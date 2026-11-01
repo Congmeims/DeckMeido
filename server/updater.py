@@ -40,12 +40,14 @@ DEFAULT_MIRROR = "https://meido.meagames.cn/deckmeido"
 REPO = "Congmeims/deckmeido"
 GITHUB_API = "https://api.github.com"
 
-# 这些结果文件不随 tarball 覆盖：升级不该把用户的配置、会话、日志一起换掉
+# 这些结果文件不随 tarball 覆盖：升级不该把用户的配置、会话、日志一起换掉。
+# 注意 VERSION 不在这个名单里：它记录的正是「现在装的是哪个版本」，
+# 排除掉的话升级后 VERSION 还停在旧版本，设置页永远显示旧版本号、检查更新也会
+# 一直提示有新版，于是每次都重复下载同一个包
 _KEEP_REL = (
     "server/config.toml",
     "server/memory.json",
     "server/meidosoul.json",
-    "VERSION",
     "update.log",
     "RELEASE-NOTES.md",
 )
@@ -346,6 +348,16 @@ def _apply_mirror(info: dict, log_path: Path) -> str:
         if not roots:
             raise RuntimeError("安装包结构不对：里面没有目录")
         _overlay_tree(roots[0], INSTALL_DIR)
+    # 发布包里的 VERSION 会被 overlay 带过来；万一包里没有（老包/手工打的包），
+    # 就用 latest.json 的 tag 补上，否则升级完了版本号还是旧的
+    ver_file = INSTALL_DIR / "VERSION"
+    try:
+        got = ver_file.read_text(encoding="utf-8").strip().lstrip("v")
+    except OSError:
+        got = ""
+    if got != ver and ver:
+        ver_file.write_text(ver + "\n", encoding="utf-8")
+        _append_log(log_path, f"写入 VERSION={ver}\n")
     _append_log(log_path, f"镜像包已覆盖到 {INSTALL_DIR}\n")
     return ver
 
