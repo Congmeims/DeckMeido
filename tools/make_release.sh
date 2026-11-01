@@ -54,7 +54,7 @@ gen_notes() {
 
 mkdir -p "$OUT" "$STAGE/$NAME"
 cd "$ROOT"
-cp -r server client assets deploy tools plugin requirements.txt README.md install.sh "$STAGE/$NAME/"
+cp -r server client assets deploy tools plugin requirements.txt requirements-gui.txt README.md install.sh "$STAGE/$NAME/"
 # 清掉不该进包的东西
 rm -rf "$STAGE/$NAME/server/config.toml" \
        "$STAGE/$NAME/server/sessions" \

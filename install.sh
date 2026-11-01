@@ -4,6 +4,7 @@
 #   bash install.sh              安装或升级到当前目录（可重复执行）
 #   bash install.sh install       同上
 #   bash install.sh install --deps      顺带用 sudo 安装控制类插件（不再询问）
+#   bash install.sh install --gui       只补装桌面客户端（PySide6），不动别的
 #   bash install.sh upgrade        升级代码与依赖，保留配置
 #   bash install.sh upgrade --deps      升级后顺带检查并安装控制类插件
 #   bash install.sh check          自检：逐个实测控制类控件是否真的能用
@@ -11,6 +12,7 @@
 #   bash install.sh uninstall --purge   连配置一起删
 #   bash install.sh service       生成 systemd 用户单元（默认不装，后端由客户端拉起）
 #   bash install.sh from-mirror   从国内镜像站下载最新版并安装（GitHub 不通时用）
+#   bash install.sh speedtest     只测各 pip 源的下载速率，挑最快的那个
 #
 # 控制类插件（ydotool / kdotool / wtype / espeak-ng / fakeroot）是系统包，
 # 装它们需要 root：默认只在结尾提示并询问一次（y/N），回答 y 才走 sudo。
@@ -31,7 +33,8 @@
 #   DECKMEIDO_DIR        安装目录，默认 ~/deckmeido
 #   DECKMEIDO_PORT       服务端口，默认 18765
 #   DECKMEIDO_MIRROR     镜像站目录，默认 https://meido.meagames.cn/deckmeido
-#   DECKMEIDO_PIP_INDEX  pip 源；留空自动测速挑一个（pip 装失败时自动换下一个）
+#   DECKMEIDO_PIP_INDEX  pip 源；留空则实测各源下载速率，自动用最快的那个
+#   DECKMEIDO_SKIP_GUI   设为 1 则跳过 PySide6（只要网页版 / 后端时用）
 #   DECKMEIDO_UPDATE_SOURCE  写进配置的更新源：mirror / github / mirror-only / github-only
 #
 # 注意：不要用 sudo 执行。脚本会把程序装到当前用户家目录、注册用户级服务，
@@ -818,7 +821,7 @@ sync_files() {
     info "安装到 $INSTALL_DIR"
   fi
   mkdir -p "$INSTALL_DIR"
-  local items=(server client assets deploy tools plugin requirements.txt README.md install.sh)
+  local items=(server client assets deploy tools plugin requirements.txt requirements-gui.txt README.md install.sh)
   # RELEASE-NOTES.md 只在发布包里存在，有就一起带上，方便用户在安装目录里查更新内容
   [ -f "$HERE/RELEASE-NOTES.md" ] && items+=(RELEASE-NOTES.md)
   for it in "${items[@]}"; do
@@ -838,7 +841,7 @@ sync_files() {
 }
 
 # pip 源：国内默认走镜像，PySide6 这类大包从官方 PyPI 拉经常超时。
-# 顺序按「国内一般最快」排，实测失败就换下一个，全都不通才回退官方。
+# 装之前会实测每个源的下载速率，从最快的开始；失败再按顺序换下一个。
 PIP_INDEXES=(
   "https://pypi.tuna.tsinghua.edu.cn/simple"
   "https://mirrors.aliyun.com/pypi/simple"
@@ -846,28 +849,77 @@ PIP_INDEXES=(
   "https://pypi.org/simple"
 )
 
-# 探一下哪个源最快（能连上就算），返回索引；都连不上返回 -1
-pick_pip_index() {
-  local i best=-1 best_t=99 t
-  need_cmd curl || { printf '%s' 0; return; }
-  for i in "${!PIP_INDEXES[@]}"; do
-    t=$(curl -o /dev/null -sS -m 4 -w '%{time_total}' "${PIP_INDEXES[$i]}/" 2>/dev/null || echo 99)
-    t=${t%%.*}
-    [ -n "$t" ] || t=99
-    if [ "$t" -lt "$best_t" ]; then best_t=$t; best=$i; fi
-  done
-  [ "$best_t" -lt 99 ] || best=-1
-  printf '%s' "$best"
+# 探一下哪个源最快，返回索引；都连不上返回 -1。
+# 不用 ping：ICMP 只能证明「能到」，跟 pip 走 HTTPS 下载快不快没必然关系，
+# 而且 mirror 源一般禁 ICMP。这里直接向每个源拉同一段真实文件，
+# 按实测下载速率（字节/秒）排，用 curl 的量测数据，不用额外依赖。
+PROBE_BYTES=65536      # 每个源只取 64KB，够分辨快慢又不费流量
+PROBE_MAX=4            # 单个源最多等 4 秒
+
+# 返回「字节/秒」，失败返回 0
+probe_speed() {
+  local url="$1" out
+  out=$(curl -sS -L -m "$PROBE_MAX" -r 0-$((PROBE_BYTES - 1)) \
+        -o /dev/null -w '%{speed_download} %{size_download}' \
+        "${url%/}/" 2>/dev/null) || return 1
+  local spd size
+  spd=${out%% *}
+  size=${out##* }
+  size=${size%%.*}
+  # 只回了几个字节的说明是错误页，不算数
+  if [ -n "$size" ] && [ "$size" -lt 1024 ] 2>/dev/null; then
+    printf '0'
+    return 0
+  fi
+  spd=${spd%%.*}
+  printf '%s' "${spd:-0}"
 }
 
+pick_pip_index() {
+  local i n=${#PIP_INDEXES[@]} idx=-1
+  local -a spd
+  need_cmd curl || { printf '%s' 0; return 0; }
+  # 注意：本函数靠 stdout 返回下标，所有提示必须走 stderr，否则会污染返回值
+  if [ "$n" -gt 1 ]; then
+    dim "测速中（各源取 ${PROBE_BYTES} 字节，最多 ${PROBE_MAX}s）" >&2
+  fi
+  for i in "${!PIP_INDEXES[@]}"; do
+    spd[$i]=$(probe_speed "${PIP_INDEXES[$i]}" || echo 0)
+    dim "$(human_rate "${spd[$i]}")  ${PIP_INDEXES[$i]}" >&2
+    if [ "${spd[$i]}" -gt 0 ] && { [ "$idx" = "-1" ] || [ "${spd[$i]}" -gt "${spd[$idx]}" ]; }; then
+      idx=$i
+    fi
+  done
+  printf '%s' "$idx"
+}
+
+# 字节/秒 → 人看得懂的速率
+human_rate() {
+  local r="${1:-0}"
+  if [ "$r" -ge 1048576 ]; then
+    printf '%d.%dMB/s' $((r / 1048576)) $((r % 1048576 * 10 / 1048576))
+  elif [ "$r" -ge 1024 ]; then
+    printf '%dKB/s' $((r / 1024))
+  elif [ "$r" -gt 0 ]; then
+    printf '%dB/s' "$r"
+  else
+    printf '连不上'
+  fi
+}
+
+# 建 venv + 装依赖。$1 = gui 时只装桌面客户端（PySide6），不动服务端依赖。
+#
+# 依赖分成两份：requirements.txt（服务端，必装）和 requirements-gui.txt
+# （PySide6 + WebEngine，解包后 700MB 上下）。以前合成一份，PySide6 一超时
+# 整个安装就报「装不上」，网页端其实早就能用了。现在拆开：桌面客户端装失败
+# 只警告，后端与网页版照常可用；之后想补装跑 install --gui。
 venv_install() {
-  local py="$INSTALL_DIR/.venv/bin/python"
+  local only_gui="${1:-}"
+  local py="$INSTALL_DIR/.venv/bin/python" idx=0 start=0
   if [ ! -x "$py" ]; then
     info "创建虚拟环境 $INSTALL_DIR/.venv"
     python3 -m venv "$INSTALL_DIR/.venv"
   fi
-  info "安装 Python 依赖（首次较慢，PySide6 体积较大）"
-  local idx=0
   if [ -n "${DECKMEIDO_PIP_INDEX:-}" ]; then
     PIP_INDEXES=("$DECKMEIDO_PIP_INDEX")
     dim "使用指定的 pip 源：$DECKMEIDO_PIP_INDEX"
@@ -877,32 +929,119 @@ venv_install() {
       idx=0
       warn "没测到可用的 pip 源，按默认顺序逐个尝试"
     else
-      dim "pip 源：${PIP_INDEXES[$idx]}"
+      dim "选最快的源：${PIP_INDEXES[$idx]}"
+      start="$idx"
     fi
   fi
-  "$py" -m pip install --upgrade pip -q -i "${PIP_INDEXES[$idx]}" 2>/dev/null ||
-    "$py" -m pip install --upgrade pip -q
-  # 装依赖：当前源失败就换下一个。以前只跑一次，国内一超时整个安装就中断，
-  # 用户看到一堆 ReadTimeout，其实只是源选错了。
-  local n=${#PIP_INDEXES[@]} i tries=0 ok=0
+  "$py" -m pip install --upgrade pip -q -i "${PIP_INDEXES[$start]}" >/dev/null 2>&1 ||
+    "$py" -m pip install --upgrade pip -q >/dev/null 2>&1 || true
+
+  if [ "$only_gui" != "gui" ]; then
+    section "Python 依赖（服务端）"
+    if ! pip_install_with_switch "$py" requirements.txt "$start"; then
+      warn "服务端依赖没装全，可稍后重跑：bash $INSTALL_DIR/install.sh upgrade"
+      dim "手动指定源：DECKMEIDO_PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple bash install.sh upgrade"
+      return 1
+    fi
+  fi
+
+  if [ -n "${DECKMEIDO_SKIP_GUI:-}" ]; then
+    dim "已跳过桌面客户端（DECKMEIDO_SKIP_GUI=1）"
+    return 0
+  fi
+  section "桌面客户端（PySide6，体积较大）"
+  if pip_install_with_switch "$py" requirements-gui.txt "$start"; then
+    dim "PySide6 已就绪"
+    return 0
+  fi
+  warn "PySide6 没装上：网页版可以正常用，桌面上不会有客户端窗口"
+  dim "稍后补装：bash $INSTALL_DIR/install.sh install --gui"
+  return 0
+}
+
+# 带进度条与换源的 pip install。
+#   $1 python，$2 requirements 文件名，$3 起始源下标（默认 0）
+# 为什么要包一层：pip 下大包时很久不吐一行输出，以前又用了 -q，用户看到的
+# 就是「卡在 pip 镜像源那一步」。这里让 pip 把输出写进日志、放后台跑，
+# 前台每秒重画一次状态行：当前包 / 已下载包数 / venv 体积 / 已用时间。
+pip_install_with_switch() {
+  local py="$1" req="$2" start="${3:-0}"
+  local n=${#PIP_INDEXES[@]} i k ok=0 log="$INSTALL_DIR/pip-install.log"
+  local sz="" ret=0 pid t0 done_n cur
   for ((i = 0; i < n; i++)); do
-    local k=$(((idx + i) % n))
-    tries=$((tries + 1))
-    [ "$tries" -gt 1 ] && dim "换源重试（${PIP_INDEXES[$k]}）"
-    if "$py" -m pip install -r "$INSTALL_DIR/requirements.txt" -q -i "${PIP_INDEXES[$k]}"; then
-      ok=1; break
+    k=$(((start + i) % n))
+    if [ "$i" -gt 0 ]; then dim "换源重试：${PIP_INDEXES[$k]}"; fi
+    # --progress-bar off：进度由我们自己画，不让 pip 的 \r 刷屏搅乱
+    "$py" -m pip install -r "$INSTALL_DIR/$req" \
+      --progress-bar off --timeout 60 --retries 3 \
+      -i "${PIP_INDEXES[$k]}" > "$log" 2>&1 &
+    pid=$!
+    t0=$SECONDS
+    ret=0
+    while kill -0 "$pid" 2>/dev/null; do
+      done_n=$(grep -c -e '^  Downloading' -e '^  Using cached' "$log" 2>/dev/null || true)
+      cur=$(grep -o 'Down[^ ]* [^ ]*' "$log" 2>/dev/null | tail -1 | cut -c1-46)
+      sz=$(du -sh "$INSTALL_DIR/.venv" 2>/dev/null | cut -f1)
+      progress_bar "${done_n:-0}" "${sz:--}" "$((SECONDS - t0))" "$cur"
+      sleep 1
+    done
+    wait "$pid" || ret=$?
+    progress_clear
+    if [ "$ret" = 0 ]; then
+      ok=1
+      dim "$req 装好了（$((SECONDS - t0))s，venv ${sz:-未知}）"
+      break
+    fi
+    if [ -s "$log" ]; then
+      dim "失败原因：$(grep -v '^[[:space:]]*$' "$log" | tail -1 | cut -c1-90)"
     fi
   done
   if [ "$ok" != 1 ]; then
-    # 最后一招：不吃任何源配置，走 pip 默认（有代理 / 公司内网时反而能成）
-    warn "镜像源都没装成功，再试一次 pip 默认源"
-    "$py" -m pip install -r "$INSTALL_DIR/requirements.txt" -q || {
-      warn "Python 依赖没装全，可稍后重跑：bash $INSTALL_DIR/install.sh upgrade"
-      dim "手动指定源：DECKMEIDO_PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple bash install.sh upgrade"
-      return 1
-    }
+    # 最后一招：不吃任何源配置，走 pip 默认（有代理 / 内网源时反而能成）
+    warn "镜像源都没装成功，再用 pip 默认源试一次"
+    progress_bar 0 "" "$SECONDS" "pip 默认源"
+    ret=0
+    "$py" -m pip install -r "$INSTALL_DIR/$req" --timeout 60 --retries 3 \
+      --progress-bar off > "$log" 2>&1 || ret=$?
+    progress_clear
+    [ "$ret" = 0 ] && ok=1
+    if [ "$ok" != 1 ]; then
+      dim "完整日志：$log"
+      dim "失败原因：$(grep -v '^[[:space:]]*$' "$log" | tail -1 | cut -c1-90)"
+    fi
   fi
-  return 0
+  [ "$ok" = 1 ]
+}
+
+# ---------- 进度显示 ----------
+# pip 不会告诉你「还剩多少」，所以这里画的是「看得见在动」：
+# 转圈 + 已下载包数 + 当前包名 + venv 体积 + 已用时间。
+# 只在真终端里用 \r 原地重画；输出被重定向到文件/管道时只打普通行，不刷屏。
+_spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+_progress_on=0
+_progress_last=""
+
+progress_clear() {
+  if [ "$_progress_on" = 1 ]; then printf '\r\033[K'; fi
+  _progress_on=0
+}
+
+# progress_bar <已下载包数> <venv 体积> <已用秒数> <当前包名>
+progress_bar() {
+  local got="${1:-0}" size="${2:-}" secs="${3:-0}" cur="${4:-}" spin_c
+  [ -n "$size" ] || size='-'
+  if [ ! -t 1 ]; then
+    # 非终端：当前包变了才打一行，重定向到日志时也能看出进度
+    if [ -n "$cur" ] && [ "$cur" != "$_progress_last" ]; then
+      printf '    [%ss] %s\n' "$secs" "$cur"
+      _progress_last="$cur"
+    fi
+    return 0
+  fi
+  spin_c="${_spin:$((got % ${#_spin})):1}"
+  printf '\r\033[K%s%s%s 已下载 %2d 包  venv %6s  已用 %4ss  %s' \
+    "$C_C" "$spin_c" "$C_END" "$got" "$size" "$secs" "$cur"
+  _progress_on=1
 }
 
 # 首次安装生成 config.toml；已有则原样保留
@@ -1197,7 +1336,19 @@ print_done() {
 
 # ---------- 子命令 ----------
 do_install() {
-  local deps="${1:-}"
+  local deps="" gui_only=0
+  for a in "$@"; do
+    case "$a" in
+      --deps) deps="--deps" ;;
+      --gui)  gui_only=1 ;;   # 只补装桌面客户端（PySide6），不动别的
+    esac
+  done
+  if [ "$gui_only" = 1 ]; then
+    check_user
+    sync_files
+    venv_install gui
+    return 0
+  fi
   print_banner
   section "环境预检"
   check_prereq
@@ -1256,8 +1407,9 @@ stop_client() {
 }
 
 do_upgrade() {
-  local deps="${1:-}"
+  local deps="${1:-}" gui_only=0
   [ -d "$INSTALL_DIR" ] || die "$INSTALL_DIR 不存在，请先执行安装"
+  if [ "$deps" = "--gui" ]; then gui_only=1; deps=""; fi
   print_banner
   section "环境预检"
   check_prereq
@@ -1267,6 +1419,11 @@ do_upgrade() {
   section "同步程序文件"
   sync_files
   section "Python 运行环境"
+  if [ "$gui_only" = 1 ]; then
+    venv_install gui || true
+    launch_client || true
+    return 0
+  fi
   venv_install || true
   section "桌面入口与服务"
   install_service
@@ -1417,6 +1574,16 @@ case "${1:-install}" in
   install|"")   do_install "${2:-}" ;;
   upgrade|update) do_upgrade "${2:-}" ;;
   from-mirror)  do_from_mirror "${2:-}" ;;
+  speedtest|mirror-test)
+                # 只测速不安装：看各个 pip 源实打实的下载速率
+                check_user
+                idx=$(pick_pip_index)
+                if [ "$idx" = "-1" ]; then
+                  warn "所有源都连不上，检查网络或代理"
+                else
+                  info "最快：${PIP_INDEXES[$idx]}"
+                  dim "想强制用它：DECKMEIDO_PIP_INDEX=${PIP_INDEXES[$idx]} bash install.sh install"
+                fi ;;
   check)        do_check "${2:-}" ;;
   uninstall)    do_uninstall "${2:-}" ;;
   service)      check_user; mkdir -p "$UNIT_DIR"; render_service
@@ -1424,5 +1591,5 @@ case "${1:-install}" in
                 dim "启用并启动：systemctl --user daemon-reload && systemctl --user enable --now $UNIT" ;;
   -h|--help|help)
     grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -n 36 ;;
-  *) die "未知命令：$1（可用：install / upgrade / from-mirror / check / uninstall / service）" ;;
+  *) die "未知命令：$1（可用：install / upgrade / from-mirror / speedtest / check / uninstall / service）" ;;
 esac
