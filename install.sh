@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # DeckMeido 一键安装 / 升级 / 卸载
 #
-#   bash install.sh              安装或升级到当前目录（可重复执行）
-#   bash install.sh install       同上
+#   bash install.sh              无参数时弹交互菜单，选「安装 / 升级 / 卸载」
+#   bash install.sh install       直接全新安装（跳过菜单）
 #   bash install.sh install --deps      顺带用 sudo 安装控制类插件（不再询问）
 #   bash install.sh install --gui       只补装桌面客户端（PySide6），不动别的
 #   bash install.sh upgrade        升级代码与依赖，保留配置
@@ -1570,8 +1570,65 @@ do_uninstall() {
   dim "代码仍保留在 $INSTALL_DIR；完全删除：rm -rf $INSTALL_DIR"
 }
 
-case "${1:-install}" in
-  install|"")   do_install "${2:-}" ;;
+# 无参数运行时弹出的交互菜单：检测是否已安装，给出带默认值的选项。
+# 明确带子命令（install/upgrade/uninstall/...）时跳过菜单，仍可直接批处理。
+show_menu() {
+  check_user
+  print_banner
+
+  local installed=0
+  [ -f "$INSTALL_DIR/VERSION" ] && installed=1
+
+  if [ "$installed" = "1" ]; then
+    local ver
+    ver=$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)
+    info "检测到已安装：$APP${ver:+ v$ver}（$INSTALL_DIR）"
+    echo
+    echo "  请选择要执行的操作："
+    echo "  ${C_B}1${C_END}  升级到最新版  ${C_DIM}（默认，回车即可）${C_END}"
+    echo "  ${C_B}2${C_END}  重新安装      ${C_DIM}（覆盖重装，保留配置）${C_END}"
+    echo "  ${C_B}3${C_END}  卸载          ${C_DIM}（停服务、删插件与配置）${C_END}"
+    echo "  ${C_B}0${C_END}  退出"
+    echo
+    local choice=""
+    if [ -t 0 ]; then
+      printf '%s[?]%s 请输入序号 [1] ' "$C_WARN" "$C_END"
+      read -r choice || choice="0"
+    else
+      choice="1"
+    fi
+    case "${choice:-1}" in
+      1|"") do_upgrade ;;
+      2)    do_install ;;
+      3)    do_uninstall ;;
+      0|q|Q) info "已取消"; exit 0 ;;
+      *)    die "无效选择：$choice" ;;
+    esac
+  else
+    info "未检测到已安装的 $APP（$INSTALL_DIR/VERSION 不存在）"
+    echo
+    echo "  请选择要执行的操作："
+    echo "  ${C_B}1${C_END}  全新安装  ${C_DIM}（默认，回车即可）${C_END}"
+    echo "  ${C_B}2${C_END}  退出"
+    echo
+    local choice=""
+    if [ -t 0 ]; then
+      printf '%s[?]%s 请输入序号 [1] ' "$C_WARN" "$C_END"
+      read -r choice || choice="0"
+    else
+      choice="1"
+    fi
+    case "${choice:-1}" in
+      1|"") do_install ;;
+      2|q|Q) info "已取消"; exit 0 ;;
+      *)    die "无效选择：$choice" ;;
+    esac
+  fi
+}
+
+case "${1:-}" in
+  "")            show_menu ;;
+  install)       do_install "${2:-}" ;;
   upgrade|update) do_upgrade "${2:-}" ;;
   from-mirror)  do_from_mirror "${2:-}" ;;
   speedtest|mirror-test)
