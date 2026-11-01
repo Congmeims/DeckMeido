@@ -907,6 +907,47 @@ human_rate() {
   fi
 }
 
+# 「11 kB」「1.9 GB」「512」这类 pip 日志里的体积文本 → 字节数
+parse_bytes() {
+  local s="$1" num unit
+  num=$(printf '%s' "$s" | grep -oE '[0-9.]+' | head -1)
+  [ -n "$num" ] || { printf '0'; return 0; }
+  unit=$(printf '%s' "$s" | grep -oE '[a-zA-Z]+' | head -1 | tr 'A-Z' 'a-z')
+  case "$unit" in
+    gb|g) printf '%d' "$(awk "BEGIN{print int($num*1073741824)}")" ;;
+    mb|m) printf '%d' "$(awk "BEGIN{print int($num*1048576)}")" ;;
+    kb|k) printf '%d' "$(awk "BEGIN{print int($num*1024)}")" ;;
+    b|"") printf '%d' "$(awk "BEGIN{print int($num)}")" ;;
+    *)    printf '0' ;;
+  esac
+}
+
+# 秒 → 「1m23s」「45s」
+human_dur() {
+  local s="${1:-0}"
+  if [ "$s" -ge 3600 ]; then
+    printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60))
+  elif [ "$s" -ge 60 ]; then
+    printf '%dm%02ds' $((s / 60)) $((s % 60))
+  else
+    printf '%ds' "$s"
+  fi
+}
+
+# 字节数 → 「1.2GB」「350MB」「11kB」这类友好体积
+human_size() {
+  local b="${1:-0}"
+  if [ "$b" -ge 1073741824 ]; then
+    printf '%.1fGB' "$(awk "BEGIN{print $b/1073741824}")"
+  elif [ "$b" -ge 1048576 ]; then
+    printf '%.0fMB' "$(awk "BEGIN{print $b/1048576}")"
+  elif [ "$b" -ge 1024 ]; then
+    printf '%.0fkB' "$(awk "BEGIN{print $b/1024}")"
+  else
+    printf '%dB' "$b"
+  fi
+}
+
 # 建 venv + 装依赖。$1 = gui 时只装桌面客户端（PySide6），不动服务端依赖。
 #
 # 依赖分成两份：requirements.txt（服务端，必装）和 requirements-gui.txt
@@ -963,11 +1004,11 @@ venv_install() {
 #   $1 python，$2 requirements 文件名，$3 起始源下标（默认 0）
 # 为什么要包一层：pip 下大包时很久不吐一行输出，以前又用了 -q，用户看到的
 # 就是「卡在 pip 镜像源那一步」。这里让 pip 把输出写进日志、放后台跑，
-# 前台每秒重画一次状态行：当前包 / 已下载包数 / venv 体积 / 已用时间。
+# 前台每秒重画一次状态行：当前包 / 已下载字节 / 总字节 / 下载速度 / 剩余时间。
 pip_install_with_switch() {
   local py="$1" req="$2" start="${3:-0}"
   local n=${#PIP_INDEXES[@]} i k ok=0 log="$INSTALL_DIR/pip-install.log"
-  local sz="" ret=0 pid t0 done_n cur
+  local ret=0 pid t0 cur got total rate prev_got
   for ((i = 0; i < n; i++)); do
     k=$(((start + i) % n))
     if [ "$i" -gt 0 ]; then dim "换源重试：${PIP_INDEXES[$k]}"; fi
@@ -978,18 +1019,36 @@ pip_install_with_switch() {
     pid=$!
     t0=$SECONDS
     ret=0
+    prev_got=0
     while kill -0 "$pid" 2>/dev/null; do
-      done_n=$(grep -c -e '^  Downloading' -e '^  Using cached' "$log" 2>/dev/null || true)
-      cur=$(grep -o 'Down[^ ]* [^ ]*' "$log" 2>/dev/null | tail -1 | cut -c1-46)
-      sz=$(du -sh "$INSTALL_DIR/.venv" 2>/dev/null | cut -f1)
-      progress_bar "${done_n:-0}" "${sz:--}" "$((SECONDS - t0))" "$cur"
+      # 已下载字节：venv 落盘体积（单调递增，直观反映「装了多少」）
+      got=$(du -sb "$INSTALL_DIR/.venv" 2>/dev/null | awk '{print $1}')
+      got=${got:-0}
+      # 总下载字节：日志里出现过的所有 Downloading (SIZE) 累加
+      total=$(grep -oE '^  Downloading[^(]*\([0-9.]+ ?[kKmMgG]?i?B?\)' "$log" 2>/dev/null \
+                | grep -oE '\([0-9.]+ ?[kKmMgG]?i?B?\)' \
+                | sed 's/[()]//g' \
+                | awk '{ sum += $1 * m($2) } END { print int(sum) }
+                       function m(u){
+                         u=tolower(u); sub(/^[0-9.]+[[:space:]]*/,"",u);
+                         if (u ~ /^g/) return 1073741824;
+                         if (u ~ /^m/) return 1048576;
+                         if (u ~ /^k/) return 1024;
+                         return 1 }')
+      total=${total:-0}
+      # 当前下载的包名（最后一行 Downloading）
+      cur=$(grep '^  Downloading' "$log" 2>/dev/null | tail -1 | sed -E 's/^  Downloading //; s/ \(.*//' | cut -c1-40)
+      # 速度：本秒 venv 体积增量（首秒视为 0，避免误报）
+      rate=$((got - prev_got))
+      prev_got=$got
+      progress_bar "$got" "$total" "$rate" "$cur"
       sleep 1
     done
     wait "$pid" || ret=$?
     progress_clear
     if [ "$ret" = 0 ]; then
       ok=1
-      dim "$req 装好了（$((SECONDS - t0))s，venv ${sz:-未知}）"
+      dim "$req 装好了（venv $(human_size "${got:-0}")）"
       break
     fi
     if [ -s "$log" ]; then
@@ -999,11 +1058,10 @@ pip_install_with_switch() {
   if [ "$ok" != 1 ]; then
     # 最后一招：不吃任何源配置，走 pip 默认（有代理 / 内网源时反而能成）
     warn "镜像源都没装成功，再用 pip 默认源试一次"
-    progress_bar 0 "" "$SECONDS" "pip 默认源"
+    dim "pip 默认源（同步执行，请稍候）"
     ret=0
     "$py" -m pip install -r "$INSTALL_DIR/$req" --timeout 60 --retries 3 \
       --progress-bar off > "$log" 2>&1 || ret=$?
-    progress_clear
     [ "$ret" = 0 ] && ok=1
     if [ "$ok" != 1 ]; then
       dim "完整日志：$log"
@@ -1014,8 +1072,9 @@ pip_install_with_switch() {
 }
 
 # ---------- 进度显示 ----------
-# pip 不会告诉你「还剩多少」，所以这里画的是「看得见在动」：
-# 转圈 + 已下载包数 + 当前包名 + venv 体积 + 已用时间。
+# pip 不把实时速度/eta 落盘（它只在 \r 里画，写不进日志），所以这里自己算：
+# 用 venv 体积增量当「下载速度」，用日志里 Downloading 行累加出的总大小
+# 减已落盘字节当「剩余量」，两者相除得「剩余时间」。
 # 只在真终端里用 \r 原地重画；输出被重定向到文件/管道时只打普通行，不刷屏。
 _spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 _progress_on=0
@@ -1026,21 +1085,28 @@ progress_clear() {
   _progress_on=0
 }
 
-# progress_bar <已下载包数> <venv 体积> <已用秒数> <当前包名>
+# progress_bar <已下载字节> <总字节> <速度(字节/秒)> <当前包名>
 progress_bar() {
-  local got="${1:-0}" size="${2:-}" secs="${3:-0}" cur="${4:-}" spin_c
-  [ -n "$size" ] || size='-'
+  local got="${1:-0}" total="${2:-0}" rate="${3:-0}" cur="${4:-}" spin_c
+  local eta_text spd_text
+  if [ "$rate" -gt 0 ] && [ "$total" -gt 0 ] && [ "$got" -lt "$total" ]; then
+    eta_text="剩余 $(human_dur $(((total - got) / rate)))"
+  else
+    eta_text="剩余 --"
+  fi
+  spd_text="$(human_rate "$rate")"
   if [ ! -t 1 ]; then
     # 非终端：当前包变了才打一行，重定向到日志时也能看出进度
     if [ -n "$cur" ] && [ "$cur" != "$_progress_last" ]; then
-      printf '    [%ss] %s\n' "$secs" "$cur"
+      printf '    [%s] %s\n' "$eta_text" "$cur"
       _progress_last="$cur"
     fi
     return 0
   fi
   spin_c="${_spin:$((got % ${#_spin})):1}"
-  printf '\r\033[K%s%s%s 已下载 %2d 包  venv %6s  已用 %4ss  %s' \
-    "$C_C" "$spin_c" "$C_END" "$got" "$size" "$secs" "$cur"
+  printf '\r\033[K%s%s%s  %s  %s/%s  %s  %s' \
+    "$C_C" "$spin_c" "$C_END" "$cur" \
+    "$(human_size "$got")" "$(human_size "$total")" "$spd_text" "$eta_text"
   _progress_on=1
 }
 
