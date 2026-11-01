@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/Congmeims/deckmeido/releases"><img src="https://img.shields.io/github/v/release/Congmeims/deckmeido?style=flat-square&color=1f6feb" alt="Release"></a>
-  <a href="https://github.com/Congmeims/deckmeido/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Congmeims/deckmeido?style=flat-square" alt="License"></a>
+  <a href="https://github.com/Congmeims/deckmeido/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-2ea44f?style=flat-square" alt="License"></a>
   <img src="https://img.shields.io/badge/platform-SteamOS%20%7C%20Linux-1f6feb?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/python-3.11+-3776ab?style=flat-square" alt="Python">
 </p>
@@ -57,16 +57,24 @@ bash /tmp/dm.sh from-mirror
 bash install.sh speedtest
 ```
 
+想看菜单自己选「安装 / 升级 / 卸载」，不带参数也随时可以重跑（已装则走升级）：
+
+```bash
+bash install.sh menu
+```
+
 ## 能做什么
 
-| | |
+| 类别 | 说明 |
 | --- | --- |
 | **桌面对话** | 流式回复 + 思维链、多会话、上下文自动压缩、长期记忆、图片上传、分享为长图 |
 | **操作桌面** | 聚焦窗口、按坐标点击、打字、执行命令（超时保护 + 危险命令识别 + 三档权限） |
 | **看屏幕** | 桌面模式 KWin 截图，游戏模式走 gamescope PipeWire 抓帧 |
-| **Steam** | 列已装游戏、商店搜索、拉下载（危险操作，强制确认） |
-| **游戏模式** | Decky 插件：QAM 面板对话、截屏提问、虚拟手柄按键 |
-| **其它** | 联网搜索、天气、文件读写、模拟器 ROM 扫描、系统信息、语音播报（TTS） |
+| **Steam** | 列已装游戏、商店搜索、拉下载（危险操作，强制确认）、检查系统更新 |
+| **游戏模式** | Decky 插件：QAM 面板对话（LT / RT 翻页）、截屏提问、截图翻译、虚拟手柄注入 |
+| **编程 / 文件** | 工作区内的目录浏览与读写、精确替换编辑（`permission_mode` 决定能否越出工作区） |
+| **自我维护** | 检查并升级自身、语音播报（TTS）、桌面模式下执行任务时阻止息屏 |
+| **其它** | 联网搜索、天气、模拟器 ROM 扫描、系统信息 |
 
 模型接任意 OpenAI 兼容后端：GPT、Claude（中转）、DeepSeek、Qwen、GLM、Kimi、本地 LM Studio 都行，默认 DeepSeek。
 
@@ -94,22 +102,26 @@ bash install.sh speedtest
 | `server/meidosoul.json` | 人设：名字、性格、称呼、语气、禁用词 |
 | `server/memory.json` | 长期记忆：用户画像 / 环境经验 / 知识条目 |
 
-感兴趣的几个键：`[llm] reasoning_effort`（思考深度，`high` / `max`）、`[agent] context_window`（`0` = 按模型名推断）、`[security] permission_mode`（`manual` / `auto` / `full`）。完整表格见 [config.example.toml](server/config.example.toml)。
+感兴趣的几个键：`[llm] reasoning_effort`（思考深度，`high` / `max`）、`[agent] context_window`（`0` = 按模型名推断）、`[update] source`（更新源，`mirror` / `github` / `mirror-only` / `github-only`）、`[security] permission_mode`（`manual` / `auto` / `full`）、`[workspace] dir`（文件工具的工作区，留空用 `~/deckmeido_workspace`）。完整表格见 [config.example.toml](server/config.example.toml)。
 
 ## 常用命令
 
 ```bash
+bash install.sh                     # 不带参数：没装就装，已装就升级
+bash install.sh menu                # 交互菜单：安装 / 升级 / 卸载
 bash install.sh upgrade             # 升级：同步代码 + 依赖，保留配置与会话
 bash install.sh upgrade --deps      # 升级后顺带检查控制类插件
 bash install.sh install --gui       # 只补装桌面客户端（PySide6）
 bash install.sh from-mirror         # 从镜像站拉最新版覆盖安装
+bash install.sh speedtest           # 只测各 pip 源速率，不安装
 bash install.sh check               # 自检：逐个实测控制类控件是否真能用
-bash ~/deckmeido/uninstall.sh       # 卸载（保留配置与会话，加 --purge 全删）
+bash install.sh uninstall           # 卸载（保留配置与会话，加 --purge 全删）
+bash install.sh service             # 生成 systemd 用户单元（默认不装，由客户端拉起后端）
 ```
 
-升级也可以在网页「设置 → 关于」里点，会先备份、校验 sha256，失败整份回滚，配置和会话不受影响。
+升级也可以在网页「设置 → 关于」里点，会先备份、校验 sha256，失败整份回滚，配置和会话不受影响。更新源可以在同一页切换镜像站 / GitHub。
 
-环境变量：`DECKMEIDO_DIR`（安装目录）、`DECKMEIDO_PORT`（端口）、`DECKMEIDO_MIRROR`（镜像站）、`DECKMEIDO_PIP_INDEX`（指定 pip 源，留空则自动测速）、`DECKMEIDO_SKIP_GUI=1`（不装 PySide6）。
+环境变量：`DECKMEIDO_DIR`（安装目录）、`DECKMEIDO_PORT`（端口）、`DECKMEIDO_MIRROR`（镜像站）、`DECKMEIDO_PIP_INDEX`（指定 pip 源，留空则自动测速）、`DECKMEIDO_SKIP_GUI=1`（不装 PySide6）、`DECKMEIDO_UPDATE_SOURCE`（安装时写进配置的更新源）、`DECKMEIDO_WORKSPACE`（工作区目录）。
 
 ## 目录结构
 
@@ -118,18 +130,28 @@ deckmeido/
 ├── install.sh          一键安装 / 升级 / 卸载 / 镜像安装 / 自检 / 测速
 ├── server/
 │   ├── main.py         FastAPI 服务、agent 循环、权限审批、遮罩调度
-│   ├── tools.py        工具定义与执行
-│   ├── session_store.py 会话落盘（单线程写、原子替换、压缩游标）
+│   ├── tools.py        工具定义与执行、工作区边界
 │   ├── llm.py          OpenAI 兼容流式客户端
-│   ├── memory.py       长期记忆    ├── persona.py    人设
+│   ├── session_store.py 会话落盘（单线程写、原子替换、压缩游标）
+│   ├── memory.py       长期记忆
+│   ├── persona.py      人设加载与回落
+│   ├── prompts/        系统提示词（system / modes / runtime）
 │   ├── overlay.py      半透明操作遮罩（PySide6）
-│   └── static/index.html   单文件 Web 控制台
+│   ├── depcheck.py     控制类控件自检（ydotool / kdotool / wtype / espeak-ng）
+│   ├── power.py        桌面模式下阻止息屏休眠
+│   ├── singleton.py    后端单实例保护
+│   ├── tts.py          语音播报（espeak-ng）
+│   ├── updater.py      自升级：查版本、拉包、校验 sha256、回滚
+│   └── static/         单文件 Web 控制台（index.html）+ 终端组件
 ├── client/             PySide6 原生客户端（托盘、单实例、崩溃守护）
 ├── plugin/             Decky 插件（QAM 面板）
-├── assets/             图标
-├── deploy/             桌面快捷方式模板、离线依赖包
-└── tools/              打包、图标生成、离线依赖抓取
+├── assets/             图标与来源图（icon-src/）
+├── deploy/             桌面快捷方式模板、systemd 单元、离线依赖（按需生成）
+├── website/            官网静态页
+└── tools/              发版打包、部署、证书与依赖抓取等仓库脚本（不进发布包）
 ```
+
+发布包是 `dist/deckmeido-<版本>.tar.gz`，插件单独打成 `dist/deckmeido-plugin-<版本>.zip`（顶层 `DeckMeido/` 文件夹，Decky 商店 / 本地安装都能直接用）。
 
 ## 常见问题
 
@@ -141,10 +163,12 @@ deckmeido/
 
 **游戏模式下网页打不开？** 正常，SteamOS 游戏模式的浏览器不在。用 Decky 插件的 QAM 面板，或切回桌面模式。
 
+**插件装完面板里什么都没有？** 多半是 zip 结构不对——Decky 要求顶层是 `DeckMeido/` 文件夹，文件直接摆在 zip 根目录会报 `No plugin.json found in plugin ZIP`。直接用 Release 里附带的 `deckmeido-plugin-*.zip`。
+
 ## 已知限制
 
 - `desktop` 输入：优先走 klipper 剪贴板 + `Ctrl+V`，klipper 不可用时退回 `ydotool type`（仅英文数字符号）
-- 文件工具只做 `expanduser` + `resolve`，没有工作区边界校验；也不受 `permission_mode` 约束
+- 文件工具默认只能碰工作区（`manual` / `auto` 模式）；`full` 模式下不设边界
 - 部分 Wayland 原生窗口无法直接截取，桌面模式依赖 `spectacle`
 - 会话只存本机，没有云端同步
 
