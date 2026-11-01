@@ -2,22 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<script>
-  // 手机竖屏强制横屏（雀魂式）：在 CSS 布局计算前、body 渲染前就判断，
-  // 给 <html> 打上 force-ls 标记。viewport 保持 device-width 不动——
-  // 字 1:1 不缩小（之前反复栽在「改 viewport 缩放」上，Chrome 会忽略运行时改的
-  // initial-scale）。旋转和断点覆盖全部交给 CSS 里的 html.force-ls 规则完成。
-  (function () {
-    try {
-      var touch = window.matchMedia('(hover: none)').matches;
-      var portrait = window.innerHeight > window.innerWidth;
-      if (touch && portrait) {
-        document.documentElement.classList.add('force-ls');
-      }
-    } catch (e) {}
-  })();
-</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0f1117">
 <link rel="icon" type="image/png" href="/favicon.png">
@@ -49,42 +34,6 @@
     height: 100dvh;
     overflow: hidden;
   }
-
-  /* 手机竖屏强制横屏：像雀魂网页版一样，竖着拿手机时整个界面旋转 90° 渲染。
-     viewport 保持 device-width（字 1:1，绝不碰 shrink-to-fit），
-     缩放/旋转全靠 #app 的 transform。
-     force-ls 这个 class 由 <head> 里的同步脚本按「触屏 + 竖屏」打上，
-     所以这里直接用 html.force-ls 选择器，不再重复 media 查询（桌面浏览器
-     hover:none 恒 false，套 media 会让规则失效、也没法自测）。
-     几何：竖屏时 100vw=屏幕短边(如 421px)、100vh=屏幕长边(如 927px)。
-     #app 按「横屏」尺寸布局——宽取长边(100vh)、高取短边(100vw)，
-     再 rotate(90deg) 旋转，927×421 变成 421×927，正好铺满竖屏，字不变形。
-     transform-origin: top left 后向左下方旋转，用 translate 把它拉回可视区 */
-  html.force-ls {
-    /* 用 dvh/dvw 而不是 vh/vw：Chrome 安卓的 100vh 含地址栏收起后的高度，
-       比可视区大，旋转后两端会被裁掉；dvh 跟随实际可视区 */
-    width: 100dvh;
-    height: 100dvw;
-    overflow: hidden;
-  }
-  html.force-ls body {
-    width: 100dvh;
-    height: 100dvw;
-    overflow: hidden;
-  }
-  html.force-ls #app {
-    position: fixed;
-    left: 100dvw;
-    top: 0;
-    width: 100dvh;
-    height: 100dvw;
-    transform-origin: top left;
-    transform: rotate(90deg);
-  }
-  /* 旋转后 #main 的 100dvh 仍按竖屏视口算（927px 高），而旋转后可视高只有
-     竖屏宽（421px），#messages 被撑到 927 高、滚不出可视区，触摸滚动失效。
-     改成 100% 跟随 #app 的固定高度，滚动容器才拿到正确高度 */
-  html.force-ls #main { height: 100%; }
 
   /* 顶部状态栏 */
   header {
@@ -2145,43 +2094,6 @@
   body.settings-mode.rb-collapsed #rbPaneFile,
   body.settings-mode.rb-collapsed #rbPaneTerm { display: none !important; }
 
-  /* ===== 手机竖屏强制横屏：三栏断点反向覆盖 =====
-     viewport 仍是 device-width（如 421px），所以 @media(max-width:760/1080px)
-     的抽屉断点会命中，把三栏塌成抽屉、顶栏收窄。但 force-ls 旋转后 #app 的
-     实际渲染宽度是 100vh（≈927px，横屏长边），足以放下一整套三栏。
-     这里用 html.force-ls 更高优先级，把断点对三栏布局的副作用全部撤销，
-     恢复桌面三栏（字 1:1）。 */
-  /* 左栏：撤销 760px 断点的抽屉化，回到桌面 flex 三栏 */
-  html.force-ls #sidebar {
-    position: relative; z-index: auto; left: auto; top: auto; bottom: auto;
-    width: auto; flex: 0 0 15%;
-    transform: none; box-shadow: none;
-  }
-  html.force-ls #main { flex: 1 1 62.5%; }
-  html.force-ls #sbToggle { display: inline-flex; }
-  html.force-ls #btnMenu { display: none; }
-
-  /* 右栏：撤销 1080px 断点的抽屉化，回到桌面 flex 三栏 */
-  html.force-ls #rightbar {
-    position: relative; z-index: auto; right: auto; top: auto; bottom: auto;
-    width: auto !important; flex: 0 0 22.5%;
-    transform: none; box-shadow: none;
-  }
-  html.force-ls #btnRight { display: none; }
-  html.force-ls #rbToggle { display: none; }
-
-  /* 撤销 560px 断点对顶栏/消息/输入框的字号与间距收窄 */
-  html.force-ls header { gap: 10px; padding: 10px 14px; padding-top: calc(10px + env(safe-area-inset-top)); }
-  html.force-ls .logo { font-size: 17px; }
-  html.force-ls .hdr-right { gap: 8px; flex-wrap: wrap; }
-  html.force-ls .badge { padding: 4px 10px; font-size: 12px; }
-  html.force-ls #ctxBadge { display: inline-flex !important; }
-  html.force-ls #modeBadge { padding: 4px 10px; font-size: 12px; }
-  html.force-ls #messages { padding: 14px; gap: 10px; }
-  html.force-ls .msg { max-width: 85%; font-size: 15.5px; padding: 10px 14px; }
-  html.force-ls #composer { padding: 8px 14px; gap: 8px; }
-  html.force-ls #input { font-size: 15px; padding: 10px 12px; min-height: 44px; }
-
 </style>
 <!-- xterm.js：真终端模拟器，替换自研 ANSI 网格渲染。
      本地文件（server/static/xterm.*），离线可用，不影响单文件部署 -->
@@ -2258,7 +2170,6 @@
     <span class="badge" id="ctxBadge" hidden></span>
     <span class="badge ctrl" id="ctrlBadge" hidden></span>
     <span class="badge" id="modeBadge" hidden></span>
-    <button class="menu-btn" id="btnFullscreen" title="全屏">⛶</button>
   </div>
 </header>
 
@@ -7829,28 +7740,6 @@
   document.getElementById('btnMenu').addEventListener('click', function () {
     document.body.classList.toggle('sb-open');
   });
-  // 全屏按钮：进入/退出全屏。requestFullscreen 必须由用户手势触发才能成功，
-  // 所以做成按钮而不是页面加载时自动调用。
-  var btnFs = document.getElementById('btnFullscreen');
-  btnFs.addEventListener('click', function () {
-    var doc = document;
-    var el = doc.documentElement;
-    if (!doc.fullscreenElement && !doc.webkitFullscreenElement) {
-      var req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
-      if (req) req.call(el);
-    } else {
-      var exit = doc.exitFullscreen || doc.webkitExitFullscreen || doc.mozCancelFullScreen || doc.msExitFullscreen;
-      if (exit) exit.call(doc);
-    }
-  });
-  // 全屏状态变化时更新按钮图标，让用户知道当前是否在全屏
-  function syncFsIcon() {
-    var fs = document.fullscreenElement || document.webkitFullscreenElement;
-    btnFs.textContent = fs ? '✕' : '⛶';
-    btnFs.title = fs ? '退出全屏' : '全屏';
-  }
-  document.addEventListener('fullscreenchange', syncFsIcon);
-  document.addEventListener('webkitfullscreenchange', syncFsIcon);
   // 点消息区 = 接着聊天，顺手收起抽屉
   messages.addEventListener('click', function () {
     document.body.classList.remove('sb-open');
@@ -8075,20 +7964,6 @@
 
   _xtLoad();   // 检测 xterm.js / FitAddon 是否就绪，就绪后放行排队里的会话创建
   connect();   // 主对话 / 事件 WebSocket
-
-  // ---------- 手机竖屏强制横屏（雀魂式） ----------
-  // 旋转/断点覆盖全部由 CSS 的 html.force-ls 规则完成（见 <head> 同步脚本 + CSS），
-  // 这里不再动态改 viewport 或 #app 尺寸——Chrome 会忽略运行时改的 initial-scale，
-  // 之前的坑就在这。只在转屏时刷新 force-ls 标记，让 CSS 媒体查询重新判定。
-  function syncForceLandscape() {
-    var portrait = window.innerHeight > window.innerWidth;
-    var touch = window.matchMedia('(hover: none)').matches;
-    document.documentElement.classList.toggle('force-ls', portrait && touch);
-  }
-  window.addEventListener('resize', syncForceLandscape);
-  window.addEventListener('orientationchange', function () {
-    setTimeout(syncForceLandscape, 120);
-  });
 
   // 连上之后才知道有没有令牌；文件面板首屏在这里补加载一次
   setTimeout(function () {
