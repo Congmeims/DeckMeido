@@ -28,6 +28,8 @@ PATTERNS = [
     ("API Key", re.compile(r"sk-[A-Za-z0-9_\-]{20,}")),
     ("GitHub Token", re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}")),
     ("AWS Key", re.compile(r"AKIA[0-9A-Z]{16}")),
+    # 服务器地址：公开仓库里不该出现具体 IP 和 SSH 端口
+    ("服务器地址", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b(?![.\d])")),
     ("密码字段", re.compile(r"(api_key|secret|token)\s*=\s*\"(?![\"\s]*\")[^\"]{16,}\"")),
 ]
 # 允许出现的占位值
@@ -54,6 +56,23 @@ def looks_like_secret(val: str) -> bool:
     return True
 
 
+def is_doc_ip(val: str) -> bool:
+    """示例/回环/私有网段保留地址不算泄露（文档里常写 127.0.0.1、192.168.x.x）"""
+    try:
+        a, b, _c, _d = (int(x) for x in val.split("."))
+    except ValueError:
+        return False
+    return (
+        a in (0, 127, 10) or (a == 192 and b == 168) or (a == 172 and 16 <= b <= 31)
+        or a >= 224 or val in ("255.255.255.255",)
+    )
+
+
+def noise(line: str) -> bool:
+    """明显不是服务器地址的行：图标 SVG 的坐标、公开 DNS、代理 fake-ip 说明"""
+    return any(k in line for k in ('"attr"', "viewBox", "8.8.8.8", "198.18.", "fake-ip"))
+
+
 def scan_text(name: str, text: str) -> list:
     hits = []
     for i, line in enumerate(text.splitlines(), 1):
@@ -63,6 +82,8 @@ def scan_text(name: str, text: str) -> list:
                 continue
             val = m.group(2) if label == "SSH 密码" and m.lastindex and m.lastindex >= 2 else m.group(0)
             if label == "SSH 密码" and not looks_like_secret(val or ""):
+                continue
+            if label == "服务器地址" and (is_doc_ip(m.group(0)) or noise(line)):
                 continue
             hits.append((name, i, label, mask(line)))
     return hits
