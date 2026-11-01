@@ -14,7 +14,7 @@ import os
 #   <webroot>/deckmeido/deckmeido-*.tar.gz  安装包
 #   <webroot>/deckmeido/deckmeido-plugin-*.zip  Decky 插件
 #
-# 依赖本地 dist/ 已经由 make_release.sh 生成好（含 latest.json、插件 zip）。
+# 依赖本地 dist/ 已经由 release.py 生成好（含 latest.json、插件 zip）。
 # 若 dist 缺产物，会提示先跑打包。
 set -euo pipefail
 
@@ -37,7 +37,7 @@ need=()
 ls "$MIRROR_DIR"/deckmeido-*.tar.gz >/dev/null 2>&1 || need+=("deckmeido-*.tar.gz")
 if [ ${#need[@]} -gt 0 ]; then
   echo "[x] 缺少镜像站产物：${need[*]}"
-  echo "    先跑：bash tools/make_release.sh v0.3.0"
+  echo "    先跑：python tools/release.py 0.4.3"
   exit 1
 fi
 

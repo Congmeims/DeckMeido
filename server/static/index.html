@@ -1035,6 +1035,9 @@
     cursor: pointer;
   }
   .mini-btn:hover { border-color: var(--brand); color: var(--brand); }
+  /* 修复守护进程这类要等后台的按钮，置灰表示正在处理，避免重复点 */
+  .mini-btn:disabled { opacity: .5; cursor: default; }
+  .mini-btn:disabled:hover { border-color: var(--line); color: var(--text); }
   /* 「语气」这类多行输入：和单行输入框同一套外观，可拖高 */
   .field textarea {
     width: 100%;
@@ -1516,8 +1519,10 @@
   }
   .ctrl-yd b { color: var(--text); font-weight: 600; }
   .ctrl-actions { display: flex; gap: 10px; }
+  /* 主操作（修复守护进程）撑满剩余宽度，次要操作（重新实测）按内容宽度；
+     两者都用 .mini-btn，保证和设置页其它按钮同一套外观 */
   .ctrl-actions button { flex: 1; }
-  .ctrl-actions button.mini-btn { flex: 0 0 auto; }
+  .ctrl-actions button + button { flex: 0 0 auto; }
   .ctrl-log {
     margin-top: 10px; font-family: ui-monospace, monospace; font-size: 11.5px;
     color: var(--muted); white-space: pre-wrap; word-break: break-word;
@@ -2129,7 +2134,7 @@
     <div class="sys-row"><span class="sys-name">RAM</span><div class="bar"><div class="fill" id="memFill"></div></div><span class="sys-val" id="memVal">–</span></div>
     <div class="sys-row"><span class="sys-name">SSD</span><div class="bar"><div class="fill" id="ssdFill"></div></div><span class="sys-val" id="ssdVal">–</span></div>
     <div class="sys-row" id="sdRow" hidden><span class="sys-name">TFC</span><div class="bar"><div class="fill" id="sdFill"></div></div><span class="sys-val" id="sdVal">–</span></div>
-    <div class="sys-row" id="ctxRow" hidden><span class="sys-name">上下文</span><div class="bar"><div class="fill" id="ctxFill"></div></div><span class="sys-val" id="ctxVal">–</span></div>
+    <div class="sys-row" id="ctxRow" hidden><span class="sys-name" id="ctxName">上下文</span><div class="bar"><div class="fill" id="ctxFill"></div></div><span class="sys-val" id="ctxVal">–</span></div>
     <div class="sys-sub" id="sysSub"></div>
   </div>
   <div class="sb-sess-block">
@@ -2408,7 +2413,7 @@
             <div class="ctrl-list" id="ctrlList"></div>
             <div class="ctrl-yd" id="ctrlYd"></div>
             <div class="ctrl-actions">
-              <button id="ctrlFix" type="button">修复守护进程</button>
+              <button id="ctrlFix" class="mini-btn" type="button">修复守护进程</button>
               <button id="ctrlReflash" class="mini-btn" type="button">重新实测</button>
             </div>
             <div id="ctrlHint" class="upd-note"></div>
@@ -5636,11 +5641,21 @@
               // 这里直接看 liveBox 里是不是已经有问答卡片了
               var hasAsk = !!liveBox.querySelector('.ask-card');
               var skip = liveToolCount, skipT = liveThoughtShown;
+              // 最终正文气泡是「这一轮的结尾」：补渲染的思考块必须插在它前面，
+              // 否则一条迟到的 thought 会追加到答复下方，屏幕上就成了
+              // 「AI 说完了，下面又冒出一串思考」
+              var tailRef = (promoted && streamEl && streamEl.parentNode === liveBox)
+                            ? streamEl : null;
               msg.events.forEach(function (e) {
                 if (e.type === 'text') return;
                 if (e.type === 'ask' && hasAsk) return;
                 if (e.type === 'tool' && skip > 0) { skip--; return; }
                 if (e.type === 'thought' && skipT > 0) { skipT--; return; }
+                if (e.type === 'thought' && tailRef) {
+                  var tr0 = makeThoughtRow(e.text, false);
+                  if (tr0) liveBox.insertBefore(tr0, tailRef);
+                  return;
+                }
                 renderEvent(e, liveBox);
               });
             } else {
@@ -5957,6 +5972,8 @@
       // 窄屏顶栏把徽章藏了，同一份用量改在侧栏状态卡里显示（见 #ctxRow）
       var ctxRow = document.getElementById('ctxRow');
       ctxRow.hidden = false;
+      // 窄屏没有顶栏胶囊，会话编号挪到这个标签上
+      document.getElementById('ctxName').textContent = c.sid ? ('#' + String(c.sid).slice(0, 6)) : '上下文';
       setCtxBar(pct, pct + '%' + (c.used ? ' · ' + fmtTokens(c.used) : '')
         + ((c.cache && c.cache.prompt) ? (' · 缓存 ' + Math.round(c.cache.percent) + '%') : ''));
       ctxRow.title = '模型窗口 ' + (c.window || 0).toLocaleString() + ' tokens'
@@ -5966,12 +5983,15 @@
       // 命中率直接摆在徽章上，省得为了看一个数去悬停
       var cache = c.cache || null;
       var cachePct = (cache && cache.prompt) ? cache.percent : 0;
-      // 胶囊只显示上下文/缓存占用，不带会话编号（编号不好看，已移除）
-      ctxBadge.textContent = '上下文 ' + pct + '%'
+      // 胶囊：会话编号 + 上下文/缓存占用。编号短显（#a1b2c3），
+      // 用来一眼看出现在是哪个会话，换会话时能立刻察觉
+      var sidText = c.sid ? ('#' + String(c.sid).slice(0, 6) + ' · ') : '';
+      ctxBadge.textContent = sidText + '上下文 ' + pct + '%'
         + (cachePct > 0 ? (' · 缓存 ' + Math.round(cachePct) + '%') : '');
       // DeepSeek 的前缀缓存命中率：命中越高越便宜（命中部分按更低价计费）。
       // 数字突然掉下来通常意味着前缀被打断（换会话、改人设、升级后第一轮）
       var tip = ctxRow.title;
+      if (c.sid) tip += '\n会话编号 #' + c.sid;
       if (c.messages != null) {
         tip += '\n会话 ' + c.messages + ' 条消息'
              + (c.chars ? ('、' + fmtTokens(c.chars) + ' 字符') : '');

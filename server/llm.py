@@ -402,9 +402,12 @@ class LLMClient:
                     content_parts.append(delta["content"])
                     if on_delta:
                         await on_delta(delta["content"])
-                # 不同供应商的思维链字段：reasoning_content / reasoning
+                # 不同供应商的思维链字段：reasoning_content / reasoning。
+                # 正文已经开始输出后不再收：有服务商把思维链混在正文流中间发，
+                # 前端会把它排到这一轮回复的末尾，看起来就是「话说完了还在想」。
+                # 已经出现的思考照常显示，后面这些丢掉
                 rc = delta.get("reasoning_content") or delta.get("reasoning")
-                if rc:
+                if rc and not content_parts:
                     reasoning_parts.append(rc)
                     if on_thought:
                         await on_thought(rc)

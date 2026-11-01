@@ -1,0 +1,10 @@
+{
+  "tag": "0.4.3",
+  "name": "DeckMeido 0.4.3",
+  "notes": "# DeckMeido 0.4.3\n\n- chore: 审计脚本排除噪声IP，deploy_mirror.sh 去掉真实地址示例\n- security: 移除代码中的服务器凭据，发布包剔除运维脚本并加校验\n- fix: 镜像升级不再跳过 VERSION，修复升级后版本号仍停在旧版\n- chore: 插件版本号升到 0.4.0，补 Windows 用的镜像站上传脚本\n- feat: QAM 面板改为三页布局并支持模型切换，官网及部署脚本入库\n- fix: 修复依赖下载进度误报「连不上」且下载阶段速度为 0\n- fix: 卸载流程真正删除代码并保留人格/记忆，界面套用卡片 UI\n- feat: install.sh 依赖下载进度显示剩余时间与下载速度\n- feat: install.sh 无参数运行时改为交互式菜单\n- fix: requirements 补上 ptyprocess 依赖，修复后端启动崩溃\n- feat(install): pip 安装进度条、按实测速率选源、拆分 PySide6 依赖\n- chore: 版本号升到 0.3.0，去掉手机强制横屏与全屏按钮\n- perf: 会话 IO 线程化、思考链合批、会话索引与 turnCache 降频\n- perf: 流式合批、历史分页、LLM 重试、工具独立超时与每轮少算 token\n- refactor: 提示词集中到 server/prompts/ 下的 md 文件\n- feat: 手机强制横屏、PWA 独立安装与多模态能力精确判断\n- feat: 模型能力批量探测清单与中转站读图兼容\n- feat: 文件管理器右键操作、真 PTY 终端面板与浮窗通知\n- feat: 网页控制台终端面板与三栏布局重构\n- feat: 虚拟手柄注入后自动换到 1P；补齐工具操作日志\n",
+  "published_at": "2026-11-02T00:15:44+08:00",
+  "files": {
+    "tarball": "deckmeido-0.4.3.tar.gz",
+    "sha256": "f9aba45a9f4eafdf1fb14c2d9b1e452c9437b4bb6ad515a68af7d8f8a3a7815a"
+  }
+}

@@ -6,8 +6,9 @@
     python tools/release.py 0.4.1
 不带版本号时读 plugin/package.json 的 version。
 
-产物写到 dist/，和 make_release.sh 的布局一致；
+产物写到 dist/；
 上传逻辑复用 deploy_mirror.py，末尾会打印最新版号核对。
+设 RELEASE_NO_UPLOAD=1 只打包不上传（deploy_all.py 在服务器上就是这么用的）。
 """
 import hashlib
 import json
@@ -26,7 +27,7 @@ DIST = ROOT / "dist"
 
 ITEMS = [
     "server", "client", "assets", "deploy", "plugin",
-    "requirements.txt", "requirements-gui.txt", "README.md", "install.sh",
+    "requirements.txt", "requirements-gui.txt", "README.md", "LICENSE", "install.sh",
 ]
 # tools/ 是仓库自用的运维脚本（连服务器的、打包的），不进发布包。
 # cli/ 里要是有给用户用的工具，单独列在这里
@@ -71,14 +72,14 @@ def build_tarball(ver: str) -> Path:
         for f in deps.glob("*.pkg.tar.zst"):
             shutil.copy2(f, stage / "deploy" / "deps" / f.name)
 
-    (stage / "VERSION").write_text(ver + "\n", encoding="utf-8")
+    (stage / "VERSION").write_text(ver + "\n", encoding="utf-8", newline="\n")
     notes = subprocess.run(
         ["git", "log", "-n", "20", "--no-merges", "--pretty=- %s"],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
     ).stdout
     (stage / "RELEASE-NOTES.md").write_text(
         f"# DeckMeido {ver}\n\n> 生成时间：{datetime.now():%Y-%m-%d %H:%M}\n\n"
-        f"## 最近提交\n\n{notes}", encoding="utf-8",
+        f"## 最近提交\n\n{notes}", encoding="utf-8", newline="\n",
     )
 
     out = DIST / f"{name}.tar.gz"
@@ -92,12 +93,35 @@ def build_tarball(ver: str) -> Path:
 def build_plugin_zip(ver: str) -> Path:
     plugin = ROOT / "plugin"
     out = DIST / f"deckmeido-plugin-{ver}.zip"
+    # Decky 的安装器只认「顶层同名文件夹」，文件摆在 zip 根目录它会报
+    # No plugin.json found in plugin ZIP
+    top = "DeckMeido/"
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(plugin / "main.py", "main.py")
-        z.write(plugin / "plugin.json", "plugin.json")
+        z.write(plugin / "main.py", top + "main.py")
+        z.write(plugin / "plugin.json", top + "plugin.json")
+        # package.json 是 Decky 加载插件时读的第一个文件（取 name / version），
+        # 漏了它插件不会报错，只是**整个不出来**，面板里什么都看不到。
+        # 但 "type": "module" 必须去掉：带着它，Decky 前端把 dist/index.js
+        # 当 CJS 解析，顶层 export 直接抛 Unexpected token 'export'。
+        # deploy.sh 复制部署时目录里没有 package.json，所以从没踩到过
+        pkg = json.loads((plugin / "package.json").read_text(encoding="utf-8"))
+        pkg.pop("type", None)
+        z.writestr(top + "package.json",
+                   json.dumps(pkg, ensure_ascii=False, indent=2) + "\n")
+        for name in ("README.md", "LICENSE"):
+            p = plugin / name
+            if p.is_file():
+                z.write(p, top + name)
+        # py_modules 是插件后端的 Python 包（已安装的插件在这里放自身模块，
+        # Decky 会把插件目录加进 sys.path），目录要连内容一起打进 zip
+        pym = plugin / "py_modules"
+        if pym.is_dir():
+            for q in sorted(pym.rglob("*")):
+                if q.is_file() and "__pycache__" not in q.parts:
+                    z.write(q, top + q.relative_to(plugin).as_posix())
         for p in sorted((plugin / "dist").rglob("*")):
             if p.is_file():
-                z.write(p, "dist/" + p.relative_to(plugin / "dist").as_posix())
+                z.write(p, top + "dist/" + p.relative_to(plugin / "dist").as_posix())
     return out
 
 
@@ -151,7 +175,11 @@ def main():
         sys.exit("发布包里有疑似凭据，已中止上传（见上面的列表）")
 
     print("==> 上传镜像站")
-    subprocess.run([sys.executable, str(ROOT / "tools" / "deploy_mirror.py")], check=True)
+    # deploy_all.py 在服务器上只借它打包，产物由它自己拷贝，不需要再传一次
+    if os.environ.get("RELEASE_NO_UPLOAD"):
+        print("    RELEASE_NO_UPLOAD=1，跳过上传")
+    else:
+        subprocess.run([sys.executable, str(ROOT / "tools" / "deploy_mirror.py")], check=True)
 
     print("==> 核对线上版本")
     try:
