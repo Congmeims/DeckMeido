@@ -1009,6 +1009,10 @@ pip_install_with_switch() {
   local py="$1" req="$2" start="${3:-0}"
   local n=${#PIP_INDEXES[@]} i k ok=0 log="$INSTALL_DIR/pip-install.log"
   local ret=0 pid t0 cur got total rate prev_got
+  # pip 下载的 wheel 先落缓存目录、下载完才装进 venv：下载阶段 venv 体积
+  # 不动、缓存增长，只盯 venv 会把下载速度误判成 0。所以「已下载」取
+  # venv + 缓存 两者体积之和，任何阶段都有增量可测。
+  local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/pip"
   for ((i = 0; i < n; i++)); do
     k=$(((start + i) % n))
     if [ "$i" -gt 0 ]; then dim "换源重试：${PIP_INDEXES[$k]}"; fi
@@ -1021,8 +1025,8 @@ pip_install_with_switch() {
     ret=0
     prev_got=0
     while kill -0 "$pid" 2>/dev/null; do
-      # 已下载字节：venv 落盘体积（单调递增，直观反映「装了多少」）
-      got=$(du -sb "$INSTALL_DIR/.venv" 2>/dev/null | awk '{print $1}')
+      # 已下载字节：venv + pip 缓存 的落盘体积（单调递增）
+      got=$(du -sb "$INSTALL_DIR/.venv" "$cache_dir" 2>/dev/null | awk '{s += $1} END {print s+0}')
       got=${got:-0}
       # 总下载字节：日志里出现过的所有 Downloading (SIZE) 累加
       total=$(grep -oE '^  Downloading[^(]*\([0-9.]+ ?[kKmMgG]?i?B?\)' "$log" 2>/dev/null \
@@ -1038,7 +1042,7 @@ pip_install_with_switch() {
       total=${total:-0}
       # 当前下载的包名（最后一行 Downloading）
       cur=$(grep '^  Downloading' "$log" 2>/dev/null | tail -1 | sed -E 's/^  Downloading //; s/ \(.*//' | cut -c1-40)
-      # 速度：本秒 venv 体积增量（首秒视为 0，避免误报）
+      # 速度：本秒 (venv + 缓存) 体积增量（首秒视为 0，避免误报）
       rate=$((got - prev_got))
       prev_got=$got
       progress_bar "$got" "$total" "$rate" "$cur"
@@ -1048,7 +1052,7 @@ pip_install_with_switch() {
     progress_clear
     if [ "$ret" = 0 ]; then
       ok=1
-      dim "$req 装好了（venv $(human_size "${got:-0}")）"
+      dim "$req 装好了（venv $(human_size "$(du -sb "$INSTALL_DIR/.venv" 2>/dev/null | awk '{print $1}')")）"
       break
     fi
     if [ -s "$log" ]; then
@@ -1094,7 +1098,13 @@ progress_bar() {
   else
     eta_text="剩余 --"
   fi
-  spd_text="$(human_rate "$rate")"
+  # 速度 0 不代表「连不上」：pip 下载大包时先落缓存、还没装进 venv，
+  # 体积采样可能还没动，这里统一叫「测速中」，别吓用户
+  if [ "$rate" -gt 0 ]; then
+    spd_text="$(human_rate "$rate")"
+  else
+    spd_text="测速中"
+  fi
   if [ ! -t 1 ]; then
     # 非终端：当前包变了才打一行，重定向到日志时也能看出进度
     if [ -n "$cur" ] && [ "$cur" != "$_progress_last" ]; then
@@ -1104,9 +1114,11 @@ progress_bar() {
     return 0
   fi
   spin_c="${_spin:$((got % ${#_spin})):1}"
-  printf '\r\033[K%s%s%s  %s  %s/%s  %s  %s' \
-    "$C_C" "$spin_c" "$C_END" "$cur" \
-    "$(human_size "$got")" "$(human_size "$total")" "$spd_text" "$eta_text"
+  # 只显示 当前包 + 速度 + 剩余时间。不显示「已下载/总量」：pip 在
+  # --progress-bar off 下不落盘当前包的部分进度，venv 体积和下载字节又是
+  # 两个量纲（解压后膨胀），硬凑一对数字只会误导。
+  printf '\r\033[K%s%s%s  %s  %s  %s' \
+    "$C_C" "$spin_c" "$C_END" "$cur" "$spd_text" "$eta_text"
   _progress_on=1
 }
 
