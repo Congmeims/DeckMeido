@@ -3068,6 +3068,22 @@ _NO_KEEP_AWAKE = {
 }
 
 
+# 单步超时（秒）。以前只有外层 280 秒的整体超时：某个工具卡死（网络不通的
+# web_search、ssh 打不开的端口、某个阻塞的 subprocess）会把整轮的时间额度吃光，
+# 模型连「换条路走」的机会都没有。这里给每类工具一个独立上限，超时就返回
+# 一句可读的错误让模型自己改策略。
+#   run_command 不设：它自己按命令类型管超时（命令可能要跑几分钟）；
+#   install_game / self_update 也是长任务，走默认值。
+_TOOL_TIMEOUT = {
+    "web_search": 60, "get_weather": 30, "find_game": 30,
+    "list_installed_games": 60, "list_emulator_roms": 30,
+    "check_system_updates": 60, "screenshot": 45,
+    "read_file": 30, "write_file": 30, "edit_file": 30, "list_dir": 30,
+}
+_TOOL_TIMEOUT_DEFAULT = 120
+_TOOL_NO_TIMEOUT = {"run_command", "install_game", "self_update"}
+
+
 async def execute(name: str, args: dict) -> str:
     fn = EXECUTORS.get(name)
     if not fn:
@@ -3097,7 +3113,16 @@ async def execute(name: str, args: dict) -> str:
         if name == "run_command" and _is_launcher(str(args.get("command", ""))) \
                 and not args.get("stdin") and not args.get("tty"):
             args["detach"] = True
-        result = await fn(**args)
+        budget = _TOOL_TIMEOUT.get(name, _TOOL_TIMEOUT_DEFAULT)
+        if name in _TOOL_NO_TIMEOUT:
+            result = await fn(**args)
+        else:
+            try:
+                result = await asyncio.wait_for(fn(**args), timeout=budget)
+            except asyncio.TimeoutError:
+                print(f"[DeckMeido] 工具超时 {name}（>{budget}s）", file=sys.stderr)
+                return (f"工具 {name} 超过 {budget} 秒没有返回，已强制中止。"
+                        f"换个方式继续（例如换更小的范围、别的命令，或让用户确认目标是否存在）")
         text = result if isinstance(result, str) else str(result)
         print(f"[DeckMeido] 工具完成 {name}（{time.monotonic() - t0:.2f}s，"
               f"{len(text)} 字）：{text[:300]}")

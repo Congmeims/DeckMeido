@@ -186,6 +186,22 @@ MAX_OUTPUT_TOKENS = int(CFG["llm"].get("max_output_tokens", 0) or 0) or CONTEXT_
 MAX_CONTINUATIONS = int(CFG["llm"].get("max_continuations", 3))
 # 最近一次请求的 token 用量：由服务商 usage 或字符估算更新
 _ctx_used = 0
+# 估算结果的缓存：(会话 sid, 历史条数, 估算值)。每次 /api/status 都全量重算一遍
+# 是最浪费的一处 —— 状态接口每秒都在被轮询，而历史只在对话推进时才会变。
+# 条数一变就失效，所以「切会话」「追加消息」都会自动重算，不会用到过期值
+_est_cache: tuple[str, int, int] = ("", -1, 0)
+
+
+def _cached_estimate() -> int:
+    """按当前会话估算上下文用量，历史没变就复用上次的结果"""
+    global _est_cache
+    sid = store.current_sid
+    n = len(store.history)
+    if _est_cache[0] == sid and _est_cache[1] == n:
+        return _est_cache[2]
+    val = _estimate_tokens(_build_llm_msgs(store.history, SYSTEM_PROMPT, sid))
+    _est_cache = (sid, n, val)
+    return val
 
 
 def _guess_context_window(model: str) -> int:
@@ -249,6 +265,18 @@ def _digest_text(m: dict) -> str:
         content = " ".join(str(p.get("text") or "[图片]") for p in content
                            if isinstance(p, dict))
     return str(content or "")
+
+
+def _digest_head_tail(text: str, head: int = 500, tail: int = 300) -> str:
+    """工具结果太长时留首尾、掐中间
+
+    工具输出最值钱的两头在首尾：开头是命令和最初几行输出，结尾是最终报错。
+    只裁尾巴会让「一开始做了什么」和「最后错在哪」同时消失，模型压缩后就只剩
+    一句"执行了命令"。中间那段大段日志对摘要没有价值。
+    """
+    if len(text) <= head + tail:
+        return text
+    return f"{text[:head]}…（中间省略 {len(text) - head - tail} 字）…{text[-tail:]}"
 
 
 def _build_llm_msgs(hist: list[dict], sys_prompt: str, sid: str = "") -> list[dict]:
@@ -742,6 +770,19 @@ def _write_streaming(sid: str, text: str, parts: list[dict] | None = None) -> No
                 pass
 
 
+def _stream_would_flush(text: str, sid: str = "") -> bool:
+    """按 persist_stream 的同一套节流规则预判这次会不会真的落盘
+
+    调用方要在传 parts 之前知道结果：parts 的构造要遍历整轮 events，
+    节流命中时白拼一遍纯属浪费。
+    """
+    sid = sid or store.turn.get("sid") or store.current_sid
+    buf = _stream_buf(sid)
+    grew = len(text) - buf["written"]
+    return grew >= _STREAM_FLUSH_CHARS or (
+        time.time() - buf["last"]) >= _STREAM_FLUSH_INTERVAL
+
+
 def persist_stream(text: str, force: bool = False, parts: list[dict] | None = None,
                    sid: str = "") -> None:
     """流式正文的节流落盘；force=True 立即写（终止 / checkpoint / 收尾时用）
@@ -780,6 +821,61 @@ def _snapshot_parts(events: list[dict], tail_text: str = "") -> list[dict]:
     if tail_text:
         parts.append({"type": "text", "content": tail_text})
     return parts
+
+
+# ---------- 流式正文合批 ----------
+# 模型吐字按 token 走，一个 chunk 常常只有一两个字。逐片广播等于让浏览器对
+# 同一条气泡做几十上百次重排，Deck 的弱 CPU 上肉眼可见地卡。这里攒 40ms
+# 再发一次：人眼分辨不出差别，重排次数降一个数量级。
+_DELTA_FLUSH_MS = 40
+# sid -> {"buf": [片段], "task": asyncio.Task|None, "tag": dict}
+_delta_pend: dict[str, dict] = {}
+
+
+def _flush_delta(sid: str) -> None:
+    """把某个会话攒下的片段一次性广播出去（同步版，供定时器与收尾调用）"""
+    st = _delta_pend.get(sid)
+    if not st:
+        return
+    st["task"] = None
+    text = "".join(st["buf"])
+    st["buf"].clear()
+    if not text:
+        return
+    tag = st["tag"]
+    asyncio.create_task(manager.broadcast(
+        {"type": "delta", "text": text, "final": False, **tag}))
+
+
+def _flush_delta_later(sid: str, text: str, tag: dict) -> None:
+    """收一片正文，攒够 40ms 就发。同一会话同一时刻只有一个待发的定时器"""
+    st = _delta_pend.get(sid)
+    if st is None:
+        st = _delta_pend[sid] = {"buf": [], "task": None, "tag": tag}
+    st["tag"] = tag
+    st["buf"].append(text)
+    if st["task"] is None:
+        st["task"] = asyncio.get_running_loop().call_later(
+            _DELTA_FLUSH_MS / 1000, _flush_delta, sid)
+
+
+def flush_delta_now(sid: str = "") -> None:
+    """立刻把攒着的正文推出去。
+
+    本轮收尾、被终止、或要发别的类型事件（工具开始/思维链）时必须调一次，
+    否则最后不到 40ms 的那几个字会被后一条消息盖掉顺序，前端看起来就是
+    「话说了一半，工具卡片插进来了」。
+    """
+    sid = sid or store.turn.get("sid") or store.current_sid
+    st = _delta_pend.pop(sid, None)
+    if not st:
+        return
+    if st["task"] is not None:
+        st["task"].cancel()
+    text = "".join(st["buf"])
+    if text:
+        asyncio.create_task(manager.broadcast(
+            {"type": "delta", "text": text, "final": False, **st["tag"]}))
 
 
 def clear_stream(sid: str = "") -> None:
@@ -1157,8 +1253,7 @@ def get_status(gaming: bool | None = None) -> dict:
     if gaming is None:
         gaming = tools.mode_is_gaming()
     win = context_window()
-    used = _ctx_used or _estimate_tokens(
-        _build_llm_msgs(store.history, SYSTEM_PROMPT, store.current_sid))
+    used = _ctx_used or _cached_estimate()
     pct = round(min(used / win, 1.0) * 100, 1) if win else 0
     return {
         "battery": int(battery) if battery.isdigit() else None,
@@ -2618,6 +2713,8 @@ async def handle_chat(text: str, announce: bool = True,
     # 每轮开头强制复位一次遮罩状态：上一轮若在取消/异常路径里漏了
     # set_overlay(False)，这里不清就会一直盖着；passthrough 漏了就反过来，
     # 遮罩会一直藏着不显示（用户就没了终止入口），所以两个都复位
+    # 上一轮若有没发出的正文批次，这里一并清掉，免得它出现在新一轮里
+    flush_delta_now(turn_sid)
     if _overlay_state.get("show"):
         set_overlay(False)
     _overlay_state["passthrough"] = False
@@ -2677,11 +2774,11 @@ async def handle_chat(text: str, announce: bool = True,
     await manager.broadcast({"type": "session_changed", "current": store.current_sid})
 
     # 上下文逼近模型窗口上限时自动压缩（摘要替换旧对话，不再直接丢弃）。
-    # _ctx_used 在切换会话等路径上会归零，这时按当前历史重新估算一次，
-    # 否则会以为「才用了 0 token」而漏掉该压的情况；压缩失败也不能让这一轮起不来
+    # _ctx_used 在切换会话等路径上会归零，这时按当前历史重新估算一次
+    # （_cached_estimate 会按条数缓存，刚追加过用户消息，这里必然重算）；
+    # 压缩失败也不能让这一轮起不来
     try:
-        if _need_compact(_ctx_used or _estimate_tokens(
-                _build_llm_msgs(hist, SYSTEM_PROMPT, turn_sid))):
+        if _need_compact(_ctx_used or _cached_estimate()):
             await compact_history(auto=True, hist=hist)
     except Exception as e:
         print(f"[DeckMeido] 自动压缩失败，按原上下文继续：{e}", file=sys.stderr)
@@ -2783,6 +2880,9 @@ async def handle_chat(text: str, announce: bool = True,
         await manager.broadcast({"type": "system", "text": "该会话已被删除，本轮回答未保存",
                                  "ts": time.time()})
         feed_push("system", text="该会话已被删除，本轮回答未保存")
+    # 收尾前把还攒着的正文批次推出去：final=True 那条必须排在它后面，
+    # 否则残留批次会晚于终态到达，界面刚定稿又被追加一截
+    flush_delta_now(turn_sid)
     if not detached and not turn_deleted and reply.strip():
         # 给前端一次「最终正文」：带 final=True，前端据此把那句界面上的气泡存进
         # localStorage 崩溃缓冲。中途被截断的工具过渡话不带这个标记，回滚时不会残留
@@ -2823,6 +2923,24 @@ def _recent_limit() -> int:
     return 200
 
 
+def _current_turn_start(hist: list[dict]) -> int:
+    """找到「当前这一轮」在 history 里的起点
+
+    一轮 = 一条用户消息，加上它后面紧跟的 assistant(tool_calls)/tool 往返。
+    压缩时这一轮必须整段留在原文里：它是模型眼下正在做的事，被摘要成一句
+    "执行了命令" 之后，模型下一轮就不知道自己刚才跑过什么、卡在哪个报错上，
+    典型表现是重复执行同一条命令。
+
+    从末尾往前找，遇到「既不是 tool 结果、也不是 tool_calls 的 user」就停。
+    找不到（比如历史开头就是工具链）返回 0，等于不做特殊保留。
+    """
+    for i in range(len(hist) - 1, -1, -1):
+        m = hist[i]
+        if m.get("role") == "user" and not m.get("tool_calls"):
+            return i
+    return 0
+
+
 def _compact_end(hist: list[dict], start: int) -> int:
     """算出这次压缩要把游标推进到第几条（即 end：history[start:end] 会被摘要）
 
@@ -2841,10 +2959,18 @@ def _compact_end(hist: list[dict], start: int) -> int:
     budget = int(context_window() * COMPACT_TARGET_LEFT)
     acc = 0
     end = total
+    # 当前这一轮整段不压：模型正靠它知道自己刚才做了什么、下一步接哪里。
+    # 它占的 token 从预算里先扣掉，相当于压缩时少留一点别的原文，
+    # 但不让压缩后立刻又顶回阈值（下面按预算累加已经在管这件事）。
+    turn_start = _current_turn_start(hist)
+    if turn_start > start:
+        acc = _estimate_tokens(hist[turn_start:total])
+        end = turn_start
     # 从最新一条往前累，直到快超出剩余额度为止。
     # 位置上限 = 请求条数上限减去「本轮新加的工具往返」的余量
     oldest = max(start, total - _recent_limit())
-    for i in range(total - 1, oldest, -1):
+    # 本轮已经整段保留时就不再从前面续收，否则会把它占的额度又花一遍
+    for i in (range(end - 1, oldest, -1) if end == total else ()):
         acc += _estimate_tokens([hist[i]])
         if acc > budget:
             break
@@ -2892,7 +3018,10 @@ async def compact_history(auto: bool = False, hist: list[dict] | None = None,
     parts.append("【新增对话】\n" + "\n".join(
         # 每条按固定长度截断：摘要请求不带 tools、system 也固定，
         # 只要游标是从同一位置往后压，前缀就能和上一轮对齐（DeepSeek 硬盘缓存）
-        f"{'用户' if m['role'] == 'user' else '助手'}: {_digest_text(m)[:500]}" for m in old))
+        # 工具结果留首尾（命令 + 最终报错都在两头），普通消息截前 500 字
+        f"{'用户' if m['role'] == 'user' else '助手'}: "
+        + (_digest_head_tail(_digest_text(m)) if m["role"] == "tool"
+           else _digest_text(m)[:500]) for m in old))
     digest = "\n\n".join(parts)
     sys_msg = {"role": "system", "content": prompts.part("compact_summary")}
     try:
@@ -2924,7 +3053,21 @@ async def compact_history(auto: bool = False, hist: list[dict] | None = None,
 
 
 @app.post("/api/compact", dependencies=[Depends(check_token)])
-async def api_compact():
+async def api_compact(preview: bool = False):
+    """压缩上下文。preview=true 时只报「会压掉多少」，不真正执行
+
+    用户点压缩前需要知道代价：条数、能省多少 token。不然按下去只看到一句
+    「已压缩」，既不知道自己毁了哪段，也不知道值不值得。
+    """
+    if preview:
+        hist = store.history
+        sid = store.turn.get("sid") or store.current_sid
+        start = min(_compact_for(sid)["upto"], len(hist))
+        end = _compact_end(hist, start)
+        old = hist[start:end]
+        return {"ok": True, "preview": True, "count": len(old), "total": len(hist),
+                "tokens": _estimate_tokens(old),
+                "left_tokens": _estimate_tokens(hist[end:])}
     summary = await compact_history()
     return {"ok": True, "summary": summary[:300]}
 
@@ -3592,6 +3735,14 @@ def set_overlay(show: bool, text: str = "") -> None:
         _overlay_state["text"] = text
     if not show:
         _overlay_state["since"] = 0.0
+        # 收起遮罩 = 这一轮不再往屏幕上写正文了（终止 / 收尾 / 开始操作桌面）：
+        # 攒着没发的字先推出去，保证界面上的正文与随后的系统提示顺序正确。
+        # 运行在事件循环里时不能直接建任务（这里也可能是异步任务之外的路径），
+        # 所以只在有事件循环时交给 call_soon；没有就留给收尾的 flush
+        try:
+            asyncio.get_running_loop().call_soon(flush_delta_now, "")
+        except RuntimeError:
+            pass
         # 不要在这里顺手把 passthrough 清掉：可能正好有一次点击注入在跑，清了之后
         # 遮罩会重新冒出来挨这一下点击，于是又被当成「用户终止」。passthrough 只由
         # set_overlay_passthrough 收
@@ -3894,6 +4045,12 @@ async def run_agent(events: list[dict], extra_system: str = "",
         return parts
 
     async def on_delta(text: str):
+        """把 LLM 的增量正文转给前端，顺便增量落盘
+
+        合批：模型一个 chunk 可能只有一两个字，原样转发等于每来一片就让前端
+        重排一次整段气泡，Deck 上看着就是一卡一卡的。这里先攒进 _delta_buf，
+        到 _DELTA_FLUSH_MS 再一次性发出；跨批次的边界不丢字（buffer 带锁）。
+        """
         nonlocal streaming
         stream_text.append(text)
         if not streaming:
@@ -3903,14 +4060,18 @@ async def run_agent(events: list[dict], extra_system: str = "",
             set_overlay(False)
             await manager.broadcast({"type": "stream_start", "ts": time.time(), **_turn_tag()})
         # 增量落盘（此函数是 async 的，前端不会感知到这点磁盘开销）
+        # _stamp_parts 要遍历全部 events，先问一句要不要写，免得在节流命中的
+        # 情况下白拼一遍字符串
         try:
-            persist_stream("".join(stream_text),
-                           parts=_stamp_parts("".join(stream_text)), sid=turn_sid)
+            full = "".join(stream_text)
+            if _stream_would_flush(full, sid=turn_sid):
+                persist_stream(full, parts=_stamp_parts(full), sid=turn_sid)
         except Exception:
             pass
+        # 前端按批渲染，这里把这一片先攒起来
+        _flush_delta_later(turn_sid, text, _turn_tag())
         # final=False：这段正文可能只是工具调用前的过渡话，前端不写进 crash 缓冲；
         # 本轮结束时会有一次带 final=True 的完整正文推送（内容相同）
-        await manager.broadcast({"type": "delta", "text": text, "final": False, **_turn_tag()})
 
     thought_open = False
 
@@ -3918,17 +4079,21 @@ async def run_agent(events: list[dict], extra_system: str = "",
         nonlocal thought_open
         if not thought_open:
             thought_open = True
+            flush_delta_now(turn_sid)
             await manager.broadcast({"type": "thought_start", "ts": time.time(), **_turn_tag()})
         await manager.broadcast({"type": "thought_delta", "text": text, **_turn_tag()})
 
-    def _output_budget(used_msgs: list[dict]) -> int:
+    def _output_budget(used_msgs: list[dict], used: int | None = None) -> int:
         """按当前上下文剩余空间算出本次调用的输出上限。
 
         旧逻辑固定 4096，长答复/长工具参数会在中途被硬截断，正文漏出半截标记。
         现在：输出额度 = min(配置上限, 上下文窗口 - 已用 - 预留)，且不低于 4096。
+        used 传入时直接用调用方刚算好的用量；不传才现数一遍（msgs 只增不减，
+        数一次的结果可以直接复用）。
         """
         win = context_window()
-        used = _estimate_tokens(used_msgs)
+        if used is None:
+            used = _estimate_tokens(used_msgs)
         # 预留一小块给下一轮的用户消息 / 工具结果
         room = max(win - used - 2048, 4096)
         cap = MAX_OUTPUT_TOKENS if MAX_OUTPUT_TOKENS > 0 else win
@@ -3964,7 +4129,11 @@ async def run_agent(events: list[dict], extra_system: str = "",
             # 单轮里工具往返也会堆积上下文，超过阈值就先压缩再继续。
             # 压缩只推进游标、不删 history，所以这里重建 msgs 时要保留
             # 本轮新加的工具往返消息（hist_msgs 之后的部分），否则工具链断掉。
-            if _need_compact(_estimate_tokens(msgs)):
+            # 每轮只数一遍 msgs：压缩判断和输出额度都用这个值。
+            # _estimate_tokens 要遍历全部历史（含几 MB 的图片 part），
+            # 一轮算两遍纯属白烧 CPU
+            used_now = _estimate_tokens(msgs)
+            if _need_compact(used_now):
                 # 压缩失败（网络抖动、摘要模型报错）不该把整轮对话弄崩：
                 # 压缩只是省上下文，压不了就带着原上下文继续跑
                 try:
@@ -3974,6 +4143,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
                              if m.get("role") in ("tool", "assistant")]
                     msgs[:] = rebuilt + extra
                     hist_msgs = len(rebuilt)
+                    # 重建后内容变了，用量跟着重算一次
+                    used_now = _estimate_tokens(msgs)
                     streaming = False
                     # 压缩前已经显示的过渡正文：作为 text 事件留在 events 里继续保存
                     if "".join(stream_text).strip():
@@ -3984,7 +4155,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
 
             msg = await llm.chat_with_tools_stream(msgs, round_tools, on_delta=on_delta,
                                                    on_thought=on_thought,
-                                                   max_tokens=_output_budget(msgs))
+                                                   max_tokens=_output_budget(msgs, used_now))
             if thought_open:
                 await manager.broadcast({"type": "thought_end", "ts": time.time(), **_turn_tag()})
                 thought_open = False
@@ -3999,9 +4170,10 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     break
                 msgs.append({"role": "assistant", "content": partial})
                 msgs.append({"role": "user", "content": prompts.part("continue_truncated")})
+                used_now = _estimate_tokens(msgs)
                 cont_msg = await llm.chat_with_tools_stream(
                     msgs, [], on_delta=on_delta,
-                    max_tokens=_output_budget(msgs))
+                    max_tokens=_output_budget(msgs, used_now))
                 more = (cont_msg.get("content") or "")
                 if cont_msg.get("reasoning_content"):
                     events.append({"type": "thought", "text": cont_msg["reasoning_content"]})
@@ -4015,8 +4187,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 if not more.strip():
                     break
 
-            # 记录本轮真实占用：优先服务商的 prompt_tokens，拿不到就按字符估算
-            _ctx_used = _split_usage(msg.get("usage")) or _estimate_tokens(msgs)
+            # 记录本轮真实占用：优先服务商的 prompt_tokens，拿不到就用上面数过的估算值
+            _ctx_used = _split_usage(msg.get("usage")) or used_now
             await manager.broadcast({"type": "status", "data": get_status()})
 
             # 思维链（reasoning_content，DeepSeek/Qwen 等支持）
@@ -4150,6 +4322,9 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         event["path"] = p
                         event["is_dir"] = True
                 activity = f"正在{label}：{summary}" if summary else f"正在{label}"
+                # 工具卡片要插在正文后面：先把手头攒的 delta 推出去，
+                # 否则这批字会晚于工具卡片到达，前端顺序就是乱的
+                flush_delta_now(turn_sid)
                 await manager.broadcast({"type": "tool_activity", "text": activity, "ts": time.time(), **_turn_tag()})
                 # 终端联动：必须在执行之前推「开跑」，面板据此立刻挂一条执行中的记录
                 # 并开始轮询实时输出。放到执行后面就只剩「已结束」一条，
@@ -4237,7 +4412,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         except Exception:
                             pass
         # 工具轮数用尽：最后再不给工具地问一次，让它基于已有结果收尾回答
-        msg = await llm.chat_with_tools_stream(msgs, [], on_delta, max_tokens=_output_budget(msgs))
+        msg = await llm.chat_with_tools_stream(
+            msgs, [], on_delta, max_tokens=_output_budget(msgs, _estimate_tokens(msgs)))
         if msg.get("reasoning_content"):
             events.append({"type": "thought", "text": msg["reasoning_content"]})
         answer = (msg.get("content") or "").strip()
