@@ -82,9 +82,13 @@ fi
 # ---- 只看状态 ----
 if [ "$MODE" = "check" ]; then
   decky_status || { dim "没装 Decky Loader（$PLUGINS_ROOT 不存在），跳过插件"; exit 2; }
-  [ -f "$TARGET/index.js" ] || { warn "Decky 插件未部署（$TARGET/index.js 不存在）"; exit 1; }
+  # 前端 bundle 落在子目录：部署段 cp -r "$PLUGIN_DIR/dist" "$TARGET/dist"，
+  # 所以入口是 dist/index.js，不是插件根目录下的 index.js。
+  # 以前这里查的是根目录，部署明明成功也恒报「未部署」。
+  [ -f "$TARGET/dist/index.js" ] || { warn "Decky 插件未部署（$TARGET/dist/index.js 不存在）"; exit 1; }
   [ -f "$TARGET/main.py" ] || { warn "Decky 插件缺 main.py"; exit 1; }
   [ -f "$TARGET/plugin.json" ] || { warn "Decky 插件缺 plugin.json"; exit 1; }
+  [ -f "$TARGET/package.json" ] || { warn "Decky 插件缺 package.json（Decky 不会加载它）"; exit 1; }
   exit 0
 fi
 
@@ -121,21 +125,17 @@ if [ "$(id -u)" = "0" ]; then
 fi
 
 # ---- 目录权限 ----
-# Decky 自己建的 ~/homebrew/plugins 属 root:root（早期版本是 deck），
-# 普通用户既删不掉也建不了插件目录，直接 rm -rf 会报「权限不够」并留下半个目录，
-# Decky 下次加载卡在那半个目录上。所以先把这一层交还给当前用户：
-#   - 目录属主不是自己 → 尝试 sudo chown（有免密 sudo 时无提示，没有就输一次密码）
-#   - 插件目录里如果有 root 留下的文件，也一并收回来，否则 rm 删不动
-# 全程只动 ~/homebrew/plugins 这一层和本插件自己的目录，不碰别的插件。
+# Decky 自己建的 ~/homebrew/plugins 属 root:root，普通用户既删不掉也建不了插件目录，
+# 直接 rm -rf 会报「权限不够」并留下半个目录，Decky 下次加载卡在那半个目录上。
+# 注意：不要 chown 插件根目录本身 —— Decky 及机器上其它插件都按 root:root 工作，
+# 把根目录改成 deck 会让整个 ~/homebrew/plugins 的属主和 Decky 的预期不一致。
+# 只借一次 sudo 动本插件自己的目录，根目录保持原样。
 ME="$(id -un)"
 if [ -d "$TARGET" ] || [ "$(stat -c %U "$PLUGINS_ROOT" 2>/dev/null)" != "$ME" ]; then
   sudo -n true 2>/dev/null ||
     warn "需要一次 sudo：$PLUGINS_ROOT 属 root，普通用户删不掉插件目录"
-  sudo chown "$ME:$(id -gn)" "$PLUGINS_ROOT" 2>/dev/null ||
-    warn "改不动 $PLUGINS_ROOT 的属主，下面可能失败"
-  if [ -d "$TARGET" ]; then
-    sudo chown -R "$ME:$(id -gn)" "$TARGET" 2>/dev/null || true
-  fi
+  sudo mkdir -p "$TARGET" 2>/dev/null || warn "建不动 $TARGET，下面可能失败"
+  sudo chown -R "$ME:$(id -gn)" "$TARGET" 2>/dev/null || true
 fi
 
 # ---- 部署（复制，不软链接）----
@@ -145,6 +145,7 @@ fi
 [ -f "$PLUGIN_DIR/dist/index.js" ] || die "缺少 dist/index.js（发布包里应自带，不需要 npm 编译）"
 [ -f "$PLUGIN_DIR/main.py" ] || die "缺少 main.py"
 [ -f "$PLUGIN_DIR/plugin.json" ] || die "缺少 plugin.json"
+[ -f "$PLUGIN_DIR/package.json" ] || die "缺少 package.json（Decky 靠它取 name/version，缺了插件不会出现在 QAM）"
 
 # 目录可能已存在（重装/升级），清掉旧的再复制，避免残留旧文件。
 # 删不掉时退回「原地覆盖」：Decky 按文件名加载，多出来的旧文件无害，
@@ -155,9 +156,31 @@ fi
 mkdir -p "$TARGET"
 cp "$PLUGIN_DIR/main.py" "$TARGET/main.py"
 cp "$PLUGIN_DIR/plugin.json" "$TARGET/plugin.json"
+# package.json 是 Decky 加载插件时读的第一个文件（取 name / version），漏了它
+# 插件不报错，只是整个不出来：面板里什么都看不到。
+# 但不能原样复制源文件里的 "type": "module" —— 带着它 Decky 前端会把
+# dist/index.js 当 CommonJS 解析，顶层 export 直接抛 Unexpected token 'export'。
+# 和 tools/release.py 打 zip 时的处理保持一致。
+"${PYTHON:-python3}" - "$PLUGIN_DIR/package.json" "$TARGET/package.json" <<'PY'
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+pkg = json.loads(open(src, encoding="utf-8").read())
+pkg.pop("type", None)
+open(dst, "w", encoding="utf-8").write(json.dumps(pkg, ensure_ascii=False, indent=2) + "\n")
+PY
 rm -rf "$TARGET/dist" 2>/dev/null || true
 cp -r "$PLUGIN_DIR/dist" "$TARGET/dist"
 info "已部署插件到 $TARGET"
+
+# ---- 属主对齐 ----
+# 为了能写入，上面把本插件目录临时改成了当前用户；但 Decky 自己装的插件都是
+# root:root（plugin.json 里也声明了 flags: ["root"]，后端本来就以 root 跑）。
+# 部署完把本插件目录还原成 root:root，只动自己的目录，不碰别人。
+if [ "$(stat -c %U "$TARGET" 2>/dev/null)" != "root" ]; then
+  if ! sudo -n chown -R root:root "$TARGET" 2>/dev/null; then
+    dim "未能把 $TARGET 还原成 root:root（不影响加载，插件后端仍以 root 运行）"
+  fi
+fi
 
 # ---- Python 依赖：插件直接用系统 python，不建 venv ----
 # Decky 自带 python 环境，main.py 只用到标准库（tomllib/base64/json），
