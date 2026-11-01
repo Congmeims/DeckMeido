@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # DeckMeido 一键安装 / 升级 / 卸载
 #
-#   bash install.sh              无参数时弹交互菜单，选「安装 / 升级 / 卸载」
+#   bash install.sh              无参数时自动判断：没装就全新安装，装了就直接升级
+#   bash install.sh menu         弹出交互菜单，手动选「安装 / 升级 / 卸载」
 #   bash install.sh install       直接全新安装（跳过菜单）
 #   bash install.sh install --deps      顺带用 sudo 安装控制类插件（不再询问）
 #   bash install.sh install --gui       只补装桌面客户端（PySide6），不动别的
@@ -22,12 +23,16 @@
 # `pacman -Q` 会出现「记录在、命令没了」的假象。install.sh check 一律实测。
 # 同理 ydotoold 必须由 systemd 用户单元托管（enabled），裸跑的进程重启即失效。
 #
-# 怎么装（三条路，装完都是同一个目录）：
-#   git clone https://github.com/Congmeims/deckmeido.git && cd deckmeido && bash install.sh
+# 怎么装（最傻瓜的一条命令，装完能反复用来自动升级）：
+#   curl -sL https://meido.meagames.cn/deckmeido/install.sh | bash
+#   —— 第一次跑：全新安装；之后再跑同一条：自动升级（无需 git、无需 cd、无需删目录）
+#   想手动选操作（含卸载）：下载脚本后 bash install.sh menu
+#   git 方式（需要本地源码目录时）：git clone ... && cd deckmeido && bash install.sh
 #   已有脚本、只想走镜像拉最新版：bash install.sh from-mirror
-#   国内镜像直连（GitHub 完全不通时用，先取一份脚本再跑）：
-#     curl -fsSL -o /tmp/dm.sh https://meido.meagames.cn/deckmeido/install.sh
-#     bash /tmp/dm.sh from-mirror
+#
+# 再跑第一条 git clone 时若报「目标路径已存在，并且不是一个空目录」，
+# 说明 deckmeido 目录已存在——直接 cd deckmeido && bash install.sh 升级即可，
+# 不用删目录重新 clone。
 #
 # 环境变量：
 #   DECKMEIDO_DIR        安装目录，默认 ~/deckmeido
@@ -55,7 +60,17 @@ DESKTOP_DIR="$HOME/.local/share/applications"
 # 真正的「桌面」目录：可能是 Desktop 也可能是 桌面，取 xdg 配置，没配置就默认 Desktop
 DESKTOP_FOLDER="$(command -v xdg-user-dir >/dev/null 2>&1 && xdg-user-dir DESKTOP 2>/dev/null || true)"
 [ -n "$DESKTOP_FOLDER" ] && [ "$DESKTOP_FOLDER" != "$HOME" ] || DESKTOP_FOLDER="$HOME/Desktop"
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+
+# 是否通过「curl | sh -」管道执行。管道执行时脚本不在磁盘上，$BASH_SOURCE[0]
+# 不是真实文件，sync_files 依赖的 $HERE/* 会指向错误位置；此时自动走
+# from-mirror（下载完整发布包再安装），让「一行命令来回用」成为可能。
+_is_piped() {
+  local src="${BASH_SOURCE[0]:-}"
+  # 管道执行时 BASH_SOURCE[0] 通常是空 / "bash" / "sh" / "-"，不是真实文件
+  [ -n "$src" ] && [ -f "$src" ] && return 1
+  return 0
+}
 
 # ---------- 输出 ----------
 if [ -t 1 ]; then
@@ -360,6 +375,11 @@ deps_intro() {
     esac
   done
   echo
+  dim "它们分工成三类："
+  dim "  · 动手（ydotool / kdotool / wtype）——替你点鼠标、敲键盘、切窗口"
+  dim "  · 出声（espeak-ng）——把女仆的回复念出来"
+  dim "  · 看屏（spectacle）——截图，让女仆「看到」当前屏幕"
+  echo
   [ ${#miss_pacman[@]} -gt 0 ] && dim "待安装（pacman）：${miss_pacman[*]}"
   [ ${#miss_aur[@]}    -gt 0 ] && dim "待安装（AUR）：${miss_aur[*]}（需要 paru 或 yay）"
   [ ${#miss_other[@]}  -gt 0 ] && dim "未找到：${miss_other[*]}（KDE 一般自带，可忽略）"
@@ -372,6 +392,7 @@ deps_intro() {
     fi
   fi
   dim "安装过程会用 sudo 关闭 SteamOS 根分区只读保护并安装系统包，不会改动你的游戏与个人文件。"
+  dim "其中 ydotool / wtype 会注册一个用户级守护进程（ydotoold），装完自动开机自启，无需你手动配置。"
 }
 
 ask_yes() {
@@ -1212,15 +1233,41 @@ install_plugin() {
     [ -n "$PLUGIN_SKIP_REASON" ] || dim "想用游戏模式面板，先装 Decky Loader，再跑：bash $INSTALL_DIR/plugin/deploy.sh"
     return 0
   fi
-  info "检测到 Decky Loader，部署 QAM 插件"
-  # deploy.sh 退出码 2 是「环境不具备」（没 npm / 没 Decky），不算失败
-  local rc=0
-  DECKMEIDO_NONINTERACTIVE=1 bash "$INSTALL_DIR/plugin/deploy.sh" || rc=$?
-  case "$rc" in
-    0) dim "插件已就绪，到 设置 → Decky Loader 点「重新载入」即可在 QAM 里看到" ;;
-    2) dim "插件暂未部署（构建环境不具备），装好 nodejs/npm 后重跑：bash $INSTALL_DIR/plugin/deploy.sh" ;;
-    *) warn "插件部署失败（退出码 $rc），可单独重跑：bash $INSTALL_DIR/plugin/deploy.sh" ;;
-  esac
+  # 检测到 Decky，但装不装让用户定：插件要写进 ~/homebrew/plugins，属于系统级改动
+  if ask_yes "检测到 Decky Loader，现在就在游戏模式里装上 QAM 面板吗？"; then
+    info "部署 QAM 插件"
+    # deploy.sh 退出码 2 是「环境不具备」（没装 Decky），不算失败
+    local rc=0
+    DECKMEIDO_NONINTERACTIVE=1 bash "$INSTALL_DIR/plugin/deploy.sh" || rc=$?
+    case "$rc" in
+      0) dim "插件已就绪，到 设置 → Decky Loader 点「重新载入」即可在 QAM 里看到" ;;
+      2) dim "插件暂未部署（环境不具备），装好 Decky Loader 后重跑：bash $INSTALL_DIR/plugin/deploy.sh" ;;
+      *) warn "插件部署失败（退出码 $rc），可单独重跑：bash $INSTALL_DIR/plugin/deploy.sh" ;;
+    esac
+  else
+    # 跳过：把插件 zip 放到工作区，用户之后想装了自己解压到 ~/homebrew/plugins/DeckMeido
+    plugin_handoff_zip
+  fi
+  return 0
+}
+
+# 用户跳过插件安装时，把发布包里的插件 zip 复制到工作区，并说明手动安装流程。
+# zip 由 make_release.sh 放进 deploy/deckmeido-plugin.zip（前端已编译，无需 npm）。
+plugin_handoff_zip() {
+  local src="$INSTALL_DIR/deploy/deckmeido-plugin.zip" ws dst
+  if [ ! -f "$src" ]; then
+    dim "安装包里没带插件包，跳过。想装时可单独下载 deckmeido-plugin-<版本>.zip"
+    return 0
+  fi
+  ws="$(workspace_dir)"
+  dst="$ws/deckmeido-plugin.zip"
+  mkdir -p "$ws"
+  cp -f "$src" "$dst"
+  dim "已把插件包放到工作区：$dst"
+  dim "之后想装，手动执行："
+  dim "  mkdir -p ~/homebrew/plugins/DeckMeido"
+  dim "  unzip -o '$dst' -d ~/homebrew/plugins/DeckMeido"
+  dim "  # 然后到 设置 → Decky Loader 点「重新载入」"
   return 0
 }
 
@@ -1501,6 +1548,10 @@ do_upgrade() {
   [ -d "$INSTALL_DIR" ] || die "$INSTALL_DIR 不存在，请先执行安装"
   if [ "$deps" = "--gui" ]; then gui_only=1; deps=""; fi
   print_banner
+  # 升级只换代码和依赖，下面这些一律保留，用户不用担心升级丢数据
+  dim "升级会保留：配置文件（config.toml）、人设（meidosoul.json）、"
+  dim "长期记忆（memory.json）、会话记录、工作区、Decky 插件（不重复部署）。"
+  echo
   section "环境预检"
   check_prereq
   # 顺序要紧：先停客户端（否则它的 watchdog 会把旧后端拉回来），再停服务
@@ -1569,8 +1620,10 @@ do_from_mirror() {
   local src; src="$(find "$tmp" -maxdepth 2 -name install.sh -printf '%h\n' | head -n1)"
   [ -n "$src" ] || die "安装包结构不对：里面没有 install.sh"
   info "开始安装（来源：$src）"
-  # 让子进程沿用这次用的镜像地址，写进配置的就是它
-  DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" install "${1:-}"
+  # 让子进程沿用这次用的镜像地址，写进配置的就是它。
+  # 不带子命令：让 install.sh 的 smart_default 自己判断「没装就装、装了就升级」，
+  # 这样同一条 curl 命令既能首次安装也能反复升级。
+  DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" "${1:-}"
 }
 
 # 正在跑的任务要先取消：卸载时把后端直接杀掉，正在执行的命令会变成孤儿进程
@@ -1639,6 +1692,12 @@ do_uninstall() {
   else
     info "卸载 DeckMeido"
   fi
+  if [ "$purge" = 1 ]; then
+    dim "彻底清除：代码、配置、会话、工作区，连同人设与记忆一起删除（不可恢复）。"
+  else
+    dim "本次卸载只删代码与依赖；人设、记忆会先备份到 $CONFIG_DIR，下次安装自动恢复。"
+  fi
+  echo
   # 先把人设和记忆备份走，再动目录，避免删代码时连带丢数据
   backup_soul
   # 先取消正在执行的任务，再停客户端和后端，避免留下跑了一半的命令
@@ -1671,7 +1730,7 @@ do_uninstall() {
   need_cmd kbuildsycoca6 && kbuildsycoca6 >/dev/null 2>&1 || true
   need_cmd kbuildsycoca5 && kbuildsycoca5 >/dev/null 2>&1 || true
 
-  # Decky 插件：装的时候链接到 ~/homebrew/plugins/DeckMeido，卸载不清的话
+  # Decky 插件：装的时候复制到 ~/homebrew/plugins/DeckMeido，卸载不清的话
   # QAM 里会一直留着一个连不上后端的面板
   if [ -f "$INSTALL_DIR/plugin/deploy.sh" ]; then
     dim "移除 Decky 插件"
@@ -1777,8 +1836,32 @@ show_menu() {
   fi
 }
 
+# 无参数时的智能默认：已装就升级、没装就全新安装，一条命令来回用都行。
+# 想手动选操作，或要卸载/自检，用 bash install.sh menu 或直接带子命令。
+smart_default() {
+  check_user
+  if [ -f "$INSTALL_DIR/VERSION" ]; then
+    local ver
+    ver=$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)
+    info "检测到已安装 $APP${ver:+ v$ver}，直接升级（想卸载用 bash install.sh uninstall）"
+    do_upgrade
+  else
+    info "未检测到已安装的 $APP，开始全新安装"
+    do_install
+  fi
+}
+
+# 通过「curl -sL ... | sh -」管道执行时，脚本不在本地磁盘上，这里直接自举：
+# 下载最新发布包到临时目录再交给正常的 install 流程。这样用户记住一行命令，
+# 不管全新安装还是之后升级，都能用同一条命令反复跑。
+if _is_piped; then
+  do_from_mirror "${1:-}"
+  exit $?
+fi
+
 case "${1:-}" in
-  "")            show_menu ;;
+  "")            smart_default ;;
+  menu)          show_menu ;;
   install)       do_install "${2:-}" ;;
   upgrade|update) do_upgrade "${2:-}" ;;
   from-mirror)  do_from_mirror "${2:-}" ;;
@@ -1799,5 +1882,5 @@ case "${1:-}" in
                 dim "启用并启动：systemctl --user daemon-reload && systemctl --user enable --now $UNIT" ;;
   -h|--help|help)
     grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -n 36 ;;
-  *) die "未知命令：$1（可用：install / upgrade / from-mirror / speedtest / check / uninstall / service）" ;;
+  *) die "未知命令：$1（可用：无参数=智能装/升 / menu / install / upgrade / from-mirror / speedtest / check / uninstall / service）" ;;
 esac

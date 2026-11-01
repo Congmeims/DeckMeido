@@ -36,6 +36,11 @@ uninstall.sh
 # 上传的图片（运行时产物）
 server/static/uploads/
 
+# 部署/调试临时脚本（一次性用的，不入库）
+tools/_*.py
+_src.tar.gz
+.uploads/
+
 # 多 agent 协作通道（本地信箱，不入库；见 _comms/README.md）
 _comms/
 

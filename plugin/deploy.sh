@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # DeckMeido 的 Decky 插件部署脚本。
 #
-# 插件本体放在 ~/homebrew/plugins/DeckMeido，用软链接指回本仓库的 plugin/，
-# 这样改完代码只要重启 Decky 就能生效，不用重复部署。
+# 插件装到 ~/homebrew/plugins/DeckMeido（复制，不是软链接），改完代码重跑一次即可。
+# 前端（dist/index.js）在发版时就编译好了，随发布包一起分发，用户不需要 npm。
 #
 # 用法：
-#   bash plugin/deploy.sh               构建并部署
+#   bash plugin/deploy.sh               部署（复制本目录的 main.py / plugin.json / dist）
 #   bash plugin/deploy.sh --detect      只查装没装 Decky 框架（install.sh 用）
 #   bash plugin/deploy.sh --remove      卸载插件
-#   bash plugin/deploy.sh --no-build    跳过前端构建（dist 已存在时用）
 #   bash plugin/deploy.sh --check       只报状态，不改任何东西（install.sh 用）
 #
-# 退出码：0 = 已就绪 / 成功；1 = 失败；2 = 环境不具备（没装 Decky、没装 npm），
+# 退出码：0 = 已就绪 / 成功；1 = 失败；2 = 环境不具备（没装 Decky 等），
 # 这种情况 install.sh 不该当错误处理，只提示一句。
 #
 # 被 install.sh 调用时（DECKMEIDO_NONINTERACTIVE=1）不打印颜色和多余提示。
@@ -33,11 +32,8 @@ case "${1:-}" in
   --remove) MODE=remove ;;
   --check)  MODE=check ;;
   --detect) MODE=detect ;;
-  --no-build) MODE=deploy; BUILD=0 ;;
-  "")       MODE=deploy; BUILD=1 ;;
-  *)        die "不认识的参数：$1（可用：--detect / --check / --remove / --no-build）" ;;
+  *)        MODE=deploy ;;
 esac
-BUILD="${BUILD:-1}"
 
 # ---- 检测 Decky 框架 ----
 # 判断「装没装 Decky」。最可靠的信号是插件根目录 ~/homebrew/plugins 是否存在：
@@ -86,15 +82,23 @@ fi
 # ---- 只看状态 ----
 if [ "$MODE" = "check" ]; then
   decky_status || { dim "没装 Decky Loader（$PLUGINS_ROOT 不存在），跳过插件"; exit 2; }
-  [ -L "$TARGET" ] && info "Decky 插件已链接到 $PLUGIN_DIR" || { warn "Decky 插件未部署"; exit 1; }
-  [ -f "$PLUGIN_DIR/dist/index.js" ] || { warn "插件缺 dist/index.js，需要构建"; exit 1; }
+  [ -f "$TARGET/index.js" ] || { warn "Decky 插件未部署（$TARGET/index.js 不存在）"; exit 1; }
+  [ -f "$TARGET/main.py" ] || { warn "Decky 插件缺 main.py"; exit 1; }
+  [ -f "$TARGET/plugin.json" ] || { warn "Decky 插件缺 plugin.json"; exit 1; }
   exit 0
 fi
 
 # ---- 卸载 ----
 if [ "$MODE" = "remove" ]; then
-  if [ -L "$TARGET" ] || [ -d "$TARGET" ]; then
-    rm -rf "$TARGET"
+  if [ -d "$TARGET" ]; then
+    # 目录属 root 时普通用户删不动，先收回属主再删
+    if ! rm -rf "$TARGET" 2>/dev/null; then
+      if sudo chown -R "$(id -un):$(id -gn)" "$TARGET"; then
+        rm -rf "$TARGET"
+      else
+        die "删不掉 $TARGET（sudo chown 也失败）"
+      fi
+    fi
     info "已移除 $TARGET"
     dim "重启 Decky（设置 → Decky Loader → 重新载入）后插件从 QAM 消失"
   else
@@ -116,42 +120,44 @@ if [ "$(id -u)" = "0" ]; then
   die "不要用 sudo/root 执行：插件要装在当前用户家目录下"
 fi
 
-# ---- 构建前端 ----
-if [ "$BUILD" = "1" ]; then
-  need_build=1
-  if [ -d "$PLUGIN_DIR/dist" ] && [ -f "$PLUGIN_DIR/package.json" ]; then
-    # dist 比源码新就跳过，省得每次都等 npm
-    if [ -z "$(find "$PLUGIN_DIR/src" -newer "$PLUGIN_DIR/dist" -type f 2>/dev/null)" ]; then
-      need_build=0
-      info "dist 已是最新，跳过构建"
-    fi
-  fi
-
-  if [ "$need_build" = "1" ]; then
-    if ! command -v npm >/dev/null 2>&1; then
-      warn "没装 npm，无法构建插件前端"
-      dim "装好 nodejs/npm 后再跑：bash plugin/deploy.sh"
-      exit 2
-    fi
-    info "构建前端"
-    cd "$PLUGIN_DIR"
-    if [ ! -d node_modules ]; then
-      npm install --no-audit --no-fund
-    fi
-    npm run build
-    [ -f "$PLUGIN_DIR/dist/index.js" ] || die "构建完成但没有 dist/index.js"
+# ---- 目录权限 ----
+# Decky 自己建的 ~/homebrew/plugins 属 root:root（早期版本是 deck），
+# 普通用户既删不掉也建不了插件目录，直接 rm -rf 会报「权限不够」并留下半个目录，
+# Decky 下次加载卡在那半个目录上。所以先把这一层交还给当前用户：
+#   - 目录属主不是自己 → 尝试 sudo chown（有免密 sudo 时无提示，没有就输一次密码）
+#   - 插件目录里如果有 root 留下的文件，也一并收回来，否则 rm 删不动
+# 全程只动 ~/homebrew/plugins 这一层和本插件自己的目录，不碰别的插件。
+ME="$(id -un)"
+if [ -d "$TARGET" ] || [ "$(stat -c %U "$PLUGINS_ROOT" 2>/dev/null)" != "$ME" ]; then
+  sudo -n true 2>/dev/null ||
+    warn "需要一次 sudo：$PLUGINS_ROOT 属 root，普通用户删不掉插件目录"
+  sudo chown "$ME:$(id -gn)" "$PLUGINS_ROOT" 2>/dev/null ||
+    warn "改不动 $PLUGINS_ROOT 的属主，下面可能失败"
+  if [ -d "$TARGET" ]; then
+    sudo chown -R "$ME:$(id -gn)" "$TARGET" 2>/dev/null || true
   fi
 fi
 
-[ -f "$PLUGIN_DIR/dist/index.js" ] || die "缺少 dist/index.js，先不带 --no-build 跑一次"
+# ---- 部署（复制，不软链接）----
+# 前端 dist/index.js 在发版时就编译好了，这里只需要把插件要用的文件复制过去。
+# 复制而非软链接：软链接指回安装目录，一旦安装目录被删/移动插件就失效，
+# 复制则插件目录是自洽的，Decky 重载也不依赖安装目录还在。
+[ -f "$PLUGIN_DIR/dist/index.js" ] || die "缺少 dist/index.js（发布包里应自带，不需要 npm 编译）"
+[ -f "$PLUGIN_DIR/main.py" ] || die "缺少 main.py"
+[ -f "$PLUGIN_DIR/plugin.json" ] || die "缺少 plugin.json"
 
-# ---- 部署（软链接，不复制）----
-if [ -e "$TARGET" ] && [ ! -L "$TARGET" ]; then
-  warn "$TARGET 不是软链接（可能是之前复制进去的旧版本），先挪走"
-  mv "$TARGET" "$TARGET.bak.$(date +%s)"
+# 目录可能已存在（重装/升级），清掉旧的再复制，避免残留旧文件。
+# 删不掉时退回「原地覆盖」：Decky 按文件名加载，多出来的旧文件无害，
+# 比整次安装失败要好
+if [ -d "$TARGET" ] && ! rm -rf "$TARGET" 2>/dev/null; then
+  warn "删不掉旧目录 $TARGET，改为原地覆盖"
 fi
-ln -sfn "$PLUGIN_DIR" "$TARGET"
-info "已链接 $TARGET → $PLUGIN_DIR"
+mkdir -p "$TARGET"
+cp "$PLUGIN_DIR/main.py" "$TARGET/main.py"
+cp "$PLUGIN_DIR/plugin.json" "$TARGET/plugin.json"
+rm -rf "$TARGET/dist" 2>/dev/null || true
+cp -r "$PLUGIN_DIR/dist" "$TARGET/dist"
+info "已部署插件到 $TARGET"
 
 # ---- Python 依赖：插件直接用系统 python，不建 venv ----
 # Decky 自带 python 环境，main.py 只用到标准库（tomllib/base64/json），
