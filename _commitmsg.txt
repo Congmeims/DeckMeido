@@ -1,0 +1,4 @@
+chore: 移除 deploy_mirror.py，发版只打包
+
+release.py 不再自动上传镜像站，上传统一走 deploy_all.py；
+去掉 RELEASE_NO_UPLOAD 开关和对应的上传调用。
