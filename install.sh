@@ -8,8 +8,8 @@
 #   bash install.sh upgrade        升级代码与依赖，保留配置
 #   bash install.sh upgrade --deps      升级后顺带检查并安装控制类插件
 #   bash install.sh check          自检：逐个实测控制类控件是否真的能用
-#   bash install.sh uninstall     卸载（默认保留 ~/.config/deckmeido 配置与工作区）
-#   bash install.sh uninstall --purge   连配置一起删
+#   bash install.sh uninstall     卸载（删代码与依赖，保留人设/记忆，下次安装自动恢复）
+#   bash install.sh uninstall --purge   连人设、记忆、配置、会话、工作区一起删
 #   bash install.sh service       生成 systemd 用户单元（默认不装，后端由客户端拉起）
 #   bash install.sh from-mirror   从国内镜像站下载最新版并安装（GitHub 不通时用）
 #   bash install.sh speedtest     只测各 pip 源的下载速率，挑最快的那个
@@ -1236,8 +1236,8 @@ install_uninstaller() {
   cat > "$INSTALL_DIR/uninstall.sh" <<'EOS'
 #!/usr/bin/env bash
 # DeckMeido 卸载入口（由 install.sh 自动生成）
-#   bash uninstall.sh            停服务、删快捷方式，保留配置与工作区
-#   bash uninstall.sh --purge    连配置、会话、工作区一起删
+#   bash uninstall.sh            删代码与依赖，保留人设、记忆（下次安装自动恢复）
+#   bash uninstall.sh --purge    连人设、记忆、配置、会话、工作区一起删
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$HERE/install.sh" ]; then
@@ -1275,10 +1275,20 @@ if [ "${1:-}" = "--purge" ]; then
   case "$WS" in "~"/*) WS="$HOME/${WS#\~/}" ;; /*) ;; *) WS="$HOME/$WS" ;; esac
   rm -rf "$CONFIG_DIR"
   case "$WS" in ""|"/"|"$HOME") echo "工作区路径异常（$WS），跳过删除" ;; *) rm -rf "$WS" ;; esac
+else
+  # 普通卸载：把人设和记忆搬到 ~/.config/deckmeido/，下次安装恢复
+  mkdir -p "$CONFIG_DIR"
+  for f in meidosoul.json memory.json; do
+    [ -f "$HERE/server/$f" ] && cp -f "$HERE/server/$f" "$CONFIG_DIR/$f" 2>/dev/null
+  done
 fi
-rm -rf "$HERE/.venv" "$HERE/server/sessions" "$HERE/server/static/shots" "$HERE/server/uploads"
-rm -f "$HERE/VERSION" "$HERE/update.log"
-echo "卸载完成。代码仍在 $HERE，完全删除：rm -rf \"$HERE\""
+# 真正删掉整个安装目录（含代码、venv、会话）
+rm -rf "$HERE"
+if [ "${1:-}" = "--purge" ]; then
+  echo "卸载完成：代码、配置、会话、工作区、人设与记忆已全部清除"
+else
+  echo "卸载完成：代码已删除，人设与记忆保留在 $CONFIG_DIR（下次安装自动恢复）"
+fi
 EOS
   chmod +x "$INSTALL_DIR/uninstall.sh"
 }
@@ -1427,6 +1437,8 @@ do_install() {
   venv_install || true
   section "写入配置"
   prepare_config
+  # 之前卸载时备份的人设/记忆搬回来，让「她」还是原来的她
+  restore_soul
   section "桌面入口与服务"
   stop_service
   install_service
@@ -1575,11 +1587,48 @@ workspace_dir() {
   printf '%s\n' "$ws"
 }
 
+# 卸载前把「她这个人」的数据备份到 ~/.config/deckmeido/，普通卸载只删代码、
+# 不丢人设和记忆；下次安装时自动恢复。--purge 才会连这份备份一起删。
+# 备份两份文件：meidosoul.json（人设）+ memory.json（长期记忆/偏好）。
+backup_soul() {
+  local dst="$CONFIG_DIR" src="$INSTALL_DIR/server"
+  mkdir -p "$dst"
+  local saved=0
+  for f in meidosoul.json memory.json; do
+    if [ -f "$src/$f" ]; then
+      cp -f "$src/$f" "$dst/$f" 2>/dev/null && saved=1
+    fi
+  done
+  [ "$saved" = 1 ] && dim "已备份人设与记忆到 $dst（下次安装自动恢复）"
+}
+
+# 安装完成后，若 ~/.config/deckmeido/ 里有之前卸载时留下的人设/记忆备份，
+# 就搬回 server/ 目录，让「她」还是原来的她。
+restore_soul() {
+  local src="$CONFIG_DIR" dst="$INSTALL_DIR/server"
+  local restored=0
+  for f in meidosoul.json memory.json; do
+    if [ -f "$src/$f" ] && [ ! -f "$dst/$f" ]; then
+      cp -f "$src/$f" "$dst/$f" 2>/dev/null && restored=1
+    fi
+  done
+  if [ "$restored" = 1 ]; then
+    dim "已恢复之前的人设与记忆（$src）"
+  fi
+}
+
 do_uninstall() {
   local purge=0
   [ "${1:-}" = "--purge" ] && purge=1
   check_user
-  info "卸载 DeckMeido"
+  if ui_fits; then
+    print_banner
+    section "$([ "$purge" = 1 ] && echo '卸载（彻底清除）' || echo '卸载')"
+  else
+    info "卸载 DeckMeido"
+  fi
+  # 先把人设和记忆备份走，再动目录，避免删代码时连带丢数据
+  backup_soul
   # 先取消正在执行的任务，再停客户端和后端，避免留下跑了一半的命令
   cancel_running_turn
   # 客户端是后端的父进程，先让它退出，后端会跟着收走
@@ -1619,8 +1668,8 @@ do_uninstall() {
 
   if [ "$purge" = 1 ]; then
     local ws; ws="$(workspace_dir)"
-    warn "删除配置、会话与工作区（不可恢复）"
-    dim "配置：$CONFIG_DIR"
+    warn "删除配置、工作区（不可恢复）"
+    dim "配置（含人设/记忆备份）：$CONFIG_DIR"
     dim "工作区：$ws"
     rm -rf "$CONFIG_DIR"
     case "$ws" in
@@ -1628,12 +1677,36 @@ do_uninstall() {
       *) rm -rf "$ws" ;;
     esac
   fi
-  # 只删本仓库自带的运行产物，避免误删用户数据
-  rm -rf "$INSTALL_DIR/server/sessions" "$INSTALL_DIR/server/static/shots" \
-         "$INSTALL_DIR/server/uploads" "$INSTALL_DIR/.venv"
-  rm -f "$INSTALL_DIR/VERSION" "$INSTALL_DIR/update.log" "$INSTALL_DIR/uninstall.sh"
-  info "卸载完成"
-  dim "代码仍保留在 $INSTALL_DIR；完全删除：rm -rf $INSTALL_DIR"
+
+  # 真正删掉整个安装目录（代码 + venv + 会话 + 运行产物全清）。
+  # 人设和记忆已经在最前面 backup_soul 里搬到 ~/.config/deckmeido/，
+  # 普通卸载不会丢；--purge 在上面已经把那份备份也删了。
+  if [ -d "$INSTALL_DIR" ]; then
+    rm -rf "$INSTALL_DIR"
+  fi
+
+  # 结果汇总（和安装界面同一套卡片风格）
+  if ui_fits; then
+    card
+    card_title "卸载完成"
+    if [ "$purge" = 1 ]; then
+      card_line "已彻底清除：代码、配置、会话、工作区"
+      card_line "人设与记忆也已一并删除"
+    else
+      card_line "代码与依赖已删除"
+      card_line "人设与记忆已保留在 $CONFIG_DIR"
+      card_line "下次安装会自动恢复"
+    fi
+    card_end
+    echo
+  else
+    info "卸载完成"
+    if [ "$purge" = 1 ]; then
+      dim "已彻底清除（含人设与记忆）"
+    else
+      dim "人设与记忆保留在 $CONFIG_DIR，下次安装自动恢复"
+    fi
+  fi
 }
 
 # 无参数运行时弹出的交互菜单：检测是否已安装，给出带默认值的选项。
@@ -1653,7 +1726,7 @@ show_menu() {
     echo "  请选择要执行的操作："
     echo "  ${C_B}1${C_END}  升级到最新版  ${C_DIM}（默认，回车即可）${C_END}"
     echo "  ${C_B}2${C_END}  重新安装      ${C_DIM}（覆盖重装，保留配置）${C_END}"
-    echo "  ${C_B}3${C_END}  卸载          ${C_DIM}（停服务、删插件与配置）${C_END}"
+    echo "  ${C_B}3${C_END}  卸载          ${C_DIM}（删代码，保留人设与记忆）${C_END}"
     echo "  ${C_B}0${C_END}  退出"
     echo
     local choice=""
