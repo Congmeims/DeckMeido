@@ -1,0 +1,5 @@
+# 桌面客户端与截图遮罩层（overlay.py）依赖。
+# 体积很大（解包后 700MB 上下），单独一份：下载失败只影响桌面客户端，
+# 网页端和后端靠 requirements.txt 就能跑，安装不会因此中断。
+PySide6
+PySide6-WebEngine

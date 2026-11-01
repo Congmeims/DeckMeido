@@ -9,9 +9,8 @@ python-multipart
 psutil        # 系统信息（/api/sysinfo）
 qrcode        # 设置页扫码连接（/api/qrcode）
 
-# PySide6：遮罩层（overlay.py）与原生客户端都依赖，install.sh 默认安装
-PySide6
-PySide6-WebEngine
+# PySide6（桌面客户端 / 遮罩层）体积很大，拆到 requirements-gui.txt 单独装：
+# 它下载失败不该拖垮整个安装，网页端和后端只靠上面的依赖就能跑
 
 # 联网搜索工具（web_search 依赖；不需要联网搜索可注释掉，工具会返回报错而不是静默失败）
 ddgs
