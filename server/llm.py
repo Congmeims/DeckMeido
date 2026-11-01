@@ -293,12 +293,14 @@ class LLMClient:
 
     async def chat_with_tools_stream(self, messages: list[dict], tools: list[dict],
                                      on_delta=None, on_thought=None,
-                                     max_tokens: int | None = None) -> dict:
+                                     max_tokens: int | None = None,
+                                     on_retry=None) -> dict:
         """流式调用，失败时自动重试；正文一旦开始输出就不再重试
 
         重试只对「还没往外吐任何字」的失败生效：网络抖动、503、限流都还能救回来，
         而用户已经看到半句话之后再重来一遍，屏幕上就会重复一段正文。
         指数退避 1s / 2s / 4s，仍失败就抛出最后一次的异常。
+        on_retry 在每次重试前调用：让上层把「上一次尝试留下的半截状态」清掉。
         """
         for delay in _RETRY_DELAYS + (None,):
             started = False
@@ -321,6 +323,11 @@ class LLMClient:
                 if started or not _retryable(exc) or delay is None:
                     raise
                 print(f"[DeckMeido] LLM 调用失败（{exc}），{delay:g}s 后重试", flush=True)
+                if on_retry:
+                    try:
+                        on_retry()
+                    except Exception:
+                        pass
                 await asyncio.sleep(delay)
         raise RuntimeError("unreachable")
 

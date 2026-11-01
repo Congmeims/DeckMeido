@@ -3512,6 +3512,30 @@
   var liveThoughtShown = 0; // 已实时渲染的思维链数
   var askShown = 0;         // 已实时渲染的提问数（收尾时按这个跳过 events 里的 ask）
   var liveThought = null;  // 实时思维链卡片（.thought-body 元素）
+  // 思考链合帧缓冲：后端已按 40ms 合过一批，一帧里仍可能进来好几条，
+  // 这里再合一次，重排次数从「每条一次」降到「每帧一次」
+  var thoughtFlushQueued = false;
+  var thoughtTextPend = '';
+
+  function thoughtFlushSoon() {
+    if (thoughtFlushQueued) return;
+    thoughtFlushQueued = true;
+    requestAnimationFrame(function () {
+      thoughtFlushQueued = false;
+      // 写之前再取一次 liveThought：这一帧里思考块可能已经收尾/换掉了
+      if (liveThought && thoughtTextPend) liveThought.textContent += thoughtTextPend;
+      thoughtTextPend = '';
+      scrollBottomSafe();
+    });
+  }
+
+  // 把攒着的思考字立刻写进 DOM（收尾、断联、切轮之前必须调，
+  // 否则最后不到一帧的那几个字会落在 thought_end 之后，那块已经折叠/撤掉了）
+  function thoughtFlushNow() {
+    thoughtFlushQueued = false;
+    if (liveThought && thoughtTextPend) liveThought.textContent += thoughtTextPend;
+    thoughtTextPend = '';
+  }
   var streamEl = null;     // 流式输出气泡
   var streamBody = null;
   // 心跳：长时间没收到任何消息时发一次 ping。手机上切后台回来、或中途换了
@@ -5316,10 +5340,20 @@
     .catch(function () {});
 
 
+  // 本地缓存的落盘节流。以前是 600ms，而流式输出每来一批都会调一次 schedule，
+  // 等于每 0.6 秒就把整段正文 join 一遍、JSON.stringify 一遍、再同步写进
+  // localStorage（同步 IO，写的时候主线程完全停住，Deck 上就是「输出一顿一顿的」）。
+  // 现在改成 3 秒，并且只留尾部：这份缓存唯一的作用是「后端进程突然没了，
+  // 刷新回来补上屏幕上最后那段字」，前面早就正式落盘的内容服务端自己有，
+  // 没必要一遍遍重新序列化。
+  var TURN_CACHE_MS = 3000;
+  var TURN_CACHE_TAIL = 4000;   // 最多存最后 4000 字
+
   function turnCacheText() {
     var all = turnCache.segs.slice();
     if (turnCache.cur) all.push(turnCache.cur);
-    return all.filter(function (s) { return String(s || '').trim(); }).join('\n\n');
+    var t = all.filter(function (s) { return String(s || '').trim(); }).join('\n\n');
+    return t.length > TURN_CACHE_TAIL ? t.slice(t.length - TURN_CACHE_TAIL) : t;
   }
 
   function turnCacheFlush() {
@@ -5335,8 +5369,19 @@
 
   function turnCacheSchedule() {
     if (turnCacheTimer) return;
-    turnCacheTimer = setTimeout(turnCacheFlush, 600);
+    turnCacheTimer = setTimeout(turnCacheFlush, TURN_CACHE_MS);
   }
+
+  // 页面要走（刷新/关标签）或切到后台时立刻补一次：平时靠 3 秒节流，
+  // 最后那一下不等了，否则中途刷新会丢掉最后几秒屏幕上出现的字
+  function turnCacheFlushNow() {
+    if (turnCacheTimer) { clearTimeout(turnCacheTimer); turnCacheTimer = null; }
+    turnCacheFlush();
+  }
+  window.addEventListener('pagehide', turnCacheFlushNow);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') turnCacheFlushNow();
+  });
 
   function turnCacheReset() {
     turnCache = { sid: currentSid, segs: [], cur: '' };
@@ -5477,6 +5522,7 @@
           } catch (e) { /* 缓存损坏：忽略 */ }
           // 重连后重建现场：残留的流式气泡/事件容器都指向已经不存在的这一轮
           streamTextPend = '';
+          thoughtTextPend = '';
           streamEl = null; streamBody = null;
           liveBox = null; liveToolCount = 0; liveThoughtShown = 0; liveThought = null;
           askShown = 0;
@@ -5508,6 +5554,7 @@
           liveToolCount = 0;
           liveThoughtShown = 0;
           liveThought = null;
+          thoughtTextPend = '';
           showTyping();
           break;
         case 'stream_start':
@@ -5564,6 +5611,7 @@
           }
           break;
         case 'thought_start':
+          thoughtFlushNow();   // 上一段思考的尾巴先落地，别串到新块里
           if (!liveBox) {
             liveBox = document.createElement('div');
             liveBox.className = 'events';
@@ -5585,11 +5633,13 @@
           break;
         case 'thought_delta':
           if (liveThought) {
-            liveThought.textContent += msg.text;
-            scrollBottomSafe();
+            thoughtTextPend += msg.text;
+            thoughtFlushSoon();
           }
           break;
         case 'thought_end':
+          // 先把手里的字写进去，再判断空不空、再折叠，否则末尾几个字会跟着被吞
+          thoughtFlushNow();
           if (liveThought) {
             var trow2 = liveThought.parentNode;
             // 空的思考块（模型啥也没想）直接撤掉，不留「思考 ▸」空头
@@ -5660,8 +5710,7 @@
           // 作为「后端已落盘但页面还没来得及刷新」这一瞬间的兜底
           if (msg.sid) turnCache.sid = msg.sid;
           if (msg.text) turnCache.cur = msg.text;
-          if (turnCacheTimer) { clearTimeout(turnCacheTimer); turnCacheTimer = null; }
-          turnCacheFlush();
+          turnCacheFlushNow();
           // 这一轮正常收尾：服务端确实把这轮的正文写进历史了，本地缓存随即作废。
           // 留着不删会在下次刷新时被误判成「服务端缺了尾巴」，重复补一条
           if (!msg.cancelled) {
@@ -5760,6 +5809,7 @@
       // 点了只会发 cancel（完全不发消息），主人看到的就是「按钮卡死」
       setBusy(false);
       streamTextPend = '';
+      thoughtTextPend = '';
       streamEl = null; streamBody = null;
       liveBox = null; liveToolCount = 0; liveThoughtShown = 0; liveThought = null;
       if (suppressReconnect) return;
@@ -6465,6 +6515,7 @@
     // 而且下一轮的 delta 会往这个旧气泡里接着写，两轮正文混在一起。
     // 已生成的部分交给服务端的 assistant_message(cancelled) 落成正式回复
     streamTextPend = '';
+    thoughtTextPend = '';
     streamEl = null; streamBody = null;
     liveBox = null; liveToolCount = 0; liveThoughtShown = 0; liveThought = null;
     askShown = 0;
