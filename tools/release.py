@@ -102,7 +102,7 @@ def build_plugin_zip(ver: str) -> Path:
         # 漏了它插件不会报错，只是**整个不出来**，面板里什么都看不到。
         # 但 "type": "module" 必须去掉：带着它，Decky 前端把 dist/index.js
         # 当 CJS 解析，顶层 export 直接抛 Unexpected token 'export'。
-        # deploy.sh 复制部署时目录里没有 package.json，所以从没踩到过
+        # 剥掉 "type" 这一步和 plugin/deploy.sh 里的部署逻辑必须保持一致
         pkg = json.loads((plugin / "package.json").read_text(encoding="utf-8"))
         pkg.pop("type", None)
         z.writestr(top + "package.json",
