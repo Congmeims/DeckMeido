@@ -1,6 +1,7 @@
 """OpenAI 兼容 LLM 客户端"""
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -293,6 +294,39 @@ class LLMClient:
     async def chat_with_tools_stream(self, messages: list[dict], tools: list[dict],
                                      on_delta=None, on_thought=None,
                                      max_tokens: int | None = None) -> dict:
+        """流式调用，失败时自动重试；正文一旦开始输出就不再重试
+
+        重试只对「还没往外吐任何字」的失败生效：网络抖动、503、限流都还能救回来，
+        而用户已经看到半句话之后再重来一遍，屏幕上就会重复一段正文。
+        指数退避 1s / 2s / 4s，仍失败就抛出最后一次的异常。
+        """
+        for delay in _RETRY_DELAYS + (None,):
+            started = False
+
+            async def _delta(text: str) -> None:
+                nonlocal started
+                started = True
+                if on_delta:
+                    await on_delta(text)
+
+            async def _thought(text: str) -> None:
+                nonlocal started
+                started = True
+                if on_thought:
+                    await on_thought(text)
+
+            try:
+                return await self._stream_once(messages, tools, _delta, _thought, max_tokens)
+            except Exception as exc:
+                if started or not _retryable(exc) or delay is None:
+                    raise
+                print(f"[DeckMeido] LLM 调用失败（{exc}），{delay:g}s 后重试", flush=True)
+                await asyncio.sleep(delay)
+        raise RuntimeError("unreachable")
+
+    async def _stream_once(self, messages: list[dict], tools: list[dict],
+                           on_delta=None, on_thought=None,
+                           max_tokens: int | None = None) -> dict:
         """流式调用：正文增量经 on_delta、思维链增量经 on_thought 回调，最终返回聚合后的完整 message
 
         max_tokens 传入时覆盖实例默认值，供上层按当前上下文剩余空间动态放大输出额度；
@@ -392,3 +426,25 @@ class LLMClient:
 
     async def close(self):
         await self._client.aclose()
+
+
+# 每次重试前等待多久（秒）。放在模块层是为了让重试策略一眼可见、好调整。
+# 三次总等待 1+2+4=7 秒：够熬过中转站的短时抖动，又不会让用户干等太久。
+_RETRY_DELAYS = (1.0, 2.0, 4.0)
+
+
+def _retryable(exc: Exception) -> bool:
+    """这个异常重试有没有意义
+
+    超时、连不上、429 限流、5xx 都是暂时性的，重试一次往往就好了；
+    401 / 400 / 余额不足这类配置问题重试多少次都一样，直接抛出去给用户看。
+    流里塞了 error 的情况我们抛的是 RuntimeError，一并归为不重试：那是
+    「模型/网关真的拒绝了」，重发只会再被拒一次。
+    """
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError,
+                        httpx.RemoteProtocolError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code if exc.response is not None else 0
+        return code == 429 or code >= 500
+    return False

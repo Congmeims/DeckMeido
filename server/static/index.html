@@ -155,6 +155,11 @@
     gap: 10px;
     -webkit-overflow-scrolling: touch;
   }
+  /* 视口外的消息跳过布局与绘制：往回翻长对话时 Deck 的弱 CPU 才不会卡死 */
+  #messages > .msg, #messages > .events {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 120px;
+  }
   .msg {
     position: relative;
     max-width: 85%;
@@ -2868,9 +2873,54 @@
     return device ? '电脑' : '';
   }
 
-  // 网页端消息区不裁剪：浏览器渲染上万个节点也不卡，往回翻要能看到完整对话。
-  // 20 条的上限只在插件（QAM）那边，见 plugin/main.py 的 _THREAD_MAX
+  // 网页端消息区：长会话只渲染最近 HIST_PAGE 条，顶部一条「加载更早」按需往回补。
+  // 以前虽然注释说「不裁剪」，实际做法是一次性把整份历史铺进 DOM —— 几百轮
+  // 之后切会话要重建上千个节点（含图片、工具卡片），Deck 上要卡好一两秒。
+  // 现在按需补渲染，和聊天软件的做法一致。
+  var HIST_PAGE = 50;
+  var histPending = null;   // 还没渲染的旧消息（history 回放时切下来的那一段）
+
   function trimMessages() {}
+
+  // 从待渲染队列里再往前放一批（保持原有顺序：插到当前第一条消息之前）
+  function histLoadOlder() {
+    var bar = document.getElementById('histMore');
+    if (!histPending || !histPending.length) {
+      if (bar) bar.remove();
+      return;
+    }
+    var take = Math.min(HIST_PAGE, histPending.length);
+    var slice = histPending.splice(histPending.length - take, take);
+    // 内容锚点：第一条不是「加载更早」那一行的节点
+    var anchor = bar ? bar.nextSibling : messages.firstChild;
+    var beforeH = messages.scrollHeight;
+    var frag = document.createDocumentFragment();
+    slice.forEach(function (m) { frag.appendChild(buildHistNode(m)); });
+    messages.insertBefore(frag, anchor);
+    // 顶上插内容会把视图顶下去：按插入的高度补偿滚动位置，视觉上停在原处
+    // （scrollHeight 的变化量 = 这批内容占的像素）
+    var grew = messages.scrollHeight - beforeH;
+    if (messages.scrollTop > 40 && grew > 0) messages.scrollTop += grew;
+    if (!histPending.length && bar) bar.remove();
+  }
+
+  // 把一条历史消息构造成节点（不直接挂进 messages，交给调用方决定位置）
+  function buildHistNode(m) {
+    var holder = document.createElement('div');
+    var realAppend = messages.appendChild;
+    // addMsg 只会往 messages 末尾 append；这里临时接住，改挂到 holder 上
+    messages.appendChild = function (node) {
+      holder.appendChild(node);
+      return node;
+    };
+    try {
+      addMsg(m.role === 'user' ? 'user' : 'assistant', m.brief || m.content, m.ts,
+             m.events, m.client, m.device);
+    } finally {
+      messages.appendChild = realAppend;
+    }
+    return holder.firstChild || holder;
+  }
 
   function addMsg(role, text, ts, events, client, device) {
     // 历史回放：事件与正文按「屏幕上出现过的顺序」串成一条时间线。
@@ -3417,6 +3467,21 @@
   // 键盘弹出时保持滚动到底部
   function scrollBottomSafe() {
     requestAnimationFrame(scrollBottom);
+  }
+
+  // 流式正文合帧：新到的字先攒进 streamTextPend，下一帧一次性写进 DOM 再滚到底
+  var streamFlushQueued = false;
+  var streamTextPend = '';
+  function streamFlushSoon() {
+    if (streamFlushQueued) return;
+    streamFlushQueued = true;
+    requestAnimationFrame(function () {
+      streamFlushQueued = false;
+      // 写之前再取一次 streamBody：这一帧里可能刚开始新一轮、壳子换掉了
+      if (streamBody && streamTextPend) streamBody.textContent += streamTextPend;
+      streamTextPend = '';
+      scrollBottom();
+    });
   }
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', scrollBottomSafe);
@@ -5345,11 +5410,16 @@
           messages.innerHTML = '';
           // 清空后必须重算按钮：否则切会话/新连接时，上一轮残留的终止态会一直挂着
           updateSendBtn();
-          (msg.messages || []).forEach(function (m) {
+          // 分页渲染：只画最近 HIST_PAGE 条，更早的挂在队列里，顶部按需补
+          var histList = (msg.messages || []).filter(function (m) {
             // 随提问附带的画面在历史里是一条独立的 content 数组消息（给模型看图用的），
             // 不是对话内容。以前把它当正文渲染，屏幕上就多出一条
             // 「[object Object][object Object]」的气泡
-            if (m.content && typeof m.content !== 'string') return;
+            return !(m.content && typeof m.content !== 'string');
+          });
+          var cut = Math.max(0, histList.length - HIST_PAGE);
+          histPending = histList.slice(0, cut);
+          histList.slice(cut).forEach(function (m) {
             // 用户消息也会带事件（截屏询问那一步附带的画面），
             // 只挂 assistant 的话，回放历史时提问里的图就丢了。
             // brief 是界面专用的短文案：截屏询问那套提示词一百多字，
@@ -5357,6 +5427,15 @@
             addMsg(m.role === 'user' ? 'user' : 'assistant', m.brief || m.content, m.ts,
                    m.events, m.client, m.device);
           });
+          if (histPending.length) {
+            var moreBar = document.createElement('button');
+            moreBar.id = 'histMore';
+            moreBar.className = 'menu-btn';
+            moreBar.style.cssText = 'align-self:center;margin:4px 0';
+            moreBar.textContent = '加载更早的 ' + histPending.length + ' 条';
+            moreBar.onclick = histLoadOlder;
+            messages.insertBefore(moreBar, messages.firstChild);
+          }
           // 崩溃补丁：后端被杀时最后一条正文可能只发到浏览器、没来得及写盘。
           // 本地缓存里若有一条服务端历史里没有的回复，补在末尾，避免「我的回复凭空消失」
           try {
@@ -5375,6 +5454,9 @@
               localStorage.removeItem('deckmeido_last_reply');
             }
           } catch (e) { /* 缓存损坏：忽略 */ }
+          // 补回的内容挂在末尾，得保证它在「加载更早」那一行之后
+          var hmBar = document.getElementById('histMore');
+          if (hmBar && messages.firstChild !== hmBar) messages.insertBefore(hmBar, messages.firstChild);
           // 更强的崩溃补丁：本轮屏幕上出现过的全部内容（含过渡正文与工具过程）。
           // 只在「服务端最后一条是用户消息」时启用——那说明这一轮的答复一个字都没写盘
           // （进程在第一次节流落盘前就被杀）。此时浏览器手里是唯一的一份完整内容。
@@ -5394,6 +5476,7 @@
             }
           } catch (e) { /* 缓存损坏：忽略 */ }
           // 重连后重建现场：残留的流式气泡/事件容器都指向已经不存在的这一轮
+          streamTextPend = '';
           streamEl = null; streamBody = null;
           liveBox = null; liveToolCount = 0; liveThoughtShown = 0; liveThought = null;
           askShown = 0;
@@ -5471,10 +5554,13 @@
             liveBox.appendChild(streamEl);
           }
           if (streamBody) {
-            streamBody.textContent += msg.text;
+            // 文字先攒着，到下一帧再一次性写进 DOM：后端已经按 40ms 合过一批，
+            // 一帧里仍可能进来好几条；后端合成的这批到这里再合一次，
+            // 重排次数就从「每条一次」降到「每帧一次」
+            streamTextPend += msg.text;
             turnCache.cur += msg.text;      // 屏幕上出现的每个字都记进本地缓存
             turnCacheSchedule();
-            scrollBottomSafe();
+            streamFlushSoon();
           }
           break;
         case 'thought_start':
@@ -5566,6 +5652,9 @@
               streamEl.parentNode.removeChild(streamEl);
             }
           }
+          // 还没写进 DOM 的那一批直接丢掉：这一段马上整段按最终正文重画，
+          // 再补上去就会重复一截
+          streamTextPend = '';
           streamEl = null; streamBody = null;
           // 最终正文就是本轮屏幕上出现过的内容：整段订正后立刻落一份到本地，
           // 作为「后端已落盘但页面还没来得及刷新」这一瞬间的兜底
@@ -5631,6 +5720,7 @@
               streamEl.parentNode.removeChild(streamEl);
             }
           }
+          streamTextPend = '';
           streamEl = null; streamBody = null;
           if (msg.question) liveBox.appendChild(makeTextBubble(msg.question, false));
           liveBox.appendChild(makeAskCard(msg.question, msg.options));
@@ -5669,6 +5759,7 @@
       // 断联时把忙碌态复位：旧逻辑保留 busy=true，发送键一直停在终止态，
       // 点了只会发 cancel（完全不发消息），主人看到的就是「按钮卡死」
       setBusy(false);
+      streamTextPend = '';
       streamEl = null; streamBody = null;
       liveBox = null; liveToolCount = 0; liveThoughtShown = 0; liveThought = null;
       if (suppressReconnect) return;
@@ -6373,6 +6464,7 @@
     // 流式容器也要清：不清的话半截气泡会一直挂着「流式中」的样式，
     // 而且下一轮的 delta 会往这个旧气泡里接着写，两轮正文混在一起。
     // 已生成的部分交给服务端的 assistant_message(cancelled) 落成正式回复
+    streamTextPend = '';
     streamEl = null; streamBody = null;
     liveBox = null; liveToolCount = 0; liveThoughtShown = 0; liveThought = null;
     askShown = 0;
@@ -7953,7 +8045,30 @@
   }, 500);
 
   // ---------- / 快捷命令 ----------
+  // 压缩上下文：先问后端「会压掉多少」，用户看到条数和 token 再决定
+  function compactContext() {
+    if (busy) { addSystem('正在执行任务，等这一轮结束再压缩'); return; }
+    var u = '/api/compact?token=' + encodeURIComponent(token);
+    fetch(u + '&preview=true', { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (p) {
+        if (!p.ok) { addSystem('压缩失败：' + (p.detail || '未知错误')); return; }
+        if (!p.count) { addSystem('对话还很短，无需压缩'); return; }
+        var msg = '将把 ' + p.count + '/' + p.total + ' 条旧消息（约 '
+          + p.tokens + ' token）压成摘要，最近 ' + (p.total - p.count)
+          + ' 条与当前这一轮完整保留，聊天记录不会消失。';
+        if (!window.confirm(msg + '\n\n要现在压缩吗？')) return;
+        return fetch(u, { method: 'POST' })
+          .then(function (r) { return r.json(); })
+          .then(function (r2) {
+            addSystem(r2.ok ? '压缩完成' : '压缩失败：' + (r2.detail || '未知错误'));
+          });
+      })
+      .catch(function (e) { addSystem('压缩请求失败：' + e); });
+  }
+
   var COMMANDS = [
+    { cmd: 'compact', label: '压缩上下文（先预览）', run: function () { compactContext(); } },
     { cmd: 'shot', label: '截屏并展示', run: function () { input.value = '截屏，把当前桌面画面展示给我'; } },
     { cmd: 'new', label: '新会话', run: function () { document.getElementById('btnNewSess').click(); } },
     { cmd: 'weather', label: '查天气（发送询问）', run: function () { input.value = '查一下现在上海的天气'; } }
