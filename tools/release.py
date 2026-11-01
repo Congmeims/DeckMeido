@@ -6,9 +6,8 @@
     python tools/release.py 0.4.1
 不带版本号时读 plugin/package.json 的 version。
 
-产物写到 dist/；
-上传逻辑复用 deploy_mirror.py，末尾会打印最新版号核对。
-设 RELEASE_NO_UPLOAD=1 只打包不上传（deploy_all.py 在服务器上就是这么用的）。
+产物写到 dist/，只打包不上传；
+上传镜像站用 tools/deploy_all.py。
 """
 import hashlib
 import json
@@ -174,12 +173,10 @@ def main():
     if audit.returncode != 0:
         sys.exit("发布包里有疑似凭据，已中止上传（见上面的列表）")
 
-    print("==> 上传镜像站")
-    # deploy_all.py 在服务器上只借它打包，产物由它自己拷贝，不需要再传一次
-    if os.environ.get("RELEASE_NO_UPLOAD"):
-        print("    RELEASE_NO_UPLOAD=1，跳过上传")
-    else:
-        subprocess.run([sys.executable, str(ROOT / "tools" / "deploy_mirror.py")], check=True)
+    print("==> 打包完成")
+    print(f"    {tar}")
+    print(f"    {z}")
+    print("    产物在 dist/，官网镜像站走 tools/deploy_all.py 上传")
 
     print("==> 核对线上版本")
     try:
