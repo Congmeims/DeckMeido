@@ -1361,6 +1361,8 @@ def get_status(gaming: bool | None = None) -> dict:
             "window": win,
             "percent": pct,
             "compact_at": round(COMPACT_RATIO * 100),
+            # 当前会话编号：顶栏胶囊上显示成 #xxxxxx，方便区分/回溯是哪个会话
+            "sid": store.current_sid,
             # 最近一次请求的前缀缓存命中率（DeepSeek 才有；别家是 0，
             # 前端据此决定要不要显示「缓存 xx%」）
             "cache": llm.cache_stats(),
@@ -4165,7 +4167,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
         重排一次整段气泡，Deck 上看着就是一卡一卡的。这里先攒进 _delta_buf，
         到 _DELTA_FLUSH_MS 再一次性发出；跨批次的边界不丢字（buffer 带锁）。
         """
-        nonlocal streaming
+        nonlocal streaming, thought_open
         stream_text.append(text)
         if not streaming:
             streaming = True
@@ -4184,13 +4186,24 @@ async def run_agent(events: list[dict], extra_system: str = "",
             pass
         # 前端按批渲染，这里把这一片先攒起来
         _flush_delta_later(turn_sid, text, _turn_tag())
+        # 开头已经说话了，就把思维链收尾。模型经常是「先吐一两句正文，再补一段
+        # reasoning」，如果只等本轮结束才发 thought_end，那段思考会挂到正文后面，
+        # 界面上看起来就像「答完了还在想」（最终答复末尾下面又冒出一堆思考行）
+        if thought_open:
+            flush_thought_now(turn_sid)
+            await manager.broadcast({"type": "thought_end", "ts": time.time(), **_turn_tag()})
+            thought_open = False
         # final=False：这段正文可能只是工具调用前的过渡话，前端不写进 crash 缓冲；
         # 本轮结束时会有一次带 final=True 的完整正文推送（内容相同）
 
     thought_open = False
+    # 每轮 LLM 调用前清零：这一轮的思维链是实时播出去的，还是只在最后一次性返回
+    thought_emitted = False
+    # 本轮实时播给前端的思考原文，收尾时用它判断「这段 reasoning 是不是已经播过了」
+    thought_live = []
 
     async def on_thought(text: str):
-        nonlocal thought_open
+        nonlocal thought_open, thought_emitted, thought_live
         if not thought_open:
             thought_open = True
             # 先切话题：正文字要排在思维链前面，不然顺序会乱
@@ -4198,6 +4211,9 @@ async def run_agent(events: list[dict], extra_system: str = "",
             await manager.broadcast({"type": "thought_start", "ts": time.time(), **_turn_tag()})
         # 思考阶段模型吐的片比正文还密（往往一个字一片），逐片广播最费前端
         _flush_thought_later(turn_sid, text, _turn_tag())
+        thought_live.append(text)
+        # 记录「这一轮思考已经实时给前端播过了」，收尾时不再往 events 补记
+        thought_emitted = True
 
     # 重试时重新开始思考：上一个半截思维链已经显示过，不补一个 thought_start
     # 的话新来的片段会接着拼到那块旧内容后面
@@ -4277,6 +4293,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 except Exception as e:
                     print(f"[DeckMeido] 工具轮中压缩失败，继续：{e}", file=sys.stderr)
 
+            thought_emitted = False
+            thought_live = []
             msg = await llm.chat_with_tools_stream(msgs, round_tools, on_delta=on_delta,
                                                    on_thought=on_thought,
                                                    on_retry=_reset_thought,
@@ -4303,8 +4321,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     msgs, [], on_delta=on_delta,
                     max_tokens=_output_budget(msgs, used_now))
                 more = (cont_msg.get("content") or "")
-                if cont_msg.get("reasoning_content"):
-                    events.append({"type": "thought", "text": cont_msg["reasoning_content"]})
+                # 续写阶段的思维链同样不能补记：正文已经流式播到屏幕上了，
+                # 这条 thought 追加到 events 里就排在本轮正文之后
                 msg = {"role": "assistant", "content": partial + more,
                        "finish_reason": cont_msg.get("finish_reason")}
                 if cont_msg.get("usage"):
@@ -4320,9 +4338,16 @@ async def run_agent(events: list[dict], extra_system: str = "",
             await manager.broadcast({"type": "status", "data": get_status()})
 
             # 思维链（reasoning_content，DeepSeek/Qwen 等支持）
+            # 只跳过「这一轮确实实时播过、且内容对得上」的那份：供应商不一定逐片
+            # 回调，有时整段只出现在最终响应里（on_thought 从没被调过），
+            # 那种情况必须照常记下来，否则长时间跑工具的那些轮次思考会整批消失。
+            # 也不能无条件追加：events 是有序流，此刻通常已越过工具块/过渡正文，
+            # 补进去就排到正文后面，界面上成了「话说完了还在想」
             reasoning = (msg.get("reasoning_content") or "").strip()
             if reasoning:
-                events.append({"type": "thought", "text": reasoning})
+                live = "".join(thought_live).strip()
+                if not (thought_emitted and live and (reasoning in live or live in reasoning)):
+                    events.append({"type": "thought", "text": reasoning})
 
             tool_calls = msg.get("tool_calls") or []
             # 每轮模型返回都记一笔：这一步到底动没动手、动了什么。

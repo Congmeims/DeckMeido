@@ -104,7 +104,30 @@ def _probe_kdotool() -> tuple[bool, str]:
     rc, out = _run(["kdotool", "getactivewindow"], env={"KDE_SESSION_VERSION": "6"})
     if rc == 0:
         return True, ""
-    return False, f"调用失败（{out.splitlines()[0][:60] if out else '无输出'}）"
+    return False, _explain_kdotool_err(out)
+
+
+def _explain_kdotool_err(out: str) -> str:
+    """把 kdotool 的原始报错翻译成「怎么了 + 怎么办」
+
+    kdotool 自己不干活，它把一段 JS 丢给 KWin 执行，KWin 那边出错时
+    会把脚本异常原样打回来，典型长这样：
+
+        ERROR: Script error: TypeError: Cannot read property 'intern' of undefined
+
+    这是 KWin 6.x 改脚本 API 之后新旧版本对不上（kdotool 读的字段没了），
+    跟用户的操作无关。直接把这段英文截断塞进灰字里，用户既看不懂也不知道该干什么，
+    所以这里按错误特征分开说。
+    """
+    low = (out or "").lower()
+    if "script error" in low or "typeerror" in low:
+        return "kdotool 与当前 KWin 版本不兼容（KWin 脚本报错），请升级 kdotool"
+    if "not activatable" in low or "no such file" in low or "serviceunknown" in low:
+        return "找不到 KWin 的 D-Bus 服务，可能不在 Plasma 桌面会话里"
+    if "not found" in low or "command not found" in low:
+        return "kdotool 无法执行"
+    first = (out or "").strip().splitlines()
+    return f"调用失败（{first[0][:60] if first else '无输出'}）"
 
 
 def _in_gamescope() -> bool:

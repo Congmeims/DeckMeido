@@ -1252,7 +1252,7 @@ install_plugin() {
 }
 
 # 用户跳过插件安装时，把发布包里的插件 zip 复制到工作区，并说明手动安装流程。
-# zip 由 make_release.sh 放进 deploy/deckmeido-plugin.zip（前端已编译，无需 npm）。
+# zip 由 release.py 放进插件 zip（前端已编译，无需 npm）。
 plugin_handoff_zip() {
   local src="$INSTALL_DIR/deploy/deckmeido-plugin.zip" ws dst
   if [ ! -f "$src" ]; then
@@ -1354,7 +1354,7 @@ EOS
 
 # 版本号写进安装目录，网页设置页与升级检查都读它
 write_version_file() {
-  # 发布包里带一份 VERSION（make_release.sh 按 tag 写入），tar 安装时没有
+  # 发布包里带一份 VERSION（release.py 按 tag 写入），tar 安装时没有
   # git 仓库，只能靠它；git 安装则用 describe，能反映「比 tag 多几个提交」
   local ver=""
   if [ -f "$HERE/VERSION" ]; then

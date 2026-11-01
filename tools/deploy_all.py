@@ -63,7 +63,7 @@ def main():
     ssh.run("command -v python3 || apt-get install -y python3", check=False)
     ssh.run("command -v zip || apt-get install -y zip", check=False)
     ssh.run(
-        f"cd /root/deckmeido_build/repo && bash tools/make_release.sh {VER}",
+        f"cd /root/deckmeido_build/repo && RELEASE_NO_UPLOAD=1 python3 tools/release.py {VER}",
         check=False,
     )
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 汇总离线依赖包到 deploy/deps/，供 make_release.sh 打进发布包。
+# 汇总离线依赖包到 deploy/deps/，供 release.py 打进发布包。
 #
 #   bash tools/fetch_offline_deps.sh
 #
@@ -51,4 +51,4 @@ done
 echo
 echo "共 $(find "$OUT" -maxdepth 1 -name '*.pkg.tar.zst' | wc -l) 个包，位置 $OUT"
 [ "$bad" = 0 ] || { echo "[!] 有包缺失或损坏，检查上面的输出"; exit 1; }
-echo "下一步：bash tools/make_release.sh <版本号>"
+echo "下一步：python tools/release.py <版本号>"

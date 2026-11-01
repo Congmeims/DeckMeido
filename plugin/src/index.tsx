@@ -717,14 +717,27 @@ function Content() {
   }, [page, ticket]);
 
   // LT / RT 翻页。（() => void）表示「听这个键但不拦截它」：
-  // 摇杆和方向键仍然照常滚动对话区，只是屏幕上任意位置按 LT/RT 都能换页
+  // 摇杆和方向键仍然照常滚动对话区，只是屏幕上任意位置按 LT/RT 都能换页。
+  // 整段包在 try 里：SteamClient.Input 在部分客户端版本上取属性就会抛，
+  // 拿不到就算了，面板不能因为翻页失灵而整个挂掉
   useEffect(() => {
     const prev = () => setPage((p) => (p > 0 ? p - 1 : p));
     const next = () => setPage((p) => (p < PAGES.length - 1 ? p + 1 : p));
-    const api = steamClient()?.Input as any;
-    const reg = api?.RegisterForControllerInputMessages?.(prev, next);
+    let reg: any = null;
+    try {
+      const api = steamClient()?.Input;
+      if (api && typeof api.RegisterForControllerInputMessages === "function") {
+        reg = api.RegisterForControllerInputMessages(prev, next);
+      }
+    } catch (e) {
+      logPadOrder(`LT/RT 绑定失败，翻页改用标签点按：${String(e)}`);
+    }
     return () => {
-      reg?.unregister?.();
+      try {
+        reg?.unregister?.();
+      } catch {
+        /* 解绑失败不影响卸载 */
+      }
     };
   }, []);
 
