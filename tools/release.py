@@ -25,9 +25,12 @@ ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
 
 ITEMS = [
-    "server", "client", "assets", "deploy", "tools", "plugin",
+    "server", "client", "assets", "deploy", "plugin",
     "requirements.txt", "requirements-gui.txt", "README.md", "install.sh",
 ]
+# tools/ 是仓库自用的运维脚本（连服务器的、打包的），不进发布包。
+# cli/ 里要是有给用户用的工具，单独列在这里
+EXTRA_DIRS = ["cli"]
 # 不进发布包的运行产物
 SKIP_ANY = {
     "server/config.toml", "server/sessions", "server/uploads",
@@ -44,7 +47,7 @@ def build_tarball(ver: str) -> Path:
     stage_root = Path(tempfile.mkdtemp(prefix="deckmeido-rel-"))
     stage = stage_root / name
     stage.mkdir(parents=True)
-    for item in ITEMS:
+    for item in ITEMS + [d for d in EXTRA_DIRS if (ROOT / d).is_dir()]:
         src = ROOT / item
         if not src.exists():
             continue
@@ -137,6 +140,15 @@ def main():
     shutil.copy2(ROOT / "install.sh", DIST / "install.sh")
     print(f"    {tar.name} {tar.stat().st_size // 1024} KB")
     print(f"    {z.name} {z.stat().st_size // 1024} KB")
+
+    # 发之前先查一遍包里有没有账号密码，命中就不上传
+    print("==> 凭据检查")
+    audit = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "audit_release.py"), ver],
+        cwd=ROOT, text=True, encoding="utf-8",
+    )
+    if audit.returncode != 0:
+        sys.exit("发布包里有疑似凭据，已中止上传（见上面的列表）")
 
     print("==> 上传镜像站")
     subprocess.run([sys.executable, str(ROOT / "tools" / "deploy_mirror.py")], check=True)

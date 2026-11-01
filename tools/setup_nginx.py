@@ -3,11 +3,13 @@
 """创建 meido.meagames.cn 的 nginx vhost 配置（HTTP80 + SSL 预留）。"""
 import os
 
+import os
+
 import paramiko
 
 HOST = os.environ.get("DEPLOY_HOST", "")
 PORT = int(os.environ.get("DEPLOY_PORT", "22"))
-USER = "root"
+USER = os.environ.get("DEPLOY_USER", "root")
 PASS = os.environ.get("DEPLOY_PASS", "")
 DOMAIN = "meido.meagames.cn"
 WEBROOT = f"/www/wwwroot/{DOMAIN}"
