@@ -2011,17 +2011,22 @@ async def _core_http(port: int, token: str, method: str, path: str,
 
 
 async def _core_status(port: int, token: str) -> dict:
-    """问一次后端自己的 /api/status，确认女仆核心活着（在不在、什么模式）"""
-    return await _core_http(port, token, "GET", "/api/status")
+    """问一次后端自己的 /api/status，确认女仆核心活着（在不在、什么模式）
+
+    get_status 是面板打开时第一个调用，Decky 会一直等着它返回，
+    超时太长时后端没起来的话整个 QAM 都像卡死，所以只给 2 秒。
+    """
+    return await _core_http(port, token, "GET", "/api/status", timeout=2.0)
 
 
 async def _core_prefs(port: int, token: str) -> dict:
-    """读后端的偏好项（语音播报、版本号），面板设置区要显示/切换这些"""
-    r = await _core_http(port, token, "GET", "/api/config")
+    """读后端的偏好项（语音播报、版本号、当前模型），面板设置区要显示/切换这些"""
+    r = await _core_http(port, token, "GET", "/api/config", timeout=2.0)
     if not r["ok"]:
-        return {"ok": False, "error": r.get("error", ""), "tts": False, "version": ""}
+        return {"ok": False, "error": r.get("error", ""), "tts": False, "version": "", "model": ""}
     d = r.get("data") or {}
-    return {"ok": True, "tts": bool(d.get("tts_enable")), "version": str(d.get("version") or "")}
+    return {"ok": True, "tts": bool(d.get("tts_enable")), "version": str(d.get("version") or ""),
+            "model": str(d.get("model") or "")}
 
 
 async def _session_post(what: str, path: str) -> dict:
@@ -2093,6 +2098,8 @@ class Plugin:
             # 设置区：语音播报开关（由后端 tts.enable 决定）与版本号（底部显示）
             "tts": bool(prefs.get("tts")),
             "version": str(prefs.get("version") or _PLUGIN_VERSION),
+            # 设置区：当前模型名，下拉菜单的首帧先显示它，再异步拉全量列表
+            "model": str(prefs.get("model") or ""),
             # 当前正在运行的游戏名：抓帧时会再查一次，这里给面板一个初值，
             # 让用户按「截屏询问」之前就能看到这一问会带上哪款游戏
             "game_name": (game.get("name") or ""),
@@ -2217,6 +2224,53 @@ class Plugin:
         data = r.get("data") or {}
         return {"ok": True, "text": str(data.get("text") or ""),
                 "default": str(data.get("default") or "")}
+
+    async def get_models(self, ticket: str = "") -> dict:
+        """当前模型 + 服务商可用模型列表，供面板上的下拉菜单用
+
+        列表要现场问服务商，网络差的时候十几秒没有回音，Decky 会把它看成
+        「插件卡死」并把整个 QAM 挂住。所以这里只读本机配置里的当前模型
+        （本机 HTTP，毫秒级），列表另走 refresh_models，前端异步拿。
+        """
+        _require(ticket, "get_models")
+        cfg = _load_server_cfg()
+        port = int(cfg.get("port", 18765))
+        token = str(cfg.get("token", "") or "").strip()
+        cur = await _core_http(port, token, "GET", "/api/config", timeout=3.0)
+        if not cur["ok"]:
+            return {"ok": False, "error": cur.get("error") or "读不到后端配置", "model": ""}
+        return {"ok": True, "model": str((cur.get("data") or {}).get("model") or "")}
+
+    async def refresh_models(self, ticket: str = "") -> dict:
+        """问服务商要模型列表：慢就放弃，让下拉菜单保持「只有当前模型」"""
+        _require(ticket, "refresh_models")
+        cfg = _load_server_cfg()
+        port = int(cfg.get("port", 18765))
+        token = str(cfg.get("token", "") or "").strip()
+        cur = await _core_http(port, token, "GET", "/api/config", timeout=3.0)
+        model = str((cur.get("data") or {}).get("model") or "") if cur["ok"] else ""
+        r = await _core_http(port, token, "GET", "/api/models", timeout=8.0)
+        if not r["ok"]:
+            return {"ok": False, "error": r.get("error") or "拉取模型列表失败", "model": model}
+        models = [str(m) for m in ((r.get("data") or {}).get("models") or []) if str(m).strip()]
+        # 当前模型不在列表里（手填的、或服务商不返回）也要能显示出来
+        if model and model not in models:
+            models.insert(0, model)
+        return {"ok": True, "model": model, "models": models}
+
+    async def set_model(self, model: str, ticket: str = "") -> dict:
+        """切模型：写回后端配置，下一个回合就生效"""
+        _require(ticket, "set_model")
+        name = str(model or "").strip()
+        if not name:
+            return {"ok": False, "error": "模型名不能为空"}
+        cfg = _load_server_cfg()
+        r = await _core_http(int(cfg.get("port", 18765)),
+                             str(cfg.get("token", "") or "").strip(),
+                             "POST", "/api/config", timeout=15.0, body={"model": name})
+        if not r["ok"]:
+            return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
+        return {"ok": True, "model": str((r.get("data") or {}).get("model") or name)}
 
     async def set_ask_template(self, text: str, ticket: str = "") -> dict:
         """改「截屏询问」的提示词模板：传空串表示恢复默认"""

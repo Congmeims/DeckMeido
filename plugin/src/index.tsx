@@ -1,6 +1,6 @@
 import { definePlugin, call, addEventListener, removeEventListener } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
-import { Navigation, PanelSection, PanelSectionRow, ButtonItem, TextField, ToggleField, Focusable } from "@decky/ui";
+import { Navigation, PanelSection, PanelSectionRow, ButtonItem, TextField, ToggleField, Focusable, DropdownItem } from "@decky/ui";
 import { GiTeapot } from "react-icons/gi";
 
 // 后端在不在、截图能不能用、代理走哪条路，由插件后端探测
@@ -27,6 +27,8 @@ type Status = {
   gamepad: boolean;
   // 设置区：语音播报（后端 tts.enable）
   tts: boolean;
+  // 设置区：当前模型名（下拉菜单首帧显示它，全量列表另外拉）
+  model: string;
   // 当前正在运行的游戏名（后端从 Steam 进程/日志读出），没在玩时为空
   game_name: string;
   // 底部显示：后端版本号，后端连不上时是插件自己的版本
@@ -103,6 +105,48 @@ const FAKE_BTN: React.CSSProperties = {
 
 const ERR_COLOR = "#e06c75";
 const DIM = "#8b929a";
+
+/**
+ * 分页标签条上的单个标签。选中的那个底色提亮、文字变亮，
+ * 一眼看出当前在哪一页，同时暗示左右两个方向还有别的页。
+ */
+const tabStyle = (active: boolean): React.CSSProperties => ({
+  flex: "1 1 0",
+  textAlign: "center",
+  padding: "5px 0",
+  fontSize: 12,
+  borderRadius: 2,
+  background: active ? "rgba(90,169,230,.28)" : "rgba(255,255,255,.06)",
+  color: active ? "#eaf2fb" : DIM,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+});
+
+/** 分页右侧的提示：告诉用户 LT/RT 能翻页，不然没人会去按 */
+const PAGE_HINT: React.CSSProperties = {
+  fontSize: 10,
+  color: "#6b7683",
+  textAlign: "right",
+  marginTop: 4,
+  lineHeight: 1.3,
+};
+
+/** 设置页里的分组标题：把设置项按层次分开，而不是一整坨 */
+function GroupTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        fontSize: 11,
+        letterSpacing: 1,
+        color: "#5aa9e6",
+        margin: "14px 0 6px",
+        textTransform: "uppercase",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
 
 /**
  * QAM 里渲染 markdown。后端给的是 markdown，网页端有 renderMd 处理，
@@ -295,6 +339,19 @@ const DEFAULT_ASK_TPL =
   "已经能从上图判断就不要搜索；最多搜 2 次，得到一个答案就停。\n" +
   "再总结成几条可以直接照做的步骤，200 字以内。\n" +
   "不要剧透：只讲眼前这一步怎么过，不要提前说后面的剧情、结局或其他关卡的解法。";
+
+// 「截图翻译」的提示词：和「截屏询问」共用同一条抓帧链路，只是问的内容不同。
+// 不走后端模板，翻译是固定诉求，没必要让用户去改
+const SHOT_TRANSLATE_TPL =
+  "把画面上的外文原文先照抄出来，再逐句翻译成简体中文。" +
+  "已经是中文就原样说明，不要翻译。\n" +
+  "只翻译、不解释剧情、不剧透，保持原文的换行和顺序。";
+
+const SHOT_TRANSLATE_BRIEF = "翻译画面上的文字";
+
+// 面板分页：LT 上一页 / RT 下一页。
+// 第一页放着「看一眼就问」的两个大按钮和对话记录，第二页专门打字，第三页是设置。
+const PAGES = ["询问", "输入", "设置"] as const;
 
 export default definePlugin(() => {
   return {
@@ -505,10 +562,14 @@ function Content() {
   // 当前这一轮正在做什么（后端 tool_activity 的原文），空表示还没开始动手
   const [activity, setActivity] = useState("");
   const [withShot, setWithShot] = useState(true);
-  // 设置区默认收起，点「设置」才展开
-  const [showSettings, setShowSettings] = useState(false);
+  // LT/RT 翻页：0 = 询问，1 = 输入，2 = 设置
+  const [page, setPage] = useState(0);
   // 语音播报的实际值以后端为准：status 回来后同步过来，切换时先乐观更新
   const [tts, setTts] = useState(false);
+  // 模型下拉：当前值 + 服务商可用列表（列表异步拉，拉不到就只显示当前模型）
+  const [model, setModel] = useState("");
+  const [modelList, setModelList] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
   // 「截屏询问」用的提示词模板，存在后端配置里（网页设置页改的也是这一份）
   const [askTpl, setAskTpl] = useState("");
   const [askTplEdit, setAskTplEdit] = useState("");
@@ -536,6 +597,7 @@ function Content() {
       const st = (await call<[], Status>("get_status")) as Status;
       setStatus(st);
       setTts(!!st.tts);
+      if (st.model) setModel(st.model);
       // 票据以后端为准：面板重挂载后本地是空的，这里补回来；
       // 后端说没解锁（插件重启过、票据过期）就把本地那张丢掉
       setTicket(st.ticket || "");
@@ -646,6 +708,24 @@ function Content() {
 
   useEffect(() => {
     refreshStatus();
+  }, []);
+
+  // 翻到设置页时拉一次模型列表：QAM 一开一关就重挂载，所以每次进页都拉，
+  // 免得模型在别处被换过后这里还显示旧列表
+  useEffect(() => {
+    if (page === 2 && ticket) void loadModels();
+  }, [page, ticket]);
+
+  // LT / RT 翻页。（() => void）表示「听这个键但不拦截它」：
+  // 摇杆和方向键仍然照常滚动对话区，只是屏幕上任意位置按 LT/RT 都能换页
+  useEffect(() => {
+    const prev = () => setPage((p) => (p > 0 ? p - 1 : p));
+    const next = () => setPage((p) => (p < PAGES.length - 1 ? p + 1 : p));
+    const api = steamClient()?.Input as any;
+    const reg = api?.RegisterForControllerInputMessages?.(prev, next);
+    return () => {
+      reg?.unregister?.();
+    };
   }, []);
 
   // 解锁后连上后端，把「所有端」的提问和回复一次拉回来；
@@ -907,6 +987,62 @@ function Content() {
     await runTurn(askTpl || DEFAULT_ASK_TPL, true, true, SHOT_ASK_BRIEF);
   };
 
+  /** 截图翻译：同一条抓帧链路，只是问的是「把画面上的字翻成中文」 */
+  const shotTranslate = async () => {
+    if (busyRef.current) return;
+    await runTurn(SHOT_TRANSLATE_TPL, true, true, SHOT_TRANSLATE_BRIEF);
+  };
+
+  /**
+   * 拉模型列表，分两步：
+   * 1. get_models 只读本机配置里的当前值，立刻返回 —— 下拉菜单先有东西显示；
+   * 2. refresh_models 才去问服务商，网络慢的时候可能要几秒，拉到了再补进菜单。
+   * 合成一个方法会让整页等在那条慢请求上，Decky 会把它当成卡死。
+   */
+  const loadModels = async () => {
+    if (loadingModels) return;
+    setLoadingModels(true);
+    try {
+      const r = (await call<[string], { ok: boolean; model?: string; error?: string }>(
+        "get_models",
+        ticket
+      )) as { ok: boolean; model?: string; error?: string };
+      if (r.ok && r.model) setModel(r.model);
+    } catch {
+      /* 当前模型拿不到就保持原样，不影响下面的列表拉取 */
+    }
+    try {
+      const r = (await call<[string], { ok: boolean; models?: string[]; error?: string }>(
+        "refresh_models",
+        ticket
+      )) as { ok: boolean; models?: string[]; error?: string };
+      if (r.ok) setModelList(r.models || []);
+    } catch {
+      /* 列表拉不到就只留当前模型，不弹错打断用户 */
+    } finally {
+      setLoadingModels(false);
+    }
+  };
+
+  /** 切模型：先按用户选的显示，后端拒绝再翻回去并提示 */
+  const changeModel = async (name: string) => {
+    const prev = model;
+    setModel(name);
+    try {
+      const r = (await call<[string, string], { ok: boolean; model?: string; error?: string }>(
+        "set_model",
+        name,
+        ticket
+      )) as { ok: boolean; model?: string; error?: string };
+      if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
+      setModel(r.model ?? name);
+      setError("");
+    } catch (e: any) {
+      setModel(prev);
+      setError(`切换模型失败：${String(e?.message ?? e)}`);
+    }
+  };
+
   /** 语音播报开关：先按用户点的显示，后端拒绝再翻回去并提示 */
   const toggleTts = async (v: boolean) => {
     setTts(v);
@@ -1047,233 +1183,292 @@ function Content() {
         </div>
       </PanelSectionRow>
 
-      {/* 放在按钮上面：抓帧那一分钟面板是收着的，回来第一眼就该看见进度和取消。
-          按钮下多留一点：它和下面的对话区之间原本只隔 row 的默认间距，
-          第一句话几乎贴着按钮，看着像挤在一起。
-          生成期间改成「思考中」并置灰：文字和点击都别再给出「还能再发一次」的暗示 */}
+      {/* 分页标签：LT / RT 翻页。点标签也能切，触摸板用户不用记按键 */}
       <PanelSectionRow>
-        <div style={{ paddingBottom: 6 }}>
-          <ButtonItem layout="below" onClick={busy ? undefined : shotAsk} disabled={busy}>
-            {busy ? `思考中…（${elapsed}s）` : "截屏询问"}
-          </ButtonItem>
+        <div style={{ width: "100%" }}>
+          <Focusable
+            style={{ display: "flex", gap: 6 }}
+            onActivate={() => {}}
+          >
+            {PAGES.map((name, i) => (
+              <div key={name} style={tabStyle(page === i)} onClick={() => setPage(i)}>
+                {name}
+              </div>
+            ))}
+          </Focusable>
+          <div style={PAGE_HINT}>LT / RT 翻页 · {page + 1}/{PAGES.length}</div>
         </div>
       </PanelSectionRow>
 
-      {/* 中断单独给一个出口：主按钮在生成期间已经不可点了，
-          想停下来的话就从这里走，否则面板上就没有能中止的地方了 */}
-      {busy && (
-        <PanelSectionRow>
-          <div role="button" onClick={cancel} style={{ width: "100%", ...FAKE_BTN }}>
-            中断这一轮
-          </div>
-        </PanelSectionRow>
-      )}
-
-      {/* 后端没起来时把「启动」放在最显眼的位置：不改什么设置就能用 */}
-      {status && !status.core_ok && (
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={startBackend} disabled={starting}>
-            {starting ? "正在启动后端…" : "启动后端"}
-          </ButtonItem>
-        </PanelSectionRow>
-      )}
-
-      {error && (
-        <PanelSectionRow>
-          <div style={{ ...CARD, color: ERR_COLOR, background: "rgba(224,108,117,.1)" }}>
-            {error}
-          </div>
-        </PanelSectionRow>
-      )}
-
-      {/* 画面静止时 gamescope 一帧都不吐，只有真人动一下摇杆才会重绘。
-          这里不做成报错（红色）：它不是故障，是等用户配合一下 */}
-      {pendingPoke && (
-        <PanelSectionRow>
-          <div style={{ ...CARD, display: "flex", flexDirection: "column", gap: 8 }}>
-            <div style={{ color: DIM }}>
-              画面静止，截不到图。随便动一下摇杆或触摸板，再点下面重新截。
-            </div>
-            <div
-              role="button"
-              onClick={() => {
-                if (busyRef.current) return;
-                const p = pendingPoke;
-                setPendingPoke(null);
-                // 原样再走一遍：话没变，用户不用重新打
-                void runTurn(p.text, true, p.hideQam, p.brief);
-              }}
-              style={{ width: "100%", ...FAKE_BTN }}
-            >
-              动好了，重新截图
-            </div>
-          </div>
-        </PanelSectionRow>
-      )}
-
-      <PanelSectionRow>
-        <Focusable
-          ref={scrollRef as any}
-          style={{ maxHeight: 330, overflowY: "auto", display: "block", padding: THREAD_PAD }}
-        >
-          {streaming && (
-            <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: 4 }}>
+      {/* ================= 第一页：询问 ================= */}
+      {page === 0 && (
+        <>
+          {/* 左右对半：左边问「怎么过」，右边把画面上的外文翻成中文。
+              两个按钮共用一次抓帧，动作都是「收面板 → 截图 → 带图问」 */}
+          <PanelSectionRow>
+            <div style={{ display: "flex", gap: 8, width: "100%", paddingBottom: 6 }}>
               <div
+                role="button"
+                onClick={busy ? undefined : shotAsk}
                 style={{
-                  ...CARD,
-                  margin: "0",
-                  padding: "5px 6px",
-                  maxWidth: "100%",
+                  flex: "1 1 0",
                   minWidth: 0,
-                  background: "rgba(255,255,255,.06)",
-                  borderLeft: "2px solid #5aa9e6",
+                  ...FAKE_BTN,
+                  background: "rgba(90,169,230,.22)",
+                  opacity: busy ? 0.5 : 1,
+                  cursor: busy ? "default" : "pointer",
                 }}
               >
-                <Md text={streaming} />
-                <span style={{ color: DIM }}>▍</span>
+                {busy ? `思考中…（${elapsed}s）` : "截图询问"}
+              </div>
+              <div
+                role="button"
+                onClick={busy ? undefined : shotTranslate}
+                style={{
+                  flex: "1 1 0",
+                  minWidth: 0,
+                  ...FAKE_BTN,
+                  background: "rgba(90,169,230,.10)",
+                  opacity: busy ? 0.5 : 1,
+                  cursor: busy ? "default" : "pointer",
+                }}
+              >
+                截图翻译
               </div>
             </div>
+          </PanelSectionRow>
+
+          {/* 中断单独给一个出口：主按钮在生成期间已经不可点了，
+              想停下来的话就从这里走，否则面板上就没有能中止的地方了 */}
+          {busy && (
+            <PanelSectionRow>
+              <div role="button" onClick={cancel} style={{ width: "100%", ...FAKE_BTN }}>
+                中断这一轮
+              </div>
+            </PanelSectionRow>
           )}
-          {/* 倒序：最新一条在最上面，进来不用先把列表拉到底。
-              正在生成的那条（streaming）排在最前，正好是「最新」的位置 */}
-          {items.slice().reverse().map((m, i) => {
-            // 一左一右：AI 在左、我说话在右，各带一条同色竖条，
-            // 扫一眼就知道哪句是谁说的
-            const mine = m.role === "user";
-            return (
-              <div
-                key={`${m.ts}-${i}`}
-                style={{
-                  display: "flex",
-                  justifyContent: mine ? "flex-end" : "flex-start",
-                  marginBottom: 4,
-                }}
-              >
+
+          {/* 后端没起来时把「启动」放在最显眼的位置：不改什么设置就能用 */}
+          {status && !status.core_ok && (
+            <PanelSectionRow>
+              <ButtonItem layout="below" onClick={startBackend} disabled={starting}>
+                {starting ? "正在启动后端…" : "启动后端"}
+              </ButtonItem>
+            </PanelSectionRow>
+          )}
+
+          {error && (
+            <PanelSectionRow>
+              <div style={{ ...CARD, color: ERR_COLOR, background: "rgba(224,108,117,.1)" }}>
+                {error}
+              </div>
+            </PanelSectionRow>
+          )}
+
+          {/* 画面静止时 gamescope 一帧都不吐，只有真人动一下摇杆才会重绘。
+              这里不做成报错（红色）：它不是故障，是等用户配合一下 */}
+          {pendingPoke && (
+            <PanelSectionRow>
+              <div style={{ ...CARD, display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ color: DIM }}>
+                  画面静止，截不到图。随便动一下摇杆或触摸板，再点下面重新截。
+                </div>
                 <div
-                  style={{
-                    ...CARD,
-                    // 气泡吃满整行宽度、左右内边距压到最小：QAM 只有 ~300px，
-                    // 每省下一点横向留白，一行就能多塞几个字
-                    margin: "0",
-                    padding: "5px 6px",
-                    // 去掉 82% 的宽度上限：那点留白换来的「左右区分」远不如多显示的字值钱
-                    maxWidth: "100%",
-                    minWidth: 0,
-                    background: mine ? "rgba(90,169,230,.14)" : "rgba(255,255,255,.06)",
-                    borderLeft: mine ? "2px solid transparent" : "2px solid #5aa9e6",
-                    borderRight: mine ? "2px solid #5aa9e6" : "2px solid transparent",
-                    textAlign: mine ? "right" : "left",
+                  role="button"
+                  onClick={() => {
+                    if (busyRef.current) return;
+                    const p = pendingPoke;
+                    setPendingPoke(null);
+                    // 原样再走一遍：话没变，用户不用重新打
+                    void runTurn(p.text, true, p.hideQam, p.brief);
                   }}
+                  style={{ width: "100%", ...FAKE_BTN }}
                 >
-                  {m.image && (
-                    // 这一轮附带的画面：以前只有模型看得到，屏幕上一直是空的
-                    <img
-                      src={m.image}
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        height: "auto",
-                        marginBottom: 4,
-                        borderRadius: 4,
-                      }}
-                    />
-                  )}
-                  <Md text={m.text} align={mine ? "right" : "left"} />
+                  动好了，重新截图
                 </div>
               </div>
-            );
-          })}
-          {!items.length && !streaming && (
-            <div style={{ ...CARD, color: DIM, textAlign: "center" }}>
-              聊天框空空如也，随便问点什么吧
-            </div>
+            </PanelSectionRow>
           )}
-        </Focusable>
-      </PanelSectionRow>
 
-      {/* 隔断：上面是可滚动的对话区，下面是输入区。没有这条线时，
-          消息滚到底会和「问问 Meido...」粘成一片，看不出哪块能滚。
-          上下各留 12px：紧贴着回复和输入框都显得挤 */}
-      <div
-        style={{
-          height: 1,
-          background: "rgba(255,255,255,.12)",
-          margin: "12px 0 12px",
-        }}
-      />
-
-      {/* 输入框单独一行 */}
-      <PanelSectionRow>
-        <TextField
-          value={input}
-          placeholder="问问 Meido..."
-          onChange={(e) => setInput(e.target.value)}
-        />
-      </PanelSectionRow>
-
-      {/* 发送单独一行：与输入框之间留一点距离。
-          生成期间置灰并写「思考中」：这一轮没答完之前不让再发，
-          免得上一轮还在跑、下一轮又压进去（后端会排队，界面上却分不清谁是谁） */}
-      <PanelSectionRow>
-        <div
-          role="button"
-          onClick={busy ? undefined : ask}
-          style={{
-            width: "100%",
-            marginTop: 6,
-            ...FAKE_BTN,
-            opacity: busy ? 0.5 : 1,
-            cursor: busy ? "default" : "pointer",
-          }}
-        >
-          {busy ? `思考中…（${elapsed}s）` : "发送"}
-        </div>
-      </PanelSectionRow>
-
-      {/* 隔断：输入区（输入框 + 发送）与下面的操作按钮之间 */}
-      <div
-        style={{ height: 1, background: "rgba(255,255,255,.12)", margin: "12px 0 12px" }}
-      />
-
-      {/* 新会话单独一行 */}
-      {status?.core_ok && !busy && (
-        <PanelSectionRow>
-          <div
-            role="button"
-            onClick={newing ? undefined : newSession}
-            style={{ width: "100%", ...FAKE_BTN, opacity: newing ? 0.5 : 1 }}
-          >
-            {newing ? "正在新建…" : "新会话"}
-          </div>
-        </PanelSectionRow>
+          <PanelSectionRow>
+            <Focusable
+              ref={scrollRef as any}
+              style={{ maxHeight: 330, overflowY: "auto", display: "block", padding: THREAD_PAD }}
+            >
+              {streaming && (
+                <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: 4 }}>
+                  <div
+                    style={{
+                      ...CARD,
+                      margin: "0",
+                      padding: "5px 6px",
+                      maxWidth: "100%",
+                      minWidth: 0,
+                      background: "rgba(255,255,255,.06)",
+                      borderLeft: "2px solid #5aa9e6",
+                    }}
+                  >
+                    <Md text={streaming} />
+                    <span style={{ color: DIM }}>▍</span>
+                  </div>
+                </div>
+              )}
+              {/* 倒序：最新一条在最上面，进来不用先把列表拉到底。
+                  正在生成的那条（streaming）排在最前，正好是「最新」的位置 */}
+              {items.slice().reverse().map((m, i) => {
+                // 一左一右：AI 在左、我说话在右，各带一条同色竖条，
+                // 扫一眼就知道哪句是谁说的
+                const mine = m.role === "user";
+                return (
+                  <div
+                    key={`${m.ts}-${i}`}
+                    style={{
+                      display: "flex",
+                      justifyContent: mine ? "flex-end" : "flex-start",
+                      marginBottom: 4,
+                    }}
+                  >
+                    <div
+                      style={{
+                        ...CARD,
+                        // 气泡吃满整行宽度、左右内边距压到最小：QAM 只有 ~300px，
+                        // 每省下一点横向留白，一行就能多塞几个字
+                        margin: "0",
+                        padding: "5px 6px",
+                        // 去掉 82% 的宽度上限：那点留白换来的「左右区分」远不如多显示的字值钱
+                        maxWidth: "100%",
+                        minWidth: 0,
+                        background: mine ? "rgba(90,169,230,.14)" : "rgba(255,255,255,.06)",
+                        borderLeft: mine ? "2px solid transparent" : "2px solid #5aa9e6",
+                        borderRight: mine ? "2px solid #5aa9e6" : "2px solid transparent",
+                        textAlign: mine ? "right" : "left",
+                      }}
+                    >
+                      {m.image && (
+                        // 这一轮附带的画面：以前只有模型看得到，屏幕上一直是空的
+                        <img
+                          src={m.image}
+                          style={{
+                            display: "block",
+                            width: "100%",
+                            height: "auto",
+                            marginBottom: 4,
+                            borderRadius: 4,
+                          }}
+                        />
+                      )}
+                      <Md text={m.text} align={mine ? "right" : "left"} />
+                    </div>
+                  </div>
+                );
+              })}
+              {!items.length && !streaming && (
+                <div style={{ ...CARD, color: DIM, textAlign: "center" }}>
+                  聊天框空空如也，随便问点什么吧
+                </div>
+              )}
+            </Focusable>
+          </PanelSectionRow>
+        </>
       )}
 
-      {/* 隔断：新会话与设置之间 */}
-      <div
-        style={{ height: 1, background: "rgba(255,255,255,.12)", margin: "12px 0 12px" }}
-      />
-
-      {/* 设置单独一行 */}
-      <PanelSectionRow>
-        <div
-          role="button"
-          onClick={() => setShowSettings((v) => !v)}
-          style={{ width: "100%", ...FAKE_BTN }}
-        >
-          设置
-        </div>
-      </PanelSectionRow>
-
-      {showSettings && (
+      {/* ================= 第二页：手动输入 ================= */}
+      {page === 1 && (
         <>
+          <GroupTitle>打字问</GroupTitle>
+          <PanelSectionRow>
+            <TextField
+              value={input}
+              placeholder="问问 Meido..."
+              onChange={(e) => setInput(e.target.value)}
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <div
+              role="button"
+              onClick={busy ? undefined : ask}
+              style={{
+                width: "100%",
+                marginTop: 6,
+                ...FAKE_BTN,
+                background: "rgba(90,169,230,.22)",
+                opacity: busy ? 0.5 : 1,
+                cursor: busy ? "default" : "pointer",
+              }}
+            >
+              {busy ? `思考中…（${elapsed}s）` : "发送"}
+            </div>
+          </PanelSectionRow>
+
+          {error && (
+            <PanelSectionRow>
+              <div style={{ ...CARD, color: ERR_COLOR, background: "rgba(224,108,117,.1)" }}>
+                {error}
+              </div>
+            </PanelSectionRow>
+          )}
+
+          <GroupTitle>这一轮</GroupTitle>
           <PanelSectionRow>
             <ToggleField
               label="带画面询问"
-              description="发送时抓当前游戏画面一起发给 AI；抓不到时这一轮自动退回纯文字"
+              description="发送时抓当前游戏画面一起发给 AI；抓不到时自动退回纯文字"
               checked={withShot}
               onChange={setWithShot}
             />
           </PanelSectionRow>
+          {busy && (
+            <PanelSectionRow>
+              <div role="button" onClick={cancel} style={{ width: "100%", ...FAKE_BTN }}>
+                中断这一轮
+              </div>
+            </PanelSectionRow>
+          )}
+          {status?.core_ok && !busy && (
+            <PanelSectionRow>
+              <div
+                role="button"
+                onClick={newing ? undefined : newSession}
+                style={{ width: "100%", ...FAKE_BTN, opacity: newing ? 0.5 : 1 }}
+              >
+                {newing ? "正在新建…" : "新会话"}
+              </div>
+            </PanelSectionRow>
+          )}
+        </>
+      )}
+
+      {/* ================= 第三页：设置 ================= */}
+      {page === 2 && (
+        <>
+          <GroupTitle>模型</GroupTitle>
+          <PanelSectionRow>
+            <DropdownItem
+              // 列表还没拉回来时只放当前模型，点开也不至于空白
+              rgOptions={(modelList.length ? modelList : [model].filter(Boolean)).map((m) => ({
+                data: m,
+                label: m,
+              }))}
+              selectedOption={model}
+              menuLabel="选择模型"
+              strDefaultLabel={loadingModels ? "加载中…" : "选择模型"}
+              disabled={!status?.core_ok}
+              onChange={(o) => {
+                if (o.data && o.data !== model) void changeModel(String(o.data));
+              }}
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <div
+              role="button"
+              onClick={loadModels}
+              style={{ width: "100%", ...FAKE_BTN, opacity: loadingModels ? 0.5 : 1 }}
+            >
+              {loadingModels ? "正在拉取…" : "刷新模型列表"}
+            </div>
+          </PanelSectionRow>
+
+          <GroupTitle>对话</GroupTitle>
           <PanelSectionRow>
             <ToggleField
               label="语音播报回复"
@@ -1285,8 +1480,8 @@ function Content() {
           <PanelSectionRow>
             {/* 「截屏询问」的提示词：默认就是「看我卡在哪一步…不要剧透，200 字以内」。
                 放在这里可以直接改，和网页设置页是同一份；清空保存即恢复默认 */}
-            <div style={{ marginTop: 12 }}>
-              <div style={{ color: "#dcdedf", fontSize: 14, marginBottom: 8 }}>
+            <div style={{ marginTop: 4 }}>
+              <div style={{ color: "#dcdedf", fontSize: 12, marginBottom: 6 }}>
                 截屏询问的提示词{status?.game_name ? `（当前游戏：${status.game_name}）` : ""}
               </div>
               <TextField
@@ -1296,7 +1491,7 @@ function Content() {
             </div>
           </PanelSectionRow>
           <PanelSectionRow>
-            <div style={{ display: "flex", gap: 8, width: "100%", marginTop: 8 }}>
+            <div style={{ display: "flex", gap: 8, width: "100%", marginTop: 4 }}>
               <div role="button" onClick={saveAskTpl} style={{ flex: "1 1 0", ...FAKE_BTN }}>
                 保存提示词
               </div>
@@ -1309,9 +1504,16 @@ function Content() {
               </div>
             </div>
           </PanelSectionRow>
-          <div
-            style={{ height: 1, background: "rgba(255,255,255,.12)", margin: "12px 0 12px" }}
-          />
+
+          {error && (
+            <PanelSectionRow>
+              <div style={{ ...CARD, color: ERR_COLOR, background: "rgba(224,108,117,.1)" }}>
+                {error}
+              </div>
+            </PanelSectionRow>
+          )}
+
+          <GroupTitle>维护</GroupTitle>
           <PanelSectionRow>
             <div
               role="button"
@@ -1326,7 +1528,7 @@ function Content() {
               {restarting ? "正在重启…" : "重启核心"}
             </div>
           </PanelSectionRow>
-          </>
+        </>
       )}
 
       <div

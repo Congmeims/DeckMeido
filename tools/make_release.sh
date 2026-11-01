@@ -6,6 +6,7 @@
 # 产物：dist/deckmeido-<版本>.tar.gz
 #       dist/deckmeido-<版本>.tar.gz.sha256（也汇总进 dist/SHA256SUMS）
 #       dist/latest.json   镜像站/客户端查最新版用，指向本次打的包
+#       dist/deckmeido-plugin-<版本>.zip    Decky 插件（前端已编译，用户无需 npm）
 #
 # 包内额外带两个文件：
 #   VERSION        安装时 install.sh 优先读它写进安装目录
@@ -75,6 +76,28 @@ if compgen -G "$ROOT/deploy/deps/*.pkg.tar.zst" > /dev/null; then
   mkdir -p "$STAGE/$NAME/deploy/deps"
   cp "$ROOT"/deploy/deps/*.pkg.tar.zst "$STAGE/$NAME/deploy/deps/"
   echo "已并入离线依赖：$(ls "$STAGE/$NAME/deploy/deps" | wc -l) 个包"
+fi
+
+# ---- Decky 插件 zip 包 ----
+# 插件前端（dist/index.js）在打开发包时一并编译好，用户不需要 npm。
+# 两个产物：
+#   1. dist/deckmeido-plugin-<版本>.zip —— 放到 GitHub Release / 镜像站，与 tar.gz 平级，
+#      给用户单独下载、手动装到 Decky Loader 用。
+#   2. 包内 deploy/deckmeido-plugin.zip —— 固定名，随 tar.gz 一起分发，
+#      install.sh 在用户跳过插件安装时把它放到工作区，方便之后自选安装。
+PLUGIN_NAME="deckmeido-plugin-${VER}"
+if [ -f "$ROOT/plugin/dist/index.js" ]; then
+  (
+    cd "$ROOT/plugin"
+    zip -qr "$OUT/$PLUGIN_NAME.zip" main.py plugin.json dist
+  )
+  PLUGIN_SHA="$(sha256sum "$OUT/$PLUGIN_NAME.zip" | awk '{print $1}')"
+  echo "$PLUGIN_SHA  $PLUGIN_NAME.zip" > "$OUT/$PLUGIN_NAME.zip.sha256"
+  echo "已生成 $OUT/$PLUGIN_NAME.zip"
+  # 固定名副本塞进安装包，install.sh 跳过插件安装时复制到工作区
+  cp "$OUT/$PLUGIN_NAME.zip" "$STAGE/$NAME/deploy/deckmeido-plugin.zip"
+else
+  echo "跳过插件 zip：plugin/dist/index.js 不存在，先 cd plugin && npm run build"
 fi
 
 tar -C "$STAGE" -czf "$OUT/$NAME.tar.gz" "$NAME"
