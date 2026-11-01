@@ -165,8 +165,8 @@ bash /tmp/dm.sh from-mirror
 镜像站也可以直接下包手动安装（地址里带版本号，换版本要改文件名）：
 
 ```bash
-curl -fLO https://meido.meagames.cn/deckmeido/deckmeido-0.2.0.tar.gz
-tar -xzf deckmeido-0.2.0.tar.gz && cd deckmeido-0.2.0 && bash install.sh
+curl -fLO https://meido.meagames.cn/deckmeido/deckmeido-0.3.0.tar.gz
+tar -xzf deckmeido-0.3.0.tar.gz && cd deckmeido-0.3.0 && bash install.sh
 ```
 
 脚本会：建虚拟环境 → 装依赖（含 PySide6，pip 自动挑最快的国内源，装失败自动换源）→ 生成配置 → 清理旧的 `deckmeido.service` 与占用端口的残留后端 → 装好应用菜单与桌面快捷方式 → 自动启动客户端（后端由客户端拉起），最后打印带令牌的访问地址。
@@ -176,8 +176,8 @@ tar -xzf deckmeido-0.2.0.tar.gz && cd deckmeido-0.2.0 && bash install.sh
 GitHub Release 里也有同样的包，文件名带版本号，所以链接里必须写具体版本号：
 
 ```bash
-curl -fLO https://github.com/Congmeims/deckmeido/releases/download/v0.2.0/deckmeido-0.2.0.tar.gz
-tar -xzf deckmeido-0.2.0.tar.gz && cd deckmeido-0.2.0 && bash install.sh
+curl -fLO https://github.com/Congmeims/deckmeido/releases/download/v0.3.0/deckmeido-0.3.0.tar.gz
+tar -xzf deckmeido-0.3.0.tar.gz && cd deckmeido-0.3.0 && bash install.sh
 ```
 
 也可以用同一页面上的 `SHA256SUMS` 先核对包是否完整：
@@ -219,16 +219,16 @@ bash ~/deckmeido/uninstall.sh --purge   # 连配置与工作区一起删
 ```bash
 bash ~/deckmeido/install.sh from-mirror     # 从镜像站拉最新版覆盖
 # 或者 git 安装时切到指定版本
-cd ~/deckmeido && git fetch --tags && git checkout v0.2.0 && bash install.sh upgrade
+cd ~/deckmeido && git fetch --tags && git checkout v0.3.0 && bash install.sh upgrade
 ```
 
 ### 发布到镜像站
 
-`bash tools/make_release.sh v0.2.0` 会产出 `dist/` 下的 tarball、`.sha256`、`SHA256SUMS`、`latest.json` 和 `install.sh`，按原样 rsync 到镜像目录即可（客户端读 `latest.json` 判断有没有新版）：
+`bash tools/make_release.sh v0.3.0` 会产出 `dist/` 下的 tarball、`.sha256`、`SHA256SUMS`、`latest.json` 和 `install.sh`，按原样 rsync 到镜像目录即可（客户端读 `latest.json` 判断有没有新版）：
 
 ```bash
-bash tools/make_release.sh v0.2.0
-rsync -av dist/latest.json dist/SHA256SUMS dist/install.sh dist/deckmeido-0.2.0.tar.gz* \
+bash tools/make_release.sh v0.3.0
+rsync -av dist/latest.json dist/SHA256SUMS dist/install.sh dist/deckmeido-0.3.0.tar.gz* \
       user@meido.meagames.cn:/var/www/deckmeido/
 ```
 
