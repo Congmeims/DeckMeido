@@ -16,11 +16,30 @@ import secrets
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 SESSIONS_DIR = BASE_DIR / "sessions"
 SESSIONS_DIR.mkdir(exist_ok=True)
+
+# 所有会话 IO 都排在这一个线程里跑。
+# 以前 read_text / write_text / os.replace 直接躺在事件循环里：Deck 的 eMMC
+# 抖动一下就是几十上百毫秒，这期间 WebSocket 收发、/api/* 全部停摆，
+# 表现就是「流式输出一顿」「心跳超时被判成掉线」。
+# 单线程而不是线程池，是为了天然保住「同一时刻只有一次写」——
+# 临时文件名相同、读-改-写的先后顺序，都靠这点串行来保证。
+_IO = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sess-io")
+
+
+def io_submit(fn, *args):
+    """把一次磁盘操作丢给 IO 线程，返回 Future（调用方不关心结果就忽略它）"""
+    return _IO.submit(fn, *args)
+
+
+def io_pending() -> int:
+    """还没开始跑的写任务数（用来判断「内存里的东西是不是已经在磁盘上」）"""
+    return _IO._work_queue.qsize()  # noqa: SLF001  标准库没有公开接口
 
 
 class SessionStore:
@@ -53,6 +72,19 @@ class SessionStore:
         # 压缩游标 {sid: {"summary": str, "upto": int}}：
         # 只压缩「发给模型的上下文」，绝不删界面历史
         self.compact_map: dict[str, dict] = {}
+        # 会话的创建时间：{sid: created}。以前 write_session 为了拿它在内存里
+        # 把整份文件读回来（读→写），收尾时再读一遍再写一遍，一轮要过两遍盘。
+        # 现在读会话文件时顺手记一笔，写的时候直接用。
+        self.created_map: dict[str, float] = {}
+        # 每个会话最近一次写入的内容指纹 {sid: (time.time(), len(history))}。
+        # clear_stream 靠它判断「文件里是不是已经没有可清的 _streaming」，
+        # 有就不必再整份读、整份写一遍
+        self.wrote_map: dict[str, tuple[float, int]] = {}
+        # 侧栏索引 {sid: {id,title,updated,messages}}，启动时由 load_index 填充
+        self._index: dict[str, dict] = {}
+        # 已经往 IO 队列里发过「整份写入」的会话。流式落盘以磁盘为底时要用它：
+        # 没发过整份写入就说明磁盘上可能还没有这个文件，那份流式写不能去读空文件
+        self.flushed_sids: set[str] = set()
 
     # ---------- 代次与轮次 ----------
 
@@ -136,86 +168,193 @@ class SessionStore:
         内存里的 history 才是唯一真相：用户删除、编辑、重排都发生在它上面，
         它写什么磁盘就存什么。真正需要防的只是「拿空历史覆盖掉有内容的文件」，
         那是启动时序上的竞态，不是合并能解决的问题——留着那道空写保护即可。
+
+        IO 已移到单线程 _IO 里：内存状态（标题、创建时间、写入指纹）当场定下来，
+        真正的读写排队执行。写盘失败只打日志，不再抛给调用方 —— 调用方在事件
+        循环里，等不到这个异常，看到了也只能吞掉。
         """
         with self.lock:
             if sid in self.deleted_sids:
                 # 会话已删除：迟到的落盘一律作废，否则等于把删掉的会话又变出来
                 return
-            p = self.sess_path(sid)
-            created = None
-            old_n = 0
-            old_hist: list[dict] = []
-            if p.exists():
-                try:
-                    old = json.loads(p.read_text(encoding="utf-8"))
-                    created = old.get("created")
-                    old_hist = old.get("history") or []
-                    old_n = len(old_hist)
-                except Exception as e:
-                    # 解析失败不能当成「磁盘是空的」：下面的空写保护会因此失效，
-                    # 内存恰好为空时就把整份历史覆盖掉了。留档后照常写入新内容
-                    print(f"[DeckMeido] 会话 {sid} 读取失败（{e}），按新内容覆盖",
-                          file=sys.stderr)
-                    try:
-                        p.rename(p.with_name(f"{p.name}.broken-{int(time.time())}"))
-                    except OSError:
-                        pass
-                    created, old_n, old_hist = None, 0, []
-
-            # 内存为空 = 刚建的新会话 / 启动时序竞态，绝不能拿空内容覆盖磁盘
-            if not hist and old_n > 0:
-                print(f"[DeckMeido] 拒绝空写入：会话 {sid} 磁盘有 {old_n} 条，"
-                      f"内存为空，保持磁盘内容不变", file=sys.stderr)
-                return
-
-            data = {"id": sid, "created": created or time.time(), "updated": time.time(),
-                    "history": hist}
+            data = {"id": sid, "created": self.created_map.get(sid) or time.time(),
+                    "updated": time.time(), "history": hist}
             set_title(data, hist)
             # 压缩游标必须一起落盘：否则重启后模型重新吃到全量历史，
             # 白白撑爆上下文窗口，又要再压缩一遍
             comp = self.compact_for(sid)
             if comp["upto"] or comp["summary"]:
                 data["compact"] = comp
-            # 原子写：先写临时文件再 replace。直接 write_text 覆盖时如果进程被杀/连接中断，
-            # 会留下半个 JSON，下次解析失败就等于整轮对话丢了
-            tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
-            try:
-                tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-                os.replace(tmp, p)
-            except Exception:
+            self.created_map[sid] = data["created"]
+            # 指纹里带上这次写入的 updated：_write_streaming 不更新它，
+            # clear_stream 据此就能分辨「文件里有没有流式残留」
+            self.wrote_map[sid] = (data["updated"], len(hist))
+            created = data["created"]
+        io_submit(self._write_file, sid, data, created)
+        # 记一笔「这个会话已经发过整份写入」：随后来的流式落盘据此决定
+        # 能不能以磁盘为底（那条写入一定排在它前面跑完），见 main._write_streaming
+        with self.lock:
+            self.flushed_sids.add(sid)
+
+    def _write_file(self, sid: str, data: dict, created: float,
+                    stamp: float | None = None) -> None:
+        """真正的磁盘写入（在 IO 线程里跑）
+
+        原子写：先写临时文件再 replace。直接 write_text 覆盖时如果进程被杀或
+        连接中断，会留下半个 JSON，下次解析失败就等于整轮对话丢了。
+        空写保护在这里就地检查：读到了磁盘上的旧条数，而这次什么都没写，
+        说明是启动时序竞态，宁可跳过也不能把磁盘内容抹掉。
+        """
+        try:
+            with self.lock:
+                if sid in self.deleted_sids:
+                    return
+                p = self.sess_path(sid)
+                if not data.get("history") and self._disk_count(sid, p) > 0:
+                    print(f"[DeckMeido] 拒绝空写入：会话 {sid} 磁盘有 "
+                          f"{self._disk_count(sid, p)} 条，内存为空，保持磁盘内容不变",
+                          file=sys.stderr)
+                    return
+                body = json.dumps(data, ensure_ascii=False)
+                # 临时文件名带 pid：万一还有别的进程（旧的孤儿后端）在写同一份会话，
+                # 至少不会互相踩坏对方正在写的临时文件
+                tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
                 try:
-                    tmp.unlink()
-                except OSError:
-                    pass
-                raise
+                    tmp.write_text(body, encoding="utf-8")
+                    os.replace(tmp, p)
+                except Exception:
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
+                    raise
+                self._index_put(sid, data)
+        except Exception as e:
+            print(f"[DeckMeido] 会话 {sid} 落盘失败：{e}", file=sys.stderr)
+
+    def _disk_count(self, sid: str, p: Path) -> int:
+        """磁盘上这个会话有几条历史（读失败按 0 算，让写入继续）"""
+        try:
+            return len(json.loads(p.read_text(encoding="utf-8")).get("history") or [])
+        except Exception:
+            return 0
+
+    def _index_put(self, sid: str, data: dict) -> None:
+        """更新侧栏索引（每个会话一行，正文不进索引）"""
+        with self.lock:
+            self._index[sid] = {"id": sid,
+                                "title": data.get("title") or "会话",
+                                "updated": data.get("updated") or time.time(),
+                                "messages": len(data.get("history") or [])}
+            self._index_save()
+
+    def _index_save(self) -> None:
+        """把当前索引落盘（调用方已持有锁）"""
+        try:
+            tmp = SESSIONS_DIR / f".index.{os.getpid()}.tmp"
+            tmp.write_text(json.dumps(list(self._index.values()), ensure_ascii=False),
+                           encoding="utf-8")
+            os.replace(tmp, SESSIONS_DIR / "index.json")
+        except Exception:
+            pass
 
     def read_session(self, sid: str) -> dict:
-        """读一个会话文件，读不到/解析失败返回空 dict"""
-        p = self.sess_path(sid)
-        if not p.exists():
-            return {}
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+        """读一个会话文件，读不到/解析失败返回空 dict
 
-    def rewrite_session(self, sid: str, data: dict) -> None:
-        """把改过的会话 dict 原子写回（锁内调用方已持有锁也可以）
-
-        写失败不吞掉：调用方（清 _streaming、改标题）需要知道没写成功，
-        否则会以为已经落盘，下次启动又恢复出重复内容。
+        返回值里带 `_from_disk_mtime`（文件修改时间）：调用方据此判断
+        「磁盘上的内容和内存里的是不是同一份」，避免多余的整份重写。
         """
         p = self.sess_path(sid)
-        tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
         try:
-            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, p)
+            mtime = p.stat().st_mtime
+        except OSError:
+            return {}
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        if data.get("created"):
+            with self.lock:
+                self.created_map.setdefault(sid, float(data["created"]))
+        data["_from_disk_mtime"] = mtime
+        return data
+
+    def rewrite_session(self, sid: str, data: dict) -> None:
+        """把改过的会话 dict 原子写回（同步版，供启动阶段使用）
+
+        运行期间请走 io_submit(self.rewrite_file, ...)，否则又会阻塞事件循环。
+        """
+        with self.lock:
+            self._write_file(sid, data, data.get("created") or time.time())
+
+    def rewrite_file(self, sid: str, data: dict) -> None:
+        """把改过的会话 dict 写回（在 IO 线程里跑）"""
+        self._write_file(sid, data, data.get("created") or time.time())
+
+    def mark_written(self, sid: str) -> None:
+        """把写入指纹的 updated 推到当前时刻
+
+        用在「本次落拍之后旧数据可视为过期」的场合（如判断 _streaming 残留）：
+        磁盘 mtime 的精度可能比这里记的时间粗，差几毫秒就会被误判成「文件更新了」，
+        于是整份白读一遍。
+        """
+        with self.lock:
+            cur = self.wrote_map.get(sid)
+            if cur:
+                self.wrote_map[sid] = (time.time(), cur[1])
+
+    def index(self):
+        """侧栏索引：{sid: {id,title,updated,messages}}"""
+        return self._index
+
+    def load_index(self) -> None:
+        """启动时读一次 index.json；缺失就从会话文件补建（老版本没这个文件）"""
+        path = SESSIONS_DIR / "index.json"
+        items: list[dict] = []
+        try:
+            items = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            items = []
+        if isinstance(items, list) and items:
+            self._index = {str(i.get("id")): i for i in items if i.get("id")}
+            return
+        # 没有索引（首次升级到这个版本）：扫一遍会话文件重建。
+        # 只做一次，之后每次落盘都会顺带更新
+        for p in SESSIONS_DIR.glob("*.json"):
+            if p.name == "index.json":
+                continue
             try:
-                tmp.unlink()
-            except OSError:
-                pass
-            raise
+                d = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            sid = d.get("id") or p.stem
+            if d.get("created"):
+                self.created_map.setdefault(sid, float(d["created"]))
+            self._index[sid] = {"id": sid, "title": d.get("title") or "会话",
+                                "updated": d.get("updated") or 0,
+                                "messages": len(d.get("history") or [])}
+        try:
+            path.write_text(json.dumps(list(self._index.values()), ensure_ascii=False),
+                            encoding="utf-8")
+        except Exception:
+            pass
+
+    def index_drop(self, sid: str) -> None:
+        """会话被删：从索引里摘掉并重写索引文件（删除是低频操作，同步写没问题）"""
+        with self.lock:
+            self._index.pop(sid, None)
+            self.created_map.pop(sid, None)
+            self.wrote_map.pop(sid, None)
+            self.flushed_sids.discard(sid)
+            self._index_save()
+
+    def index_put_mem(self, sid: str, title: str, updated: float, messages: int) -> None:
+        """只更新内存里的索引（改标题这类小改动，落盘交给会话文件那次写入）"""
+        with self.lock:
+            self._index[sid] = {"id": sid, "title": title or "会话",
+                                "updated": updated, "messages": messages}
 
 
 store = SessionStore()

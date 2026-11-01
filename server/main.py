@@ -28,6 +28,7 @@ from .llm import LLMClient
 from . import depcheck, memory, persona, power, prompts, singleton, tools, updater
 from .session_store import set_title as _set_title
 from .session_store import store
+from . import session_store
 from .session_store import SESSIONS_DIR as _sessions_dir
 from .tts import TTS
 
@@ -738,36 +739,43 @@ def _write_streaming(sid: str, text: str, parts: list[dict] | None = None) -> No
       {"type":"text","content":...}  ← 助手正文段
       {"type":"event","event":{...}} ← 思维链 / 工具时间线
     只存 text 的话，一轮里先说话、再调工具、再说一段的，中途被杀就只剩最后一段。
+
+    真正的读写在 IO 线程里排队执行（见 session_store._IO）：这里只把
+    「文件里应该是什么样」算好交出去，回调所在的事件循环不会被磁盘拖住。
+    顺序由单线程 IO 队列保证：先是用户消息那次整份写入，再是这次带 _streaming 的写。
     """
     with store.lock:
         if sid in store.deleted_sids:
             return
-        p = store.sess_path(sid)
-        data: dict = {}
-        if p.exists():
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                data = {}
-        data.setdefault("id", sid)
-        data.setdefault("title", "新会话")
-        data.setdefault("created", time.time())
-        data.setdefault("history", [])
-        _set_title(data, data.get("history") or [])
+        # 用户消息那次整份写入可能还排在队列里没跑（首轮尤其常见）。
+        # 这时磁盘上根本没有这个文件，按「磁盘为底」读会读空，成品只剩 _streaming、
+        # 没有 history —— 用户那一问当场就丢了。只有已经发过整份写入的会话
+        # 才能以磁盘为底（那条一定排在本任务前面跑完）
+        full_sent = sid in store.flushed_sids
+        created = store.created_map.get(sid) or time.time()
+        data = {"id": sid, "title": "新会话", "created": created, "history": []}
         data["updated"] = time.time()
         data["_streaming"] = {"text": text, "ts": time.time(),
                               "parts": list(parts or [])}
-        # 临时文件名带 pid：万一还有别的进程（旧的孤儿后端）在写同一份会话，
-        # 至少不会互相踩坏对方正在写的临时文件
-        tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
-        try:
-            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, p)
-        except Exception:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+
+    def _job() -> None:
+        """IO 线程里跑：以磁盘上的那份为底，只换掉 _streaming 和 updated"""
+        with store.lock:
+            if sid in store.deleted_sids:
+                return
+            cur = store.read_session(sid) if full_sent else {}
+            if cur:
+                cur.pop("_from_disk_mtime", None)
+                cur.pop("_streaming", None)
+                cur["updated"] = data["updated"]
+                cur["_streaming"] = data["_streaming"]
+            else:
+                # 文件还没落盘（用户消息那次写还在排队）：用内存里的骨架顶上，
+                # 整份写入紧接着也会到，两边都带同一个 created
+                cur = dict(data)
+            store.rewrite_file(sid, cur)
+
+    session_store.io_submit(_job)
 
 
 def _stream_would_flush(text: str, sid: str = "") -> bool:
@@ -830,6 +838,9 @@ def _snapshot_parts(events: list[dict], tail_text: str = "") -> list[dict]:
 _DELTA_FLUSH_MS = 40
 # sid -> {"buf": [片段], "task": asyncio.Task|None, "tag": dict}
 _delta_pend: dict[str, dict] = {}
+# 思维链单独的攒批：sid -> {"buf": [片段], "task": 定时器, "tag": dict}
+# 和正文分开，是因为两类消息在事件流里是交错的，同一个 buffer 会把顺序搅乱
+_thought_pend: dict[str, dict] = {}
 
 
 def _flush_delta(sid: str) -> None:
@@ -859,6 +870,46 @@ def _flush_delta_later(sid: str, text: str, tag: dict) -> None:
             _DELTA_FLUSH_MS / 1000, _flush_delta, sid)
 
 
+def _flush_thought(sid: str) -> None:
+    """把攒下的思维链片段一次性广播出去"""
+    st = _thought_pend.get(sid)
+    if not st:
+        return
+    st["task"] = None
+    text = "".join(st["buf"])
+    st["buf"].clear()
+    if not text:
+        return
+    asyncio.create_task(manager.broadcast(
+        {"type": "thought_delta", "text": text, **st["tag"]}))
+
+
+def _flush_thought_later(sid: str, text: str, tag: dict) -> None:
+    """收一片思维链，攒够 40ms 就发（理由同正文合批：模型思考时片又小又密）"""
+    st = _thought_pend.get(sid)
+    if st is None:
+        st = _thought_pend[sid] = {"buf": [], "task": None, "tag": tag}
+    st["tag"] = tag
+    st["buf"].append(text)
+    if st["task"] is None:
+        st["task"] = asyncio.get_running_loop().call_later(
+            _DELTA_FLUSH_MS / 1000, _flush_thought, sid)
+
+
+def flush_thought_now(sid: str = "") -> None:
+    """立刻把攒着的思维链推出去（思维链结束、切到正文前必须调）"""
+    sid = sid or store.turn.get("sid") or store.current_sid
+    st = _thought_pend.pop(sid, None)
+    if not st:
+        return
+    if st["task"] is not None:
+        st["task"].cancel()
+    text = "".join(st["buf"])
+    if text:
+        asyncio.create_task(manager.broadcast(
+            {"type": "thought_delta", "text": text, **st["tag"]}))
+
+
 def flush_delta_now(sid: str = "") -> None:
     """立刻把攒着的正文推出去。
 
@@ -879,18 +930,47 @@ def flush_delta_now(sid: str = "") -> None:
 
 
 def clear_stream(sid: str = "") -> None:
-    """正文已正式落盘，把残留的 _streaming 字段清掉"""
+    """正文已正式落盘，把残留的 _streaming 字段清掉
+
+    大多数时候根本不用清：收尾的整份写入本来就不带 _streaming，而它和这次调用
+    紧挨着，IO 队列里通常还在排队。此时磁盘上（或即将写下）的内容已经没有流式
+    残留，再读一遍、再写一遍纯属浪费——以前一轮收尾因此要过两遍盘。
+    只有「整份写入早就落完、之后又写过一次流式正文」才真有残留，
+    这时才需要一次读-删-写。
+    """
     sid = sid or store.turn.get("sid") or store.current_sid
     _stream_bufs.pop(sid, None)
-    with store.lock:
-        if sid in store.deleted_sids:
-            return
-        data = store.read_session(sid)
-        if not data:
-            return
-        if not data.pop("_streaming", None):
-            return
-        store.rewrite_session(sid, data)
+
+    def _job() -> None:
+        """IO 线程里跑：一看磁盘上还有没有残留，有才读-删-写。
+
+        判断必须在 IO 线程里做：排队中的整份写入会先执行，执行完
+        wrote_map 就被更新（不再带 _streaming），这里据此直接返回。
+        在事件循环里提前判断反而会误判成「有残留」而多写一遍。
+        """
+        with store.lock:
+            if sid in store.deleted_sids:
+                return
+            p = store.sess_path(sid)
+            try:
+                stamp = p.stat().st_mtime
+            except OSError:
+                return
+            # 时间戳取当前时刻而不是写完那一刻：磁盘时间戳的精度可能比
+            # 这里记的时间粗，差个几毫秒就会被判成「文件更新了」而白读一遍。
+            # 此刻之前落盘的写入一定覆盖了磁盘内容，之后落盘的都排在本次后面
+            if store.wrote_map.get(sid, (0.0,))[0] >= stamp:
+                store.mark_written(sid)
+                return
+            data = store.read_session(sid)
+            if not data:
+                return
+            data.pop("_from_disk_mtime", None)
+            if not data.pop("_streaming", None):
+                return
+            store.rewrite_file(sid, data)
+
+    session_store.io_submit(_job)
 
 
 _UPLOAD_RE = re.compile(r"!\[[^\]]*\]\((/uploads/[^\s)]+\.(?:png|jpe?g|webp))\)", re.I)
@@ -1009,7 +1089,9 @@ def _img_ref_content(text: str):
 def init_sessions():
     """启动时恢复最近的会话；没有历史则创建默认会话"""
     global _ctx_used
-    files = sorted(SESSIONS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # index.json 是侧栏索引，不是会话：不排除掉的话它会被当成一个坏文件反复改名
+    files = sorted((p for p in SESSIONS_DIR.glob("*.json") if p.name != "index.json"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
     if not files:
         save_current_session()
         return
@@ -1104,6 +1186,9 @@ def init_sessions():
 
 _load_initial_sessions = init_sessions
 _init_sessions = init_sessions
+# 侧栏索引要先建好：/api/sessions 只读它，不建就是空列表。
+# 放在 init_sessions 之前：恢复会话时写的那个文件会顺带把索引补齐一次
+store.load_index()
 _init_sessions()
 
 # 消息 feed（供原生客户端轮询同步，增量拉取）
@@ -1758,11 +1843,14 @@ async def api_fs(req: _FsReq):
         return {"ok": False, "error": "不允许对根目录/家目录执行此操作"}
 
     try:
+        # 这几个操作都是同步阻塞的，而 copytree / rmtree 碰上大目录能跑上几十秒。
+        # 直接写在 async 函数里，整段时间事件循环是停的：流式输出断掉、心跳发不出去、
+        # 其它接口全部排队。丢进线程池跑，循环照常转
         if op == "delete":
             if p.is_dir() and not p.is_symlink():
-                shutil.rmtree(p)
+                await asyncio.to_thread(shutil.rmtree, p)
             else:
-                p.unlink(missing_ok=True)
+                await asyncio.to_thread(p.unlink, missing_ok=True)
         elif op == "mkdir":
             # path 是父目录，path2 是目录名
             name = (req.path2 or "").strip()
@@ -1777,12 +1865,12 @@ async def api_fs(req: _FsReq):
                 return {"ok": False, "error": "目标已存在"}
             p2.parent.mkdir(parents=True, exist_ok=True)
             if op == "rename" or op == "move":
-                shutil.move(str(p), str(p2))
+                await asyncio.to_thread(shutil.move, str(p), str(p2))
             else:
                 if p.is_dir():
-                    shutil.copytree(p, p2)
+                    await asyncio.to_thread(shutil.copytree, p, p2)
                 else:
-                    shutil.copy2(p, p2)
+                    await asyncio.to_thread(shutil.copy2, p, p2)
         else:
             return {"ok": False, "error": "未知操作"}
     except FileNotFoundError:
@@ -3091,14 +3179,30 @@ async def _summarize_title(sid: str, first_user_text: str) -> None:
         return
     if not title or sid in store.deleted_sids:
         return
-    data = store.read_session(sid)
-    if not data:
-        return
-    data["title"] = title
-    try:
-        store.rewrite_session(sid, data)
-    except Exception:
-        return
+
+    # 读-改-写整份会话只为改个标题太亏，整段丢给 IO 线程：
+    # 索引先在内存里更新（侧栏马上能看到新标题），文件那头排着队改。
+    def _job() -> None:
+        with store.lock:
+            if sid in store.deleted_sids:
+                return
+            data = store.read_session(sid)
+            if not data:
+                return
+            data.pop("_from_disk_mtime", None)
+            data["title"] = title
+            # 顺带刷新 updated：标题是这一轮结束才总结出来的，
+            # 用旧时间排序会让刚聊完的会话沉到侧栏底部
+            data["updated"] = time.time()
+            store.rewrite_file(sid, data)
+            hist = data.get("history") or []
+            store.index_put_mem(sid, title, data["updated"], len(hist))
+
+    session_store.io_submit(_job)
+    _now = time.time()
+    store.index_put_mem(sid, title, _now,
+                        len(store.history) if sid == store.current_sid
+                        else (store.index().get(sid) or {}).get("messages") or 0)
     if sid == store.current_sid:
         await manager.broadcast({"type": "session_changed", "current": sid})
     else:
@@ -3231,14 +3335,13 @@ async def api_open_file(req: OpenFileReq):
 
 @app.get("/api/sessions", dependencies=[Depends(check_token)])
 async def api_sessions():
-    items = []
-    for p in sorted(SESSIONS_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
-        try:
-            d = json.loads(p.read_text(encoding="utf-8"))
-            items.append({"id": d.get("id", p.stem), "title": d.get("title", "会话"),
-                          "updated": d.get("updated", 0), "messages": len(d.get("history", []))})
-        except Exception:
-            continue
+    """侧栏列表：只读索引，不再把每个会话文件整份解析一遍
+
+    以前会话一多，切会话 / 删会话（各端都会重拉这个接口）要解析几 MB JSON，
+    而且全在事件循环里。索引只存四行字段，落盘时顺带更新。
+    """
+    items = sorted(store.index().values(), key=lambda d: d.get("updated") or 0,
+                   reverse=True)
     return {"current": store.current_sid, "items": items}
 
 
@@ -3290,7 +3393,9 @@ async def api_session_switch(req: SwitchReq):
         raise HTTPException(status_code=404, detail="session not found")
     save_current_session()
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        # 整份会话可能有几 MB，读盘同样不能压在事件循环里
+        body = await asyncio.to_thread(p.read_text, encoding="utf-8")
+        data = json.loads(body)
     except Exception as e:
         # 文件坏了就明确拒绝：以前这里直接抛 500，前端只能笼统提示「切换失败」，
         # 而用户看到的是会话列表里明明有这一条
@@ -3404,10 +3509,14 @@ async def api_session_delete(sid: str):
     # 先拉黑再删文件：反过来的话，删完到拉黑之间那一瞬间的落盘（流式回调）
     # 就能把文件写回来，等于白删
     store.deleted_sids.add(sid)
+    # 删除是低频操作，但这里要「等」而不是「发出去就走」：删完到 IO 线程真正执行
+    # 之间的那一小段里若有落盘排队，文件就会被写回来，等于白删。等它又不该卡住事件循环，
+    # 所以用 to_thread 把 .result() 挪到线程里
+    await asyncio.to_thread(session_store.io_submit(store.index_drop, sid).result)
     p = _sess_path(sid)
     if p.exists():
         try:
-            p.unlink()
+            await asyncio.to_thread(session_store.io_submit(p.unlink).result)
         except OSError as e:
             store.deleted_sids.discard(sid)
             raise HTTPException(status_code=500, detail=f"删除失败：{e}")
@@ -3417,17 +3526,18 @@ async def api_session_delete(sid: str):
         # 真的一个都不剩了才新建（且标题带时间，不再和别的「新会话」重名）
         store.bump_epoch()
         store.turn["active"] = False
-        rest = []
-        for f in sorted(SESSIONS_DIR.glob("*.json"),
-                        key=lambda x: x.stat().st_mtime, reverse=True):
-            try:
-                d = json.loads(f.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if (d.get("id") or f.stem) in store.deleted_sids:
-                continue
-            rest.append(d)
-        nxt = next((d for d in rest if d.get("history")), None)
+        # 候选顺序按索引里的 updated（比 stat 每个文件便宜得多），
+        # 真正要恢复的那一份才读文件
+        cand = [i["id"] for i in sorted(store.index().values(),
+                                        key=lambda d: d.get("updated") or 0,
+                                        reverse=True)
+                if i.get("messages") and i["id"] not in store.deleted_sids]
+        nxt = None
+        for cand_sid in cand:
+            d = await asyncio.to_thread(session_store.io_submit(store.read_session, cand_sid).result)
+            if d.get("history"):
+                nxt = d
+                break
         if nxt is None:
             store.current_sid = _fresh_sid()
             store.history = []
@@ -3473,9 +3583,13 @@ async def api_checkpoint():
             flushed = True
     except Exception:
         pass
-    # 只刷「还没落盘的流式正文」，不要拿内存 history 覆盖文件：
-    # 用户消息在 handle_chat 开头就落盘了，正文在收尾时落盘，内存里的东西不比文件新。
-    # 反过来覆盖一次就可能把文件里的历史冲掉（内存为空/偏旧时会直接清空会话）。
+    # 写盘已经丢给 IO 线程排队了，这里要等它真的落完再放客户端走，
+    # 否则 SIGTERM 一到，排队中的那一次写入就跟着一起没了。
+    # 等待要放到线程里：这一等最长 5 秒，直接在事件循环里等就别想再处理任何请求了
+    try:
+        await asyncio.to_thread(session_store.io_submit(lambda: None).result, 5)
+    except Exception:
+        pass
     return {"ok": True, "flushed": flushed, "sid": store.current_sid,
             "turns": len(store.history)}
 
@@ -4079,9 +4193,19 @@ async def run_agent(events: list[dict], extra_system: str = "",
         nonlocal thought_open
         if not thought_open:
             thought_open = True
+            # 先切话题：正文字要排在思维链前面，不然顺序会乱
             flush_delta_now(turn_sid)
             await manager.broadcast({"type": "thought_start", "ts": time.time(), **_turn_tag()})
-        await manager.broadcast({"type": "thought_delta", "text": text, **_turn_tag()})
+        # 思考阶段模型吐的片比正文还密（往往一个字一片），逐片广播最费前端
+        _flush_thought_later(turn_sid, text, _turn_tag())
+
+    # 重试时重新开始思考：上一个半截思维链已经显示过，不补一个 thought_start
+    # 的话新来的片段会接着拼到那块旧内容后面
+    def _reset_thought() -> None:
+        nonlocal thought_open
+        flush_thought_now(turn_sid)
+        thought_open = False
+        _thought_pend.pop(turn_sid, None)
 
     def _output_budget(used_msgs: list[dict], used: int | None = None) -> int:
         """按当前上下文剩余空间算出本次调用的输出上限。
@@ -4155,8 +4279,12 @@ async def run_agent(events: list[dict], extra_system: str = "",
 
             msg = await llm.chat_with_tools_stream(msgs, round_tools, on_delta=on_delta,
                                                    on_thought=on_thought,
+                                                   on_retry=_reset_thought,
                                                    max_tokens=_output_budget(msgs, used_now))
             if thought_open:
+                # 先把手里的思考片段推完，再发 thought_end，否则尾部几个字会
+                # 落在 thought_end 之后，前端那块已经收起来了，看起来就是「思考末尾丢字」
+                flush_thought_now(turn_sid)
                 await manager.broadcast({"type": "thought_end", "ts": time.time(), **_turn_tag()})
                 thought_open = False
 
