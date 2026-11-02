@@ -11,11 +11,18 @@
 from __future__ import annotations
 
 import errno
+import os
 import socket
 import sys
+import time
 
 # 允许第二个实例接管：自检脚本/重启流程里偶尔需要临时探测一下
 ENV_BYPASS = "DECKMEIDO_ALLOW_SECOND_BACKEND"
+
+# 本进程的启动标识，随 /ws 的 history 一起发给前端。
+# 前端用它区分「后端进程重启了」（缓存补回有意义）和「只是链路闪断重连」
+# （这一轮还在后端跑着，缓存补回只会把同一段内容再贴一遍）
+BOOT_ID = f"{os.getpid():x}-{int(time.time() * 1000):x}"
 
 
 def already_serving(port: int, host: str = "127.0.0.1", timeout: float = 0.6) -> bool:

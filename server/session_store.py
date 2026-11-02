@@ -31,6 +31,33 @@ SESSIONS_DIR.mkdir(exist_ok=True)
 # 临时文件名相同、读-改-写的先后顺序，都靠这点串行来保证。
 _IO = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sess-io")
 
+# 会话文件的副档案后缀：主文件只有 {id,created,updated,title,history,compact}，
+# 流式正文和文件指纹存在旁边的这个单独文件里。
+# 为什么单独存：一轮回答要落几十上百次半截正文（每 0.6 秒一次），
+# 以前每次都「把整份会话读出来 → 换掉 _streaming 字段 → 整份写回」，
+# 200 轮以上的会话一轮下来就是几百次「读几 MB + 写几 MB」，Deck 的 eMMC
+# 和那条单 IO 线程全被拖满，表现就是流式输出一顿一顿的。
+# 拆出去以后流式落盘只写这一个几 KB 到几十 KB 的小文件，与主文件大小无关。
+_SIDE_SUFFIX = ".side.json"
+
+
+def _side_path(p: Path) -> Path:
+    return p.with_name(p.stem + _SIDE_SUFFIX)
+
+
+def _atomic_write(p: Path, body: str) -> None:
+    """原子写：先写临时文件再 replace，进程中途被杀也不会留下半个 JSON"""
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(body, encoding="utf-8")
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
 
 def io_submit(fn, *args):
     """把一次磁盘操作丢给 IO 线程，返回 Future（调用方不关心结果就忽略它）"""
@@ -76,14 +103,15 @@ class SessionStore:
         # 把整份文件读回来（读→写），收尾时再读一遍再写一遍，一轮要过两遍盘。
         # 现在读会话文件时顺手记一笔，写的时候直接用。
         self.created_map: dict[str, float] = {}
-        # 每个会话最近一次写入的内容指纹 {sid: (time.time(), len(history))}。
-        # clear_stream 靠它判断「文件里是不是已经没有可清的 _streaming」，
-        # 有就不必再整份读、整份写一遍
+        # 每个会话最近一次整份写入的指纹 {sid: (updated, len(history))}。
+        # 目前只用于侧栏索引与排障，不再参与「有没有 _streaming 残留」的判断
+        # （流式正文已经搬到副档案，清理就是删一个文件）
         self.wrote_map: dict[str, tuple[float, int]] = {}
         # 侧栏索引 {sid: {id,title,updated,messages}}，启动时由 load_index 填充
         self._index: dict[str, dict] = {}
-        # 已经往 IO 队列里发过「整份写入」的会话。流式落盘以磁盘为底时要用它：
-        # 没发过整份写入就说明磁盘上可能还没有这个文件，那份流式写不能去读空文件
+        # 待落盘的索引定时器（防抖用，见 _index_schedule）
+        self._index_timer: threading.Timer | None = None
+        # 已经往 IO 队列里发过「整份写入」的会话（记录性信息，流式落盘不再依赖它）
         self.flushed_sids: set[str] = set()
 
     # ---------- 代次与轮次 ----------
@@ -186,13 +214,11 @@ class SessionStore:
             if comp["upto"] or comp["summary"]:
                 data["compact"] = comp
             self.created_map[sid] = data["created"]
-            # 指纹里带上这次写入的 updated：_write_streaming 不更新它，
-            # clear_stream 据此就能分辨「文件里有没有流式残留」
+            # 指纹里带上这次写入的 updated（排障用：能看出最近一次整份写入是什么时候）
             self.wrote_map[sid] = (data["updated"], len(hist))
             created = data["created"]
         io_submit(self._write_file, sid, data, created)
-        # 记一笔「这个会话已经发过整份写入」：随后来的流式落盘据此决定
-        # 能不能以磁盘为底（那条写入一定排在它前面跑完），见 main._write_streaming
+        # 记一笔「这个会话已经发过整份写入」（排障用：能一眼看出磁盘上是否已有文件）
         with self.lock:
             self.flushed_sids.add(sid)
 
@@ -218,19 +244,53 @@ class SessionStore:
                 body = json.dumps(data, ensure_ascii=False)
                 # 临时文件名带 pid：万一还有别的进程（旧的孤儿后端）在写同一份会话，
                 # 至少不会互相踩坏对方正在写的临时文件
-                tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
-                try:
-                    tmp.write_text(body, encoding="utf-8")
-                    os.replace(tmp, p)
-                except Exception:
-                    try:
-                        tmp.unlink()
-                    except OSError:
-                        pass
-                    raise
+                _atomic_write(p, body)
                 self._index_put(sid, data)
         except Exception as e:
             print(f"[DeckMeido] 会话 {sid} 落盘失败：{e}", file=sys.stderr)
+
+    # ---------- 流式正文副档案 ----------
+    #
+    # 一轮回答的「屏幕上已出现过什么」每 0.6 秒落一次。这部分以前写在主文件的
+    # _streaming 字段里，每次都要整份读、整份写 —— 开销和会话长度成正比，
+    # 200 轮以后一轮回答就能把 IO 线程堵死。现在它单独存一份：
+    #   {id, updated, _streaming:{text, ts, parts}}
+    # 主文件只在真正收尾时写一次，两次之间的所有流式落盘都只碰这个小文件。
+
+    def write_stream_side(self, sid: str, stamp: float, streaming: dict) -> None:
+        """把半截正文写进副档案（在 IO 线程里跑）
+
+        不读主文件：调用方已经把要存的内容算好了，这里纯粹是一次小文件覆盖写。
+        """
+        with self.lock:
+            if sid in self.deleted_sids:
+                return
+            p = _side_path(self.sess_path(sid))
+            _atomic_write(p, json.dumps({"id": sid, "updated": stamp,
+                                         "_streaming": streaming}, ensure_ascii=False))
+
+    def read_stream_side(self, sid: str) -> dict:
+        """读副档案里的 _streaming（没有或损坏返回空 dict）
+
+        启动恢复、收尾清理都要用它替代原来那个「整份读主文件再取字段」的动作。
+        """
+        p = _side_path(self.sess_path(sid))
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        stream = data.get("_streaming")
+        return stream if isinstance(stream, dict) else {}
+
+    def drop_stream_side(self, sid: str) -> None:
+        """删掉副档案：正式内容已经落进主文件，这份半截正文没有意义了"""
+        with self.lock:
+            try:
+                _side_path(self.sess_path(sid)).unlink()
+            except OSError:
+                pass
 
     def _disk_count(self, sid: str, p: Path) -> int:
         """磁盘上这个会话有几条历史（读失败按 0 算，让写入继续）"""
@@ -240,21 +300,44 @@ class SessionStore:
             return 0
 
     def _index_put(self, sid: str, data: dict) -> None:
-        """更新侧栏索引（每个会话一行，正文不进索引）"""
+        """更新侧栏索引（每个会话一行，正文不进索引）
+
+        只在内存里改，并约一次延迟合并写：以前每写一次会话文件就同步重写一次
+        index.json —— 一轮对话里「用户消息 + 收尾」至少两次，和会话写入叠在
+        同一条 IO 线程上，纯属重复劳动。这里改成 2 秒内的多次改动合并成一次。
+        """
         with self.lock:
             self._index[sid] = {"id": sid,
                                 "title": data.get("title") or "会话",
                                 "updated": data.get("updated") or time.time(),
                                 "messages": len(data.get("history") or [])}
-            self._index_save()
+        self._index_schedule()
+
+    def _index_schedule(self) -> None:
+        """安排一次索引落盘（同一时刻最多挂一个，防抖 2 秒）"""
+        with self.lock:
+            if self._index_timer is not None:
+                return
+            t = threading.Timer(2.0, self._index_save)
+            t.daemon = True
+            self._index_timer = t
+            t.start()
+
+    def flush_index(self) -> None:
+        """立即把索引落盘（进程退出前用；正常路径走延迟合并）"""
+        with self.lock:
+            if self._index_timer is not None:
+                self._index_timer.cancel()
+                self._index_timer = None
+        self._index_save()
 
     def _index_save(self) -> None:
-        """把当前索引落盘（调用方已持有锁）"""
+        """把当前索引落盘（线程安全；可在 IO 线程或定时器线程里跑）"""
+        with self.lock:
+            self._index_timer = None
+            body = json.dumps(list(self._index.values()), ensure_ascii=False)
         try:
-            tmp = SESSIONS_DIR / f".index.{os.getpid()}.tmp"
-            tmp.write_text(json.dumps(list(self._index.values()), ensure_ascii=False),
-                           encoding="utf-8")
-            os.replace(tmp, SESSIONS_DIR / "index.json")
+            _atomic_write(SESSIONS_DIR / "index.json", body)
         except Exception:
             pass
 
@@ -323,7 +406,7 @@ class SessionStore:
         # 没有索引（首次升级到这个版本）：扫一遍会话文件重建。
         # 只做一次，之后每次落盘都会顺带更新
         for p in SESSIONS_DIR.glob("*.json"):
-            if p.name == "index.json":
+            if p.name == "index.json" or p.name.endswith(_SIDE_SUFFIX):
                 continue
             try:
                 d = json.loads(p.read_text(encoding="utf-8"))
@@ -348,7 +431,7 @@ class SessionStore:
             self.created_map.pop(sid, None)
             self.wrote_map.pop(sid, None)
             self.flushed_sids.discard(sid)
-            self._index_save()
+        self._index_save()
 
     def index_put_mem(self, sid: str, title: str, updated: float, messages: int) -> None:
         """只更新内存里的索引（改标题这类小改动，落盘交给会话文件那次写入）"""

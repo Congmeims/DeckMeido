@@ -18,11 +18,35 @@ _LAST_CACHE = {"hit": 0, "prompt": 0, "at": 0.0}
 
 
 def _body_size(payload: dict) -> int:
-    """算出这次请求体的字符数（不序列化到网络，只做量尺）"""
+    """粗算这次请求体的字符数（只做量尺，不真的序列化一遍）
+
+    以前这里对整个 payload 做 json.dumps：长会话一压缩完、上下文里挂着一张
+    几 MB 的 base64 图，每次请求都要再完整序列化一遍几千万字符，而 httpx 发车时
+    还要序列化第二次。两份同时活着，Deck 的内存和 CPU 都吃不消。量尺只需要一个
+    数量级，逐字段累加就够了。
+    """
     global _LAST_BODY
+    total = 0
+
+    def walk(v) -> None:
+        nonlocal total
+        if isinstance(v, str):
+            total += len(v)
+        elif isinstance(v, dict):
+            for k, x in v.items():
+                total += len(str(k)) + 4
+                walk(x)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                walk(x)
+                total += 1
+        else:
+            total += 8
+
     try:
-        _LAST_BODY = len(json.dumps(payload, ensure_ascii=False))
-    except (TypeError, ValueError):
+        walk(payload)
+        _LAST_BODY = total
+    except Exception:
         _LAST_BODY = 0
     return _LAST_BODY
 

@@ -2595,6 +2595,9 @@
 
   // 当前会话号（会话列表加载后回填）。提前声明：WS 消息回调里要用它做过期判定
   var currentSid = null;
+  // 后端进程的启动标识（history 消息里的 boot）。变了 = 后端重启过，
+  // 没变 = 只是 WebSocket 断了一下，这一轮还在跑，不该走缓存补回
+  var lastBoot = '';
   // 手动终止后的静默窗口：这段时间内不因 status.running 重新点亮终止态
   var cancelGuardUntil = 0;
   // 属于「某一轮对话」的消息类型：这些才需要按会话号过滤
@@ -4666,6 +4669,9 @@
   // 结束后停留多久开始消散，消散动画本身 0.9s
   var TERM_DIE_DELAY = 5000;
   var TERM_DIE_ANIM = 900;
+  // 长时间跑、又一直没输出的命令（sleep、等下载、轮询服务）挂满一屏会把有用的
+  // 那几条挤出视野，所以先静音等这么久；到点还没有任何输出就自己收成一行
+  var TERM_QUIET_MS = 4000;
 
   function termStatusText(it) {
     if (it.running) return '<span class="st run">执行中<span class="tm-dots"><i></i><i></i><i></i></span></span>';
@@ -4742,6 +4748,8 @@
     head.appendChild(zoomBtn);
     head.addEventListener('click', function () {
       it.collapsed = !it.collapsed;
+      // 用户自己点开的，就不再归自动逻辑管了：之后再出输出也不强拉展开
+      it.autoCollapsed = false;
       box.classList.toggle('collapsed', it.collapsed);
     });
     // ---- 输出区 ----
@@ -5083,6 +5091,12 @@
     var it = { id: ++term.seq, who: who, cmd: cmd, reason: reason || '',
                sent: sentAt || 0, out: '', running: true, exit: null,
                background: false, collapsed: false };
+    // AI 自动插一条：先静音观察，确认它真的不出声且还在跑，才收成一行。
+    // 手动敲的命令（who='me'）不动，用户就是要看自己那条的输出
+    if (who === 'ai') {
+      it.watchAt = Date.now();
+      setTimeout(function () { termAutoCollapse(it); }, TERM_QUIET_MS + 200);
+    }
     term.items.push(it);
     if (term.items.length > 60) term.items.splice(0, term.items.length - 60);
     term.trackIdx = term.items.length - 1;
@@ -5090,6 +5104,26 @@
     // AI 命令（who==='ai'）走旧轮询；手动命令（who==='me'）由 termRunCmd 起 WS 会话
     if (who === 'ai') termStartPoll();
     return it;
+  }
+
+  function termAutoCollapse(it) {
+    // 只有「还在跑、且从头到尾一个字都没吐」的才收起来：
+    // 已经出过输出的是在真干活，用户需要看着进度；已经结束的走消散逻辑
+    if (!it || !it.running || it.collapsed || it.out) return;
+    if (!term.items || term.items.indexOf(it) < 0) return;
+    it.collapsed = true;
+    it.autoCollapsed = true;
+    // 用户正在放大看这条时不收，否则浮层里的画面会跟着变矮
+    if (termBig && termBig.it === it) return;
+    termRenderAll();
+  }
+
+  function termAutoExpand(it) {
+    // 自动收起来的那些，一有输出就展开；用户自己折起来的（autoCollapsed 为假）不碰
+    if (!it || !it.collapsed || !it.autoCollapsed) return;
+    it.collapsed = false;
+    it.autoCollapsed = false;
+    termRenderAll();
   }
 
   function termApplyState(state) {
@@ -5126,6 +5160,7 @@
       if (shown !== it.out) {
         it.out = shown;
         changed = true;
+        termAutoExpand(it);
       }
     }
     if (!state.running && it.running) {
@@ -5308,6 +5343,9 @@
   function turnCacheNextSeg() {
     if (turnCache.cur && turnCache.cur.trim()) {
       turnCache.segs.push(turnCache.cur);
+      // 落盘时只取尾部 TURN_CACHE_TAIL 字，前面那些段永远用不上，
+      // 但一轮几十个工具就是几十段留在内存里，长轮次白白占着
+      if (turnCache.segs.length > 8) turnCache.segs.splice(0, turnCache.segs.length - 8);
     }
     turnCache.cur = '';
   }
@@ -5397,14 +5435,27 @@
             moreBar.onclick = histLoadOlder;
             messages.insertBefore(moreBar, messages.firstChild);
           }
+          // 重启判定：只有「后端进程换了一个」才可能是崩溃丢内容，缓存补回才有意义。
+          // 连续思考时模型一轮要调几十次工具，这期间 WebSocket 断一下重连很常见，
+          // 进程好端端地还在跑；旧逻辑把每次重连都当成崩溃，于是同一段正文被
+          // 本地缓存又贴一遍，屏幕上就冒出「已由本机缓存补回」
+          var serverBoot = msg.boot || '';
+          var crashed = !!lastBoot && serverBoot && serverBoot !== lastBoot;
+          if (serverBoot) lastBoot = serverBoot;
+          // 后端还在跑这一轮（流式正文写在半路、还没进 history）：屏幕上的内容是活的，
+          // 不补；而且发给前端的那份历史里最后一条还是用户消息，此时补就是重复
+          var running = (msg.inflight || []).indexOf(currentSid) >= 0;
           // 崩溃补丁：后端被杀时最后一条正文可能只发到浏览器、没来得及写盘。
           // 本地缓存里若有一条服务端历史里没有的回复，补在末尾，避免「我的回复凭空消失」
           try {
             var cached = JSON.parse(localStorage.getItem('deckmeido_last_reply') || 'null');
-            if (cached && cached.sid && cached.sid === currentSid && cached.text) {
+            if (cached && cached.sid && cached.sid === currentSid && cached.text
+                && crashed && !running) {
               var lastAsst = null;
               (msg.messages || []).slice().reverse().some(function (m) {
-                if (m.role === 'assistant') { lastAsst = m.content; return true; }
+                // 历史走的是 brief（截屏询问只显示短文案），比对基准也得跟着用 brief，
+                // 否则同一条回复永远是「不相等」，每次重连都补一条一模一样的
+                if (m.role === 'assistant') { lastAsst = m.brief || m.content; return true; }
                 return false;
               });
               var norm = function (s) { return String(s || '').replace(/\s+/g, ''); };
@@ -5422,13 +5473,15 @@
           // 只在「服务端最后一条是用户消息」时启用——那说明这一轮的答复一个字都没写盘
           // （进程在第一次节流落盘前就被杀）。此时浏览器手里是唯一的一份完整内容。
           // 服务端只是残缺而非全无的情况由后端 _streaming.parts 负责，不在这里补，
-          // 否则会和已经恢复出来的内容重复一遍
+          // 否则会和已经恢复出来的内容重复一遍。
+          // 半路上断链重连（进程还活着、这一轮还在跑）也绝不能用它补：
+          // 那只是链路闪断，屏幕上流到一半的思维链和后端手里的内容都是同一份活的
           try {
             var tc = JSON.parse(localStorage.getItem('deckmeido_turn_cache') || 'null');
             if (tc && tc.sid && tc.sid === currentSid && tc.text) {
               var ms = msg.messages || [];
               var lastIsUser = ms.length && ms[ms.length - 1].role === 'user';
-              if (lastIsUser) {
+              if (lastIsUser && crashed && !running) {
                 addMsg('assistant', tc.text + '\n\n（以上回答在原进程退出前已显示在屏幕上，已由本机缓存补回）', tc.ts);
                 addMsg('system', '（这段内容来自本机缓存，屏幕上出现过的内容已全部保留）');
               }
@@ -5738,7 +5791,10 @@
       thoughtTextPend = '';
       streamEl = null; streamBody = null;
       liveBox = null; liveToolCount = 0; liveThoughtShown = 0; liveThought = null;
-      if (suppressReconnect) return;
+      // 内存里这一轮已攒下的正文跟着断链丢掉：不清的话，重连后若这一轮其实已经结束
+      // （收尾消息丢在断链窗口里），它还会被当成「屏幕上的内容」参与补回。
+      // 只清内存不动 localStorage：后端真被杀时，盘上那份缓存才是补回的依据
+      turnCache.segs = []; turnCache.cur = '';
       if (ev.code === 4401) {
         // 令牌被拒：清掉本地缓存并停在鉴权页，不要继续重连（否则会无限弹回）
         token = '';

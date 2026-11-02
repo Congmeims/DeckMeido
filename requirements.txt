@@ -1,6 +1,8 @@
 # 服务端
 fastapi
-uvicorn
+# 插件启动后端时传了 --ws-ping-interval / --ws-ping-timeout（见 plugin/main.py），
+# 这两个参数 0.21 才有；版本不定的话老 venv 升级后可能直接起不来
+uvicorn>=0.21
 websockets
 httpx
 mss

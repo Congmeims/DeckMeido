@@ -160,7 +160,8 @@ TOOLS: list[dict] = [
         "function": {
             "name": "desktop",
             "description": ("操作桌面窗口（Wayland 原生程序也能点）。action=focus 切窗口到前台；"
-                            "click 在屏幕坐标处左键单击；move 移动光标；"
+                            "click 在屏幕坐标处左键单击；move 移动光标（分段平滑滑过去，"
+                            "连续调几次 move 就能让光标沿着一串点走，画形状时按几十像素的间隔取点）；"
                             "scroll 在 (x,y) 处滚动（dx 正数向右、dy 正数向下，一格约 120）；"
                             "drag 从 (x,y) 按住左键拖到 (x2,y2)，中间自动插值，可用来拖滑块/拖文件/拖选中；"
                             "swipe 模拟触摸板滑动（dx/dy 填屏幕像素，内部按步换算成滚轮格数）——"
@@ -1352,6 +1353,11 @@ def _bg_drain(proc: asyncio.subprocess.Process, tty: bool = False) -> Path:
     return log_path
 
 
+# 命令输出在内存里最多留这么多字节：返回给模型的正文最后只截到 4000 字，
+# 多攒的部分不会被用到，但管道必须一直读空才不至于卡住子进程
+_OUT_KEEP = 256 * 1024
+
+
 def _push_cmd_output(chunks: list[bytes]) -> None:
     """把输出追加进 CURRENT_CMD，终端面板轮询就能看到进度
 
@@ -1418,8 +1424,14 @@ async def _read_probe(proc: asyncio.subprocess.Process, seconds: float) -> tuple
 
 
 async def _read_rest(proc: asyncio.subprocess.Process, budget: float) -> bytes:
-    """继续读 proc.stdout 直到 EOF，最多再等 budget 秒；没读完抛 TimeoutError"""
+    """继续读 proc.stdout 直到 EOF，最多再等 budget 秒；没读完抛 TimeoutError
+
+    只保留前 _OUT_KEEP 字节：命令刷屏（npm install、cat 大文件）时输出能到几十
+    MB，全攒在列表里既占内存又要逐片解码。返回值最后还会被截到 4000 字，
+    多读的部分本来就用不上，但管道必须一直读空 —— 不读的话子进程会卡在写满缓冲区上。
+    """
     chunks: list[bytes] = []
+    kept = 0
     loop = asyncio.get_running_loop()
     deadline = loop.time() + budget
     while True:
@@ -1436,8 +1448,51 @@ async def _read_rest(proc: asyncio.subprocess.Process, budget: float) -> bytes:
             except Exception:
                 pass
             return b"".join(chunks)
-        chunks.append(chunk)
+        if kept < _OUT_KEEP:
+            chunks.append(chunk)
+            kept += len(chunk)
         _push_cmd_output([chunk])
+
+
+async def _comm_bounded(proc: asyncio.subprocess.Process, feed: bytes | None,
+                        timeout: float) -> bytes:
+    """带 stdin 输入地等命令结束，但输出只留前 _OUT_KEEP 字节
+
+    communicate() 会把 stdout 全部读进一个 bytes 里再返回：`yes`、`cat` 大文件、
+    apt 刷进度这类命令在 timeout 到点前能吐几十上百 MB，Deck 的内存就这么被吃掉，
+    严重时整个后端被 OOM 杀掉（表现就是界面突然全断、重连后会话像是丢了）。
+    这里边读边丢掉超出上限的部分，其余行为与 communicate 一致（同样等到进程退出）。
+    """
+    async def _feed() -> None:
+        if feed and proc.stdin is not None:
+            try:
+                proc.stdin.write(feed)
+                await proc.stdin.drain()
+            except Exception:
+                pass
+        if proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+
+    async def _read() -> bytes:
+        buf = bytearray()
+        while True:
+            chunk = await proc.stdout.read(8192)
+            if not chunk:
+                return bytes(buf)
+            if len(buf) < _OUT_KEEP:
+                buf += chunk
+
+    task = asyncio.ensure_future(_feed())
+    try:
+        out = await asyncio.wait_for(_read(), timeout)
+        await asyncio.wait_for(proc.wait(), max(0.5, timeout))
+        return out
+    finally:
+        if not task.done():
+            task.cancel()
 
 
 async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin: str = "",
@@ -1540,7 +1595,7 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
         if launcher:
             # 白名单命中的常驻程序：等几秒看它是正常启动还是报错，能拿到输出就先交差
             try:
-                out, _ = await asyncio.wait_for(proc.communicate(), launch_wait)
+                out = await _comm_bounded(proc, None, launch_wait)
                 _push_cmd_output([out])
                 launcher_done = True
             except asyncio.TimeoutError:
@@ -1563,7 +1618,7 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
             # 交互式命令（带 stdin 输入）不能提前判常驻，走原来的等超时路径。
             # communicate 是一次性读完的，中途看不到进度，跑完补一次快照
             launcher_done = True
-            out, _ = await asyncio.wait_for(proc.communicate(feed), timeout)
+            out = await _comm_bounded(proc, feed, timeout)
             _push_cmd_output([out])
         else:
             # 通用探测：不靠程序名白名单猜「是不是常驻」。先读 launch_wait 秒：
@@ -2696,13 +2751,41 @@ async def _cursor() -> tuple[int, int]:
     return (int(mx.group(1)) if mx else 0, int(my.group(1)) if my else 0)
 
 
-async def _move_to(x: int, y: int) -> None:
+# 平滑移动的分段参数：一次跳几百像素，界面上的光标是「闪现」而不是「滑过去」，
+# 用户看着很突兀。拆成小步、每步之间留一点间隔，看上去才是连续的移动。
+# 步长和步数都要有上限：太细会让整段拖成好几秒，太粗又看不出平滑
+_MOVE_STEP_PX = 24
+_MOVE_STEP_SLEEP = 0.012
+_MOVE_MAX_STEPS = 24
+
+
+async def _move_to(x: int, y: int, smooth: bool = True) -> None:
     """移到屏幕绝对坐标。ydotoold 的虚拟设备没有绝对坐标轴，
-    mousemove --absolute 会静默失效，所以必须读当前位置算相对位移"""
+    mousemove --absolute 会静默失效，所以必须读当前位置算相对位移。
+
+    smooth=True 时分段插值（每步 ≤24px、步间 12ms、最多 24 步，整段 ≤0.3s）；
+    drag 这类自己已经在分步走、每步间隔很小的调用传 False，免得两次插值套在一起。
+    """
     cx, cy = await _cursor()
     dx, dy = x - cx, y - cy
-    if dx or dy:
+    if not dx and not dy:
+        return
+    if not smooth:
         await _ydotool("mousemove", "--", str(dx), str(dy))
+        return
+    # 步数按最长边算，按比例分摊两侧增量；累计取整避免攒出丢字的小数
+    dist = max(abs(dx), abs(dy))
+    steps = min(max(dist // _MOVE_STEP_PX, 1), _MOVE_MAX_STEPS)
+    sent_x = sent_y = 0
+    for i in range(1, steps + 1):
+        want_x = round(dx * i / steps)
+        want_y = round(dy * i / steps)
+        step_x, step_y = want_x - sent_x, want_y - sent_y
+        sent_x, sent_y = want_x, want_y
+        if step_x or step_y:
+            await _ydotool("mousemove", "--", str(step_x), str(step_y))
+        if i < steps:
+            await asyncio.sleep(_MOVE_STEP_SLEEP)
 
 
 async def _app_running(keyword: str) -> bool:
@@ -2775,21 +2858,25 @@ async def _desktop(action: str, target: str = "", x: int = 0, y: int = 0, text: 
         _, name = await _kdotool("getwindowname", wid)
         return f"已切到前台：{name}"
 
-    if action in ("move", "click"):
+    if action == "move":
+        # 单纯移动光标不动遮罩：以前和 click 合在一起，每挪一次都要把遮罩藏起来
+        # 再放回来，画轨迹时遮罩一明一暗，看着像屏幕在闪
+        await _move_to(x, y)
+        cx, cy = await _cursor()
+        return f"光标已移到 ({cx}, {cy})"
+
+    if action == "click":
         # 遮罩盖在桌面最上层，而且它是 XWayland 窗口：Wayland 合成器做命中测试时
         # 看不到 X11 的 input shape，所以只能让遮罩整块藏起来（后端会等遮罩确认
         # 藏好再放行）。不这么做，点击会被当成「用户终止」
         await _set_overlay_passthrough(True)
         try:
             await _move_to(x, y)
-            if action == "click":
-                await asyncio.sleep(0.25)
-                await _ydotool("click", "0xC0")
-                cx, cy = await _cursor()
-                _, focus = await _kdotool("getactivewindow", "getwindowname")
-                return f"已点击 ({cx}, {cy})，当前焦点窗口：{focus}"
+            await asyncio.sleep(0.25)
+            await _ydotool("click", "0xC0")
             cx, cy = await _cursor()
-            return f"光标已移到 ({cx}, {cy})"
+            _, focus = await _kdotool("getactivewindow", "getwindowname")
+            return f"已点击 ({cx}, {cy})，当前焦点窗口：{focus}"
         finally:
             await _set_overlay_passthrough(False)
 
@@ -2827,7 +2914,8 @@ async def _desktop(action: str, target: str = "", x: int = 0, y: int = 0, text: 
             # 滑块/列表拖选这类按位移判断的逻辑会当成「没拖」
             await _ydotool("click", "0x40:1")
             for px, py in steps:
-                await _move_to(px, py)
+                # 这里自己就在分步走，再套一层插值等于把步数乘起来，拖一下要好几秒
+                await _move_to(px, py, smooth=False)
                 await asyncio.sleep(0.02)
             await asyncio.sleep(0.05)
             await _ydotool("click", "0x40:0")

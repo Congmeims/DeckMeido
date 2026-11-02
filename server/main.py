@@ -293,6 +293,17 @@ def _build_llm_msgs(hist: list[dict], sys_prompt: str, sid: str = "") -> list[di
     if upto > 0 and comp["summary"].strip():
         msgs.append({"role": "system",
                      "content": f"【此前对话摘要，供上下文延续】\n{comp['summary']}"})
+    # 历史里的图只保留最近 _HIST_IMG_KEEP 张，更早的换成定长文案。
+    # 先数一遍总数，才能知道从哪一张开始算「旧图」——
+    # 游戏模式里反复截屏翻译，历史会攒下十几张 1280 宽 JPEG，
+    # 每张 25 万字符，全留着的话每次请求都白付它们一遍输入费
+    left = 0
+    for m in hist[upto:]:
+        c = m.get("llm") or m.get("content", "")
+        if isinstance(c, list):
+            left += sum(1 for p in c
+                        if isinstance(p, dict) and p.get("type") == "image_url")
+    keep_from = max(0, left - _HIST_IMG_KEEP)
     for m in hist[upto:]:
         content = m.get("llm") or m.get("content", "")
         if m["role"] == "user":
@@ -303,6 +314,18 @@ def _build_llm_msgs(hist: list[dict], sys_prompt: str, sid: str = "") -> list[di
             if isinstance(content, str) and "[IMG:" in content:
                 # @{} 引用的图片文件：同样只存 [IMG:路径] 标记，这里现读成图片部件
                 content = _img_ref_content(content) or content
+        # 老图换成固定文案：留最近几张够模型「记得刚才看过什么」，
+        # 再往前的画面早已翻篇，每轮重发只是白烧输入费
+        if isinstance(content, list):
+            kept = []
+            for p in content:
+                if isinstance(p, dict) and p.get("type") == "image_url":
+                    if keep_from > 0:
+                        keep_from -= 1
+                        kept.append(_restale_image_part(p))
+                        continue
+                kept.append(p)
+            content = kept
         # 历史里存下来的画面若过大（旧版截的是无损 PNG，一张 12MB），换成占位符。
         # 网关对请求体有上限，超了会被上游截断并返回 503，整轮提问跟着失败；
         # 这些图只是当时那一轮的参考，用一句说明代替即可
@@ -365,6 +388,9 @@ def _aborted_note(hist: list[dict]) -> str:
 _MAX_IMG_CHARS = 2_000_000
 # 原图字节数的对应上限（base64 大约是原图的 1.37 倍）
 _MAX_IMG_BYTES = int(_MAX_IMG_CHARS / 1.37 * 0.9)
+# 历史里最多保留几张原图，更早的换成定长文案。留 2 张是为了让「和上一张比」
+# 这类追问还能成立；再往前的画面模型本来也用不上
+_HIST_IMG_KEEP = 2
 # 收图时的压缩门槛，比上限低得多：插件用 gst 抓的是 1280x800 JPEG q90，
 # 一张游戏画面就有 1.8MB（base64 之后 240 万字符），稳稳越过上限被换成占位符。
 # 而压到 1024 宽 q75 只有 160KB，看图问答根本看不出差别，所以统一在这里压一遍
@@ -448,6 +474,27 @@ def _drop_orphan_tools(msgs: list[dict]) -> list[dict]:
         out.append(m)
     return out
 
+
+
+# 单条工具结果进模型上下文的上限（字符）。只影响「发给模型的那份」，
+# 界面上展示的、history 里存的都还是完整结果，回头翻记录照样能看到全文
+TOOL_TEXT_CAP = 24000
+
+
+def _cap_tool_text(text: str) -> str:
+    """把过长的工具结果压到上限内：留开头和结尾，中间标出省略了多少字
+
+    留尾巴是为了报错信息 —— 命令刷屏几百行时，真正有用的往往是最后那几行
+    （退出码、异常栈、失败的包名）。
+    """
+    text = str(text or "")
+    if len(text) <= TOOL_TEXT_CAP:
+        return text
+    head = TOOL_TEXT_CAP * 2 // 3
+    tail = TOOL_TEXT_CAP - head
+    return (text[:head]
+            + f"\n…（结果共 {len(text)} 字，中间省略 {len(text) - TOOL_TEXT_CAP} 字）…\n"
+            + text[-tail:])
 
 
 def _estimate_tokens(msgs: list[dict]) -> int:
@@ -709,8 +756,10 @@ def _write_session(sid: str, hist: list[dict]):
 # ---------- 流式正文的增量落盘 ----------
 # 正文原本是「整轮生成完才落盘」的，而一轮回答可能长达几分钟；这期间进程被杀
 # （客户端退出、升级、OOM）就整段消失，用户看到的就是「我的回复不见了」。
-# 下面在流式回调里按节流频率把半截正文写进会话文件的 _streaming 字段，
+# 下面在流式回调里按节流频率把半截正文写进会话的副档案（<sid>.side.json），
 # 进程被杀最多丢 1 秒；下次启动 init_sessions 会把它恢复成「回答中断」的消息。
+# 单独存一个小文件而不是塞进会话主文件：写入成本与会话长度无关，
+# 200 轮以后的会话不会再因为「每 0.6 秒整份重写一次」把磁盘和 IO 线程拖死。
 
 _STREAM_FLUSH_INTERVAL = 0.6   # 秒（越短丢得越少；写的是小文件，代价可接受）
 _STREAM_FLUSH_CHARS = 200      # 或自上次落盘以来又累积这么多字
@@ -732,48 +781,34 @@ def _stream_buf(sid: str = "") -> dict:
     return buf
 
 
+def _inflight_sids() -> set[str]:
+    """事件循环线程里：所有「流式写过、还没正式收尾」的会话号"""
+    return set(_stream_bufs)
+
+
 def _write_streaming(sid: str, text: str, parts: list[dict] | None = None) -> None:
-    """把半截正文写进会话文件的 _streaming 字段（不动 history）
+    """把半截正文写进会话的副档案（不碰主文件）
 
     parts 是「屏幕上已经出现过的全部内容」的有序块列表：
       {"type":"text","content":...}  ← 助手正文段
       {"type":"event","event":{...}} ← 思维链 / 工具时间线
     只存 text 的话，一轮里先说话、再调工具、再说一段的，中途被杀就只剩最后一段。
 
-    真正的读写在 IO 线程里排队执行（见 session_store._IO）：这里只把
-    「文件里应该是什么样」算好交出去，回调所在的事件循环不会被磁盘拖住。
-    顺序由单线程 IO 队列保证：先是用户消息那次整份写入，再是这次带 _streaming 的写。
+    真正的写在 IO 线程里排队执行（见 session_store._IO），开销是「一次几十 KB 的
+    覆盖写」。以前这里要把整份会话读出来再整份写回，写一次的成本和会话长度成正比，
+    200 轮以后一轮回答就能把那条单 IO 线程堵满，流式和落盘全跟着卡。
     """
-    with store.lock:
-        if sid in store.deleted_sids:
-            return
-        # 用户消息那次整份写入可能还排在队列里没跑（首轮尤其常见）。
-        # 这时磁盘上根本没有这个文件，按「磁盘为底」读会读空，成品只剩 _streaming、
-        # 没有 history —— 用户那一问当场就丢了。只有已经发过整份写入的会话
-        # 才能以磁盘为底（那条一定排在本任务前面跑完）
-        full_sent = sid in store.flushed_sids
-        created = store.created_map.get(sid) or time.time()
-        data = {"id": sid, "title": "新会话", "created": created, "history": []}
-        data["updated"] = time.time()
-        data["_streaming"] = {"text": text, "ts": time.time(),
-                              "parts": list(parts or [])}
+    stamp = time.time()
+    # 兜底再裁一次：调用方有的直接拿 buf["parts"] 传进来，不经过 _snapshot_parts
+    streaming = {"text": text, "ts": stamp, "parts": _trim_parts(list(parts or []))}
 
     def _job() -> None:
-        """IO 线程里跑：以磁盘上的那份为底，只换掉 _streaming 和 updated"""
         with store.lock:
             if sid in store.deleted_sids:
                 return
-            cur = store.read_session(sid) if full_sent else {}
-            if cur:
-                cur.pop("_from_disk_mtime", None)
-                cur.pop("_streaming", None)
-                cur["updated"] = data["updated"]
-                cur["_streaming"] = data["_streaming"]
-            else:
-                # 文件还没落盘（用户消息那次写还在排队）：用内存里的骨架顶上，
-                # 整份写入紧接着也会到，两边都带同一个 created
-                cur = dict(data)
-            store.rewrite_file(sid, cur)
+            # 主文件还没落盘也没关系：副档案是独立文件，恢复时两边各自读，
+            # 不再需要「以磁盘那份为底」来拼一个完整会话
+            store.write_stream_side(sid, stamp, streaming)
 
     session_store.io_submit(_job)
 
@@ -814,6 +849,136 @@ def persist_stream(text: str, force: bool = False, parts: list[dict] | None = No
     _write_streaming(sid, text, buf.get("parts") or [])
 
 
+# 副档案里每块输出 / 每个事件留多少字。一次大输出有 24 万字符（见 tools._OUT_KEEP），
+# 一轮 20 多个工具就能让 parts 涨到几 MB，而它每 200 字就要被序列化写盘一次
+_PART_TEXT_CAP = 4000
+_PART_EVENT_CAP = 4000
+# parts 总预算：超出就从最老的一头开始丢。丢的是「屏幕上曾经闪过的东西」，
+# 留不住也无所谓；真正要紧的是别让它把进程撑爆
+_PARTS_TOTAL_CAP = 400 * 1024
+# 进程占用超过这个数（MB）就认定内存吃紧，开始主动丢历史细节。
+# 只是「读不到 /proc/meminfo 时的兜底」：真正的判定按系统剩余内存算，见 _mem_pressure
+_OOM_SOFT_MB = 900
+# 上次打降载日志的时刻（30 秒节流，见 _relieve_memory）
+_RELIEVE_AT = 0.0
+
+
+def _proc_mem_mb() -> int:
+    """本进程当前占用的内存（MB）；读不到返回 0（非 Linux 环境）"""
+    try:
+        with open("/proc/self/statm", "r") as f:
+            return int(f.read().split()[1]) * 4096 // (1024 * 1024)
+    except Exception:
+        return 0
+
+
+def _mem_pressure() -> bool:
+    """现在是不是该降载了：按系统真实剩余内存判断，而不是看自己占了多少
+
+    之前用「本进程超过 900MB」当阈值，那个数是拍脑袋定的。Deck 桌面模式有 12G
+    可用，本进程涨到 1G 完全正常，却被判成吃紧，白白把工具输出压碎；反过来
+    游戏模式里游戏吃掉 10G 时，本进程只有 400MB 也已经该让路了。
+    真正决定会不会被 OOM killer 选中（SIGKILL，Python 留不下任何遗言）的是
+    「还剩多少可用」，所以这里直接读 MemAvailable。
+
+    判定标准：可用内存低于「总量的一小部分」就降载，同时留一个绝对下限兜底。
+    桌面模式 12G 可用时，剩 1.5G 才报警（正常用根本碰不到）；游戏模式里游戏
+    吃掉大半内存、系统只剩几百 MB 时立刻收手。读不到就直接按「不紧张」处理。
+    """
+    try:
+        avail_mb = 0
+        total_mb = 0
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    avail_mb = int(line.split()[1]) // 1024
+                elif line.startswith("MemTotal:"):
+                    total_mb = int(line.split()[1]) // 1024
+                if avail_mb and total_mb:
+                    break
+        if not avail_mb:
+            return False
+    except Exception:
+        # 读不到可用内存时退回旧判据，总比完全不管强
+        used = _proc_mem_mb()
+        return bool(used) and used >= _OOM_SOFT_MB
+    # 按总内存的 1/8 算阈值，再兜一个 300MB 的绝对下限。Deck 总内存 16G：
+    # 桌面模式剩 1.5G 以下才降载（平时用不到这么多），游戏模式下游戏吃掉大头时
+    # 剩几百 MB 立刻让路 —— 这时候下一个被 OOM killer 挑中的就是本进程
+    return avail_mb < max(300, total_mb // 8 if total_mb else 0)
+
+
+def _trim_part(p: dict) -> dict:
+    """把单块内容压到上限内（事件只压 output/text 这类长文本字段）"""
+    if p.get("type") == "text":
+        s = p.get("content") or ""
+        if len(s) > _PART_TEXT_CAP:
+            p = {"type": "text", "content": s[:_PART_TEXT_CAP] + f"…（省 {len(s) - _PART_TEXT_CAP} 字）"}
+        return p
+    ev = dict(p.get("event") or {})
+    for k in ("output", "text"):
+        s = ev.get(k)
+        if isinstance(s, str) and len(s) > _PART_EVENT_CAP:
+            ev[k] = s[:_PART_EVENT_CAP] + f"…（省 {len(s) - _PART_EVENT_CAP} 字）"
+    # 截图缩略图是 base64 或路径，两者都别进副档案：恢复时重新截屏即可，
+    # 一张图就能顶掉几十条正文的预算
+    ev.pop("image", None)
+    ev.pop("image_b64", None)
+    return {"type": "event", "event": ev}
+
+
+def _trim_parts(parts: list[dict]) -> list[dict]:
+    """给 parts 定容量：单块压到上限，总量超了丢最老的
+
+    这些内容只用于「进程被杀后把屏幕复原」，属于尽力而为。以前它没有上限，
+    连续几条大输出就能让这个字典长到几百 MB，而它还是被频繁整体复制、
+    序列化写盘的——OOM 就是这么来的，偏偏 OOM 时最需要它活下来。
+    """
+    out: list[dict] = []
+    total = 0
+    for p in parts or []:
+        q = _trim_part(p)
+        blob = q.get("content") or ""
+        if not blob:
+            ev = q.get("event") or {}
+            blob = str(ev.get("output") or ev.get("text") or ev.get("summary") or "")
+        n = len(blob) + 64
+        out.append(q)
+        total += n
+    while total > _PARTS_TOTAL_CAP and len(out) > 1:
+        q = out.pop(0)
+        total -= len(str(q.get("content") or "")) + len(str(q.get("event") or "")) + 64
+    return out
+
+
+def _relieve_memory(events: list[dict]) -> None:
+    """内存吃紧时丢掉还能丢的：老事件里的大段输出只留开头
+
+    只压 output/text 这类「屏幕上早就滚过去」的大文本，不动正文、不动工具调用
+    结构 —— history 里最终写盘时也要靠它们。真正常见的内存元凶（命令输出、
+    工具结果进上下文）已经在源头封顶，这里只是兜底，读不到 /proc 时直接跳过。
+    """
+    used = _proc_mem_mb()
+    if not _mem_pressure():
+        return
+    # 降载期间每轮工具往返都会走到这里，日志按 30 秒节流，免得刷满
+    global _RELIEVE_AT
+    if time.time() - _RELIEVE_AT > 30:
+        _RELIEVE_AT = time.time()
+        print(f"[DeckMeido] 可用内存偏低，降载中（本进程 {used} MB，"
+              f"parts {len(_stream_bufs)} 份待裁）", flush=True)
+    for ev in events or []:
+        for k in ("output", "text"):
+            s = ev.get(k)
+            if isinstance(s, str) and len(s) > 800:
+                ev[k] = s[:800] + "…（内存吃紧，已省略）"
+        ev.pop("image_b64", None)
+    # 屏幕快照也跟着瘦身，下一轮重算时同样是裁剪过的版本
+    for buf in _stream_bufs.values():
+        if buf.get("parts"):
+            buf["parts"] = _trim_parts(buf["parts"])
+
+
 def _snapshot_parts(events: list[dict], tail_text: str = "") -> list[dict]:
     """把本轮事件与当前正文拼成「屏幕上出现过的内容」有序块列表
 
@@ -828,7 +993,7 @@ def _snapshot_parts(events: list[dict], tail_text: str = "") -> list[dict]:
             parts.append({"type": "event", "event": ev})
     if tail_text:
         parts.append({"type": "text", "content": tail_text})
-    return parts
+    return _trim_parts(parts)
 
 
 # ---------- 流式正文合批 ----------
@@ -930,45 +1095,23 @@ def flush_delta_now(sid: str = "") -> None:
 
 
 def clear_stream(sid: str = "") -> None:
-    """正文已正式落盘，把残留的 _streaming 字段清掉
+    """正文已正式落盘，把残留的流式副档案删掉
 
-    大多数时候根本不用清：收尾的整份写入本来就不带 _streaming，而它和这次调用
-    紧挨着，IO 队列里通常还在排队。此时磁盘上（或即将写下）的内容已经没有流式
-    残留，再读一遍、再写一遍纯属浪费——以前一轮收尾因此要过两遍盘。
-    只有「整份写入早就落完、之后又写过一次流式正文」才真有残留，
-    这时才需要一次读-删-写。
+    流式正文现在存在独立的副档案里（见 session_store.write_stream_side），
+    所以这里的收尾只是「删一个小文件」：不读主文件、不重写主文件。
+    以前这一步要判断「磁盘上还有没有 _streaming 残留」，有就整份读-删-写一遍，
+    长会话收尾时又是一次几 MB 的往返。
     """
     sid = sid or store.turn.get("sid") or store.current_sid
     _stream_bufs.pop(sid, None)
 
     def _job() -> None:
-        """IO 线程里跑：一看磁盘上还有没有残留，有才读-删-写。
-
-        判断必须在 IO 线程里做：排队中的整份写入会先执行，执行完
-        wrote_map 就被更新（不再带 _streaming），这里据此直接返回。
-        在事件循环里提前判断反而会误判成「有残留」而多写一遍。
-        """
         with store.lock:
             if sid in store.deleted_sids:
                 return
-            p = store.sess_path(sid)
-            try:
-                stamp = p.stat().st_mtime
-            except OSError:
-                return
-            # 时间戳取当前时刻而不是写完那一刻：磁盘时间戳的精度可能比
-            # 这里记的时间粗，差个几毫秒就会被判成「文件更新了」而白读一遍。
-            # 此刻之前落盘的写入一定覆盖了磁盘内容，之后落盘的都排在本次后面
-            if store.wrote_map.get(sid, (0.0,))[0] >= stamp:
-                store.mark_written(sid)
-                return
-            data = store.read_session(sid)
-            if not data:
-                return
-            data.pop("_from_disk_mtime", None)
-            if not data.pop("_streaming", None):
-                return
-            store.rewrite_file(sid, data)
+            store.drop_stream_side(sid)
+            # 指纹推到现在：后续（若有）针对同一会话的残留判断不会再把主文件当成「刚被流过」
+            store.mark_written(sid)
 
     session_store.io_submit(_job)
 
@@ -1089,8 +1232,10 @@ def _img_ref_content(text: str):
 def init_sessions():
     """启动时恢复最近的会话；没有历史则创建默认会话"""
     global _ctx_used
-    # index.json 是侧栏索引，不是会话：不排除掉的话它会被当成一个坏文件反复改名
-    files = sorted((p for p in SESSIONS_DIR.glob("*.json") if p.name != "index.json"),
+    # index.json 是侧栏索引，*.side.json 是流式正文的副档案：
+    # 都不是会话文件，混进来的话会被当成坏文件反复改名
+    files = sorted((p for p in SESSIONS_DIR.glob("*.json")
+                    if p.name != "index.json" and not p.name.endswith(".side.json")),
                    key=lambda p: p.stat().st_mtime, reverse=True)
     if not files:
         save_current_session()
@@ -1116,8 +1261,10 @@ def init_sessions():
         else:
             store.drop_compact(sid)
         # 上一轮回答被打断：把当时流式落盘的半截正文恢复成一条「回答中断」的消息，
-        # 否则用户只看到自己的提问，像是回答凭空消失了
-        partial = data.pop("_streaming", None)
+        # 否则用户只看到自己的提问，像是回答凭空消失了。
+        # 半截正文现在在独立的副档案里（旧版本才存在主文件的 _streaming 字段，
+        # 这里仍然兜底读一次老格式，升级后第一次启动就能把老残留救回来）
+        partial = store.read_stream_side(sid) or data.pop("_streaming", None)
         partial_text = (partial.get("text") or "").strip() if isinstance(partial, dict) else ""
         partial_parts = (partial.get("parts") or []) if isinstance(partial, dict) else []
         # 恢复门槛已取消：只要落盘过半个字，就恢复成一条「回答中断」的消息。
@@ -1146,14 +1293,15 @@ def init_sessions():
                   file=sys.stderr)
         _ctx_used = _estimate_tokens(_build_llm_msgs(store.history, SYSTEM_PROMPT, store.current_sid))
         if partial is not None:
-            # 无论是「恢复成消息」还是「判定太短丢弃」，都要把临时字段抹掉后落盘：
+            # 无论是「恢复成消息」还是「判定太短丢弃」，都要把半截正文抹掉后落盘：
             #   - 不落盘：恢复出来的内容后端再死一次又没了
-            #   - 不抹字段：文件上的 _streaming 还在，下次启动再恢复一遍，
+            #   - 不抹掉：那份半截正文还在，下次启动再恢复一遍，
             #     同一条回答会越重启越多
             try:
                 _write_session(store.current_sid, store.history)
             except Exception as e:
                 print(f"[DeckMeido] 恢复中断回答后落盘失败：{e}", file=sys.stderr)
+            store.drop_stream_side(store.current_sid)
         print(f"[DeckMeido] 已从 {src.name} 恢复会话 {store.current_sid}（{len(store.history)} 条）",
               file=sys.stderr)
         return True
@@ -3522,6 +3670,9 @@ async def api_session_delete(sid: str):
         except OSError as e:
             store.deleted_sids.discard(sid)
             raise HTTPException(status_code=500, detail=f"删除失败：{e}")
+    # 流式副档案跟着一起删：留着的话下次启动会把它当「被中断的回答」恢复出来，
+    # 删掉的会话就凭空冒出一条消息
+    await asyncio.to_thread(session_store.io_submit(store.drop_stream_side, sid).result)
     if sid == store.current_sid:
         # 删掉的是当前会话。以前这里无条件 _fresh_sid() 再落盘一个空会话，
         # 于是「删一个」必然「多一个」；现在先试着切到剩下最新的那个，
@@ -4049,6 +4200,11 @@ async def _shutdown_overlay():
         # 那才是真正的「聊天记录丢了」。只补流式残留，别碰已落盘的历史。
     except Exception as e:
         print(f"[DeckMeido] 退出前落盘失败：{e}", file=sys.stderr)
+    # 侧栏索引平时是延迟合并写的，退出前补一次，别让最后几条会话的标题/条数丢了
+    try:
+        store.flush_index()
+    except Exception:
+        pass
 
 
 _REFUSAL_MARKS = ["我不会", "我不能", "无法执行", "无法直接执行", "恕我不能", "不执行", "拒绝执行",
@@ -4149,16 +4305,9 @@ async def run_agent(events: list[dict], extra_system: str = "",
         events 本身就是有序流（思维链 / 工具块，以及工具调用前已经显示过的
         过渡正文段——那些以 {"type":"text"} 的形式插在 events 里）。
         尾部再补上当刻正在生成的那段正文，就是完整的屏幕内容。
+        裁剪统一交给 _snapshot_parts：两处各写一份的话，上限迟早只补到一处。
         """
-        parts: list[dict] = []
-        for ev in events:
-            if ev.get("type") == "text":
-                parts.append({"type": "text", "content": ev.get("text") or ""})
-            else:
-                parts.append({"type": "event", "event": ev})
-        if tail:
-            parts.append({"type": "text", "content": tail})
-        return parts
+        return _snapshot_parts(events, tail)
 
     async def on_delta(text: str):
         """把 LLM 的增量正文转给前端，顺便增量落盘
@@ -4336,6 +4485,11 @@ async def run_agent(events: list[dict], extra_system: str = "",
             # 记录本轮真实占用：优先服务商的 prompt_tokens，拿不到就用上面数过的估算值
             _ctx_used = _split_usage(msg.get("usage")) or used_now
             await manager.broadcast({"type": "status", "data": get_status()})
+
+            # 水位自检：Deck 的可用内存在跑会话时往往只剩一两百 MB，等内核动手就晚了
+            # （SIGKILL 之后 Python 一句遗言都留不下）。这里提前把还能丢的东西丢掉：
+            # 老工具结果只留给人看的那一截，parts 也已经自带上限
+            _relieve_memory(events)
 
             # 思维链（reasoning_content，DeepSeek/Qwen 等支持）
             # 只跳过「这一轮确实实时播过、且内容对得上」的那份：供应商不一定逐片
@@ -4542,9 +4696,12 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 # 工具结果前面统一加「[工具名] 」，这类元信息在请求最前面：
                 # 同一次调用无论正文多长，前缀都一样，DeepSeek 的前缀缓存才命中得上。
                 # 反过来，若这里塞「本次命中缓存」之类的可变文案，后面整段历史
-                # 立刻全部失配，一次工具往返就能把几万 token 从命中打回未命中
+                # 立刻全部失配，一次工具往返就能把几万 token 从命中打回未命中。
+                # 长度必须封顶：cat 一个大文件、npm install 刷屏都能吐几十 MB，
+                # 原样塞进来这一轮的请求体就会一路涨到发不动，之后每次都带着它重发。
+                # 前缀是工具名，截断点之后的内容对缓存无影响，所以封顶不影响命中
                 msgs.append({"role": "tool", "tool_call_id": call["id"],
-                             "content": f"[{name}] {result}"})
+                             "content": f"[{name}] {_cap_tool_text(result)}"})
                 # 截图后把画面注入对话，多模态模型可直接看图回答。
                 # 同一轮里连着截第二张时复用上一张：模型反复截图通常不是画面变了，
                 # 而是它没「看到」上面那张。再截一张只会让上下文里堆图，
@@ -4597,11 +4754,19 @@ async def ws_endpoint(ws: WebSocket, token: str = Query(default="")):
     ua = ws.headers.get("user-agent", "")
     ua_client = "mobile" if ("Mobile" in ua or "Android" in ua) else "web"
     ws_mode = (await asyncio.to_thread(get_status))["mode"]
+    # 这两项告诉前端「此刻后端进程里还在跑哪一轮」：
+    # inflight = 流式已写过、还没收尾的会话（这一轮的正文还只在半路上，没进 history）
+    # boot_id  = 本进程的启动标识，前端据此判断这条连接是「进程重启后的第一条」
+    # 还是「只是链路断了一下」。以前前端区分不了，任何一次重连都当成崩溃，
+    # 把本地缓存补回整段对话，屏幕上就冒出「已由本机缓存补回」
+    inflight = sorted(_inflight_sids())
+    boot_id = singleton.BOOT_ID
     try:
         # 新连接同步历史（带上 sid，前端才能建立会话代次基线，
         # 否则 currentSid 一直是空值，代次过滤整条失效）
         await ws.send_json({"type": "history", "messages": store.history,
-                            "sid": store.current_sid, "my_client": ua_client})
+                            "sid": store.current_sid, "my_client": ua_client,
+                            "inflight": inflight, "boot": boot_id})
         await ws.send_json({"type": "status",
                             "data": {**get_status(), "mode": ws_mode}})
         while True:
@@ -4614,7 +4779,9 @@ async def ws_endpoint(ws: WebSocket, token: str = Query(default="")):
                 # 客户端断线重连后主动要一份：握手时后端已经发过一次，
                 # 但断线期间别的端说的话它没收到，得重新对齐
                 await ws.send_json({"type": "history", "messages": store.history,
-                                    "sid": store.current_sid, "my_client": ua_client})
+                                    "sid": store.current_sid, "my_client": ua_client,
+                                    "inflight": sorted(_inflight_sids()),
+                                    "boot": boot_id})
                 continue
             if data.get("type") == "chat":
                 # 开始发问就刷新：这条连接此刻在什么模式下，就是它自己的模式
