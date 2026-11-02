@@ -163,6 +163,8 @@ deckmeido/
 
 **游戏模式下网页打不开？** 正常，SteamOS 游戏模式的浏览器不在。用 Decky 插件的 QAM 面板，或切回桌面模式。
 
+**让助手切桌面模式，结果弹出 drkonqi 崩溃、又退回游戏模式？** 因为它用的是 `steamos-session-select plasma`——这个旧脚本里 `plasma` 指向 `plasmax11.desktop`（X11 会话），在 SteamOS 上 `startplasma-x11` 起不来就崩。正确命令是不带参数的新接口 `steamosctl switch-to-desktop-mode`（取默认会话 `plasma.desktop` = Plasma Wayland），回游戏模式是 `steamosctl switch-to-game-mode`。提示词里已经写明，用旧脚本时必须写 `plasma-wayland`。
+
 **插件装完面板里什么都没有？** 多半是 zip 结构不对——Decky 要求顶层是 `DeckMeido/` 文件夹，文件直接摆在 zip 根目录会报 `No plugin.json found in plugin ZIP`。直接用 Release 里附带的 `deckmeido-plugin-*.zip`。
 
 ## 已知限制

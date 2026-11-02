@@ -142,7 +142,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": f"在设备上执行 bash 命令（通用能力：文件/进程/桌面操作 xdotool/截屏/软件管理等）。环境：SteamOS、桌面模式 X11 DISPLAY=:0、家目录 {Path.home()}。避免交互式参数。启动浏览器/播放器/游戏这类常驻程序直接写命令即可，系统会自动判定已拉起并返回，不用加 nohup 或 &；需要拿到输出的命令才会等待执行完成",
+            "description": f"在设备上执行 bash 命令（通用能力：文件/进程/桌面操作 xdotool/截屏/软件管理等）。环境：SteamOS、桌面模式为 KDE Plasma Wayland（Xwayland 在 DISPLAY=:0）、家目录 {Path.home()}。避免交互式参数。启动浏览器/播放器/游戏这类常驻程序直接写命令即可，系统会自动判定已拉起并返回，不用加 nohup 或 &；需要拿到输出的命令才会等待执行完成",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -603,6 +603,8 @@ DANGER_PATTERNS = [
     r"\bsystemctl\s+(stop|disable|mask)", r"\breboot\b", r"\bshutdown\b",
     r"\bpoweroff\b", r"\bchmod\b", r"\bchown\b", r"\bkill\b", r"\bkillall\b",
     r"\bpkill\b", r"\bsteamos-", r"\bbtrfs\b", r"\bmount\b", r"\bumount\b",
+    # 切会话会掐断当前连接、重建整个桌面/游戏会话，智能审批下要让用户点一下
+    r"\bsteamosctl\s+switch-to-",
     r"\bfdisk\b", r"\bcurl\b[^|]*\|\s*(ba|z)?sh", r"\bwget\b[^|]*\|\s*(ba|z)?sh",
     r">\s*/(etc|usr|boot|sys|proc)/", r"\bsteam\b[^|]*\binstall",
 ]
