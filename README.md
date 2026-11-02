@@ -167,6 +167,8 @@ deckmeido/
 
 **插件装完面板里什么都没有？** 多半是 zip 结构不对——Decky 要求顶层是 `DeckMeido/` 文件夹，文件直接摆在 zip 根目录会报 `No plugin.json found in plugin ZIP`。直接用 Release 里附带的 `deckmeido-plugin-*.zip`。
 
+**让助手「关机」后，它执行了断电，重启后还要重新交代一遍任务？** 因为单纯的「关机」被当成了独立指令。如果同一句话里还带着重启后要接着做的事（「重启后再 clone 一次」），应该用 `systemctl reboot` 而不是 `poweroff`——断电会掐断连接，后续任务没人执行。提示词里已经要求先判断有无后续任务，拿不准时先问一句再动手。
+
 ## 已知限制
 
 - `desktop` 输入：优先走 klipper 剪贴板 + `Ctrl+V`，klipper 不可用时退回 `ydotool type`（仅英文数字符号）
