@@ -462,6 +462,26 @@
   #messages > .typing-row:last-child { margin-bottom: 0; }
   .typing-label { color: var(--muted); font-size: 12.5px; line-height: 1.5; word-break: break-word; }
 
+  /* 「回到底部」悬浮球：AI 正在输出时用户往上翻看旧内容，就不该再被拽回底部，
+     底部的喇叭按钮只在这时出现，点一下回到最新并恢复自动跟随。
+     放在 #chatView 里（绝对定位到消息区右下角），不用包一层影响布局 */
+  #jumpLatest {
+    position: absolute; right: 18px; bottom: 12px; z-index: 25;
+    width: 38px; height: 38px; border-radius: 50%;
+    display: none; align-items: center; justify-content: center;
+    border: 1px solid var(--line);
+    background: var(--surface-2); color: var(--text);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+    cursor: pointer;
+  }
+  #jumpLatest.show { display: flex; }
+  #jumpLatest:active { opacity: .7; }
+  /* 有新内容没看时给个小红点提示 */
+  #jumpLatest.new::after {
+    content: ''; position: absolute; top: 2px; right: 2px;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--danger);
+  }
+
   /* 底部输入区（两行：输入框 + 工具栏） */
   #composer {
     flex: 0 0 auto;
@@ -2194,6 +2214,9 @@
 
 <div id="messages"></div>
 
+<!-- 往上翻看旧消息时出现，点一下回到最新 -->
+<button id="jumpLatest" title="回到最新"></button>
+
 <div id="shareBar">
   <button class="menu-btn" id="shareAll">全选</button>
   <span class="grow" id="shareCount">已选 0 条</span>
@@ -2612,8 +2635,40 @@
   }
   function pad2(n) { return String(n).padStart(2, '0'); }
 
+  // 是否跟着最新内容走。以前只要 AI 在输出就无条件滚到底，用户想往上翻
+  // 看之前的消息时会被每一帧拽回去，根本没法定住。现在滚到底部时记一次
+  // 「在底部」，之后只有还在底部才自动跟随；一旦往上翻就停手，等用户自己点
+  // 右下角的悬浮球再恢复。
+  // scrollBottom() 会把 followBottom 设回 true，所以「发消息、切会话」这些
+  // 主动要看到底的操作照旧生效
+  var followBottom = true;
+  var nearBottom = function () {
+    return messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
+  };
   function scrollBottom() {
+    followBottom = true;
     messages.scrollTop = messages.scrollHeight;
+  }
+  // 自动跟随入口：用户往上翻着看时什么都别做。所有「流式里滚到底」都走这里
+  function scrollBottomIfFollow() {
+    if (!followBottom) { markJumpLatestNew(); return; }
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  // 悬浮球的显隐 / 红点：不在底部时出现，底部时收起
+  var jumpEl = null, jumpNew = false;
+  function syncJumpLatest() {
+    if (!jumpEl) return;
+    var atBottom = nearBottom();
+    jumpEl.classList.toggle('show', !atBottom);
+    jumpEl.classList.toggle('new', !atBottom && jumpNew);
+    if (atBottom) jumpNew = false;
+  }
+  // 有内容落地但用户没在看：只点红点，不弹提示、不打断
+  function markJumpLatestNew() {
+    if (!jumpEl || nearBottom()) return;
+    jumpNew = true;
+    jumpEl.classList.add('new');
   }
 
   function escapeHtml(s) {
@@ -2800,7 +2855,84 @@
   var HIST_PAGE = 50;
   var histPending = null;   // 还没渲染的旧消息（history 回放时切下来的那一段）
 
-  function trimMessages() {}
+  // 屏幕上最多留这么多条消息节点。往下聊得越久，「视口外但仍在 DOM 里」的
+  // 节点就越攒越多，Deck 这种弱 CPU 上滚动和重排会越来越慢。超过上限就从
+  // 顶部摘掉最老的，并在顶部留一枚「更早的 N 条」入口——点击时把摘掉的内容
+  // 原样挂回去（节点没销毁，只是脱离了文档，所以能原样恢复）。
+  // 只在下滑、且用户不在看历史时才裁：正在往上翻的时候裁掉会跳屏。
+  var MAX_LIVE_NODES = 160;
+  var trimmedBin = [];     // 被摘掉的节点，按「从新到旧」压栈，恢复时倒序挂回
+  // 刚恢复完的一小段时间内不裁，否则刚点开就被摘回去，看起来像「点了没反应」
+  var restoreGuardUntil = 0;
+
+  function trimMessages() {
+    if (messages.querySelector('#histMore')) return;   // 还有未渲染的历史，顺序不能乱
+    // 本轮还在流式输出时不裁：liveBox / streamEl 是长生命周期引用，
+    // 一旦对应的节点被摘掉，后续 delta 就写进了脱离文档的节点，屏幕上「不回字」
+    if (liveBox && liveBox.parentNode) return;
+    if (streamEl && streamEl.parentNode) return;
+    if (Date.now() < restoreGuardUntil) return;
+    var kids = messages.children, excess = kids.length - MAX_LIVE_NODES;
+    if (!(excess > 0)) { syncTrimBar(); return; }
+    // 用户正停在上面看旧内容时不要动：删掉顶部会让视图往下滑一截
+    // （自动跟随开着、且就在底部时 scrollTop 必然很小，不会撞到这里）
+    if (!followBottom || messages.scrollTop > 240) { syncTrimBar(); return; }
+    for (var i = 0; i < excess; i++) {
+      var first = messages.firstChild;
+      if (!first || first.id === 'trimMore' || first.id === 'histMore') break;
+      // 正在流式的那一块绝不能摘：摘了 streamBody 的引用就指向脱离文档的节点
+      if (liveBox && (first === liveBox || first.contains(liveBox))) break;
+      // 带锚点的元素（刚发出去的消息、正在展开的块）不摘，避免「发完就消失」的观感
+      if (first.contains(document.activeElement)) break;
+      trimmedBin.push(messages.removeChild(first));
+    }
+    syncTrimBar();
+  }
+
+  // 顶部「更早的 N 条」那枚按钮：有被摘掉的内容才出现
+  function syncTrimBar() {
+    var bar = document.getElementById('trimMore');
+    var n = trimmedBin.length;
+    if (!n) { if (bar) bar.remove(); return; }
+    if (!bar) {
+      bar = document.createElement('button');
+      bar.id = 'trimMore';
+      bar.className = 'menu-btn';
+      bar.style.cssText = 'align-self:center;margin:4px 0';
+      bar.onclick = restoreTrimmed;
+      messages.insertBefore(bar, messages.firstChild);
+    }
+    bar.textContent = '往上翻还有 ' + n + ' 条（点这里恢复）';
+  }
+
+  function restoreTrimmed() {
+    if (!trimmedBin.length) return;
+    var frag = document.createDocumentFragment();
+    while (trimmedBin.length) frag.appendChild(trimmedBin.pop());
+    var bar = document.getElementById('trimMore');
+    var beforeH = messages.scrollHeight;
+    messages.insertBefore(frag, bar ? bar.nextSibling : messages.firstChild);
+    // 顶上插内容会把视图顶走，按插入的高度补偿回去，视觉上停在原处
+    var grew = messages.scrollHeight - beforeH;
+    if (grew > 0) messages.scrollTop += grew;
+    if (bar) bar.remove();
+    // 恢复后不立刻重新裁剪：用户是主动要看的，等下一次真正往下聊再收
+    restoreGuardUntil = Date.now() + 3000;
+  }
+
+  // 切会话 / 重新回放历史时必须清空，否则旧会话的节点会混进新会话
+  function clearTrimmed() {
+    trimmedBin = [];
+    var bar = document.getElementById('trimMore');
+    if (bar) bar.remove();
+  }
+
+  // 切会话：恢复「跟随最新」，并收起悬浮球——新会话打开就该停在最新处
+  function resetFollowBottom() {
+    followBottom = true;
+    jumpNew = false;
+    if (jumpEl) jumpEl.classList.remove('show', 'new');
+  }
 
   // 从待渲染队列里再往前放一批（保持原有顺序：插到当前第一条消息之前）
   function histLoadOlder() {
@@ -3389,6 +3521,29 @@
     requestAnimationFrame(scrollBottom);
   }
 
+  // ---------- 回到底部按钮 + 自动跟随 ----------
+  // 消息区的滚动事件是判断「用户还想不想跟」的唯一信号：滚到底就恢复跟随，
+  // 往上滚就停手。用 passive 监听，滚动时不做任何重排
+  jumpEl = document.getElementById('jumpLatest');
+  if (jumpEl) {
+    // 喇叭图标（内联 SVG，避免额外的图标字体依赖）
+    jumpEl.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" ' +
+      'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+      'stroke-linejoin="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>';
+    jumpEl.addEventListener('click', function () {
+      scrollBottom();
+      jumpNew = false;
+      syncJumpLatest();
+    });
+  }
+  messages.addEventListener('scroll', function () {
+    // 往上翻的那一下立刻停手：不能等下一帧再判断，否则流式正文还在写，
+    // 一帧就能把用户又拽回底部
+    if (!nearBottom()) followBottom = false;
+    else followBottom = true;
+    syncJumpLatest();
+  }, { passive: true });
+
   // 流式正文合帧：新到的字先攒进 streamTextPend，下一帧一次性写进 DOM 再滚到底
   var streamFlushQueued = false;
   var streamTextPend = '';
@@ -3400,7 +3555,8 @@
       // 写之前再取一次 streamBody：这一帧里可能刚开始新一轮、壳子换掉了
       if (streamBody && streamTextPend) streamBody.textContent += streamTextPend;
       streamTextPend = '';
-      scrollBottom();
+      // 用户在往上翻时不能拽回底部：只亮悬浮球的小红点
+      scrollBottomIfFollow();
     });
   }
   if (window.visualViewport) {
@@ -3445,7 +3601,7 @@
       // 写之前再取一次 liveThought：这一帧里思考块可能已经收尾/换掉了
       if (liveThought && thoughtTextPend) liveThought.textContent += thoughtTextPend;
       thoughtTextPend = '';
-      scrollBottomSafe();
+      scrollBottomIfFollow();
     });
   }
 
@@ -3588,6 +3744,32 @@
     // 清掉 body：视频/音频不销毁就会在后台继续播
     rbEl('fvBody').innerHTML = '';
     fvCur = null;
+  }
+
+  // 下载到本机：走 /api/preview 的 raw=1 把文件本体取回来，再用 Blob 存到
+  // 浏览器自己的下载目录。加 download 属性不行——预览地址是带 token 的同源 URL，
+  // 但直接跳过去会被浏览器当「打开」处理，视频/图片只会在页内播放而不是落盘。
+  // 文件在 Deck 上、浏览器可能在另一台电脑，所以只能是「这台电脑的下载目录」。
+  function fbDownload(path, name) {
+    fbToast('正在下载：' + name, 'file');
+    var url = '/api/preview?token=' + encodeURIComponent(token) +
+              '&path=' + encodeURIComponent(path) + '&raw=1';
+    fetch(url).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.blob();
+    }).then(function (blob) {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name || 'download';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // 立刻 revoke 会让部分浏览器（Safari/Firefox）下载中断，延后一点再回收
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 30000);
+      fbToast('已保存到本机下载目录：' + name, 'file');
+    }).catch(function (err) {
+      fbToast('下载失败：' + err.message, 'file', true);
+    });
   }
 
   function fbPreview(path, name) {
@@ -3849,6 +4031,7 @@
       });
     } else {
       fbCtxItem('预览', function () { fbPreview(path, name); });
+      fbCtxItem('下载到本机', function () { fbDownload(path, name); });
       fbCtxItem('引用到对话', function () { fbQuote(path); });
       fbCtxSep();
     }
@@ -5408,6 +5591,9 @@
           // 本端身份以后端这条连接实际看到的为准：前端按 UA 猜只是兜底
           if (msg.my_client) localClient = msg.my_client;
           messages.innerHTML = '';
+          // 上面清空 DOM 时，被摘到 trimmedBin 里的节点还留着旧会话的内容，必须一起丢
+          clearTrimmed();
+          resetFollowBottom();
           // 清空后必须重算按钮：否则切会话/新连接时，上一轮残留的终止态会一直挂着
           updateSendBtn();
           // 分页渲染：只画最近 HIST_PAGE 条，更早的挂在队列里，顶部按需补
@@ -5542,7 +5728,7 @@
           streamEl = makeTextBubble('', false);
           streamBody = streamEl.querySelector('.stream-body');
           liveBox.appendChild(streamEl);
-          scrollBottomSafe();
+          scrollBottomIfFollow();
           break;
         case 'delta':
           if (msg.final) {
@@ -5599,7 +5785,7 @@
           trow.tl.classList.add('open');
           liveBox.appendChild(trow.tl);
           liveThought = tbd;
-          scrollBottomSafe();
+          scrollBottomIfFollow();
           break;
         case 'thought_delta':
           if (liveThought) {
@@ -5629,7 +5815,7 @@
           if (liveBox && msg.event) {
             renderEvent(msg.event, liveBox);
             liveToolCount++;
-            scrollBottomSafe();
+            scrollBottomIfFollow();
           }
           break;
         case 'assistant_message':
@@ -5754,7 +5940,7 @@
           if (msg.question) liveBox.appendChild(makeTextBubble(msg.question, false));
           liveBox.appendChild(makeAskCard(msg.question, msg.options));
           askShown++;   // 收尾时 events 里那条 ask 不再画第二遍
-          scrollBottomSafe();
+          scrollBottomIfFollow();
           break;
         case 'tool_activity':
           showTyping(msg.text);
@@ -6246,7 +6432,7 @@
     if (!item) return;
     if (!busy) { doSend(item.text); return; }
     forceSendAfterCancel = item.text;
-    fetch('/api/cancel?token=' + encodeURIComponent(token), { method: 'POST' })
+    fetch('/api/cancel?client=' + encodeURIComponent(myClient()) + '&device=' + encodeURIComponent(DEVICE_ID) + '&token=' + encodeURIComponent(token), { method: 'POST' })
       .catch(function () {});
   }
 
@@ -6495,7 +6681,9 @@
     // 取消后服务端的 task 要过一小会儿才真的 done()，这期间的 status 还会报 running=true。
     // 加个静默窗口，免得刚停下又被状态回报顶回「终止」，按钮看着像卡死了
     cancelGuardUntil = Date.now() + 5000;
-    fetch('/api/cancel?token=' + encodeURIComponent(token), { method: 'POST' })
+    // 带上调用方：后端日志里会写成「终止请求：client=… device=… ip=…」，
+    // 自动终止的来源（遮罩、别的端、插件）一查就知道，不用再靠猜
+    fetch('/api/cancel?client=' + encodeURIComponent(myClient()) + '&device=' + encodeURIComponent(DEVICE_ID) + '&token=' + encodeURIComponent(token), { method: 'POST' })
       .catch(function () {});
     setBusy(false);
     hideTyping();
@@ -6539,6 +6727,9 @@
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 120) + 'px';
     updateSendBtn();
+    // 输入框长高会把消息区挤矮，底部位置变了：悬浮球贴的是 #chatView 底边，
+    // 这里跟着重算一次，免得它悬在输入框上面或压到输入框
+    syncJumpLatest();
   });
 
   tokenBtn.addEventListener('click', function () {
@@ -7181,6 +7372,8 @@
     shareBar.classList.add('show');
     updateShareCount();
     messages.scrollTop = 0;
+    followBottom = false;
+    syncJumpLatest();
   }
 
   function exitSharePick() {
