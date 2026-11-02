@@ -93,10 +93,16 @@ if [ "$MODE" = "check" ]; then
     warn "Decky 插件是软链接（指向 $(readlink "$TARGET")），请在 Decky 里卸载后重装 zip"
     exit 1
   fi
-  # 最常见的「面板打不开」原因：package.json 里带着 "type": "module"，
-  # Decky 会把 dist/index.js 当 CommonJS 解析，顶层 export 直接抛运行时错误
-  if grep -q '"type"[[:space:]]*:[[:space:]]*"module"' "$TARGET/package.json" 2>/dev/null; then
-    warn "Decky 插件 package.json 含有 \"type\": \"module\"，面板会加载失败"
+  # package.json 必须保留 "type": "module"。Decky 读这个字段决定前端产物按
+  # ESM 还是 CJS 处理；删掉它，产物末尾那行 `export { index as default }`
+  # 在 eval 里就变成 SyntaxError: Unexpected token 'export'（以前踩过这个坑）
+  if ! grep -q '"type"[[:space:]]*:[[:space:]]*"module"' "$TARGET/package.json" 2>/dev/null; then
+    warn "Decky 插件 package.json 缺 \"type\": \"module\"，面板会报 Unexpected token 'export'"
+    exit 1
+  fi
+  # 反过来的情况：ESMODULE_V1 的机器要 import 这份，缺了 default export 会拿不到组件
+  if ! grep -qE 'export[[:space:]]*\{[^}]*[[:space:]]as[[:space:]]default[[:space:]]*\}' "$TARGET/dist/index.js" 2>/dev/null; then
+    warn "Decky 插件的 dist/index.js 没有 default export，Decky 会报「插件没有导出默认组件」"
     exit 1
   fi
   [ -f "$TARGET/plugin.json" ] || { warn "Decky 插件缺 plugin.json"; exit 1; }
@@ -165,8 +171,8 @@ fi
 TMP_ZIP="$(mktemp -t deckmeido-plugin-XXXXXX.zip)"
 trap 'rm -f "$TMP_ZIP"' EXIT
 # 打包规则与 tools/release.py 的 build_plugin_zip 保持一致：顶层 DeckMeido/，
-# package.json 去掉 "type": "module"（带着它 Decky 会把 dist/index.js 当 CJS 解析，
-# 顶层 export 直接抛 Unexpected token 'export'，面板整个打不开）
+# package.json 原样保留 "type": "module"（Decky 靠它决定按 ESM 加载），
+# main 指向 dist/index.js
 "${PYTHON:-python3}" - "$PLUGIN_DIR" "$TMP_ZIP" <<'PY'
 import json, sys, zipfile, pathlib
 plugin, out = pathlib.Path(sys.argv[1]), sys.argv[2]
@@ -175,7 +181,7 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
     z.write(plugin / "main.py", top + "main.py")
     z.write(plugin / "plugin.json", top + "plugin.json")
     pkg = json.loads((plugin / "package.json").read_text(encoding="utf-8"))
-    pkg.pop("type", None)
+    pkg["main"] = "dist/index.js"
     z.writestr(top + "package.json", json.dumps(pkg, ensure_ascii=False, indent=2) + "\n")
     for name in ("README.md", "LICENSE"):
         if (plugin / name).is_file():

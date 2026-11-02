@@ -108,11 +108,12 @@ def build_plugin_zip(ver: str) -> Path:
         put(plugin / "plugin.json", top + "plugin.json")
         # package.json 是 Decky 加载插件时读的第一个文件（取 name / version），
         # 漏了它插件不会报错，只是**整个不出来**，面板里什么都看不到。
-        # 但 "type": "module" 必须去掉：带着它，Decky 前端把 dist/index.js
-        # 当 CJS 解析，顶层 export 直接抛 Unexpected token 'export'。
-        # 剥掉 "type" 这一步和 plugin/deploy.sh 里的部署逻辑必须保持一致
+        # 里面必须原样保留 "type": "module" —— Decky 读这个字段决定用哪种方式
+        # 加载前端产物。删掉它，Decky 会按 CJS 去 eval 产物，顶层的
+        # `export { ... }` 立刻变成 SyntaxError: Unexpected token 'export'。
+        # 别处的插件包都是 type=module，这是唯一正确的形态。
         pkg = json.loads((plugin / "package.json").read_text(encoding="utf-8"))
-        pkg.pop("type", None)
+        pkg["main"] = "dist/index.js"
         zi = zipfile.ZipInfo(top + "package.json")
         zi.external_attr = (0o644 | 0o100000) << 16
         zi.compress_type = zipfile.ZIP_DEFLATED
@@ -132,6 +133,53 @@ def build_plugin_zip(ver: str) -> Path:
             if p.is_file():
                 put(p, top + "dist/" + p.relative_to(plugin / "dist").as_posix())
     return out
+
+
+def verify_plugin_zip(zip_path: Path) -> None:
+    """发版前逐条校验插件包，任何一条不合规就直接中止。
+
+    ⚠️ 这里校验的每一条都是真实踩过的坑，别删、别放宽：
+    - package.json 必须带 "type": "module"。Decky 读它决定前端产物按 ESM
+      还是 CJS 处理。曾经为了「避开顶层 export」把它删掉，结果插件加载报
+      `SyntaxError: Unexpected token 'export'`，改 dist 产物和 main 都没用。
+    - main 必须指向 dist/index.js。
+    - dist/index.js 必须存在且带 default export，否则 Decky 报「插件没有导出默认组件」。
+    - 包里不能残留 dist/legacy-iife.js 之类的历史产物。
+    """
+    problems = []
+    with zipfile.ZipFile(zip_path) as z:
+        names = set(z.namelist())
+        # 1. 顶层必须是 DeckMeido/，否则 Decky 装不上
+        if "DeckMeido/plugin.json" not in names:
+            problems.append("zip 顶层缺少 DeckMeido/plugin.json（Decky 要求顶层同名文件夹）")
+        raw = z.read("DeckMeido/package.json") if "DeckMeido/package.json" in names else None
+        if raw is None:
+            problems.append("zip 里缺 DeckMeido/package.json（Decky 靠它取 name/version）")
+        else:
+            pkg = json.loads(raw.decode("utf-8"))
+            if pkg.get("type") != "module":
+                problems.append(
+                    'package.json 的 "type" 不是 "module"'
+                    "（Decky 会按 CJS 加载 → Unexpected token 'export'）"
+                )
+            if pkg.get("main") != "dist/index.js":
+                problems.append(f'package.json 的 main 是 {pkg.get("main")!r}，应为 "dist/index.js"')
+        # 2. 前端产物
+        entry = "DeckMeido/dist/index.js"
+        if entry not in names:
+            problems.append("zip 里缺 DeckMeido/dist/index.js")
+        else:
+            code = z.read(entry).decode("utf-8", "replace")
+            if " as default" not in code:
+                problems.append("dist/index.js 没有 default export（Decky 会拿不到组件）")
+        # 3. 历史遗留产物不该再出现
+        for n in sorted(names):
+            if "legacy-iife" in n:
+                problems.append(f"zip 里残留历史产物 {n}（应删除）")
+    if problems:
+        raise SystemExit(
+            "插件包校验未通过，已中止打包：\n" + "\n".join("  - " + p for p in problems)
+        )
 
 
 def write_meta(ver: str, tarball: Path):
@@ -165,6 +213,9 @@ def main():
 
     print(f"==> 打包 {ver}")
     z = build_plugin_zip(ver)
+    # 先校验再往下走：校验没过就退出，错误的包不会落到 deploy/ 和 tarball 里
+    verify_plugin_zip(z)
+    print("    插件包参数校验通过（type=module / main=dist/index.js / default export）")
     # 插件 zip 也要放进 install.sh 找的那个位置（deploy/deckmeido-plugin.zip）：
     # 以前只落在 dist/ 根下，install.sh 永远找不到它，「装插件」整段被跳过，
     # 用户只能自己去 Decky 里装 —— 这是插件装不上/装成半截的主要来源。

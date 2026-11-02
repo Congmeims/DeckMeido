@@ -260,6 +260,9 @@
     background: var(--surface-2); border-top: 1px solid var(--line);
   }
   #shareBar.show { display: flex; }
+  /* 分享选择模式下消息区本来就停在顶部，回到底部的球没有意义，
+     而且它会压在分享条上面挡操作 */
+  body.share-mode #jumpLatest { display: none !important; }
   #shareBar button:disabled { opacity: .45; cursor: default; }
   #shareBar .grow { flex: 1; font-size: 13px; color: var(--muted); }
 
@@ -463,11 +466,15 @@
   .typing-label { color: var(--muted); font-size: 12.5px; line-height: 1.5; word-break: break-word; }
 
   /* 「回到底部」悬浮球：AI 正在输出时用户往上翻看旧内容，就不该再被拽回底部，
-     底部的喇叭按钮只在这时出现，点一下回到最新并恢复自动跟随。
-     放在 #chatView 里（绝对定位到消息区右下角），不用包一层影响布局 */
+     只在这时出现，点一下回到最新并恢复自动跟随。
+     位置：输入区正上方、水平居中，压在消息区底边上一点点。
+     它挂在 #composer 里，所以「输入框上方」这个位置是跟着输入区高度自动走的
+     —— 输入框长高、附件 / 排队消息变多时，球会一起被顶上去，
+     既不会压到发送按钮，也不用留一块固定的空白给它 */
   #jumpLatest {
-    position: absolute; right: 18px; bottom: 12px; z-index: 25;
-    width: 38px; height: 38px; border-radius: 50%;
+    position: absolute; left: 50%; top: 0; z-index: 26;
+    transform: translate(-50%, calc(-50% - 38px));
+    width: 38px; height: 38px; border-radius: 50%; padding: 0;
     display: none; align-items: center; justify-content: center;
     border: 1px solid var(--line);
     background: var(--surface-2); color: var(--text);
@@ -492,7 +499,7 @@
     padding-bottom: calc(10px + env(safe-area-inset-bottom));
     background: var(--surface);
     border-top: 1px solid var(--line);
-    position: relative;   /* 供 ＋ 菜单 / 命令菜单定位 */
+    position: relative;   /* 供 ＋ 菜单 / 命令菜单 / 回到底部球定位 */
   }
   #composerBar { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .cb-left { display: flex; gap: 8px; flex: 0 0 auto; min-width: 0; }
@@ -2214,9 +2221,6 @@
 
 <div id="messages"></div>
 
-<!-- 往上翻看旧消息时出现，点一下回到最新 -->
-<button id="jumpLatest" title="回到最新"></button>
-
 <div id="shareBar">
   <button class="menu-btn" id="shareAll">全选</button>
   <span class="grow" id="shareCount">已选 0 条</span>
@@ -2225,6 +2229,10 @@
 </div>
 
 <div id="composer">
+  <!-- 往上翻看旧消息时出现在输入框上方正中间，点一下回到最新。
+       放在 #composer 里而不是消息区：这样它永远悬在输入框上方居中，
+       不会跟右下角的发送按钮挤在一起，输入框长高、排队消息变多时自动跟着上移 -->
+  <button id="jumpLatest" title="回到最新"></button>
   <div id="plusMenu">
     <button id="pmImage">附加图片 / 文件</button>
     <button id="pmFile">引用工作区文件</button>
@@ -2647,15 +2655,47 @@
   };
   function scrollBottom() {
     followBottom = true;
-    messages.scrollTop = messages.scrollHeight;
+    pinBottom();
+  }
+
+  // ---- 真正「滚到最新」：把高度变化也算进去 ----
+  // 只写一次 scrollTop = scrollHeight 是不够的：上面节点被裁掉、图片解码完成、
+  // 工具卡片折叠展开，都会在写入之后再改变内容高度，位置就停在半路，用户得
+  // 连点好几次才能追到底。这里在接下来的几帧里持续把底部钉住，直到页面高度
+  // 连续两帧不再变（或者超过 ~1 秒的保护期），期间稳定就收手。
+  // 连续两帧高度不变才算稳定，见 pinBottom 的说明
+  var pinRaf = 0, pinStart = 0, pinLastH = -1, pinStable = 0;
+  function pinBottom() {
+    // 已经在钉就不再起一轮：免得连点把「稳定」计数重置成 0 一直滚个没完
+    if (pinRaf) return;
+    pinStart = Date.now();
+    pinLastH = -1;
+    pinStable = 0;
+    var step = function () {
+      pinRaf = 0;
+      followBottom = true;
+      messages.scrollTop = messages.scrollHeight;
+      var h = messages.scrollHeight;
+      pinStable = (h === pinLastH) ? pinStable + 1 : 0;
+      pinLastH = h;
+      // 两帧高度不变 = 内容已经长完；再兜一个 1 秒上限防某个元素一直抖
+      if (pinStable < 2 && Date.now() - pinStart < 1000) {
+        pinRaf = requestAnimationFrame(step);
+      } else {
+        syncJumpLatest();
+      }
+    };
+    pinRaf = requestAnimationFrame(step);
   }
   // 自动跟随入口：用户往上翻着看时什么都别做。所有「流式里滚到底」都走这里
   function scrollBottomIfFollow() {
     if (!followBottom) { markJumpLatestNew(); return; }
-    messages.scrollTop = messages.scrollHeight;
+    pinBottom();
   }
 
-  // 悬浮球的显隐 / 红点：不在底部时出现，底部时收起
+  // 悬浮球的显隐 / 红点：不在底部时出现，底部时收起。
+  // 球挂在 #composer 上、位置固定，这个函数只切 class，可以放心地在
+  // 滚动、输入框长高之后随时调用
   var jumpEl = null, jumpNew = false;
   function syncJumpLatest() {
     if (!jumpEl) return;
@@ -3526,17 +3566,20 @@
   // 往上滚就停手。用 passive 监听，滚动时不做任何重排
   jumpEl = document.getElementById('jumpLatest');
   if (jumpEl) {
-    // 喇叭图标（内联 SVG，避免额外的图标字体依赖）
+    // 向下箭头（内联 SVG，避免额外的图标字体依赖）
     jumpEl.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" ' +
       'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
       'stroke-linejoin="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>';
     jumpEl.addEventListener('click', function () {
       scrollBottom();
       jumpNew = false;
-      syncJumpLatest();
+      // 钉底要跨好几帧，先别急着收球；等 pinBottom 稳定后自己 syncJumpLatest
+      jumpEl.classList.remove('new');
     });
   }
   messages.addEventListener('scroll', function () {
+    // 钉底期间自己发的滚动事件不算用户操作，别把 followBottom 翻成 false
+    if (pinRaf) return;
     // 往上翻的那一下立刻停手：不能等下一帧再判断，否则流式正文还在写，
     // 一帧就能把用户又拽回底部
     if (!nearBottom()) followBottom = false;
@@ -3573,15 +3616,20 @@
     // 文件面板的两条提示条与断线联动：
     // - 断线时「AI 正在定位」的内容已经过期，立刻收掉；
     //   「加载中…/读取失败」也是断线留下的死状态
-    // - 重连后按当前跟随状态重新拉一次列表，面板自动恢复，不用手动点
+    // - 重连后按当前跟随状态重新拉一次列表，面板自动恢复，不用手动点。
+    //   只有「由断转连」才补拉：刷新页面时 connect() 里已经拉过一次，
+    //   这里再来一次就是白打一个 /api/browse（面板闪一下「加载中…」）
     if (typeof rbEl === 'function') {
       var tip = rbEl('fbTrackTip');
       if (tip) tip.classList.remove('show');
-      if (ok && typeof fbLoad === 'function' && RB && RB.tab === 'file') {
-        fbLoad(fb.follow ? (fb.aiPath || fb.path || '') : (fb.path || ''));
+      // 静默补拉：不弹「AI 正在定位」，见 fbLoad 的 quiet 参数
+      if (ok && !wasConnected && typeof fbLoad === 'function' && RB && RB.tab === 'file') {
+        fbLoad(fb.follow ? (fb.aiPath || fb.path || '') : (fb.path || ''), null, true);
       }
     }
+    wasConnected = ok;
   }
+  var wasConnected = false;
 
   var liveBox = null;      // 本轮对话的事件容器（实时渲染工具终端块）
   var liveToolCount = 0;   // 已实时渲染的工具数，避免 assistant_message 重复渲染
@@ -4296,7 +4344,9 @@
     });
   }
 
-  function fbLoad(path, sel) {
+  // quiet=true：静默刷新（重连后自动补拉），不弹「AI 正在定位」也不播淡入。
+  // 那条提示是给用户看的「AI 把面板拽走了」，断线重连 / 刷新页面时弹一次纯属打扰。
+  function fbLoad(path, sel, quiet) {
     var url = '/api/browse?token=' + encodeURIComponent(token);
     if (path) url += '&path=' + encodeURIComponent(path);
     rbEl('fbList').innerHTML = '<div class="fb-note">加载中…</div>';
@@ -4314,7 +4364,7 @@
       fbRenderList(data);
       // 数据到位才提示「AI 定位到…」，并给列表一次淡入过渡（AI 跟随跳转时才提示，
       // 用户自己点的目录不打扰）
-      if (fb.follow) {
+      if (fb.follow && !quiet) {
         fbTrackTip(data.path || '');
         var lst = rbEl('fbList');
         lst.classList.remove('fb-anim');
@@ -6727,8 +6777,8 @@
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 120) + 'px';
     updateSendBtn();
-    // 输入框长高会把消息区挤矮，底部位置变了：悬浮球贴的是 #chatView 底边，
-    // 这里跟着重算一次，免得它悬在输入框上面或压到输入框
+    // 球是绝对定位在 #composer 上的，输入框长高不会改变它的相对位置，
+    // 只需要刷新「该不该显示」——长高本身可能让可视区变矮
     syncJumpLatest();
   });
 
@@ -7370,6 +7420,7 @@
     else if (el && el.classList.contains('msg')) el.classList.add('on');
     messages.classList.add('share-pick');
     shareBar.classList.add('show');
+    document.body.classList.add('share-mode');
     updateShareCount();
     messages.scrollTop = 0;
     followBottom = false;
@@ -7379,6 +7430,7 @@
   function exitSharePick() {
     messages.classList.remove('share-pick');
     shareBar.classList.remove('show');
+    document.body.classList.remove('share-mode');
     Array.prototype.forEach.call(messages.querySelectorAll('.msg.on'), function (m) {
       m.classList.remove('on');
     });
