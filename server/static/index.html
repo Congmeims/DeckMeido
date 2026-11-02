@@ -730,7 +730,7 @@
     display: inline-flex; align-items: center; justify-content: center;
   }
   .atchip .at-del:hover { background: var(--danger); color: #fff; }
-  #queueBox { display: none; flex-direction: column; align-items: flex-start; gap: 4px; margin-bottom: 6px; }
+  #queueBox { display: none; flex-direction: column; align-items: stretch; gap: 4px; margin-bottom: 6px; }
   #queueBox.show { display: flex; }
   .qchip {
     display: flex; align-items: center; gap: 7px;
@@ -741,9 +741,9 @@
     height: 34px;
     font-size: 13px;
     cursor: grab;
-    /* 贴合内容宽度，别整条撑满输入区：短消息时按钮跟文字挨在一起，
-       不会飘到右边几百像素外。上限留给超长文本，那时才省略 */
-    width: fit-content;
+    /* 整条拉满输入区宽度：正文占满可用空间，操作按钮统一推到最右侧对齐，
+       多条排队时右边缘是一条直线，不会因文字长短参差 */
+    width: 100%;
     max-width: 100%;
     transition: background .15s ease, border-color .15s ease;
   }
@@ -759,11 +759,12 @@
   }
   .qchip .q-ico { flex: none; color: var(--muted); font-size: 12px; opacity: .8; }
   .qchip .q-text {
-    flex: 0 1 auto; min-width: 0;
+    flex: 1 1 auto; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     color: var(--text);
   }
-  .qchip .q-acts { flex: none; display: flex; align-items: center; gap: 1px; }
+  /* margin-left:auto 兜底：无论正文多短，按钮组都贴在最右侧 */
+  .qchip .q-acts { flex: none; margin-left: auto; display: flex; align-items: center; gap: 1px; }
   .qchip .q-act {
     border: none; background: none; cursor: pointer;
     width: 24px; height: 24px; border-radius: 6px;
