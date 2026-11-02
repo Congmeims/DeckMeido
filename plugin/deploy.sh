@@ -87,6 +87,18 @@ if [ "$MODE" = "check" ]; then
   # 以前这里查的是根目录，部署明明成功也恒报「未部署」。
   [ -f "$TARGET/dist/index.js" ] || { warn "Decky 插件未部署（$TARGET/dist/index.js 不存在）"; exit 1; }
   [ -f "$TARGET/main.py" ] || { warn "Decky 插件缺 main.py"; exit 1; }
+  # 装成了软链接（旧版部署方式）不算就绪：安装目录一挪或删掉，插件就整个失效。
+  # 现在只认「zip 解出来的实体目录」，这里顺手把残留的软链接报出来
+  if [ -L "$TARGET" ]; then
+    warn "Decky 插件是软链接（指向 $(readlink "$TARGET")），请在 Decky 里卸载后重装 zip"
+    exit 1
+  fi
+  # 最常见的「面板打不开」原因：package.json 里带着 "type": "module"，
+  # Decky 会把 dist/index.js 当 CommonJS 解析，顶层 export 直接抛运行时错误
+  if grep -q '"type"[[:space:]]*:[[:space:]]*"module"' "$TARGET/package.json" 2>/dev/null; then
+    warn "Decky 插件 package.json 含有 \"type\": \"module\"，面板会加载失败"
+    exit 1
+  fi
   [ -f "$TARGET/plugin.json" ] || { warn "Decky 插件缺 plugin.json"; exit 1; }
   [ -f "$TARGET/package.json" ] || { warn "Decky 插件缺 package.json（Decky 不会加载它）"; exit 1; }
   exit 0
@@ -131,56 +143,56 @@ fi
 # 把根目录改成 deck 会让整个 ~/homebrew/plugins 的属主和 Decky 的预期不一致。
 # 只借一次 sudo 动本插件自己的目录，根目录保持原样。
 ME="$(id -un)"
-if [ -d "$TARGET" ] || [ "$(stat -c %U "$PLUGINS_ROOT" 2>/dev/null)" != "$ME" ]; then
+if [ -e "$TARGET" ] || [ "$(stat -c %U "$PLUGINS_ROOT" 2>/dev/null)" != "$ME" ]; then
   sudo -n true 2>/dev/null ||
     warn "需要一次 sudo：$PLUGINS_ROOT 属 root，普通用户删不掉插件目录"
-  sudo mkdir -p "$TARGET" 2>/dev/null || warn "建不动 $TARGET，下面可能失败"
-  sudo chown -R "$ME:$(id -gn)" "$TARGET" 2>/dev/null || true
+  # 旧版可能是软链接装进来的：先删链接本身，别顺着链接把安装目录删了
+  if [ -L "$TARGET" ]; then
+    sudo rm -f "$TARGET" 2>/dev/null || rm -f "$TARGET" 2>/dev/null || true
+  fi
+  sudo mkdir -p "$PLUGINS_ROOT" 2>/dev/null || warn "建不动 $PLUGINS_ROOT，下面可能失败"
 fi
 
-# ---- 部署（复制，不软链接）----
-# 前端 dist/index.js 在发版时就编译好了，这里只需要把插件要用的文件复制过去。
-# 复制而非软链接：软链接指回安装目录，一旦安装目录被删/移动插件就失效，
-# 复制则插件目录是自洽的，Decky 重载也不依赖安装目录还在。
+# ---- 部署（解 zip，不软链接）----
+# 唯一认可的安装形态是 Decky 安装器解出来的实体目录。这里不再「复制 + 改 package.json」，
+# 而是现场打一份和 release 完全一致的 zip 再解开：两条路径（Decky 装 / 脚本装）
+# 出来的文件逐字节相同，不会出现「脚本装的能用、Decky 装的打不开」这种分裂。
 [ -f "$PLUGIN_DIR/dist/index.js" ] || die "缺少 dist/index.js（发布包里应自带，不需要 npm 编译）"
 [ -f "$PLUGIN_DIR/main.py" ] || die "缺少 main.py"
 [ -f "$PLUGIN_DIR/plugin.json" ] || die "缺少 plugin.json"
 [ -f "$PLUGIN_DIR/package.json" ] || die "缺少 package.json（Decky 靠它取 name/version，缺了插件不会出现在 QAM）"
 
-# 目录可能已存在（重装/升级），清掉旧的再复制，避免残留旧文件。
-# 删不掉时退回「原地覆盖」：Decky 按文件名加载，多出来的旧文件无害，
-# 比整次安装失败要好
-if [ -d "$TARGET" ] && ! rm -rf "$TARGET" 2>/dev/null; then
-  warn "删不掉旧目录 $TARGET，改为原地覆盖"
-fi
-mkdir -p "$TARGET"
-cp "$PLUGIN_DIR/main.py" "$TARGET/main.py"
-cp "$PLUGIN_DIR/plugin.json" "$TARGET/plugin.json"
-# package.json 是 Decky 加载插件时读的第一个文件（取 name / version），漏了它
-# 插件不报错，只是整个不出来：面板里什么都看不到。
-# 但不能原样复制源文件里的 "type": "module" —— 带着它 Decky 前端会把
-# dist/index.js 当 CommonJS 解析，顶层 export 直接抛 Unexpected token 'export'。
-# 和 tools/release.py 打 zip 时的处理保持一致。
-"${PYTHON:-python3}" - "$PLUGIN_DIR/package.json" "$TARGET/package.json" <<'PY'
-import json, sys
-src, dst = sys.argv[1], sys.argv[2]
-pkg = json.loads(open(src, encoding="utf-8").read())
-pkg.pop("type", None)
-open(dst, "w", encoding="utf-8").write(json.dumps(pkg, ensure_ascii=False, indent=2) + "\n")
+TMP_ZIP="$(mktemp -t deckmeido-plugin-XXXXXX.zip)"
+trap 'rm -f "$TMP_ZIP"' EXIT
+# 打包规则与 tools/release.py 的 build_plugin_zip 保持一致：顶层 DeckMeido/，
+# package.json 去掉 "type": "module"（带着它 Decky 会把 dist/index.js 当 CJS 解析，
+# 顶层 export 直接抛 Unexpected token 'export'，面板整个打不开）
+"${PYTHON:-python3}" - "$PLUGIN_DIR" "$TMP_ZIP" <<'PY'
+import json, sys, zipfile, pathlib
+plugin, out = pathlib.Path(sys.argv[1]), sys.argv[2]
+top = "DeckMeido/"
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    z.write(plugin / "main.py", top + "main.py")
+    z.write(plugin / "plugin.json", top + "plugin.json")
+    pkg = json.loads((plugin / "package.json").read_text(encoding="utf-8"))
+    pkg.pop("type", None)
+    z.writestr(top + "package.json", json.dumps(pkg, ensure_ascii=False, indent=2) + "\n")
+    for name in ("README.md", "LICENSE"):
+        if (plugin / name).is_file():
+            z.write(plugin / name, top + name)
+    for sub in ("py_modules", "dist"):
+        base = plugin / sub
+        if base.is_dir():
+            for q in sorted(base.rglob("*")):
+                if q.is_file() and "__pycache__" not in q.parts:
+                    z.write(q, top + q.relative_to(plugin).as_posix())
 PY
-rm -rf "$TARGET/dist" 2>/dev/null || true
-cp -r "$PLUGIN_DIR/dist" "$TARGET/dist"
-info "已部署插件到 $TARGET"
 
-# ---- 属主对齐 ----
-# 为了能写入，上面把本插件目录临时改成了当前用户；但 Decky 自己装的插件都是
-# root:root（plugin.json 里也声明了 flags: ["root"]，后端本来就以 root 跑）。
-# 部署完把本插件目录还原成 root:root，只动自己的目录，不碰别人。
-if [ "$(stat -c %U "$TARGET" 2>/dev/null)" != "root" ]; then
-  if ! sudo -n chown -R root:root "$TARGET" 2>/dev/null; then
-    dim "未能把 $TARGET 还原成 root:root（不影响加载，插件后端仍以 root 运行）"
-  fi
-fi
+# 先删后解：zip 里没有的旧文件（改过名的模块）留着会让 Decky 加载到过期代码
+rm -rf "$TARGET" 2>/dev/null || sudo rm -rf "$TARGET" 2>/dev/null || true
+sudo unzip -oq "$TMP_ZIP" -d "$PLUGINS_ROOT"
+[ -f "$TARGET/dist/index.js" ] && [ -f "$TARGET/plugin.json" ] || die "解包结果不完整（$TARGET）"
+info "已部署插件到 $TARGET"
 
 # ---- Python 依赖：插件直接用系统 python，不建 venv ----
 # Decky 自带 python 环境，main.py 只用到标准库（tomllib/base64/json），

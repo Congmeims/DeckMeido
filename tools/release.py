@@ -96,8 +96,16 @@ def build_plugin_zip(ver: str) -> Path:
     # No plugin.json found in plugin ZIP
     top = "DeckMeido/"
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(plugin / "main.py", top + "main.py")
-        z.write(plugin / "plugin.json", top + "plugin.json")
+        def put(src: Path, arc: str):
+            # 工作区在 Windows/NTFS 上时源文件可能是 0666 之类，z.write 会把这份权限
+            # 一起带进 zip，解到 Deck 上就成了 world-writable。统一按 0644 写
+            zi = zipfile.ZipInfo.from_file(src, arc)
+            zi.external_attr = (0o644 | 0o100000) << 16
+            zi.compress_type = zipfile.ZIP_DEFLATED
+            z.writestr(zi, src.read_bytes())
+
+        put(plugin / "main.py", top + "main.py")
+        put(plugin / "plugin.json", top + "plugin.json")
         # package.json 是 Decky 加载插件时读的第一个文件（取 name / version），
         # 漏了它插件不会报错，只是**整个不出来**，面板里什么都看不到。
         # 但 "type": "module" 必须去掉：带着它，Decky 前端把 dist/index.js
@@ -105,22 +113,24 @@ def build_plugin_zip(ver: str) -> Path:
         # 剥掉 "type" 这一步和 plugin/deploy.sh 里的部署逻辑必须保持一致
         pkg = json.loads((plugin / "package.json").read_text(encoding="utf-8"))
         pkg.pop("type", None)
-        z.writestr(top + "package.json",
-                   json.dumps(pkg, ensure_ascii=False, indent=2) + "\n")
+        zi = zipfile.ZipInfo(top + "package.json")
+        zi.external_attr = (0o644 | 0o100000) << 16
+        zi.compress_type = zipfile.ZIP_DEFLATED
+        z.writestr(zi, json.dumps(pkg, ensure_ascii=False, indent=2) + "\n")
         for name in ("README.md", "LICENSE"):
             p = plugin / name
             if p.is_file():
-                z.write(p, top + name)
+                put(p, top + name)
         # py_modules 是插件后端的 Python 包（已安装的插件在这里放自身模块，
         # Decky 会把插件目录加进 sys.path），目录要连内容一起打进 zip
         pym = plugin / "py_modules"
         if pym.is_dir():
             for q in sorted(pym.rglob("*")):
                 if q.is_file() and "__pycache__" not in q.parts:
-                    z.write(q, top + q.relative_to(plugin).as_posix())
+                    put(q, top + q.relative_to(plugin).as_posix())
         for p in sorted((plugin / "dist").rglob("*")):
             if p.is_file():
-                z.write(p, top + "dist/" + p.relative_to(plugin / "dist").as_posix())
+                put(p, top + "dist/" + p.relative_to(plugin / "dist").as_posix())
     return out
 
 
@@ -154,8 +164,13 @@ def main():
         sys.exit("plugin/dist/index.js 不存在，先 cd plugin && npm run build")
 
     print(f"==> 打包 {ver}")
-    tar = build_tarball(ver)
     z = build_plugin_zip(ver)
+    # 插件 zip 也要放进 install.sh 找的那个位置（deploy/deckmeido-plugin.zip）：
+    # 以前只落在 dist/ 根下，install.sh 永远找不到它，「装插件」整段被跳过，
+    # 用户只能自己去 Decky 里装 —— 这是插件装不上/装成半截的主要来源。
+    # 必须在 build_tarball 之前放好，发布包才会带上它
+    shutil.copy2(z, ROOT / "deploy" / "deckmeido-plugin.zip")
+    tar = build_tarball(ver)
     write_meta(ver, tar)
     (DIST / f"{z.name}.sha256").write_text(
         f"{sha256(z)}  {z.name}\n", encoding="utf-8", newline="\n"
