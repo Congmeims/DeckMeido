@@ -122,7 +122,7 @@ const tabStyle = (active: boolean): React.CSSProperties => ({
   whiteSpace: "nowrap",
 });
 
-/** 分页右侧的提示：告诉用户 LT/RT 能翻页，不然没人会去按 */
+/** 分页右侧的提示：告诉用户 LB/RB 能翻页，不然没人会去按 */
 const PAGE_HINT: React.CSSProperties = {
   fontSize: 10,
   color: "#6b7683",
@@ -349,7 +349,7 @@ const SHOT_TRANSLATE_TPL =
 
 const SHOT_TRANSLATE_BRIEF = "翻译画面上的文字";
 
-// 面板分页：LT 上一页 / RT 下一页。
+// 面板分页：LB 上一页 / RB 下一页。
 // 第一页放着「看一眼就问」的两个大按钮和对话记录，第二页专门打字，第三页是设置。
 const PAGES = ["询问", "输入", "设置"] as const;
 
@@ -562,7 +562,7 @@ function Content() {
   // 当前这一轮正在做什么（后端 tool_activity 的原文），空表示还没开始动手
   const [activity, setActivity] = useState("");
   const [withShot, setWithShot] = useState(true);
-  // LT/RT 翻页：0 = 询问，1 = 输入，2 = 设置
+  // LB/RB 翻页：0 = 询问，1 = 输入，2 = 设置
   const [page, setPage] = useState(0);
   // 语音播报的实际值以后端为准：status 回来后同步过来，切换时先乐观更新
   const [tts, setTts] = useState(false);
@@ -716,21 +716,29 @@ function Content() {
     if (page === 2 && ticket) void loadModels();
   }, [page, ticket]);
 
-  // LT / RT 翻页。（() => void）表示「听这个键但不拦截它」：
-  // 摇杆和方向键仍然照常滚动对话区，只是屏幕上任意位置按 LT/RT 都能换页。
+  // LB / RB 翻页。（() => void）表示「听这个键但不拦截它」：
+  // 摇杆和方向键仍然照常滚动对话区，只是屏幕上任意位置按 LB/RB 都能换页。
   // 整段包在 try 里：SteamClient.Input 在部分客户端版本上取属性就会抛，
   // 拿不到就算了，面板不能因为翻页失灵而整个挂掉
   useEffect(() => {
-    const prev = () => setPage((p) => (p > 0 ? p - 1 : p));
-    const next = () => setPage((p) => (p < PAGES.length - 1 ? p + 1 : p));
     let reg: any = null;
     try {
       const api = steamClient()?.Input;
       if (api && typeof api.RegisterForControllerInputMessages === "function") {
-        reg = api.RegisterForControllerInputMessages(prev, next);
+        // 这个接口只有一个参数（消息回调），按键信息在 msg.button 里。
+        // 以前写成了 (prev, next) 两个回调，等于把函数当成参数传进去，
+        // 回调永远不会被调用 —— 这就是 LB/RB 一直没反应的原因。
+        // msg.button 用的是 Steam 前端的 EInputButton 编号：LB=6、RB=7
+        // （不是 Linux 内核的 BTN_TL/BTN_TR，插件后端那套是写虚拟手柄用的，别混）。
+        // is_repeat 是长按后的连发，翻页只要按下的第一下，否则一按就翻好几页
+        reg = api.RegisterForControllerInputMessages((msg: any) => {
+          if (!msg || msg.is_repeat) return;
+          if (msg.button === 6) setPage((p) => (p > 0 ? p - 1 : p));
+          else if (msg.button === 7) setPage((p) => (p < PAGES.length - 1 ? p + 1 : p));
+        });
       }
     } catch (e) {
-      logPadOrder(`LT/RT 绑定失败，翻页改用标签点按：${String(e)}`);
+      logPadOrder(`LB/RB 绑定失败，翻页改用标签点按：${String(e)}`);
     }
     return () => {
       try {
@@ -1196,7 +1204,7 @@ function Content() {
         </div>
       </PanelSectionRow>
 
-      {/* 分页标签：LT / RT 翻页。点标签也能切，触摸板用户不用记按键 */}
+      {/* 分页标签：LB / RB 翻页。点标签也能切，触摸板用户不用记按键 */}
       <PanelSectionRow>
         <div style={{ width: "100%" }}>
           <Focusable
@@ -1209,7 +1217,7 @@ function Content() {
               </div>
             ))}
           </Focusable>
-          <div style={PAGE_HINT}>LT / RT 翻页 · {page + 1}/{PAGES.length}</div>
+          <div style={PAGE_HINT}>LB / RB 翻页 · {page + 1}/{PAGES.length}</div>
         </div>
       </PanelSectionRow>
 
@@ -1456,20 +1464,27 @@ function Content() {
         <>
           <GroupTitle>模型</GroupTitle>
           <PanelSectionRow>
-            <DropdownItem
-              // 列表还没拉回来时只放当前模型，点开也不至于空白
-              rgOptions={(modelList.length ? modelList : [model].filter(Boolean)).map((m) => ({
-                data: m,
-                label: m,
-              }))}
-              selectedOption={model}
-              menuLabel="选择模型"
-              strDefaultLabel={loadingModels ? "加载中…" : "选择模型"}
-              disabled={!status?.core_ok}
-              onChange={(o) => {
-                if (o.data && o.data !== model) void changeModel(String(o.data));
-              }}
-            />
+            {/* 下拉框和下面的「刷新模型列表」都是整行控件，宽度得对齐。
+                DropdownItem 不收 style，宽度由 childrenContainerWidth 决定：
+                默认 'min' 只按内容撑开，一行长一行短看着很乱；'max' 才是撑满整行 */}
+            <div style={{ width: "100%", display: "flex" }}>
+              <DropdownItem
+                childrenContainerWidth="max"
+                layout="below"
+                // 列表还没拉回来时只放当前模型，点开也不至于空白
+                rgOptions={(modelList.length ? modelList : [model].filter(Boolean)).map((m) => ({
+                  data: m,
+                  label: m,
+                }))}
+                selectedOption={model}
+                menuLabel="选择模型"
+                strDefaultLabel={loadingModels ? "加载中…" : "选择模型"}
+                disabled={!status?.core_ok}
+                onChange={(o) => {
+                  if (o.data && o.data !== model) void changeModel(String(o.data));
+                }}
+              />
+            </div>
           </PanelSectionRow>
           <PanelSectionRow>
             <div
@@ -1493,11 +1508,13 @@ function Content() {
           <PanelSectionRow>
             {/* 「截屏询问」的提示词：默认就是「看我卡在哪一步…不要剧透，200 字以内」。
                 放在这里可以直接改，和网页设置页是同一份；清空保存即恢复默认 */}
-            <div style={{ marginTop: 4 }}>
+            <div style={{ marginTop: 4, width: "100%" }}>
               <div style={{ color: "#dcdedf", fontSize: 12, marginBottom: 6 }}>
                 截屏询问的提示词{status?.game_name ? `（当前游戏：${status.game_name}）` : ""}
               </div>
+              {/* 和上面的下拉框一样撑满整行，不然输入框只有半截宽 */}
               <TextField
+                style={{ width: "100%" }}
                 value={askTplEdit}
                 onChange={(e) => setAskTplEdit(e.target.value)}
               />

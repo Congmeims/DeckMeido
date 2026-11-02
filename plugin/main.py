@@ -82,7 +82,7 @@ def _workspace() -> str:
 
 # 面板底部显示版本号：优先用后端 config 里报的版本（和网页设置页一致），
 # 后端连不上时退回插件自己的 package.json
-_PLUGIN_VERSION = "0.4.2"
+_PLUGIN_VERSION = "0.5.0"
 try:
     _pkg = json.loads((Path(__file__).resolve().parent / "package.json").read_text(encoding="utf-8"))
     _PLUGIN_VERSION = str(_pkg.get("version") or _PLUGIN_VERSION)
@@ -740,6 +740,10 @@ async def _start_backend(port: int) -> tuple[bool, str]:
             proc = await asyncio.create_subprocess_exec(
                 *_run_as(), str(py), "-m", "uvicorn", "server.main:app",
                 "--host", "0.0.0.0", "--port", str(port),
+                # 心跳放宽：默认 20 秒收不到 pong 就主动断开。Deck 睡眠、切桌面/游戏模式、
+                # 跑一条刷屏命令时事件循环偶尔卡几十秒，默认值会让它把好好的连接踢掉，
+                # 前台表现就是「回答到一半突然整段消失、重连后又冒出来」
+                "--ws-ping-interval", "60", "--ws-ping-timeout", "120",
                 cwd=str(INSTALL_DIR), **kwargs,
             )
         finally:
@@ -1700,9 +1704,10 @@ def _finalize(cancelled: bool = False):
     """把这一轮冻结下来并推给前端。
 
     后端的收尾顺序是 delta(final=True, reply) → assistant_message(全文) → status；
-    所以真正能被当成「这轮结束」的只有前两个，其中 assistant_message 是唯一
-    带完整正文的（没有正文的一轮后端压根不发）。status.running 不能当收尾依据：
-    current_task 在回复广播之前就被置空，那一刻正文还没到。
+    delta(final=True) 那条已经带整份全文（reply），所以读循环收到它就立刻冻结，
+    assistant_message 只负责往面板列表里补一条带 ts 的正式记录。
+    status.running 不能当收尾依据：current_task 在回复广播之前就被置空，
+    那一刻正文还没到。
     """
     global _LAST_REPLY, _STREAM_RUNNING, _TURN_SHOT_PATH
     # 同一轮可能被两条路径冻结（正常收尾一条，连接断开兜底一条）：
@@ -1840,8 +1845,12 @@ async def _read_loop(bk: _Backend):
                 _ACC += text
                 _emit({"kind": "delta", "text": text})
             if msg.get("final"):
-                # 正文已完整，但先不冻结：后面还有一条 assistant_message 要覆盖它
+                # 正文已完整：这条是唯一带整份全文的流式消息，assistant_message 之后
+                # 只会把它再覆盖一遍同样的内容。以前这里只改写 _ACC、不发出去，
+                # 前端只能等 wait_final 的兜底返回值补全文，那段已经攒下的增量还挂在
+                # 流式气泡上，看起来就是同一句话显示了两遍。这里直接把定稿推给前端
                 _ACC = str(msg.get("reply") or _ACC)
+                _finalize()
         elif typ == "tool_activity":
             # 「正在读文件：…」这类过程提示，只给界面看，不进正文
             _emit({"kind": "tool", "text": str(msg.get("text") or "")})
