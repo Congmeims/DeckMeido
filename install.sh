@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # DeckMeido 一键安装 / 升级 / 卸载
 #
-#   bash install.sh              无参数时自动判断：没装就全新安装，装了就直接升级
+#   bash install.sh              无参数时自动判断：没装就直接装，装了则询问「升级 / 卸载 / 退出」（须手动选择）
 #   bash install.sh menu         弹出交互菜单，手动选「安装 / 升级 / 卸载」
 #   bash install.sh install       直接全新安装（跳过菜单）
 #   bash install.sh install --deps      顺带用 sudo 安装控制类插件（不再询问）
@@ -23,9 +23,9 @@
 # `pacman -Q` 会出现「记录在、命令没了」的假象。install.sh check 一律实测。
 # 同理 ydotoold 必须由 systemd 用户单元托管（enabled），裸跑的进程重启即失效。
 #
-# 怎么装（最傻瓜的一条命令，装完能反复用来自动升级）：
+# 怎么装（最傻瓜的一条命令，装完能反复用来自动升级 / 卸载）：
 #   curl -sL https://meido.meagames.cn/deckmeido/install.sh | bash
-#   —— 第一次跑：全新安装；之后再跑同一条：自动升级（无需 git、无需 cd、无需删目录）
+#   —— 第一次跑：全新安装；之后再跑同一条：询问「升级 / 卸载」，选完才继续
 #   想手动选操作（含卸载）：下载脚本后 bash install.sh menu
 #   git 方式（需要本地源码目录时）：git clone ... && cd deckmeido && bash install.sh
 #   已有脚本、只想走镜像拉最新版：bash install.sh from-mirror
@@ -413,6 +413,25 @@ ask_yes() {
     read -r ans || return 1
   fi
   case "$ans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+# 读一行输入并回显提示，返回用户敲的内容。
+#
+# 和 ask_yes 不一样，这里**没有默认值**：管道执行（curl | bash）时 stdin 是脚本本身，
+# 直接 read 会读到还没执行的脚本文本，所以固定从 /dev/tty 读。
+# 拿不到终端（无人值守、ssh 没分配 tty）就返回非 0，由调用方决定怎么退。
+ask_choice() {
+  local prompt="$1" ans=""
+  if [ -t 0 ]; then
+    printf '%s[?]%s %s' "$C_WARN" "$C_END" "$prompt"
+    read -r ans || return 1
+  elif [ -r /dev/tty ]; then
+    printf '%s[?]%s %s' "$C_WARN" "$C_END" "$prompt" > /dev/tty
+    read -r ans < /dev/tty || return 1
+  else
+    return 1
+  fi
+  printf '%s' "$ans"
 }
 
 sudo_warmup() {
@@ -1235,18 +1254,45 @@ install_plugin() {
   fi
   # 检测到 Decky，但装不装让用户定：插件要写进 ~/homebrew/plugins，属于系统级改动
   if ask_yes "检测到 Decky Loader，现在就在游戏模式里装上 QAM 面板吗？"; then
-    info "部署 QAM 插件"
-    # deploy.sh 退出码 2 是「环境不具备」（没装 Decky），不算失败
-    local rc=0
-    DECKMEIDO_NONINTERACTIVE=1 bash "$INSTALL_DIR/plugin/deploy.sh" || rc=$?
-    case "$rc" in
-      0) dim "插件已就绪，到 设置 → Decky Loader 点「重新载入」即可在 QAM 里看到" ;;
-      2) dim "插件暂未部署（环境不具备），装好 Decky Loader 后重跑：bash $INSTALL_DIR/plugin/deploy.sh" ;;
-      *) warn "插件部署失败（退出码 $rc），可单独重跑：bash $INSTALL_DIR/plugin/deploy.sh" ;;
-    esac
+    info "安装 QAM 插件（zip 解包，不使用软链接）"
+    # 直接解 zip 到 ~/homebrew/plugins/DeckMeido：和 Decky 自己的安装器同一套产物，
+    # 插件目录自洽，删掉安装目录也不影响它加载。
+    # deploy.sh 保留给「装完还想重新解一次」的场景，这里不再走它。
+    if plugin_install_zip; then
+      dim "插件已就绪，到 设置 → Decky Loader 点「重新载入」即可在 QAM 里看到"
+    else
+      warn "插件安装失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
+    fi
   else
-    # 跳过：把插件 zip 放到工作区，用户之后想装了自己解压到 ~/homebrew/plugins/DeckMeido
     plugin_handoff_zip
+  fi
+  return 0
+}
+
+# 把发布包里的插件 zip 解到 ~/homebrew/plugins/DeckMeido。
+# zip 由 release.py 打（前端已编译，无需 npm），顶层是 DeckMeido/ 目录。
+plugin_install_zip() {
+  # 优先用发布包里带的那份（deploy/deckmeido-plugin.zip，由 release.py 从 dist/ 拷进来）
+  local src="$INSTALL_DIR/deploy/deckmeido-plugin.zip"
+  local root="${DECKY_PLUGINS_DIR:-$HOME/homebrew/plugins}"
+  local target="$root/DeckMeido"
+  [ -f "$src" ] || { dim "安装包里没带插件包（$src），跳过"; return 1; }
+  need_cmd unzip || { dim "缺少 unzip，跳过"; return 1; }
+  # 旧版本可能是软链接装进来的：先删链接本身，别顺着链接把安装目录删了
+  if [ -L "$target" ]; then
+    rm -f "$target" 2>/dev/null || sudo rm -f "$target"
+  fi
+  # 插件根目录属 root:root，普通用户建不了/删不掉，借一次 sudo 动本插件自己的目录
+  sudo -n mkdir -p "$target" 2>/dev/null ||
+    sudo mkdir -p "$target" 2>/dev/null || { dim "建不动 $target"; return 1; }
+  # 清旧文件再解：zip 里没有的旧文件（改过名的模块）留着会让 Decky 加载到过期代码
+  sudo rm -rf "$target" 2>/dev/null || true
+  sudo mkdir -p "$target" || return 1
+  sudo unzip -oq "$src" -d "$root" || return 1
+  # zip 顶层目录名是 DeckMeido，解到 $root 下正好生成 $target
+  if [ ! -f "$target/dist/index.js" ] || [ ! -f "$target/plugin.json" ]; then
+    dim "解包结果不完整（$target）"
+    return 1
   fi
   return 0
 }
@@ -1597,8 +1643,59 @@ mirror_latest_tag() {
     sed -E 's/.*"([^"]+)"$/\1/' | sed 's/^v//'
 }
 
+# 管道执行时「装 / 升 / 卸」怎么定：
+#   没装   → 什么都不问，直接装（一行命令的默认用途）
+#   装了   → 必须手动选「升级」还是「卸载」，不设默认值
+# 之所以不给默认值：回车就升级的话，想卸载的人一旦手滑就直接覆盖安装，
+# 卸载入口等于藏起来了。这里强制敲 1 或 2。
+mirror_pick_action() {
+  print_banner
+  if [ ! -f "$INSTALL_DIR/VERSION" ]; then
+    info "未检测到已安装的 $APP，直接开始全新安装（$INSTALL_DIR）"
+    printf 'install'
+    return 0
+  fi
+  local ver; ver=$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)
+  info "检测到已安装：$APP${ver:+ v$ver}（$INSTALL_DIR）"
+  echo
+  echo "  请选择要执行的操作："
+  echo "  ${C_B}1${C_END}  升级到最新版  ${C_DIM}（保留配置、人设与记忆）${C_END}"
+  echo "  ${C_B}2${C_END}  卸载          ${C_DIM}（删代码，人设与记忆会备份）${C_END}"
+  echo "  ${C_B}0${C_END}  退出"
+  echo
+  local choice
+  # 不写默认值：拿不到终端或读失败一律退出，绝不替用户选升级
+  choice=$(ask_choice "请输入序号（1 升级 / 2 卸载 / 0 退出）：") || {
+    echo >&2
+    warn "没有可用的终端，无法确认要升级还是卸载"
+    dim "带子命令直接指定：bash install.sh upgrade / bash install.sh uninstall"
+    return 3
+  }
+  case "$choice" in
+    1) printf 'upgrade' ;;
+    2) printf 'uninstall' ;;
+    0|""|q|Q) printf 'quit' ;;
+    *) return 4 ;;
+  esac
+}
+
 do_from_mirror() {
   need_cmd curl || die "需要 curl：先装 curl（sudo pacman -S curl）"
+  local action rc=0
+  action="$(mirror_pick_action)" || rc=$?
+  if [ "$rc" != 0 ]; then
+    [ "$rc" = 3 ] && exit 0
+    die "无效选择，已退出（输入 1 升级 / 2 卸载 / 0 退出）"
+  fi
+  case "$action" in
+    quit) info "已取消"; exit 0 ;;
+    uninstall)
+      # 卸载不需要安装包：直接用这张脚本自带的 do_uninstall，
+      # 免得为了删代码先下载几十 MB
+      do_uninstall
+      exit 0 ;;
+  esac
+
   print_banner
   info "镜像站：$MIRROR"
   local tag; tag="$(mirror_latest_tag || true)"
@@ -1619,11 +1716,13 @@ do_from_mirror() {
   tar -xzf "$tmp/pkg.tar.gz" -C "$tmp" || die "解压失败"
   local src; src="$(find "$tmp" -maxdepth 2 -name install.sh -printf '%h\n' | head -n1)"
   [ -n "$src" ] || die "安装包结构不对：里面没有 install.sh"
-  info "开始安装（来源：$src）"
+  info "开始执行：$action（来源：$src）"
   # 让子进程沿用这次用的镜像地址，写进配置的就是它。
-  # 不带子命令：让 install.sh 的 smart_default 自己判断「没装就装、装了就升级」，
-  # 这样同一条 curl 命令既能首次安装也能反复升级。
-  DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" "${1:-}"
+  # 子命令明确传下去：上面已经问过「升级还是卸载」，不能让子脚本再猜一次
+  case "$action" in
+    upgrade) DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" upgrade ;;
+    *)       DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" install ;;
+  esac
 }
 
 # 正在跑的任务要先取消：卸载时把后端直接杀掉，正在执行的命令会变成孤儿进程
@@ -1836,19 +1935,36 @@ show_menu() {
   fi
 }
 
-# 无参数时的智能默认：已装就升级、没装就全新安装，一条命令来回用都行。
-# 想手动选操作，或要卸载/自检，用 bash install.sh menu 或直接带子命令。
+# 无参数时：没装就直接装；已装就「升级 / 卸载 / 退出」三选一，不给默认值。
+# 想跳过询问，直接带子命令：bash install.sh upgrade / install / uninstall / check / menu
 smart_default() {
   check_user
-  if [ -f "$INSTALL_DIR/VERSION" ]; then
-    local ver
-    ver=$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)
-    info "检测到已安装 $APP${ver:+ v$ver}，直接升级（想卸载用 bash install.sh uninstall）"
-    do_upgrade
-  else
+  if [ ! -f "$INSTALL_DIR/VERSION" ]; then
     info "未检测到已安装的 $APP，开始全新安装"
     do_install
+    return
   fi
+  local ver; ver=$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)
+  print_banner
+  info "检测到已安装：$APP${ver:+ v$ver}（$INSTALL_DIR）"
+  echo
+  echo "  请选择要执行的操作："
+  echo "  ${C_B}1${C_END}  升级到最新版  ${C_DIM}（保留配置、人设与记忆）${C_END}"
+  echo "  ${C_B}2${C_END}  卸载          ${C_DIM}（删代码，人设与记忆会备份）${C_END}"
+  echo "  ${C_B}0${C_END}  退出"
+  echo
+  local choice
+  if ! choice=$(ask_choice "请输入序号（1 升级 / 2 卸载 / 0 退出）："); then
+    warn "没有可用的终端，无法确认要升级还是卸载"
+    dim "带子命令直接指定：bash install.sh upgrade / bash install.sh uninstall"
+    exit 0
+  fi
+  case "$choice" in
+    1) do_upgrade ;;
+    2) do_uninstall ;;
+    0|""|q|Q) info "已取消"; exit 0 ;;
+    *) die "无效选择：$choice（输入 1 升级 / 2 卸载 / 0 退出）" ;;
+  esac
 }
 
 # 通过「curl -sL ... | sh -」管道执行时，脚本不在本地磁盘上，这里直接自举：

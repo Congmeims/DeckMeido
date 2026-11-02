@@ -585,7 +585,7 @@ class Mask(QWidget):
         def post():
             try:
                 req = urllib.request.Request(
-                    f"{API}/api/cancel?token={TOKEN}", method="POST")
+                    f"{API}/api/cancel?client=overlay&device=deck&token={TOKEN}", method="POST")
                 urllib.request.urlopen(req, timeout=3).read()
             except Exception:
                 pass

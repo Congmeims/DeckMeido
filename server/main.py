@@ -19,7 +19,7 @@ import zipfile
 from pathlib import Path
 
 import tomllib
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Header, HTTPException, Depends, UploadFile, Response
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Header, HTTPException, Depends, UploadFile, Response, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -346,6 +346,31 @@ def _build_llm_msgs(hist: list[dict], sys_prompt: str, sid: str = "") -> list[di
 _ABORT_NOTE_MAX = 12
 
 
+def _tool_results_digest(tool_log: list[dict] | None, max_chars: int = 300) -> str:
+    """把本轮已执行完的工具连结果一起列出来（终止 / 超时落盘用）
+
+    以前终止和超时只留一句「已终止」「超时了」，做过什么、结果是什么全丢：
+    用户事后再看会话，看不到那条 find 跑出了什么、文件到底改了没有，
+    下一轮模型也只能重做一遍。这里每条附上结果的摘要（去掉多余空行、截断）。
+    """
+    done = [t for t in (tool_log or []) if isinstance(t, dict) and not t.get("interrupted")]
+    if not done:
+        return ""
+    lines = []
+    for t in done[:32]:
+        name = t.get("name") or "?"
+        summary = str(t.get("summary") or "").strip()
+        head = f"- {name}：{summary}" if summary else f"- {name}"
+        out = str(t.get("output") or "").strip()
+        out = re.sub(r"\n{2,}", "\n", out)
+        if len(out) > max_chars:
+            out = out[:max_chars] + "…"
+        lines.append(head + (f"\n  结果：{out}" if out else ""))
+    if len(done) > 32:
+        lines.append(f"- 还有 {len(done) - 32} 步，略")
+    return "\n".join(lines)
+
+
 def _aborted_note(hist: list[dict]) -> str:
     """上一轮是被用户终止的话，给模型一条交接说明
 
@@ -370,7 +395,12 @@ def _aborted_note(hist: list[dict]) -> str:
         for t in finished[:_ABORT_NOTE_MAX]:
             name = t.get("name") or ""
             summary = str(t.get("summary") or "").strip()
-            lines.append(f"- {name}：{summary}" if summary else f"- {name}")
+            line = f"- {name}：{summary}" if summary else f"- {name}"
+            # 带上结果：下一轮模型才知道「这步已经做成了什么」，不会照着重跑一遍
+            out = re.sub(r"\n{2,}", "\n", str(t.get("output") or "").strip())
+            if out:
+                line += "\n  " + (out[:300] + "…" if len(out) > 300 else out)
+            lines.append(line)
         if len(finished) > _ABORT_NOTE_MAX:
             lines.append(f"- 还有 {len(finished) - _ABORT_NOTE_MAX} 步，略")
     if cut:
@@ -2349,8 +2379,18 @@ async def start_chat(text: str, announce: bool = True, **kwargs):
 
 
 @app.post("/api/cancel", dependencies=[Depends(check_token)])
-async def api_cancel():
+async def api_cancel(request: Request, client: str = "", device: str = ""):
+    """终止当前这一轮，并把「谁点的」记进日志。
+
+    以前这里只留一行 `200 OK`，于是出现「这一轮莫名其妙被终止」时，
+    只能去背调哪个浏览器标签页在发请求（会话 #65e2b8 里就为此猜错了两轮）。
+    现在把调用方的 client/device 和来源 IP 一起打出来，插件、客户端、
+    网页各自带自己的标识，对不上就说明是别人的页面在点。
+    """
+    who = f"client={client or '?'} device={device or '?'} ip={request.client.host if request.client else '?'}"
     if current_task and not current_task.done():
+        print(f"[DeckMeido] 终止请求：{who}（有正在执行的轮次，已取消）",
+              file=sys.stderr, flush=True)
         current_task.cancel()
         # 遮罩进程在遮罩消失前会重新拉一次状态，这里立刻翻成 false，
         # 用户点完遮罩就不会出现「已终止」又闪回操作中的画面
@@ -2360,6 +2400,8 @@ async def api_cancel():
         # 登记在案的子进程树砍掉，让那一轮无论如何都能收尾。
         killed = await tools.abort_all_procs()
         return {"ok": True, "killed": killed}
+    print(f"[DeckMeido] 终止请求：{who}（当前没有在执行的任务，仅清残留子进程）",
+          file=sys.stderr, flush=True)
     # 任务已结束但可能还留着后台子进程，一并清掉，避免下次点终止没反应
     killed = await tools.abort_all_procs()
     return {"ok": False, "detail": "no active task", "killed": killed}
@@ -3067,6 +3109,14 @@ async def handle_chat(text: str, announce: bool = True,
         killed_text = "\n\n".join(s.strip() for s in killed_segs if s.strip()).strip()
         if partial.strip() and partial.strip() not in killed_text:
             killed_text = (killed_text + "\n\n" + partial.strip()).strip() if killed_text else partial.strip()
+        # 一句话都还没说出口就被终止时（工具刚开跑就点了终止），
+        # 以前会落一条 content 为空串的 assistant 消息 —— 会话里看着像「没有回答」，
+        # 用户也看不到到底跑过什么。这里把已执行的步骤和结果补成正文
+        digest = _tool_results_digest(tool_log)
+        if not killed_text.strip():
+            killed_text = ("（已终止，这一轮还没生成正文）"
+                           + (f"\n\n终止前已经执行的步骤：\n{digest}" if digest
+                              else "\n\n（还没有执行任何工具）"))
         # 无论有没有留下正文，都要落一条带 aborted_turn 的 assistant 消息：
         # 它带着这一轮做过哪些工具，下一轮靠它告诉模型「已经终止，别接着做」
         # （见 _aborted_note）。以前只在有正文时才落，于是刚开跑就被终止的
@@ -3086,7 +3136,10 @@ async def handle_chat(text: str, announce: bool = True,
         # 统一在这里收成一条带错误说明的回复，走与成功路径相同的收尾
         print(f"[DeckMeido] 本轮异常：{e}", file=sys.stderr)
         reply = f"（出错了：{e}）"
-        if events:
+        digest = _tool_results_digest(tool_log)
+        if digest:
+            reply += f"\n\n出错前已经执行的步骤：\n{digest}"
+        elif events:
             reply += "\n\n（上面这些步骤已经执行，结果未完整汇总）"
     finally:
         set_overlay(False)
@@ -4234,7 +4287,12 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
                       from_client=client),
             timeout=agent_timeout)
     except asyncio.TimeoutError:
-        return "（这轮处理超时了——可能是模型响应慢或命令太久。任务可能已在后台执行，换个问法或让我检查下结果）"
+        # 超时不能只丢一句「超时了」：这一轮里已经跑完的命令、改过的文件全都要留下，
+        # 否则用户既看不到结果，下一轮模型也会把同样的活重做一遍
+        note = ("（这轮处理超时了——可能是模型响应慢或命令太久。任务可能已在后台执行，"
+                "换个问法或让我检查下结果）")
+        digest = _tool_results_digest(tool_log)
+        return note + (f"\n\n超时前已经执行的步骤：\n{digest}" if digest else "")
     # 系统层兜底：full 模式下模型空口拒绝（没调任何工具）→ 注入纠正指令重试一次
     if (PERMISSION_MODE == "full"
             and not any(e.get("type") == "tool" for e in events)
@@ -4679,6 +4737,9 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         set_overlay(False)
                     set_overlay_pointer(False)
                 log_item["interrupted"] = False
+                # 结果摘要随 tool_log 落盘：终止 / 超时那一轮靠它把「做过什么、
+                # 结果是什么」留在会话里（见 _tool_results_digest）
+                log_item["output"] = result[:2000]
                 # 终端输出截断后随事件展示（网页端显示为终端块）
                 event["output"] = result[:1500] + ("\n…（截断）" if len(result) > 1500 else "")
                 if name in ("write_file", "edit_file") and tools.LAST_DIFF:

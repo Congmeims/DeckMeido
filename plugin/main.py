@@ -2493,7 +2493,7 @@ class Plugin:
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
             req = (
-                "POST /api/cancel HTTP/1.1\r\n"
+                "POST /api/cancel?client=qam&device=deck HTTP/1.1\r\n"
                 f"Host: 127.0.0.1:{port}\r\n"
                 f"X-Token: {token}\r\n"
                 "Content-Length: 0\r\n"
