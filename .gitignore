@@ -29,6 +29,9 @@ dist/
 # 离线依赖包（体积大，不进仓库；发版时由 tools/fetch_offline_deps.sh 现拉）
 deploy/deps/*.pkg.tar.zst
 
+# 插件 zip 是 release.py 现打的产物，入库会和源码脱节，只作中间文件
+deploy/deckmeido-plugin.zip
+
 # 安装时生成的产物（由 install.sh 写入，不入库）
 VERSION
 uninstall.sh
