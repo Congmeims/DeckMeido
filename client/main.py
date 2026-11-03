@@ -40,6 +40,11 @@ BACKEND_LOG = DECKMEIDO_DIR / "server" / "backend.log"
 _BACKEND_LOG_MAX = 5 * 1024 * 1024   # 5 MB，只留一代 backend.log.1
 _log_handle = None
 
+# 插件大屏页「关闭核心」留下的标记：存在时 watchdog 不自动重拉，保证
+# 「关闭后保持停止、只有用户点启动才起来」。插件点「启动」会删掉它；
+# 手动打开客户端属于显式启动，不受这个标记限制。
+CORE_STOP_MARKER = DECKMEIDO_DIR / "server" / ".core_stopped"
+
 # 客户端崩溃日志：切游戏模式时 gamescope 会话重建会掐断 Wayland 连接，
 # Qt 在那种情况下是 abort()，Python 层 try/except 拦不住，只有 faulthandler
 # 能在进程死前把栈写下来。没有它就只能看到一句 "Wayland connection broke"。
@@ -121,6 +126,12 @@ def ensure_backend() -> bool:
     except Exception:
         pass
     print(f"[DeckMeido] 后端未运行，正在拉起，日志：{BACKEND_LOG}", file=sys.stderr)
+    # 手动打开客户端属于用户显式启动：清掉插件留下的停止标记，
+    # 之后 watchdog 才能继续保活
+    try:
+        CORE_STOP_MARKER.unlink(missing_ok=True)
+    except Exception:
+        pass
     kicker = _start_backend()
     # 记下句柄交给调用方，watchdog 才认得出「这是我刚拉起来的那个」
     global _STARTED_BACKEND
@@ -434,7 +445,13 @@ def main() -> int:
         这里**不发 HTTP**：watchdog 跑在 Qt 主线程上，探活一旦超时就会把界面
         冻住（旧版 2 秒硬超时，后端忙着流式生成时既卡界面又容易误判成「已死」）。
         改成看进程句柄 + 端口监听，都是毫秒级返回。
+
+        插件大屏页点过「关闭核心」时（CORE_STOP_MARKER 在），这里必须原地不动：
+        自动重拉等于把用户的「关闭」作废。只有用户显式点「启动」才会清标记。
         """
+        if CORE_STOP_MARKER.exists():
+            watch_state["misses"] = 0
+            return
         proc = backend["proc"]
         if proc is not None:
             if proc.poll() is None:
