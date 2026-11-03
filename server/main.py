@@ -180,6 +180,17 @@ DEFAULT_ASK_TEMPLATE = (
     "不要剧透：只讲眼前这一步怎么过，不要提前说后面的剧情、结局或其他关卡的解法。"
 )
 ASK_TEMPLATE = str(CFG.get("agent", {}).get("ask_template") or "").strip() or DEFAULT_ASK_TEMPLATE
+# 「截图翻译」的提示词模板。以前写死在插件前端，用户改不了；现在和截屏询问一样
+# 存进 [agent] translate_template，插件设置区保存后下一次翻译就用新的。
+DEFAULT_TRANSLATE_TEMPLATE = (
+    "把画面上的外文原文先照抄出来，再逐句翻译成简体中文。"
+    "已经是中文就原样说明，不要翻译。\n"
+    "只翻译、不解释剧情、不剧透，保持原文的换行和顺序。"
+)
+TRANSLATE_TEMPLATE = (
+    str(CFG.get("agent", {}).get("translate_template") or "").strip()
+    or DEFAULT_TRANSLATE_TEMPLATE
+)
 # 单轮最多几轮工具往返。以前默认 0 = 不限，模型一旦陷进「截图 → 没看懂 → 再截图」
 # 这种循环就会一直跑下去，只能靠用户点终止。12 步对稍微复杂一点的活儿（找文件、
 # 改代码、跑测试、修错）往往不够，走到一半就被截断；现在放到 50 步，
@@ -696,6 +707,7 @@ tts = TTS(
 def apply_config(cfg: dict):
     """热更新运行配置（LLM / TTS / 权限模式 / 访问令牌），无需重启"""
     global CFG, TOKEN, PERMISSION_MODE, PERSONA, SYSTEM_PROMPT, MAX_TOOL_ROUNDS, ASK_TEMPLATE
+    global TRANSLATE_TEMPLATE
     CFG = cfg
     # 人设不在这里取：它存在 meidosoul.json，改完由 update_config 的调用方
     # 直接 reload_persona()，config.toml 里即使还留着旧的 [persona] 段也不再生效
@@ -704,6 +716,10 @@ def apply_config(cfg: dict):
                        or DEFAULT_MAX_TOOL_ROUNDS)
     ASK_TEMPLATE = (str(cfg.get("agent", {}).get("ask_template") or "").strip()
                     or DEFAULT_ASK_TEMPLATE)
+    TRANSLATE_TEMPLATE = (
+        str(cfg.get("agent", {}).get("translate_template") or "").strip()
+        or DEFAULT_TRANSLATE_TEMPLATE
+    )
     c = cfg["llm"]
     llm.base_url = c["base_url"].rstrip("/")
     llm.api_key = c["api_key"]
@@ -2503,6 +2519,11 @@ class AskTemplateUpdate(BaseModel):
     text: str = ""
 
 
+class TranslateTemplateUpdate(BaseModel):
+    # 空 / 全空白表示恢复默认模板
+    text: str = ""
+
+
 class MemoryItem(BaseModel):
     """设置页手工教学用的记忆条目（text 为空 = 删除这条）"""
     id: str | None = None
@@ -2562,6 +2583,9 @@ async def api_get_config():
         # 「截屏询问」的提示词模板：插件设置区里可以直接改
         "ask_template": ASK_TEMPLATE,
         "ask_template_default": DEFAULT_ASK_TEMPLATE,
+        # 「截图翻译」的提示词模板：同一套存储与热更新路径
+        "translate_template": TRANSLATE_TEMPLATE,
+        "translate_template_default": DEFAULT_TRANSLATE_TEMPLATE,
         # 更新源：updater 从 config.toml 的 [update] 段读，缺省即默认值
         "update_source": updater.update_cfg()["source"],
         "update_source_label": updater.source_label(),
@@ -2803,6 +2827,28 @@ async def api_set_ask_template(req: AskTemplateUpdate):
     tpl = req.text.strip() or DEFAULT_ASK_TEMPLATE
     update_config({"agent": {"ask_template": tpl}})
     return {"ok": True, "text": ASK_TEMPLATE}
+
+
+@app.get("/api/translate-template", dependencies=[Depends(check_token)])
+async def api_get_translate_template():
+    """「截图翻译」提示词模板：和大屏模型页那一栏是同一份配置"""
+    return {
+        "ok": True,
+        "text": TRANSLATE_TEMPLATE,
+        "default": DEFAULT_TRANSLATE_TEMPLATE,
+    }
+
+
+@app.post("/api/translate-template", dependencies=[Depends(check_token_any)])
+async def api_set_translate_template(req: TranslateTemplateUpdate):
+    """改「截图翻译」提示词模板：空 / 全空白表示恢复默认
+
+    保存后写回 config.toml 的 [agent] translate_template 并立即热更新；
+    下一次插件发起的翻译请求就会带上这段新提示词。
+    """
+    tpl = req.text.strip() or DEFAULT_TRANSLATE_TEMPLATE
+    update_config({"agent": {"translate_template": tpl}})
+    return {"ok": True, "text": TRANSLATE_TEMPLATE}
 
 
 # ---------- 版本与升级 ----------
