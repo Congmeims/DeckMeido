@@ -2506,6 +2506,8 @@ class ConfigUpdate(BaseModel):
     clear_api_key: bool = False
     model: str | None = None
     tts_enable: bool | None = None
+    # 发送时是否附带给游戏画面（面板上的「画面：开/关」）
+    with_shot: bool | None = None
     permission_mode: str | None = None
     # 深度思考档位：空串 / low / medium / high（前端滑条的「无 / 低 / 中 / 高」）
     reasoning_effort: str | None = None
@@ -2578,6 +2580,10 @@ async def api_get_config():
         "model": llm.model,
         "reasoning_effort": llm.reasoning_effort,
         "tts_enable": tts.enable,
+        # 带画面询问的开关：面板重开后按它恢复，不能只存在前端内存里
+        "with_shot": bool((CFG.get("agent") or {}).get("with_shot", True)),
+        # 语音输入开关：和语音播报一样，面板上要能显示和切换
+        "stt_enable": stt.enable,
         "permission_mode": PERMISSION_MODE,
         "workspace": str(tools.WORKSPACE),
         "token": TOKEN,
@@ -2757,6 +2763,9 @@ async def api_set_config(req: ConfigUpdate):
         updates["llm"] = llm_updates
     if req.tts_enable is not None:
         updates["tts"] = {"enable": req.tts_enable}
+    if req.with_shot is not None:
+        # 带画面开关落盘到 [agent]：面板关掉再打开要还是上次选的那个
+        updates.setdefault("agent", {})["with_shot"] = bool(req.with_shot)
     if req.reasoning_effort is not None and req.reasoning_effort in ("", "low", "medium", "high"):
         # 深度思考滑条：空串 = 不带参数（不思考），其余原样写进 [llm]。
         # 空串要显式落盘，不能当作「没传」忽略，否则关掉之后再打开还是旧的档位
@@ -2812,6 +2821,7 @@ async def api_set_config(req: ConfigUpdate):
             "token": TOKEN,
             # 回传归一之后的实值：前端滑条按它落位（比如 DeepSeek 上的「中」实际是 high）
             "reasoning_effort": llm.reasoning_effort,
+            "with_shot": bool((CFG.get("agent") or {}).get("with_shot", True)),
             "model": llm.model}
 
 
@@ -2896,6 +2906,17 @@ async def api_stt_download():
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"模型下载失败：{exc}")
     return {"ok": True, "model_root": str(root)}
+
+
+@app.post("/api/stt/toggle", dependencies=[Depends(check_token_any)])
+async def api_set_stt(enabled: bool = Query(...)):
+    """只切语音输入开关：给 Decky 面板用
+
+    关掉时 apply_config 会顺手 stt.unload()，把识别模型从内存里放掉
+    （SenseVoice int8 常驻约 100MB+），Dock 上的 15W 预算也少一份占用。
+    """
+    update_config({"stt": {"enable": bool(enabled)}})
+    return {"ok": True, "stt_enable": stt.enable}
 
 
 @app.post("/api/stt/transcribe", dependencies=[Depends(check_token_any)])

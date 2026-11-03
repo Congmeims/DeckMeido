@@ -1,23 +1,22 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import {
   DialogButton,
-  DropdownItem,
   Focusable,
   GamepadButton,
   Navigation,
+  showModal,
   TextField,
-  ToggleField,
 } from "@decky/ui";
 import { ACCENT, DIM, ERR_COLOR, Md, TEXT } from "./ui";
 import { Item, useSession } from "./useSession";
 import { useVoiceInput } from "./useVoiceInput";
 
-// 全屏页版式：按 Deck 的 1280×800 算，页面内高 800-48-44=708
-// 页头 26 + 状态行（询问 46 / 聊天 28 / 设置 28）+ 间距 + 输入卡（仅聊天 60）+ 分隔线 1
-// 询问页消息区 612、聊天页消息区 549；14px/1.5=21px/行 → 每行约 75 个汉字
-const MAX_W = 1360;
-const PAGE_TOP = 48;
-const PAGE_BOTTOM = 44;
+// 全屏页版式：按 Deck 的 1280×800 算。
+// 800 里真正能用的只有中间那条：顶部状态栏约 65、底部按键图例条约 50。
+// 实测页头还能再往上提一点，所以顶部只让 44、底部让 46，多出的 ~25px
+// 全部给内容区（三页共用）。
+const PAGE_TOP = 44;
+const PAGE_BOTTOM = 46;
 
 const CHAT_FONT = 14;
 const CHAT_LH = 1.5;
@@ -34,16 +33,25 @@ const fmtLogTime = (ts: number) => {
 
 const TABS = ["询问", "聊天", "设置"] as const;
 
+/** 控制盘基调：深海军底 + 细微内阴影，卡片有角色色左边条 */
 const cardStyle: React.CSSProperties = {
-  background: "rgba(255,255,255,.05)",
-  border: "1px solid rgba(255,255,255,.08)",
-  borderRadius: 4,
-  padding: 16,
+  background: "rgba(14,20,28,.92)",
+  border: "1px solid rgba(90,169,230,.08)",
+  borderRadius: 3,
+  padding: 8,
   display: "flex",
   flexDirection: "column",
-  gap: 10,
+  gap: 6,
   minWidth: 0,
   boxSizing: "border-box",
+};
+
+/** 主题色：所有卡片统一用同一个蓝，不再按功能分色 */
+const C = {
+  cyber: "#5AA9E6",
+  model: "#5AA9E6",
+  prompt: "#5AA9E6",
+  ops: "#5AA9E6",
 };
 
 /** 询问页、聊天页共用同一条分隔线：1px 弱线，左右各留 2px 不贴边 */
@@ -55,11 +63,11 @@ const dividerStyle: React.CSSProperties = {
 };
 
 const sectionTitle: React.CSSProperties = {
-  fontSize: 13,
-  letterSpacing: 1,
+  fontSize: 11.5,
+  letterSpacing: 2.5,
   textTransform: "uppercase",
-  color: ACCENT,
-  fontWeight: 700,
+  color: DIM,
+  fontWeight: 600,
 };
 
 const tabStyle = (active: boolean): React.CSSProperties => ({
@@ -95,6 +103,7 @@ function ActionButton({
   primary,
   description,
   style,
+  compact,
 }: {
   children: React.ReactNode;
   onClick: () => void;
@@ -102,6 +111,8 @@ function ActionButton({
   primary?: boolean;
   description?: string;
   style?: React.CSSProperties;
+  /** 紧凑高度：按钮高度压到和一行文字齐平，给设置页省纵向空间 */
+  compact?: boolean;
 }) {
   return (
     <DialogButton
@@ -111,12 +122,23 @@ function ActionButton({
       onCancelActionDescription="返回"
       style={{
         width: "100%",
-        minHeight: 46,
-        borderRadius: 4,
-        fontSize: 14,
+        // DialogButton 自带 Steam 默认 min-width，塞进窄列会被撑爆导致
+        // 出界/重叠（箭头按钮、开关按钮都栽过这里），必须压掉
+        minWidth: 0,
+        minHeight: compact ? 22 : 46,
+        fontSize: 13,
+        lineHeight: 1.2,
+        paddingLeft: 8,
+        paddingRight: 8,
+        paddingTop: compact ? 1 : 4,
+        paddingBottom: compact ? 1 : 4,
+        whiteSpace: "nowrap",
         boxSizing: "border-box",
-        background: primary ? "rgba(90,169,230,.24)" : "rgba(255,255,255,.10)",
-        color: TEXT,
+        // 控制盘按钮：primary 青高亮，普通半透黑 + 青细边
+        background: primary ? "rgba(90,169,230,.28)" : "rgba(255,255,255,.04)",
+        border: `1px solid ${primary ? "rgba(90,169,230,.55)" : "rgba(255,255,255,.12)"}`,
+        borderRadius: 3,
+        color: primary ? "#eaf2fb" : TEXT,
         ...style,
       }}
     >
@@ -158,23 +180,28 @@ function StatRow({
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "84px minmax(0, 1fr)",
+        gridTemplateColumns: "52px minmax(0, 1fr)",
         gap: 8,
-        alignItems: "baseline",
-        fontSize: 13,
-        lineHeight: 1.6,
+        alignItems: "center",
+        fontSize: 12.5,
+        lineHeight: 1.3,
         minWidth: 0,
+        height: 18,
+        overflow: "hidden",
       }}
     >
-      <span style={{ color: DIM }}>{label}</span>
+      <span style={{ color: DIM, fontSize: 11 }}>{label}</span>
       <span
         style={{
-          color: TEXT,
           minWidth: 0,
           whiteSpace: wrap ? "normal" : "nowrap",
           overflow: wrap ? "visible" : "hidden",
           textOverflow: "ellipsis",
           overflowWrap: wrap ? "anywhere" : "normal",
+          // 等宽字体 + 青色微亮，终端读数感
+          fontFamily: "'JetBrains Mono', 'Consolas', monospace",
+          fontSize: 12,
+          color: "#bcd6ea",
         }}
       >
         {value ?? "—"}
@@ -206,6 +233,9 @@ function MessageBubble({
       <div
         style={{
           maxWidth: "92%",
+          // 气泡按内容收缩：没有这行时盒子会被最宽子元素撑开后不再回缩，
+          // 短行消息右侧就留一大块空白（截图里接收方气泡右边空的来源）
+          width: "fit-content",
           minWidth: 0,
           padding: "8px 12px",
           borderRadius: 4,
@@ -226,10 +256,14 @@ function MessageBubble({
             src={image}
             style={{
               display: "block",
-              maxWidth: "100%",
-              maxHeight: 320,
+              // 图片按自身缩放上限定宽：百分比会反过来撑大 fit-content 气泡，
+              // 带图消息右边就留一大块空白
+              maxWidth: 420,
+              maxHeight: 256,
+              width: "auto",
+              height: "auto",
               objectFit: "contain",
-              marginBottom: 8,
+              marginBottom: text ? 8 : 0,
               borderRadius: 4,
             }}
           />
@@ -245,14 +279,76 @@ function SectionCard({
   title,
   children,
   style,
+  inlineTitle,
+  accent,
 }: {
   title: string;
   children: React.ReactNode;
   style?: React.CSSProperties;
+  inlineTitle?: boolean;
+  /** 卡片角色色：控制标题文字 + 左边条 */
+  accent?: string;
 }) {
+  if (inlineTitle) {
+    return (
+      <div
+        style={{
+          ...cardStyle,
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "row",
+          gap: 10,
+          overflow: "hidden",
+          // 角色色左边条 + 顶边微光
+          borderLeft: `3px solid ${accent ?? C.cyber}`,
+          boxShadow: `inset 1px 0 0 ${accent ?? C.cyber}11`,
+          ...style,
+        }}
+      >
+        {/* 外层普通 flex 做垂直居中；writingMode 只放内层文字。
+            Deck 的 CEF 对 vertical-rl 元素自身的 flex 轴映射不可靠，
+            之前把 flex 直接压在竖排元素上导致标题被裁掉 */}
+        <div style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
+          <div
+            style={{
+              ...sectionTitle,
+              writingMode: "vertical-rl",
+              whiteSpace: "nowrap",
+              lineHeight: 1.1,
+              color: accent ?? C.cyber,
+            }}
+          >
+            {title}
+          </div>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+            minWidth: 0,
+            minHeight: 0,
+            flex: 1,
+            // 卡内内容整体垂直居中：上下留白对称，不再顶贴
+            justifyContent: "center",
+          }}
+        >
+          {children}
+        </div>
+      </div>
+    );
+  }
   return (
-    <div style={{ ...cardStyle, minHeight: 0, ...style }}>
-      <div style={sectionTitle}>{title}</div>
+    <div
+      style={{
+        ...cardStyle,
+        minHeight: 0,
+        borderLeft: `3px solid ${accent ?? C.cyber}`,
+        ...style,
+      }}
+    >
+      <div style={{ ...sectionTitle, color: accent ?? C.cyber }}>{title}</div>
       {children}
     </div>
   );
@@ -312,25 +408,83 @@ function ChatLog({
 
 /**
  * 多行提示词编辑框。@decky/ui 的 TextField 只有单行，装不下整段提示词，
- * 所以这里用原生 textarea：固定高度、内部滚动，全文可见。
+ * 所以这里用原生 textarea：撑满卡片剩余高度、内部滚动，全文可见。
  * 焦点树只认 Focusable，按 A 时把 DOM 焦点交给 textarea，Steam 会照常
  * 弹出虚拟键盘；B 退出键盘后焦点回到这层 Focusable。
  */
+/**
+ * 提示词编辑模态：卡内 textarea 在 Steam 游戏模式下拿焦点不会弹键盘，
+ * 所以按 A 弹这个模态，用 @decky/ui 的 TextField 编辑（自动弹虚拟键盘）。
+ * TextField 是单行，编辑长文本时配合左右摇杆滚动；确认才写回。
+ */
+function PromptEditModal({
+  initial,
+  onChange,
+  onDone,
+  onCancel,
+}: {
+  initial: string;
+  onChange: (v: string) => void;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(initial);
+  return (
+    <div style={{ width: 720, padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>编辑提示词</div>
+      <TextField
+        value={draft}
+        focusOnMount
+        onChange={(e) => setDraft(e.target.value)}
+        style={{ width: "100%", fontSize: 14 }}
+      />
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <div style={{ width: 96 }}>
+          <DialogButton onClick={onCancel}>取消</DialogButton>
+        </div>
+        <div style={{ width: 96 }}>
+          <DialogButton
+            onClick={() => {
+              onChange(draft);
+              onDone();
+            }}
+          >
+            保存
+          </DialogButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PromptEditor({
   value,
   onChange,
-  height = 130,
 }: {
   value: string;
   onChange: (v: string) => void;
-  height?: number;
 }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
   return (
+    // flex:1 + minHeight:0 让它吃掉卡片剩余高度：写死 130 时卡片一矮，
+    // textarea 就顶出卡片底部，最后一行被切掉半截
     <Focusable
       onOKActionDescription="编辑"
-      onActivate={() => ref.current?.focus()}
-      style={{ width: "100%", minWidth: 0, display: "flex" }}
+      onActivate={() => {
+        // Steam 游戏模式下原生 textarea 拿到 DOM 焦点不会弹虚拟键盘。
+        // 标准做法：弹 Decky 模态框，里面放 @decky/ui 的 TextField
+        // （聚焦时 Steam 自动弹键盘，和聊天页输入框同一原理），确认后写回
+        const close = showModal(
+          <PromptEditModal
+            initial={value}
+            onChange={onChange}
+            onDone={() => close.Close()}
+            onCancel={() => close.Close()}
+          />
+        );
+      }}
+      // Focusable 自带上下内边距（约各 8px），压到 0 让 textarea 撑满
+      style={{ width: "100%", minWidth: 0, flex: 1, minHeight: 0, display: "flex", padding: 0 }}
     >
       <textarea
         ref={ref}
@@ -339,15 +493,16 @@ function PromptEditor({
         spellCheck={false}
         style={{
           width: "100%",
-          height,
-          minHeight: height,
+          height: "100%",
+          minHeight: 0,
           resize: "none",
           overflowY: "auto",
           boxSizing: "border-box",
-          padding: "10px 12px",
-          borderRadius: 4,
-          border: "1px solid rgba(255,255,255,.14)",
-          background: "rgba(0,0,0,.22)",
+          padding: "0 4px",
+          borderRadius: 3,
+          border: "1px solid rgba(90,169,230,.22)",
+          borderLeft: "2px solid #5AA9E6",
+          background: "rgba(14,20,28,.92)",
           color: TEXT,
           fontSize: 13,
           lineHeight: 1.5,
@@ -359,11 +514,21 @@ function PromptEditor({
   );
 }
 
+// 页签记忆：截图要收 QAM/导航，Decky 路由返回时 BigScreen 会整个重挂载，
+// useState 初值归零就跳回询问页。用模块级变量跨挂载记住上次页签
+let lastTab = 0;
+
 export default function BigScreen() {
   const s = useSession();
-  const [tab, setTab] = useState(0);
+  const [tab, setTabState] = useState(lastTab);
+  const setTab = (t: number | ((prev: number) => number)) => {
+    setTabState((prev) => {
+      const next = typeof t === "function" ? t(prev) : t;
+      lastTab = next;
+      return next;
+    });
+  };
   const [input, setInput] = useState("");
-  const [logOpen, setLogOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // 语音结果追加到已有输入后面，不覆盖用户已经打的字
   const voice = useVoiceInput(s.ticket, (t) =>
@@ -396,6 +561,15 @@ export default function BigScreen() {
       : "未连上";
   const coreColor = coreRunning ? ACCENT : coreStopped ? DIM : ERR_COLOR;
 
+  // 模型左右切换器：在列表里循环步进换模型
+  const modelList = s.modelList.length ? s.modelList : s.model ? [s.model] : [];
+  const stepModel = (dir: 1 | -1) => {
+    if (!s.status?.core_ok || modelList.length < 2) return;
+    const idx = modelList.indexOf(s.model);
+    const next = modelList[((idx < 0 ? 0 : idx + dir) + modelList.length) % modelList.length];
+    if (next !== s.model) void s.changeModel(next);
+  };
+
   const submit = () => {
     const text = input.trim();
     if (!text || s.busy) return;
@@ -408,7 +582,9 @@ export default function BigScreen() {
     if (voice.ready) return null;
     if (voice.error) return { text: voice.error, color: ERR_COLOR, canDownload: false };
     const st = voice.status;
-    if (!st) return null;
+    // ticket 还没到、或者插件桥报错时 status 就是空的：这也要说出来，
+    // 否则按钮只是灰着，用户不知道在等什么
+    if (!st) return { text: "语音状态读取中…", color: DIM, canDownload: false };
     if (!st.ok) return { text: "语音不可用：后端没连上", color: DIM, canDownload: false };
     if (st.enable === false) return { text: "语音输入已在设置里关闭", color: DIM, canDownload: false };
     if (!st.runtime) return { text: "语音不可用：后端没装 sherpa-onnx", color: DIM, canDownload: false };
@@ -417,61 +593,20 @@ export default function BigScreen() {
     return null;
   })();
 
-  // 状态行只显示结论：空闲留空（结构保留，后续填内容），忙时显示思考中
-  const statusLine = s.busy ? `思考中…（${s.elapsed}s）` : "";
-
   // 询问页两个动作按钮的忙碌态：被点的那个留在原位显示「思考中」，
   // 另一个原地换成「中断」，焦点不会因为按钮消失而跳走。
   const askRunning = s.busy && s.runningAction !== "translate";
   const translateRunning = s.busy && s.runningAction === "translate";
 
-  // 询问页和聊天页共用同一条核心异常提示
-  const coreAlert = () =>
-    s.status && !s.status.core_ok ? (
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          padding: "10px 14px",
-          borderRadius: 4,
-          background: "rgba(224,108,117,.10)",
-          color: ERR_COLOR,
-          fontSize: 13,
-          flexShrink: 0,
-          minWidth: 0,
-        }}
-      >
-        <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {coreStopped
-            ? "核心已停止（不会自动拉起，点「启动核心」恢复）"
-            : "核心异常（点「启动核心」恢复）"}
-        </span>
-        <div style={{ width: 160, flex: "0 0 160px" }}>
-          <ActionButton
-            onClick={() => void s.coreStart()}
-            disabled={s.starting}
-            description="启动核心"
-          >
-            {s.starting ? "核心启动中…" : "启动核心"}
-          </ActionButton>
-        </div>
-      </div>
-    ) : null;
+  // 核心异常提示已并入底部回执卡片（coreAlert 大红条已移除）
 
   const chatLog = () => (
     <ChatLog
       items={s.items}
       streaming={s.streaming}
-      busy={s.busy}
+      // 只有聊天页自己发起的那轮才显示「思考中」占位；
+      // 询问页发起的（ask/translate）在这个页签下不显示
+      busy={s.busy && s.runningAction === "send"}
       elapsed={s.elapsed}
       scrollRef={scrollRef}
     />
@@ -492,7 +627,9 @@ export default function BigScreen() {
             onOptionsActionDescription: "截图询问",
           }
         : {})}
-      {...(s.busy ? { onMenuActionDescription: "中断" } : {})}
+      {...(s.busy && (tab === 0 || s.runningAction === "send")
+        ? { onMenuActionDescription: "中断" }
+        : {})}
       onButtonDown={(evt) => {
         const detail = evt?.detail;
         if (!detail || detail.is_repeat) return;
@@ -508,6 +645,12 @@ export default function BigScreen() {
           void s.cancel();
           return;
         }
+        // 聊天页按住 R2 说话：只在这一页、且语音可用时接管，
+        // 其它页签的扳机键保持原样（扳机在别处通常是滚轮/加速之类的默认绑定）
+        if (detail.button === GamepadButton.TRIGGER_RIGHT && tab === 1 && voice.ready) {
+          if (voice.phase === "idle" && !s.busy) void voice.start();
+          return;
+        }
         if (tab !== 0 || !ready || s.busy) return;
         // X = 翻译，Y = 截图询问
         if (detail.button === GamepadButton.SECONDARY) {
@@ -516,14 +659,32 @@ export default function BigScreen() {
           void s.shotAsk();
         }
       }}
+      onButtonUp={(evt) => {
+        const detail = evt?.detail;
+        if (!detail) return;
+        // 松开 R2 结束录音；这里不看 tab：按下时还在聊天页，松手前切走了也要收尾，
+        // 否则麦克风会一直开着
+        if (detail.button === GamepadButton.TRIGGER_RIGHT && voice.phase === "recording") {
+          void voice.stop();
+        }
+      }}
       style={{
-        height: "100%",
+        // 路由容器从视口左上角开始铺，且不给确定高度，所以不能靠它排版。
+        // 直接固定到视口上，再用内边距把 Steam 的顶部状态栏、底部按键条让出来：
+        // 实测状态栏底边在 y≈65、按键条顶边在 y≈750，但页头还能再上提一点，
+        // 顶部只让 44、底部让 46，把省下来的近 25px 分给三个页签的内容区。
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 10,
         width: "100%",
         boxSizing: "border-box",
-        padding: `${PAGE_TOP}px 48px ${PAGE_BOTTOM}px`,
+        padding: `${PAGE_TOP}px 14px ${PAGE_BOTTOM}px`,
         display: "flex",
         flexDirection: "column",
-        gap: 12,
+        gap: 8,
         background: "#1b1f26",
         color: TEXT,
         overflow: "hidden",
@@ -532,13 +693,13 @@ export default function BigScreen() {
       <header
         style={{
           width: "100%",
-          maxWidth: MAX_W,
           margin: "0 auto",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
           gap: 16,
           minWidth: 0,
+          // 页头永不被压扁（消息区 flex:1 会抢空间）
           flexShrink: 0,
         }}
       >
@@ -607,108 +768,8 @@ export default function BigScreen() {
         )}
       </header>
 
-      {/* 状态行：询问页常驻（右侧是截图按钮）；聊天页/设置页只在忙时出现「中断」 */}
-      {(tab === 0 || s.busy) && (
-      <div
-        style={{
-          width: "100%",
-          maxWidth: MAX_W,
-          margin: "0 auto",
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          flexShrink: 0,
-          minHeight: tab === 0 ? ACTION_H : COMPACT_H,
-        }}
-      >
-        <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            color: DIM,
-            fontSize: 12.5,
-            lineHeight: 1.4,
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
-          {statusLine}
-        </span>
-
-        {tab === 0 && (
-          <div style={{ display: "flex", gap: 10, flexShrink: 0, height: ACTION_H }}>
-            <div style={{ width: 160, height: ACTION_H }}>
-              {!s.busy ? (
-                <ActionButton
-                  primary
-                  disabled={!ready}
-                  onClick={() => void s.shotAsk()}
-                  description="截图询问"
-                >
-                  截图询问
-                </ActionButton>
-              ) : askRunning ? (
-                <ActionButton
-                  onClick={() => {}}
-                  description="思考中"
-                  style={runningBtnStyle}
-                >
-                  思考中…（{s.elapsed}s）
-                </ActionButton>
-              ) : (
-                <ActionButton
-                  onClick={() => void s.cancel()}
-                  description="中断"
-                  style={cancelBtnStyle}
-                >
-                  中断
-                </ActionButton>
-              )}
-            </div>
-            <div style={{ width: 160, height: ACTION_H }}>
-              {!s.busy ? (
-                <ActionButton
-                  disabled={!ready}
-                  onClick={() => void s.shotTranslate()}
-                  description="截图翻译"
-                >
-                  截图翻译
-                </ActionButton>
-              ) : translateRunning ? (
-                <ActionButton
-                  onClick={() => {}}
-                  description="思考中"
-                  style={runningBtnStyle}
-                >
-                  思考中…（{s.elapsed}s）
-                </ActionButton>
-              ) : (
-                <ActionButton
-                  onClick={() => void s.cancel()}
-                  description="中断"
-                  style={cancelBtnStyle}
-                >
-                  中断
-                </ActionButton>
-              )}
-            </div>
-          </div>
-        )}
-
-        {tab !== 0 && s.busy && (
-          <div style={{ width: 110, height: COMPACT_H, flexShrink: 0 }}>
-            <ActionButton
-              onClick={() => void s.cancel()}
-              description="中断"
-              style={{ minHeight: COMPACT_H, height: COMPACT_H, fontSize: 13 }}
-            >
-              中断
-            </ActionButton>
-          </div>
-        )}
-      </div>
-      )}
+      {/* 询问页的状态行已移入页面容器内（与聊天页输入行同一层级），
+          避免两页因容器层数不同导致分隔线下移 */}
 
       {!s.status ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -754,16 +815,14 @@ export default function BigScreen() {
             flex: 1,
             minHeight: 0,
             width: "100%",
-            maxWidth: MAX_W,
-            margin: "0 auto",
+              margin: "0 auto",
             display: "flex",
             flexDirection: "column",
             gap: 10,
           }}
         >
-          {coreAlert()}
-
-          {/* 动作按钮已移到状态行右侧，整行高度让给消息区 */}
+          {/* 动作按钮已移到状态行右侧，整行高度让给消息区；
+              核心停止/异常提示并入底部回执卡片，不再弹红色大条 */}
 
           {s.pendingPoke && (
             <div
@@ -787,8 +846,140 @@ export default function BigScreen() {
             </div>
           )}
 
-          {/* 状态行与消息区之间：规格与聊天页一致；-2px 抵消页面根间距，上下都留 10px */}
-          <div style={{ ...dividerStyle, marginTop: -2 }} />
+          {/* 状态行：回执卡 + 截图询问/截图翻译按钮。
+              与聊天页输入行同层级、同高 46px，分隔线位置才能完全一致 */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              width: "100%",
+              height: ACTION_H,
+              flexShrink: 0,
+            }}
+          >
+            {/* 回执卡：核心停止/异常时整卡转红并带「启动核心」按钮 */}
+            <div
+              style={{
+                flex: 1,
+                minWidth: 0,
+                height: ACTION_H,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "0 10px",
+                borderRadius: 4,
+                boxSizing: "border-box",
+                background:
+                  s.status && !s.status.core_ok ? "rgba(224,108,117,.10)" : "rgba(255,255,255,.05)",
+                border:
+                  s.status && !s.status.core_ok
+                    ? "1px solid rgba(224,108,117,.30)"
+                    : "1px solid rgba(90,169,230,.14)",
+                borderLeft: `2px solid ${s.status && !s.status.core_ok ? "#e06c75" : "#5AA9E6"}`,
+                overflow: "hidden",
+              }}
+            >
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontSize: 12.5,
+                  lineHeight: 1.4,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  color: s.status && !s.status.core_ok ? ERR_COLOR : TEXT,
+                }}
+              >
+                {s.status && !s.status.core_ok
+                  ? coreStopped
+                    ? "核心已停止（不会自动拉起，点「启动核心」恢复）"
+                    : "核心异常（点「启动核心」恢复）"
+                  : latestLog
+                    ? `${latestLog.code} · ${fmtLogTime(latestLog.ts)} · ${latestLog.detail}`
+                    : "待命，等待指令"}
+              </span>
+              {s.status && !s.status.core_ok && (
+                <ActionButton
+                  onClick={() => void s.coreStart()}
+                  disabled={s.starting}
+                  description="启动核心"
+                  compact
+                  style={{
+                    width: 120,
+                    flex: "0 0 120px",
+                    fontSize: 12,
+                    background: "rgba(224,108,117,.18)",
+                    borderColor: "rgba(224,108,117,.45)",
+                    color: "#f0c3c7",
+                  }}
+                >
+                  {s.starting ? "启动中…" : "启动核心"}
+                </ActionButton>
+              )}
+            </div>
+
+            {/* 四个按钮统一 138px，回执卡（flex:1）自动收缩匹配 */}
+            <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+              {!s.busy ? (
+                <ActionButton
+                  primary
+                  disabled={!ready}
+                  onClick={() => void s.shotAsk()}
+                  description="截图询问"
+                  style={{ width: 138 }}
+                >
+                  截图询问
+                </ActionButton>
+              ) : askRunning ? (
+                <ActionButton
+                  onClick={() => {}}
+                  description="思考中"
+                  style={{ ...runningBtnStyle, width: 138 }}
+                >
+                  思考中…（{s.elapsed}s）
+                </ActionButton>
+              ) : (
+                <ActionButton
+                  onClick={() => void s.cancel()}
+                  description="中断"
+                  style={{ ...cancelBtnStyle, width: 138 }}
+                >
+                  中断
+                </ActionButton>
+              )}
+              {!s.busy ? (
+                <ActionButton
+                  disabled={!ready}
+                  onClick={() => void s.shotTranslate()}
+                  description="截图翻译"
+                  style={{ width: 138 }}
+                >
+                  截图翻译
+                </ActionButton>
+              ) : translateRunning ? (
+                <ActionButton
+                  onClick={() => {}}
+                  description="思考中"
+                  style={{ ...runningBtnStyle, width: 138 }}
+                >
+                  思考中…（{s.elapsed}s）
+                </ActionButton>
+              ) : (
+                <ActionButton
+                  onClick={() => void s.cancel()}
+                  description="中断"
+                  style={{ ...cancelBtnStyle, width: 138 }}
+                >
+                  中断
+                </ActionButton>
+              )}
+            </div>
+          </div>
+
+          {/* 状态行与消息区之间：规格与聊天页输入行完全一致（同高、同 gap），分隔线零补偿 */}
+          <div style={dividerStyle} />
 
           {chatLog()}
         </div>
@@ -798,30 +989,39 @@ export default function BigScreen() {
             flex: 1,
             minHeight: 0,
             width: "100%",
-            maxWidth: MAX_W,
-            margin: "0 auto",
+              margin: "0 auto",
             display: "flex",
             flexDirection: "column",
             gap: 10,
           }}
         >
-          {coreAlert()}
-
-          {/* 聊天页：输入区不要卡片外框；输入框自带细边，与发送按钮同为 44px */}
+          {/* 聊天页：输入区不要卡片外框；输入框自带细边，与发送按钮同为 46px
+              （与询问页状态行等高，两页分界线位置一致） */}
           <div
             style={{
               display: "flex",
               alignItems: "stretch",
               gap: 8,
               width: "100%",
-              height: 44,
+              height: ACTION_H,
               flexShrink: 0,
               position: "relative",
             }}
           >
             <Focusable
               onOKActionDescription="输入"
-              style={{ flex: 1, minWidth: 0, display: "flex" }}
+              // @decky/ui 的 TextField 外面还包一层 div，单靠 flex 撑不满
+              // （截图里输入框只有几十像素宽）；这里用 grid 强制子项铺满整行
+              style={{
+                flex: 1,
+                minWidth: 0,
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr)",
+                gridAutoFlow: "column",
+                // Focusable 自带左右内边距，会吃掉输入框宽度，
+                // 导致输入框比询问页状态栏短一截
+                padding: 0,
+              }}
             >
               <TextField
                 value={input}
@@ -829,21 +1029,26 @@ export default function BigScreen() {
                 onChange={(e) => setInput(e.target.value)}
                 style={{
                   width: "100%",
-                  height: 44,
-                  minHeight: 44,
+                  maxWidth: "100%",
+                  height: ACTION_H,
+                  minHeight: ACTION_H,
                   padding: "0 12px",
                   boxSizing: "border-box",
                   fontSize: 14,
-                  lineHeight: "42px",
+                  lineHeight: "44px",
                   borderRadius: 4,
                   border: "1px solid rgba(255,255,255,.14)",
                   background: "rgba(255,255,255,.08)",
+                  // 不写 color 时 Steam 主题会给输入框套黑色文字，深底上几乎看不见
+                  color: TEXT,
                 }}
               />
             </Focusable>
-            <div style={{ flex: "0 0 96px", width: 96, height: 44 }}>
+            <div style={{ flex: "0 0 138px", width: 138, height: ACTION_H }}>
               <ActionButton
-                disabled={s.busy || voice.phase === "working" || !voice.ready}
+                // 询问页发起思考时语音仍可用（照常说话转文字填入输入框），
+                // 只有聊天页自己发起的那轮才锁语音
+                disabled={(s.busy && s.runningAction === "send") || voice.phase === "working" || !voice.ready}
                 onClick={() => (voice.phase === "recording" ? voice.stop() : voice.start())}
                 description={
                   !voice.ready
@@ -852,11 +1057,11 @@ export default function BigScreen() {
                       : "语音输入不可用"
                     : voice.phase === "recording"
                       ? "松开结束"
-                      : "语音输入"
+                      : "语音输入（也可按住 R2）"
                 }
                 style={{
-                  height: 44,
-                  minHeight: 44,
+                  height: ACTION_H,
+                  minHeight: ACTION_H,
                   // 录音中整块变强调色，手柄注意力在输入框上也能一眼看出在录
                   background: voice.phase === "recording" ? ACCENT : "rgba(255,255,255,.10)",
                   color: voice.phase === "recording" ? "#1b1b1b" : TEXT,
@@ -865,23 +1070,41 @@ export default function BigScreen() {
                 {voice.phase === "working" ? "识别中" : voice.phase === "recording" ? "松开" : "语音"}
               </ActionButton>
             </div>
-            <div style={{ flex: "0 0 160px", width: 160, height: 44 }}>
-              <ActionButton
-                primary
-                disabled={s.busy || !input.trim()}
-                onClick={submit}
-                description="发送"
-                style={{ height: 44, minHeight: 44 }}
-              >
-                发送
-              </ActionButton>
+            <div style={{ flex: "0 0 138px", width: 138, height: ACTION_H }}>
+              {!s.busy ? (
+                <ActionButton
+                  primary
+                  disabled={!input.trim()}
+                  onClick={submit}
+                  description="发送"
+                  style={{ height: ACTION_H, minHeight: ACTION_H }}
+                >
+                  发送
+                </ActionButton>
+              ) : s.runningAction === "send" ? (
+                <ActionButton
+                  onClick={() => {}}
+                  description="思考中"
+                  style={{ ...runningBtnStyle, height: ACTION_H, minHeight: ACTION_H }}
+                >
+                  思考中…（{s.elapsed}s）
+                </ActionButton>
+              ) : (
+                <ActionButton
+                  onClick={() => void s.cancel()}
+                  description="中断"
+                  style={{ ...cancelBtnStyle, height: ACTION_H, minHeight: ACTION_H }}
+                >
+                  中断
+                </ActionButton>
+              )}
             </div>
             {/* 语音提示：绝对定位浮在输入行下方，不占版式高度 */}
             {voiceTip && (
               <div
                 style={{
                   position: "absolute",
-                  top: 48,
+                  top: ACTION_H + 4,
                   left: 0,
                   display: "flex",
                   alignItems: "center",
@@ -917,278 +1140,444 @@ export default function BigScreen() {
           {chatLog()}
         </div>
       ) : (
-        <div
+        <Focusable
+          flow-children="vertical"
           style={{
             flex: 1,
             minHeight: 0,
             width: "100%",
-            maxWidth: MAX_W,
             margin: "0 auto",
-            display: "grid",
-            gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
-            gridTemplateRows: "1fr 1fr",
-            gap: 20,
+            // 5 张卡 flex 1 平均分配，卡内内容各自垂直居中
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
             boxSizing: "border-box",
             overflow: "hidden",
+            // 页头与首张卡之间多让一点，和卡间间距更接近
+            paddingTop: 6,
           }}
         >
-          <SectionCard
-            title="模型"
-            style={{ gridColumn: "span 2", padding: 16, gap: 10, overflow: "hidden" }}
-          >
-            <div style={{ width: "100%", minWidth: 0 }}>
-              <DropdownItem
-                childrenContainerWidth="max"
-                layout="below"
-                rgOptions={(s.modelList.length ? s.modelList : [s.model].filter(Boolean)).map((m) => ({
-                  data: m,
-                  label: m,
-                }))}
-                selectedOption={s.model}
-                menuLabel="选择模型"
-                strDefaultLabel={s.loadingModels ? "加载中…" : "选择模型"}
-                disabled={!s.status?.core_ok}
-                onChange={(o) => {
-                  if (o.data && o.data !== s.model) void s.changeModel(String(o.data));
-                }}
-              />
-            </div>
-            <ActionButton
-              onClick={() => void s.loadModels()}
-              disabled={s.loadingModels}
-              description="刷新"
-            >
-              {s.loadingModels ? "拉取中…" : "刷新模型"}
-            </ActionButton>
-            {/* 两个开关同一组：语音播报 + 带画面（后者从对话页移过来） */}
-            <ToggleField
-              label="语音播报"
-              description="回复生成完在本机念一遍"
-              checked={s.tts}
-              onChange={(v) => void s.toggleTts(v)}
-            />
-            <ToggleField
-              label="带画面"
-              description="问的时候附带当前游戏画面"
-              checked={s.withShot}
-              onChange={s.setWithShot}
-            />
-          </SectionCard>
-
-          <SectionCard
-            title="截屏询问"
-            style={{ gridColumn: "span 2", padding: 16, gap: 8, overflow: "hidden" }}
-          >
-            <div style={{ color: DIM, fontSize: 12.5, lineHeight: 1.45 }}>
-              截图询问时带给模型的提示词
-            </div>
-            <PromptEditor value={s.askTplEdit} onChange={s.setAskTplEdit} />
-            <div style={{ color: DIM, fontSize: 11.5, lineHeight: 1.4 }}>
-              按 A 编辑；内容超长可在框内滚动。
-            </div>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
-                gap: 8,
-                width: "100%",
-              }}
-            >
-              <ActionButton onClick={() => void s.saveAskTpl()} description="保存">
-                保存
-              </ActionButton>
-              <ActionButton
-                onClick={() => s.setAskTplEdit(s.askTplDefault)}
-                description="恢复默认"
-              >
-                恢复默认
-              </ActionButton>
-            </div>
-          </SectionCard>
-
-          <SectionCard
-            title="截图翻译"
-            style={{ gridColumn: "span 2", padding: 16, gap: 8, overflow: "hidden" }}
-          >
-            <div style={{ color: DIM, fontSize: 12.5, lineHeight: 1.45 }}>
-              截图翻译时带给模型的提示词
-            </div>
-            <PromptEditor value={s.translateTplEdit} onChange={s.setTranslateTplEdit} />
-            <div style={{ color: DIM, fontSize: 11.5, lineHeight: 1.4 }}>
-              保存后写入后端配置，下一次「截图翻译」立即生效。
-            </div>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
-                gap: 8,
-                width: "100%",
-              }}
-            >
-              <ActionButton onClick={() => void s.saveTranslateTpl()} description="保存">
-                保存
-              </ActionButton>
-              <ActionButton
-                onClick={() => s.setTranslateTplEdit(s.translateTplDefault)}
-                description="恢复默认"
-              >
-                恢复默认
-              </ActionButton>
-            </div>
-          </SectionCard>
-
+          {/* 连接 */}
           <SectionCard
             title="连接"
-            style={{ gridColumn: "span 2", padding: 16, gap: 10, overflow: "hidden" }}
+            inlineTitle
+            accent={C.cyber}
+            style={{ padding: 6, flex: 0.7 }}
           >
-            <StatRow label="核心" value={coreLine} />
-            <StatRow label="地址" value={s.status ? `${s.status.ip}:${s.status.port}` : "—"} />
-            <StatRow
-              label="截图"
-              value={s.status?.capture_ok ? "可用" : s.status?.capture_reason || "不可用"}
-              wrap
-            />
-            <StatRow label="虚拟手柄" value={s.status?.gamepad ? "可用" : "不可用"} />
-            <StatRow
-              label="当前游戏"
-              value={
-                s.status?.game_name
-                  ? `${s.status.game_name}（${s.status.game_source || "?"}）`
-                  : "—"
-              }
-            />
-            <StatRow label="版本" value={s.status?.version || "—"} />
-            <StatRow label="工作区" value={s.status?.workspace || "—"} wrap />
+            {/* 四分栏两行：一行 4 列读数，一屏全展开 */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+                columnGap: 14,
+                rowGap: 2,
+                alignContent: "center",
+                minHeight: 0,
+                width: "100%",
+              }}
+            >
+              <StatRow label="女仆核心" value={coreLine} />
+              <StatRow
+                label="当前游戏"
+                value={
+                  s.status?.game_name
+                    ? `${s.status.game_name}（${s.status.game_source || "?"}）`
+                    : "—"
+                }
+              />
+              <StatRow
+                label="屏幕截图"
+                value={s.status?.capture_ok ? "可用" : s.status?.capture_reason || "不可用"}
+              />
+              <StatRow
+                label="语音输入"
+                value={
+                  !voice.status
+                    ? "读取中"
+                    : voice.ready
+                      ? "可用"
+                      : voice.status.enable === false
+                        ? "已关闭"
+                        : "不可用"
+                }
+              />
+              <StatRow label="核心版本" value={s.status?.version || "—"} />
+              <StatRow label="设备地址" value={s.status ? `${s.status.ip}:${s.status.port}` : "—"} />
+              <StatRow label="虚拟手柄" value={s.status?.gamepad ? "可用" : "不可用"} />
+              <StatRow label="更新检测" value="—" />
+            </div>
           </SectionCard>
 
+          {/* 模型 */}
           <SectionCard
-            title="维护"
-            style={{ gridColumn: "span 4", padding: 16, gap: 10, overflow: "hidden" }}
+            title="模型"
+            inlineTitle
+            accent={C.model}
+            style={{ padding: 6, flex: 0.7 }}
           >
-            {logOpen ? (
-              <>
-                {/* 大屏唯一看日志的地方：最近 3 条，正文过长就在框内滚动 */}
+            {/* 左侧模型下拉拉满剩余宽度，右栏固定 190px（与截屏卡按钮列等宽） */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr) 190px",
+                columnGap: 14,
+                // 右栏三个按钮按卡片剩余高度均分，不用固定像素叠高：
+                // 卡片矮时超出的部分原本会被居中裁到卡片外（刷新模型掉出去）
+                alignItems: "stretch",
+                minHeight: 0,
+                width: "100%",
+                flex: 1,
+              }}
+            >
+              {/* 左右切换器：‹ 模型名 ›，循环步进 */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "36px minmax(0, 1fr) 36px",
+                  gap: 6,
+                  alignItems: "center",
+                  minWidth: 0,
+                  minHeight: 0,
+                  width: "100%",
+                }}
+              >
+                <ActionButton
+                  onClick={() => stepModel(-1)}
+                  disabled={!s.status?.core_ok || modelList.length < 2}
+                  description="上一个模型"
+                  compact
+                  style={{ fontSize: 18, padding: 0 }}
+                >
+                  ‹
+                </ActionButton>
                 <div
                   style={{
-                    flex: 1,
-                    minHeight: 0,
-                    overflowY: "auto",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 10,
-                  }}
-                >
-                  {s.logs.slice(0, 3).map((e, i) => (
-                    <div
-                      key={`${e.ts}-${i}`}
-                      style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}
-                    >
-                      <div style={{ fontSize: 12, fontWeight: 700, color: ACCENT }}>
-                        {e.code} · {fmtLogTime(e.ts)}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 12.5,
-                          lineHeight: 1.5,
-                          color: TEXT,
-                          overflowWrap: "anywhere",
-                          wordBreak: "break-word",
-                        }}
-                      >
-                        {e.detail || "—"}
-                      </div>
-                    </div>
-                  ))}
-                  {!s.logs.length && <div style={{ color: DIM, fontSize: 13 }}>—</div>}
-                </div>
-                <ActionButton onClick={() => setLogOpen(false)} description="收起">
-                  收起
-                </ActionButton>
-              </>
-            ) : (
-              <>
-                <Focusable
-                  onActivate={() => setLogOpen(true)}
-                  onOKActionDescription="查看"
-                  style={{
+                    minWidth: 0,
+                    minHeight: 30,
                     display: "flex",
                     alignItems: "center",
-                    gap: 10,
-                    minWidth: 0,
-                    flexShrink: 0,
-                    padding: "6px 10px",
-                    borderRadius: 4,
-                    background: "rgba(255,255,255,.06)",
-                    border: "1px solid rgba(255,255,255,.10)",
-                    boxSizing: "border-box",
+                    justifyContent: "center",
+                    padding: "0 8px",
+                    borderRadius: 3,
+                    border: "1px solid rgba(90,169,230,.22)",
+                    borderLeft: "2px solid #5AA9E6",
+                    background: "rgba(14,20,28,.92)",
+                    color: TEXT,
+                    fontSize: 13,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
                   }}
+                  title={s.model}
                 >
-                  <span style={{ color: DIM, fontSize: 12.5, flexShrink: 0 }}>最近事件</span>
-                  <span
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      textAlign: "right",
-                      fontSize: 13,
-                      color: latestLog ? TEXT : DIM,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {latestLog ? `${latestLog.code} · ${fmtLogTime(latestLog.ts)}` : "—"}
-                  </span>
-                </Focusable>
-
-                {/* 核心三按钮：启动核心 / 重启核心 / 关闭核心。关闭后保持停止，只有「启动核心」能恢复 */}
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-                    gap: 10,
-                    width: "100%",
-                  }}
+                  {s.loadingModels ? "加载中…" : s.model || "未选择"}
+                </div>
+                <ActionButton
+                  onClick={() => stepModel(1)}
+                  disabled={!s.status?.core_ok || modelList.length < 2}
+                  description="下一个模型"
+                  compact
+                  style={{ fontSize: 18, padding: 0 }}
                 >
-                  <ActionButton
-                    onClick={() => void s.coreStart()}
-                    disabled={coreRunning || s.starting || s.restarting || s.killing}
-                    primary={!coreRunning}
-                    description="启动核心"
-                  >
-                    {s.starting ? "核心启动中…" : "启动核心"}
-                  </ActionButton>
-                  <ActionButton
-                    onClick={() => void s.coreRestart()}
-                    disabled={!coreRunning || s.starting || s.restarting || s.killing}
-                    description="重启核心"
-                  >
-                    {s.restarting ? "核心重启中…" : "重启核心"}
-                  </ActionButton>
-                  <ActionButton
-                    onClick={() => void s.coreKill()}
-                    disabled={!coreRunning || s.starting || s.restarting || s.killing}
-                    description="关闭核心"
-                  >
-                    {s.killing ? "核心关闭中…" : "关闭核心"}
-                  </ActionButton>
-                </div>
-                <div style={{ color: DIM, fontSize: 12.5, lineHeight: 1.45 }}>
-                  {coreStopped
-                    ? "核心已停止：不会自动拉起，只有点「启动核心」才会恢复。"
-                    : "关闭核心会停止后端进程并保持停止；「重启核心」只在运行中可用。"}
-                </div>
+                  ›
+                </ActionButton>
+              </div>
+              {/* 右栏两行 1fr 1fr 均分卡高：第一行两个开关，第二行刷新模型 */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateRows: "repeat(2, minmax(0, 1fr))",
+                  gap: 4,
+                  minWidth: 0,
+                  minHeight: 0,
+                }}
+              >
+                {/* 两个开关并排；小字号 + 紧凑内边距防出界 */}
                 <div
                   style={{
                     display: "grid",
                     gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
-                    gap: 10,
-                    width: "100%",
+                    gap: 4,
+                    minWidth: 0,
+                    minHeight: 0,
+                  }}
+                >
+                  <ActionButton
+                    onClick={() => void s.toggleStt(!s.stt)}
+                    description="切换语音输入"
+                    compact
+                    style={{
+                      // 开：蓝色（和 primary 按钮同色系）；关：灰
+                      background: s.stt ? "rgba(90,169,230,.28)" : "rgba(255,255,255,.06)",
+                      border: `1px solid ${s.stt ? "rgba(90,169,230,.55)" : "rgba(255,255,255,.10)"}`,
+                      color: s.stt ? "#eaf2fb" : DIM,
+                      fontSize: 12,
+                      paddingLeft: 4,
+                      paddingRight: 4,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      // 撑满所在行高（compact 的固定 22px 会留出空档）
+                      minHeight: 0,
+                      height: "100%",
+                    }}
+                  >
+                    语音输入
+                  </ActionButton>
+                  <ActionButton
+                    onClick={() => void s.toggleWithShot(!s.withShot)}
+                    description="切换带图发送"
+                    compact
+                    style={{
+                      background: s.withShot ? "rgba(90,169,230,.28)" : "rgba(255,255,255,.06)",
+                      border: `1px solid ${s.withShot ? "rgba(90,169,230,.55)" : "rgba(255,255,255,.10)"}`,
+                      color: s.withShot ? "#eaf2fb" : DIM,
+                      fontSize: 12,
+                      paddingLeft: 4,
+                      paddingRight: 4,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      minHeight: 0,
+                      height: "100%",
+                    }}
+                  >
+                    带图发送
+                  </ActionButton>
+                </div>
+                <ActionButton
+                  onClick={() => void s.loadModels()}
+                  disabled={s.loadingModels}
+                  description="刷新"
+                  compact
+                  style={{
+                    fontSize: 12,
+                    paddingLeft: 4,
+                    paddingRight: 4,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    minHeight: 0,
+                    height: "100%",
+                  }}
+                >
+                  {s.loadingModels ? "拉取中…" : "刷新模型"}
+                </ActionButton>
+              </div>
+            </div>
+          </SectionCard>
+
+          {/* 截屏询问 */}
+          <SectionCard
+            title="截屏询问"
+            inlineTitle
+            accent={C.prompt}
+            style={{ padding: 6, flex: 1.5 }}
+          >
+            {/* 左 4/5 放提示词框，右 1/5 竖排两个按钮（宽度减半给文本框让路） */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr) 190px",
+                columnGap: 10,
+                alignItems: "stretch",
+                minHeight: 0,
+                width: "100%",
+                // 关键：撑满卡片剩余高度，textarea 才会跟着撑高
+                flex: 1,
+              }}
+            >
+              <PromptEditor value={s.askTplEdit} onChange={s.setAskTplEdit} />
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                  // 上下均分撑满整卡高度（按钮各自 flex:1）
+                }}
+              >
+                <ActionButton
+                  onClick={() => void s.saveAskTpl()}
+                  description="保存"
+                  compact
+                  style={{ flex: 1, minHeight: 0 }}
+                >
+                  保存
+                </ActionButton>
+                <ActionButton
+                  onClick={() => s.setAskTplEdit(s.askTplDefault)}
+                  description="恢复默认"
+                  compact
+                  style={{ flex: 1, minHeight: 0 }}
+                >
+                  恢复默认
+                </ActionButton>
+              </div>
+            </div>
+          </SectionCard>
+
+          {/* 截图翻译 */}
+          <SectionCard
+            title="截图翻译"
+            inlineTitle
+            accent={C.prompt}
+            style={{ padding: 6, flex: 1.5 }}
+          >
+            {/* 同上：左 4/5 文本框，右 1/5 按钮 */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr) 190px",
+                columnGap: 10,
+                alignItems: "stretch",
+                minHeight: 0,
+                width: "100%",
+                // 关键：撑满卡片剩余高度，textarea 才会跟着撑高
+                flex: 1,
+              }}
+            >
+              <PromptEditor value={s.translateTplEdit} onChange={s.setTranslateTplEdit} />
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                  // 上下均分撑满整卡高度（按钮各自 flex:1）
+                }}
+              >
+                <ActionButton
+                  onClick={() => void s.saveTranslateTpl()}
+                  description="保存"
+                  compact
+                  style={{ flex: 1, minHeight: 0 }}
+                >
+                  保存
+                </ActionButton>
+                <ActionButton
+                  onClick={() => s.setTranslateTplEdit(s.translateTplDefault)}
+                  description="恢复默认"
+                  compact
+                  style={{ flex: 1, minHeight: 0 }}
+                >
+                  恢复默认
+                </ActionButton>
+              </div>
+            </div>
+          </SectionCard>
+
+          {/* 维护 */}
+          <SectionCard
+            title="维护"
+            inlineTitle
+            accent={C.ops}
+            style={{ padding: 6, flex: 0.8 }}
+          >
+            {/* 左栏拉满剩余宽度；右栏固定 190px 与"保存"按钮等宽 */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr) 190px",
+                columnGap: 10,
+                // 两栏等高撑满卡片，内部各行上下均分对齐
+                alignItems: "stretch",
+                minHeight: 0,
+                width: "100%",
+                flex: 1,
+              }}
+            >
+                {/* 左栏两行用 1fr 1fr 精确均分（flex:1 在 grid item 上不可靠） */}
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateRows: "1fr 1fr",
+                    gap: 4,
+                    minWidth: 0,
+                    minHeight: 0,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      minWidth: 0,
+                      minHeight: 0,
+                      padding: "4px 10px",
+                      borderRadius: 4,
+                      background: "rgba(255,255,255,.06)",
+                      border: "1px solid rgba(255,255,255,.10)",
+                      boxSizing: "border-box",
+                    }}
+                  >
+                    <span style={{ color: DIM, fontSize: 12.5, flexShrink: 0 }}>最近事件</span>
+                    <span
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        textAlign: "right",
+                        fontSize: 13,
+                        color: latestLog ? TEXT : DIM,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {latestLog ? `${latestLog.code} · ${fmtLogTime(latestLog.ts)}` : "—"}
+                    </span>
+                  </div>
+
+                  {/* 核心三按钮横排：grid item 自动占满 1fr 行高 */}
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                      gap: 6,
+                      minWidth: 0,
+                      minHeight: 0,
+                      alignContent: "stretch",
+                    }}
+                  >
+                    <ActionButton
+                      onClick={() => void s.coreStart()}
+                      disabled={coreRunning || s.starting || s.restarting || s.killing}
+                      primary={!coreRunning}
+                      description="启动核心"
+                      compact
+                    >
+                      {s.starting ? "核心启动中…" : "启动核心"}
+                    </ActionButton>
+                    <ActionButton
+                      onClick={() => void s.coreRestart()}
+                      disabled={!coreRunning || s.starting || s.restarting || s.killing}
+                      description="重启核心"
+                      compact
+                    >
+                      {s.restarting ? "核心重启中…" : "重启核心"}
+                    </ActionButton>
+                    <ActionButton
+                      onClick={() => void s.coreKill()}
+                      disabled={!coreRunning || s.starting || s.restarting || s.killing}
+                      description="关闭核心"
+                      compact
+                    >
+                      {s.killing ? "核心关闭中…" : "关闭核心"}
+                    </ActionButton>
+                  </div>
+                </div>
+
+                {/* 右 1/3：新会话、返回游戏两行 1fr 1fr 精确均分 */}
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateRows: "1fr 1fr",
+                    gap: 4,
+                    minWidth: 0,
+                    minHeight: 0,
                   }}
                 >
                   <ActionButton
                     onClick={() => void s.newSession()}
                     disabled={s.busy || s.newing}
                     description="新会话"
+                    compact
+                    style={{ minHeight: 0 }}
                   >
                     {s.newing ? "新建中…" : "新会话"}
                   </ActionButton>
@@ -1202,17 +1591,15 @@ export default function BigScreen() {
                       }
                     }}
                     description="返回游戏"
+                    compact
+                    style={{ minHeight: 0 }}
                   >
                     返回游戏
                   </ActionButton>
                 </div>
-                <div style={{ color: DIM, fontSize: 12.5, lineHeight: 1.45 }}>
-                  新会话只清本地记录，不会重启核心。
-                </div>
-              </>
-            )}
+            </div>
           </SectionCard>
-        </div>
+        </Focusable>
       )}
     </Focusable>
   );

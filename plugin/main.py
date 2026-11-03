@@ -2117,12 +2117,18 @@ async def _core_status(port: int, token: str) -> dict:
 
 
 async def _core_prefs(port: int, token: str) -> dict:
-    """读后端的偏好项（语音播报、版本号、当前模型），面板设置区要显示/切换这些"""
+    """读后端的偏好项（语音播报、带画面、版本号、当前模型），面板设置区要显示/切换这些"""
     r = await _core_http(port, token, "GET", "/api/config", timeout=2.0)
     if not r["ok"]:
-        return {"ok": False, "error": r.get("error", ""), "tts": False, "version": "", "model": ""}
+        return {"ok": False, "error": r.get("error", ""), "tts": False,
+                "with_shot": True, "version": "", "model": ""}
     d = r.get("data") or {}
-    return {"ok": True, "tts": bool(d.get("tts_enable")), "version": str(d.get("version") or ""),
+    return {"ok": True, "tts": bool(d.get("tts_enable")),
+            # 带画面询问：老后端没有这个字段就当开（和前端默认值一致）
+            "with_shot": bool(d.get("with_shot", True)),
+            # 语音输入：配置在 [stt] 段，/api/stt 才有；这里同时带一份供面板显示
+            "stt": bool(d.get("stt_enable", True)),
+            "version": str(d.get("version") or ""),
             "model": str(d.get("model") or "")}
 
 
@@ -2199,6 +2205,10 @@ class Plugin:
             "core_stopped": _core_stopped(),
             # 设置区：语音播报开关（由后端 tts.enable 决定）与版本号（底部显示）
             "tts": bool(prefs.get("tts")),
+            # 带画面询问开关：面板一关一开组件会重挂载，状态得从后端补回来
+            "with_shot": bool(prefs.get("with_shot", True)),
+            # 语音输入开关（[stt] enable）：关掉时后端会释放识别模型省内存
+            "stt": bool(prefs.get("stt", True)),
             "version": str(prefs.get("version") or _PLUGIN_VERSION),
             # 设置区：当前模型名，下拉菜单的首帧先显示它，再异步拉全量列表
             "model": str(prefs.get("model") or ""),
@@ -2320,6 +2330,30 @@ class Plugin:
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
         return {"ok": True, "tts": bool((r.get("data") or {}).get("tts_enable"))}
+
+    async def set_with_shot(self, enabled: bool, ticket: str = "") -> dict:
+        """切「带画面询问」：写进后端 [agent] with_shot，面板重开后仍是这个值"""
+        _require(ticket, "set_with_shot")
+        cfg = _load_server_cfg()
+        port = int(cfg.get("port", 18765))
+        token = str(cfg.get("token", "") or "").strip()
+        r = await _core_http(port, token, "POST", "/api/config",
+                             body={"with_shot": bool(enabled)})
+        if not r["ok"]:
+            return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
+        return {"ok": True, "with_shot": bool((r.get("data") or {}).get("with_shot", enabled))}
+
+    async def set_stt(self, enabled: bool, ticket: str = "") -> dict:
+        """切语音输入：写后端 [stt] enable，关掉时后端顺手释放识别模型"""
+        _require(ticket, "set_stt")
+        cfg = _load_server_cfg()
+        port = int(cfg.get("port", 18765))
+        token = str(cfg.get("token", "") or "").strip()
+        r = await _core_http(port, token, "POST",
+                             f"/api/stt/toggle?enabled={'true' if enabled else 'false'}")
+        if not r["ok"]:
+            return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
+        return {"ok": True, "stt": bool((r.get("data") or {}).get("stt_enable", enabled))}
 
     async def get_ask_template(self, ticket: str = "") -> dict:
         """读「截屏询问」的提示词模板（存在后端配置里，网页设置页改的也是这份）"""

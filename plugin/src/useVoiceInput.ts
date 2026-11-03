@@ -96,7 +96,12 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
 
   useEffect(() => {
     refresh();
-  }, [refresh]);
+    // ticket 可能比组件挂载晚到（要先 get_status 才拿到），空票直接跳过；
+    // 这里再兜一段：后端重启、状态一时取不到时不至于一直灰着
+    if (status) return;
+    const id = window.setInterval(refresh, 3000);
+    return () => window.clearInterval(id);
+  }, [refresh, status]);
 
   const cleanup = useCallback(() => {
     try {

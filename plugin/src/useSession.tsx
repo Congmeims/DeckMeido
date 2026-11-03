@@ -36,6 +36,10 @@ export type Status = {
   workspace: string;
   gamepad: boolean;
   tts: boolean;
+  // 带画面询问：后端 [agent] with_shot，面板重开后按它恢复
+  with_shot: boolean;
+  // 语音输入开关（后端 [stt] enable）：关掉后后端会释放识别模型
+  stt: boolean;
   model: string;
   game_name: string;
   // 名字来源 / 置信度 / 证据时间：只有 high 才注入提问
@@ -104,6 +108,7 @@ export function useSession() {
   const [elapsed, setElapsed] = useState(0);
   const [activity, setActivity] = useState("");
   const [withShot, setWithShot] = useState(true);
+  const [stt, setStt] = useState(true);
   const [tts, setTts] = useState(false);
   const [model, setModel] = useState("");
   const [modelList, setModelList] = useState<string[]>([]);
@@ -200,6 +205,8 @@ export function useSession() {
       const st = (await call<[], Status>("get_status")) as Status;
       setStatus(st);
       setTts(!!st.tts);
+      setWithShot(!!st.with_shot);
+      setStt(!!st.stt);
       if (st.model) setModel(st.model);
       setTicket(st.ticket || "");
       if (st.ticket) void loadTemplates(st.ticket);
@@ -504,19 +511,35 @@ export function useSession() {
     }
   };
 
-  const toggleTts = async (v: boolean) => {
-    setTts(v);
+  const toggleStt = async (v: boolean) => {
+    setStt(v);
     try {
-      const r = (await call<[boolean, string], { ok: boolean; tts?: boolean; error?: string }>(
-        "set_tts",
+      const r = (await call<[boolean, string], { ok: boolean; stt?: boolean; error?: string }>(
+        "set_stt",
         v,
         ticket
-      )) as { ok: boolean; tts?: boolean; error?: string };
+      )) as { ok: boolean; stt?: boolean; error?: string };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
-      setTts(!!r.tts);
+      setStt(!!r.stt);
     } catch (e: any) {
-      setTts(!v);
-      fail("TTS_TOGGLE_FAILED", `语音播报切换失败：${String(e?.message ?? e)}`);
+      setStt(!v);
+      fail("STT_TOGGLE_FAILED", `语音输入切换失败：${String(e?.message ?? e)}`);
+    }
+  };
+
+  const toggleWithShot = async (v: boolean) => {
+    setWithShot(v);
+    try {
+      const r = (await call<[boolean, string], { ok: boolean; with_shot?: boolean; error?: string }>(
+        "set_with_shot",
+        v,
+        ticket
+      )) as { ok: boolean; with_shot?: boolean; error?: string };
+      if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
+      setWithShot(!!r.with_shot);
+    } catch (e: any) {
+      setWithShot(!v);
+      fail("SHOT_TOGGLE_FAILED", `带画面开关切换失败：${String(e?.message ?? e)}`);
     }
   };
 
@@ -685,7 +708,8 @@ export function useSession() {
     activity,
     logs,
     withShot,
-    setWithShot,
+    stt,
+    toggleWithShot,
     tts,
     model,
     modelList,
@@ -718,7 +742,7 @@ export function useSession() {
     newSession,
     loadModels,
     changeModel,
-    toggleTts,
+    toggleStt,
     saveAskTpl,
     saveTranslateTpl,
     coreStart,
