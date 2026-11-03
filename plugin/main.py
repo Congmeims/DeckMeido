@@ -82,7 +82,7 @@ def _workspace() -> str:
 
 # 面板底部显示版本号：优先用后端 config 里报的版本（和网页设置页一致），
 # 后端连不上时退回插件自己的 package.json
-_PLUGIN_VERSION = "0.5.3"
+_PLUGIN_VERSION = "0.6.0"
 try:
     _pkg = json.loads((Path(__file__).resolve().parent / "package.json").read_text(encoding="utf-8"))
     _PLUGIN_VERSION = str(_pkg.get("version") or _PLUGIN_VERSION)
@@ -815,7 +815,13 @@ async def _start_backend(port: int) -> tuple[bool, str]:
     log = INSTALL_DIR / "server" / "backend.log"
     try:
         fd = _backend_log_fd()
-        kwargs: dict = {"stdout": fd, "stderr": fd}
+        # XDG_RUNTIME_DIR 不能指望从 Decky 继承下来：插件是系统服务起的，
+        # 环境里没有这个变量，后端的 pw-record（语音录音）和 PipeWire 抓帧都得靠它
+        kwargs: dict = {
+            "stdout": fd,
+            "stderr": fd,
+            "env": {**os.environ, "XDG_RUNTIME_DIR": _runtime_dir()},
+        }
         if not _run_as():
             kwargs["start_new_session"] = True
         try:
@@ -2409,6 +2415,88 @@ class Plugin:
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
         return {"ok": True, "text": str((r.get("data") or {}).get("text") or "")}
+
+    async def stt_status(self, ticket: str = "") -> dict:
+        """语音输入可用性：依赖、模型、录音设备三者都齐了按钮才亮"""
+        _require(ticket, "stt_status")
+        cfg = _load_server_cfg()
+        r = await _core_http(int(cfg.get("port", 18765)),
+                             str(cfg.get("token", "") or "").strip(),
+                             "GET", "/api/stt", timeout=3.0)
+        if not r["ok"]:
+            return {"ok": False, "error": r.get("error") or "读不到语音状态"}
+        return {"ok": True, **(r.get("data") or {})}
+
+    async def stt_download_model(self, ticket: str = "") -> dict:
+        """下语音模型（约 1GB）：走线程，别卡住 Decky 的事件循环"""
+        _require(ticket, "stt_download_model")
+        cfg = _load_server_cfg()
+        r = await _core_http(int(cfg.get("port", 18765)),
+                             str(cfg.get("token", "") or "").strip(),
+                             "POST", "/api/stt/download", timeout=600.0)
+        if not r["ok"]:
+            return {"ok": False, "error": r.get("error") or "模型下载失败"}
+        return {"ok": True, "model_root": str((r.get("data") or {}).get("model_root") or "")}
+
+    async def stt_transcribe(self, wav_b64: str, ticket: str = "") -> dict:
+        """WAV(base64) → 文字
+
+        音频走 base64 而不是二进制参数：Decky 的方法桥只传 JSON，
+        320KB 的 10 秒录音编成 base64 约 430KB，一次传完没问题。
+        """
+        _require(ticket, "stt_transcribe")
+        try:
+            wav = base64.b64decode(wav_b64 or "", validate=True)
+        except Exception:
+            return {"ok": False, "error": "音频编码不对"}
+        if not wav:
+            return {"ok": False, "error": "没有录到声音"}
+        cfg = _load_server_cfg()
+        port = int(cfg.get("port", 18765))
+        token = str(cfg.get("token", "") or "").strip()
+        if not token:
+            return {"ok": False, "error": "配置里没有 token"}
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        except Exception as exc:
+            return {"ok": False, "error": f"连不上 :{port}（{exc}）"}
+        try:
+            head = (
+                f"POST /api/stt/transcribe HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{port}\r\n"
+                f"X-Token: {token}\r\n"
+                f"Content-Type: audio/wav\r\n"
+                f"Content-Length: {len(wav)}\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode()
+            writer.write(head + wav)
+            await writer.drain()
+            chunks = []
+            while True:
+                chunk = await asyncio.wait_for(reader.read(65536), timeout=120.0)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+        except Exception as exc:
+            return {"ok": False, "error": f"识别请求失败（{exc}）"}
+        finally:
+            try:
+                writer.close()
+            except Exception:
+                pass
+        # 手动拆响应：前面不发 header 就收不到状态码，这里按空行切开
+        sep = raw.find(b"\r\n\r\n")
+        if sep < 0:
+            return {"ok": False, "error": "后端返回不完整"}
+        body = raw[sep + 4:]
+        try:
+            data = json.loads(body.decode("utf-8", "replace") or "{}")
+        except Exception:
+            return {"ok": False, "error": "后端返回的不是 JSON"}
+        if not raw.startswith(b"HTTP/1.1 200") and not raw.startswith(b"HTTP/1.0 200"):
+            return {"ok": False, "error": str(data.get("detail") or "识别失败")}
+        return {"ok": True, "text": str(data.get("text") or "")}
 
     async def core_start(self, ticket: str = "") -> dict:
         """「启动」按钮：显式清掉停止标记，再把核心拉起来

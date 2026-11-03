@@ -23,9 +23,9 @@
 # `pacman -Q` 会出现「记录在、命令没了」的假象。install.sh check 一律实测。
 # 同理 ydotoold 必须由 systemd 用户单元托管（enabled），裸跑的进程重启即失效。
 #
-# 怎么装（最傻瓜的一条命令，装完能反复用来自动升级）：
+# 怎么装（最傻瓜的一条命令，装完能反复用来自动升级 / 卸载）：
 #   curl -sL https://meido.meagames.cn/deckmeido/install.sh | bash
-#   —— 第一次跑：全新安装；之后再跑同一条：自动升级（无需 git、无需 cd、无需删目录）
+#   —— 第一次跑：全新安装；之后再跑同一条：询问「升级 / 卸载」，选完才继续
 #   想手动选操作（含卸载）：下载脚本后 bash install.sh menu
 #   git 方式（需要本地源码目录时）：git clone ... && cd deckmeido && bash install.sh
 #   已有脚本、只想走镜像拉最新版：bash install.sh from-mirror
@@ -1254,18 +1254,45 @@ install_plugin() {
   fi
   # 检测到 Decky，但装不装让用户定：插件要写进 ~/homebrew/plugins，属于系统级改动
   if ask_yes "检测到 Decky Loader，现在就在游戏模式里装上 QAM 面板吗？"; then
-    info "部署 QAM 插件"
-    # deploy.sh 退出码 2 是「环境不具备」（没装 Decky），不算失败
-    local rc=0
-    DECKMEIDO_NONINTERACTIVE=1 bash "$INSTALL_DIR/plugin/deploy.sh" || rc=$?
-    case "$rc" in
-      0) dim "插件已就绪，到 设置 → Decky Loader 点「重新载入」即可在 QAM 里看到" ;;
-      2) dim "插件暂未部署（环境不具备），装好 Decky Loader 后重跑：bash $INSTALL_DIR/plugin/deploy.sh" ;;
-      *) warn "插件部署失败（退出码 $rc），可单独重跑：bash $INSTALL_DIR/plugin/deploy.sh" ;;
-    esac
+    info "安装 QAM 插件（zip 解包，不使用软链接）"
+    # 直接解 zip 到 ~/homebrew/plugins/DeckMeido：和 Decky 自己的安装器同一套产物，
+    # 插件目录自洽，删掉安装目录也不影响它加载。
+    # deploy.sh 保留给「装完还想重新解一次」的场景，这里不再走它。
+    if plugin_install_zip; then
+      dim "插件已就绪，到 设置 → Decky Loader 点「重新载入」即可在 QAM 里看到"
+    else
+      warn "插件安装失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
+    fi
   else
-    # 跳过：把插件 zip 放到工作区，用户之后想装了自己解压到 ~/homebrew/plugins/DeckMeido
     plugin_handoff_zip
+  fi
+  return 0
+}
+
+# 把发布包里的插件 zip 解到 ~/homebrew/plugins/DeckMeido。
+# zip 由 release.py 打（前端已编译，无需 npm），顶层是 DeckMeido/ 目录。
+plugin_install_zip() {
+  # 优先用发布包里带的那份（deploy/deckmeido-plugin.zip，由 release.py 从 dist/ 拷进来）
+  local src="$INSTALL_DIR/deploy/deckmeido-plugin.zip"
+  local root="${DECKY_PLUGINS_DIR:-$HOME/homebrew/plugins}"
+  local target="$root/DeckMeido"
+  [ -f "$src" ] || { dim "安装包里没带插件包（$src），跳过"; return 1; }
+  need_cmd unzip || { dim "缺少 unzip，跳过"; return 1; }
+  # 旧版本可能是软链接装进来的：先删链接本身，别顺着链接把安装目录删了
+  if [ -L "$target" ]; then
+    rm -f "$target" 2>/dev/null || sudo rm -f "$target"
+  fi
+  # 插件根目录属 root:root，普通用户建不了/删不掉，借一次 sudo 动本插件自己的目录
+  sudo -n mkdir -p "$target" 2>/dev/null ||
+    sudo mkdir -p "$target" 2>/dev/null || { dim "建不动 $target"; return 1; }
+  # 清旧文件再解：zip 里没有的旧文件（改过名的模块）留着会让 Decky 加载到过期代码
+  sudo rm -rf "$target" 2>/dev/null || true
+  sudo mkdir -p "$target" || return 1
+  sudo unzip -oq "$src" -d "$root" || return 1
+  # zip 顶层目录名是 DeckMeido，解到 $root 下正好生成 $target
+  if [ ! -f "$target/dist/index.js" ] || [ ! -f "$target/plugin.json" ]; then
+    dim "解包结果不完整（$target）"
+    return 1
   fi
   return 0
 }
@@ -1669,6 +1696,7 @@ do_from_mirror() {
       exit 0 ;;
   esac
 
+  print_banner
   info "镜像站：$MIRROR"
   local tag; tag="$(mirror_latest_tag || true)"
   [ -n "$tag" ] || die "读不到镜像站的版本信息（$MIRROR/latest.json），请检查网络或稍后再试"

@@ -1,10 +1,10 @@
 {
-  "tag": "0.5.0",
-  "name": "DeckMeido 0.5.0",
-  "notes": "# DeckMeido 0.5.0\n\n## 稳定性\n- 修掉长时间运行被系统杀掉进程的问题：命令输出、工具结果、发给模型的请求体都加上限，流式过程数据另存为独立文件并按需裁剪\n- 系统可用内存偏低时自动降载，桌面模式不误伤、游戏模式及时收缩\n- 历史对话里的截图只保留最近两张，更早的换成文字说明\n- 后端重启或前端崩溃后，正在生成的内容能接回来，不再整段丢失\n\n## 界面\n- 网页端：长时间没有输出的终端卡片自动折叠成一行，一轮加载几十个工具也不会把右侧列表占满\n- QAM 面板：分页改为 LB / RB 按键翻页\n- QAM 设置页：模型下拉框、提示词输入框与按钮宽度统一\n\n## 最近提交\n\n- fix(plugin): 修 --check 恒报未部署，部署时补拷 package.json\n- docs: README 与当前代码对齐，移除多余的镜像部署脚本\n- chore: 移除误提交的临时文件\n- chore: 移除 deploy_mirror.py，发版只打包\n- chore: 0.4.3 发布准备，改用 CC BY-NC 4.0 许可\n- chore: 审计脚本排除噪声IP，deploy_mirror.sh 去掉真实地址示例\n- security: 移除代码中的服务器凭据，发布包剔除运维脚本并加校验\n- fix: 镜像升级不再跳过 VERSION，修复升级后版本号仍停在旧版\n- chore: 插件版本号升到 0.4.0，补 Windows 用的镜像站上传脚本\n- feat: QAM 面板改为三页布局并支持模型切换，官网及部署脚本入库\n- fix: 修复依赖下载进度误报「连不上」且下载阶段速度为 0\n- fix: 卸载流程真正删除代码并保留人格/记忆，界面套用卡片 UI\n- feat: install.sh 依赖下载进度显示剩余时间与下载速度\n- feat: install.sh 无参数运行时改为交互式菜单\n- fix: requirements 补上 ptyprocess 依赖，修复后端启动崩溃\n- feat(install): pip 安装进度条、按实测速率选源、拆分 PySide6 依赖\n- chore: 版本号升到 0.3.0，去掉手机强制横屏与全屏按钮\n- perf: 会话 IO 线程化、思考链合批、会话索引与 turnCache 降频\n- perf: 流式合批、历史分页、LLM 重试、工具独立超时与每轮少算 token\n- refactor: 提示词集中到 server/prompts/ 下的 md 文件\n",
-  "published_at": "2026-11-02T14:02:36+08:00",
+  "tag": "0.6.0",
+  "name": "DeckMeido 0.6.0",
+  "notes": "# DeckMeido 0.6.0\n\n- docs(prototype): add standalone 1280x800 big screen prototype\n- fix(deploy): stop auto-restart after core close\n- feat(plugin): restructure big screen UI with tabs, receipt and core controls\n- feat(server): make translate prompt configurable\n- fix(plugin): scope game detection to current Steam client session\n- fix(server): gate power commands on current-turn intent with policy and pending_intent\n- feat(plugin): add fullscreen Steam route with gamepad-first big screen chat UI\n- release: 0.5.3\n- chore: 忽略 release.py 生成的插件 zip 中间产物\n- fix(plugin): 恢复 package.json 的 type=module，修掉插件加载报 Unexpected token 'export'\n- feat(install): 重跑安装脚本时询问升级还是卸载，不再默认升级\n- feat(plugin): 插件统一走 zip 安装，产物落到 install.sh 找的位置\n- perf(ui): 限制屏幕上消息节点数量，流式输出时不再打断回看\n- fix(ui): 排队气泡拉满整行，操作按钮右对齐\n- fix(prompt): 重启前先自检是否已重启完成，避免重复掐断会话\n- fix(prompt): 关机/重启先判断有无后续任务，能接续的用 systemctl reboot\n- fix(prompt): 切桌面模式改用 steamosctl，不再走 steamos-session-select plasma\n- chore: 0.5.0 发布准备，镜像站产物更新到 0.5.0\n- fix(plugin): QAM 分页改用 LB/RB，设置页控件宽度对齐\n- perf: 给内存占用设上限，长时间运行不再被系统杀掉进程\n",
+  "published_at": "2026-11-03T18:44:10+08:00",
   "files": {
-    "tarball": "deckmeido-0.5.0.tar.gz",
-    "sha256": "6b411de7d801ce0f35660266bff3610515eb9bcd23c02179fb558318710c86c1"
+    "tarball": "deckmeido-0.6.0.tar.gz",
+    "sha256": "781521ad2139d83be86f5e37b08500ece9ab1c8f256f56f5ebd5d0005fcb9a27"
   }
 }

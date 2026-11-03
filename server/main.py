@@ -31,6 +31,7 @@ from .session_store import store
 from . import session_store
 from .session_store import SESSIONS_DIR as _sessions_dir
 from .tts import TTS
+from .stt import STT, STTError, record_supported
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.toml"
@@ -703,6 +704,14 @@ tts = TTS(
     max_chars=int(_tts_cfg.get("max_chars", 300)),
 )
 
+# 语音识别：模型放在用户数据目录（server/models/），不进插件包也不进 venv。
+# 懒加载，第一次识别才建 recognizer
+_stt_cfg = CFG.get("stt", {})
+stt = STT(
+    model_root=BASE_DIR / "models" / "sensevoice",
+    enable=bool(_stt_cfg.get("enable", True)),
+)
+
 
 def apply_config(cfg: dict):
     """热更新运行配置（LLM / TTS / 权限模式 / 访问令牌），无需重启"""
@@ -738,6 +747,11 @@ def apply_config(cfg: dict):
             pass
     tts.voice = t.get("voice", "cmn")
     tts.speed = int(t.get("speed", 170))
+    # 语音输入开关热更新；关掉时顺手把已加载的模型释放掉，别让它白占内存
+    s = cfg.get("stt", {})
+    stt.enable = bool(s.get("enable", True))
+    if not stt.enable:
+        stt.unload()
     PERMISSION_MODE = cfg.get("security", {}).get("permission_mode", "auto")
     # 文件工具的边界跟着权限模式走：full 不设限（与 run_command 一致），
     # 其余模式只能碰工作区。这里同步一份，热更新后立刻生效
@@ -2849,6 +2863,59 @@ async def api_set_translate_template(req: TranslateTemplateUpdate):
     tpl = req.text.strip() or DEFAULT_TRANSLATE_TEMPLATE
     update_config({"agent": {"translate_template": tpl}})
     return {"ok": True, "text": TRANSLATE_TEMPLATE}
+
+
+# ---------- 语音输入 ----------
+
+@app.get("/api/stt", dependencies=[Depends(check_token)])
+async def api_stt_status():
+    """语音输入状态：前端据此决定按钮能不能按、要不要提示下模型
+
+    runtime / model 分开报，是为了区分「没装 sherpa-onnx」和「装了但模型没下」
+    两种不可用原因 —— 前者要 pip，后者点一下就下。
+    """
+    rec = record_supported()
+    return {
+        "ok": True,
+        **stt.status(),
+        "record": rec["ok"],
+        "record_reason": rec["reason"],
+    }
+
+
+@app.post("/api/stt/download", dependencies=[Depends(check_token_any)])
+async def api_stt_download():
+    """下载语音模型（约 155MB）。已经在就秒回，不会重复下
+
+    下载是阻塞 IO，扔到线程里跑，别卡住事件循环 —— 后端还要同时喂 WebSocket。
+    """
+    try:
+        root = await asyncio.to_thread(stt.download_model)
+    except STTError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"模型下载失败：{exc}")
+    return {"ok": True, "model_root": str(root)}
+
+
+@app.post("/api/stt/transcribe", dependencies=[Depends(check_token_any)])
+async def api_stt_transcribe(req: Request):
+    """整段 WAV 转文字。请求体直接是音频字节，不做 multipart
+
+    前端用 MediaRecorder / AudioWorklet 录完一次性 POST 上来，
+    返回的文字由前端填进输入框，**不自动发送**（用户还要改）。
+    """
+    wav = await req.body()
+    if not wav:
+        raise HTTPException(status_code=400, detail="没有收到音频")
+    # 10 秒 16k 单声道 16bit ≈ 320KB，留 20 倍余量防滥用
+    if len(wav) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="音频太大（上限 8MB）")
+    try:
+        text = await asyncio.to_thread(stt.transcribe, wav)
+    except STTError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "text": text}
 
 
 # ---------- 版本与升级 ----------

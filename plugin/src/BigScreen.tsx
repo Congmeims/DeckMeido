@@ -10,6 +10,7 @@ import {
 } from "@decky/ui";
 import { ACCENT, DIM, ERR_COLOR, Md, TEXT } from "./ui";
 import { Item, useSession } from "./useSession";
+import { useVoiceInput } from "./useVoiceInput";
 
 // 全屏页版式：按 Deck 的 1280×800 算，页面内高 800-48-44=708
 // 页头 26 + 状态行（询问 46 / 聊天 28 / 设置 28）+ 间距 + 输入卡（仅聊天 60）+ 分隔线 1
@@ -364,6 +365,10 @@ export default function BigScreen() {
   const [input, setInput] = useState("");
   const [logOpen, setLogOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // 语音结果追加到已有输入后面，不覆盖用户已经打的字
+  const voice = useVoiceInput(s.ticket, (t) =>
+    setInput((prev) => (prev.trim() ? prev.replace(/\s*$/, " ") + t : t))
+  );
 
   // 大屏上最新一条应该在最下面；切页签后消息区会重新挂载，也要贴底
   useEffect(() => {
@@ -397,6 +402,20 @@ export default function BigScreen() {
     setInput("");
     void s.send(text);
   };
+
+  // 语音提示只在不就绪时出现：报错优先，其次按原因给一句短提示 + 下载入口
+  const voiceTip = (() => {
+    if (voice.ready) return null;
+    if (voice.error) return { text: voice.error, color: ERR_COLOR, canDownload: false };
+    const st = voice.status;
+    if (!st) return null;
+    if (!st.ok) return { text: "语音不可用：后端没连上", color: DIM, canDownload: false };
+    if (st.enable === false) return { text: "语音输入已在设置里关闭", color: DIM, canDownload: false };
+    if (!st.runtime) return { text: "语音不可用：后端没装 sherpa-onnx", color: DIM, canDownload: false };
+    if (!st.model) return { text: "语音模型未下载（约 1GB，只需一次）", color: DIM, canDownload: true };
+    if (st.record === false) return { text: st.record_reason || "录音设备不可用", color: DIM, canDownload: false };
+    return null;
+  })();
 
   // 状态行只显示结论：空闲留空（结构保留，后续填内容），忙时显示思考中
   const statusLine = s.busy ? `思考中…（${s.elapsed}s）` : "";
@@ -797,6 +816,7 @@ export default function BigScreen() {
               width: "100%",
               height: 44,
               flexShrink: 0,
+              position: "relative",
             }}
           >
             <Focusable
@@ -821,6 +841,30 @@ export default function BigScreen() {
                 }}
               />
             </Focusable>
+            <div style={{ flex: "0 0 96px", width: 96, height: 44 }}>
+              <ActionButton
+                disabled={s.busy || voice.phase === "working" || !voice.ready}
+                onClick={() => (voice.phase === "recording" ? voice.stop() : voice.start())}
+                description={
+                  !voice.ready
+                    ? voice.status?.model === false
+                      ? "语音模型未下载"
+                      : "语音输入不可用"
+                    : voice.phase === "recording"
+                      ? "松开结束"
+                      : "语音输入"
+                }
+                style={{
+                  height: 44,
+                  minHeight: 44,
+                  // 录音中整块变强调色，手柄注意力在输入框上也能一眼看出在录
+                  background: voice.phase === "recording" ? ACCENT : "rgba(255,255,255,.10)",
+                  color: voice.phase === "recording" ? "#1b1b1b" : TEXT,
+                }}
+              >
+                {voice.phase === "working" ? "识别中" : voice.phase === "recording" ? "松开" : "语音"}
+              </ActionButton>
+            </div>
             <div style={{ flex: "0 0 160px", width: 160, height: 44 }}>
               <ActionButton
                 primary
@@ -832,8 +876,41 @@ export default function BigScreen() {
                 发送
               </ActionButton>
             </div>
+            {/* 语音提示：绝对定位浮在输入行下方，不占版式高度 */}
+            {voiceTip && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: 48,
+                  left: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  height: 26,
+                  // 只有下载按钮要接焦点，整条浮层不挡消息区
+                  pointerEvents: voiceTip.canDownload ? "auto" : "none",
+                }}
+              >
+                <span style={{ fontSize: 12, color: voiceTip.color }}>{voiceTip.text}</span>
+                {voiceTip.canDownload && (
+                  <ActionButton
+                    disabled={voice.downloading}
+                    onClick={voice.downloadModel}
+                    description="下载语音模型"
+                    style={{
+                      width: "auto",
+                      height: 26,
+                      minHeight: 26,
+                      padding: "0 10px",
+                      fontSize: 12,
+                    }}
+                  >
+                    {voice.downloading ? "下载中…" : "下载模型"}
+                  </ActionButton>
+                )}
+              </div>
+            )}
           </div>
-
           {/* 输入区与消息区之间：与询问页共用同一条分隔线 */}
           <div style={dividerStyle} />
 
