@@ -1,6 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { addEventListener, call, removeEventListener } from "@decky/api";
+import { Navigation } from "@decky/ui";
 import { applyPadOrder } from "./padOrder";
+
+/** 大屏路由页地址：index.tsx 注册路由、这里截图后导航回来，只能有这一份 */
+export const BIG_SCREEN_ROUTE = "/deckmeido";
+
+/**
+ * 从大屏页退到游戏、到抓帧之间的等待。gamescope 抓的是合成后的整屏，
+ * 路由页的退场动画没走完就会被拍进去；QAM 收起那套用的是 1.2s，
+ * 这里是整页路由切换（还带一层淡出），给到 1.6s。
+ */
+const SHOT_LEAVE_MS = 1600;
+
+const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // 后端在不在、截图能不能用、代理走哪条路，由插件后端探测
 export type Status = {
@@ -18,6 +31,8 @@ export type Status = {
   core_ok: boolean;
   core_reason: string;
   core_mode: string;
+  // 用户点过「关闭核心」且没再点「启动核心」：显示「已停止」并禁用重启核心
+  core_stopped: boolean;
   workspace: string;
   gamepad: boolean;
   tts: boolean;
@@ -48,7 +63,19 @@ export type Delta =
   | { kind: "pad_order"; action: "to1p" | "revert" }
   | { kind: "thread"; items: Item[] };
 
-export type PendingPoke = { text: string; brief: string };
+export type ActionKind = "" | "ask" | "translate" | "send";
+
+export type PendingPoke = { text: string; brief: string; action: ActionKind };
+
+/** 大屏唯一的日志来源：设置页「维护」里只显示最近一条，点开看最近 3 条 */
+export type LogEntry = { code: string; ts: number; detail: string };
+
+// 跨挂载保留最近一次动作：从游戏画面回到大屏页时 busy 由后端事件补推，
+// 但“哪个按钮在跑”只存在前端，放模块级变量才不会因为组件重挂而丢。
+let activeAction: ActionKind = "";
+
+// 日志同理：截图会短暂离开大屏页，组件重挂后仍要保留最近事件
+let logStore: LogEntry[] = [];
 
 export const SHOT_ASK_BRIEF = "看看这个，我该怎么做？";
 export const SHOT_TRANSLATE_BRIEF = "翻译画面上的文字";
@@ -59,7 +86,7 @@ export const DEFAULT_ASK_TPL =
   "再总结成几条可以直接照做的步骤，200 字以内。\n" +
   "不要剧透：只讲眼前这一步怎么过，不要提前说后面的剧情、结局或其他关卡的解法。";
 
-export const SHOT_TRANSLATE_TPL =
+export const DEFAULT_TRANSLATE_TPL =
   "把画面上的外文原文先照抄出来，再逐句翻译成简体中文。" +
   "已经是中文就原样说明，不要翻译。\n" +
   "只翻译、不解释剧情、不剧透，保持原文的换行和顺序。";
@@ -83,16 +110,43 @@ export function useSession() {
   const [loadingModels, setLoadingModels] = useState(false);
   const [askTpl, setAskTpl] = useState("");
   const [askTplEdit, setAskTplEdit] = useState("");
+  const [askTplDefault, setAskTplDefault] = useState(DEFAULT_ASK_TPL);
+  // 翻译提示词存在后端 [agent] translate_template 里，这里只是镜像；
+  // 真正发翻译请求时用 translateTpl（见 shotTranslate）
+  const [translateTpl, setTranslateTpl] = useState(DEFAULT_TRANSLATE_TPL);
+  const [translateTplEdit, setTranslateTplEdit] = useState(DEFAULT_TRANSLATE_TPL);
+  const [translateTplDefault, setTranslateTplDefault] = useState(DEFAULT_TRANSLATE_TPL);
   const [tokenInput, setTokenInput] = useState("");
   const [ticket, setTicket] = useState("");
   const [probing, setProbing] = useState(true);
   const [restarting, setRestarting] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [killing, setKilling] = useState(false);
   const [newing, setNewing] = useState(false);
   const [pendingPoke, setPendingPoke] = useState<PendingPoke | null>(null);
+  const [runningAction, setRunningActionState] = useState<ActionKind>(activeAction);
+  const [logs, setLogs] = useState<LogEntry[]>(logStore);
 
   const curRef = useRef("");
   const busyRef = useRef(false);
+
+  const setRunningAction = (a: ActionKind) => {
+    activeAction = a;
+    setRunningActionState(a);
+  };
+
+  const pushLog = (code: string, detail = "") => {
+    const entry: LogEntry = { code, ts: Math.floor(Date.now() / 1000), detail };
+    logStore = [entry, ...logStore].slice(0, 10);
+    setLogs(logStore);
+  };
+
+  // 失败统一走这里：界面只在「维护」显示结论码 + 时间，正文留给展开后的明细
+  const fail = (fallback: string, text: string) => {
+    const code = /策略拒绝|denied|policy/i.test(text) ? "POLICY_DENIED" : fallback;
+    setError(text);
+    pushLog(code, text);
+  };
 
   const setBusyBoth = (v: boolean) => {
     busyRef.current = v;
@@ -106,22 +160,37 @@ export function useSession() {
   const finishTurn = (cancelled?: boolean) => {
     setStreaming("");
     setBusyBoth(false);
+    setRunningAction("");
     setActivity("");
     if (cancelled) setError("这一轮已中断");
   };
 
-  const loadAskTpl = async (tk: string) => {
+  const loadTemplates = async (tk: string) => {
     try {
-      const r = (await call<[string], { ok: boolean; text?: string }>(
+      const r = (await call<[string], { ok: boolean; text?: string; default?: string }>(
         "get_ask_template",
         tk
-      )) as { ok: boolean; text?: string };
+      )) as { ok: boolean; text?: string; default?: string };
       if (r.ok && r.text) {
         setAskTpl(r.text);
         setAskTplEdit(r.text);
       }
+      if (r.ok && r.default) setAskTplDefault(r.default);
     } catch {
       /* 取不到就用后端默认模板 */
+    }
+    try {
+      const r = (await call<[string], { ok: boolean; text?: string; default?: string }>(
+        "get_translate_template",
+        tk
+      )) as { ok: boolean; text?: string; default?: string };
+      if (r.ok && r.text) {
+        setTranslateTpl(r.text);
+        setTranslateTplEdit(r.text);
+      }
+      if (r.ok && r.default) setTranslateTplDefault(r.default);
+    } catch {
+      /* 取不到就用本地兜底模板 */
     }
   };
 
@@ -133,10 +202,10 @@ export function useSession() {
       setTts(!!st.tts);
       if (st.model) setModel(st.model);
       setTicket(st.ticket || "");
-      if (st.ticket) void loadAskTpl(st.ticket);
+      if (st.ticket) void loadTemplates(st.ticket);
       return st;
     } catch (e: any) {
-      setError(`插件后端未就绪：${String(e?.message ?? e)}`);
+      fail("BACKEND_DOWN", `插件后端未就绪：${String(e?.message ?? e)}`);
       return null;
     } finally {
       setProbing(false);
@@ -149,7 +218,7 @@ export function useSession() {
       tk
     )) as { ok: boolean; ticket?: string; error?: string };
     if (!r.ok || !r.ticket) {
-      setError(r.error ?? "解锁失败");
+      fail("AUTH_FAILED", r.error ?? "解锁失败");
       return;
     }
     setTicket(r.ticket);
@@ -164,7 +233,7 @@ export function useSession() {
     try {
       await applyTicket(tk);
     } catch (e: any) {
-      setError(String(e?.message ?? e));
+      fail("AUTH_FAILED", String(e?.message ?? e));
     }
   };
 
@@ -178,27 +247,41 @@ export function useSession() {
         ticket
       )) as { ok: boolean; error?: string; already?: boolean };
       if (!r.ok) {
-        setError(r.error ?? "拉起后端失败");
+        fail("CORE_START_FAILED", r.error ?? "拉起后端失败");
         return;
       }
       await refreshStatus();
       await call<[string], { ok: boolean; error?: string }>("session_open", ticket);
       await call<[string], { ok: boolean }>("ready", ticket);
+      pushLog("BACKEND_STARTED", "插件后端已拉起");
     } catch (e: any) {
-      setError(String(e?.message ?? e));
+      fail("CORE_START_FAILED", String(e?.message ?? e));
     } finally {
       setStarting(false);
     }
   };
 
-  const runTurn = async (text: string, grab: boolean, brief = "") => {
+  const runTurn = async (text: string, grab: boolean, brief = "", action: ActionKind = "") => {
     if (busyRef.current) return;
     setError("");
     setActivity("");
     setPendingPoke(null);
     curRef.current = "";
     setStreaming("");
+    setRunningAction(action);
     setBusyBoth(true);
+
+    // 抓帧期间人已经退回游戏了：这一轮不管走成什么样，最后都要回到大屏页
+    let offRoute = false;
+    const backToBigScreen = () => {
+      if (!offRoute) return;
+      offRoute = false;
+      try {
+        Navigation.Navigate(BIG_SCREEN_ROUTE);
+      } catch {
+        /* 导航回去失败就只能靠 B 键返回，不能在这里再抛一个错把原始错误盖掉 */
+      }
+    };
 
     try {
       const st = await refreshStatus();
@@ -217,9 +300,16 @@ export function useSession() {
         ts?: number;
       } | null = null;
       if (grab) {
-        // TODO: /deckmeido 是全屏路由，当前位置抓帧会把这一页也拍进去。
-        // 第一版先按原链路调用；后续需要在抓帧前 NavigateBack 回游戏、等 1.2s，
-        // 抓完再 Navigate 回来，否则截屏询问拿到的会是插件页而不是游戏画面。
+        // gamescope 抓的是合成后的整屏，/deckmeido 这页本身会一起被拍进去。
+        // 所以先退回游戏、等路由退场动画走完再抓，抓完立刻导航回来。
+        try {
+          Navigation.NavigateBack();
+          offRoute = true;
+        } catch (e: any) {
+          // 退不出去就别抓了：抓到的只会是插件页
+          throw new Error(`无法暂时退出大屏页：${String(e?.message ?? e)}`);
+        }
+        await wait(SHOT_LEAVE_MS);
         const snap = (await call<
           [string, boolean],
           {
@@ -248,14 +338,16 @@ export function useSession() {
           game?: { appid?: string; name?: string };
         };
         if (snap.needPoke) {
-          setPendingPoke({ text, brief });
+          setPendingPoke({ text, brief, action });
           setBusyBoth(false);
+          setRunningAction("");
+          backToBigScreen();
           return;
         }
         if (snap.ok && snap.shot) {
           shotPath = snap.shot;
         } else {
-          setError(`截图失败，这轮只发文字：${snap.error ?? "未知原因"}`);
+          fail("SHOT_FAILED", `截图失败，这轮只发文字：${snap.error ?? "未知原因"}`);
         }
         game = snap.game ?? null;
       }
@@ -277,6 +369,10 @@ export function useSession() {
       )) as { ok: boolean; error?: string };
       if (!res.ok) throw new Error(res.error ?? "发不出去");
 
+      // 这一轮已经在后端跑起来了，马上回大屏页；答复靠事件流补上，
+      // 挂载后的 ready 会补推一次 running 状态，界面不会漏掉这一轮
+      backToBigScreen();
+
       const fin = (await call<[number, string], { ok: boolean; text?: string; error?: string }>(
         "wait_final",
         900,
@@ -291,45 +387,51 @@ export function useSession() {
         }
       }
     } catch (e: any) {
-      setError(String(e?.message ?? e));
+      fail("TURN_FAILED", String(e?.message ?? e));
       setBusyBoth(false);
+      setRunningAction("");
       setActivity("");
       setStreaming("");
+    } finally {
+      // 任何提前返回/异常都不能把人留在游戏画面里
+      backToBigScreen();
     }
   };
 
   const send = async (text: string) => {
     const t = text.trim();
     if (!t || busyRef.current) return;
-    await runTurn(t, withShot, "");
+    await runTurn(t, withShot, "", "send");
   };
 
   const shotAsk = async () => {
     if (busyRef.current) return;
-    await runTurn(askTpl || DEFAULT_ASK_TPL, true, SHOT_ASK_BRIEF);
+    await runTurn(askTpl || DEFAULT_ASK_TPL, true, SHOT_ASK_BRIEF, "ask");
   };
 
   const shotTranslate = async () => {
     if (busyRef.current) return;
-    await runTurn(SHOT_TRANSLATE_TPL, true, SHOT_TRANSLATE_BRIEF);
+    // 用后端持久化的翻译提示词；还没读到就用兜底常量
+    await runTurn(translateTpl || DEFAULT_TRANSLATE_TPL, true, SHOT_TRANSLATE_BRIEF, "translate");
   };
 
   const retryPoke = async () => {
     if (busyRef.current || !pendingPoke) return;
     const p = pendingPoke;
     setPendingPoke(null);
-    await runTurn(p.text, true, p.brief);
+    await runTurn(p.text, true, p.brief, p.action);
   };
 
   const cancel = async () => {
     setBusyBoth(false);
+    setRunningAction("");
     setActivity("");
     try {
       await call<[string], { ok: boolean; error?: string }>("cancel", ticket);
     } catch {
       /* 断开本身已经够用 */
     }
-    setError("这一轮已中断");
+    fail("CANCELLED", "这一轮已中断");
     setPendingPoke(null);
   };
 
@@ -351,8 +453,9 @@ export function useSession() {
       setStreaming("");
       setActivity("");
       curRef.current = "";
+      pushLog("SESSION_NEW", "已开始新会话");
     } catch (e: any) {
-      setError(`新建会话失败：${String(e?.message ?? e)}`);
+      fail("SESSION_NEW_FAILED", `新建会话失败：${String(e?.message ?? e)}`);
     } finally {
       setNewing(false);
     }
@@ -397,7 +500,7 @@ export function useSession() {
       setError("");
     } catch (e: any) {
       setModel(prev);
-      setError(`切换模型失败：${String(e?.message ?? e)}`);
+      fail("MODEL_CHANGE_FAILED", `切换模型失败：${String(e?.message ?? e)}`);
     }
   };
 
@@ -413,7 +516,7 @@ export function useSession() {
       setTts(!!r.tts);
     } catch (e: any) {
       setTts(!v);
-      setError(`语音播报切换失败：${String(e?.message ?? e)}`);
+      fail("TTS_TOGGLE_FAILED", `语音播报切换失败：${String(e?.message ?? e)}`);
     }
   };
 
@@ -429,25 +532,83 @@ export function useSession() {
       setAskTplEdit(r.text ?? "");
       setError("");
     } catch (e: any) {
-      setError(`提示词保存失败：${String(e?.message ?? e)}`);
+      fail("ASK_TPL_SAVE_FAILED", `提示词保存失败：${String(e?.message ?? e)}`);
     }
   };
 
-  const restartCore = async () => {
+  const saveTranslateTpl = async () => {
+    try {
+      const r = (await call<[string, string], { ok: boolean; text?: string; error?: string }>(
+        "set_translate_template",
+        translateTplEdit,
+        ticket
+      )) as { ok: boolean; text?: string; error?: string };
+      if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
+      setTranslateTpl(r.text ?? "");
+      setTranslateTplEdit(r.text ?? "");
+      setError("");
+    } catch (e: any) {
+      fail("TRANSLATE_TPL_SAVE_FAILED", `翻译提示词保存失败：${String(e?.message ?? e)}`);
+    }
+  };
+
+  const coreStart = async () => {
+    if (starting) return;
+    setStarting(true);
+    setError("");
+    try {
+      const r = (await call<[string], { ok: boolean; version?: string; error?: string }>(
+        "core_start",
+        ticket
+      )) as { ok: boolean; version?: string; error?: string };
+      if (!r.ok) throw new Error(r.error ?? "核心没有起来");
+      await refreshStatus();
+      await call<[string], { ok: boolean; error?: string }>("session_open", ticket);
+      await call<[string], { ok: boolean }>("ready", ticket);
+      pushLog("CORE_STARTED", "核心已启动");
+    } catch (e: any) {
+      fail("CORE_START_FAILED", `启动核心失败：${String(e?.message ?? e)}`);
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const coreRestart = async () => {
     if (restarting) return;
     setRestarting(true);
     setError("");
     try {
       const r = (await call<[string], { ok: boolean; version?: string; error?: string }>(
-        "restart_core",
+        "core_restart",
         ticket
       )) as { ok: boolean; version?: string; error?: string };
       if (!r.ok) throw new Error(r.error ?? "核心没有回来");
       await refreshStatus();
+      pushLog("CORE_RESTARTED", "核心已重启");
     } catch (e: any) {
-      setError(`重启核心失败：${String(e?.message ?? e)}`);
+      fail("CORE_RESTART_FAILED", `重启核心失败：${String(e?.message ?? e)}`);
     } finally {
       setRestarting(false);
+    }
+  };
+
+  const coreKill = async () => {
+    if (killing) return;
+    setKilling(true);
+    setError("");
+    try {
+      const r = (await call<[string], { ok: boolean; error?: string }>(
+        "core_kill",
+        ticket
+      )) as { ok: boolean; error?: string };
+      if (!r.ok) throw new Error(r.error ?? "核心没有停下来");
+      // 标记已落盘：后端不会再自动拉起，只有「启动核心」能恢复
+      await refreshStatus();
+      pushLog("CORE_CLOSED", "核心已关闭，不会自动拉起");
+    } catch (e: any) {
+      fail("CORE_CLOSE_FAILED", `关闭核心失败：${String(e?.message ?? e)}`);
+    } finally {
+      setKilling(false);
     }
   };
 
@@ -483,7 +644,8 @@ export function useSession() {
           setBusyBoth(true);
         } else if (!msg.running && busyRef.current) {
           setBusyBoth(false);
-          setError("这一轮没有收到答复，可能是后端断开了");
+          setRunningAction("");
+          fail("BACKEND_DOWN", "这一轮没有收到答复，可能是后端断开了");
         }
         return;
       }
@@ -518,8 +680,10 @@ export function useSession() {
     items,
     streaming,
     busy,
+    runningAction,
     elapsed,
     activity,
+    logs,
     withShot,
     setWithShot,
     tts,
@@ -529,12 +693,18 @@ export function useSession() {
     askTpl,
     askTplEdit,
     setAskTplEdit,
+    askTplDefault,
+    translateTpl,
+    translateTplEdit,
+    setTranslateTplEdit,
+    translateTplDefault,
     tokenInput,
     setTokenInput,
     ticket,
     probing,
     restarting,
     starting,
+    killing,
     newing,
     pendingPoke,
     refreshStatus,
@@ -550,7 +720,10 @@ export function useSession() {
     changeModel,
     toggleTts,
     saveAskTpl,
-    restartCore,
+    saveTranslateTpl,
+    coreStart,
+    coreRestart,
+    coreKill,
     setError,
   };
 }

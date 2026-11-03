@@ -213,6 +213,40 @@ def _clear_ticket():
         pass
 
 
+# ---------- 核心停止标记 ----------
+#
+# 「关闭核心」之后要求保持停止：插件加载时的自动拉起（_autostart_backend）
+# 必须先看这个标记，有标记就跳过。只有用户显式点「启动」（start_backend /
+# core_start）才清掉它。标记放在安装目录的 server/ 下，插件（root）和桌面
+# 客户端的 watchdog 都能看到，Decky / Steam 重启后仍然生效。
+
+def _core_stopped_path() -> Path:
+    # 和桌面客户端的 watchdog 共用这一个标记：放在安装目录里 root / deck 都能 stat。
+    # 存在 = 用户点过「关闭核心」，两条自动拉起路径（插件 _autostart_backend、
+    # 客户端 watchdog）都必须跳过；只有显式「启动」才删掉它。
+    return INSTALL_DIR / "server" / ".core_stopped"
+
+
+def _core_stopped() -> bool:
+    try:
+        return _core_stopped_path().exists()
+    except Exception:
+        return False
+
+
+def _mark_core_stopped(stopped: bool) -> None:
+    path = _core_stopped_path()
+    try:
+        if stopped:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+            os.chmod(path, 0o600)
+        else:
+            path.unlink(missing_ok=True)
+    except Exception as exc:
+        decky.logger.warning(f"写入核心停止标记失败：{exc}")
+
+
 def _token() -> str:
     """插件自己的令牌：环境变量 > 插件配置 > 默认 meido。
 
@@ -2154,6 +2188,9 @@ class Plugin:
             "core_ok": bool(core.get("ok")),
             "core_reason": str(core.get("error") or ""),
             "core_mode": str((core.get("data") or {}).get("mode") or ""),
+            # 用户点过「关闭核心」且没再点「启动」：前端据此显示「已停止」
+            # 而不是「异常」，并把「重启」置灰
+            "core_stopped": _core_stopped(),
             # 设置区：语音播报开关（由后端 tts.enable 决定）与版本号（底部显示）
             "tts": bool(prefs.get("tts")),
             "version": str(prefs.get("version") or _PLUGIN_VERSION),
@@ -2216,6 +2253,8 @@ class Plugin:
         token = str(cfg.get("token", "") or "").strip()
         if not token:
             return {"ok": False, "error": "后端配置里的 token 是空的，先在网页设置页生成一个"}
+        # 用户显式点「启动」：清掉停止标记，之后的自动拉起才恢复
+        _mark_core_stopped(False)
         core = await _core_http(port, token, "GET", "/api/status", timeout=2.0)
         if core.get("ok"):
             return {"ok": True, "already": True}
@@ -2347,7 +2386,62 @@ class Plugin:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
         return {"ok": True, "text": str((r.get("data") or {}).get("text") or "")}
 
-    async def restart_core(self, ticket: str = "") -> dict:
+    async def get_translate_template(self, ticket: str = "") -> dict:
+        """读「截图翻译」的提示词模板（存在后端配置里，真正用于翻译请求）"""
+        _require(ticket, "get_translate_template")
+        cfg = _load_server_cfg()
+        r = await _core_http(int(cfg.get("port", 18765)),
+                             str(cfg.get("token", "") or "").strip(),
+                             "GET", "/api/translate-template")
+        if not r["ok"]:
+            return {"ok": False, "error": r.get("error") or "读取失败"}
+        data = r.get("data") or {}
+        return {"ok": True, "text": str(data.get("text") or ""),
+                "default": str(data.get("default") or "")}
+
+    async def set_translate_template(self, text: str, ticket: str = "") -> dict:
+        """改「截图翻译」的提示词模板：传空串表示恢复默认"""
+        _require(ticket, "set_translate_template")
+        cfg = _load_server_cfg()
+        r = await _core_http(int(cfg.get("port", 18765)),
+                             str(cfg.get("token", "") or "").strip(),
+                             "POST", "/api/translate-template", body={"text": text})
+        if not r["ok"]:
+            return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
+        return {"ok": True, "text": str((r.get("data") or {}).get("text") or "")}
+
+    async def core_start(self, ticket: str = "") -> dict:
+        """「启动」按钮：显式清掉停止标记，再把核心拉起来
+
+        和 start_backend 的区别：这个面向大屏页的三个核心按钮，返回里带
+        already / version，前端据此决定按钮状态；停止标记只在这里和
+        start_backend 里清除。
+        """
+        _require(ticket, "core_start")
+        cfg = _load_server_cfg()
+        port = int(cfg.get("port", 18765))
+        token = str(cfg.get("token", "") or "").strip()
+        if not token:
+            return {"ok": False, "error": "后端配置里的 token 是空的，先在网页设置页生成一个"}
+        _mark_core_stopped(False)
+        core = await _core_http(port, token, "GET", "/api/status", timeout=2.0)
+        if core.get("ok"):
+            await self._stay_connected()
+            ver = await _core_http(port, token, "GET", "/api/version", timeout=3.0)
+            return {"ok": True, "already": True,
+                    "version": str((ver.get("data") or {}).get("version") or "")}
+        decky.logger.info("大屏页启动核心 :%s", port)
+        ok, why = await _start_backend(port)
+        if not ok:
+            decky.logger.error("启动核心失败：%s", why)
+            return {"ok": False, "error": why}
+        await _drop_backend()
+        await self._stay_connected()
+        ver = await _core_http(port, token, "GET", "/api/version", timeout=3.0)
+        return {"ok": True, "already": False,
+                "version": str((ver.get("data") or {}).get("version") or "")}
+
+    async def core_restart(self, ticket: str = "") -> dict:
         """重启女仆核心：由插件自己收掉旧进程，再用启动时那套命令拉起
 
         不能让后端自己重启（见 server/main.py 的 /api/restart）：
@@ -2357,7 +2451,10 @@ class Plugin:
         实测结果就是旧进程没了、新的没起来，重启变成「把后端关掉」。
         插件这边握着完整的启动命令（_start_backend），所以由它来重放。
         """
-        _require(ticket, "restart_core")
+        _require(ticket, "core_restart")
+        # 「关闭」之后必须保持停止：重启不算启动，不能顺手把标记清掉
+        if _core_stopped():
+            return {"ok": False, "error": "核心已停止，先点「启动」"}
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
         token = str(cfg.get("token", "") or "").strip()
@@ -2370,6 +2467,22 @@ class Plugin:
         back = await _core_http(port, token, "GET", "/api/version", timeout=3.0)
         ver = str((back.get("data") or {}).get("version") or "") if back["ok"] else ""
         return {"ok": True, "version": ver}
+
+    async def core_kill(self, ticket: str = "") -> dict:
+        """关闭核心并保持停止：先落停止标记，再收进程
+
+        标记先写：这样即便正好有一次自动拉起在排队，看到标记也会跳过。
+        插件加载时的 _autostart_backend、以及系统的 restart 策略都不会再拉它；
+        只有用户点「启动」（core_start / start_backend）才会恢复。
+        """
+        _require(ticket, "core_kill")
+        cfg = _load_server_cfg()
+        port = int(cfg.get("port", 18765))
+        _mark_core_stopped(True)
+        await _stop_backend(port)
+        # 主动断掉 ws，别让读循环在后台对着已死的端口反复重连
+        await _drop_backend()
+        return {"ok": True}
 
     async def screenshot(self, ticket: str = "", hide: bool = False) -> dict:
         """抓当前游戏画面
@@ -2605,7 +2718,14 @@ class Plugin:
 
         开机那几十秒里网络、磁盘都可能还没就绪，所以退避重试几次；
         后端自己有单实例守卫，和客户端同时拉起也不会起两份。
+
+        ⚠️ 用户点过「关闭核心」时（core_stopped 标记在），这里必须完全跳过：
+        这就是「关闭后保持停止」的那条自动拉起路径。只有用户点「启动」
+        （core_start / start_backend）清掉标记后，下一次插件加载才会再自动拉起。
         """
+        if _core_stopped():
+            decky.logger.info("自动启动后端跳过：用户已点过「关闭核心」")
+            return
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
         token = str(cfg.get("token", "") or "").strip()
@@ -2614,6 +2734,10 @@ class Plugin:
             return
         for attempt in range(1, retries + 1):
             await asyncio.sleep(3 if attempt == 1 else 10)
+            # 等待期间用户可能在大屏页点了「关闭核心」：每一轮都重新检查
+            if _core_stopped():
+                decky.logger.info("自动启动后端中止：用户已点过「关闭核心」")
+                return
             core = await _core_http(port, token, "GET", "/api/status", timeout=2.0)
             if core.get("ok"):
                 decky.logger.info(f"后端已在运行 :{port}，无需自动启动")

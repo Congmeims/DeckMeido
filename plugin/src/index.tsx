@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Navigation, PanelSection, PanelSectionRow, ButtonItem, TextField, ToggleField, Focusable, DropdownItem } from "@decky/ui";
 import { GiTeapot } from "react-icons/gi";
 import BigScreen from "./BigScreen";
+import { BIG_SCREEN_ROUTE, DEFAULT_TRANSLATE_TPL } from "./useSession";
 import { applyPadOrder, logPadOrder, steamClient } from "./padOrder";
 
 // 后端在不在、截图能不能用、代理走哪条路，由插件后端探测
@@ -23,6 +24,8 @@ type Status = {
   core_ok: boolean;
   core_reason: string;
   core_mode: string;
+  // 用户点过「关闭核心」且没再点「启动核心」：显示「已停止」并禁用重启核心
+  core_stopped: boolean;
   // 工作区绝对路径：面板底部显示，让主人知道 agent 能碰哪些文件
   workspace: string;
   // 虚拟手柄能不能用（/dev/uinput 存在且可写）
@@ -346,19 +349,14 @@ const DEFAULT_ASK_TPL =
   "再总结成几条可以直接照做的步骤，200 字以内。\n" +
   "不要剧透：只讲眼前这一步怎么过，不要提前说后面的剧情、结局或其他关卡的解法。";
 
-// 「截图翻译」的提示词：和「截屏询问」共用同一条抓帧链路，只是问的内容不同。
-// 不走后端模板，翻译是固定诉求，没必要让用户去改
-const SHOT_TRANSLATE_TPL =
-  "把画面上的外文原文先照抄出来，再逐句翻译成简体中文。" +
-  "已经是中文就原样说明，不要翻译。\n" +
-  "只翻译、不解释剧情、不剧透，保持原文的换行和顺序。";
+// 「截图翻译」的提示词：和后端 [agent] translate_template 是同一份配置，
+// 这里只做后端读不到时的兜底（内容与 server/main.py 的默认值一致）
 
 const SHOT_TRANSLATE_BRIEF = "翻译画面上的文字";
 
 // 面板分页：LB 上一页 / RB 下一页。
 // 第一页放着「看一眼就问」的两个大按钮和对话记录，第二页专门打字，第三页是设置。
 const PAGES = ["询问", "输入", "设置"] as const;
-const BIG_SCREEN_ROUTE = "/deckmeido";
 
 export default definePlugin(() => {
   // 全屏页挂到 Steam 的 GamepadUI 路由里，从 QAM 用 Navigation.Navigate 进入；
@@ -413,6 +411,8 @@ function Content() {
   // 「截屏询问」用的提示词模板，存在后端配置里（网页设置页改的也是这一份）
   const [askTpl, setAskTpl] = useState("");
   const [askTplEdit, setAskTplEdit] = useState("");
+  // 「截图翻译」的提示词模板：大屏页模型页保存的那一份，QAM 翻译也读它
+  const [translateTpl, setTranslateTpl] = useState(DEFAULT_TRANSLATE_TPL);
   // 解锁：令牌输入框 + 后端给的票据（之后每次调用都要带上）
   const [tokenInput, setTokenInput] = useState("");
   const [ticket, setTicket] = useState("");
@@ -420,6 +420,8 @@ function Content() {
   const [probing, setProbing] = useState(true);
   // 重启核心进行中：按钮置灰，等后端起来再刷新状态
   const [restarting, setRestarting] = useState(false);
+  // 关闭核心进行中：关闭后保持停止，不会自动拉起
+  const [killing, setKilling] = useState(false);
   // 画面静止导致抓帧没拿到时，把这轮本来要问的话存下来，等用户动了再重试。
   // 非空就表示要显示那张「请动一下画面」的卡片
   const [pendingPoke, setPendingPoke] = useState<
@@ -442,7 +444,10 @@ function Content() {
       // 后端说没解锁（插件重启过、票据过期）就把本地那张丢掉
       setTicket(st.ticket || "");
       // 模板跟着票据一起取：没解锁时后端会拒绝，取不到就保持空（不影响默认模板生效）
-      if (st.ticket) void loadAskTpl(st.ticket);
+      if (st.ticket) {
+        void loadAskTpl(st.ticket);
+        void loadTranslateTpl(st.ticket);
+      }
       return st;
     } catch (e: any) {
       const why = String(e?.message ?? e);
@@ -843,6 +848,19 @@ function Content() {
     }
   };
 
+  /** 读「截图翻译」模板：大屏页模型页保存后，QAM 这边下一次翻译也用它 */
+  const loadTranslateTpl = async (tk: string) => {
+    try {
+      const r = (await call<[string], { ok: boolean; text?: string }>(
+        "get_translate_template",
+        tk
+      )) as { ok: boolean; text?: string };
+      if (r.ok && r.text) setTranslateTpl(r.text);
+    } catch {
+      /* 取不到就用本地兜底模板 */
+    }
+  };
+
   /** 保存「截屏询问」模板：清空即恢复默认（后端负责判定） */
   const saveAskTpl = async () => {
     try {
@@ -875,7 +893,7 @@ function Content() {
   /** 截图翻译：同一条抓帧链路，只是问的是「把画面上的字翻成中文」 */
   const shotTranslate = async () => {
     if (busyRef.current) return;
-    await runTurn(SHOT_TRANSLATE_TPL, true, true, SHOT_TRANSLATE_BRIEF);
+    await runTurn(translateTpl || DEFAULT_TRANSLATE_TPL, true, true, SHOT_TRANSLATE_BRIEF);
   };
 
   /**
@@ -946,8 +964,9 @@ function Content() {
   };
 
   /**
-   * 重启核心：插件自己收掉旧进程再用启动时那套命令重放（main.py 的 restart_core），
+   * 重启核心：插件自己收掉旧进程再用启动时那套命令重放（main.py 的 core_restart），
    * 等它应答后刷新一次状态，让顶部「核心已连接」和版本号都换成重启后的值。
+   * 用户点过「关闭核心」时后端会拒绝重启核心，必须先点「启动核心」。
    */
   const restartCore = async () => {
     if (restarting) return;
@@ -955,7 +974,7 @@ function Content() {
     setError("");
     try {
       const r = (await call<[string], { ok: boolean; version?: string; error?: string }>(
-        "restart_core",
+        "core_restart",
         ticket
       )) as { ok: boolean; version?: string; error?: string };
       if (!r.ok) throw new Error(r.error ?? "核心没有回来");
@@ -964,6 +983,25 @@ function Content() {
       setError(`重启核心失败：${String(e?.message ?? e)}`);
     } finally {
       setRestarting(false);
+    }
+  };
+
+  /** 关闭核心：后端先落停止标记再收进程，之后只有「启动核心」能恢复 */
+  const killCore = async () => {
+    if (killing) return;
+    setKilling(true);
+    setError("");
+    try {
+      const r = (await call<[string], { ok: boolean; error?: string }>(
+        "core_kill",
+        ticket
+      )) as { ok: boolean; error?: string };
+      if (!r.ok) throw new Error(r.error ?? "核心没有停下来");
+      await refreshStatus();
+    } catch (e: any) {
+      setError(`关闭核心失败：${String(e?.message ?? e)}`);
+    } finally {
+      setKilling(false);
     }
   };
 
@@ -1052,19 +1090,27 @@ function Content() {
   const coreLine = status
     ? status.core_ok
       ? "女仆核心 正常"
-      : "异常"
+      : status.core_stopped
+        ? "女仆核心 已停止"
+        : "异常"
     : probing
       ? "女仆核心 未知"
       : "未连上";
+  const coreColor = status?.core_ok
+    ? DIM
+    : status?.core_stopped
+      ? DIM
+      : ERR_COLOR;
   // 错误码单独占第二行：状态行只放结论，出错时才在下一行写原因，位置不串
-  const coreWhy = status && !status.core_ok ? status.core_reason : "";
+  // 用户主动停掉的不算故障，不再把 core_reason 挂在下面
+  const coreWhy = status && !status.core_ok && !status.core_stopped ? status.core_reason : "";
 
   return (
     <PanelSection>
       <PanelSectionRow>
         <div style={{ fontSize: 10, lineHeight: 1.5 }}>
           <div style={{ color: DIM }}>
-            <span style={{ color: status?.core_ok ? DIM : ERR_COLOR }}>{coreLine}</span>
+            <span style={{ color: coreColor }}>{coreLine}</span>
             {" · "}
             <span>{status ? `${status.ip}:${status.port}` : "—"}</span>
           </div>
@@ -1423,16 +1469,58 @@ function Content() {
           <GroupTitle>维护</GroupTitle>
           <PanelSectionRow>
             <div
-              role="button"
-              onClick={restartCore}
               style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                gap: 6,
                 width: "100%",
-                ...FAKE_BTN,
-                opacity: restarting ? 0.5 : 1,
-                pointerEvents: restarting ? "none" : "auto",
               }}
             >
-              {restarting ? "正在重启…" : "重启核心"}
+              {[
+                {
+                  label: starting ? "核心启动中…" : "启动核心",
+                  onClick: startBackend,
+                  off: !status || status.core_ok || starting || restarting || killing,
+                  primary: !status?.core_ok,
+                },
+                {
+                  label: restarting ? "核心重启中…" : "重启核心",
+                  onClick: restartCore,
+                  off: !status?.core_ok || starting || restarting || killing,
+                  primary: false,
+                },
+                {
+                  label: killing ? "核心关闭中…" : "关闭核心",
+                  onClick: killCore,
+                  off: !status?.core_ok || starting || restarting || killing,
+                  primary: false,
+                },
+              ].map((b) => (
+                <div
+                  key={b.label}
+                  role="button"
+                  onClick={b.off ? undefined : b.onClick}
+                  style={{
+                    ...FAKE_BTN,
+                    padding: "0 4px",
+                    fontSize: 11,
+                    background: b.primary
+                      ? "rgba(90,169,230,.22)"
+                      : "rgba(255,255,255,.10)",
+                    opacity: b.off ? 0.45 : 1,
+                    pointerEvents: b.off ? "none" : "auto",
+                  }}
+                >
+                  {b.label}
+                </div>
+              ))}
+            </div>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <div style={{ fontSize: 10, color: DIM, lineHeight: 1.45 }}>
+              {status?.core_stopped
+                ? "核心已停止：不会自动拉起，只有点「启动核心」才恢复。"
+                : "关闭核心后保持停止；「重启核心」只在运行中可用。"}
             </div>
           </PanelSectionRow>
         </>
