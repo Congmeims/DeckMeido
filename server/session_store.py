@@ -103,6 +103,10 @@ class SessionStore:
         # 把整份文件读回来（读→写），收尾时再读一遍再写一遍，一轮要过两遍盘。
         # 现在读会话文件时顺手记一笔，写的时候直接用。
         self.created_map: dict[str, float] = {}
+        # 每个会话的显式挂起意图 {sid: pending_intent}。
+        # 不能用「历史里有句话」当授权：历史里残留的重启请求会被模型当成
+        # 当前指令；这里把「用户到底想干什么」单独存成有状态、会过期的记录。
+        self.intent_map: dict[str, dict] = {}
         # 每个会话最近一次整份写入的指纹 {sid: (updated, len(history))}。
         # 目前只用于侧栏索引与排障，不再参与「有没有 _streaming 残留」的判断
         # （流式正文已经搬到副档案，清理就是删一个文件）
@@ -153,6 +157,22 @@ class SessionStore:
 
     def drop_compact(self, sid: str) -> None:
         self.compact_map.pop(sid, None)
+
+    # ---------- 挂起意图 ----------
+
+    def get_intent(self, sid: str) -> dict | None:
+        """取某个会话的 pending_intent（没有就 None）"""
+        with self.lock:
+            it = self.intent_map.get(sid or "")
+            return dict(it) if isinstance(it, dict) else None
+
+    def set_intent(self, sid: str, intent: dict | None) -> None:
+        """更新 / 清空某个会话的 pending_intent"""
+        with self.lock:
+            if intent:
+                self.intent_map[sid or self.current_sid] = dict(intent)
+            else:
+                self.intent_map.pop(sid or self.current_sid, None)
 
     # ---------- 路径 ----------
 
@@ -213,6 +233,11 @@ class SessionStore:
             comp = self.compact_for(sid)
             if comp["upto"] or comp["summary"]:
                 data["compact"] = comp
+            # pending_intent 随会话落盘：重启后按 boot_id 对账，
+            # 老密码 / 老确认不会在几十轮之后又被当成有效授权
+            intent = self.intent_map.get(sid)
+            if isinstance(intent, dict) and intent:
+                data["pending_intent"] = dict(intent)
             self.created_map[sid] = data["created"]
             # 指纹里带上这次写入的 updated（排障用：能看出最近一次整份写入是什么时候）
             self.wrote_map[sid] = (data["updated"], len(hist))
@@ -361,6 +386,12 @@ class SessionStore:
         if data.get("created"):
             with self.lock:
                 self.created_map.setdefault(sid, float(data["created"]))
+        intent = data.get("pending_intent")
+        with self.lock:
+            if isinstance(intent, dict) and intent:
+                self.intent_map[sid] = dict(intent)
+            else:
+                self.intent_map.pop(sid, None)
         data["_from_disk_mtime"] = mtime
         return data
 
@@ -429,6 +460,7 @@ class SessionStore:
         with self.lock:
             self._index.pop(sid, None)
             self.created_map.pop(sid, None)
+            self.intent_map.pop(sid, None)
             self.wrote_map.pop(sid, None)
             self.flushed_sids.discard(sid)
         self._index_save()

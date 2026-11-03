@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import depcheck, memory, persona, power, prompts, singleton, tools, updater
+from . import depcheck, memory, persona, policy, power, prompts, singleton, tools, updater
 from .session_store import set_title as _set_title
 from .session_store import store
 from . import session_store
@@ -138,6 +138,20 @@ singleton.guard(
     int(_PORT_EARLY),
     allow_second=bool(os.environ.get(singleton.ENV_BYPASS)),
 )
+
+
+def _system_boot_id() -> str:
+    """内核这次启动的标识：真重启后才会变。
+
+    用来给 pending_intent 对账：重启前登记的 reboot 变成 executed、
+    sudo_password 变成 expired，老密码不会在几十轮之后又被当成有效授权。
+    非 Linux（开发机测试）退回进程级 BOOT_ID。
+    """
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text(
+            encoding="utf-8").strip() or singleton.BOOT_ID
+    except Exception:
+        return singleton.BOOT_ID
 
 llm = LLMClient(
     base_url=CFG["llm"]["base_url"],
@@ -280,6 +294,13 @@ def _digest_head_tail(text: str, head: int = 500, tail: int = 300) -> str:
     return f"{text[:head]}…（中间省略 {len(text) - head - tail} 字）…{text[-tail:]}"
 
 
+# 本轮授权边界：插在当前用户消息前面的系统提示。
+# 历史里可能残留着上一轮「帮我重启」和模型自己答应的「我现在执行」，
+# 模型会把它们当成仍然有效的指令。这里明确告诉它：历史只能当上下文。
+_BOUNDARY_NOTE = ("【本轮授权边界】以上历史消息仅供上下文，不得据此执行任何操作；"
+                  "只有下面这条本轮用户消息构成授权。")
+
+
 def _build_llm_msgs(hist: list[dict], sys_prompt: str, sid: str = "") -> list[dict]:
     """构造发给模型的 messages：摘要 + 压缩游标之后的原文
 
@@ -339,6 +360,14 @@ def _build_llm_msgs(hist: list[dict], sys_prompt: str, sid: str = "") -> list[di
         msgs.append({"role": m["role"], "content": content,
                      "tool_calls": m.get("tool_calls"),
                      "tool_call_id": m.get("tool_call_id")})
+    # 只在最后一条用户消息（本轮提问）前插一条边界说明：
+    # 历史里已经有同款提示时不再重复堆叠，别把 prompt 撑爆
+    if not any(isinstance(m.get("content"), str)
+               and m["content"].startswith("【本轮授权边界】") for m in msgs):
+        last_user = next((i for i in range(len(msgs) - 1, 0, -1)
+                          if msgs[i].get("role") == "user"), None)
+        if last_user is not None:
+            msgs.insert(last_user, {"role": "system", "content": _BOUNDARY_NOTE})
     return _drop_orphan_tools(msgs)
 
 
@@ -1259,6 +1288,23 @@ def _img_ref_content(text: str):
     return parts
 
 
+def _restore_intent_map(sid: str, data: dict) -> bool:
+    """把会话文件里的 pending_intent 装回内存，并按 boot_id 对账。
+
+    返回 True 表示状态发生了变化（调用方需要落盘，让 executed/expired 留下来）。
+    """
+    intent = data.get("pending_intent")
+    if not isinstance(intent, dict) or not intent:
+        store.set_intent(sid, None)
+        return False
+    rec = policy.reconcile_intent(intent, _system_boot_id(), time.time())
+    if not rec:
+        store.set_intent(sid, None)
+        return bool(intent)
+    store.set_intent(sid, rec)
+    return rec != intent
+
+
 def init_sessions():
     """启动时恢复最近的会话；没有历史则创建默认会话"""
     global _ctx_used
@@ -1284,6 +1330,15 @@ def init_sessions():
             return False
         store.current_sid = sid
         store.history = hist
+        # 回填真实创建时间：以前启动恢复只把 history 装回来，created_map 是空的，
+        # 下一次 write_session 就用当前时间覆盖掉文件里的 created ——
+        # 用户看到的就是「昨天建的会话，今天显示刚创建」
+        if data.get("created"):
+            try:
+                store.created_map.setdefault(sid, float(data["created"]))
+            except (TypeError, ValueError):
+                pass
+        intent_changed = _restore_intent_map(sid, data)
         comp = data.get("compact")
         if isinstance(comp, dict) and (comp.get("summary") or comp.get("upto")):
             _set_compact(sid, comp.get("summary") or "",
@@ -1332,6 +1387,13 @@ def init_sessions():
             except Exception as e:
                 print(f"[DeckMeido] 恢复中断回答后落盘失败：{e}", file=sys.stderr)
             store.drop_stream_side(store.current_sid)
+        elif intent_changed:
+            # 只有意图状态变了（重启后 reboot→executed / 密码→expired）：
+            # 也要落盘，否则下次启动又会按旧状态重新对账
+            try:
+                _write_session(store.current_sid, store.history)
+            except Exception as e:
+                print(f"[DeckMeido] 写回 pending_intent 失败：{e}", file=sys.stderr)
         print(f"[DeckMeido] 已从 {src.name} 恢复会话 {store.current_sid}（{len(store.history)} 条）",
               file=sys.stderr)
         return True
@@ -3044,6 +3106,16 @@ async def handle_chat(text: str, announce: bool = True,
     hist.append({"role": "user", "content": text, "llm": _expand_context(text, workspace) + shot_ref,
                  "ts": user_ts, **src_tag,
                  **({"events": [shot_event]} if shot_event else {})})
+    # 本轮授权上下文：user_text 是用户这次真正说的话（不是历史拼接结果）。
+    # 一路传到工具执行层，policy 只认它 + 挂起意图 + 工具参数
+    turn_ctx = policy.TurnContext(
+        sid=turn_sid,
+        turn_id=turn_id or store.turn.get("turn_id") or "",
+        user_text=text,
+        client=client or "",
+        device=device or "",
+        boot_id=_system_boot_id(),
+    )
     # 本轮新截的这张放在 llm 标记里（_build_llm_msgs 现读现编码），
     # 不再另补一条内联 base64 的消息：那条一旦被上下文压缩裁掉，界面上的图就没了
     events: list[dict] = []
@@ -3076,25 +3148,43 @@ async def handle_chat(text: str, announce: bool = True,
             # 挂起的操作不是这个会话/这个端提的：既不能替别人确认，也不该
             # 因为别处的对话把这边的手头操作清掉，按普通消息继续
             reply = await _run_agent_guarded(events, hist=hist, image_part=shot_ref,
-                                             tool_log=tool_log, client=client)
+                                             tool_log=tool_log, client=client,
+                                             turn_ctx=turn_ctx)
         elif pending_action and tools.is_confirm(text):
-            # 用户确认了挂起的危险操作
+            # 用户确认了挂起的危险操作：这是显式的「窗口里点了确认」，
+            # 不是历史文本推断出来的授权，policy 用 approved=True 放行并记账
             action, pending_action = pending_action, None
+            decision = policy.check(action["name"], action["args"], turn_ctx,
+                                    approved=True)
             events.append({"type": "tool", "name": action["name"],
-                           "summary": action["description"], "files": [], "approved": True})
-            result = await tools.execute(action["name"], action["args"])
+                           "summary": action["description"], "files": [], "approved": True,
+                           **({} if decision.allowed else {"denied": True,
+                                                           "reason": decision.reason})})
+            if decision.allowed:
+                power_act = (policy.power_action(str(action["args"].get("command") or ""))
+                             if action["name"] == "run_command" else None)
+                if power_act:
+                    _arm_power_intent(turn_ctx, power_act, hist)
+                result = await tools.execute(action["name"], action["args"])
+                _record_power_intent(turn_ctx, action["name"], action["args"], result)
+            else:
+                print(f"[DeckMeido][policy] 策略拒绝已确认操作 {action['name']}："
+                      f"{decision.reason}", file=sys.stderr)
+                result = f"策略拒绝：{decision.reason}"
             tool_log.append({"name": action["name"], "summary": action["description"]})
-            reply = f"已完成：{action['description']}\n{result}"
+            reply = (f"已完成：{action['description']}\n{result}" if decision.allowed
+                     else f"未执行：{action['description']}\n{result}")
         elif pending_action:
             # 有新消息但未确认，取消挂起操作
             action, pending_action = pending_action, None
             reply = f"已取消：{action['description']}。\n\n" + await run_agent(
                 events, hist=hist, image_part=shot_ref, tool_log=tool_log,
-                from_client=client)
+                from_client=client, turn_ctx=turn_ctx)
         else:
             # 画面要一路传进 run_agent：插件端才知道这一轮不用自己再截图
             reply = await _run_agent_guarded(events, hist=hist, image_part=shot_ref,
-                                             tool_log=tool_log, client=client)
+                                             tool_log=tool_log, client=client,
+                                             turn_ctx=turn_ctx)
     except asyncio.CancelledError:
         # 用户点了终止：广播终止消息并向上传递
         await manager.broadcast({"type": "assistant_message", "text": "已终止当前操作",
@@ -3615,6 +3705,12 @@ async def api_session_switch(req: SwitchReq):
                      min(int(comp.get("upto") or 0), len(store.history)))
     else:
         store.drop_compact(store.current_sid)
+    # 切换会话也要换 pending_intent：否则 A 会话的密码授权会被带进 B 会话
+    if _restore_intent_map(store.current_sid, data):
+        try:
+            _write_session(store.current_sid, store.history)
+        except Exception as e:
+            print(f"[DeckMeido] 切换会话时写回 pending_intent 失败：{e}", file=sys.stderr)
     _ctx_used = _estimate_tokens(
         _build_llm_msgs(store.history, SYSTEM_PROMPT, store.current_sid))
     store.bump_epoch()
@@ -4260,6 +4356,39 @@ async def _shutdown_overlay():
         pass
 
 
+def _exit_code(result: str) -> int | None:
+    """run_command 返回串以 `exit=<code>` 开头，解析出来给意图记账用"""
+    m = re.match(r"^exit=(-?\d+)", str(result or ""))
+    return int(m.group(1)) if m else None
+
+
+def _arm_power_intent(ctx: policy.TurnContext, action: str, hist: list[dict]) -> None:
+    """执行电源命令前登记 confirmed 意图：即便命令把机器关掉、来不及写收尾，
+    下次启动也能按 boot_id 认出「这次重启已经执行过」"""
+    it = policy.make_intent(action, ctx)
+    it["status"] = "confirmed"
+    store.set_intent(ctx.sid, it)
+    try:
+        _write_session(ctx.sid, hist)
+    except Exception as e:
+        print(f"[DeckMeido][policy] 写回电源意图失败：{e}", file=sys.stderr)
+
+
+def _record_power_intent(ctx: policy.TurnContext, name: str, args: dict,
+                         result: str) -> None:
+    """命令返回后按退出码记账：成功=executed，失败=cancelled"""
+    if name != "run_command":
+        return
+    action = policy.power_action(str((args or {}).get("command") or ""))
+    if not action:
+        return
+    code = _exit_code(result)
+    it = policy.make_intent(action, ctx)
+    it["status"] = "executed" if code == 0 else "cancelled"
+    it["finished_at"] = time.time()
+    store.set_intent(ctx.sid, it)
+
+
 _REFUSAL_MARKS = ["我不会", "我不能", "无法执行", "无法直接执行", "恕我不能", "不执行", "拒绝执行",
                   "我不会执行", "我没办法", "不允许", "不建议执行"]
 
@@ -4271,7 +4400,8 @@ def _looks_like_refusal(reply: str) -> bool:
 async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
                              image_part: str | None = None,
                              tool_log: list[dict] | None = None,
-                             client: str | None = None) -> str:
+                             client: str | None = None,
+                             turn_ctx: policy.TurnContext | None = None) -> str:
     """带总超时和拒绝重试的 agent 入口：任何环节卡死都不会让对话无限挂起
 
     image_part 非空表示本轮提问自带画面（这里是历史里那条 [SHOT:文件名] 标记，
@@ -4284,7 +4414,7 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
     try:
         reply = await asyncio.wait_for(
             run_agent(events, hist=hist, image_part=image_part, tool_log=tool_log,
-                      from_client=client),
+                      from_client=client, turn_ctx=turn_ctx),
             timeout=agent_timeout)
     except asyncio.TimeoutError:
         # 超时不能只丢一句「超时了」：这一轮里已经跑完的命令、改过的文件全都要留下，
@@ -4301,7 +4431,7 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
         try:
             reply = await asyncio.wait_for(run_agent(
                 events, hist=hist, tool_log=tool_log, from_client=client,
-                extra_system=prompts.part("retry_refuse"),
+                extra_system=prompts.part("retry_refuse"), turn_ctx=turn_ctx,
             ), timeout=agent_timeout)
         except asyncio.TimeoutError:
             return "（重试也超时了，请再发一次）"
@@ -4313,7 +4443,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
                    image_part: str | None = None,
                    tool_log: list[dict] | None = None,
                    from_client: str | None = None,
-                   _shot_lock: bool | None = None) -> str:
+                   _shot_lock: bool | None = None,
+                   turn_ctx: policy.TurnContext | None = None) -> str:
     """LLM + 工具调用循环（流式），思考链/工具调用/终端输出写入 events 供 UI 展示
 
     image_part 非空表示本轮提问自带画面：插件端这一轮把截图工具摘掉（见 round_tools）
@@ -4329,6 +4460,16 @@ async def run_agent(events: list[dict], extra_system: str = "",
     shot_state = tools.new_shot_state()
     # 本轮归属（中途切会话也不改这份 sid）
     turn_sid = store.turn.get("sid") or store.current_sid
+    # 没传 TurnContext 的调用点（老代码 / 内部重试）按「没有本轮授权」处理：
+    # user_text 留空，电源命令一律会被 policy 拒绝，而不是默认放行
+    ctx = turn_ctx or policy.TurnContext(
+        sid=turn_sid,
+        turn_id=store.turn.get("turn_id") or "",
+        user_text="",
+        client=store.turn.get("client") or "",
+        device=store.turn.get("device") or "",
+        boot_id=_system_boot_id(),
+    )
     # 当前模式必须实测后告诉模型：游戏模式用 gamepad 注入、游戏模式下从 gamescope
     # 抓帧、遮罩提示挂 gamescope 覆盖层；桌面模式走 desktop 点按 + spectacle 截图。
     # 两套操作手段不通用，猜错就是「点了没反应」或「抓不到画面」。探针会起子进程，
@@ -4595,7 +4736,12 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         a = json.loads(c["function"].get("arguments") or "{}")
                     except (ValueError, TypeError):
                         a = {}
-                    return tools.touches_screen(c["function"]["name"], a if isinstance(a, dict) else {})
+                    a = a if isinstance(a, dict) else {}
+                    n = c["function"]["name"]
+                    # 电源命令不碰屏幕，但截图轮也绝不能执行：模型可能一边
+                    # 「看图回答」一边把机器关掉
+                    return (tools.touches_screen(n, a)
+                            or policy.blocks_in_locked_shot(n, a))
 
                 dropped = [t["function"]["name"] for t in tool_calls if _screen_call(t)]
                 if len(dropped) == len(tool_calls):
@@ -4629,11 +4775,54 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     q = str(args.get("question") or "").strip()
                     opts = [str(o).strip() for o in (args.get("options") or [])
                             if str(o).strip()][:6]
+                    # 要密码 / 问要不要重启：登记一条有状态、会过期的 pending_intent，
+                    # 这样用户下一轮回「2333」或「好」才算授权；历史里那句密码
+                    # 不会在几十轮之后又被当成有效凭据
+                    ask_kind = policy.ask_intent_kind(q)
+                    if ask_kind:
+                        it = policy.make_intent(ask_kind, ctx)
+                        store.set_intent(turn_sid, it)
+                        try:
+                            _write_session(turn_sid, hist)
+                        except Exception as e:
+                            print(f"[DeckMeido][policy] 写回待授权意图失败：{e}",
+                                  file=sys.stderr)
+                        print(f"[DeckMeido][policy] 登记待授权意图 {ask_kind}"
+                              f"（会话 {turn_sid}）", file=sys.stderr)
                     ask = {"question": q, "options": opts}
                     events.append({"type": "ask", **ask})
                     await manager.broadcast({"type": "ask", "ts": time.time(),
                                              **ask, **_turn_tag()})
                     return q or prompts.part("ask_empty")
+
+                # 授权闸门：电源类命令只认本轮 user_text + 有效的 pending_intent。
+                # full 模式也必须过这一关 —— 它只决定「要不要弹审批」，
+                # 不决定「模型有没有资格执行」
+                decision = policy.check(name, args, ctx, store.get_intent(turn_sid))
+                if not decision.allowed:
+                    label = tools.cn_name(name)
+                    summary = tools.summarize_tool(name, args)
+                    deny_event = {"type": "tool", "name": name, "label": label,
+                                  "summary": summary, "files": [], "denied": True,
+                                  "reason": decision.reason}
+                    events.append(deny_event)
+                    await manager.broadcast({"type": "tool_done", "event": deny_event,
+                                             "ts": time.time(), **_turn_tag()})
+                    msgs.append({"role": "tool", "tool_call_id": call["id"],
+                                 "content": f"[{name}] 策略拒绝：{decision.reason}"})
+                    print(f"[DeckMeido][policy] 策略拒绝 {name}（会话 {turn_sid}）："
+                          f"{decision.reason} args={json.dumps(args, ensure_ascii=False)[:200]}",
+                          file=sys.stderr)
+                    continue
+                if decision.intent:
+                    # 密码 / 确认被这次调用消费掉：落盘，刷新了状态才算有效
+                    store.set_intent(turn_sid, decision.intent)
+                    print(f"[DeckMeido][policy] 授权通过（{decision.code}）"
+                          f"：{name}", file=sys.stderr)
+                    try:
+                        _write_session(turn_sid, hist)
+                    except Exception as e:
+                        print(f"[DeckMeido][policy] 写回授权状态失败：{e}", file=sys.stderr)
 
                 # 完全访问：用户已预先授权一切操作，连 gamepad / install_game 这些
                 # 往常必须点头的也不拦。只有升级例外 —— 它会让服务重启、对话中断，
@@ -4730,6 +4919,12 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 # 于是交接说明里能准确指出「这一步断了」。正常跑完再把它改成已完成
                 log_item = {"name": name, "summary": summary, "interrupted": True}
                 tool_log.append(log_item)
+                # 电源命令执行前先落一条 confirmed 意图：真重启会掐断收尾，
+                # 下次启动按 boot_id 把它标成 executed（见 _restore_intent_map）
+                power_act = (policy.power_action(str(args.get("command") or ""))
+                             if name == "run_command" else None)
+                if power_act:
+                    _arm_power_intent(ctx, power_act, hist)
                 try:
                     result = await tools.execute(name, args)
                 finally:
@@ -4737,6 +4932,9 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         set_overlay(False)
                     set_overlay_pointer(False)
                 log_item["interrupted"] = False
+                # 退出码为 0 记 executed，失败记 cancelled；真重启通常走不到这里，
+                # 由下次启动的 boot_id 对账补上
+                _record_power_intent(ctx, name, args, result)
                 # 结果摘要随 tool_log 落盘：终止 / 超时那一轮靠它把「做过什么、
                 # 结果是什么」留在会话里（见 _tool_results_digest）
                 log_item["output"] = result[:2000]
