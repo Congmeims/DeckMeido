@@ -1,7 +1,9 @@
-import { definePlugin, call, addEventListener, removeEventListener } from "@decky/api";
+import { definePlugin, call, addEventListener, removeEventListener, routerHook } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 import { Navigation, PanelSection, PanelSectionRow, ButtonItem, TextField, ToggleField, Focusable, DropdownItem } from "@decky/ui";
 import { GiTeapot } from "react-icons/gi";
+import BigScreen from "./BigScreen";
+import { applyPadOrder, logPadOrder, steamClient } from "./padOrder";
 
 // 后端在不在、截图能不能用、代理走哪条路，由插件后端探测
 type Status = {
@@ -352,8 +354,17 @@ const SHOT_TRANSLATE_BRIEF = "翻译画面上的文字";
 // 面板分页：LB 上一页 / RB 下一页。
 // 第一页放着「看一眼就问」的两个大按钮和对话记录，第二页专门打字，第三页是设置。
 const PAGES = ["询问", "输入", "设置"] as const;
+const BIG_SCREEN_ROUTE = "/deckmeido";
 
 export default definePlugin(() => {
+  // 全屏页挂到 Steam 的 GamepadUI 路由里，从 QAM 用 Navigation.Navigate 进入；
+  // 卸载时移除，避免插件重载后路由残留。路由 API 不可用时只记日志，不能拖垮 QAM。
+  try {
+    routerHook.addRoute(BIG_SCREEN_ROUTE, () => <BigScreen />);
+  } catch (e) {
+    console.error("[DeckMeido] 大屏路由注册失败", e);
+  }
+
   return {
   name: "DeckMeido",
   titleView: <div>DeckMeido</div>,
@@ -364,190 +375,15 @@ export default definePlugin(() => {
       <GiTeapot size={20} style={{ transform: "scale(1.15)", transformOrigin: "center" }} />
     </div>
   ),
+  onDismount() {
+    try {
+      routerHook.removeRoute(BIG_SCREEN_ROUTE);
+    } catch (e) {
+      console.error("[DeckMeido] 大屏路由移除失败", e);
+    }
+  },
   };
 });
-
-/**
- * 把 DeckMeido 的虚拟手柄换到 1P（Steam 的 0 号槽位）。
- *
- * 为什么只能在到这里来做：控制器排序只存在 Steam 进程的内存里（配置里没有，
- * Steam 的「为控制器重新排序」走的就是这条 IPC），插件后端和主程序都够不着，
- * 只有跑在 Steam 页面里的这段 JS 能调 SteamClient.Input。
- *
- * 后端在虚拟手柄建好 / 销毁时广播 pad_order，这里收到就照办：
- *   to1p   新插上的手柄排在物理手柄后面（就是 2P），不挪到 1P 游戏根本不看它
- *   revert 虚拟手柄没了，确认物理手柄回到 1P，免得下次开机游戏收不到输入
- *
- * 两条路依次试：
- *   1. SteamClient.Input.SwapControllerOrder —— 官方 IPC，最稳
- *   2. WebSocket.RegisterForControllerList + SwapControllerOrderByIndex ——
- *      老一点的 Steam 客户端里前面那组 API 不全，这条是给「控制器设置」页用的
- * 拿不到 SteamClient（桌面模式下没有游戏模式界面）就静默作罢：
- * 换序失败不能影响按键注入本身。
- */
-type SteamController = {
-  nControllerIndex?: number;
-  nXInputIndex?: number;
-  nAIndex?: number;
-  strName?: string;
-  strType?: string;
-};
-
-type SteamInputApi = {
-  GetControllers?: () => SteamController[];
-  GetControllersSorted?: () => SteamController[];
-  SwapControllerOrder?: (from: number, to: number) => void;
-};
-
-type SteamWsApi = {
-  RegisterForControllerList?: (cb: (list: SteamController[]) => void) => unknown;
-  SwapControllerOrderByIndex?: (from: number, to: number) => void;
-};
-
-function steamClient(): any {
-  const w = window as any;
-  return w.SteamClient || w.SP?.SteamClient || null;
-}
-
-// 虚拟手柄：名字认 DeckMeido（内核上报的设备名）；认不出就退回
-// 「不是 Valve 自家手柄」那一个 —— Steam Deck 本体手柄的 strType 带 Steam/Valve
-function isVirtualPad(c: SteamController): boolean {
-  return (
-    /deckmeido/i.test(String(c?.strName || "")) ||
-    !/steam|valve/i.test(String(c?.strType || ""))
-  );
-}
-
-// 槽位下标：新老客户端字段名不一样，挨个试
-function padSlot(c: SteamController): number | undefined {
-  for (const v of [c?.nXInputIndex, c?.nAIndex]) {
-    if (typeof v === "number" && v >= 0) return v;
-  }
-  return undefined;
-}
-
-function swapBy(client: any, api: SteamWsApi, from: SteamController, to: number): boolean {
-  const byIndex = api.SwapControllerOrderByIndex;
-  if (typeof byIndex === "function" && typeof from.nControllerIndex === "number") {
-    byIndex.call(api, from.nControllerIndex, to);
-    return true;
-  }
-  // 注意：SteamClient.Input.SwapControllerOrder 的两个参数都是「槽位」
-  // （nXInputIndex），不是 nControllerIndex —— 这是 Steam 自己的
-  // 「为控制器重新排序」面板里的用法：
-  //   SwapControllerOrder(items[from].index, items[to].index)
-  const slot = padSlot(from);
-  const input: SteamInputApi | undefined = client?.Input;
-  if (typeof input?.SwapControllerOrder === "function" && typeof slot === "number") {
-    input.SwapControllerOrder(slot, to);
-    return true;
-  }
-  return false;
-}
-
-/** 当前 Steam 认识的控制器列表（新客户端有 GetControllers，老的只能靠事件回调） */
-async function fetchControllers(client: any): Promise<SteamController[]> {
-  const input: SteamInputApi | undefined = client?.Input;
-  for (const fn of [input?.GetControllers, input?.GetControllersSorted]) {
-    if (typeof fn === "function") {
-      try {
-        const list = fn.call(input);
-        if (Array.isArray(list)) return list;
-      } catch {
-        /* 老客户端里可能只是占位，走下面的 WebSocket 版本 */
-      }
-    }
-  }
-  const ws: SteamWsApi | undefined = client?.WebSocket;
-  if (typeof ws?.RegisterForControllerList === "function") {
-    return await new Promise<SteamController[]>((resolve) => {
-      let done = false;
-      try {
-        ws.RegisterForControllerList!((list) => {
-          if (done || !Array.isArray(list)) return;
-          done = true;
-          resolve(list);
-        });
-      } catch {
-        resolve([]);
-      } finally {
-        // 回调没来时别一直挂着
-        setTimeout(() => {
-          if (!done) {
-            done = true;
-            resolve([]);
-          }
-        }, 1200);
-      }
-    });
-  }
-  return [];
-}
-
-/** 换序结果同时写进插件日志：QAM 里看不到 console，出问题只能靠日志 */
-function logPadOrder(msg: string) {
-  console.log("[DeckMeido]", msg);
-  call("_probe_log", "[padOrder] " + msg).catch(() => undefined);
-}
-
-async function applyPadOrder(action: "to1p" | "revert"): Promise<void> {
-  // 防重入：面板重挂载会重新注册监听，同一个请求可能来两次；
-  // 两路同时正在换会把顺序搅乱
-  if (padOrderBusy) return;
-  if (action === "revert" && !padOrderWanted1P) return; // 没换过就不用还原
-  padOrderBusy = true;
-  try {
-    await doPadOrder(action);
-  } finally {
-    padOrderBusy = false;
-    if (action === "to1p") padOrderWanted1P = true;
-  }
-}
-
-// 本次装的是不是刚把虚拟手柄挪到 1P（决定销毁时要不要还原）
-let padOrderWanted1P = false;
-let padOrderBusy = false;
-
-async function doPadOrder(action: "to1p" | "revert"): Promise<void> {
-  const client = steamClient();
-  if (!client) {
-    logPadOrder(`没有 SteamClient，跳过换序（${action}）`);
-    return;
-  }
-  const api: SteamWsApi | undefined = client.WebSocket;
-
-  // 设备刚创建时 Steam 还没枚举到它，所以有耐心地重试几轮
-  const tries = action === "to1p" ? 12 : 2;
-  for (let i = 0; i < tries; i++) {
-    // 留出时间让 Steam 把手柄枚举进去，再问它现在有几只手柄
-    if (i > 0) await new Promise((r) => setTimeout(r, 300));
-    const list = (await fetchControllers(client)).filter(
-      (c) => c && typeof c.nControllerIndex === "number"
-    );
-    const withSlot = list
-      .map((c) => ({ c, slot: padSlot(c) }))
-      .filter((x) => typeof x.slot === "number");
-
-    if (action === "to1p") {
-      const pad = withSlot.find((x) => isVirtualPad(x.c));
-      if (!pad) continue;
-      if (pad.slot === 0) return; // 已经是 1P
-      const ok = swapBy(client, api || {}, pad.c, 0);
-      logPadOrder(`换到 1P ${ok ? "已发出" : "失败"}：${JSON.stringify(list)}`);
-      return;
-    }
-
-    // revert：虚拟手柄已销毁，槽位会自动前移；只有 1P 还被「非 Valve 手柄」占着才动手
-    const first = withSlot.find((x) => x.slot === 0);
-    if (!first || !isVirtualPad(first.c)) return;
-    const deck = withSlot.find((x) => !isVirtualPad(x.c));
-    if (!deck) return;
-    const ok = swapBy(client, api || {}, deck.c, 0);
-    logPadOrder(`还原 ${ok ? "已发出" : "失败"}：${JSON.stringify(list)}`);
-    return;
-  }
-  logPadOrder(`换序未完成（${action}）：Steam 一直没枚举到虚拟手柄`);
-}
 
 function Content() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -837,6 +673,16 @@ function Content() {
       await applyTicket(tk);
     } catch (e: any) {
       setError(`${String(e?.message ?? e)}（面板已打开，需要重新输入访问令牌）`);
+    }
+  };
+
+  /** 从 QAM 进入插件自己的全屏路由；先导航再收侧栏，避免页面被侧栏挡住 */
+  const openBigScreen = () => {
+    try {
+      Navigation.Navigate(BIG_SCREEN_ROUTE);
+      Navigation.CloseSideMenus();
+    } catch (e: any) {
+      setError(`打开大屏失败：${String(e?.message ?? e)}`);
     }
   };
 
@@ -1167,6 +1013,11 @@ function Content() {
             解锁
           </ButtonItem>
         </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={openBigScreen}>
+            打开大屏
+          </ButtonItem>
+        </PanelSectionRow>
         {error && (
           <PanelSectionRow>
             <div style={{ ...CARD, color: ERR_COLOR, background: "rgba(224,108,117,.1)" }}>
@@ -1224,6 +1075,12 @@ function Content() {
       {/* ================= 第一页：询问 ================= */}
       {page === 0 && (
         <>
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={openBigScreen}>
+              打开大屏
+            </ButtonItem>
+          </PanelSectionRow>
+
           {/* 左右对半：左边问「怎么过」，右边把画面上的外文翻成中文。
               两个按钮共用一次抓帧，动作都是「收面板 → 截图 → 带图问」 */}
           <PanelSectionRow>
