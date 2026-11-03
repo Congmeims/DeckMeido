@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DeckMeido 大屏页原型 · 1280×800</title>
+<style>
+  :root{
+    --accent:#5aa9e6; --dim:#8b929a; --err:#e06c75; --text:#dcdedf;
+    --card:rgba(255,255,255,.05); --line:rgba(255,255,255,.08);
+    --btn:rgba(255,255,255,.10); --btn-primary:rgba(90,169,230,.24);
+    --tab:rgba(255,255,255,.06); --tab-on:rgba(90,169,230,.28);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:#0d1014; color:var(--text);
+    font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:16px; padding:28px 20px 22px; min-height:100%;
+  }
+  .stage{display:flex; flex-direction:column; align-items:center; gap:14px}
+  /* 画布固定 1280×800；窗口比它小时整体等比缩小，不改版式 */
+  .scaler{position:relative; width:1280px; height:800px; flex:0 0 auto}
+  .scaler .screen{position:absolute; top:0; left:0; transform-origin:top left}
+  .screen{
+    position:relative; width:1280px; height:800px; flex:0 0 auto;
+    background:#1b1f26; border:1px solid #2c333d; border-radius:6px;
+    box-shadow:0 20px 60px rgba(0,0,0,.65), inset 0 0 0 1px rgba(255,255,255,.02);
+    overflow:hidden;
+  }
+  /* 页面内边距与插件一致：顶部 48 / 左右 48 / 底部 44（避开 Steam 图例栏） */
+  .inner{
+    position:absolute; inset:0; padding:48px 48px 44px;
+    display:flex; flex-direction:column; gap:12px;
+  }
+  .row{display:flex; align-items:center; gap:16px; width:100%; min-width:0}
+  /* 页签收进页头右侧：左侧标题+状态，右侧 L1 / 页签 / R1 */
+  .head{justify-content:space-between; flex:0 0 auto; min-height:26px}
+  .head-left{display:flex; align-items:center; gap:12px; min-width:0; flex:1 1 auto; overflow:hidden}
+  .head-tabs{display:flex; align-items:center; gap:6px; flex:0 0 auto}
+  .brand{font-size:22px; line-height:1.2; font-weight:700; color:#fff; letter-spacing:.4px; flex:0 0 auto}
+  .chips{display:flex; align-items:center; gap:8px; min-width:0}
+  .chip{
+    display:inline-block; max-width:260px; padding:4px 10px; border-radius:4px;
+    background:rgba(255,255,255,.07); font-size:12px; line-height:1.4; color:var(--dim);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .chip.ok{color:var(--accent)}
+  .chip.bad{color:var(--err)}
+
+  /* 状态行：询问页右侧放开两个动作按钮，忙时原地互换；其他页只留一行文字 */
+  .status{
+    display:flex; align-items:center; gap:10px;
+    min-height:28px; flex:0 0 auto;
+  }
+  .status.ask{min-height:46px}
+  .status[hidden]{display:none}
+  .status-text{
+    flex:1; min-width:0; color:var(--dim); font-size:12.5px; line-height:1.4;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .status-actions{display:none; align-items:center; gap:10px; flex:0 0 auto; height:46px}
+  .status.show-ask .status-actions{display:flex}
+  .status-actions .slot{width:160px; height:46px}
+  #cancelBtn{display:none; width:110px; min-height:28px; height:28px; font-size:13px}
+  .status.show-cancel #cancelBtn{display:flex}
+  .btn.run{background:rgba(90,169,230,.18); box-shadow:inset 0 0 0 1px rgba(90,169,230,.55); color:#d9ecff}
+  .btn.danger{background:rgba(224,108,117,.18); color:#f0c3c7}
+
+  .tabs{display:flex; align-items:center; gap:6px; flex:0 0 auto}
+  .tab{
+    flex:0 0 auto; height:26px; min-width:64px; padding:0 10px; font-size:12.5px;
+    display:flex; align-items:center; justify-content:center;
+    border-radius:4px; background:var(--tab); color:var(--dim); cursor:pointer;
+    user-select:none;
+  }
+  .tab.on{background:var(--tab-on); color:#eaf2fb}
+
+  .f{outline:none; box-shadow:none; transition:box-shadow .12s ease}
+  .f.focus{box-shadow:inset 0 0 0 2px var(--accent), 0 0 0 2px rgba(90,169,230,.28)}
+  .tab.f.focus{background:rgba(90,169,230,.42); color:#fff}
+  .btn{
+    width:100%; min-height:46px; border-radius:4px; background:var(--btn); color:var(--text);
+    display:flex; align-items:center; justify-content:center; font-size:14px;
+    cursor:pointer; user-select:none; border:0; padding:0 12px; text-align:center;
+  }
+  .btn.primary{background:var(--btn-primary)}
+  .btn.f.focus{background:rgba(90,169,230,.40); color:#fff}
+
+  .pane{flex:1; min-height:0; display:flex; flex-direction:column; gap:10px}
+  .pane[hidden]{display:none}
+  /* 共享消息区：同一个 #chat 在询问页 / 聊天页之间移动，不复制 DOM */
+  .chatHost{flex:1; min-height:0; display:flex; flex-direction:column}
+
+  .note{
+    display:flex; align-items:center; gap:12px; padding:10px 14px; border-radius:4px;
+    background:rgba(224,108,117,.10); color:var(--err); font-size:13px; flex:0 0 auto;
+  }
+  .note .grow{flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .note .fix{flex:0 0 160px; width:160px}
+
+  .chat{
+    flex:1; min-height:0; overflow-y:auto; padding:2px 4px 2px 0; display:block;
+  }
+  .chat::-webkit-scrollbar{width:8px}
+  .chat::-webkit-scrollbar-thumb{background:rgba(255,255,255,.18); border-radius:4px}
+  .msgs{display:flex; flex-direction:column; gap:8px; width:100%}
+  .msg{display:flex; width:100%; min-width:0}
+  .msg.mine{justify-content:flex-end}
+  .bubble{
+    max-width:92%; min-width:0; padding:8px 12px; border-radius:4px;
+    background:rgba(255,255,255,.06); border-left:3px solid var(--accent);
+    white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere;
+    /* 正文 14px / 行高 21px：动作按钮并入状态行后，询问页消息区 612px、聊天页 549px → 28 / 25 完整行 */
+    font-size:14px; line-height:1.5;
+  }
+  .msg.mine .bubble{
+    background:rgba(90,169,230,.16); border-left:3px solid transparent;
+    border-right:3px solid var(--accent); text-align:right;
+  }
+  .bubble b{color:#fff}
+  .bubble code{
+    background:rgba(255,255,255,.1); border-radius:3px; padding:0 3px; font-size:13px;
+  }
+  .bubble ul{margin:3px 0; padding-left:18px; text-align:left}
+  .bubble li{margin:1px 0}
+  .caret{color:var(--dim)}
+
+  /* 输入区不再套卡片外框；输入框自带细边，与发送按钮同为 44px */
+  .composer{display:flex; align-items:stretch; gap:8px; width:100%; height:44px; flex:0 0 auto}
+  .field{
+    flex:1 1 auto; min-width:0; height:44px; display:flex; align-items:center; padding:0 12px;
+    border-radius:4px; background:rgba(255,255,255,.08);
+    border:1px solid rgba(255,255,255,.14); font-size:14px; line-height:42px; color:var(--text);
+  }
+  .field .ph{color:rgba(220,222,223,.55)}
+  .field.ph{color:rgba(220,222,223,.55)}
+  .send{flex:0 0 160px; width:160px; height:44px; min-height:44px; font-size:14px; padding:0 8px}
+  /* 输入区与消息区之间：1px 弱分隔线，跟内容边界对齐 */
+  .divider{height:1px; flex:0 0 auto; margin:0 2px; background:rgba(139,146,154,.30)}
+  /* 询问页：抵消页面根间距 12px，让状态行到分隔线也是 10px，与聊天页一致 */
+  #pane0 > .divider{margin-top:-2px}
+  .toggle{display:flex; align-items:center; gap:10px; font-size:14px; min-width:0}
+  .knob{
+    width:34px; height:18px; border-radius:9px; background:rgba(255,255,255,.18);
+    position:relative; flex:0 0 auto;
+  }
+  .knob::after{
+    content:""; position:absolute; top:2px; left:2px; width:14px; height:14px;
+    border-radius:50%; background:#c9ced4; transition:left .12s;
+  }
+  .knob.on{background:rgba(90,169,230,.55)}
+  .knob.on::after{left:18px; background:#fff}
+  .toggle .sub{display:block; color:var(--dim); font-size:12px; margin-top:2px}
+
+  /* 合并设置页：6 列 × 2 行，所有卡片等高，不出现一高一低 */
+  .settings{
+    flex:1; min-height:0; display:grid;
+    grid-template-columns:repeat(6,minmax(0,1fr));
+    grid-template-rows:1fr 1fr;
+    gap:20px;
+  }
+  .span2{grid-column:span 2}
+  .span4{grid-column:span 4}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:4px;
+    padding:16px; display:flex; flex-direction:column; gap:10px; min-width:0;
+  }
+  .card.compact{padding:16px; gap:10px; min-height:0; overflow:hidden}
+  /* 两张提示词卡内容最多，行距略收，保证 305px 行高内放得下 */
+  .card.compact.tight{padding:16px; gap:8px}
+  .card h3{
+    margin:0; font-size:13px; letter-spacing:1px; text-transform:uppercase;
+    color:var(--accent); font-weight:700;
+  }
+  .kv{display:grid; grid-template-columns:84px minmax(0,1fr); gap:8px; font-size:13px; line-height:1.6}
+  .kv .k{color:var(--dim)}
+  .kv .v{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .kv .v.wrap{white-space:normal; overflow-wrap:anywhere}
+  .drop{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    min-height:40px; padding:0 12px; border-radius:4px;
+    background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.14); font-size:14px;
+  }
+  /* 多行提示词：固定高度、内部滚动，不再把设置页撑高 */
+  .tpl{
+    width:100%; height:130px; min-height:130px; resize:none; overflow-y:auto;
+    padding:10px 12px; border-radius:4px; font-size:13px; line-height:1.5;
+    background:rgba(0,0,0,.22); border:1px solid rgba(255,255,255,.14);
+    color:var(--text); font-family:inherit;
+  }
+  .pair{display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px}
+  .triple{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px}
+  .muted{color:var(--dim); font-size:12.5px; line-height:1.5}
+  /* 维护卡里的「最近事件」：大屏唯一显示日志的地方 */
+  .logrow{
+    display:flex; align-items:center; gap:10px; flex:0 0 auto; min-width:0;
+    padding:6px 10px; border-radius:4px;
+    background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.10);
+  }
+  .logrow .lk{color:var(--dim); font-size:12.5px; flex:0 0 auto}
+  .logrow .lv{
+    flex:1; min-width:0; text-align:right; font-size:13px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .logrow .lv.empty{color:var(--dim)}
+  .maint-normal{flex:1; min-height:0; display:flex; flex-direction:column; gap:10px}
+  .logview{flex:1; min-height:0; display:flex; flex-direction:column; gap:10px}
+  .maint-normal[hidden], .logview[hidden]{display:none}
+  .loglist{flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:10px}
+  .logitem{display:flex; flex-direction:column; gap:2px; min-width:0}
+  .logitem .code{font-size:12px; font-weight:700; color:var(--accent)}
+  .logitem .detail{font-size:12.5px; line-height:1.5; color:var(--text); overflow-wrap:anywhere}
+  .btn.off{opacity:.42; pointer-events:none}
+
+  /* 页内不再自绘提示条；底部 44px 留给 Steam 原生图例 */
+  .k{
+    flex:0 0 auto; background:#fff; color:#000; font-weight:700; font-size:11px;
+    line-height:1.4; border-radius:3px; padding:1px 5px;
+  }
+  .k.dark{background:rgba(255,255,255,.14); color:var(--text)}
+
+  .toast{
+    position:absolute; left:50%; bottom:96px; transform:translateX(-50%);
+    background:rgba(0,0,0,.72); border:1px solid var(--line); border-radius:4px;
+    padding:8px 14px; font-size:13px; color:var(--text); opacity:0;
+    transition:opacity .16s; pointer-events:none;
+  }
+  .toast.on{opacity:1}
+
+  .legend{
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap; justify-content:center;
+    color:#8b929a; font-size:12.5px; max-width:1280px;
+  }
+  .legend .grp{display:flex; align-items:center; gap:6px}
+  .caption{color:#5e6873; font-size:12px}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="scaler" id="scaler">
+  <div class="screen" id="screen">
+    <div class="inner">
+
+      <div class="row head">
+        <div class="head-left">
+          <div class="brand">DeckMeido</div>
+          <div class="chips">
+            <span class="chip ok" id="coreChip">核心正常</span>
+            <span class="chip">192.168.1.23:18765</span>
+            <span class="chip">Hades II</span>
+          </div>
+        </div>
+        <div class="head-tabs">
+          <span class="k">L1</span>
+          <div class="tabs" id="tabs">
+            <div class="tab f on" data-focus="tab" data-tab="0" tabindex="-1">询问</div>
+            <div class="tab f" data-focus="tab" data-tab="1" tabindex="-1">聊天</div>
+            <div class="tab f" data-focus="tab" data-tab="2" tabindex="-1">设置</div>
+          </div>
+          <span class="k">R1</span>
+        </div>
+      </div>
+
+      <div class="status ask show-ask" id="statusRow">
+        <span class="status-text" id="statusText"></span>
+        <div class="status-actions" id="statusActions">
+          <div class="slot">
+            <div class="btn primary f" id="askBtn" data-focus="act" data-act="ask" tabindex="-1">截图询问</div>
+          </div>
+          <div class="slot">
+            <div class="btn f" id="trBtn" data-focus="act" data-act="translate" tabindex="-1">截图翻译</div>
+          </div>
+        </div>
+        <div class="btn f" id="cancelBtn" data-act="cancel" tabindex="-1">中断</div>
+      </div>
+
+      <!-- 询问页：状态行下方与消息区之间加一条分割线，规格与聊天页一致 -->
+      <div class="pane" id="pane0">
+        <div class="divider"></div>
+        <div class="chatHost" id="askHost">
+          <div class="chat f" id="chat" data-focus="chat" tabindex="-1">
+            <div class="msgs" id="msgs">
+              <div class="msg mine">
+                <div class="bubble">First boss 的第三阶段，那个 red 的 AoE 圈要怎么躲？<br>我老是 dodge 完之后就被 second wave 打到。</div>
+              </div>
+              <div class="msg">
+                <div class="bubble"><b>先别急着翻滚，这一招是两段判定。</b>
+第一段是地面红圈的收缩，第二段是圈内的爆炸。你在圈边等它收完再横移，不要在第一段就 dodge——翻滚的无敌帧只有 0.4 秒左右，早翻半秒就会吃第二段。
+
+<ul>
+<li>看到圈开始收缩：贴着外圈走，别停</li>
+<li>圈到最小时：朝圈的切线方向横移一小步</li>
+<li>爆炸亮起后：立刻回身打两下 light attack</li>
+</ul>
+
+如果场地中央还留着 last phase 的 lava pool，就把 boss 往左上角带，那里地面干净。Break 之后它会有大约 6 秒的硬直，这是你唯一能放心蓄 heavy 的窗口。</div>
+              </div>
+              <div class="msg mine">
+                <div class="bubble">OK，那 heavy attack 的蓄力是不是要留到 break 之后？</div>
+              </div>
+              <div class="msg">
+                <div class="bubble">对。平时只用 light attack 叠 buff，break 一出现立刻蓄满 heavy，能多打一轮 special。</div>
+              </div>
+              <div class="msg">
+                <div class="bubble" id="streamBubble">再看你的第二段移动：如果是从左下往右上切，建议先把 dash 的方向定在 45°，这样<span class="caret">▍</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 聊天页：输入区无外框，输入框与发送按钮同一行 44px -->
+      <div class="pane" id="pane1" hidden>
+        <div class="composer">
+          <div class="field f" data-focus="field" tabindex="-1">这个 BOSS 的第二阶段怎么打？</div>
+          <div class="btn primary f send" data-focus="act" data-act="send" tabindex="-1">发送</div>
+        </div>
+        <div class="divider"></div>
+        <div class="chatHost" id="chatHost"></div>
+      </div>
+
+      <div class="pane" id="pane2" hidden>
+        <div class="settings">
+          <div class="card compact span2">
+            <h3>模型</h3>
+            <div class="drop f" data-focus="act" data-act="model" tabindex="-1">
+              <span>gpt-4o-mini</span><span style="color:var(--dim)">▾</span>
+            </div>
+            <div class="btn f" data-focus="act" data-act="refresh" tabindex="-1">刷新模型</div>
+            <div class="toggle f" data-focus="act" data-act="tts" tabindex="-1">
+              <span class="knob on" id="ttsKnob"></span>
+              <span>语音播报<span class="sub">回复生成完在本机念一遍</span></span>
+            </div>
+            <div class="toggle f" data-focus="act" data-act="shot" tabindex="-1">
+              <span class="knob on" id="shotKnob"></span>
+              <span>带画面<span class="sub">问的时候附带当前游戏画面</span></span>
+            </div>
+            <div class="muted">当前模型同时用于询问与聊天。</div>
+          </div>
+
+          <div class="card compact tight span2">
+            <h3>截屏询问</h3>
+            <div class="muted">截图询问时带给模型的提示词</div>
+            <textarea class="tpl f" data-focus="field" readonly tabindex="-1">看我卡在哪一步，说说现在这个画面里我该做什么。已经能从上图判断就不要搜索；最多搜 2 次，得到一个答案就停。
+再总结成几条可以直接照做的步骤，200 字以内。
+不要剧透：只讲眼前这一步怎么过，不要提前说后面的剧情、结局或其他关卡的解法。</textarea>
+            <div class="muted">按 A 编辑；内容超长可在框内滚动。</div>
+            <div class="pair">
+              <div class="btn f" data-focus="act" data-act="save_ask" tabindex="-1">保存</div>
+              <div class="btn f" data-focus="act" data-act="reset_ask" tabindex="-1">恢复默认</div>
+            </div>
+          </div>
+
+          <div class="card compact tight span2">
+            <h3>截图翻译</h3>
+            <div class="muted">截图翻译时带给模型的提示词</div>
+            <textarea class="tpl f" data-focus="field" readonly tabindex="-1">把画面上的外文原文先照抄出来，再逐句翻译成简体中文。已经是中文就原样说明，不要翻译。
+只翻译、不解释剧情、不剧透，保持原文的换行和顺序。</textarea>
+            <div class="muted">保存后写入后端配置，下一次「截图翻译」立即生效。</div>
+            <div class="pair">
+              <div class="btn f" data-focus="act" data-act="save_tr" tabindex="-1">保存</div>
+              <div class="btn f" data-focus="act" data-act="reset_tr" tabindex="-1">恢复默认</div>
+            </div>
+          </div>
+
+          <div class="card compact span2">
+            <h3>连接</h3>
+            <div class="kv"><span class="k">核心</span><span class="v" id="coreVal" style="color:var(--accent)">运行中</span></div>
+            <div class="kv"><span class="k">地址</span><span class="v">192.168.1.23:18765</span></div>
+            <div class="kv"><span class="k">截图</span><span class="v">可用（gamescope 节点 hdmi）</span></div>
+            <div class="kv"><span class="k">虚拟手柄</span><span class="v">可用</span></div>
+            <div class="kv"><span class="k">当前游戏</span><span class="v">Hades II（steam）</span></div>
+            <div class="kv"><span class="k">版本</span><span class="v">0.5.3</span></div>
+            <div class="kv"><span class="k">工作区</span><span class="v wrap">/home/deck/DeckMeido</span></div>
+          </div>
+          <div class="card compact span4">
+            <h3>维护</h3>
+            <div class="maint-normal" id="maintNormal">
+              <div class="logrow f" id="logRow" data-focus="act" data-act="log" tabindex="-1">
+                <span class="lk">最近事件</span>
+                <span class="lv" id="logValue">—</span>
+              </div>
+              <div class="triple">
+                <div class="btn f off" id="startBtn" data-focus="act" data-act="core_start" tabindex="-1">启动核心</div>
+                <div class="btn f" id="restartBtn" data-focus="act" data-act="core_restart" tabindex="-1">重启核心</div>
+                <div class="btn f" id="killBtn" data-focus="act" data-act="core_kill" tabindex="-1">关闭核心</div>
+              </div>
+              <div class="muted" id="coreNote">关闭核心会停止后端进程并保持停止；「重启核心」只在运行中可用。</div>
+              <div class="pair">
+                <div class="btn f" data-focus="act" data-act="new" tabindex="-1">新会话</div>
+                <div class="btn f" data-focus="act" data-act="back" tabindex="-1">返回游戏</div>
+              </div>
+              <div class="muted">新会话只清本地记录，不会重启后端。</div>
+            </div>
+            <div class="logview" id="logView" hidden>
+              <div class="loglist" id="logList"></div>
+              <div class="btn f" data-focus="act" data-act="log_close" tabindex="-1">收起</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="toast" id="toast"></div>
+  </div>
+  </div>
+
+  <div class="legend">
+    <span class="caption">页内不再自绘提示条，底部 44px 留给 Steam 原生图例。键盘模拟手柄：</span>
+    <span class="grp"><span class="k dark">↑↓←→</span>移动焦点</span>
+    <span class="grp"><span class="k dark">Enter</span>＝A 确认</span>
+    <span class="grp"><span class="k dark">Esc</span>＝B 返回</span>
+    <span class="grp"><span class="k dark">X</span>截图翻译</span>
+    <span class="grp"><span class="k dark">Y</span>截图询问</span>
+    <span class="grp"><span class="k dark">Q</span><span class="k dark">E</span>＝L1 / R1 切页签</span>
+    <span class="grp"><span class="k dark">T</span>＝≡ 中断</span>
+  </div>
+</div>
+<script>
+(function () {
+  const $ = (s) => document.querySelector(s);
+  const paneEls = [$('#pane0'), $('#pane1'), $('#pane2')];
+  const tabEls = Array.from(document.querySelectorAll('.tab'));
+  const statusRow = $('#statusRow');
+  const statusText = $('#statusText');
+  const chat = $('#chat');
+  const msgs = $('#msgs');
+  const field = document.querySelector('.field');
+  const toast = $('#toast');
+  const cancelBtn = $('#cancelBtn');
+  const askBtn = $('#askBtn');
+  const trBtn = $('#trBtn');
+  const askHost = $('#askHost');
+  const chatHost = $('#chatHost');
+  const scaler = $('#scaler');
+  const screen = $('#screen');
+  const coreChip = $('#coreChip');
+  const coreVal = $('#coreVal');
+  const coreNote = $('#coreNote');
+  const startBtn = $('#startBtn');
+  const restartBtn = $('#restartBtn');
+  const killBtn = $('#killBtn');
+  const logRow = $('#logRow');
+  const logValue = $('#logValue');
+  const maintNormal = $('#maintNormal');
+  const logView = $('#logView');
+  const logList = $('#logList');
+
+  // 大屏唯一的日志：只在这里显示，其他位置不出现日志正文
+  let logs = [
+    { code: 'POLICY_DENIED', ts: '10:20:31', detail: '策略拒绝：电源命令需要本轮明确授权' },
+    { code: 'SHOT_FAILED', ts: '10:18:02', detail: '截图失败，这轮只发文字：gamescope 没有返回画面' },
+    { code: 'CORE_RESTARTED', ts: '10:12:40', detail: '核心已重启' },
+  ];
+
+  function nowTime() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  function pushLog(code, detail) {
+    logs = [{ code: code, ts: nowTime(), detail: detail || '' }].concat(logs).slice(0, 10);
+    renderLogRow();
+  }
+
+  function renderLogRow() {
+    const latest = logs[0];
+    logValue.textContent = latest ? latest.code + ' · ' + latest.ts : '—';
+    logValue.classList.toggle('empty', !latest);
+    logList.innerHTML = '';
+    logs.slice(0, 3).forEach((e) => {
+      const item = document.createElement('div');
+      item.className = 'logitem';
+      const code = document.createElement('div');
+      code.className = 'code';
+      code.textContent = e.code + ' · ' + e.ts;
+      const detail = document.createElement('div');
+      detail.className = 'detail';
+      detail.textContent = e.detail || '—';
+      item.appendChild(code);
+      item.appendChild(detail);
+      logList.appendChild(item);
+    });
+  }
+
+  function openLog(open) {
+    maintNormal.hidden = open;
+    logView.hidden = !open;
+    if (open) setFocus(logView.querySelector('.f'));
+    else setFocus(logRow);
+  }
+
+  // 窗口小于画布时等比缩小，版式尺寸保持不变
+  function fit() {
+    const s = Math.min(1, (window.innerWidth - 48) / 1280, (window.innerHeight - 108) / 800);
+    screen.style.transform = 'scale(' + s + ')';
+    scaler.style.width = 1280 * s + 'px';
+    scaler.style.height = 800 * s + 'px';
+  }
+  fit();
+  window.addEventListener('resize', fit);
+
+  let tab = 0;
+  let busy = false;
+  let running = '';
+  let coreRunning = true;
+  let elapsed = 0;
+  let timer = null;
+  let streamTimer = null;
+  let delayTimer = null;
+  let cur = null;
+
+  function allFocusables() {
+    return Array.from(document.querySelectorAll('.f')).filter(
+      (el) => el.offsetParent !== null && !el.classList.contains('off')
+    );
+  }
+
+  function setFocus(el) {
+    if (!el) return;
+    if (cur) cur.classList.remove('focus');
+    cur = el;
+    el.classList.add('focus');
+    const r = el.getBoundingClientRect();
+    if (el.closest('.chat') && r.bottom > window.innerHeight) el.scrollIntoView({ block: 'nearest' });
+  }
+
+  // 核心状态：运行中 / 已停止。已停止时「重启核心」「关闭核心」置灰，只有「启动核心」可点
+  function renderCore() {
+    const on = coreRunning;
+    coreChip.textContent = on ? '核心运行中' : '核心已停止';
+    coreChip.className = 'chip ' + (on ? 'ok' : 'bad');
+    coreVal.textContent = on ? '运行中' : '已停止';
+    coreVal.style.color = on ? 'var(--accent)' : 'var(--dim)';
+    startBtn.classList.toggle('off', on);
+    restartBtn.classList.toggle('off', !on);
+    killBtn.classList.toggle('off', !on);
+    coreNote.textContent = on
+      ? '关闭核心会停止后端进程并保持停止；「重启核心」只在运行中可用。'
+      : '核心已停止：不会自动拉起，只有点「启动核心」才会恢复。';
+    if (!on && cur && (cur === restartBtn || cur === killBtn)) setFocus(startBtn);
+    if (on && cur === startBtn) setFocus(restartBtn);
+  }
+
+  function center(el) {
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, r };
+  }
+
+  // 按几何方向找下一个焦点，模拟 Steam 的虚拟焦点树
+  function move(dir) {
+    const items = allFocusables();
+    if (!items.length) return;
+    if (!cur || !cur.classList.contains('focus') || items.indexOf(cur) < 0) {
+      setFocus(items[0]);
+      return;
+    }
+    const c = center(cur);
+    let best = null;
+    let bestD = Infinity;
+    for (const el of items) {
+      if (el === cur) continue;
+      const p = center(el);
+      let d;
+      if (dir === 'left') d = c.x - p.x;
+      else if (dir === 'right') d = p.x - c.x;
+      else if (dir === 'up') d = c.y - p.y;
+      else d = p.y - c.y;
+      if (d <= 4) continue;
+      // 主轴距离优先，副轴偏差作为惩罚，避免斜着跳很远
+      const cross = dir === 'left' || dir === 'right' ? Math.abs(p.y - c.y) : Math.abs(p.x - c.x);
+      const score = d + cross * 1.6;
+      if (score < bestD) {
+        bestD = score;
+        best = el;
+      }
+    }
+    if (best) setFocus(best);
+  }
+
+  function showToast(text) {
+    toast.textContent = text;
+    toast.classList.add('on');
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => toast.classList.remove('on'), 1600);
+  }
+
+  function setBtn(el, label, action, cls) {
+    const focused = el === cur;
+    el.textContent = label;
+    el.dataset.act = action;
+    el.className = cls + ' f' + (focused ? ' focus' : '');
+  }
+
+  // 忙时：跑着的那个原地显示「思考中」，另一个原地换成「中断」，焦点不丢
+  function renderStatusActions() {
+    const t = '思考中…（' + elapsed + 's）';
+    if (!busy) {
+      setBtn(askBtn, '截图询问', 'ask', 'btn primary');
+      setBtn(trBtn, '截图翻译', 'translate', 'btn');
+      return;
+    }
+    if (running === 'translate') {
+      setBtn(askBtn, '中断', 'cancel', 'btn danger');
+      setBtn(trBtn, t, 'noop', 'btn run');
+    } else {
+      setBtn(askBtn, t, 'noop', 'btn run');
+      setBtn(trBtn, '中断', 'cancel', 'btn danger');
+    }
+  }
+
+  function setTab(i) {
+    tab = i;
+    tabEls.forEach((el, k) => el.classList.toggle('on', k === i));
+    paneEls.forEach((el, k) => (el.hidden = k !== i));
+    // 共享消息区：同一个 #chat 在询问 / 聊天之间移动，滚动位置一并带过去
+    if (i === 0 || i === 1) {
+      const keep = chat.scrollTop;
+      (i === 0 ? askHost : chatHost).appendChild(chat);
+      chat.scrollTop = keep;
+    }
+    statusRow.classList.toggle('ask', i === 0);
+    statusRow.classList.toggle('show-ask', i === 0);
+    statusRow.classList.toggle('show-cancel', busy && i !== 0);
+    // 聊天页 / 设置页空闲时不占这条 28px 的行；忙时才出现「中断」
+    statusRow.hidden = i !== 0 && !busy;
+    // 跳过置灰（.off）的按钮，落到第一个可用项
+    const first = Array.from(paneEls[i].querySelectorAll('.f')).find(
+      (el) => !el.classList.contains('off')
+    );
+    setFocus(first || tabEls[i]);
+  }
+
+  function setBusy(on, kind) {
+    busy = on;
+    running = on ? kind || '' : '';
+    statusRow.classList.toggle('show-cancel', on && tab !== 0);
+    statusRow.hidden = tab !== 0 && !on;
+    renderStatusActions();
+    clearInterval(timer);
+    if (on) {
+      elapsed = 0;
+      statusText.textContent = '思考中…（0s）';
+      timer = setInterval(() => {
+        elapsed += 1;
+        statusText.textContent = '思考中…（' + elapsed + 's）';
+        renderStatusActions();
+      }, 1000);
+    } else {
+      statusText.textContent = '';
+    }
+  }
+
+  function appendMsg(text, mine) {
+    const row = document.createElement('div');
+    row.className = 'msg' + (mine ? ' mine' : '');
+    const b = document.createElement('div');
+    b.className = 'bubble';
+    b.textContent = text;
+    row.appendChild(b);
+    msgs.appendChild(row);
+    chat.scrollTop = chat.scrollHeight;
+    return b;
+  }
+
+  const ASK_REPLY =
+    '这一屏是 boss 把场地切成三块的时候。先别急着打输出：站在中间那块，等左右两侧的 lava 落下再往缺口走。' +
+    '两段 AoE 结束后它会有一次短硬直，这时候用 heavy 打两下就退，不要贪第三下。';
+
+  const TRANSLATE_REPLY =
+    '原文：Press and hold the interact key to channel the gate.\n译文：按住交互键不放，为这道门引导能量。';
+
+  function streamReply(text) {
+    const b = appendMsg('', false);
+    let i = 0;
+    streamTimer = setInterval(() => {
+      if (i >= text.length) {
+        clearInterval(streamTimer);
+        streamTimer = null;
+        setBusy(false);
+        return;
+      }
+      i += 1;
+      b.textContent = text.slice(0, i) + '▍';
+      chat.scrollTop = chat.scrollHeight;
+    }, 34);
+  }
+
+  function shot(kind) {
+    if (tab !== 0) {
+      showToast('截图询问 / 翻译只在询问页可用');
+      return;
+    }
+    if (busy) {
+      showToast('上一轮还没结束，先按 ≡ 中断');
+      return;
+    }
+    setBusy(true, kind);
+    appendMsg(kind === 'translate' ? '截图翻译' : '看看这个，我该怎么做？', true);
+    showToast('模拟：退回游戏 → 抓帧 → 回到大屏页');
+    delayTimer = setTimeout(() => {
+      delayTimer = null;
+      streamReply(kind === 'translate' ? TRANSLATE_REPLY : ASK_REPLY);
+    }, 1400);
+  }
+
+  function cancel() {
+    if (!busy) return;
+    clearTimeout(delayTimer);
+    delayTimer = null;
+    if (streamTimer) {
+      clearInterval(streamTimer);
+      streamTimer = null;
+      const last = msgs.lastElementChild;
+      if (last) last.querySelector('.bubble').textContent += '（已中断）';
+    }
+    setBusy(false);
+    pushLog('CANCELLED', '这一轮已中断');
+  }
+
+  function send() {
+    if (busy) {
+      showToast('上一轮还没结束，先按 ≡ 中断');
+      return;
+    }
+    if (field.classList.contains('ph') || !field.textContent.trim()) {
+      showToast('输入框是空的');
+      return;
+    }
+    const text = field.textContent.trim();
+    field.textContent = '问问 Meido...';
+    field.classList.add('ph');
+    setBusy(true, 'send');
+    appendMsg(text, true);
+    delayTimer = setTimeout(() => {
+      delayTimer = null;
+      streamReply('收到。这个问题我先按你当前进度回答：把资源留给 break 之后，平时只用轻攻击。');
+    }, 500);
+  }
+
+  function act(name) {
+    switch (name) {
+      case 'ask': shot('ask'); break;
+      case 'translate': shot('translate'); break;
+      case 'send': send(); break;
+      case 'cancel': cancel(); break;
+      case 'log': openLog(true); break;
+      case 'log_close': openLog(false); break;
+      case 'core_start':
+        if (coreRunning) { showToast('核心已经在运行'); break; }
+        coreRunning = true;
+        renderCore();
+        pushLog('CORE_STARTED', '核心已启动（自动拉起仍然关闭）');
+        break;
+      case 'core_restart':
+        if (!coreRunning) { showToast('核心已停止，先点「启动核心」'); break; }
+        showToast('模拟：正在重启核心…');
+        setTimeout(() => {
+          if (coreRunning) pushLog('CORE_RESTARTED', '核心已重启完成');
+        }, 1200);
+        break;
+      case 'core_kill':
+        if (!coreRunning) { showToast('核心已经是停止状态'); break; }
+        coreRunning = false;
+        renderCore();
+        pushLog('CORE_CLOSED', '核心已关闭，保持停止、不会自动拉起');
+        break;
+      case 'new':
+        msgs.innerHTML = '';
+        appendMsg('新会话已开始，之前聊的内容不会带到这一轮。', false);
+        pushLog('SESSION_NEW', '已清空本地会话');
+        break;
+      case 'back': showToast('模拟：已返回游戏（原型不真跳转）'); break;
+      case 'model': showToast('模拟：打开模型下拉'); break;
+      case 'refresh': showToast('模拟：拉取模型列表… 3 个可用'); break;
+      case 'tts':
+        $('#ttsKnob').classList.toggle('on');
+        showToast('语音播报已' + ($('#ttsKnob').classList.contains('on') ? '打开' : '关闭'));
+        break;
+      case 'shot':
+        $('#shotKnob').classList.toggle('on');
+        showToast('带画面已' + ($('#shotKnob').classList.contains('on') ? '打开' : '关闭'));
+        break;
+      case 'save_ask': showToast('截屏询问提示词已保存到后端配置'); break;
+      case 'reset_ask': showToast('已填回默认截屏询问提示词'); break;
+      case 'save_tr': showToast('截图翻译提示词已保存，下一次翻译生效'); break;
+      case 'reset_tr': showToast('已填回默认截图翻译提示词'); break;
+      default: break;
+    }
+  }
+
+  function confirm() {
+    if (!cur) return;
+    if (cur.dataset.act) {
+      act(cur.dataset.act);
+    } else if (cur.dataset.tab !== undefined) {
+      setTab(Number(cur.dataset.tab));
+    } else if (cur.dataset.focus === 'field') {
+      showToast('模拟：呼出屏幕键盘输入');
+    } else if (cur.dataset.focus === 'chat') {
+      showToast('模拟：在消息区里上下滚动');
+    }
+  }
+
+  // 键位：方向键移动焦点，Enter=A，Esc=B，X/Y 截图，Q/E=L1/R1，T=≡
+  window.addEventListener('keydown', (e) => {
+    const k = e.key;
+    // 焦点在提示词框里时，上下键用来滚动全文，不再移动焦点
+    if ((k === 'ArrowUp' || k === 'ArrowDown') && cur && cur.tagName === 'TEXTAREA') {
+      e.preventDefault();
+      cur.scrollTop += k === 'ArrowDown' ? 48 : -48;
+      return;
+    }
+    if (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'ArrowUp' || k === 'ArrowDown') {
+      e.preventDefault();
+      move(k.replace('Arrow', '').toLowerCase());
+      return;
+    }
+    if (k === 'Enter' || k === 'a' || k === 'A') {
+      e.preventDefault();
+      confirm();
+      return;
+    }
+    if (k === 'Escape' || k === 'b' || k === 'B') {
+      e.preventDefault();
+      showToast('模拟：Steam 原生返回（B）');
+      return;
+    }
+    if (k === 'x' || k === 'X') { e.preventDefault(); shot('translate'); return; }
+    if (k === 'y' || k === 'Y') { e.preventDefault(); shot('ask'); return; }
+    if (k === 't' || k === 'T') { e.preventDefault(); cancel(); return; }
+    if (k === 'q' || k === 'Q') { e.preventDefault(); setTab(Math.max(0, tab - 1)); return; }
+    if (k === 'e' || k === 'E') { e.preventDefault(); setTab(Math.min(2, tab + 1)); return; }
+  });
+
+  document.querySelectorAll('.f').forEach((el) => {
+    el.addEventListener('click', () => {
+      setFocus(el);
+      confirm();
+    });
+    el.addEventListener('mouseenter', () => {
+      if (!busy) setFocus(el);
+    });
+  });
+
+  // 首屏把消息区滚到最新
+  chat.scrollTop = chat.scrollHeight;
+  renderCore();
+  renderLogRow();
+  renderStatusActions();
+  setFocus(tabEls[0]);
+})();
+</script>
+</body>
+</html>
