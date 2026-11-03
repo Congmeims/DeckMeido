@@ -33,6 +33,10 @@ type Status = {
   model: string;
   // 当前正在运行的游戏名（后端从 Steam 进程/日志读出），没在玩时为空
   game_name: string;
+  // 名字来源 / 置信度 / 证据时间：confidence 不是 high 时前端不往提问里注入游戏名
+  game_source: string;
+  game_confidence: string;
+  game_ts: number;
   // 底部显示：后端版本号，后端连不上时是插件自己的版本
   version: string;
   // 本机鉴权：false 时面板只显示解锁框
@@ -713,7 +717,13 @@ function Content() {
       const tk = st.ticket;
 
       let shotPath: string | null = null;
-      let game: { appid?: string; name?: string } | null = null;
+      let game: {
+        appid?: string;
+        name?: string;
+        source?: string;
+        confidence?: string;
+        ts?: number;
+      } | null = null;
       if (grab) {
         // 先收面板：CloseSideMenus 走的是 Steam 的 MenuStore，等于替用户按了
         // 一次「关闭侧栏」（按 B 只是回上一级，面板还开着）。
@@ -732,7 +742,13 @@ function Content() {
             thumb?: string;
             error?: string;
             needPoke?: boolean;
-            game?: { appid?: string; name?: string };
+            game?: {
+              appid?: string;
+              name?: string;
+              source?: string;
+              confidence?: string;
+              ts?: number;
+            };
           }
         >("screenshot", tk, hideQam).catch((e: any) => ({
           // 调用本身也可能抛（插件侧异常 / IPC 断掉）：不接住的话会一路跳到
@@ -770,7 +786,9 @@ function Content() {
       // 游戏名从 Steam 侧拿到就直接写进问题里，免得模型看画面认错游戏、
       // 搜回来一堆别的游戏的攻略
       let body = text;
-      const gname = game?.name ?? "";
+      // 只有可信来源才注入：confidence 不是 high 时宁可不带名字，
+      // 也不要把旧游戏名塞给模型、让它硬套着去搜攻略
+      const gname = game?.confidence === "high" ? (game?.name ?? "") : "";
       if (gname) {
         const aid = game?.appid ? `（appid ${game.appid}）` : "";
         body = `当前游戏：《${gname}》${aid}。\n${text}`;
@@ -1367,7 +1385,9 @@ function Content() {
                 放在这里可以直接改，和网页设置页是同一份；清空保存即恢复默认 */}
             <div style={{ marginTop: 4, width: "100%" }}>
               <div style={{ color: "#dcdedf", fontSize: 12, marginBottom: 6 }}>
-                截屏询问的提示词{status?.game_name ? `（当前游戏：${status.game_name}）` : ""}
+                截屏询问的提示词{status?.game_name
+                  ? `（当前游戏：${status.game_name}，来源 ${status.game_source || "?"} / ${status.game_confidence || "none"}）`
+                  : ""}
               </div>
               {/* 和上面的下拉框一样撑满整行，不然输入框只有半截宽 */}
               <TextField

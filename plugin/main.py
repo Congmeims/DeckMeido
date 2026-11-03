@@ -409,14 +409,69 @@ def _read_shortcuts(path: Path) -> dict[str, str]:
     return out
 
 
-def _steam_running_app(names: dict[str, str]) -> tuple[str, str] | None:
-    """Steam 账本里当前在跑的那款，返回 (appid, name)；没有则 None
+_LOG_TS_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
+
+
+def _log_ts(line: str) -> float:
+    """console_log 行首的 [YYYY-MM-DD HH:MM:SS] 转时间戳；解析不出返回 0"""
+    m = _LOG_TS_RE.search(line)
+    if not m:
+        return 0.0
+    try:
+        return time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        return 0.0
+
+
+def _steam_running_from_tail(tail: str, names: dict[str, str]) -> tuple[str, str, float] | None:
+    """从 console_log 尾部解析「最后一次客户端启动之后」仍在跑的游戏。
+
+    Steam 每次启动客户端都会写一行 "Client version:"。账本里的 added/removed
+    只在同一次客户端运行期间有意义：一次启动前留下的 added 很可能早已退出，
+    甚至换过一个游戏，却被旧实现当成「当前正在玩」。所以必须先找到最后一条
+    Client version:，把它之前的事件全部作废，只统计之后的部分。
+    返回 (appid, name, added 时间戳)；没有可信结果返回 None。
+    """
+    if not names:
+        return None
+    running: list[tuple[str, float]] = []
+    seen_client = False
+    for line in tail.splitlines():
+        if "Client version:" in line:
+            # 新一次客户端启动：前面的账本作废
+            running.clear()
+            seen_client = True
+            continue
+        m = re.search(r"AppID (\d+)", line)
+        if not m:
+            continue
+        appid = m.group(1)
+        ts = _log_ts(line)
+        if "Game process added" in line:
+            # 同一款重启一次会再 added 一遍，去重免得越堆越多
+            running = [(a, t) for a, t in running if a != appid]
+            running.append((appid, ts))
+        elif "Game process removed" in line:
+            running = [(a, t) for a, t in running if a != appid]
+    if not seen_client:
+        # 尾部没有客户端启动边界：无法判断这些 added 属于哪一次运行，宁可不报
+        return None
+    # 最新启动的那款优先：启动器可能带出两层进程
+    for appid, ts in reversed(running):
+        if names.get(appid):
+            return appid, names[appid], ts
+    return None
+
+
+def _steam_running_app(names: dict[str, str]) -> tuple[str, str, float] | None:
+    """Steam 账本里当前在跑的那款，返回 (appid, name, added_ts)；没有则 None
 
     进程表里查不到 SteamAppId 时用它（Linux 原生版、启动器套娃的那类）。
     localconfig 的 LastPlayed 只有退出后才更新，所以不能拿它当「正在运行」。
     console_log.txt 里成对记着 "Game process added ... AppID <n>" 与
-    "Game process removed ... AppID <n>"，按出现顺序跑一遍，剩下没被移除的
-    就是此刻在跑的那款——这是 Steam 自己的账本，比按画面猜靠谱。
+    "Game process removed ... AppID <n>"，按最后一条 Client version: 之后的
+    顺序跑一遍，剩下没被移除的就是此刻在跑的那款——这是 Steam 自己的账本，
+    比按画面猜靠谱。
     """
     if not names:
         return None
@@ -430,23 +485,9 @@ def _steam_running_app(names: dict[str, str]) -> tuple[str, str] | None:
                 tail = f.read().decode("utf-8", "replace")
         except Exception:
             continue
-        running: list[str] = []
-        for line in tail.splitlines():
-            m = re.search(r"AppID (\d+)", line)
-            if not m:
-                continue
-            appid = m.group(1)
-            if "Game process added" in line:
-                # 同一款重启一次会再 added 一遍，去重免得越堆越多
-                if appid in running:
-                    running.remove(appid)
-                running.append(appid)
-            elif "Game process removed" in line and appid in running:
-                running.remove(appid)
-        # 最新启动的那款优先：启动器可能带出两层进程
-        for appid in reversed(running):
-            if names.get(appid):
-                return appid, names[appid]
+        hit = _steam_running_from_tail(tail, names)
+        if hit:
+            return hit
     return None
 
 
@@ -558,13 +599,14 @@ def _running_app_ids() -> list[str]:
 
 
 def _current_game() -> dict:
-    """当前正在运行的游戏：{appid, name}，没在玩游戏就 name 为空
+    """当前正在运行的游戏：{appid, name, source, confidence, ts}
 
     两条路取同一个事实，不是靠画面猜：
     1. 进程环境变量里的 SteamAppId / STEAM_COMPAT_DATA_PATH —— Proton 游戏都带；
     2. Steam 日志里的 "Game process added / removed" 账本 —— 原生 Linux 版和
        启动器套娃那类没有第 1 条的，靠这条。
-    查到名字后由调用方写进提问，模型搜攻略就不会搜到同系列的别的作品。
+    账本只统计「最后一次 Client version: 之后」的事件；进程表为空且账本里
+    没有本次客户端启动后的 added 时，直接返回空，不再把上一局游戏当成当前游戏。
     """
     names = _app_names()
     # 同一个游戏会有好几个子进程，环境变量一致；取第一个能查到名字的。
@@ -572,10 +614,16 @@ def _current_game() -> dict:
     # 命中 shortcuts.vdf 的 appid，拿到的是用户在库里改过的 AppName。
     for appid in _running_app_ids():
         if names.get(appid):
-            return {"appid": appid, "name": names[appid]}
-    # 进程表里没有线索：用 Steam 自己的运行记录
-    appid, name = _steam_running_app(names) or ("", "")
-    return {"appid": appid, "name": name}
+            return {"appid": appid, "name": names[appid],
+                    "source": "proc", "confidence": "high", "ts": time.time()}
+    # 进程表里没有线索：用 Steam 自己的运行记录（已按客户端会话边界截断）
+    hit = _steam_running_app(names)
+    if hit:
+        appid, name, ts = hit
+        return {"appid": appid, "name": name,
+                "source": "log", "confidence": "high", "ts": ts or time.time()}
+    return {"appid": "", "name": "", "source": "none",
+            "confidence": "none", "ts": 0}
 
 
 # ---------- 身份与运行目录 ----------
@@ -2084,7 +2132,9 @@ class Plugin:
             f"get_status：核心 {'正常' if core.get('ok') else '异常'}"
             f"{'' if core.get('ok') else '（' + str(core.get('error') or '') + '）'}，"
             f"画面节点 {'有' if node else '没有'}"
-            f"{'' if node else '（' + why + '）'}，已解锁 {_unlocked()}"
+            f"{'' if node else '（' + why + '）'}，已解锁 {_unlocked()}，"
+            f"游戏 {game.get('name') or '无'}"
+            f"（来源 {game.get('source') or 'none'} / 置信 {game.get('confidence') or 'none'}）"
         )
         return {
             "install_dir": str(INSTALL_DIR),
@@ -2110,8 +2160,13 @@ class Plugin:
             # 设置区：当前模型名，下拉菜单的首帧先显示它，再异步拉全量列表
             "model": str(prefs.get("model") or ""),
             # 当前正在运行的游戏名：抓帧时会再查一次，这里给面板一个初值，
-            # 让用户按「截屏询问」之前就能看到这一问会带上哪款游戏
+            # 让用户按「截屏询问」之前就能看到这一问会带上哪款游戏。
+            # source / confidence / ts 让面板和日志都能看出名字从哪来、可不可信；
+            # 前端只在 confidence == "high" 时才把名字注入提问
             "game_name": (game.get("name") or ""),
+            "game_source": (game.get("source") or ""),
+            "game_confidence": (game.get("confidence") or ""),
+            "game_ts": (game.get("ts") or 0),
             # 虚拟手柄能不能用：设备节点在 + 进程有写权限
             "gamepad": os.access("/dev/uinput", os.W_OK) if os.path.exists("/dev/uinput") else False,
             # 本机鉴权状态：false 时前端只显示解锁框

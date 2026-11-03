@@ -23,6 +23,10 @@ export type Status = {
   tts: boolean;
   model: string;
   game_name: string;
+  // 名字来源 / 置信度 / 证据时间：只有 high 才注入提问
+  game_source: string;
+  game_confidence: string;
+  game_ts: number;
   version: string;
   unlocked: boolean;
   ticket: string;
@@ -205,7 +209,13 @@ export function useSession() {
       const tk = st.ticket;
 
       let shotPath: string | null = null;
-      let game: { appid?: string; name?: string } | null = null;
+      let game: {
+        appid?: string;
+        name?: string;
+        source?: string;
+        confidence?: string;
+        ts?: number;
+      } | null = null;
       if (grab) {
         // TODO: /deckmeido 是全屏路由，当前位置抓帧会把这一页也拍进去。
         // 第一版先按原链路调用；后续需要在抓帧前 NavigateBack 回游戏、等 1.2s，
@@ -218,7 +228,13 @@ export function useSession() {
             thumb?: string;
             error?: string;
             needPoke?: boolean;
-            game?: { appid?: string; name?: string };
+            game?: {
+              appid?: string;
+              name?: string;
+              source?: string;
+              confidence?: string;
+              ts?: number;
+            };
           }
         >("screenshot", tk, false).catch((e: any) => ({
           ok: false,
@@ -245,7 +261,8 @@ export function useSession() {
       }
 
       let body = text;
-      const gname = game?.name ?? "";
+      // 只在可信来源时注入游戏名；否则完全不提，避免模型硬套旧名字搜攻略
+      const gname = game?.confidence === "high" ? (game?.name ?? "") : "";
       if (gname) {
         const aid = game?.appid ? `（appid ${game.appid}）` : "";
         body = `当前游戏：《${gname}》${aid}。\n${text}`;

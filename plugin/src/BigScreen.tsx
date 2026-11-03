@@ -587,7 +587,14 @@ export default function BigScreen() {
             <StatRow label="地址" value={s.status ? `${s.status.ip}:${s.status.port}` : "—"} />
             <StatRow label="截图" value={s.status?.capture_ok ? "可用" : s.status?.capture_reason || "不可用"} wrap />
             <StatRow label="虚拟手柄" value={s.status?.gamepad ? "可用" : "不可用"} />
-            <StatRow label="当前游戏" value={s.status?.game_name || "—"} />
+            <StatRow
+              label="当前游戏"
+              value={
+                s.status?.game_name
+                  ? `${s.status.game_name}（${s.status.game_source || "?"}）`
+                  : "—"
+              }
+            />
             <StatRow label="版本" value={s.status?.version || "—"} />
             <StatRow label="工作区" value={s.status?.workspace || "—"} wrap />
             {s.status && !s.status.core_ok && (
