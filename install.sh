@@ -10,7 +10,7 @@
 #   bash install.sh upgrade --deps      升级后顺带检查并安装控制类插件
 #   bash install.sh check          自检：逐个实测控制类控件是否真的能用
 #   bash install.sh uninstall     卸载（删代码与依赖，保留人设/记忆，下次安装自动恢复）
-#   bash install.sh uninstall --purge   连人设、记忆、配置、会话、工作区一起删
+#   bash install.sh uninstall --purge   额外删安装器创建的配置备份（userdata/ 仍保留）
 #   bash install.sh service       生成 systemd 用户单元（默认不装，后端由客户端拉起）
 #   bash install.sh from-mirror   从国内镜像站下载最新版并安装（GitHub 不通时用）
 #   bash install.sh speedtest     只测各 pip 源的下载速率，挑最快的那个
@@ -2398,7 +2398,8 @@ workspace_dir() {
 }
 
 # 卸载前把「她这个人」的数据备份到 ~/.config/deckmeido/，普通卸载只删代码、
-# 不丢人设和记忆；下次安装时自动恢复。--purge 才会连这份备份一起删。
+# 不丢人设和记忆；下次安装时自动恢复。--purge 才会连这份备份一起删，
+# 但无论哪种模式，userdata/ 都整目录保留。
 # 备份两份文件：meidosoul.json（人设）+ memory.json（长期记忆/偏好）。
 backup_soul() {
   local dst="$CONFIG_DIR" src="$INSTALL_DIR/server"

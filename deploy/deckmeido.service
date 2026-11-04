@@ -6,6 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=__INSTALL_DIR__
+# 用户数据根：默认 <安装目录>/userdata；显式设置后仍可被同名环境变量覆盖
+Environment=DECKMEIDO_DATA_DIR=__INSTALL_DIR__/userdata
 ExecStart=__INSTALL_DIR__/.venv/bin/python -m uvicorn server.main:app --host 0.0.0.0 --port __PORT__
 # 不自动拉起：插件大屏页的「关闭核心」要求关闭后保持停止。
 # systemd 这边一旦写成 Restart=on-failure / always，进程被 SIGTERM 收掉后

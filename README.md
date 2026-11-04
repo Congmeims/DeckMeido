@@ -98,11 +98,35 @@ bash install.sh menu
 
 | 文件 | 内容 |
 | --- | --- |
-| `server/config.toml` | 端口、令牌、模型与 API、上下文压缩、权限模式、语音、更新源 |
-| `server/meidosoul.json` | 人设：名字、性格、称呼、语气、禁用词 |
-| `server/memory.json` | 长期记忆：用户画像 / 环境经验 / 知识条目 |
+| `userdata/config.toml` | 端口、令牌、模型与 API、上下文压缩、权限模式、语音、更新源 |
+| `userdata/persona/meidosoul.json` | 人设：名字、性格、称呼、语气、禁用词 |
+| `userdata/memory.json` | 长期记忆：用户画像 / 环境经验 / 知识条目 |
+| `userdata/sessions/` | 会话记录 |
+| `userdata/uploads/` | 用户上传与工作区文件 |
+| `userdata/meidobot/` | meidobot（QQ）通道归档：`images/`、`inbox_index.jsonl`、`text_log.txt` |
 
 感兴趣的几个键：`[llm] reasoning_effort`（思考深度，`high` / `max`）、`[agent] context_window`（`0` = 按模型名推断）、`[update] source`（更新源，`mirror` / `github` / `mirror-only` / `github-only`）、`[security] permission_mode`（`manual` / `auto` / `full`）、`[workspace] dir`（文件工具的工作区，留空用 `~/deckmeido_workspace`）。完整表格见 [config.example.toml](server/config.example.toml)。
+
+### 数据目录
+
+所有可修改数据统一在数据根 `userdata/` 下，默认 `<安装目录>/userdata`，可用环境变量 `DECKMEIDO_DATA_DIR` 覆盖。安装器创建时把目录权限收紧到 `700`，`config.toml` 为 `600`。
+
+```
+userdata/
+├── config.toml
+├── persona/meidosoul.json
+├── memory.json
+├── sessions/
+├── uploads/
+└── meidobot/
+    ├── images/
+    ├── inbox_index.jsonl
+    └── text_log.txt
+```
+
+- **迁移**：安装/升级时若发现旧位置（`server/config.toml`、`server/config.toml.bak*`、`server/meidosoul.json`、`server/memory.json`、`server/sessions/`、`~/.local/share/deckmeido/qq/`）的数据，会**只复制、不删除**到 `userdata/` 对应位置，旧文件留在原地当备份，并写 `.deckmeido-migrated` 标记避免重复搬。旧的 `userdata/qq/` 会复制到 `userdata/meidobot/`；两边都存在时只补缺文件、不覆盖，并打一条警告。
+- **升级**：同步代码时排除整个 `userdata/`，不会用模板覆盖 `userdata/config.toml`。
+- **卸载**：`userdata/` 整目录保留（含 `meidobot/` 归档）；卸载只按安装清单删除安装器自己放进去的文件，清单外的文件与目录都不动。
 
 ## 常用命令
 
@@ -115,7 +139,7 @@ bash install.sh install --gui       # 只补装桌面客户端（PySide6）
 bash install.sh from-mirror         # 从镜像站拉最新版覆盖安装
 bash install.sh speedtest           # 只测各 pip 源速率，不安装
 bash install.sh check               # 自检：逐个实测控制类控件是否真能用
-bash install.sh uninstall           # 卸载（保留配置与会话，加 --purge 全删）
+bash install.sh uninstall           # 卸载（只删安装器文件；userdata/ 永远保留）
 bash install.sh service             # 生成 systemd 用户单元（默认不装，由客户端拉起后端）
 ```
 
@@ -166,7 +190,7 @@ deckmeido/
 
 **SteamOS 更新后点击失灵？** 换镜像会冲掉 `/usr` 下 pacman 装的包，重跑 `bash install.sh install --deps` 即可。`bash install.sh check` 能逐个实测哪些真的没了。
 
-**升级后聊天记录丢了？** 不应该发生——会话在 `server/sessions/`，升级不碰。如果确实丢了，多半是有两份后端抢同一端口，跑一次 `bash install.sh upgrade` 会清理残留进程。
+**升级后聊天记录丢了？** 不应该发生——会话在 `userdata/sessions/`，升级不碰。如果确实丢了，多半是有两份后端抢同一端口，跑一次 `bash install.sh upgrade` 会清理残留进程。
 
 **游戏模式下网页打不开？** 正常，SteamOS 游戏模式的浏览器不在。用 Decky 插件的 QAM 面板，或切回桌面模式。
 
