@@ -3,8 +3,8 @@
 #
 # 数据根（配置、人设、记忆、会话、上传、QQ 归档都放这里）按顺序解析：
 #   1. 环境变量 DECKMEIDO_DATA_DIR
-#   2. <安装目录>/userdata/（install.sh 创建；不存在或只读时回退）
-#   3. ~/.local/share/deckmeido/（回退目录，日志标 fallback）
+#   2. <安装目录>/userdata/（install.sh 创建）
+# 两者都不可用会直接报错并提示 DECKMEIDO_DATA_DIR，不会静默换到别的目录。
 # 目录结构：
 #   userdata/config.toml
 #   userdata/persona/meidosoul.json
@@ -13,10 +13,7 @@
 #   userdata/uploads/
 #   userdata/meidobot/{images,inbox_index.jsonl,text_log.txt}
 #
-# 旧布局兼容：升级后第一次读会回退到 server/config.toml、server/meidosoul.json、
-# server/memory.json、server/sessions 与 server/uploads（只读，不删除）；
-# 第一次写入时把旧文件复制到新数据根并记「已迁移读取」。旧 QQ 归档 userdata/qq/
-# 存在而 userdata/meidobot/ 不存在时，读索引/文本会回退旧目录（legacy_dir=qq）。
+# 只认这一套布局，不做旧位置的数据迁移。
 #
 # 本文件只管「怎么跑」——地址、密钥、端口、更新源这类运行参数。
 # 它不存人格和记忆，那些拆在另外两个文件里（和 config.toml 放在同一目录）：
@@ -50,16 +47,12 @@ token = "meido"
 # 交给这台 Deck（Steam UI、游戏、DeckMeido 页面都收得到）。按 Esc 或点客户端
 # 自己的 logo 释放。
 #
-# 只有一个总开关。默认关闭，必须显式打开；打开即允许局域网来源的接管，
-# 不再需要另外配置 bind_lan（旧版本那个键若还在文件里，仍按旧语义作额外限制）。
+# 只有一个总开关。默认关闭，必须显式打开；打开即允许局域网来源的接管。
 #   - 只有拿到访问令牌的人能连；
 #   - 开启后，局域网内任何拿到令牌的人都能控制这台机器，
 #     只在可信网络里用，用完及时关闭；
 #   - 网页设置里打开这个开关前会先弹一次安全确认。
 enabled = false
-# 旧版本兼容键（新配置不需要它，留着注释说明即可）：
-# 存在且为 false 时，即使 enabled = true 也只接受本机回环连接。
-# bind_lan = true
 # 指针灵敏度（前端滑杆也按这个初值）。1.0 = 原始位移，建议 1.2~2.0。
 sensitivity = 1.5
 # 单次接管最长分钟数，到点自动释放并断开。
@@ -128,11 +121,9 @@ keep_awake = true
 
 [update]
 # 默认同时探测「国内镜像」与 GitHub Release，取版本更高者；
-# 版本相同时优先镜像。旧的 source = mirror-only / github-only 仍可用，
-# 等价于只开一个源（保持对老配置的兼容）。
+# 版本相同时优先镜像。
 # 镜像站是纯静态目录，放 latest.json 与 deckmeido-<版本>.tar.gz；
 # 走镜像升级不需要 git，覆盖文件时会保留配置、会话与工作区。
-source = "mirror"
 # 双源模式下是否探测 GitHub；改成 false 就只用国内镜像
 github_enable = true
 # 镜像站目录（末尾不要加斜杠）
@@ -203,11 +194,10 @@ allow_image = false
 max_image_mb = 8.0
 # 管理员最近多少分钟内发过图，聊天轮次就把它带上作为视觉输入。
 image_recent_minutes = 2
-# 图片归档目录。留空 = <安装目录>/userdata/qq/images/<YYYY-MM-DD>/；
-# 安装目录不可写时自动回退到 ~/.local/share/deckmeido/qq/（日志标 fallback）。
+# 图片归档目录。留空 = <数据根>/meidobot/images/<YYYY-MM-DD>/；
 # 显式填绝对路径则覆盖默认。
 image_save_dir = ""
-# 引用保存文本的存档文件。留空 = <安装目录>/userdata/qq/text_log.txt（同上会回退）。
+# 引用保存文本的存档文件。留空 = <数据根>/meidobot/text_log.txt。
 text_log_path = ""
 # 安装类命令执行成功后自动启动刚装好的程序，再截图回一条图文消息。
 auto_launch_after_install = true
@@ -253,11 +243,11 @@ ping_timeout = 15
 #   normal：其余设备操作，保持原来的单段「确认」流程
 #
 # ── 归档位置 ──
-# 默认根目录：<安装目录>/userdata/qq/
+# 默认根目录：<数据根>/meidobot/
 #   images/<YYYY-MM-DD>/<HHMMSS>_<QQ号>_<群号|private>_<message_id>.<ext>
 #   inbox_index.jsonl   图片索引
 #   text_log.txt        引用保存的文本（追加，每组之间空一行）
-# 安装目录判定：DECKMEIDO_INSTALL_DIR 环境变量，否则按 server/ 的上一级推导。
-# 不可写时回退 ~/.local/share/deckmeido/qq/，日志标 fallback，回复里也会提示。
-# 卸载不会删除 userdata/qq：install.sh 卸载时排除整个 userdata/，
+# 数据根判定：DECKMEIDO_DATA_DIR 环境变量，否则 <安装目录>/userdata。
+# 数据根不可用时直接报错，不会静默换路径。
+# 卸载不会删除 userdata/meidobot：install.sh 卸载时排除整个 userdata/，
 # 结束时打印「保存的 QQ 归档保留在 <路径>」，重新安装后仍在原处。

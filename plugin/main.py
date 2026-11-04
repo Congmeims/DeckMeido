@@ -45,7 +45,7 @@ except ImportError:
 
 
 def _find_install_dir() -> Path:
-    """找 DeckMeido 的安装目录（里面要有 server/config.toml）。
+    """找 DeckMeido 的安装目录（里面要有 server/main.py）。
 
     插件自己装在 ~/homebrew/plugins/DeckMeido，和后端不是同一个目录，
     所以不能靠 __file__ 往上推，只能按已知位置挨个试。
@@ -59,7 +59,7 @@ def _find_install_dir() -> Path:
     for home in dict.fromkeys(homes):
         for name in ("deckmeido", "DeckMeido", "SDagent", "sdagent"):
             cand = Path(home) / name
-            if (cand / "server" / "config.toml").exists():
+            if (cand / "server" / "main.py").exists():
                 return cand
     return Path("/home/deck/deckmeido")
 
@@ -68,15 +68,11 @@ INSTALL_DIR = _find_install_dir()
 
 
 def _config_paths() -> list[Path]:
-    """配置读取顺序：DECKMEIDO_DATA_DIR > <安装目录>/userdata > ~/.local/share > 旧 server/"""
+    """配置路径：DECKMEIDO_DATA_DIR > <安装目录>/userdata/"""
     env = (os.environ.get("DECKMEIDO_DATA_DIR") or "").strip()
     if env:
         return [Path(env).expanduser() / "config.toml"]
-    return [
-        INSTALL_DIR / "userdata" / "config.toml",
-        Path.home() / ".local" / "share" / "deckmeido" / "config.toml",
-        INSTALL_DIR / "server" / "config.toml",   # 旧布局，只读
-    ]
+    return [INSTALL_DIR / "userdata" / "config.toml"]
 
 
 def _config_path() -> Path:

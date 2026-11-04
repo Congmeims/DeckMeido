@@ -6,7 +6,7 @@
 - 国内镜像（纯静态站）：latest.json + deckmeido-<ver>.tar.gz，不依赖 git
 - GitHub：api.github.com + Release 资产（git fetch/checkout 安装）
 在 config.toml 的 [update] 段里可以关掉 GitHub（github_enable = false），
-旧的 source = mirror-only / github-only 仍然等价于只开一源。
+关掉后只用镜像。
 
 升级过程会把正在运行的服务换掉，所以分两种走法：
 - restart_service=True（用户点了升级、或 systemd 托管）：交给 install.sh upgrade，
@@ -114,14 +114,13 @@ def _special_cert_note(exc: Exception, host: str) -> str:
 def update_cfg() -> dict:
     """读 [update] 段；没有这一段（老配置）时按默认值走"""
     defaults = {
-        "source": "mirror",          # 兼容旧配置：mirror/github 均表示双源；*-only 只开一源
         "mirror": DEFAULT_MIRROR,
         "github_repo": REPO,
         "github_enable": True,       # 双源模式下是否探测 GitHub
     }
     try:
         import tomllib
-        cfg_file = paths.read_path(paths.config_path(), paths.legacy_config_path())
+        cfg_file = paths.config_path()
         if not cfg_file.exists():
             return defaults
         cfg = tomllib.loads(cfg_file.read_text(encoding="utf-8"))
@@ -129,9 +128,6 @@ def update_cfg() -> dict:
         return defaults
     u = cfg.get("update") or {}
     out = dict(defaults)
-    src = str(u.get("source") or "").strip().lower()
-    if src in ("mirror", "github", "mirror-only", "github-only"):
-        out["source"] = src
     if str(u.get("mirror") or "").strip():
         out["mirror"] = str(u["mirror"]).strip().rstrip("/")
     if str(u.get("github_repo") or "").strip():
@@ -142,23 +138,9 @@ def update_cfg() -> dict:
 
 
 def sources_enabled(cfg: dict | None = None) -> list[str]:
-    """本次实际探测/可用的源。
-
-    旧的 mirror-only / github-only 语义保留；其余情况默认两源都开，
-    只有显式 github_enable = false 才只留镜像。
-    """
+    """本次实际探测/可用的源：默认两源都开，github_enable = false 时只留镜像"""
     cfg = cfg or update_cfg()
-    src = cfg["source"]
-    if src == "mirror-only":
-        return ["mirror"]
-    if src == "github-only":
-        return ["github"]
     return ["mirror", "github"] if cfg.get("github_enable", True) else ["mirror"]
-
-
-def source_order(cfg: dict | None = None) -> list[str]:
-    """兼容旧调用：按配置给出可尝试的源（新逻辑不再按顺序回退）"""
-    return sources_enabled(cfg)
 
 
 def source_label(cfg: dict | None = None) -> str:

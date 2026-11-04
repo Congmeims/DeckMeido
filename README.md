@@ -105,7 +105,7 @@ bash install.sh menu
 | `userdata/uploads/` | 用户上传与工作区文件 |
 | `userdata/meidobot/` | meidobot（QQ）通道归档：`images/`、`inbox_index.jsonl`、`text_log.txt` |
 
-感兴趣的几个键：`[llm] reasoning_effort`（思考深度，`high` / `max`）、`[agent] context_window`（`0` = 按模型名推断）、`[update] source`（更新源，`mirror` / `github` / `mirror-only` / `github-only`）、`[security] permission_mode`（`manual` / `auto` / `full`）、`[workspace] dir`（文件工具的工作区，留空用 `~/deckmeido_workspace`）。完整表格见 [config.example.toml](server/config.example.toml)。
+感兴趣的几个键：`[llm] reasoning_effort`（思考深度，`high` / `max`）、`[agent] context_window`（`0` = 按模型名推断）、`[update] github_enable`（是否同时探测 GitHub，`false` 只用国内镜像）、`[security] permission_mode`（`manual` / `auto` / `full`）、`[workspace] dir`（文件工具的工作区，留空用 `~/deckmeido_workspace`）。完整表格见 [config.example.toml](server/config.example.toml)。
 
 ### 数据目录
 

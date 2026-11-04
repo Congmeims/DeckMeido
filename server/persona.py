@@ -20,8 +20,10 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 from . import paths
 
-# 新位置 <data>/persona/meidosoul.json；旧 server/meidosoul.json 只读兼容
-PERSONA_PATH = paths.persona_path()
+
+def _path() -> Path:
+    """人设文件：数据根下的 persona/meidosoul.json（惰性解析）"""
+    return paths.persona_path()
 
 _lock = threading.Lock()
 
@@ -77,14 +79,10 @@ def _clean(data: dict) -> dict:
     return out
 
 
-def _read_path():
-    return paths.read_path(PERSONA_PATH, paths.legacy_persona_path())
-
-
 def load() -> dict:
     """读取人设；文件不存在或坏了就用默认值"""
     try:
-        data = json.loads(_read_path().read_text(encoding="utf-8"))
+        data = json.loads(_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return json.loads(json.dumps(DEFAULTS))
     return _clean(data)
@@ -94,12 +92,11 @@ def _save(data: dict) -> None:
     """原子写：先写临时文件再替换，断电/杀进程不会留下半截 JSON"""
     data = _clean(data)
     data["updated"] = time.time()
-    # 第一次写新位置前，把旧位置的人设复制过来（旧文件保留，不删）
-    paths.ensure_migrated(PERSONA_PATH, paths.legacy_persona_path())
-    PERSONA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = PERSONA_PATH.with_suffix(f".json.{os.getpid()}.tmp")
+    target = _path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(f".json.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    os.replace(tmp, PERSONA_PATH)
+    os.replace(tmp, target)
 
 
 def save(data: dict) -> dict:
@@ -107,20 +104,3 @@ def save(data: dict) -> dict:
     with _lock:
         _save(data)
         return load()
-
-
-def migrate_from_config(cfg: dict) -> bool:
-    """老版本的人设写在 config.toml 的 [persona] 段里，这里搬一次
-
-    只在 meidosoul.json 还不存在、而配置里确实有 [persona] 时执行，
-    搬完把人设写进 meidosoul.json；config.toml 里的旧段不删（用户自己看着办），
-    但从此不再读取它，避免两处都改时互相覆盖。
-    """
-    if _read_path().exists():
-        return False
-    old = cfg.get("persona") if isinstance(cfg, dict) else None
-    if not isinstance(old, dict) or not old:
-        return False
-    with _lock:
-        _save(old)
-    return True

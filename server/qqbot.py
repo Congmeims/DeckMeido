@@ -128,9 +128,8 @@ _INJECTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 归档目录：数据根里的 meidobot/，卸载不删；旧的 qq/ 只读兼容
+# 归档目录：数据根里的 meidobot/，卸载不删
 ARCHIVE_SUBDIR = Path("userdata") / "meidobot"
-FALLBACK_ARCHIVE_DIR = "~/.local/share/deckmeido/meidobot"
 INDEX_NAME = "inbox_index.jsonl"
 TEXT_LOG_NAME = "text_log.txt"
 
@@ -321,39 +320,30 @@ def install_root() -> Path:
     return paths.install_root()
 
 
-def archive_root(configured: str = "") -> tuple[Path, bool]:
-    """QQ 归档根目录：显式配置优先；否则数据根下的 meidobot/。
-
-    数据根按 server/paths.py 的规则解析（env > userdata > fallback），
-    返回 (目录, 是否回退)。旧 qq/ 目录存在时会在首次写入时补拷索引/文本，
-    但旧目录本身不删除。
-    """
+def archive_root(configured: str = "") -> Path:
+    """QQ 归档根目录：显式配置优先；否则数据根下的 meidobot/。"""
     raw = (configured or "").strip()
     if raw:
-        return Path(raw).expanduser(), False
-    return paths.meidobot_dir(), paths.data_root_label() == "fallback"
+        return Path(raw).expanduser()
+    return paths.meidobot_dir()
 
 
-def image_archive(cfg: QQConfig) -> tuple[Path, Path, bool]:
-    """存图目录：返回 (索引根, 图片根, 是否回退)。
-
-    image_save_dir 显式配置时直接用作图片根（索引也放同级）。
-    """
+def image_archive(cfg: QQConfig) -> tuple[Path, Path]:
+    """存图目录：返回 (索引根, 图片根)。image_save_dir 显式配置时直接用。"""
     override = (cfg.image_save_dir or "").strip()
     if override:
         root = Path(override).expanduser()
-        return root, root, False
-    base, fallback = archive_root("")
-    return base, base / "images", fallback
+        return root, root
+    base = archive_root("")
+    return base, base / "images"
 
 
-def text_log_location(cfg: QQConfig) -> tuple[Path, bool]:
+def text_log_location(cfg: QQConfig) -> Path:
     """引用保存文本的目标文件：text_log_path 覆盖，否则 <归档根>/text_log.txt"""
     override = (cfg.text_log_path or "").strip()
     if override:
-        return Path(override).expanduser(), False
-    base, fallback = archive_root("")
-    return base / TEXT_LOG_NAME, fallback
+        return Path(override).expanduser()
+    return archive_root("") / TEXT_LOG_NAME
 
 
 # ---------- 前缀与指令解析 ----------
@@ -1540,7 +1530,7 @@ class QQBot:
         if not item:
             await self._send_text(ev, "最近没有可保存的图片；发一张图、或者引用一张图再发「存图」。")
             return
-        index_root, images_root, fallback = image_archive(cfg)
+        index_root, images_root = image_archive(cfg)
         day = datetime.now().strftime("%Y-%m-%d")
         stamp = datetime.now().strftime("%H%M%S")
         gid = str(item.get("group_id") or ev.group_id or "private")
@@ -1568,11 +1558,7 @@ class QQBot:
             return
         self._log("info", "存图成功",
                   f"{target} 来源={item.get('source') or '未知'} message_id={mid}")
-        note = ""
-        if fallback:
-            note = f"\n安装目录不可写，已回退到 {index_root}"
-            self._log("warn", "存档目录 fallback", str(index_root))
-        await self._send_text(ev, f"已存好：{target}{note}")
+        await self._send_text(ev, f"已存好：{target}")
 
     async def _group_name(self, group_id: str) -> str:
         try:
@@ -1614,7 +1600,7 @@ class QQBot:
             where = "私聊"
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         line = f"[{stamp}] {where} {label}: {body}"
-        path, fallback = text_log_location(self._cfg)
+        path = text_log_location(self._cfg)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as fh:
@@ -1625,11 +1611,7 @@ class QQBot:
             return
         self._log("info", "保存文本成功",
                   f"{path} message_id={payload.get('message_id') or ev.reply_id}")
-        note = ""
-        if fallback:
-            note = f"\n安装目录不可写，已回退到 {path}"
-            self._log("warn", "存档目录 fallback", str(path))
-        await self._send_text(ev, f"已追加到文本存档：{path}{note}")
+        await self._send_text(ev, f"已追加到文本存档：{path}")
 
     # -- 工具 --
 

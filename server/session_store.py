@@ -22,9 +22,11 @@ from pathlib import Path
 from . import paths
 
 BASE_DIR = Path(__file__).resolve().parent
-# 新会话一律写数据根；旧 server/sessions 只在缺失时只读回退
-SESSIONS_DIR = paths.sessions_dir()
-LEGACY_SESSIONS_DIR = paths.legacy_sessions_dir()
+
+
+def sessions_dir() -> Path:
+    """会话目录：数据根下的 sessions/（惰性解析，导入本模块时不碰磁盘）"""
+    return paths.sessions_dir()
 
 # 所有会话 IO 都排在这一个线程里跑。
 # 以前 read_text / write_text / os.replace 直接躺在事件循环里：Deck 的 eMMC
@@ -49,16 +51,15 @@ def _side_path(p: Path) -> Path:
 
 
 def all_session_files() -> list[Path]:
-    """新旧两个目录里的会话文件（同 sid 以新位置为准），按 mtime 新到旧"""
+    """数据根里 sessions/ 下的会话文件，按 mtime 新到旧"""
     seen: dict[str, Path] = {}
-    for folder in (SESSIONS_DIR, LEGACY_SESSIONS_DIR):
-        try:
-            for p in folder.glob("*.json"):
-                if p.name == "index.json" or p.name.endswith(_SIDE_SUFFIX):
-                    continue
-                seen.setdefault(p.stem, p)
-        except OSError:
-            continue
+    try:
+        for p in sessions_dir().glob("*.json"):
+            if p.name == "index.json" or p.name.endswith(_SIDE_SUFFIX):
+                continue
+            seen.setdefault(p.stem, p)
+    except OSError:
+        pass
     return sorted(seen.values(), key=lambda p: p.stat().st_mtime, reverse=True)
 
 
@@ -194,16 +195,8 @@ class SessionStore:
     # ---------- 路径 ----------
 
     def sess_path(self, sid: str) -> Path:
-        """读路径：新位置优先，旧位置存在时只读回退"""
-        new = SESSIONS_DIR / f"{sid}.json"
-        if new.exists() or not LEGACY_SESSIONS_DIR.exists():
-            return new
-        legacy = LEGACY_SESSIONS_DIR / f"{sid}.json"
-        return legacy if legacy.exists() else new
-
-    def sess_write_path(self, sid: str) -> Path:
-        """写路径：永远是数据根里的新位置，旧目录不写"""
-        return SESSIONS_DIR / f"{sid}.json"
+        """会话文件路径：永远是数据根里的 sessions/<sid>.json"""
+        return sessions_dir() / f"{sid}.json"
 
     def fresh_sid(self) -> str:
         """生成一个目录里绝对不存在的会话号。
@@ -286,7 +279,7 @@ class SessionStore:
             with self.lock:
                 if sid in self.deleted_sids:
                     return
-                p = self.sess_write_path(sid)
+                p = self.sess_path(sid)
                 if not data.get("history") and self._disk_count(sid, p) > 0:
                     print(f"[DeckMeido] 拒绝空写入：会话 {sid} 磁盘有 "
                           f"{self._disk_count(sid, p)} 条，内存为空，保持磁盘内容不变",
@@ -316,7 +309,7 @@ class SessionStore:
         with self.lock:
             if sid in self.deleted_sids:
                 return
-            p = _side_path(self.sess_write_path(sid))
+            p = _side_path(self.sess_path(sid))
             _atomic_write(p, json.dumps({"id": sid, "updated": stamp,
                                          "_streaming": streaming}, ensure_ascii=False))
 
@@ -325,8 +318,7 @@ class SessionStore:
 
         启动恢复、收尾清理都要用它替代原来那个「整份读主文件再取字段」的动作。
         """
-        new_main = self.sess_write_path(sid)
-        p = _side_path(new_main if new_main.exists() else self.sess_path(sid))
+        p = _side_path(self.sess_path(sid))
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
@@ -340,8 +332,7 @@ class SessionStore:
         """删掉副档案：正式内容已经落进主文件，这份半截正文没有意义了"""
         with self.lock:
             try:
-                # 旧目录只读：只清掉新位置的副档案
-                _side_path(self.sess_write_path(sid)).unlink()
+                _side_path(self.sess_path(sid)).unlink()
             except OSError:
                 pass
 
@@ -390,7 +381,7 @@ class SessionStore:
             self._index_timer = None
             body = json.dumps(list(self._index.values()), ensure_ascii=False)
         try:
-            _atomic_write(SESSIONS_DIR / "index.json", body)
+            _atomic_write(sessions_dir() / "index.json", body)
         except Exception:
             pass
 
@@ -453,10 +444,7 @@ class SessionStore:
 
     def load_index(self) -> None:
         """启动时读一次 index.json；缺失就从会话文件补建（老版本没这个文件）"""
-        path = SESSIONS_DIR / "index.json"
-        if not path.exists() and (LEGACY_SESSIONS_DIR / "index.json").exists():
-            # 旧索引只读；下一次 _index_save 会写到新数据根
-            path = LEGACY_SESSIONS_DIR / "index.json"
+        path = sessions_dir() / "index.json"
         items: list[dict] = []
         try:
             items = json.loads(path.read_text(encoding="utf-8"))

@@ -30,15 +30,13 @@ from . import depcheck, memory, paths, persona, policy, power, prompts, qqbot, r
 from .session_store import set_title as _set_title
 from .session_store import store
 from . import session_store
-from .session_store import SESSIONS_DIR as _sessions_dir
 from .tts import TTS
 from .stt import STT, STTError, record_supported
 from .tomlcfg import ConfigWriteError, write_config
 
 BASE_DIR = Path(__file__).resolve().parent
-# 配置写在新数据根（userdata/config.toml）；旧 server/config.toml 只读兼容
+# 配置在数据根（userdata/config.toml）；数据根不可用时 paths.data_dir 会直接报错
 CONFIG_PATH = paths.config_path()
-LEGACY_CONFIG_PATH = paths.legacy_config_path()
 STATIC_DIR = BASE_DIR / "static"
 
 # 安装目录（install.sh 会把代码放在这里，并写入 VERSION 文件）
@@ -58,17 +56,13 @@ def gen_token(length: int = 5) -> str:
 
 
 def load_config() -> dict:
-    src = paths.read_path(CONFIG_PATH, LEGACY_CONFIG_PATH)
-    if not src.exists():
+    if not CONFIG_PATH.exists():
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(BASE_DIR / "config.example.toml", CONFIG_PATH)
-        src = CONFIG_PATH
-    cfg = tomllib.loads(src.read_text(encoding="utf-8"))
-    # token 留空（用户手动清空）时补一个，并写回新配置文件方便查看
+    cfg = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    # token 留空（用户手动清空）时补一个，并写回配置文件方便查看
     if not cfg["server"].get("token"):
         token = gen_token()
-        # 读的是旧位置时先复制到新位置，之后的写入一律落在新数据根
-        paths.ensure_migrated(CONFIG_PATH, src)
         text = CONFIG_PATH.read_text(encoding="utf-8")
         text = re.sub(r'^token\s*=\s*""', f'token = "{token}"', text, count=1, flags=re.M)
         CONFIG_PATH.write_text(text, encoding="utf-8")
@@ -78,8 +72,6 @@ def load_config() -> dict:
 
 def update_config(updates: dict):
     """把 {section: {key: value}} 写回 config.toml（保留注释），并重载运行配置"""
-    # 配置还在旧位置时先搬到新数据根；旧文件保留，不删
-    paths.ensure_migrated(CONFIG_PATH, LEGACY_CONFIG_PATH)
     write_config(CONFIG_PATH, updates, apply=apply_config)
 
 
@@ -133,11 +125,6 @@ llm = LLMClient(
 llm.normalize()
 
 PERSONA = persona.load()
-# 老版本的人设写在 config.toml 的 [persona] 段，第一次启动时搬进 meidosoul.json，
-# 之后再改设置页，人设也只落 meidosoul.json，不再写 config.toml。
-# 迁移必须在 load_config 之后、拼 SYSTEM_PROMPT 之前。
-if persona.migrate_from_config(CFG.get("persona")):
-    PERSONA = persona.load()
 # 「截屏询问」的提示词模板。插件点按钮时会把这段连同当前画面发过来，
 # 所以模板本身放在配置里，用户可以在设置页随时改（例如换个问法、加一条自己的要求）。
 DEFAULT_ASK_TEMPLATE = (
@@ -765,8 +752,6 @@ except Exception:
 # 状态与落盘都在 session_store 里（store.current_sid / store.history / store.turn ...）。
 # 这里保留原来的名字，调用点不用改；但这些都是「读 store」的视图，不是第二份状态。
 
-SESSIONS_DIR = _sessions_dir
-
 
 # 会话文件的写入锁，见 session_store.SessionStore.lock
 _SESS_WRITE_LOCK = store.lock
@@ -1343,9 +1328,8 @@ def init_sessions():
             store.drop_compact(sid)
         # 上一轮回答被打断：把当时流式落盘的半截正文恢复成一条「回答中断」的消息，
         # 否则用户只看到自己的提问，像是回答凭空消失了。
-        # 半截正文现在在独立的副档案里（旧版本才存在主文件的 _streaming 字段，
-        # 这里仍然兜底读一次老格式，升级后第一次启动就能把老残留救回来）
-        partial = store.read_stream_side(sid) or data.pop("_streaming", None)
+        # 半截正文存在独立的副档案里。
+        partial = store.read_stream_side(sid)
         partial_text = (partial.get("text") or "").strip() if isinstance(partial, dict) else ""
         partial_parts = (partial.get("parts") or []) if isinstance(partial, dict) else []
         # 恢复门槛已取消：只要落盘过半个字，就恢复成一条「回答中断」的消息。
@@ -2694,8 +2678,6 @@ class ConfigUpdate(BaseModel):
     ask_template: str | None = None
     # 状态栏隐藏提示词：空字符串表示恢复默认（只影响 /api/status/line 的文风）
     status_prompt: str | None = None
-    # 更新源：mirror / github / mirror-only / github-only
-    update_source: str | None = None
     # 双源模式是否探测 GitHub（关掉就只用镜像）
     update_github_enable: bool | None = None
     # 跨屏键鼠接管：合并成单开关（设置页只展示这一项）、灵敏度、单次时长上限
@@ -2810,7 +2792,6 @@ async def api_get_config():
         "translate_template": TRANSLATE_TEMPLATE,
         "translate_template_default": DEFAULT_TRANSLATE_TEMPLATE,
         # 更新源：updater 从 config.toml 的 [update] 段读，缺省即默认值
-        "update_source": updater.update_cfg()["source"],
         "update_source_label": updater.source_label(),
         "update_mirror": updater.update_cfg()["mirror"],
         "update_github_enable": bool(updater.update_cfg().get("github_enable", True)),
@@ -3012,20 +2993,11 @@ async def api_set_config(req: ConfigUpdate):
             },
         })
         reload_persona()
-    if req.update_source in ("mirror", "github", "mirror-only", "github-only"):
-        # 只写 source；mirror / github_repo 的地址留给 [update] 段（一般不用改）
-        updates["update"] = {"source": req.update_source}
     if req.update_github_enable is not None:
         updates.setdefault("update", {})["github_enable"] = bool(req.update_github_enable)
     ri = {}
     if req.remote_input_enabled is not None:
-        value = bool(req.remote_input_enabled)
-        ri["enabled"] = value
-        # 单开关：旧的 bind_lan 只在老配置里还留着时同步一份镜像值。
-        # 这样回滚到旧版本时不会因为 enabled=true / bind_lan=false 又变回「只允许本机」，
-        # 新配置则不写这个键，文件里只保留 enabled。
-        if "bind_lan" in (CFG.get("remote_input") or {}):
-            ri["bind_lan"] = value
+        ri["enabled"] = bool(req.remote_input_enabled)
     if req.remote_input_sensitivity is not None:
         # 灵敏度夹在 0.5~3，太小指针几乎不动，太大一碰就飞出屏幕
         ri["sensitivity"] = max(0.5, min(3.0, float(req.remote_input_sensitivity)))
@@ -3183,7 +3155,6 @@ async def api_version():
     return {
         "version": VERSION,
         "repo": updater.REPO,
-        "update_source": updater.update_cfg()["source"],
         "update_source_label": updater.source_label(),
         "is_git": (INSTALL_DIR / ".git").exists(),
         "install_dir": str(INSTALL_DIR),
@@ -4292,12 +4263,6 @@ async def api_session_delete(sid: str):
                                  "sid": store.current_sid})
         await manager.broadcast({"type": "session_changed", "current": store.current_sid})
     return {"ok": True, "current": store.current_sid}
-
-
-# 旧接口兼容：新会话
-@app.post("/api/session/new", dependencies=[Depends(check_token)])
-async def api_new_session():
-    return await api_session_create()
 
 
 @app.post("/api/checkpoint", dependencies=[Depends(check_token)])
@@ -5905,8 +5870,7 @@ def _qq_public_config() -> dict:
         "text_log_path": cfg.text_log_path,
         "auto_launch_after_install": cfg.auto_launch_after_install,
         "auto_launch_wait_seconds": cfg.auto_launch_wait_seconds,
-        "archive_dir_default": str(qqbot.install_root() / qqbot.ARCHIVE_SUBDIR),
-        "archive_dir_fallback": str(Path(qqbot.FALLBACK_ARCHIVE_DIR).expanduser()),
+        "archive_dir_default": str(qqbot.archive_root("")),
         "rate_per_minute": cfg.rate_per_minute,
         "max_message_chars": cfg.max_message_chars,
         "reply_chunk_chars": cfg.reply_chunk_chars,

@@ -2711,9 +2711,8 @@
                      placeholder="留空则用默认归档目录" autocomplete="off" spellcheck="false">
               <div class="field-hint">
                 QQ 归档放在数据根下的 <b>userdata/meidobot/</b>（图片、inbox_index.jsonl、text_log.txt）。
-                <b>卸载不删</b>；安装目录不可写时自动回退到 ~/.local/share/deckmeido/meidobot/，
-                旧的 userdata/qq/ 仍可只读兼容。
-                并在日志与回复里标注 fallback。这里填路径可覆盖默认位置。
+                <b>卸载不删</b>；数据根不可写时直接报错，不会换到别的目录。
+                这里填路径可覆盖默认位置。
               </div>
             </div>
             <div class="field field-row">
@@ -2888,13 +2887,14 @@
           </div>
           <div class="card">
             <div class="card-title">更新源</div>
+            <div class="field field-row">
+              <label style="margin:0">同时探测 GitHub（关掉只用国内镜像）</label>
+              <label class="switch">
+                <input id="cfgUpdGithub" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
             <div class="field">
-              <select id="cfgUpdSource" class="cfg-select">
-                <option value="mirror">自动：镜像 + GitHub（取更高版本）</option>
-                <option value="github">自动：镜像 + GitHub（旧配置兼容）</option>
-                <option value="mirror-only">只用国内镜像</option>
-                <option value="github-only">只用 GitHub</option>
-              </select>
               <div class="field-hint" id="updSourceHint"></div>
             </div>
           </div>
@@ -7261,7 +7261,7 @@
   var updCheck = document.getElementById('updCheck');
   var updNote = document.getElementById('updNote');
   var updApply = document.getElementById('updApply');
-  var cfgUpdSource = document.getElementById('cfgUpdSource');
+  var cfgUpdGithub = document.getElementById('cfgUpdGithub');
   var updSourceHint = document.getElementById('updSourceHint');
   // 跨屏接管设置（单开关：开 = 允许局域网接管）
   var cfgRiEnabled = document.getElementById('cfgRiEnabled');
@@ -7496,8 +7496,8 @@
         document.getElementById('cfgPersonaForbid').value = c.persona_forbid || '';
         cfgToken.value = c.token || '';
         cfgUrl.value = location.origin + '/?token=' + encodeURIComponent(c.token || '');
-        // 更新源：老配置没有 [update] 段时后端按默认值回传
-        cfgUpdSource.value = c.update_source || 'mirror';
+        // 更新源：双源探测，这里只控制是否同时查 GitHub
+        cfgUpdGithub.checked = c.update_github_enable !== false;
         ddRefreshAll();
         updSourceHint.textContent = c.update_mirror ? '镜像地址：' + c.update_mirror : '';
         // 没配 Key 时直接把设置页顶到最显眼的位置当首次引导
@@ -7857,7 +7857,7 @@
       persona_ending: document.getElementById('cfgPersonaEnding').value,
       persona_suffix: document.getElementById('cfgPersonaSuffix').value,
       persona_forbid: document.getElementById('cfgPersonaForbid').value,
-      update_source: cfgUpdSource.value,
+      update_github_enable: !!cfgUpdGithub.checked,
       remote_input_enabled: !!cfgRiEnabled.checked,
       remote_input_sensitivity: Number(cfgRiSens.value) || 1.5,
       remote_input_max_minutes: parseInt(cfgRiMax.value, 10) || 30
@@ -8390,7 +8390,6 @@
 
   var RI_ERR_TEXT = {
     RI_DISABLED: '跨屏接管没有开启，已打开设置页：把「允许局域网设备接管」打开并保存，再点 logo',
-    RI_LOCAL_ONLY: '旧配置里 bind_lan = false，本机以外的设备仍被拒绝；请在设置里重新打开总开关并保存',
     RI_UNAUTHORIZED: '访问令牌已失效，请重新登录',
     RI_BUSY: '已经有人在接管这台 Deck 了',
     RI_NO_YDOTOOL: 'Deck 上没有可用的按键注入服务（ydotoold 未运行）',
@@ -9264,13 +9263,13 @@
     refreshLabel();
   }
   function ddInitAll() {
-    [['permSelect'], ['modelSelect'], ['modelCapsSelect'], ['memKind'], ['cfgPerm'], ['cfgUpdSource']]
+    [['permSelect'], ['modelSelect'], ['modelCapsSelect'], ['memKind'], ['cfgPerm']]
       .forEach(function (id) { ddSelect(document.getElementById(id)); });
   }
   // config/模型列表异步加载后，select.value 被恢复但 label 没跟着变，
   // 强刷会导致下拉框显示第一个选项。这里统一按各自 value 刷新一次 label
   function ddRefreshAll() {
-    ['permSelect', 'modelSelect', 'modelCapsSelect', 'memKind', 'cfgPerm', 'cfgUpdSource']
+    ['permSelect', 'modelSelect', 'modelCapsSelect', 'memKind', 'cfgPerm']
       .forEach(function (id) {
         var el = document.getElementById(id);
         if (el && el._dd && el._dd.refresh) el._dd.refresh();

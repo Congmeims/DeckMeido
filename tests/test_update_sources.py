@@ -13,7 +13,6 @@ from server import updater
 
 def _cfg(**over) -> dict:
     cfg = {
-        "source": "mirror",
         "mirror": "https://mirror.test/deckmeido",
         "github_repo": "example/deckmeido",
         "github_enable": True,
@@ -105,24 +104,6 @@ class DualSourcePickTest(unittest.TestCase):
         info = _run(lambda _m: _release("mirror", "0.6.10"), never, cfg)
         self.assertEqual(info["source_used"], "mirror")
         self.assertFalse(info["github_reachable"])
-
-    def test_legacy_mirror_only(self):
-        cfg = _cfg(source="mirror-only")
-
-        def never(_r):
-            raise AssertionError("mirror-only 不应探测 GitHub")
-
-        info = _run(lambda _m: _release("mirror", "0.6.10"), never, cfg)
-        self.assertEqual(info["tag"], "0.6.10")
-
-    def test_legacy_github_only(self):
-        cfg = _cfg(source="github-only")
-
-        def never(_m):
-            raise AssertionError("github-only 不应探测镜像")
-
-        info = _run(never, lambda _r: _release("github", "0.6.10"), cfg)
-        self.assertEqual(info["source_used"], "github")
 
 
 class GithubReleaseParseTest(unittest.TestCase):
