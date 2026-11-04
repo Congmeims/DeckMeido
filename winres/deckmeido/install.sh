@@ -11,7 +11,7 @@
 #   bash install.sh check          自检：逐个实测控制类控件是否真的能用
 #   bash install.sh uninstall     卸载（删代码与依赖，保留人设/记忆，下次安装自动恢复）
 #   bash install.sh uninstall --purge   额外删安装器创建的配置备份（userdata/ 仍保留）
-#   bash install.sh service       生成 systemd 用户单元（默认不装，后端由客户端拉起）
+#   bash install.sh service       渲染 systemd 用户单元（只生成不启用，后端由客户端拉起）
 #   bash install.sh from-mirror   从国内镜像站下载最新版并安装（GitHub 不通时用）
 #   bash install.sh speedtest     只测各 pip 源的下载速率，挑最快的那个
 #
@@ -40,10 +40,9 @@
 #   DECKMEIDO_MIRROR     镜像站目录，默认 https://meido.meagames.cn/deckmeido
 #   DECKMEIDO_PIP_INDEX  pip 源；留空则实测各源下载速率，自动用最快的那个
 #   DECKMEIDO_SKIP_GUI   设为 1 则跳过 PySide6（只要网页版 / 后端时用）
-#   DECKMEIDO_UPDATE_SOURCE  写进配置的更新源：mirror / github / mirror-only / github-only
 #
-# 注意：不要用 sudo 执行。脚本会把程序装到当前用户家目录、注册用户级服务，
-#       用 root 装会装到 /root 并注册到 root 名下，桌面会话里起不来。
+# 注意：不要用 sudo 执行。脚本会把程序装到当前用户家目录、注册用户级桌面项，
+#       用 root 装会装到 /root 下，桌面会话里起不来；也不注册开机自启服务。
 #
 # 2026-11-04 事故：卸载验证误把源码工作区当安装目录，rm -rf 清空了整个仓库（含
 # .git）。此后卸载/清理必须先过 safe_rm_target，拒绝源码工作区与危险路径。
@@ -53,8 +52,8 @@
 # 绝不 rmdir），userdata/ 永远保留。
 # 用户可修改数据统一放 <安装目录>/userdata（可用 DECKMEIDO_DATA_DIR 覆盖）：
 # config.toml、persona/meidosoul.json、memory.json、sessions/、uploads/、
-# meidobot/。只保留这一套标准布局；升级同步排除整个 userdata/，卸载按清单
-# 删除代码、userdata/ 整目录保留。
+# meidobot/、models/sensevoice/、logs/、core.stopped。只保留这一套标准布局；
+# 升级同步排除整个 userdata/，卸载按清单删除代码、userdata/ 整目录保留。
 set -euo pipefail
 
 APP=deckmeido
@@ -96,6 +95,8 @@ DATA_MEMORY="$DATA_DIR/memory.json"
 DATA_SESSIONS="$DATA_DIR/sessions"        # 会话目录固定叫 sessions（复数）
 DATA_UPLOADS="$DATA_DIR/uploads"
 DATA_BOT="$DATA_DIR/meidobot"             # meidobot（QQ）通道归档
+DATA_LOGS="$DATA_DIR/logs"                # backend.log / overlay.log / client-crash.log
+DATA_MODELS="$DATA_DIR/models"            # 语音识别模型（sensevoice/）
 
 # 是否通过「curl | sh -」管道执行。管道执行时脚本不在磁盘上，$BASH_SOURCE[0]
 # 不是真实文件，sync_files 依赖的 $HERE/* 会指向错误位置；此时自动走
@@ -1479,15 +1480,14 @@ progress_bar() {
 # ---------- 数据目录 ----------
 # 数据根权限：userdata 及子目录 0700，配置 0600（Linux 凭据不外泄）
 ensure_data_layout() {
-  ( umask 077; mkdir -p "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" ) 2>/dev/null || true
-  chmod 700 "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" 2>/dev/null || true
+  ( umask 077; mkdir -p "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" "$DATA_LOGS" "$DATA_MODELS" ) 2>/dev/null || true
+  chmod 700 "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" "$DATA_LOGS" "$DATA_MODELS" 2>/dev/null || true
 }
 
 # 首次安装生成 config.toml；已有则原样保留
 prepare_config() {
   ensure_data_layout
   local cfg="$DATA_CONFIG"
-  local src="${DECKMEIDO_UPDATE_SOURCE:-mirror}"
   if [ -f "$cfg" ]; then
     info "保留已有配置 $cfg"
     # 老配置没有 [update] 段：补上，并写入当前脚本用的镜像地址，
@@ -1497,7 +1497,6 @@ prepare_config() {
         echo ""
         echo "# 更新源（网页「设置 → 关于」可改）"
         echo "[update]"
-        echo "source = \"$src\""
         echo "mirror = \"$MIRROR\""
         echo "github_repo = \"$GITHUB_REPO\""
       } >> "$cfg"
@@ -1505,15 +1504,6 @@ prepare_config() {
     fi
   else
     cp "$INSTALL_DIR/server/config.example.toml" "$cfg"
-    if [ "$src" != "mirror" ]; then
-      # 只改 [update] 段里的那一行，别的地方不动
-      awk -v v="$src" '
-        /^\[update\]/ { inu = 1; print; next }
-        /^\[/        { inu = 0 }
-        inu && /^source *=/ { print "source = \"" v "\""; next }
-        { print }
-      ' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
-    fi
     info "生成配置 $cfg"
   fi
   # 不论新旧，配置里都可能有令牌，统一收紧到 0600
