@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""一键发版：打 tar.gz + 插件 zip + latest.json，并上传到镜像站。
+"""本地发版构建：打 tar.gz + 插件 zip + latest.json，不在任何地方上传。
 
 用法（仓库根目录）：
-    python tools/release.py 0.4.1
+    python tools/release.py 0.6.6
 不带版本号时读 plugin/package.json 的 version。
 
-产物写到 dist/，只打包不上传；
-上传镜像站用 tools/deploy_all.py。
+产物只写到 dist/。发版剩下的步骤是人工的：
+  1. 把 dist/ 里的产物同步进 winres/deckmeido/ 并提交；
+  2. 用 gh release 把 tar.gz / 插件 zip / sha256 / latest.json / install.sh
+     作为资产传到 GitHub。
 """
 import hashlib
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -230,31 +231,20 @@ def main():
     print(f"    {tar.name} {tar.stat().st_size // 1024} KB")
     print(f"    {z.name} {z.stat().st_size // 1024} KB")
 
-    # 发之前先查一遍包里有没有账号密码，命中就不上传
+    # 出包前先查一遍包里有没有账号密码，命中就不出包
     print("==> 凭据检查")
     audit = subprocess.run(
         [sys.executable, str(ROOT / "tools" / "audit_release.py"), ver],
         cwd=ROOT, text=True, encoding="utf-8",
     )
     if audit.returncode != 0:
-        sys.exit("发布包里有疑似凭据，已中止上传（见上面的列表）")
+        sys.exit("发布包里有疑似凭据，已中止本次发布（见上面的列表）")
 
     print("==> 打包完成")
     print(f"    {tar}")
     print(f"    {z}")
-    print("    产物在 dist/，官网镜像站走 tools/deploy_all.py 上传")
-
-    print("==> 核对线上版本")
-    try:
-        import urllib.request
-        with urllib.request.urlopen(
-            "https://meido.meagames.cn/deckmeido/latest.json?t=" + str(int(datetime.now().timestamp())),
-            timeout=20,
-        ) as r:
-            tag = json.loads(r.read().decode("utf-8")).get("tag")
-        print(f"    线上 tag = {tag}" + ("  OK" if tag == ver else "  ← 不一致，检查 CDN 缓存"))
-    except Exception as exc:
-        print(f"    核对失败（不影响发布）：{exc}")
+    print("    产物只在 dist/，没有上传步骤")
+    print("    下一步：同步 dist/ 到 winres/deckmeido/ 并提交，再用 gh release 上传资产")
 
 
 if __name__ == "__main__":

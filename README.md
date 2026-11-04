@@ -148,10 +148,17 @@ deckmeido/
 ├── assets/             图标与来源图（icon-src/）
 ├── deploy/             桌面快捷方式模板、systemd 单元、离线依赖（按需生成）
 ├── website/            官网静态页
-└── tools/              发版打包、部署、证书与依赖抓取等仓库脚本（不进发布包）
+└── tools/              发版打包、证书与依赖抓取等维护脚本（不进发布包）
 ```
 
 发布包是 `dist/deckmeido-<版本>.tar.gz`，插件单独打成 `dist/deckmeido-plugin-<版本>.zip`（顶层 `DeckMeido/` 文件夹，Decky 商店 / 本地安装都能直接用）。
+
+## 发版（维护者）
+
+1. 升版本号：`plugin/package.json`、`plugin/package-lock.json`（两处）、`plugin/main.py` 的 `_PLUGIN_VERSION`；再 `cd plugin && npm run build`。
+2. 本地构建：仓库根目录执行 `python tools/release.py`（不带参数时读 `plugin/package.json` 的版本）。**产物只写到 `dist/`，脚本不联网上传、也不往桌面复制。**
+3. 把 `dist/` 里的新产物同步进 `winres/deckmeido/`（tar.gz + 插件 zip + 各自 `.sha256` + `latest.json` + `install.sh` + `SHA256SUMS`），提交这次发布。
+4. 打 tag 后用 `gh release create` 上传资产：`deckmeido-<版本>.tar.gz`、`deckmeido-plugin-<版本>.zip`、两个 `.sha256`、`latest.json`、`install.sh`。
 
 ## 常见问题
 
