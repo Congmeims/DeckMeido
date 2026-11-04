@@ -1296,6 +1296,20 @@ install_plugin() {
     [ -n "$PLUGIN_SKIP_REASON" ] || dim "想用游戏模式面板，先装 Decky Loader，再跑：bash $INSTALL_DIR/plugin/deploy.sh"
     return 0
   fi
+  # 内联升级（updater.py 用 start_new_session + stdin=/dev/null 拉起本脚本）
+  # 拿不到终端，ask_yes 永远回答「不」，插件就被静默跳过、版本停在旧的。
+  # 这类无人值守的升级必须自动装：用户既然装过插件，升级时就该跟着换。
+  if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
+    info "非交互升级：自动更新 Decky 插件"
+    if plugin_install_zip; then
+      local ver
+      ver="$(plugin_installed_version)" && info "插件已安装 v${ver}"
+      plugin_reload || true
+    else
+      warn "插件自动更新失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
+    fi
+    return 0
+  fi
   # 检测到 Decky，但装不装让用户定：插件要写进 ~/homebrew/plugins，属于系统级改动
   if ask_yes "检测到 Decky Loader，现在就在游戏模式里装上 QAM 面板吗？"; then
     info "安装 QAM 插件（zip 解包，不使用软链接）"
@@ -1303,6 +1317,8 @@ install_plugin() {
     # 插件目录自洽，删掉安装目录也不影响它加载。
     # deploy.sh 保留给「装完还想重新解一次」的场景，这里不再走它。
     if plugin_install_zip; then
+      local ver
+      ver="$(plugin_installed_version)" && info "插件已安装 v${ver}"
       dim "插件已就绪，到 设置 → Decky Loader 点「重新载入」即可在 QAM 里看到"
     else
       warn "插件安装失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
@@ -1339,6 +1355,31 @@ plugin_install_zip() {
     return 1
   fi
   return 0
+}
+
+# 已安装插件的版本号：解包后写进日志，升没升上去一眼能看出来
+plugin_installed_version() {
+  local p="${DECKY_PLUGINS_DIR:-$HOME/homebrew/plugins}/DeckMeido/package.json"
+  [ -f "$p" ] || return 1
+  sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$p" | head -n1
+}
+
+# 重载 Decky：插件是启动时一次性 import 的，换了磁盘上的文件不重载还是旧代码
+plugin_reload() {
+  if ! command -v systemctl >/dev/null 2>&1; then
+    dim "没有 systemctl，重启游戏模式后插件才会用上新版本"
+    return 1
+  fi
+  local unit
+  unit="$(systemctl list-unit-files 2>/dev/null |
+    sed -nE 's/^((decky|plugin_loader)[^[:space:]]*\.service).*/\1/p' | head -n1)"
+  if [ -n "$unit" ] && { sudo -n systemctl restart "$unit" 2>/dev/null ||
+      systemctl restart "$unit" 2>/dev/null; }; then
+    info "已重载 Decky（$unit），新插件版本已生效"
+    return 0
+  fi
+  dim "请在 设置 → Decky Loader 点「重新载入」使新插件生效"
+  return 1
 }
 
 # 用户跳过插件安装时，把发布包里的插件 zip 复制到工作区，并说明手动安装流程。
