@@ -26,12 +26,10 @@ INTENT_TTL = 600.0
 # 不能一概当成电源命令；具体的电源判定见 _segment_action。
 POWER_ACTIONS = {"reboot", "poweroff", "halt", "shutdown", "restart", "kexec"}
 
-# 只读会话（QQ 群聊里的普通成员）允许调用的工具：全是纯查询 / 看图 / 提问，
-# 不碰设备也不改文件。不在名单里的一律拒绝
-READONLY_TOOLS = {
-    "get_weather", "web_search", "find_game", "list_installed_games",
-    "list_emulator_roms", "screenshot", "list_dir", "read_file", "ask_user",
-}
+# 只读会话（QQ 群聊里的普通成员）允许调用的工具。
+# 群友那一轮是「纯闲聊」：零工具，连截图/读文件都不给（见 classify_remote_tool
+# 与 guest 轮次），所以这里刻意收成空集，防止只读白名单被当成后门。
+READONLY_TOOLS: set[str] = set()
 
 # systemctl restart 指向这些 unit 时等同于重启/关机，必须继续拦截
 _POWER_UNIT_RE = re.compile(
@@ -265,6 +263,178 @@ def risky_action(name: str, args: dict) -> str | None:
 
 def is_power_command(name: str, args: dict) -> bool:
     return name == "run_command" and bool(power_action(str((args or {}).get("command") or "")))
+
+
+# ---------- 三档远程风险（只作用于 QQ 远程；本机 remote=False 不变） ----------
+
+@dataclass(frozen=True)
+class RiskDecision:
+    level: str          # deny / hard_confirm / normal
+    rule: str = ""
+    reason: str = ""
+
+
+REMOTE_NORMAL = RiskDecision("normal")
+
+
+def _R(**kw) -> RiskDecision:
+    return RiskDecision(**kw)
+
+
+# token 边界：避免把 "charm" 里的 rm、"screenshot" 里的 shot 当成命令
+def _tok(word: str) -> str:
+    return rf"(?<![\w.-]){word}(?![\w.-])"
+
+
+# 高危：直接拒绝，不生成挂起（写错了没有回头路）
+_DENY_RULES: tuple[tuple[str, str, str], ...] = (
+    ("rm", r"(?:(?<=[\s;&|(`/])|^)rm(?![\w.-])",
+     "删除命令（rm）在 QQ 远程一律拒绝"),
+    ("rmdir_recursive", _tok("rmdir") + r"[^\n]*(?:-p|--parents)",
+     "rmdir 递归删除在 QQ 远程一律拒绝"),
+    ("shred", _tok("shred") + r"(?=\s|$)", "shred 会不可恢复地擦除文件"),
+    ("dd", _tok("dd") + r"(?=\s|$)", "dd 直接写块设备，风险不可控"),
+    ("mkfs", _tok(r"mkfs(?:\.\w+)?") + r"(?=\s|$)", "格式化文件系统"),
+    ("mke2fs", _tok("mke2fs") + r"(?=\s|$)", "格式化文件系统"),
+    ("wipefs", _tok("wipefs") + r"(?=\s|$)", "擦除文件系统签名"),
+    ("fdisk_write", _tok("fdisk") + r"(?!\s+(?:-l|--list)(?:\s|$))",
+     "fdisk 分区写操作"),
+    ("parted_write", _tok("parted") + r"[^\n]*\b(?:mkpart|mklabel|rm|resizepart|set)\b",
+     "parted 分区写操作"),
+    ("copy_to_dev", r"\b(?:mv|cp)\b[^\n]*\s/dev/", "把文件复制/移动到 /dev"),
+    ("redirect_dev", r">>?\s*/dev/(?:sd|nvme|mmcblk)", "重定向写入块设备"),
+    ("fork_bomb", r":\s*\(\s*\)\s*\{[^\n]*\|[^\n]*&\s*\}", "fork bomb"),
+    ("chmod_root", r"chmod\s+-[A-Za-z]*R[A-Za-z]*\s+777\s+/", "chmod -R 777 /"),
+    ("find_root_delete", r"find\s+/(?:\s|$)[^\n]*-delete", "find / -delete"),
+    ("critical_file", r"(?:>>?|tee|cp|mv|install|truncate|chmod|chown|ln)\s+"
+                      r"[^\n]*(?:/etc/(?:passwd|shadow|gshadow|sudoers)|"
+                      r"/boot(?:/|\s|$)|(?:~|/home/[^/\s]+)?/\.ssh(?:/|\s|$))",
+     "写系统关键文件（/etc/passwd、/boot、~/.ssh 等）"),
+    ("systemctl_critical", r"systemctl\s+(?:stop|disable|mask)\s+"
+                           r"(?:ssh|sshd|network|NetworkManager|systemd-logind|"
+                           r"dbus|display-manager|gdm|sddm|steam|gamescope)",
+     "停用/屏蔽关键系统服务"),
+    ("history_clear", _tok("history") + r"\s+-c(?:\s|$)", "清空命令历史"),
+)
+
+# 高危但可确认：必须回「确认执行」
+_HARD_RULES: tuple[tuple[str, str, str], ...] = (
+    ("sudo", r"(?:(?<=[\s;&|(`])|^)(?:sudo|doas)(?=\s)",
+     "sudo/doas 提权"),
+    ("pipe_to_shell", r"(?:curl|wget)[^\n|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|fish)",
+     "把网络内容直接管道给 shell"),
+    ("shell_c_remote", r"(?:sh|bash|zsh)\s+-c\s+[^\n]*(?:curl|wget|base64\s+-d)",
+     "在子 shell 里执行远程内容"),
+    ("eval_remote", r"\b(?:eval|exec)\b[^\n]*(?:curl|wget|\$\()",
+     "eval/exec 执行远程内容"),
+    ("base64_pipe", r"base64\s+(?:-d|--decode)[^\n|]*\|\s*(?:sh|bash|zsh)",
+     "base64 解码后管道给 shell"),
+    ("write_etc_usr", r"(?:>>?|tee|cp|mv|install|chmod|chown|ln|rm)\s+"
+                      r"[^\n]*(?<![\w])/(?:etc|usr)(?:/|\s|$)",
+     "写入 /etc 或 /usr"),
+    ("pkg_install", r"\b(?:apt|apt-get|dnf|yum|zypper)\b[^\n]*"
+                    r"\b(?:install|remove|purge|erase|upgrade|dist-upgrade)\b",
+     "包管理器安装/卸载"),
+    ("pacman", r"\b(?:pacman|paru|yay)\b[^\n]*\s-(?:S|R|U|Sy|Syu|Rs|Rns)\b",
+     "pacman 安装/卸载"),
+    ("pip_install", r"\b(?:pip|pip3)\b[^\n]*(?:install|uninstall)", "pip 安装/卸载"),
+    ("npm_global", r"\bnpm\s+(?:install|i)\b[^\n]*(?:\s-g\b|--global)",
+     "npm 全局安装"),
+    ("crontab_edit", r"\bcrontab\b\s+(?!-l(?:\s|$))", "修改 crontab"),
+    ("systemctl_restart", r"systemctl\s+restart\s+(?!reboot|poweroff|halt|shutdown|kexec)\S",
+     "重启非电源服务"),
+    ("chmod_exec", r"chmod\s+\+x\s+(\S+)[^\n]*(?:&&|;|\n)\s*(?:\./|/)\S+",
+     "chmod +x 后立即执行"),
+    ("clone_exec", r"git\s+clone[^\n]*(?:&&|;)[^\n]*(?:\./|bash|sh|make|npm|pip)",
+     "git clone 后立即执行"),
+)
+
+
+def _segments_simple(cmd: str) -> list[str]:
+    """按 ; && || 与换行切段，够用来判断每条子命令（不做完整 shell 解析）"""
+    return [p.strip() for p in re.split(r"(?:&&|\|\||;|\n)", cmd or "") if p.strip()]
+
+
+def _match_rules(cmd: str, rules) -> RiskDecision | None:
+    for rule, pattern, reason in rules:
+        if re.search(pattern, cmd, re.IGNORECASE):
+            level = "deny" if rules is _DENY_RULES else "hard_confirm"
+            return RiskDecision(level, rule, reason)
+    return None
+
+
+def classify_remote_command(cmd: str, depth: int = 0) -> RiskDecision:
+    """把一条 QQ 远程命令分成 deny / hard_confirm / normal 三档。
+
+    规则按 token 边界匹配，不用「包含子串」，避免把聊天里的字误判成命令。
+    嵌套的 bash -c / sh -c 会递归看里层（最多 3 层）。
+    """
+    text = str(cmd or "").strip()
+    if not text:
+        return REMOTE_NORMAL
+    # 分段后逐段判，避免 "echo rm" 里的 rm 单独一行也能被抓到；
+    # 整段匹配则能覆盖 "sudo rm -rf /" 这类组合
+    for seg in [text] + _segments_simple(text):
+        hit = _match_rules(seg, _DENY_RULES)
+        if hit:
+            return hit
+    for seg in [text] + _segments_simple(text):
+        hit = _match_rules(seg, _HARD_RULES)
+        if hit:
+            return hit
+    if depth < 3:
+        for inner in re.findall(
+                r"(?:sh|bash|zsh)\s+-c\s+[\"']([^\"']+)[\"']", text, re.IGNORECASE):
+            nested = classify_remote_command(inner, depth + 1)
+            if nested.level != "normal":
+                return nested
+        for inner in re.findall(r"\$\(([^)]+)\)", text):
+            nested = classify_remote_command(inner, depth + 1)
+            if nested.level != "normal":
+                return nested
+    return REMOTE_NORMAL
+
+
+def _classify_path(path: str) -> RiskDecision:
+    p = str(path or "").strip()
+    if not p:
+        return REMOTE_NORMAL
+    p = p.replace("\\", "/")
+    if re.search(r"/etc/(?:passwd|shadow|gshadow|sudoers)(?:$|/)", p):
+        return _R(level="deny", rule="critical_file", reason="写系统关键文件")
+    if p.startswith("/boot") or "/.ssh" in p or p.startswith("/dev/") or "~/.ssh" in p:
+        return _R(level="deny", rule="critical_path", reason="写 /boot、~/.ssh 或 /dev")
+    if p.startswith("/etc/") or p.startswith("/usr/"):
+        return _R(level="hard_confirm", rule="write_etc_usr", reason="写 /etc 或 /usr")
+    return REMOTE_NORMAL
+
+
+def classify_remote_tool(name: str, args: dict, remote: bool = True) -> RiskDecision:
+    """QQ 远程的工具风险：文件写入统一走路径判定，命令走 classify_remote_command"""
+    if not remote:
+        return REMOTE_NORMAL
+    name = str(name or "")
+    args = args or {}
+    if name == "run_command":
+        return classify_remote_command(str(args.get("command") or ""))
+    if name in ("write_file", "edit_file"):
+        return _classify_path(str(args.get("path") or args.get("file") or ""))
+    if name == "install_game":
+        return _R(level="hard_confirm", rule="install_game", reason="远程安装游戏")
+    if name == "self_update":
+        return _R(level="hard_confirm", rule="self_update", reason="远程自更新会替换程序")
+    return REMOTE_NORMAL
+
+
+_HARD_CONFIRM_RE = re.compile(r"^确认执行[。！!.]?$")
+
+
+def is_hard_confirm(text: str) -> bool:
+    return bool(_HARD_CONFIRM_RE.match((text or "").strip()))
+
+
+def is_soft_confirm(text: str) -> bool:
+    return bool(_CONFIRM_RE.match((text or "").strip()))
 
 
 def blocks_in_locked_shot(name: str, args: dict) -> bool:
