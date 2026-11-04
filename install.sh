@@ -44,6 +44,9 @@
 #
 # 注意：不要用 sudo 执行。脚本会把程序装到当前用户家目录、注册用户级服务，
 #       用 root 装会装到 /root 并注册到 root 名下，桌面会话里起不来。
+#
+# 2026-11-04 事故：卸载验证误把源码工作区当安装目录，rm -rf 清空了整个仓库（含
+# .git）。此后卸载/清理必须先过 safe_rm_target，拒绝源码工作区与危险路径。
 set -euo pipefail
 
 APP=deckmeido
@@ -85,6 +88,76 @@ die()  { printf '%s[x]%s %s\n' "$C_ERR" "$C_END" "$*" >&2; exit 1; }
 dim()  { printf '%s    %s%s\n' "$C_DIM" "$*" "$C_END"; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+# ---------- 删除守卫 ----------
+# 2026-11-04 事故：卸载验证把源码工作区当成安装目录，一条 rm -rf 清空了整个仓库
+#（含 .git）。之后所有删除动作都必须先过 safe_rm_target：
+#   · 目标是源码工作区（含 .git）、或就是本脚本所在目录、或是它的上级 → 拒绝
+#   · 目标是空、/、$HOME、或路径层级过浅 → 拒绝
+#   · 真机确需强删时显式设置 DECKMEIDO_ALLOW_UNSAFE_UNINSTALL=1
+safe_rm_target() {
+  local target="${1:-}" abs depth
+  if [ "${DECKMEIDO_ALLOW_UNSAFE_UNINSTALL:-0}" = "1" ]; then
+    echo "[删除守卫] 已按 DECKMEIDO_ALLOW_UNSAFE_UNINSTALL=1 放行：$target"
+    return 0
+  fi
+  if [ -z "$target" ]; then
+    echo "[删除守卫] 拒绝：删除目标是空字符串" >&2
+    return 1
+  fi
+  if [ "$target" = "/" ]; then
+    echo "[删除守卫] 拒绝：删除目标是 /" >&2
+    return 1
+  fi
+  target="${target%/}"
+  case "$target" in
+    "~"*) target="$HOME/${target#\~/}" ;;
+  esac
+  # 解析成绝对路径；父目录不存在时保留原样（真实删除会失败，不会误删）
+  if abs="$(cd -P "$(dirname "$target")" 2>/dev/null && pwd)/$(basename "$target")"; then
+    :
+  else
+    abs="$target"
+  fi
+  abs="${abs%/}"
+  case "$abs" in
+    ""|"/"|"$HOME"|"$HOME/")
+      echo "[删除守卫] 拒绝：目标是空、/ 或家目录（$abs）" >&2
+      return 1
+      ;;
+  esac
+  depth="$(printf '%s' "$abs" | awk -F/ '{print NF-1}')"
+  if [ "${depth:-0}" -lt 3 ]; then
+    echo "[删除守卫] 拒绝：路径层级过浅（$abs）" >&2
+    return 1
+  fi
+  if [ "$abs" = "$HERE" ]; then
+    echo "[删除守卫] 拒绝：目标就是脚本所在目录（源码工作区）" >&2
+    return 1
+  fi
+  if [ -d "$abs/.git" ] || [ -f "$abs/.git" ]; then
+    echo "[删除守卫] 拒绝：目标是 Git 源码工作区（$abs）" >&2
+    return 1
+  fi
+  case "$HERE/" in
+    "$abs"/*)
+      echo "[删除守卫] 拒绝：目标是脚本所在目录的上级（$abs）" >&2
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+# 守卫 + 打印具体目标 + 真正删除；任何一步失败都以非 0 退出
+remove_tree() {
+  local target="${1:-}"
+  if ! safe_rm_target "$target"; then
+    die "拒绝删除：$target（疑似源码工作区或危险路径）"
+  fi
+  echo "[删除] $target"
+  rm -rf -- "$target"
+}
+
 
 # ---------- 文本宽度 ----------
 # 终端里中文占 2 列，按字符数排版框线一定会歪，这里按显示宽度算。
@@ -1346,6 +1419,8 @@ plugin_install_zip() {
   sudo -n mkdir -p "$target" 2>/dev/null ||
     sudo mkdir -p "$target" 2>/dev/null || { dim "建不动 $target"; return 1; }
   # 清旧文件再解：zip 里没有的旧文件（改过名的模块）留着会让 Decky 加载到过期代码
+  safe_rm_target "$target" || { dim "拒绝清理插件目录（$target）"; return 1; }
+  echo "[删除] $target"
   sudo rm -rf "$target" 2>/dev/null || true
   sudo mkdir -p "$target" || return 1
   sudo unzip -oq "$src" -d "$root" || return 1
@@ -1443,6 +1518,25 @@ DESKTOP_FOLDER="$(command -v xdg-user-dir >/dev/null 2>&1 && xdg-user-dir DESKTO
 [ -n "$DESKTOP_FOLDER" ] && [ "$DESKTOP_FOLDER" != "$HOME" ] || DESKTOP_FOLDER="$HOME/Desktop"
 [ "$(id -u)" = "0" ] && { echo "不要用 sudo 运行"; exit 1; }
 
+# 2026-11-04 事故：卸载脚本误把源码工作区当安装目录删了。这里同样加删除守卫：
+# 含 .git / 就是脚本所在目录 / 空 / / / 家目录 / 路径过浅 一律拒绝。
+guard_target() {
+  local t="${1:-}"
+  [ "${DECKMEIDO_ALLOW_UNSAFE_UNINSTALL:-0}" = "1" ] && return 0
+  [ -n "$t" ] && [ "$t" != "/" ] && [ "$t" != "$HOME" ] && [ "$t" != "$HOME/" ] || return 1
+  t="${t%/}"
+  [ "$(printf '%s' "$t" | awk -F/ '{print NF-1}')" -ge 3 ] || return 1
+  [ ! -d "$t/.git" ] || return 1
+  [ "$t" != "$HERE" ] || return 1
+  case "$HERE/" in "$t"/*) return 1 ;; esac
+  return 0
+}
+safe_rm() {
+  guard_target "$1" || { echo "[删除守卫] 拒绝：$1（疑似源码工作区或危险路径）" >&2; exit 1; }
+  echo "[删除] $1"
+  rm -rf -- "$1"
+}
+
 # 先取消正在跑的任务，再关进程
 if command -v curl >/dev/null 2>&1 && [ -f "$HERE/server/config.toml" ]; then
   TOK="$(grep -oP '^token\s*=\s*"\K[^"]*' "$HERE/server/config.toml" 2>/dev/null | head -n1 || true)"
@@ -1463,8 +1557,9 @@ if [ "${1:-}" = "--purge" ]; then
   WS="$(grep -oP '^\s*workspace\s*=\s*"\K[^"]*' "$HERE/server/config.toml" 2>/dev/null | head -n1 || true)"
   [ -n "$WS" ] || WS="${DECKMEIDO_WORKSPACE:-$HOME/${APP}_workspace}"
   case "$WS" in "~"/*) WS="$HOME/${WS#\~/}" ;; /*) ;; *) WS="$HOME/$WS" ;; esac
-  rm -rf "$CONFIG_DIR"
-  case "$WS" in ""|"/"|"$HOME") echo "工作区路径异常（$WS），跳过删除" ;; *) rm -rf "$WS" ;; esac
+  safe_rm "$CONFIG_DIR" || exit 1
+  if guard_target "$WS"; then safe_rm "$WS" || exit 1
+  else echo "工作区路径异常（$WS），跳过删除"; fi
 else
   # 普通卸载：把人设和记忆搬到 ~/.config/deckmeido/，下次安装恢复
   mkdir -p "$CONFIG_DIR"
@@ -1472,8 +1567,20 @@ else
     [ -f "$HERE/server/$f" ] && cp -f "$HERE/server/$f" "$CONFIG_DIR/$f" 2>/dev/null
   done
 fi
-# 真正删掉整个安装目录（含代码、venv、会话）
-rm -rf "$HERE"
+# 真正删掉整个安装目录（含代码、venv、会话）；userdata/ 里的 QQ 归档保留
+if [ -d "$HERE" ]; then
+  guard_target "$HERE" || { echo "[删除守卫] 拒绝：$HERE（疑似源码工作区或危险路径）" >&2; exit 1; }
+  for entry in "$HERE"/* "$HERE"/.[!.]* "$HERE"/..?*; do
+    [ -e "$entry" ] || continue
+    [ "$entry" = "$HERE/userdata" ] && continue
+    echo "[删除] $entry"
+    rm -rf -- "$entry"
+  done
+fi
+KEPT="$HERE/userdata/qq"
+if [ -d "$KEPT" ]; then
+  echo "保存的 QQ 归档保留在 $KEPT"
+fi
 if [ "${1:-}" = "--purge" ]; then
   echo "卸载完成：代码、配置、会话、工作区、人设与记忆已全部清除"
 else
@@ -1870,6 +1977,7 @@ restore_soul() {
 
 do_uninstall() {
   local purge=0
+  local qq_keep=""
   [ "${1:-}" = "--purge" ] && purge=1
   check_user
   if ui_fits; then
@@ -1928,18 +2036,33 @@ do_uninstall() {
     warn "删除配置、工作区（不可恢复）"
     dim "配置（含人设/记忆备份）：$CONFIG_DIR"
     dim "工作区：$ws"
-    rm -rf "$CONFIG_DIR"
+    remove_tree "$CONFIG_DIR"
     case "$ws" in
       ""|"/"|"$HOME") warn "工作区路径异常（$ws），跳过删除" ;;
-      *) rm -rf "$ws" ;;
+      *) remove_tree "$ws" ;;
     esac
   fi
 
   # 真正删掉整个安装目录（代码 + venv + 会话 + 运行产物全清）。
   # 人设和记忆已经在最前面 backup_soul 里搬到 ~/.config/deckmeido/，
   # 普通卸载不会丢；--purge 在上面已经把那份备份也删了。
+  # userdata/ 例外：QQ 的图片/文本归档要留着，卸载后仍能从原路径找回。
   if [ -d "$INSTALL_DIR" ]; then
-    rm -rf "$INSTALL_DIR"
+    if ! safe_rm_target "$INSTALL_DIR"; then
+      warn "拒绝删除：$INSTALL_DIR 疑似源码工作区或危险路径"
+      die "卸载中止（未删除任何文件）"
+    fi
+    local entry
+    for entry in "$INSTALL_DIR"/* "$INSTALL_DIR"/.[!.]* "$INSTALL_DIR"/..?*; do
+      [ -e "$entry" ] || continue
+      [ "$entry" = "$INSTALL_DIR/userdata" ] && continue
+      echo "[删除] $entry"
+      rm -rf -- "$entry"
+    done
+    qq_keep="$INSTALL_DIR/userdata/qq"
+  fi
+  if [ -d "$qq_keep" ]; then
+    info "保存的 QQ 归档保留在 $qq_keep"
   fi
 
   # 结果汇总（和安装界面同一套卡片风格）
@@ -1954,6 +2077,8 @@ do_uninstall() {
       card_line "人设与记忆已保留在 $CONFIG_DIR"
       card_line "下次安装会自动恢复"
     fi
+    [ -n "$qq_keep" ] && [ -d "$qq_keep" ] &&
+      card_line "QQ 归档保留在 $qq_keep"
     card_end
     echo
   else
@@ -1963,6 +2088,8 @@ do_uninstall() {
     else
       dim "人设与记忆保留在 $CONFIG_DIR，下次安装自动恢复"
     fi
+    [ -n "$qq_keep" ] && [ -d "$qq_keep" ] &&
+      dim "QQ 归档保留在 $qq_keep（卸载不删）"
   fi
 }
 
