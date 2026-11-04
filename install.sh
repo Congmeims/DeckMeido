@@ -51,6 +51,10 @@
 # 逐项删除；目录必须带 .deckmeido-install 标记才算「安装器创建的」，否则一律
 # 拒绝卸载（即使设置了 DECKMEIDO_ALLOW_UNSAFE_UNINSTALL=1 也只删清单文件、
 # 绝不 rmdir），userdata/ 永远保留。
+# 用户可修改数据统一放 <安装目录>/userdata（可用 DECKMEIDO_DATA_DIR 覆盖）：
+# config.toml、persona/meidosoul.json、memory.json、sessions/、uploads/、
+# meidobot/。安装/升级发现旧布局数据时只复制到 userdata/、不删除原文件；
+# 升级同步排除整个 userdata/，卸载按清单删除代码、userdata/ 整目录保留。
 set -euo pipefail
 
 APP=deckmeido
@@ -74,6 +78,25 @@ INSTALL_MARKER="$INSTALL_DIR/.deckmeido-install"
 INSTALL_MANIFEST="$INSTALL_DIR/.deckmeido-manifest"
 CONFIG_MARKER="$CONFIG_DIR/.deckmeido-config"
 CONFIG_MANIFEST="$CONFIG_DIR/.deckmeido-config-manifest"
+
+# ---------- 用户数据根（userdata/） ----------
+# 所有用户可修改的数据统一放在数据根下：默认 $INSTALL_DIR/userdata，可用
+# DECKMEIDO_DATA_DIR 显式覆盖（服务单元也按这个变量注入）。卸载永远整目录
+# 保留，安装清单里也不会出现这里面的任何路径。
+DATA_DIR="${DECKMEIDO_DATA_DIR:-$INSTALL_DIR/userdata}"
+case "$DATA_DIR" in
+  "~"/*) DATA_DIR="$HOME/${DATA_DIR#\~/}" ;;
+  /*) ;;
+  *) DATA_DIR="$PWD/$DATA_DIR" ;;
+esac
+DATA_CONFIG="$DATA_DIR/config.toml"
+DATA_PERSONA_DIR="$DATA_DIR/persona"
+DATA_PERSONA="$DATA_PERSONA_DIR/meidosoul.json"
+DATA_MEMORY="$DATA_DIR/memory.json"
+DATA_SESSIONS="$DATA_DIR/sessions"        # 会话目录固定叫 sessions（复数）
+DATA_UPLOADS="$DATA_DIR/uploads"
+DATA_BOT="$DATA_DIR/meidobot"             # 原 userdata/qq，QQ/meidobot 通道归档
+MIGRATED_MARKER="$DATA_DIR/.deckmeido-migrated"
 
 # 是否通过「curl | sh -」管道执行。管道执行时脚本不在磁盘上，$BASH_SOURCE[0]
 # 不是真实文件，sync_files 依赖的 $HERE/* 会指向错误位置；此时自动走
@@ -1161,7 +1184,10 @@ sync_files() {
   for it in "${items[@]}"; do
     [ -e "$HERE/$it" ] || continue
     if [ -d "$HERE/$it" ]; then
-      rsync -a --exclude '__pycache__' --exclude 'config.toml' --exclude 'sessions' \
+      # userdata/ 是用户数据根，永远不从源码包覆盖；server 下的旧配置/会话/
+      # 上传/日志也继续排除，避免升级时把用户数据冲掉
+      rsync -a --exclude 'userdata' --exclude '__pycache__' --exclude 'config.toml' \
+            --exclude 'config.toml.bak*' --exclude 'sessions' \
             --exclude 'uploads' --exclude 'shots' --exclude '*.log' \
             "$HERE/$it/" "$INSTALL_DIR/$it/" 2>/dev/null ||
         cp -r "$HERE/$it/." "$INSTALL_DIR/$it/"
@@ -1456,9 +1482,100 @@ progress_bar() {
   _progress_on=1
 }
 
+# ---------- 数据目录与迁移 ----------
+# 数据根权限：userdata 及子目录 0700，配置 0600（Linux 凭据不外泄）
+ensure_data_layout() {
+  ( umask 077; mkdir -p "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" ) 2>/dev/null || true
+  chmod 700 "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" 2>/dev/null || true
+}
+
+# 复制单个文件：目标已存在就不动（不覆盖用户现有数据）
+MIGRATED=0
+copy_if_missing() {
+  local src="$1" dst="$2"
+  [ -e "$src" ] || return 0
+  [ -e "$dst" ] && return 0
+  mkdir -p "$(dirname "$dst")" 2>/dev/null || true
+  if cp -a -- "$src" "$dst" 2>/dev/null || cp -r -- "$src" "$dst" 2>/dev/null; then
+    dim "已迁移 $src → $dst（旧位置保留）"
+    MIGRATED=1
+  fi
+}
+
+# 目录合并复制：只补目标里缺失的文件，绝不覆盖已有文件；旧目录保留
+MERGE_COPIED=0
+merge_copy_tree() {
+  local src="${1%/}" dst="${2%/}" rel copied=0 existed=0
+  [ -d "$src" ] || return 0
+  [ -d "$dst" ] && existed=1
+  mkdir -p "$dst" 2>/dev/null || true
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    [ -e "$dst/$rel" ] && continue
+    mkdir -p "$(dirname "$dst/$rel")" 2>/dev/null || true
+    cp -a -- "$src/$rel" "$dst/$rel" 2>/dev/null || \
+      cp -r -- "$src/$rel" "$dst/$rel" 2>/dev/null || true
+    copied=$((copied + 1))
+  done < <(cd "$src" && find . -type f -printf '%P\n' 2>/dev/null)
+  MERGE_COPIED=$copied
+  if [ "$existed" = 1 ]; then
+    warn "两边都存在：$dst（只补了 $copied 个缺失文件，未覆盖已有文件）"
+  elif [ "$copied" -gt 0 ]; then
+    dim "已迁移 $src → $dst（复制 $copied 个文件，旧目录保留）"
+  fi
+  [ "$copied" -gt 0 ] && MIGRATED=1
+  return 0
+}
+
+write_migrated_marker() {
+  {
+    printf 'format=1\n'
+    printf 'migrated_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf 'from=legacy-layout\n'
+  } > "$MIGRATED_MARKER" 2>/dev/null || true
+}
+
+# 旧 userdata/qq 改名兼容：每次都跑但幂等，旧目录一律保留不删。
+# 新目录不存在 → 整份复制；两边都存在 → 只补缺文件并打警告。
+migrate_meidobot_name() {
+  local old="$INSTALL_DIR/userdata/qq"
+  [ -d "$old" ] || return 0
+  [ "${old%/}" = "${DATA_BOT%/}" ] && return 0
+  merge_copy_tree "$old" "$DATA_BOT"
+}
+
+# 旧布局 → userdata/ 的迁移：只复制、不删除；用 .deckmeido-migrated 防重复。
+# 旧位置：server/config.toml(.bak*)、server/meidosoul.json、server/memory.json、
+#          server/sessions/、~/.local/share/deckmeido/qq/
+migrate_legacy_data() {
+  ensure_data_layout
+  MIGRATED=0
+  if [ -f "$MIGRATED_MARKER" ]; then
+    dim "迁移标记已存在：$MIGRATED_MARKER（跳过旧位置扫描）"
+  else
+    local src="$INSTALL_DIR/server" f
+    copy_if_missing "$src/config.toml" "$DATA_CONFIG"
+    for f in "$src"/config.toml.bak*; do
+      [ -f "$f" ] || continue
+      copy_if_missing "$f" "$DATA_DIR/$(basename "$f")"
+    done
+    copy_if_missing "$src/meidosoul.json" "$DATA_PERSONA"
+    copy_if_missing "$src/memory.json" "$DATA_MEMORY"
+    merge_copy_tree "$src/sessions" "$DATA_SESSIONS"
+    local oldbot="$HOME/.local/share/deckmeido/qq"
+    [ -d "$oldbot" ] && merge_copy_tree "$oldbot" "$DATA_BOT"
+    if [ "$MIGRATED" = 1 ]; then
+      write_migrated_marker
+    fi
+  fi
+  migrate_meidobot_name
+  chmod 700 "$DATA_DIR" 2>/dev/null || true
+}
+
 # 首次安装生成 config.toml；已有则原样保留
 prepare_config() {
-  local cfg="$INSTALL_DIR/server/config.toml"
+  ensure_data_layout
+  local cfg="$DATA_CONFIG"
   local src="${DECKMEIDO_UPDATE_SOURCE:-mirror}"
   if [ -f "$cfg" ]; then
     info "保留已有配置 $cfg"
@@ -1486,9 +1603,10 @@ prepare_config() {
         { print }
       ' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
     fi
-    chmod 600 "$cfg"
     info "生成配置 $cfg"
   fi
+  # 不论新旧，配置里都可能有令牌，统一收紧到 0600
+  chmod 600 "$cfg" 2>/dev/null || true
 }
 
 install_service() {
@@ -1746,6 +1864,10 @@ MARKER="$HERE/.deckmeido-install"
 MANIFEST="$HERE/.deckmeido-manifest"
 CONFIG_MARKER="$CONFIG_DIR/.deckmeido-config"
 CONFIG_MANIFEST="$CONFIG_DIR/.deckmeido-config-manifest"
+# 用户数据根：默认 <安装目录>/userdata，可用 DECKMEIDO_DATA_DIR 覆盖；永不删除
+DATA_DIR="${DECKMEIDO_DATA_DIR:-$HERE/userdata}"
+case "$DATA_DIR" in "~"/*) DATA_DIR="$HOME/${DATA_DIR#\~/}" ;; esac
+DATA_CONFIG="$DATA_DIR/config.toml"
 
 # 2026-11-04 事故：卸载脚本误把源码工作区当安装目录删了。这里同样加删除守卫：
 # 含 .git / 就是脚本所在目录 / 空 / / / 家目录 / 路径过浅 一律拒绝。
@@ -1824,8 +1946,10 @@ elif [ ! -f "$MANIFEST" ]; then
 fi
 
 # 先取消正在跑的任务，再关进程
-if command -v curl >/dev/null 2>&1 && [ -f "$HERE/server/config.toml" ]; then
-  TOK="$(grep -oP '^token\s*=\s*"\K[^"]*' "$HERE/server/config.toml" 2>/dev/null | head -n1 || true)"
+CFG="$DATA_CONFIG"
+[ -f "$CFG" ] || CFG="$HERE/server/config.toml"
+if command -v curl >/dev/null 2>&1 && [ -f "$CFG" ]; then
+  TOK="$(grep -oP '^token\s*=\s*"\K[^"]*' "$CFG" 2>/dev/null | head -n1 || true)"
   curl -fsS -m 2 -X POST -H "X-Token: $TOK" "http://127.0.0.1:$PORT/api/cancel" >/dev/null 2>&1 || true
 fi
 pkill -f "$HERE/client/launch.sh" 2>/dev/null || true
@@ -1890,9 +2014,9 @@ else
 fi
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
 command -v kbuildsycoca6 >/dev/null 2>&1 && kbuildsycoca6 >/dev/null 2>&1 || true
-KEPT="$HERE/userdata/qq"
+KEPT="$DATA_DIR/meidobot"
 if [ -d "$KEPT" ]; then
-  echo "保存的 QQ 归档保留在 $KEPT"
+  echo "meidobot 归档保留在 $KEPT"
 fi
 if [ "${1:-}" = "--purge" ]; then
   echo "卸载完成：安装器文件与配置备份已按清单删除"
@@ -1921,7 +2045,9 @@ write_version_file() {
 }
 
 read_token() {
-  local cfg="$INSTALL_DIR/server/config.toml"
+  local cfg="$DATA_CONFIG"
+  # 尚未迁移的老安装仍读 server/config.toml
+  [ -f "$cfg" ] || cfg="$INSTALL_DIR/server/config.toml"
   [ -f "$cfg" ] || return 0
   grep -oP '^token\s*=\s*"\K[^"]*' "$cfg" 2>/dev/null | head -n1
 }
@@ -2010,12 +2136,13 @@ print_done() {
   card_line "本机控制台   http://127.0.0.1:$PORT/?token=$token"
   card_line "局域网访问   http://$ip:$PORT/?token=$token"
   card_line "访问令牌     默认 meido，可在客户端设置页修改"
-  card_line "配置文件     $INSTALL_DIR/server/config.toml"
+  card_line "配置文件     $DATA_CONFIG"
+  card_line "用户数据     $DATA_DIR（卸载保留）"
   card_line ""
   card_line "首次打开地址会弹出设置页，填 API 地址与 Key 即可对话"
   card_line "以后升级     bash $INSTALL_DIR/install.sh upgrade"
   card_line "卸载         bash $INSTALL_DIR/uninstall.sh"
-  card_line "             （加 --purge 连配置、会话、工作区一起删）"
+  card_line "             （只删安装器文件；userdata/ 永远保留）"
   card_end
   echo
 }
@@ -2032,6 +2159,7 @@ do_install() {
   if [ "$gui_only" = 1 ]; then
     check_user
     sync_files
+    migrate_legacy_data
     venv_install gui
     write_install_records
     return 0
@@ -2043,6 +2171,8 @@ do_install() {
   preflight
   section "同步程序文件"
   sync_files
+  section "迁移用户数据"
+  migrate_legacy_data
   section "Python 运行环境"
   # 依赖没装全不该让整个安装中断：代码已经同步好了，联网问题用户之后能自行重试
   venv_install || true
@@ -2103,8 +2233,8 @@ do_upgrade() {
   if [ "$deps" = "--gui" ]; then gui_only=1; deps=""; fi
   print_banner
   # 升级只换代码和依赖，下面这些一律保留，用户不用担心升级丢数据
-  dim "升级会保留：配置文件（config.toml）、人设（meidosoul.json）、"
-  dim "长期记忆（memory.json）、会话记录、工作区、Decky 插件（不重复部署）。"
+  dim "升级会保留：userdata/ 下的配置、人设、长期记忆、会话与上传文件，"
+  dim "以及工作区、Decky 插件（不重复部署）。"
   echo
   section "环境预检"
   check_prereq
@@ -2115,6 +2245,8 @@ do_upgrade() {
   stop_backend
   section "同步程序文件"
   sync_files
+  section "迁移用户数据"
+  migrate_legacy_data
   section "Python 运行环境"
   if [ "$gui_only" = 1 ]; then
     venv_install gui || true
@@ -2249,7 +2381,9 @@ cancel_running_turn() {
 # 工作区真实路径：优先读配置里的 workspace，删不到才退回默认目录。
 # 以前直接删 $HOME/deckmeido_workspace，而配置里指到别处的工作区根本删不到。
 workspace_dir() {
-  local cfg="$INSTALL_DIR/server/config.toml" ws=""
+  local cfg="$DATA_CONFIG" ws=""
+  # 老安装的配置还在 server/config.toml
+  [ -f "$cfg" ] || cfg="$INSTALL_DIR/server/config.toml"
   if [ -f "$cfg" ]; then
     ws=$(grep -oP '^\s*workspace\s*=\s*"\K[^"]*' "$cfg" 2>/dev/null | head -n1)
   fi
@@ -2270,11 +2404,16 @@ backup_soul() {
   local dst="$CONFIG_DIR" src="$INSTALL_DIR/server"
   mkdir -p "$dst"
   local saved=0
-  for f in meidosoul.json memory.json; do
-    if [ -f "$src/$f" ]; then
-      cp -f "$src/$f" "$dst/$f" 2>/dev/null && saved=1
-    fi
-  done
+  # 新布局：persona/meidosoul.json + memory.json；老安装回退 server/
+  local soul="$DATA_PERSONA" mem="$DATA_MEMORY"
+  [ -f "$soul" ] || soul="$src/meidosoul.json"
+  [ -f "$mem" ] || mem="$src/memory.json"
+  if [ -f "$soul" ]; then
+    cp -f "$soul" "$dst/meidosoul.json" 2>/dev/null && saved=1
+  fi
+  if [ -f "$mem" ]; then
+    cp -f "$mem" "$dst/memory.json" 2>/dev/null && saved=1
+  fi
   # 只有安装器创建的配置目录才允许日后 --purge 删除，必须留下标记与清单
   write_config_records || true
   [ "$saved" = 1 ] && dim "已备份人设与记忆到 $dst（下次安装自动恢复）"
@@ -2285,16 +2424,19 @@ backup_soul() {
 # 安装完成后，若 ~/.config/deckmeido/ 里有之前卸载时留下的人设/记忆备份，
 # 就搬回 server/ 目录，让「她」还是原来的她。
 restore_soul() {
-  local src="$CONFIG_DIR" dst="$INSTALL_DIR/server"
+  local src="$CONFIG_DIR"
   local restored=0
-  for f in meidosoul.json memory.json; do
-    if [ -f "$src/$f" ] && [ ! -f "$dst/$f" ]; then
-      cp -f "$src/$f" "$dst/$f" 2>/dev/null && restored=1
-    fi
-  done
+  ensure_data_layout
+  if [ -f "$src/meidosoul.json" ] && [ ! -f "$DATA_PERSONA" ]; then
+    cp -f "$src/meidosoul.json" "$DATA_PERSONA" 2>/dev/null && restored=1
+  fi
+  if [ -f "$src/memory.json" ] && [ ! -f "$DATA_MEMORY" ]; then
+    cp -f "$src/memory.json" "$DATA_MEMORY" 2>/dev/null && restored=1
+  fi
   if [ "$restored" = 1 ]; then
     dim "已恢复之前的人设与记忆（$src）"
   fi
+  return 0
 }
 
 do_uninstall() {
@@ -2371,7 +2513,7 @@ do_uninstall() {
     esac
   fi
 
-  qq_keep="$INSTALL_DIR/userdata/qq"
+  qq_keep="$DATA_BOT"
   if [ -d "$INSTALL_DIR" ]; then
     if [ -f "$INSTALL_MANIFEST" ]; then
       delete_install_manifest "$INSTALL_MANIFEST"
@@ -2397,7 +2539,7 @@ do_uninstall() {
     fi
   fi
   if [ -d "$qq_keep" ]; then
-    info "保存的 QQ 归档保留在 $qq_keep"
+    info "meidobot 归档保留在 $qq_keep"
   fi
   need_cmd kbuildsycoca6 && kbuildsycoca6 >/dev/null 2>&1 || true
   need_cmd kbuildsycoca5 && kbuildsycoca5 >/dev/null 2>&1 || true
@@ -2414,9 +2556,8 @@ do_uninstall() {
       card_line "人设与记忆已保留在 $CONFIG_DIR"
       card_line "下次安装会自动恢复"
     fi
-    card_line "userdata/ 一律保留，未识别文件未动"
-    [ -n "$qq_keep" ] && [ -d "$qq_keep" ] &&
-      card_line "QQ 归档保留在 $qq_keep"
+    card_line "用户数据保留在 $DATA_DIR（含 meidobot 归档）"
+    card_line "清单外文件未动"
     card_end
     echo
   else
@@ -2426,9 +2567,7 @@ do_uninstall() {
     else
       dim "人设与记忆保留在 $CONFIG_DIR，下次安装自动恢复"
     fi
-    dim "userdata/ 与清单外文件一律保留"
-    [ -n "$qq_keep" ] && [ -d "$qq_keep" ] &&
-      dim "QQ 归档保留在 $qq_keep（卸载不删）"
+    dim "用户数据保留在 $DATA_DIR（含 meidobot 归档），清单外文件未动"
   fi
   # 最后几行是条件输出的 && 列表，没有 QQ 归档时返回 1，不能让它影响退出码
   return 0
