@@ -1,10 +1,10 @@
 {
   "tag": "0.6.9",
   "name": "DeckMeido 0.6.9",
-  "notes": "# DeckMeido 0.6.9\n\n- 移除测试夹具中的真实\n- release: 0.6.9 发布产物与镜像目录更新\n- release: 0.6.9 版本号\n- refactor: 运行日志与停止标记迁入数据根\n- refactor: STT 模型迁入数据根\n- fix: 统一客户端配置路径并清理失效配置键\n- docs: 重写 README 说明当前功能与安装\n- release: 0.6.8 发布产物与镜像目录更新\n- release: 0.6.8 版本号\n- 删除旧布局与旧配置兼容代码，只保留最新标准实现\n- 删除旧布局兼容代码，仅保留\n- 用户数据统一按数据根读写，QQ 归档改名 meidobot 并保留旧布局只读回退\n- 降级卸载不触碰配置备份，清单排除 server/userdata\n- 新增状态栏短句接口，按状态缓存并在失败时回退本地模板\n- 服务单元注入数据根并补充 userdata 文档\n- 用户数据统一迁入 userdata 并兼容旧布局迁移\n- 更新源改为双源探测取更高版本，新增 github_enable 与下载校验回退\n- 卸载改为按清单逐项删除、无标记目录拒绝\n- 回执收敛：询问页只显示结论，错误码与明细只进设置页\n- QAM 提示词改为多行编辑，复用 ImeTextArea 固定高度内部滚动\n",
-  "published_at": "2026-11-04T22:28:13+08:00",
+  "notes": "# DeckMeido 0.6.9\n\n- 修复 release notes 中文乱码：git log 输出显式 UTF-8 解码并兜底 errors=replace\n- release: 重发 0.6.9 发布产物（历史重写后重新打包）\n- test: 规范测试夹具数据\n- release: 0.6.9 发布产物与镜像目录更新\n- release: 0.6.9 版本号\n- refactor: 运行日志与停止标记迁入数据根\n- refactor: STT 模型迁入数据根\n- fix: 统一客户端配置路径并清理失效配置键\n- docs: 重写 README 说明当前功能与安装\n- release: 0.6.8 发布产物与镜像目录更新\n- release: 0.6.8 版本号\n- 删除旧布局与旧配置兼容代码，只保留最新标准实现\n- 删除旧布局兼容代码，仅保留\n- 用户数据统一按数据根读写，QQ 归档改名 meidobot 并保留旧布局只读回退\n- 降级卸载不触碰配置备份，清单排除 server/userdata\n- 新增状态栏短句接口，按状态缓存并在失败时回退本地模板\n- 服务单元注入数据根并补充 userdata 文档\n- 用户数据统一迁入 userdata 并兼容旧布局迁移\n- 更新源改为双源探测取更高版本，新增 github_enable 与下载校验回退\n- 卸载改为按清单逐项删除、无标记目录拒绝\n",
+  "published_at": "2026-11-04T22:48:59+08:00",
   "files": {
     "tarball": "deckmeido-0.6.9.tar.gz",
-    "sha256": "70fea2792d81fdd62364f0582053adc5dbd535a910fed76c0254b3c3c521b486"
+    "sha256": "12f6867471cda134e3a86d7700b13c46750673f500852c61a387050832849c4c"
   }
 }
