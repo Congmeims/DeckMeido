@@ -130,6 +130,17 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+def enabled(cfg: dict) -> bool:
+    """合并后的唯一开关：enabled 打开即允许局域网来源（不再单独配置 bind_lan）。
+
+    旧配置里若还留着 bind_lan，它继续按旧语义作额外闸门（false 时只接受回环），
+    不能因为合并开关就把老用户原本只允许本机的配置悄悄放开到局域网。
+    """
+    if not bool(cfg.get("enabled", False)):
+        return False
+    return bool(cfg.get("bind_lan", True))
+
+
 def access_error(cfg: dict, client_ip: str, token: str, provided: str) -> str | None:
     """连接前的总校验：令牌 → 开关 → 来源地址。
 
@@ -139,7 +150,8 @@ def access_error(cfg: dict, client_ip: str, token: str, provided: str) -> str | 
         return RI_UNAUTHORIZED
     if not bool(cfg.get("enabled", False)):
         return RI_DISABLED
-    if not bool(cfg.get("bind_lan", False)) and not _is_loopback(client_ip):
+    if not enabled(cfg) and not _is_loopback(client_ip):
+        # 仅剩旧配置 bind_lan=false 这一种可能：本机仍可接管，局域网仍被拒
         return RI_LOCAL_ONLY
     return None
 

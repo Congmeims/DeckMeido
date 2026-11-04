@@ -129,6 +129,44 @@ class PolicyTest(unittest.TestCase):
             "run_command", {"command": "systemctl status deckmeido"}, now).allowed)
 
 
+class SurfacePolicyTest(unittest.TestCase):
+    """按入口区分单轮策略：ask/translate 保持一问一答，只有 chat 放开多轮"""
+
+    def test_qam_ask_and_translate_stay_locked(self):
+        """(1) QAM 的所有入口都保持一问一答，不会被大屏聊天页的放开放宽"""
+        self.assertTrue(policy.shot_lock_for("qam", "ask"))
+        self.assertTrue(policy.shot_lock_for("qam", "translate"))
+        # QAM 面板里的普通输入（哪怕标了 chat）也不能放开
+        self.assertTrue(policy.shot_lock_for("qam", "chat"))
+        # 老前端没传 surface：按原来的一问一答处理，不能被这次改动误放开
+        self.assertTrue(policy.shot_lock_for("qam", ""))
+        self.assertTrue(policy.shot_lock_for("qam", None))
+        # 大屏询问页 / 截图翻译仍然单轮
+        self.assertTrue(policy.shot_lock_for("bigscreen", "ask"))
+        self.assertTrue(policy.shot_lock_for("bigscreen", "translate"))
+
+    def test_chat_surface_unlocks_tool_rounds(self):
+        """(2) 只有大屏聊天页放开：工具调用后可以继续推进"""
+        self.assertFalse(policy.shot_lock_for("bigscreen", "chat"))
+        # 网页/桌面端本来就不在插件的锁里
+        self.assertFalse(policy.shot_lock_for("web", "chat"))
+        self.assertFalse(policy.shot_lock_for(None, "chat"))
+
+    def test_chat_continuation_is_bounded(self):
+        """(3) chat 兜底：只说不做最多补 2 次，之后按最终答复收尾"""
+        self.assertTrue(policy.chat_should_continue("bigscreen", "chat", "好的，我去看看。", 0))
+        self.assertTrue(policy.chat_should_continue("bigscreen", "chat", "稍等一下，我先查一下。", 1))
+        self.assertFalse(policy.chat_should_continue("bigscreen", "chat", "好的，我去看看。", 2))
+        # ask/translate 不走催促，保持答完即停
+        self.assertFalse(policy.chat_should_continue("bigscreen", "ask", "好的，我去看看。", 0))
+        self.assertFalse(policy.chat_should_continue("bigscreen", "translate", "好的，我去看看。", 0))
+        # QAM 面板即使标了 chat 也不催，行为和小屏完全一致
+        self.assertFalse(policy.chat_should_continue("qam", "chat", "好的，我去看看。", 0))
+        # 正常收尾的答复不会被误催促
+        self.assertFalse(policy.chat_should_continue(
+            "bigscreen", "chat", "《Stellar Blade》这个 BOSS 弱点是背后核心，破防后一套带走。", 0))
+
+
 class GameBoundaryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

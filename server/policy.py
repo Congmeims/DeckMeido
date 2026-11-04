@@ -263,6 +263,62 @@ def blocks_in_locked_shot(name: str, args: dict) -> bool:
     return bool(risky_action(name, args))
 
 
+# ---------- 按入口区分单轮策略 ----------
+
+# 插件发起的一轮属于哪个入口：大屏聊天页 / 大屏询问页 / 截图翻译
+# 没标（老前端）按「非 chat」处理，保持原来的单轮行为
+SURFACE_CHAT = "chat"
+SURFACE_ASK = "ask"
+SURFACE_TRANSLATE = "translate"
+
+# chat 入口连续「只说不做」时最多补几次催促；补完仍不动手就按最终答复收尾。
+# 取 2：第一次用来纠正「我去看看」这类过渡话，第二次留给模型重新组织计划；
+# 再多只会烧 token、拖长一轮，收益递减。
+MAX_CHAT_CONTINUATIONS = 2
+
+# 像「我先去查一下」这种只表计划、没有结果的短回复。
+# 只用明确的短语，不按「我」字泛匹配，避免把正常短答复误判成未完待续
+_STALL_PHRASES = (
+    "我去看看", "我去查", "我去搜", "我去处理", "我去试试",
+    "我先看看", "我先查", "我先去", "我来看一下", "我查一下", "我搜一下",
+    "让我看看", "让我先", "我帮你看看", "我这就去", "这就去办",
+    "稍等一下", "请稍等", "马上就好", "正在处理中", "正在执行中",
+)
+
+
+def shot_lock_for(client: str | None, surface: str | None) -> bool:
+    """本轮带图时是否强制单轮（locked_shot）。
+
+    只有「大屏聊天页」放开：client=bigscreen 且 surface=chat。
+    QAM 的全部入口（截图询问 ask、截图翻译 translate、面板里的普通输入）
+    都必须一问一答：它们挂在游戏画面上，模型反复截图/反复动手会把用户
+    看到的画面换掉。网页/桌面端以及老的无标记请求保持原来的不锁行为。
+    """
+    c = (client or "").strip()
+    if c == "bigscreen":
+        return (surface or "") != SURFACE_CHAT
+    if c == "qam":
+        return True
+    return False
+
+
+def looks_like_stall(reply: str) -> bool:
+    """模型只说了「去看看」却没给结果、也没调工具"""
+    r = (reply or "").strip()
+    if not r or len(r) > 160:
+        return False
+    return any(p in r for p in _STALL_PHRASES)
+
+
+def chat_should_continue(client: str | None, surface: str | None,
+                         reply: str, used: int) -> bool:
+    """大屏聊天页是否该再推一轮（兜底：used 到 MAX_CHAT_CONTINUATIONS 即停）"""
+    return ((client or "").strip() == "bigscreen"
+            and (surface or "") == SURFACE_CHAT
+            and used < MAX_CHAT_CONTINUATIONS
+            and looks_like_stall(reply))
+
+
 # ---------- 本轮用户消息意图 ----------
 
 def _positive_text(text: str) -> str:

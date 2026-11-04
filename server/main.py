@@ -1686,6 +1686,9 @@ class ChatRequest(BaseModel):
     # 不传的话挂起记录里是空值，插件端和网页端都会退化成同一个来源
     client: str | None = None
     device: str | None = None
+    # 插件里的入口：chat=大屏聊天页（放开多轮），ask=询问页/截图询问，
+    # translate=截图翻译（后两者保持一问一答）。网页/桌面端不传
+    surface: str | None = None
 
 
 _CTX_RE = re.compile(r"@\{([^}]+)\}")
@@ -2459,8 +2462,8 @@ async def api_remote_input_status():
     """接管开关 + 当前会话状态：页面加载/重连后据此恢复横幅与 logo 状态"""
     cfg = CFG.get("remote_input") or {}
     return {
-        "enabled": bool(cfg.get("enabled", False)),
-        "bind_lan": bool(cfg.get("bind_lan", False)),
+        # 合并后的单开关：true = 已开启且允许局域网来源
+        "enabled": remote_input.enabled(cfg),
         "sensitivity": float(cfg.get("sensitivity", 1.5) or 1.5),
         "max_minutes": int(cfg.get("max_minutes", 30) or 30),
         **remote_input.manager.status(),
@@ -2603,7 +2606,8 @@ async def api_chat(req: ChatRequest, workspace: str | None = Query(default=None)
     if root is not None and not root.is_dir():
         root = None
     return await start_chat(text, image=req.image, image_prompt=req.image_prompt,
-                            workspace=root, client=req.client, device=req.device)
+                            workspace=root, client=req.client, device=req.device,
+                            surface=req.surface)
 
 
 # 当前正在处理的对话任务（用于终止按钮）
@@ -2661,6 +2665,8 @@ class ConfigUpdate(BaseModel):
     clear_api_key: bool = False
     model: str | None = None
     tts_enable: bool | None = None
+    # 语音输入开关：和 tts_enable 一样走热更新，插件端 /api/stt/toggle 写的是同一份 [stt]
+    stt_enable: bool | None = None
     # 发送时是否附带给游戏画面（面板上的「画面：开/关」）
     with_shot: bool | None = None
     permission_mode: str | None = None
@@ -2683,9 +2689,8 @@ class ConfigUpdate(BaseModel):
     ask_template: str | None = None
     # 更新源：mirror / github / mirror-only / github-only
     update_source: str | None = None
-    # 跨屏键鼠接管：开关、是否允许局域网、灵敏度、单次时长上限
+    # 跨屏键鼠接管：合并成单开关（设置页只展示这一项）、灵敏度、单次时长上限
     remote_input_enabled: bool | None = None
-    remote_input_bind_lan: bool | None = None
     remote_input_sensitivity: float | None = None
     remote_input_max_minutes: int | None = None
 
@@ -2772,9 +2777,8 @@ async def api_get_config():
         "update_mirror": updater.update_cfg()["mirror"],
         # 长期记忆的条数概览（正文单独走 /api/memory，设置页按需拉）
         "memory": memory.stats(),
-        # 跨屏键鼠接管：设置页表单与安全提示用
-        "remote_input_enabled": bool((CFG.get("remote_input") or {}).get("enabled", False)),
-        "remote_input_bind_lan": bool((CFG.get("remote_input") or {}).get("bind_lan", False)),
+        # 跨屏键鼠接管：设置页表单与安全提示用（单开关：开 = 允许局域网）
+        "remote_input_enabled": remote_input.enabled(CFG.get("remote_input") or {}),
         "remote_input_sensitivity": float((CFG.get("remote_input") or {}).get("sensitivity", 1.5) or 1.5),
         "remote_input_max_minutes": int((CFG.get("remote_input") or {}).get("max_minutes", 30) or 30),
     }
@@ -2928,6 +2932,9 @@ async def api_set_config(req: ConfigUpdate):
         updates["llm"] = llm_updates
     if req.tts_enable is not None:
         updates["tts"] = {"enable": req.tts_enable}
+    if req.stt_enable is not None:
+        # 语音输入：apply_config 里关掉时会顺手 unload 模型，和插件端 toggle 走同一条路径
+        updates["stt"] = {"enable": bool(req.stt_enable)}
     if req.with_shot is not None:
         # 带画面开关落盘到 [agent]：面板关掉再打开要还是上次选的那个
         updates.setdefault("agent", {})["with_shot"] = bool(req.with_shot)
@@ -2967,9 +2974,13 @@ async def api_set_config(req: ConfigUpdate):
         updates["update"] = {"source": req.update_source}
     ri = {}
     if req.remote_input_enabled is not None:
-        ri["enabled"] = bool(req.remote_input_enabled)
-    if req.remote_input_bind_lan is not None:
-        ri["bind_lan"] = bool(req.remote_input_bind_lan)
+        value = bool(req.remote_input_enabled)
+        ri["enabled"] = value
+        # 单开关：旧的 bind_lan 只在老配置里还留着时同步一份镜像值。
+        # 这样回滚到旧版本时不会因为 enabled=true / bind_lan=false 又变回「只允许本机」，
+        # 新配置则不写这个键，文件里只保留 enabled。
+        if "bind_lan" in (CFG.get("remote_input") or {}):
+            ri["bind_lan"] = value
     if req.remote_input_sensitivity is not None:
         # 灵敏度夹在 0.5~3，太小指针几乎不动，太大一碰就飞出屏幕
         ri["sensitivity"] = max(0.5, min(3.0, float(req.remote_input_sensitivity)))
@@ -3351,7 +3362,8 @@ async def handle_chat(text: str, announce: bool = True,
                       client: str | None = None,
                       device: str | None = None,
                       brief: str = "",
-                      turn_id: str = "") -> dict:
+                      turn_id: str = "",
+                      surface: str | None = None) -> dict:
     """brief 是给界面看的短文案（可选）：截屏询问那套提示词有一百多字，
    插件面板长显会把整个面板撑开。它只随消息存下来供各端显示，
    真正发给模型、算进上下文的仍然是 text。"""
@@ -3430,6 +3442,9 @@ async def handle_chat(text: str, announce: bool = True,
         device=device or "",
         boot_id=_system_boot_id(),
     )
+    # 带图轮的单轮策略按入口区分：大屏聊天页放开多轮；询问页/截图翻译
+    # （包括 QAM 的全部截图轮）继续一问一答，行为保持原样
+    shot_lock = policy.shot_lock_for(client, surface)
     # 本轮新截的这张放在 llm 标记里（_build_llm_msgs 现读现编码），
     # 不再另补一条内联 base64 的消息：那条一旦被上下文压缩裁掉，界面上的图就没了
     events: list[dict] = []
@@ -3463,7 +3478,8 @@ async def handle_chat(text: str, announce: bool = True,
             # 因为别处的对话把这边的手头操作清掉，按普通消息继续
             reply = await _run_agent_guarded(events, hist=hist, image_part=shot_ref,
                                              tool_log=tool_log, client=client,
-                                             turn_ctx=turn_ctx)
+                                             turn_ctx=turn_ctx,
+                                             shot_lock=shot_lock, surface=surface)
         elif pending_action and tools.is_confirm(text):
             # 用户确认了挂起的危险操作：这是显式的「窗口里点了确认」，
             # 不是历史文本推断出来的授权，policy 用 approved=True 放行并记账
@@ -3493,12 +3509,14 @@ async def handle_chat(text: str, announce: bool = True,
             action, pending_action = pending_action, None
             reply = f"已取消：{action['description']}。\n\n" + await run_agent(
                 events, hist=hist, image_part=shot_ref, tool_log=tool_log,
-                from_client=client, turn_ctx=turn_ctx)
+                from_client=client, turn_ctx=turn_ctx,
+                _shot_lock=shot_lock, surface=surface)
         else:
             # 画面要一路传进 run_agent：插件端才知道这一轮不用自己再截图
             reply = await _run_agent_guarded(events, hist=hist, image_part=shot_ref,
                                              tool_log=tool_log, client=client,
-                                             turn_ctx=turn_ctx)
+                                             turn_ctx=turn_ctx,
+                                             shot_lock=shot_lock, surface=surface)
     except asyncio.CancelledError:
         # 用户点了终止：广播终止消息并向上传递
         await manager.broadcast({"type": "assistant_message", "text": "已终止当前操作",
@@ -4715,7 +4733,9 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
                              image_part: str | None = None,
                              tool_log: list[dict] | None = None,
                              client: str | None = None,
-                             turn_ctx: policy.TurnContext | None = None) -> str:
+                             turn_ctx: policy.TurnContext | None = None,
+                             shot_lock: bool | None = None,
+                             surface: str | None = None) -> str:
     """带总超时和拒绝重试的 agent 入口：任何环节卡死都不会让对话无限挂起
 
     image_part 非空表示本轮提问自带画面（这里是历史里那条 [SHOT:文件名] 标记，
@@ -4728,7 +4748,8 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
     try:
         reply = await asyncio.wait_for(
             run_agent(events, hist=hist, image_part=image_part, tool_log=tool_log,
-                      from_client=client, turn_ctx=turn_ctx),
+                      from_client=client, turn_ctx=turn_ctx,
+                      _shot_lock=shot_lock, surface=surface),
             timeout=agent_timeout)
     except asyncio.TimeoutError:
         # 超时不能只丢一句「超时了」：这一轮里已经跑完的命令、改过的文件全都要留下，
@@ -4746,6 +4767,7 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
             reply = await asyncio.wait_for(run_agent(
                 events, hist=hist, tool_log=tool_log, from_client=client,
                 extra_system=prompts.part("retry_refuse"), turn_ctx=turn_ctx,
+                _shot_lock=shot_lock, surface=surface,
             ), timeout=agent_timeout)
         except asyncio.TimeoutError:
             return "（重试也超时了，请再发一次）"
@@ -4758,6 +4780,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                    tool_log: list[dict] | None = None,
                    from_client: str | None = None,
                    _shot_lock: bool | None = None,
+                   surface: str | None = None,
                    turn_ctx: policy.TurnContext | None = None) -> str:
     """LLM + 工具调用循环（流式），思考链/工具调用/终端输出写入 events 供 UI 展示
 
@@ -4917,7 +4940,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
         # 这里用 from_client 而不是 client：下面工具循环里的 for call 会用到
         # client 这个名字（handle_chat 里本来就是这么命名的），别被它盖掉
         if _shot_lock is None:
-            _shot_lock = (from_client or "") == "qam"
+            _shot_lock = policy.shot_lock_for(from_client, surface)
         locked_shot = has_shot and _shot_lock
         round_tools = tools.TOOLS if not locked_shot else [
             t for t in tools.TOOLS if t["function"]["name"] != "screenshot"]
@@ -4926,6 +4949,9 @@ async def run_agent(events: list[dict], extra_system: str = "",
         # 所以带图这轮答完正文就直接收工，不再继续跑工具轮
         if locked_shot:
             extra_system = (extra_system + "\n" if extra_system else "") + prompts.part("locked_shot")
+        # chat 入口的「只说不做」纠偏次数：模型偶尔回一句「我去看看」就不调工具了，
+        # 这里最多补两次催促（policy.chat_should_continue），用完仍不动手就按最终答复收尾
+        stall_nudges = 0
         while MAX_TOOL_ROUNDS <= 0 or round_no < MAX_TOOL_ROUNDS:
             round_no += 1
             # 单轮里工具往返也会堆积上下文，超过阈值就先压缩再继续。
@@ -5025,14 +5051,30 @@ async def run_agent(events: list[dict], extra_system: str = "",
                      if tool_calls else "，没有动手，直接作答")
                   + f"，正文 {len(msg.get('content') or '')} 字")
             if not tool_calls:
+                body = (msg.get("content") or "").strip()
+                # 聊天页的任务型提问：模型只回了「我去看看」这类过渡话就停住，
+                # 给它一次明确的催促，让它真的调工具继续做；用完次数仍不动手
+                # 就按最终答复收尾（不会无限循环）
+                if policy.chat_should_continue(from_client, surface, body, stall_nudges):
+                    stall_nudges += 1
+                    # 这段正文已经流式播给用户了，必须作为 text 事件留在 events 里，
+                    # 否则最终答复一来它就从界面上消失
+                    if "".join(stream_text).strip():
+                        events.append({"type": "text", "text": "".join(stream_text)})
+                    streaming = False
+                    stream_text.clear()
+                    msgs.append({"role": "assistant", "content": body})
+                    msgs.append({"role": "user", "content": prompts.part("continue_task")})
+                    print(f"[DeckMeido] chat 入口第 {round_no} 轮只说不做，"
+                          f"催促第 {stall_nudges} 次继续执行")
+                    continue
                 # 续写后仍被截断：内容已经流式显示给用户了，别丢，末尾加一句说明
                 if msg.get("finish_reason") == "length":
-                    body = (msg.get("content") or "").strip()
                     note = ("\n\n（以上内容到了输出上限，续写也没能收尾；"
                             "要我接着写就说「继续」。）")
                     return (body + note) if body else note.strip()
                 print("[DeckMeido] 本轮收尾：模型没有再调用工具")
-                return msg.get("content") or "（没有回复内容）"
+                return body or "（没有回复内容）"
 
             # 带图这轮只答一次：模型拿到工具结果后常常再截一张确认，
             # 于是又对着新画面续一轮，用户看到一条提问连着好几张图和好几段回答。
@@ -5374,6 +5416,7 @@ async def ws_endpoint(ws: WebSocket, token: str = Query(default="")):
                         device=str(data.get("device") or "").strip() or None,
                         brief=str(data.get("brief") or "").strip(),
                         turn_id=str(data.get("turn_id") or ""),
+                        surface=str(data.get("surface") or "").strip() or None,
                     )
                 except asyncio.CancelledError:
                     pass  # 用户点了终止，保持 ws 连接

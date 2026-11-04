@@ -872,43 +872,49 @@
     transition: box-shadow .18s ease, background .18s ease;
   }
   .sb-brand:hover { background: rgba(26,159,255,.06); }
-  /* 接管中：一圈高亮描边 + 呼吸，避免用户不知道现在是不是在接管 */
+  /* 接管中：一圈高亮描边 + 呼吸，避免用户不知道现在是不是在接管。
+     侧栏贴屏幕左缘，外发光会被页面裁掉，所以只用 inset 阴影画在元素内部 */
   .sb-brand.ri-active {
     animation: riBreath 1.6s ease-in-out infinite;
     background: rgba(26,159,255,.10);
   }
   @keyframes riBreath {
-    0%, 100% { box-shadow: 0 0 0 1px rgba(26,159,255,.55), 0 0 6px rgba(26,159,255,.18); }
-    50%      { box-shadow: 0 0 0 2px rgba(26,159,255,.95), 0 0 20px rgba(26,159,255,.55); }
+    0%, 100% { box-shadow: inset 0 0 0 1px rgba(26,159,255,.62), inset 0 0 10px rgba(26,159,255,.16); }
+    50%      { box-shadow: inset 0 0 0 2px rgba(26,159,255,.95), inset 0 0 18px rgba(26,159,255,.45); }
   }
+  @keyframes riDotPulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+  /* 「接管中」小字：固定深色底 + 亮色字，浅色主题下也不糊在侧栏背景里 */
   .sb-brand .bn-ri {
     display: none; flex: 0 0 auto; align-self: center;
-    font-size: 11px; color: var(--brand);
-    border: 1px solid rgba(26,159,255,.45); border-radius: 999px;
-    padding: 1px 6px; line-height: 1.2; white-space: nowrap;
+    font-size: 11px; font-weight: 600; color: #eaf4ff;
+    background: rgba(12,16,26,.94);
+    border: 1px solid rgba(120,200,255,.8); border-radius: 999px;
+    padding: 1px 7px; line-height: 1.2; white-space: nowrap;
+    box-shadow: 0 2px 10px rgba(0,0,0,.28);
   }
   .sb-brand.ri-active .bn-ri { display: inline; }
-  /* 接管中顶部标识：所有端（远程控制端 / Deck 客户端）都走同一条广播 */
+  /* 接管中顶部标识：所有端（远程控制端 / Deck 客户端）都走同一条广播。
+     深浅两套主题都不跟随，固定深底亮字，避免浅色主题下变成黑底黑字 */
   #riBanner {
     position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
     z-index: 80; display: flex; align-items: center; gap: 10px;
     padding: 7px 8px 7px 13px; border-radius: 999px;
-    border: 1px solid rgba(26,159,255,.65);
-    background: rgba(18,22,32,.82); color: var(--text);
-    box-shadow: 0 8px 28px rgba(0,0,0,.45), 0 0 18px rgba(26,159,255,.18);
+    border: 1px solid rgba(120,200,255,.85);
+    background: rgba(12,16,26,.96); color: #eaf4ff; font-weight: 500;
+    box-shadow: 0 8px 28px rgba(0,0,0,.55), 0 0 22px rgba(26,159,255,.35);
     backdrop-filter: blur(10px); font-size: 12px; white-space: nowrap;
   }
   #riBanner[hidden] { display: none !important; }
   #riBanner .ri-dot {
-    width: 8px; height: 8px; border-radius: 50%; background: var(--brand);
-    box-shadow: 0 0 8px var(--brand); animation: riBreath 1.4s infinite;
+    width: 8px; height: 8px; border-radius: 50%; background: #6fc3ff;
+    box-shadow: 0 0 8px #6fc3ff; animation: riDotPulse 1.4s ease-in-out infinite;
   }
   #riStop {
     height: 24px; padding: 0 12px; border-radius: 999px;
-    border: 1px solid rgba(26,159,255,.7); background: rgba(26,159,255,.16);
-    color: var(--text); font-size: 12px; cursor: pointer;
+    border: 1px solid rgba(150,215,255,.9); background: rgba(26,159,255,.26);
+    color: #fff; font-size: 12px; cursor: pointer;
   }
-  #riStop:hover { background: rgba(26,159,255,.28); }
+  #riStop:hover { background: rgba(26,159,255,.42); }
   #riToast {
     position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
     z-index: 90; max-width: 80vw; padding: 9px 14px; border-radius: 10px;
@@ -917,6 +923,13 @@
     box-shadow: 0 10px 30px rgba(0,0,0,.5); display: none;
   }
   #riToast.show { display: block; }
+  /* 未开启时点 logo 的引导：设置页那张卡片闪两下，眼睛能立刻落到开关上。
+     用 inset 阴影，不会像外发光那样被面板裁掉 */
+  .ri-guide { animation: riGuide 0.9s ease-in-out 2; }
+  @keyframes riGuide {
+    0%, 100% { box-shadow: inset 0 0 0 1px rgba(26,159,255,.2); }
+    50%      { box-shadow: inset 0 0 0 2px rgba(26,159,255,.95), inset 0 0 18px rgba(26,159,255,.28); }
+  }
   .sb-brand .brand-mark {
     /* 112px 的 1.5 倍 = 168px，仍居中，左右各留 8px 与按钮区对齐 */
     width: 75%; height: auto; max-height: 24dvh; object-fit: contain;
@@ -1169,6 +1182,8 @@
   }
   .switch input:checked + .slider { background: var(--brand); }
   .switch input:checked + .slider::before { transform: translateX(20px); background: #fff; }
+  /* 键盘/引导聚焦到开关时给出可见的高亮，否则透明 checkbox 聚焦了也看不出来 */
+  .switch input:focus-visible + .slider { box-shadow: 0 0 0 2px rgba(26,159,255,.85); }
   #cfgHint { text-align: center; font-size: 13px; color: var(--muted); margin-top: 10px; min-height: 18px; }
 
   /* 长期记忆：新增行 = 下拉 + 输入框 + 按钮，三者同高同圆角，
@@ -1232,6 +1247,15 @@
     white-space: pre-wrap; word-break: break-word; line-height: 1.5;
   }
   .upd-note b { color: var(--text); }
+  /* 插件设置里的只读状态行：左标签、右值，长值（模型名）允许换行不溢出 */
+  .state-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 14px; padding: 3px 0; font-size: 13px; color: var(--muted);
+  }
+  .state-row b {
+    color: var(--text); font-weight: 500; text-align: right;
+    word-break: break-all;
+  }
   /* 外观见上方 #saveCfg 那条共用规则，这里只管排版 */
   #updApply { display: none; width: 100%; margin-top: 8px; }
 
@@ -2357,10 +2381,9 @@
               </div>
               <div id="apiKeyHint" class="field-hint"></div>
             </div>
-            <div class="field">
-              <label>模型选择（保存后拉取，选中即当前对话模型）</label>
-              <select id="modelCapsSelect" class="cb-select" title="模型"></select>
-            </div>
+          </div>
+          <div class="field-hint">
+            模型下拉在「插件设置 → 模型」里，和 Decky 插件端共用同一个当前模型。
           </div>
         </section>
 
@@ -2471,12 +2494,8 @@
               <label>工作区目录（编程/文件任务默认位置）</label>
               <input id="cfgWorkspace" type="text" placeholder="~/deckmeido_workspace" autocomplete="off">
             </div>
-            <div class="field field-row">
-              <label style="margin:0">语音播报回复</label>
-              <label class="switch">
-                <input id="cfgTts" type="checkbox">
-                <span class="slider"></span>
-              </label>
+            <div class="field-hint" style="margin-top:0">
+              语音播报、语音输入、带画面这些对话开关在「插件设置」里。
             </div>
           </div>
           <div class="card">
@@ -2509,23 +2528,91 @@
             <div id="ctrlHint" class="upd-note"></div>
             <div id="ctrlLog" class="ctrl-log"></div>
           </div>
+        </section>
+
+        <section class="set-pane" data-pane="plugin">
+          <h3>插件设置</h3>
+          <p class="pane-desc">
+            和 Decky 插件端（QAM 快捷面板 / 大屏页）共用同一份后端配置：这里保存后插件端读到的就是新值，
+            插件端改完回到这里也会显示新值。页面底部的「保存」管开关和表单，提示词模板在卡片里单独保存。
+          </p>
+
           <div class="card">
-            <div class="card-title">跨屏键鼠接管</div>
-            <p class="pane-desc" style="margin-top:0">
-              在电脑浏览器里点左下角 DeckMeido logo 就进入接管：鼠标从电脑上消失，出现在这台 Deck 上，
-              能操作 Steam UI、游戏和这个页面。按 Esc、再点一次 logo，或在 Deck 客户端里点 logo 释放。
-            </p>
+            <div class="card-title">模型</div>
+            <div class="field">
+              <label>当前模型（选中立即生效，与顶栏下拉同步）</label>
+              <div class="about-row">
+                <select id="modelCapsSelect" class="cb-select" title="模型"></select>
+                <button id="pluginModelRefresh" class="mini-btn" type="button">刷新列表</button>
+              </div>
+              <div id="pluginModelHint" class="field-hint"></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">对话与语音</div>
             <div class="field field-row">
-              <label style="margin:0">启用跨屏接管（默认关闭）</label>
+              <label style="margin:0">带画面询问（截图随消息一起发）</label>
               <label class="switch">
-                <input id="cfgRiEnabled" type="checkbox">
+                <input id="cfgWithShot" type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
             <div class="field field-row">
-              <label style="margin:0">允许局域网设备接管</label>
+              <label style="margin:0">语音播报回复</label>
               <label class="switch">
-                <input id="cfgRiBindLan" type="checkbox">
+                <input id="cfgTts" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field field-row">
+              <label style="margin:0">语音输入</label>
+              <label class="switch">
+                <input id="cfgStt" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div id="sttHint" class="field-hint"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">提示词模板</div>
+            <p class="pane-desc" style="margin-top:0">
+              和插件端「截屏询问 / 截图翻译」是同一份配置。留空保存即恢复默认，默认值由后端下发。
+            </p>
+            <div class="field">
+              <label>截屏询问提示词</label>
+              <textarea id="cfgAskTemplate" rows="6" placeholder="留空保存即恢复默认"></textarea>
+              <div class="mem-foot">
+                <span class="field-hint">插件端点「截屏询问」时发给模型的提问。</span>
+                <button id="askTplReset" class="mini-btn" type="button">恢复默认</button>
+              </div>
+            </div>
+            <div class="field">
+              <label>截图翻译提示词</label>
+              <textarea id="cfgTranslateTemplate" rows="6" placeholder="留空保存即恢复默认"></textarea>
+              <div class="mem-foot">
+                <span class="field-hint">插件端点「截图翻译」时的翻译指令。</span>
+                <button id="trnTplReset" class="mini-btn" type="button">恢复默认</button>
+              </div>
+            </div>
+            <div class="mem-foot">
+              <span class="field-hint" id="tplHint"></span>
+              <button id="tplSave" class="mini-btn" type="button">保存提示词</button>
+            </div>
+          </div>
+
+          <div class="card" id="riEnableCard">
+            <div class="card-title">跨屏键鼠接管</div>
+            <p class="pane-desc" style="margin-top:0">
+              在电脑浏览器里点左下角 DeckMeido logo 就进入接管：鼠标从电脑上消失，出现在这台 Deck 上，
+              能操作 Steam UI、游戏和这个页面。按 Esc、再点一次 logo，或在 Deck 客户端里点 logo 释放。
+              开关没开时点 logo，会先把你带到这里的开关上。
+            </p>
+            <div class="field field-row">
+              <label style="margin:0">允许局域网设备接管（总开关）</label>
+              <label class="switch">
+                <input id="cfgRiEnabled" type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
@@ -2539,10 +2626,20 @@
               <input id="cfgRiMax" type="number" min="1" max="120" step="1" value="30">
             </div>
             <div class="field-hint" style="color:#e0a33a">
-              安全提示：开启「允许局域网设备接管」后，局域网内任何拿到访问令牌的人都能控制这台机器。
-              只在可信网络里用，用完及时关闭。
+              安全提示：这个开关同时就是「允许局域网设备接管」。开启后，局域网内任何拿到访问令牌的人
+              都能控制这台机器。只在可信网络里用，用完及时关闭。
             </div>
             <div class="field-hint" id="riCfgState">当前状态：未接管</div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">核心状态与维护</div>
+            <div id="coreState"><div class="state-row"><span>状态</span><b>读取中…</b></div></div>
+            <div class="mem-foot">
+              <span class="field-hint">核心的启动 / 重启 / 关闭由 Decky 插件端和桌面客户端负责（网页只是它的前端，不能自己停掉自己）。</span>
+              <button id="coreRefresh" class="mini-btn" type="button">刷新状态</button>
+              <button id="pluginNewSess" class="mini-btn" type="button">新会话</button>
+            </div>
           </div>
         </section>
 
@@ -6935,13 +7032,27 @@
   var updApply = document.getElementById('updApply');
   var cfgUpdSource = document.getElementById('cfgUpdSource');
   var updSourceHint = document.getElementById('updSourceHint');
-  // 跨屏接管设置
+  // 跨屏接管设置（单开关：开 = 允许局域网接管）
   var cfgRiEnabled = document.getElementById('cfgRiEnabled');
-  var cfgRiBindLan = document.getElementById('cfgRiBindLan');
   var cfgRiSens = document.getElementById('cfgRiSens');
   var cfgRiSensVal = document.getElementById('cfgRiSensVal');
   var cfgRiMax = document.getElementById('cfgRiMax');
+  var riEnableCard = document.getElementById('riEnableCard');
   var riCfgState = document.getElementById('riCfgState');
+  // 插件设置（和 Decky 插件端共用一份后端配置）
+  var cfgWithShot = document.getElementById('cfgWithShot');
+  var cfgStt = document.getElementById('cfgStt');
+  var cfgAskTemplate = document.getElementById('cfgAskTemplate');
+  var cfgTranslateTemplate = document.getElementById('cfgTranslateTemplate');
+  var tplHint = document.getElementById('tplHint');
+  var sttHint = document.getElementById('sttHint');
+  var pluginModelHint = document.getElementById('pluginModelHint');
+  var pluginModelRefresh = document.getElementById('pluginModelRefresh');
+  var coreState = document.getElementById('coreState');
+  var tplSave = document.getElementById('tplSave');
+  // 默认模板只存后端下发的值，不在前端硬编码；「恢复默认」先把值填回文本框
+  var askTplDefault = '';
+  var trnTplDefault = '';
   var verLoaded = false;
 
   // 后端回来的「实际用到的源」→ 给用户看的名字
@@ -7065,6 +7176,8 @@
     loadMemory();
     loadVersion();
     loadCfgForm();
+    loadSttStatus();
+    loadCoreState();
   }
 
   // 读一次配置填进设置页表单。导入备份改了人设之后也要再填一遍，
@@ -7093,10 +7206,16 @@
           ? '已配置：' + masked + '　要更换请直接填新的，留空保存不会改动它'
           : '还没有配置 Key';
         cfgTts.checked = c.tts_enable;
+        // 插件设置：与插件端同一个 GET /api/config 来源，开关和模板都按后端值回填
+        cfgWithShot.checked = c.with_shot !== false;
+        cfgStt.checked = !!c.stt_enable;
+        cfgAskTemplate.value = c.ask_template || '';
+        askTplDefault = c.ask_template_default || '';
+        cfgTranslateTemplate.value = c.translate_template || '';
+        trnTplDefault = c.translate_template_default || '';
         cfgPerm.value = c.permission_mode || 'auto';
         cfgWorkspace.value = c.workspace || '';
         cfgRiEnabled.checked = !!c.remote_input_enabled;
-        cfgRiBindLan.checked = !!c.remote_input_bind_lan;
         cfgRiSens.value = c.remote_input_sensitivity || 1.5;
         cfgRiSensVal.textContent = Number(cfgRiSens.value).toFixed(1) + '×';
         cfgRiMax.value = c.remote_input_max_minutes || 30;
@@ -7336,7 +7455,7 @@
   // 名称与顺序固定，和内容区各 <section data-pane> 一一对应
   var setNav = document.getElementById('setNav');
   [['model', '模型接入'], ['persona', '女仆人设'],
-   ['device', '设备连接'], ['about', '关于更新']].forEach(function (it) {
+   ['device', '设备连接'], ['plugin', '插件设置'], ['about', '关于更新']].forEach(function (it) {
     var b = document.createElement('button');
     b.type = 'button';
     b.className = 'set-tab';
@@ -7457,6 +7576,8 @@
     var payload = {
       base_url: cfgBaseUrl.value,
       tts_enable: cfgTts.checked,
+      with_shot: !!cfgWithShot.checked,
+      stt_enable: !!cfgStt.checked,
       permission_mode: cfgPerm.value,
       workspace: cfgWorkspace.value,
       token: newToken,
@@ -7470,7 +7591,6 @@
       persona_forbid: document.getElementById('cfgPersonaForbid').value,
       update_source: cfgUpdSource.value,
       remote_input_enabled: !!cfgRiEnabled.checked,
-      remote_input_bind_lan: !!cfgRiBindLan.checked,
       remote_input_sensitivity: Number(cfgRiSens.value) || 1.5,
       remote_input_max_minutes: parseInt(cfgRiMax.value, 10) || 30
     };
@@ -7499,6 +7619,10 @@
           tokenHint.textContent = '令牌已更新，其他设备需用新令牌重新连接';
           reconnectNow();
         }
+        // 开关可能刚改过：先按表单值立刻更新本地判断，再拉一次服务端状态校准
+        riState.enabled = !!cfgRiEnabled.checked;
+        loadRemoteStatus();
+        loadSttStatus();
         cfgHint.textContent = res.llm_configured ? '已保存，正在拉取模型列表…' : '已保存（API Key 为空，对话暂不可用）';
         if (!res.llm_configured) {
           // 全屏设置页不再自动关闭：主人可能还要接着改下一项，
@@ -7519,6 +7643,103 @@
       });
   });
 
+  // ---------- 插件设置（和 Decky 插件端共用同一份后端配置） ----------
+  // 语音输入可用性：/api/stt 会把「运行时没装」和「模型没下」分开报，
+  // 开关本身照样能保存，这里只负责把不可用的原因说清楚
+  function loadSttStatus() {
+    fetch('/api/stt?token=' + encodeURIComponent(token))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.runtime && d.model) {
+          sttHint.textContent = '语音输入可用。';
+        } else if (d && !d.runtime) {
+          sttHint.textContent = '这台机器还没安装语音识别运行时（sherpa-onnx）：开关可以保存，但暂时识别不了。';
+        } else {
+          sttHint.textContent = '语音识别模型还没下载（约 155MB），在插件端点下载后才能用。';
+        }
+      })
+      .catch(function () { sttHint.textContent = ''; });
+  }
+
+  // 核心状态：只读展示。/api/status 是网页实时状态，和「启动/重启/关闭核心」
+  // 这类由插件端/客户端执行的维护操作分开，不在网页里重复做一份会误导人的按钮
+  function loadCoreState() {
+    fetch('/api/status?token=' + encodeURIComponent(token))
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (s) {
+        var ctx = s.context || {};
+        var rows = [
+          ['核心', '运行中'],
+          ['模型', s.model || '未配置'],
+          ['模式', s.mode === 'gaming' ? '游戏模式' : '桌面模式'],
+          ['当前会话', ctx.sid ? '#' + ctx.sid : '新会话'],
+          ['上下文', (ctx.messages || 0) + ' 条 / ' + (ctx.percent || 0) + '%']
+        ];
+        coreState.innerHTML = rows.map(function (r) {
+          return '<div class="state-row"><span>' + r[0] + '</span><b>'
+            + escapeHtml(String(r[1])) + '</b></div>';
+        }).join('');
+      })
+      .catch(function () {
+        coreState.innerHTML = '<div class="state-row"><span>核心</span><b>连不上（可能正在重启）</b></div>';
+      });
+  }
+
+  // 提示词模板走插件端同一条独立接口；空文本由后端归一成默认模板
+  function saveTpl(endpoint, box) {
+    return memFetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: box.value })
+    }).then(function (res) {
+      // 后端会把全空白归一成默认模板，这里回填服务端最终生效的文本
+      box.value = (res && res.text) || '';
+      return res;
+    });
+  }
+  tplSave.addEventListener('click', function () {
+    tplHint.textContent = '保存中…';
+    Promise.all([
+      saveTpl('/api/ask-template', cfgAskTemplate),
+      saveTpl('/api/translate-template', cfgTranslateTemplate)
+    ]).then(function () {
+      tplHint.textContent = '提示词已保存：插件端「截屏询问 / 截图翻译」读到的就是这份';
+    }).catch(function (err) {
+      var msg = (err && err.message) || '';
+      var offline = /Failed to fetch|NetworkError|Load failed/i.test(msg);
+      tplHint.textContent = '保存失败：' + (offline ? '连不上服务，请稍后重试' : (msg || '未知错误'));
+    });
+  });
+  document.getElementById('askTplReset').addEventListener('click', function () {
+    cfgAskTemplate.value = askTplDefault;
+    tplHint.textContent = '已填入默认的截屏提问，点「保存提示词」后生效';
+  });
+  document.getElementById('trnTplReset').addEventListener('click', function () {
+    cfgTranslateTemplate.value = trnTplDefault;
+    tplHint.textContent = '已填入默认的翻译提示词，点「保存提示词」后生效';
+  });
+
+  // 刷新模型列表：和顶栏、插件端都用 /api/models，拉到的列表写进同一个下拉
+  pluginModelRefresh.addEventListener('click', function () {
+    pluginModelHint.textContent = '刷新中…';
+    reloadModels().then(function (list) {
+      pluginModelHint.textContent = list.length
+        ? ('已刷新，共 ' + list.length + ' 个模型')
+        : '没拉到模型列表：检查「模型接入」里的地址和 Key 后重试';
+    });
+  });
+
+  // 新会话复用侧栏已有的入口，创建结果由那边的广播/提示负责
+  document.getElementById('pluginNewSess').addEventListener('click', function () {
+    document.getElementById('btnNewSess').click();
+    setTimeout(loadCoreState, 500);
+  });
+
+  document.getElementById('coreRefresh').addEventListener('click', loadCoreState);
+
   // ---------- 跨屏键鼠接管（PC 浏览器 ↔ Deck） ----------
   // 远程 PC 点 logo → Pointer Lock → 相对位移/按键走 /ws/input；
   // Deck 客户端（native=1）点 logo → POST release，走同一个后端释放路径。
@@ -7528,7 +7749,7 @@
   var riStop = document.getElementById('riStop');
   var riToastEl = document.getElementById('riToast');
   var riState = {
-    enabled: false, bind_lan: false, sensitivity: 1.5, max_minutes: 30,
+    enabled: false, sensitivity: 1.5, max_minutes: 30,
     active: false, by: '', remaining: 0
   };
   var riWs = null, riActive = false, riStarting = false;
@@ -7537,6 +7758,17 @@
 
   if (cfgRiSens) cfgRiSens.addEventListener('input', function () {
     cfgRiSensVal.textContent = Number(cfgRiSens.value).toFixed(1) + '×';
+  });
+
+  // 单开关：从「关」切到「开」等于开放局域网接管，先明确提醒一次；
+  // 取消就把勾选退回去，别让人稀里糊涂把机器暴露出去
+  cfgRiEnabled.addEventListener('change', function () {
+    if (!cfgRiEnabled.checked) return;
+    var ok = window.confirm(
+      '开启后，局域网内任何拿到访问令牌的设备都能接管这台 Deck。\n' +
+      '请只在可信网络里使用，用完及时关闭。确定要开启吗？'
+    );
+    if (!ok) cfgRiEnabled.checked = false;
   });
 
   function riToast(text) {
@@ -7572,7 +7804,6 @@
       .then(function (st) {
         if (!st) return;
         riState.enabled = !!st.enabled;
-        riState.bind_lan = !!st.bind_lan;
         riState.sensitivity = Number(st.sensitivity) || 1.5;
         riState.max_minutes = Number(st.max_minutes) || 30;
         riState.active = !!st.active;
@@ -7593,8 +7824,8 @@
   }
 
   var RI_ERR_TEXT = {
-    RI_DISABLED: '跨屏接管没有开启，请先在 Deck 的设置 → 设备连接里启用',
-    RI_LOCAL_ONLY: '只允许本机接管，请在 Deck 设置里打开「允许局域网设备接管」并保存',
+    RI_DISABLED: '跨屏接管没有开启，已打开设置页：把「允许局域网设备接管」打开并保存，再点 logo',
+    RI_LOCAL_ONLY: '旧配置里 bind_lan = false，本机以外的设备仍被拒绝；请在设置里重新打开总开关并保存',
     RI_UNAUTHORIZED: '访问令牌已失效，请重新登录',
     RI_BUSY: '已经有人在接管这台 Deck 了',
     RI_NO_YDOTOOL: 'Deck 上没有可用的按键注入服务（ydotoold 未运行）',
@@ -7686,8 +7917,27 @@
     };
   }
 
+  // 开关没开时点 logo 不能静默失败：先给一句明确提示，再直接把设置页的开关摆到眼前
+  function riGuideEnable() {
+    riToast('跨屏接管还没开启：已打开设置页，把总开关打开并保存，再点 logo 即可接管');
+    if (!document.body.classList.contains('settings-mode')) openSettings();
+    // openSettings 默认落在「模型接入」，这里再切到「插件设置」（接管开关已并到这组）
+    showSetPane('plugin');
+    // 等这一帧的切页真正落定再滚动：showSetPane 会把 .set-body 的滚动位置归零
+    setTimeout(function () {
+      if (riEnableCard) {
+        riEnableCard.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        riEnableCard.classList.remove('ri-guide');
+        void riEnableCard.offsetWidth;  // 强制回流，连续点两次也能重放高亮动画
+        riEnableCard.classList.add('ri-guide');
+      }
+      try { cfgRiEnabled.focus(); } catch (e) {}
+    }, 60);
+  }
+
   function startRemoteInput() {
     if (IS_NATIVE || riActive || riStarting) return;
+    if (!riState.enabled) { riGuideEnable(); return; }
     if (typeof brandLogo.requestPointerLock !== 'function') {
       riToast('当前环境不支持指针锁定，无法接管（请用桌面版 Chrome / Edge）');
       return;

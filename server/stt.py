@@ -166,36 +166,41 @@ class STT:
     # ---------- 识别 ----------
 
     def _ensure_recognizer(self):
-        if self._rec is not None:
-            return self._rec
-        try:
-            import sherpa_onnx
-        except Exception as exc:
-            raise STTError(
-                "没有装 sherpa-onnx，语音功能不可用（pip install sherpa-onnx）"
-            ) from exc
-        if not self.model_ready():
-            raise STTError("语音模型还没下载")
+        # 整个加载过程放在锁里：并发请求同时判定 self._rec 为空会各建一份，
+        # 后一份覆盖前一份，前一份的线程/内存就漏掉了
+        with self._lock:
+            if self._rec is not None:
+                return self._rec
+            try:
+                import sherpa_onnx
+            except Exception as exc:
+                raise STTError(
+                    "没有装 sherpa-onnx，语音功能不可用（pip install sherpa-onnx）"
+                ) from exc
+            if not self.model_ready():
+                raise STTError("语音模型还没下载")
 
-        root = self._ready_path
-        self._rec = sherpa_onnx.OfflineRecognizer.from_sense_voice(
-            model=str(root / "model.int8.onnx"),
-            tokens=str(root / "tokens.txt"),
-            # use_itn：数字、日期转成习惯写法（「三点」「3:00」），并补标点
-            use_itn=True,
-            num_threads=NUM_THREADS,
-            # 不在这里选语言：SenseVoice 自带中英日韩粤识别，让它自己判
-            language="auto",
-        )
-        return self._rec
+            root = self._ready_path
+            self._rec = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                model=str(root / "model.int8.onnx"),
+                tokens=str(root / "tokens.txt"),
+                # use_itn：数字、日期转成习惯写法（「三点」「3:00」），并补标点
+                use_itn=True,
+                num_threads=NUM_THREADS,
+                # 不在这里选语言：SenseVoice 自带中英日韩粤识别，让它自己判
+                language="auto",
+            )
+            return self._rec
 
     def _maybe_unload(self):
         """空闲超过 IDLE_UNLOAD_SEC 就释放 recognizer，把内存还给系统"""
-        if self._rec is None:
-            return
-        if time.time() - self._last_used < IDLE_UNLOAD_SEC:
-            return
+        # 判定和卸载都放进锁里：只看锁外的旧 _last_used 可能刚有请求进来，
+        # 结果把正在用的 recognizer 卸掉，下一次识别直接失败
         with self._lock:
+            if self._rec is None:
+                return
+            if time.time() - self._last_used < IDLE_UNLOAD_SEC:
+                return
             self._rec = None
 
     @staticmethod
@@ -233,12 +238,19 @@ class STT:
 
         rec = self._ensure_recognizer()
         # sherpa-onnx 的 recognizer 不是线程安全的，并发请求在这里排队
-        with self._lock:
-            stream = rec.create_stream()
-            stream.accept_waveform(rate, samples)
-            rec.decode_stream(stream)
-            text = (stream.result.text or "").strip()
-        self._last_used = time.time()
+        try:
+            with self._lock:
+                stream = rec.create_stream()
+                stream.accept_waveform(rate, samples)
+                rec.decode_stream(stream)
+                text = (stream.result.text or "").strip()
+            self._last_used = time.time()
+        except Exception as exc:
+            # 识别器可能在长时间驻留后损坏；丢掉缓存，下一次按需重新加载，
+            # 而不是把坏掉的实例一直留着让后面每一轮都失败
+            with self._lock:
+                self._rec = None
+            raise STTError(f"识别失败：{exc}") from exc
         return text
 
     def unload(self):

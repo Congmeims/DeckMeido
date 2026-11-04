@@ -79,7 +79,7 @@ class AccessTest(unittest.TestCase):
         self.assertEqual(
             ri.access_error(self.cfg(enabled=False), "127.0.0.1", "abcd", "abcd"),
             ri.RI_DISABLED)
-        # bind_lan = false 时局域网来源被拒，本机回环放行
+        # 旧配置 bind_lan = false 时局域网来源被拒，本机回环放行
         self.assertEqual(
             ri.access_error(self.cfg(bind_lan=False), "192.168.1.9", "abcd", "abcd"),
             ri.RI_LOCAL_ONLY)
@@ -87,6 +87,24 @@ class AccessTest(unittest.TestCase):
             ri.access_error(self.cfg(bind_lan=False), "127.0.0.1", "abcd", "abcd"))
         self.assertIsNone(
             ri.access_error(self.cfg(), "192.168.1.9", "abcd", "ABCD"))
+
+    def test_merged_switch_allows_lan(self):
+        """合并成单开关后，新配置只有 enabled = true 就应该允许局域网"""
+        self.assertIsNone(
+            ri.access_error({"enabled": True}, "192.168.1.9", "abcd", "abcd"))
+        self.assertFalse(ri.enabled({"enabled": False}))
+        self.assertTrue(ri.enabled({"enabled": True}))
+
+    def test_legacy_bind_lan_still_limits(self):
+        """旧配置残留的 bind_lan = false 不能被合并开关悄悄放开到局域网"""
+        legacy = {"enabled": True, "bind_lan": False}
+        self.assertEqual(
+            ri.access_error(legacy, "192.168.1.9", "abcd", "abcd"),
+            ri.RI_LOCAL_ONLY)
+        self.assertIsNone(
+            ri.access_error(legacy, "127.0.0.1", "abcd", "abcd"))
+        self.assertFalse(ri.enabled(legacy))
+        self.assertTrue(ri.enabled({"enabled": True, "bind_lan": True}))
 
 
 class KeyMapTest(unittest.TestCase):
