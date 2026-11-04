@@ -35,7 +35,7 @@ EXTRA_DIRS = ["cli"]
 # 不进发布包的运行产物
 SKIP_ANY = {
     "server/config.toml", "server/sessions", "server/uploads",
-    "server/static/shots", "server/overlay.log", "plugin/node_modules",
+    "server/static/shots", "plugin/node_modules",
 }
 
 
