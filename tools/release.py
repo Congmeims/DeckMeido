@@ -75,7 +75,7 @@ def build_tarball(ver: str) -> Path:
     (stage / "VERSION").write_text(ver + "\n", encoding="utf-8", newline="\n")
     notes = subprocess.run(
         ["git", "log", "-n", "20", "--no-merges", "--pretty=- %s"],
-        cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
     ).stdout
     (stage / "RELEASE-NOTES.md").write_text(
         f"# DeckMeido {ver}\n\n> 生成时间：{datetime.now():%Y-%m-%d %H:%M}\n\n"
@@ -190,7 +190,7 @@ def write_meta(ver: str, tarball: Path):
     (DIST / "SHA256SUMS").write_text(f"{s}  {name}\n", encoding="utf-8", newline="\n")
     notes = subprocess.run(
         ["git", "log", "-n", "20", "--no-merges", "--pretty=- %s"],
-        cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
     ).stdout
     data = {
         "tag": ver,
@@ -235,7 +235,7 @@ def main():
     print("==> 凭据检查")
     audit = subprocess.run(
         [sys.executable, str(ROOT / "tools" / "audit_release.py"), ver],
-        cwd=ROOT, text=True, encoding="utf-8",
+        cwd=ROOT, text=True, encoding="utf-8", errors="replace",
     )
     if audit.returncode != 0:
         sys.exit("发布包里有疑似凭据，已中止本次发布（见上面的列表）")
