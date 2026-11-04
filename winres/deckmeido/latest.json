@@ -1,10 +1,10 @@
 {
-  "tag": "0.6.1",
-  "name": "DeckMeido 0.6.1",
-  "notes": "# DeckMeido 0.6.1\n\n- feat(qam): 持久化画面开关与语音输入开关，精修大屏设置页布局\n- feat(voice): 大屏聊天页支持离线语音输入\n- docs(prototype): add standalone 1280x800 big screen prototype\n- fix(deploy): stop auto-restart after core close\n- feat(plugin): restructure big screen UI with tabs, receipt and core controls\n- feat(server): make translate prompt configurable\n- fix(plugin): scope game detection to current Steam client session\n- fix(server): gate power commands on current-turn intent with policy and pending_intent\n- feat(plugin): add fullscreen Steam route with gamepad-first big screen chat UI\n- release: 0.5.3\n- chore: 忽略 release.py 生成的插件 zip 中间产物\n- fix(plugin): 恢复 package.json 的 type=module，修掉插件加载报 Unexpected token 'export'\n- feat(install): 重跑安装脚本时询问升级还是卸载，不再默认升级\n- feat(plugin): 插件统一走 zip 安装，产物落到 install.sh 找的位置\n- perf(ui): 限制屏幕上消息节点数量，流式输出时不再打断回看\n- fix(ui): 排队气泡拉满整行，操作按钮右对齐\n- fix(prompt): 重启前先自检是否已重启完成，避免重复掐断会话\n- fix(prompt): 关机/重启先判断有无后续任务，能接续的用 systemctl reboot\n- fix(prompt): 切桌面模式改用 steamosctl，不再走 steamos-session-select plasma\n- chore: 0.5.0 发布准备，镜像站产物更新到 0.5.0\n",
-  "published_at": "2026-11-04T10:15:05+08:00",
+  "tag": "0.6.2",
+  "name": "DeckMeido 0.6.2",
+  "notes": "# DeckMeido 0.6.2\n\n- feat(plugin): QAM 三页签移植与输入法修复，版本升到 0.6.2\n- feat(server): 跨屏接管单开关与开启引导、聊天 surface 策略、网页插件设置组\n- release: 0.6.1 发布产物整理\n- chore(release): 版本号升到 0.6.1\n- fix(install): 升级时强制收掉脱管后端\n- feat(server): 跨屏键鼠接管与远程输入接口\n- feat(qam): 持久化画面开关与语音输入开关，精修大屏设置页布局\n- feat(voice): 大屏聊天页支持离线语音输入\n- docs(prototype): add standalone 1280x800 big screen prototype\n- fix(deploy): stop auto-restart after core close\n- feat(plugin): restructure big screen UI with tabs, receipt and core controls\n- feat(server): make translate prompt configurable\n- fix(plugin): scope game detection to current Steam client session\n- fix(server): gate power commands on current-turn intent with policy and pending_intent\n- feat(plugin): add fullscreen Steam route with gamepad-first big screen chat UI\n- release: 0.5.3\n- chore: 忽略 release.py 生成的插件 zip 中间产物\n- fix(plugin): 恢复 package.json 的 type=module，修掉插件加载报 Unexpected token 'export'\n- feat(install): 重跑安装脚本时询问升级还是卸载，不再默认升级\n- feat(plugin): 插件统一走 zip 安装，产物落到 install.sh 找的位置\n",
+  "published_at": "2026-11-04T12:26:33+08:00",
   "files": {
-    "tarball": "deckmeido-0.6.1.tar.gz",
-    "sha256": "8ccb6c947484e6dd5dea8ae6f809ec1337c0575e104856b9f909ca464d956f42"
+    "tarball": "deckmeido-0.6.2.tar.gz",
+    "sha256": "4d5a3e99d5ec87064cf69239e8c388306f62afe83a4dddbb04b9254d5c9a83c6"
   }
 }
