@@ -19,5 +19,5 @@ ptyprocess    # 真 PTY 终端面板（server/tools.py 模块级裸 import，缺
 ddgs
 
 # 语音输入（server/stt.py 的可选依赖）：缺了不影响后端启动，/api/stt 会报 runtime=false。
-# 模型不在这里，第一次用时由 /api/stt/download 下到 server/models/sensevoice/（约 1GB）。
+# 模型不在这里，第一次用时由 /api/stt/download 下到 <数据根>/models/sensevoice/（约 1GB）。
 sherpa-onnx

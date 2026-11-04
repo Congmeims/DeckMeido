@@ -1,7 +1,8 @@
 """语音输入（STT）：sherpa-onnx + SenseVoice-Small int8，纯 CPU 离线识别
 
 为什么选它（见交接纪要 §5）：用户没有云端 STT 的 key；SenseVoice-Small int8
-下载 155MB、10 秒语音推算 1–1.5 秒、中文与中英混说都行、自带标点。
+压缩包约 1GB（只解出 int8 模型，约 250MB）、10 秒语音推算 1–1.5 秒、
+中文与中英混说都行、自带标点。
 三者都跑在 sherpa-onnx 上，将来换模型不用改这里的调用代码。
 
 几个硬约束：
@@ -19,6 +20,7 @@
 """
 from __future__ import annotations
 
+import errno
 import io
 import os
 import shutil
@@ -44,6 +46,8 @@ MODEL_URL = (
 MODEL_ARCHIVE = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2"
 # 解压后真正的模型文件在顶层同名目录里
 MODEL_INNER = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
+# 下载 + 解压至少需要的空闲空间：压缩包约 1GB，解出来的 int8 模型约 250MB
+MIN_FREE_BYTES = int(1.5 * 1024**3)
 
 # 推理线程数：2 线程已能跑到实时率的数倍，再多只会和游戏抢 CPU
 NUM_THREADS = 2
@@ -111,53 +115,81 @@ class STT:
     # ---------- 模型下载 ----------
 
     def download_model(self, progress=None) -> Path:
-        """下载并解压模型（约 155MB），已存在则直接返回
+        """下载并解压模型（压缩包约 1GB，解出约 250MB），已存在则直接返回
 
         progress(done, total) 用来给前端报进度；total 未知时传 -1。
         """
         if self.model_ready():
             return self._ready_path
 
-        self.model_root.mkdir(parents=True, exist_ok=True)
+        try:
+            self.model_root.mkdir(parents=True, exist_ok=True)
+            self.model_root.chmod(0o700)
+        except OSError as exc:
+            raise STTError(
+                f"模型目录不可写：{self.model_root}（{exc}）；"
+                "请检查数据根权限或 DECKMEIDO_DATA_DIR"
+            ) from exc
+
+        try:
+            free = shutil.disk_usage(self.model_root).free
+        except OSError:
+            free = None
+        if free is not None and free < MIN_FREE_BYTES:
+            raise STTError(
+                f"磁盘空间不足：{self.model_root.parent} 仅剩 {free / 1024**3:.1f} GB，"
+                f"下载并解压语音模型至少需要 {MIN_FREE_BYTES / 1024**3:.1f} GB"
+            )
+
         archive = self.model_root / MODEL_ARCHIVE
         tmp = archive.with_suffix(".part")
+        try:
+            if not archive.is_file():
+                req = urllib.request.Request(MODEL_URL, headers={"User-Agent": "DeckMeido"})
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    total = int(resp.headers.get("Content-Length") or -1)
+                    done = 0
+                    with open(tmp, "wb") as fh:
+                        while True:
+                            chunk = resp.read(1 << 16)
+                            if not chunk:
+                                break
+                            fh.write(chunk)
+                            done += len(chunk)
+                            if progress:
+                                progress(done, total)
+                tmp.replace(archive)
 
-        if not archive.is_file():
-            req = urllib.request.Request(MODEL_URL, headers={"User-Agent": "DeckMeido"})
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                total = int(resp.headers.get("Content-Length") or -1)
-                done = 0
-                with open(tmp, "wb") as fh:
-                    while True:
-                        chunk = resp.read(1 << 16)
-                        if not chunk:
-                            break
-                        fh.write(chunk)
-                        done += len(chunk)
-                        if progress:
-                            progress(done, total)
-            tmp.replace(archive)
-
-        # 只解出要用的三个文件：包里还有一个 fp32 的 model.onnx（937MB），
-        # 解出来纯属白占地方，int8 版识别效果够用
-        want = {"model.int8.onnx", "tokens.txt", "LICENSE"}
-        root = self.model_root / MODEL_INNER
-        root.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(archive, "r:bz2") as tf:
-            for m in tf.getmembers():
-                if not m.isfile() or Path(m.name).name not in want:
-                    continue
-                src = tf.extractfile(m)
-                if src is None:
-                    continue
-                with src, open(root / Path(m.name).name, "wb") as fh:
-                    shutil.copyfileobj(src, fh)
-        # 压缩包 1GB，解完就没用了
-        archive.unlink(missing_ok=True)
-        # 老版本解过整包的，把 fp32 那份和残留目录顺手清掉
-        for stale in (root / "model.onnx", root / "export-onnx.py", root / "README.md"):
-            stale.unlink(missing_ok=True)
-        shutil.rmtree(root / "test_wavs", ignore_errors=True)
+            # 只解出要用的三个文件：包里还有一个 fp32 的 model.onnx（937MB），
+            # 解出来纯属白占地方，int8 版识别效果够用
+            want = {"model.int8.onnx", "tokens.txt", "LICENSE"}
+            root = self.model_root / MODEL_INNER
+            root.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(archive, "r:bz2") as tf:
+                for m in tf.getmembers():
+                    if not m.isfile() or Path(m.name).name not in want:
+                        continue
+                    src = tf.extractfile(m)
+                    if src is None:
+                        continue
+                    with src, open(root / Path(m.name).name, "wb") as fh:
+                        shutil.copyfileobj(src, fh)
+            # 压缩包 1GB，解完就没用了
+            archive.unlink(missing_ok=True)
+            # 老版本解过整包的，把 fp32 那份和残留目录顺手清掉
+            for stale in (root / "model.onnx", root / "export-onnx.py", root / "README.md"):
+                stale.unlink(missing_ok=True)
+            shutil.rmtree(root / "test_wavs", ignore_errors=True)
+        except STTError:
+            raise
+        except OSError as exc:
+            tmp.unlink(missing_ok=True)
+            if exc.errno == errno.ENOSPC:
+                raise STTError(f"磁盘空间不足，语音模型写入失败：{exc}") from exc
+            raise STTError(f"语音模型下载/解压失败：{exc}") from exc
+        except Exception as exc:
+            tmp.unlink(missing_ok=True)
+            raise STTError(f"语音模型下载/解压失败：{exc}") from exc
 
         if not self.model_ready():
             raise STTError("模型解压后仍找不到 model.int8.onnx")
@@ -181,15 +213,18 @@ class STT:
                 raise STTError("语音模型还没下载")
 
             root = self._ready_path
-            self._rec = sherpa_onnx.OfflineRecognizer.from_sense_voice(
-                model=str(root / "model.int8.onnx"),
-                tokens=str(root / "tokens.txt"),
-                # use_itn：数字、日期转成习惯写法（「三点」「3:00」），并补标点
-                use_itn=True,
-                num_threads=NUM_THREADS,
-                # 不在这里选语言：SenseVoice 自带中英日韩粤识别，让它自己判
-                language="auto",
-            )
+            try:
+                self._rec = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                    model=str(root / "model.int8.onnx"),
+                    tokens=str(root / "tokens.txt"),
+                    # use_itn：数字、日期转成习惯写法（「三点」「3:00」），并补标点
+                    use_itn=True,
+                    num_threads=NUM_THREADS,
+                    # 不在这里选语言：SenseVoice 自带中英日韩粤识别，让它自己判
+                    language="auto",
+                )
+            except Exception as exc:
+                raise STTError(f"识别器加载失败：{exc}") from exc
             return self._rec
 
     def _maybe_unload(self):

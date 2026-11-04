@@ -100,3 +100,19 @@ def meidobot_dir() -> Path:
     path = data_dir() / "meidobot"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def logs_dir() -> Path:
+    """运行日志目录（backend.log / overlay.log）；权限 700"""
+    path = data_dir() / "logs"
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+    return path
+
+
+def stt_model_dir() -> Path:
+    """语音识别模型目录：<data>/models/sensevoice（首次下载时才创建）"""
+    return data_dir() / "models" / "sensevoice"

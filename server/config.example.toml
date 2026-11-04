@@ -150,8 +150,9 @@ max_chars = 300
 
 [stt]
 # 语音输入（离线识别）：开启后首次录音会按需下载 SenseVoice-Small 模型
-#（约 155MB）到 <安装目录>/server/models/，纯 CPU 运行，不联网。
-# 关闭后释放模型、不再占用内存；识别语言由模型自动判定，中英混说即可。
+#（压缩包约 1GB，只解出约 250MB）到 <数据根>/models/sensevoice，纯 CPU
+# 运行，不联网。关闭后释放模型、不再占用内存；识别语言由模型自动判定，
+# 中英混说即可。
 enable = true
 
 [security]

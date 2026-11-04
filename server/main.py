@@ -657,11 +657,11 @@ tts = TTS(
     max_chars=int(_tts_cfg.get("max_chars", 300)),
 )
 
-# 语音识别：模型放在用户数据目录（server/models/），不进插件包也不进 venv。
+# 语音识别：模型放在数据根（<data>/models/sensevoice），不进插件包也不进 venv。
 # 懒加载，第一次识别才建 recognizer
 _stt_cfg = CFG.get("stt", {})
 stt = STT(
-    model_root=BASE_DIR / "models" / "sensevoice",
+    model_root=paths.stt_model_dir(),
     enable=bool(_stt_cfg.get("enable", True)),
 )
 
@@ -3103,7 +3103,7 @@ async def api_stt_status():
 
 @app.post("/api/stt/download", dependencies=[Depends(check_token_any)])
 async def api_stt_download():
-    """下载语音模型（约 155MB）。已经在就秒回，不会重复下
+    """下载语音模型（压缩包约 1GB，解出约 250MB）。已经在就秒回，不会重复下
 
     下载是阻塞 IO，扔到线程里跑，别卡住事件循环 —— 后端还要同时喂 WebSocket。
     """
