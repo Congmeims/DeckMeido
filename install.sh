@@ -47,6 +47,10 @@
 #
 # 2026-11-04 事故：卸载验证误把源码工作区当安装目录，rm -rf 清空了整个仓库（含
 # .git）。此后卸载/清理必须先过 safe_rm_target，拒绝源码工作区与危险路径。
+# 2026-11-04 进一步改造：卸载不再整块删除安装目录，改为按 .deckmeido-manifest
+# 逐项删除；目录必须带 .deckmeido-install 标记才算「安装器创建的」，否则一律
+# 拒绝卸载（即使设置了 DECKMEIDO_ALLOW_UNSAFE_UNINSTALL=1 也只删清单文件、
+# 绝不 rmdir），userdata/ 永远保留。
 set -euo pipefail
 
 APP=deckmeido
@@ -64,6 +68,12 @@ DESKTOP_DIR="$HOME/.local/share/applications"
 DESKTOP_FOLDER="$(command -v xdg-user-dir >/dev/null 2>&1 && xdg-user-dir DESKTOP 2>/dev/null || true)"
 [ -n "$DESKTOP_FOLDER" ] && [ "$DESKTOP_FOLDER" != "$HOME" ] || DESKTOP_FOLDER="$HOME/Desktop"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# 安装器写下的标记与清单：只有带标记的目录才允许卸载；清单记录本次安装
+# 实际铺进安装目录的条目，卸载时只按清单逐项删除，清单外的文件一律不动。
+INSTALL_MARKER="$INSTALL_DIR/.deckmeido-install"
+INSTALL_MANIFEST="$INSTALL_DIR/.deckmeido-manifest"
+CONFIG_MARKER="$CONFIG_DIR/.deckmeido-config"
+CONFIG_MANIFEST="$CONFIG_DIR/.deckmeido-config-manifest"
 
 # 是否通过「curl | sh -」管道执行。管道执行时脚本不在磁盘上，$BASH_SOURCE[0]
 # 不是真实文件，sync_files 依赖的 $HERE/* 会指向错误位置；此时自动走
@@ -156,6 +166,217 @@ remove_tree() {
   fi
   echo "[删除] $target"
   rm -rf -- "$target"
+}
+
+# ---------- 安装标记与文件清单 ----------
+# 2026-11-04 事故后再加一层：卸载只认安装器自己写的清单，不再整块删目录。
+# 清单行格式：
+#   server/xxx            安装目录内的单个文件（相对路径）
+#   dir:client            安装目录内的整目录（安装器完全管理的部分）
+#   ext:/abs/path         安装目录之外、由安装器创建的路径（服务单元/桌面项/插件）
+# 清单外的任何条目都不动；userdata/ 与标记文件永远不会出现在清单里。
+
+# 相对条目校验：拒绝空、绝对路径、.. 逃逸，以及 userdata 与标记文件本身
+manifest_rel_ok() {
+  local rel="${1:-}"
+  [ -n "$rel" ] || return 1
+  case "$rel" in
+    /*|*..*) return 1 ;;
+    userdata|userdata/*|.deckmeido-install|.deckmeido-manifest) return 1 ;;
+  esac
+  return 0
+}
+
+# 外部条目白名单：只允许删安装器自己创建的那几个固定路径
+ext_path_allowed() {
+  local p="${1%/}" root
+  case "$p" in
+    "${UNIT_DIR%/}/$UNIT"|"${DESKTOP_DIR%/}/DeckMeido.desktop"|"${DESKTOP_FOLDER%/}/DeckMeido.desktop")
+      return 0 ;;
+  esac
+  root="${DECKY_PLUGINS_DIR:-$HOME/homebrew/plugins}"
+  [ "$p" = "${root%/}/DeckMeido" ] && return 0
+  return 1
+}
+
+# 删除清单里的单个具体路径（目录递归、文件单删）；插件目录属 root 时补一次 sudo
+remove_manifest_path() {
+  local abs="$1"
+  echo "[删除] $abs"
+  if [ -d "$abs" ] && [ ! -L "$abs" ]; then
+    rm -rf -- "$abs" 2>/dev/null || sudo -n rm -rf -- "$abs" 2>/dev/null || true
+  else
+    rm -f -- "$abs" 2>/dev/null || sudo -n rm -f -- "$abs" 2>/dev/null || true
+  fi
+}
+
+# 按清单逐项删除安装目录内条目。返回通过 LAST_REMOVED 报告实际删除条数。
+delete_install_manifest() {
+  local manifest="$1" line rel abs
+  LAST_REMOVED=0
+  LAST_SKIPPED=0
+  [ -f "$manifest" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      \#*) continue ;;
+      dir:*)
+        rel="${line#dir:}"
+        if ! manifest_rel_ok "$rel"; then
+          warn "跳过清单中的异常目录条目：$line"
+          LAST_SKIPPED=$((LAST_SKIPPED + 1))
+          continue
+        fi
+        abs="$INSTALL_DIR/$rel"
+        [ -e "$abs" ] || [ -L "$abs" ] || continue
+        remove_manifest_path "$abs"
+        LAST_REMOVED=$((LAST_REMOVED + 1))
+        ;;
+      ext:*)
+        abs="${line#ext:}"
+        if ! ext_path_allowed "$abs"; then
+          warn "跳过清单中的外部条目：$abs"
+          LAST_SKIPPED=$((LAST_SKIPPED + 1))
+          continue
+        fi
+        [ -e "$abs" ] || [ -L "$abs" ] || continue
+        remove_manifest_path "$abs"
+        LAST_REMOVED=$((LAST_REMOVED + 1))
+        ;;
+      *)
+        rel="$line"
+        if ! manifest_rel_ok "$rel"; then
+          warn "跳过清单中的异常文件条目：$line"
+          LAST_SKIPPED=$((LAST_SKIPPED + 1))
+          continue
+        fi
+        abs="$INSTALL_DIR/$rel"
+        [ -e "$abs" ] || [ -L "$abs" ] || continue
+        echo "[删除] $abs"
+        rm -f -- "$abs" 2>/dev/null || true
+        LAST_REMOVED=$((LAST_REMOVED + 1))
+        ;;
+    esac
+  done < "$manifest"
+  return 0
+}
+
+# 删完文件后，只收掉「因清单文件被删而变空」的父目录；rmdir 非空目录会失败，
+# 所以用户放在这些目录里的文件不会被牵连。
+cleanup_empty_manifest_dirs() {
+  local manifest="$1" line rel dirs=""
+  [ -f "$manifest" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in
+      ""|\#*|dir:*|ext:*) continue ;;
+    esac
+    rel="$line"
+    manifest_rel_ok "$rel" || continue
+    while [ "${rel%/*}" != "$rel" ]; do
+      rel="${rel%/*}"
+      dirs="$dirs$rel"$'\n'
+    done
+  done < "$manifest"
+  printf '%s' "$dirs" | sort -u -r | while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    rmdir "$INSTALL_DIR/$rel" 2>/dev/null || true
+  done
+}
+
+# 写入/刷新 .deckmeido-install 与 .deckmeido-manifest。只记录安装器负责的条目：
+#   · 整目录管理的：.venv client assets deploy tools plugin
+#   · server 逐文件列出，保留 config.toml / sessions / uploads / shots / 日志
+#   · 顶层文件：requirements、README、install.sh、VERSION、uninstall.sh 等
+#   · 安装目录之外的固定路径（服务单元、桌面项、Decky 插件）
+write_install_records() {
+  [ -d "$INSTALL_DIR" ] || return 0
+  local ver tmp="$INSTALL_MANIFEST.tmp" it rel root
+  ver="$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
+  [ -n "$ver" ] || ver="unknown"
+  {
+    printf 'format=1\n'
+    printf 'app=%s\n' "$APP"
+    printf 'version=%s\n' "$ver"
+    printf 'installed_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf 'installer_path=%s\n' "$HERE/install.sh"
+    printf 'install_dir=%s\n' "$INSTALL_DIR"
+  } > "$INSTALL_MARKER" 2>/dev/null || return 0
+
+  : > "$tmp" 2>/dev/null || return 0
+  for it in .venv client assets deploy tools plugin; do
+    [ -d "$INSTALL_DIR/$it" ] && printf 'dir:%s\n' "$it" >> "$tmp"
+  done
+  if [ -d "$INSTALL_DIR/server" ]; then
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      printf 'server/%s\n' "$rel" >> "$tmp"
+    done < <(cd "$INSTALL_DIR/server" && find . -type f \
+      ! -path './config.toml' ! -path './sessions/*' ! -path './uploads/*' \
+      ! -path './shots/*' ! -path '*/__pycache__/*' ! -name '*.log' \
+      -printf '%P\n' 2>/dev/null)
+  fi
+  for it in requirements.txt requirements-gui.txt README.md install.sh RELEASE-NOTES.md VERSION uninstall.sh pip-install.log; do
+    [ -f "$INSTALL_DIR/$it" ] && printf '%s\n' "$it" >> "$tmp"
+  done
+  [ -f "$UNIT_DIR/$UNIT" ] && printf 'ext:%s\n' "$UNIT_DIR/$UNIT" >> "$tmp"
+  [ -f "$DESKTOP_DIR/DeckMeido.desktop" ] && printf 'ext:%s\n' "$DESKTOP_DIR/DeckMeido.desktop" >> "$tmp"
+  [ -f "$DESKTOP_FOLDER/DeckMeido.desktop" ] && printf 'ext:%s\n' "$DESKTOP_FOLDER/DeckMeido.desktop" >> "$tmp"
+  root="${DECKY_PLUGINS_DIR:-$HOME/homebrew/plugins}"
+  [ -d "$root/DeckMeido" ] && printf 'ext:%s\n' "$root/DeckMeido" >> "$tmp"
+  mv -f "$tmp" "$INSTALL_MANIFEST" 2>/dev/null || rm -f "$tmp"
+  dim "安装清单：$INSTALL_MANIFEST（$(wc -l < "$INSTALL_MANIFEST" 2>/dev/null | tr -d ' ') 项）"
+  return 0
+}
+
+# 配置备份目录（~/.config/deckmeido）的标记与清单：--purge 只按清单逐项删，
+# 没有 .deckmeido-config 标记的目录一律拒绝删除。
+write_config_records() {
+  mkdir -p "$CONFIG_DIR" 2>/dev/null || return 1
+  {
+    printf 'format=1\n'
+    printf 'app=%s\n' "$APP"
+    printf 'created_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf 'installer_path=%s\n' "$HERE/install.sh"
+  } > "$CONFIG_MARKER" 2>/dev/null || return 1
+  : > "$CONFIG_MANIFEST" 2>/dev/null || return 0
+  local f
+  for f in meidosoul.json memory.json; do
+    [ -f "$CONFIG_DIR/$f" ] && printf '%s\n' "$f" >> "$CONFIG_MANIFEST"
+  done
+  return 0
+}
+
+purge_config_dir() {
+  local line rel abs
+  if [ ! -f "$CONFIG_MARKER" ]; then
+    warn "拒绝删除配置目录：$CONFIG_DIR 缺少安装器标记 .deckmeido-config"
+    return 0
+  fi
+  if [ -f "$CONFIG_MANIFEST" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      case "$line" in
+        /*|*..*)
+          warn "跳过配置清单中的异常条目：$line"
+          continue
+          ;;
+      esac
+      abs="$CONFIG_DIR/$line"
+      [ -e "$abs" ] || [ -L "$abs" ] || continue
+      echo "[删除] $abs"
+      rm -f -- "$abs" 2>/dev/null || true
+    done < "$CONFIG_MANIFEST"
+    echo "[删除] $CONFIG_MANIFEST"
+    rm -f -- "$CONFIG_MANIFEST" 2>/dev/null || true
+  fi
+  echo "[删除] $CONFIG_MARKER"
+  rm -f -- "$CONFIG_MARKER" 2>/dev/null || true
+  if [ -z "$(find "$CONFIG_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    echo "[删除] $CONFIG_DIR"
+    rmdir "$CONFIG_DIR" 2>/dev/null || true
+  else
+    info "保留目录：$CONFIG_DIR（含未识别文件）"
+  fi
 }
 
 
@@ -1501,22 +1722,30 @@ install_uninstaller() {
   cat > "$INSTALL_DIR/uninstall.sh" <<'EOS'
 #!/usr/bin/env bash
 # DeckMeido 卸载入口（由 install.sh 自动生成）
-#   bash uninstall.sh            删代码与依赖，保留人设、记忆（下次安装自动恢复）
-#   bash uninstall.sh --purge    连人设、记忆、配置、会话、工作区一起删
+#   bash uninstall.sh            按清单删安装器文件，保留人设、记忆与 userdata/
+#   bash uninstall.sh --purge    额外删除安装器创建的配置备份目录（逐项）
+#
+# 2026-11-04 事故后规则：绝不整块删除安装目录；没有 .deckmeido-install 标记的
+# 目录一律拒绝卸载；只删 .deckmeido-manifest 里列出的条目；userdata/ 永远保留。
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "$HERE/install.sh" ]; then
-  exec bash "$HERE/install.sh" uninstall "${1:-}"
-fi
-# ---- 兜底：install.sh 已经不在了，只能自己动手 ----
+# 注意：这里不再转发给 install.sh。install.sh 的守卫会把「脚本所在目录」
+# 当成源码工作区拒绝，而本脚本就住在安装目录里，转发必然失败。下面全部
+# 按清单逐项删除，HERE 只作为安装目录基准，绝不对 HERE 本身 rm -rf。
 APP=deckmeido
 PORT="${DECKMEIDO_PORT:-18765}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/$APP"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+UNIT=deckmeido.service
 DESKTOP_DIR="$HOME/.local/share/applications"
 DESKTOP_FOLDER="$(command -v xdg-user-dir >/dev/null 2>&1 && xdg-user-dir DESKTOP 2>/dev/null || true)"
 [ -n "$DESKTOP_FOLDER" ] && [ "$DESKTOP_FOLDER" != "$HOME" ] || DESKTOP_FOLDER="$HOME/Desktop"
 [ "$(id -u)" = "0" ] && { echo "不要用 sudo 运行"; exit 1; }
+INSTALL_DIR="$HERE"
+MARKER="$HERE/.deckmeido-install"
+MANIFEST="$HERE/.deckmeido-manifest"
+CONFIG_MARKER="$CONFIG_DIR/.deckmeido-config"
+CONFIG_MANIFEST="$CONFIG_DIR/.deckmeido-config-manifest"
 
 # 2026-11-04 事故：卸载脚本误把源码工作区当安装目录删了。这里同样加删除守卫：
 # 含 .git / 就是脚本所在目录 / 空 / / / 家目录 / 路径过浅 一律拒绝。
@@ -1527,15 +1756,72 @@ guard_target() {
   t="${t%/}"
   [ "$(printf '%s' "$t" | awk -F/ '{print NF-1}')" -ge 3 ] || return 1
   [ ! -d "$t/.git" ] || return 1
-  [ "$t" != "$HERE" ] || return 1
-  case "$HERE/" in "$t"/*) return 1 ;; esac
+  # 这里不能拒绝 t == HERE：本脚本就住在安装目录里。只拒绝 HERE 的上级。
+  case "$HERE" in "$t"/*) return 1 ;; esac
   return 0
 }
-safe_rm() {
-  guard_target "$1" || { echo "[删除守卫] 拒绝：$1（疑似源码工作区或危险路径）" >&2; exit 1; }
-  echo "[删除] $1"
-  rm -rf -- "$1"
+
+rel_ok() {
+  local rel="${1:-}"
+  [ -n "$rel" ] || return 1
+  case "$rel" in
+    /*|*..*) return 1 ;;
+    userdata|userdata/*|.deckmeido-install|.deckmeido-manifest) return 1 ;;
+  esac
+  return 0
 }
+ext_ok() {
+  local p="${1%/}" root
+  case "$p" in
+    "${UNIT_DIR%/}/$UNIT"|"${DESKTOP_DIR%/}/DeckMeido.desktop"|"${DESKTOP_FOLDER%/}/DeckMeido.desktop")
+      return 0 ;;
+  esac
+  root="${DECKY_PLUGINS_DIR:-$HOME/homebrew/plugins}"
+  [ "$p" = "${root%/}/DeckMeido" ] && return 0
+  return 1
+}
+remove_path() {
+  echo "[删除] $1"
+  if [ -d "$1" ] && [ ! -L "$1" ]; then
+    rm -rf -- "$1" 2>/dev/null || sudo -n rm -rf -- "$1" 2>/dev/null || true
+  else
+    rm -f -- "$1" 2>/dev/null || sudo -n rm -f -- "$1" 2>/dev/null || true
+  fi
+}
+delete_manifest() {
+  local line rel abs
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      dir:*) rel="${line#dir:}"; rel_ok "$rel" || continue; abs="$INSTALL_DIR/$rel" ;;
+      ext:*) abs="${line#ext:}"; ext_ok "$abs" || continue ;;
+      *) rel="$line"; rel_ok "$rel" || continue; abs="$INSTALL_DIR/$rel" ;;
+    esac
+    [ -e "$abs" ] || [ -L "$abs" ] || continue
+    if [ "${line#ext:}" != "$line" ] && [ -d "$abs" ] && [ ! -L "$abs" ]; then
+      remove_path "$abs"
+    elif [ -d "$abs" ] && [ ! -L "$abs" ]; then
+      remove_path "$abs"
+    else
+      echo "[删除] $abs"; rm -f -- "$abs" 2>/dev/null || true
+    fi
+  done < "$MANIFEST"
+}
+
+# 第一道：危险路径直接拒绝，保证零改动
+guard_target "$INSTALL_DIR" || { echo "[删除守卫] 拒绝：$INSTALL_DIR（疑似源码工作区或危险路径）" >&2; exit 1; }
+DEGRADED=0
+if [ ! -f "$MARKER" ]; then
+  if [ "${DECKMEIDO_ALLOW_UNSAFE_UNINSTALL:-0}" != "1" ]; then
+    echo "[拒绝] 拒绝卸载：$INSTALL_DIR 不是本安装器创建的目录" >&2
+    exit 1
+  fi
+  DEGRADED=1
+  echo "[警告] 无安装器标记：只删清单文件，绝不删除目录本身"
+elif [ ! -f "$MANIFEST" ]; then
+  echo "[拒绝] 安装标记存在但缺少清单：$MANIFEST" >&2
+  exit 1
+fi
 
 # 先取消正在跑的任务，再关进程
 if command -v curl >/dev/null 2>&1 && [ -f "$HERE/server/config.toml" ]; then
@@ -1545,46 +1831,73 @@ fi
 pkill -f "$HERE/client/launch.sh" 2>/dev/null || true
 pkill -f "$HERE/client/main.py" 2>/dev/null || true
 if command -v systemctl >/dev/null 2>&1; then
-  systemctl --user disable --now deckmeido.service >/dev/null 2>&1 || true
-  rm -f "$UNIT_DIR/deckmeido.service"
+  systemctl --user disable --now "$UNIT" >/dev/null 2>&1 || true
   systemctl --user daemon-reload || true
 fi
 pkill -f "$HERE/server/main.py" 2>/dev/null || true
 pkill -f "$HERE/server/overlay.py" 2>/dev/null || true
-rm -f "$DESKTOP_DIR/DeckMeido.desktop" "$DESKTOP_FOLDER/DeckMeido.desktop"
-command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
+
+# 普通卸载：把人设和记忆搬到 ~/.config/deckmeido/，并留下标记/清单
+mkdir -p "$CONFIG_DIR" 2>/dev/null || true
+for f in meidosoul.json memory.json; do
+  [ -f "$HERE/server/$f" ] && cp -f "$HERE/server/$f" "$CONFIG_DIR/$f" 2>/dev/null
+done
+{
+  printf 'format=1\napp=%s\ncreated_at=%s\ninstaller_path=%s\n' \
+    "$APP" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$HERE/uninstall.sh"
+} > "$CONFIG_MARKER" 2>/dev/null || true
+: > "$CONFIG_MANIFEST" 2>/dev/null || true
+for f in meidosoul.json memory.json; do
+  [ -f "$CONFIG_DIR/$f" ] && printf '%s\n' "$f" >> "$CONFIG_MANIFEST"
+done
+
 if [ "${1:-}" = "--purge" ]; then
-  WS="$(grep -oP '^\s*workspace\s*=\s*"\K[^"]*' "$HERE/server/config.toml" 2>/dev/null | head -n1 || true)"
-  [ -n "$WS" ] || WS="${DECKMEIDO_WORKSPACE:-$HOME/${APP}_workspace}"
-  case "$WS" in "~"/*) WS="$HOME/${WS#\~/}" ;; /*) ;; *) WS="$HOME/$WS" ;; esac
-  safe_rm "$CONFIG_DIR" || exit 1
-  if guard_target "$WS"; then safe_rm "$WS" || exit 1
-  else echo "工作区路径异常（$WS），跳过删除"; fi
+  if [ -f "$CONFIG_MARKER" ]; then
+    if [ -f "$CONFIG_MANIFEST" ]; then
+      while IFS= read -r line || [ -n "$line" ]; do
+        [ -n "$line" ] || continue
+        case "$line" in /*|*..*) continue ;; esac
+        [ -e "$CONFIG_DIR/$line" ] || continue
+        echo "[删除] $CONFIG_DIR/$line"; rm -f -- "$CONFIG_DIR/$line" 2>/dev/null || true
+      done < "$CONFIG_MANIFEST"
+      echo "[删除] $CONFIG_MANIFEST"; rm -f -- "$CONFIG_MANIFEST" 2>/dev/null || true
+    fi
+    echo "[删除] $CONFIG_MARKER"; rm -f -- "$CONFIG_MARKER" 2>/dev/null || true
+    if [ -z "$(find "$CONFIG_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+      echo "[删除] $CONFIG_DIR"; rmdir "$CONFIG_DIR" 2>/dev/null || true
+    else
+      echo "保留目录：$CONFIG_DIR（含未识别文件）"
+    fi
+  else
+    echo "[拒绝] 拒绝删除配置目录：$CONFIG_DIR 缺少 .deckmeido-config 标记"
+  fi
+  echo "拒绝删除工作区：--purge 不再删除工作区"
+fi
+
+if [ -f "$MANIFEST" ]; then
+  delete_manifest
+fi
+if [ "$DEGRADED" = 0 ]; then
+  echo "[删除] $MANIFEST"; rm -f -- "$MANIFEST" 2>/dev/null || true
+  echo "[删除] $MARKER"; rm -f -- "$MARKER" 2>/dev/null || true
+  if [ -z "$(find "$HERE" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    echo "[删除] $HERE"; rmdir "$HERE" 2>/dev/null || true
+  else
+    echo "保留目录：$HERE（含未识别文件）"
+  fi
 else
-  # 普通卸载：把人设和记忆搬到 ~/.config/deckmeido/，下次安装恢复
-  mkdir -p "$CONFIG_DIR"
-  for f in meidosoul.json memory.json; do
-    [ -f "$HERE/server/$f" ] && cp -f "$HERE/server/$f" "$CONFIG_DIR/$f" 2>/dev/null
-  done
+  echo "保留目录：$HERE（降级路径只删清单文件，不 rmdir）"
 fi
-# 真正删掉整个安装目录（含代码、venv、会话）；userdata/ 里的 QQ 归档保留
-if [ -d "$HERE" ]; then
-  guard_target "$HERE" || { echo "[删除守卫] 拒绝：$HERE（疑似源码工作区或危险路径）" >&2; exit 1; }
-  for entry in "$HERE"/* "$HERE"/.[!.]* "$HERE"/..?*; do
-    [ -e "$entry" ] || continue
-    [ "$entry" = "$HERE/userdata" ] && continue
-    echo "[删除] $entry"
-    rm -rf -- "$entry"
-  done
-fi
+command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
+command -v kbuildsycoca6 >/dev/null 2>&1 && kbuildsycoca6 >/dev/null 2>&1 || true
 KEPT="$HERE/userdata/qq"
 if [ -d "$KEPT" ]; then
   echo "保存的 QQ 归档保留在 $KEPT"
 fi
 if [ "${1:-}" = "--purge" ]; then
-  echo "卸载完成：代码、配置、会话、工作区、人设与记忆已全部清除"
+  echo "卸载完成：安装器文件与配置备份已按清单删除"
 else
-  echo "卸载完成：代码已删除，人设与记忆保留在 $CONFIG_DIR（下次安装自动恢复）"
+  echo "卸载完成：安装器文件已按清单删除，人设与记忆保留在 $CONFIG_DIR"
 fi
 EOS
   chmod +x "$INSTALL_DIR/uninstall.sh"
@@ -1720,6 +2033,7 @@ do_install() {
     check_user
     sync_files
     venv_install gui
+    write_install_records
     return 0
   fi
   print_banner
@@ -1743,6 +2057,8 @@ do_install() {
   install_uninstaller
   section "Decky 插件（游戏模式）"
   install_plugin
+  # 所有安装动作结束后再落标记/清单，确保 venv、桌面项、插件都记录在内
+  write_install_records
   if [ "$deps" = "--deps" ]; then
     deps_intro
     maybe_autorepair_after_image_update
@@ -1802,6 +2118,7 @@ do_upgrade() {
   section "Python 运行环境"
   if [ "$gui_only" = 1 ]; then
     venv_install gui || true
+    write_install_records
     launch_client || true
     return 0
   fi
@@ -1812,6 +2129,7 @@ do_upgrade() {
   install_uninstaller
   section "Decky 插件（游戏模式）"
   install_plugin
+  write_install_records
   if [ "$deps" = "--deps" ]; then
     maybe_autorepair_after_image_update
     install_deps
@@ -1957,7 +2275,11 @@ backup_soul() {
       cp -f "$src/$f" "$dst/$f" 2>/dev/null && saved=1
     fi
   done
+  # 只有安装器创建的配置目录才允许日后 --purge 删除，必须留下标记与清单
+  write_config_records || true
   [ "$saved" = 1 ] && dim "已备份人设与记忆到 $dst（下次安装自动恢复）"
+  # 没有可备份文件时上面的 && 列表返回 1，不能让 set -e 把卸载中断
+  return 0
 }
 
 # 安装完成后，若 ~/.config/deckmeido/ 里有之前卸载时留下的人设/记忆备份，
@@ -1976,10 +2298,28 @@ restore_soul() {
 }
 
 do_uninstall() {
-  local purge=0
-  local qq_keep=""
+  local purge=0 degraded=0 has_marker=0
+  local qq_keep="" ws="" kept_dir=0
   [ "${1:-}" = "--purge" ] && purge=1
   check_user
+  # 第一道：危险路径/源码工作区一律在动手前拒绝，保证零改动
+  if ! safe_rm_target "$INSTALL_DIR"; then
+    warn "拒绝卸载：$INSTALL_DIR 疑似源码工作区或危险路径"
+    die "卸载中止（未删除任何文件）"
+  fi
+  # 第二道：目录必须带安装器标记。没有标记就不是我们装的，绝不删。
+  [ -f "$INSTALL_MARKER" ] && has_marker=1
+  if [ "$has_marker" = 0 ]; then
+    if [ "${DECKMEIDO_ALLOW_UNSAFE_UNINSTALL:-0}" != "1" ]; then
+      warn "拒绝卸载：$INSTALL_DIR 不是本安装器创建的目录"
+      exit 1
+    fi
+    degraded=1
+    warn "无安装器标记：进入降级路径，只删清单文件，绝不删除目录本身"
+  elif [ ! -f "$INSTALL_MANIFEST" ]; then
+    warn "安装标记存在但缺少清单：$INSTALL_MANIFEST"
+    die "卸载中止（未删除任何文件）"
+  fi
   if ui_fits; then
     print_banner
     section "$([ "$purge" = 1 ] && echo '卸载（彻底清除）' || echo '卸载')"
@@ -1987,9 +2327,9 @@ do_uninstall() {
     info "卸载 DeckMeido"
   fi
   if [ "$purge" = 1 ]; then
-    dim "彻底清除：代码、配置、会话、工作区，连同人设与记忆一起删除（不可恢复）。"
+    dim "彻底清除：按清单删除安装器创建的文件，连同配置备份与人设记忆（不可恢复）。"
   else
-    dim "本次卸载只删代码与依赖；人设、记忆会先备份到 $CONFIG_DIR，下次安装自动恢复。"
+    dim "本次卸载只删安装器创建的文件；人设、记忆会先备份到 $CONFIG_DIR，下次安装自动恢复。"
   fi
   echo
   # 先把人设和记忆备份走，再动目录，避免删代码时连带丢数据
@@ -2008,8 +2348,8 @@ do_uninstall() {
   if need_cmd systemctl; then
     dim "移除用户服务"
     systemctl --user disable --now "$UNIT" >/dev/null 2>&1 || true
-    rm -f "$UNIT_DIR/$UNIT"
     systemctl --user daemon-reload || true
+    # 服务单元本身由清单独条目删除，这里不再直接 rm
   fi
   # 兜底：后端被独立拉起时（旧版本装过 systemd 单元）也要收掉，否则卸载后
   # 它还在 18765 上跑，下次安装会撞端口
@@ -2017,66 +2357,64 @@ do_uninstall() {
   pkill -f "$INSTALL_DIR/server/overlay.py" 2>/dev/null || true
   sleep 1
 
-  rm -f "$DESKTOP_DIR/DeckMeido.desktop"
-  rm -f "$DESKTOP_FOLDER/DeckMeido.desktop"
+  # 桌面项与 Decky 插件都通过清单里的 ext: 条目删除，刷新缓存放在删完之后
   need_cmd update-desktop-database && update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
-  # 桌面文件被删后，KDE 的图标缓存里还会留着入口，通知它刷新一次
-  need_cmd kbuildsycoca6 && kbuildsycoca6 >/dev/null 2>&1 || true
-  need_cmd kbuildsycoca5 && kbuildsycoca5 >/dev/null 2>&1 || true
-
-  # Decky 插件：装的时候复制到 ~/homebrew/plugins/DeckMeido，卸载不清的话
-  # QAM 里会一直留着一个连不上后端的面板
-  if [ -f "$INSTALL_DIR/plugin/deploy.sh" ]; then
-    dim "移除 Decky 插件"
-    DECKMEIDO_NONINTERACTIVE=1 bash "$INSTALL_DIR/plugin/deploy.sh" --remove >/dev/null 2>&1 || true
-  fi
 
   if [ "$purge" = 1 ]; then
-    local ws; ws="$(workspace_dir)"
-    warn "删除配置、工作区（不可恢复）"
-    dim "配置（含人设/记忆备份）：$CONFIG_DIR"
-    dim "工作区：$ws"
-    remove_tree "$CONFIG_DIR"
+    ws="$(workspace_dir)"
+    warn "删除安装器创建的配置备份目录（逐项，不可恢复）"
+    purge_config_dir
+    # 工作区、家目录、/ 一律拒绝：--purge 不再删除工作区
     case "$ws" in
-      ""|"/"|"$HOME") warn "工作区路径异常（$ws），跳过删除" ;;
-      *) remove_tree "$ws" ;;
+      ""|"/"|"$HOME") warn "拒绝删除工作区：$ws" ;;
+      *) warn "拒绝删除工作区：$ws（含用户文件，--purge 不再删除）" ;;
     esac
   fi
 
-  # 真正删掉整个安装目录（代码 + venv + 会话 + 运行产物全清）。
-  # 人设和记忆已经在最前面 backup_soul 里搬到 ~/.config/deckmeido/，
-  # 普通卸载不会丢；--purge 在上面已经把那份备份也删了。
-  # userdata/ 例外：QQ 的图片/文本归档要留着，卸载后仍能从原路径找回。
+  qq_keep="$INSTALL_DIR/userdata/qq"
   if [ -d "$INSTALL_DIR" ]; then
-    if ! safe_rm_target "$INSTALL_DIR"; then
-      warn "拒绝删除：$INSTALL_DIR 疑似源码工作区或危险路径"
-      die "卸载中止（未删除任何文件）"
+    if [ -f "$INSTALL_MANIFEST" ]; then
+      delete_install_manifest "$INSTALL_MANIFEST"
+      cleanup_empty_manifest_dirs "$INSTALL_MANIFEST"
+      dim "按清单删除了 $LAST_REMOVED 项（跳过异常条目 $LAST_SKIPPED 项）"
     fi
-    local entry
-    for entry in "$INSTALL_DIR"/* "$INSTALL_DIR"/.[!.]* "$INSTALL_DIR"/..?*; do
-      [ -e "$entry" ] || continue
-      [ "$entry" = "$INSTALL_DIR/userdata" ] && continue
-      echo "[删除] $entry"
-      rm -rf -- "$entry"
-    done
-    qq_keep="$INSTALL_DIR/userdata/qq"
+    if [ "$degraded" = 0 ]; then
+      # 标记与清单本身最后处理；降级路径保留它们作为「这里被谁动过」的证据
+      echo "[删除] $INSTALL_MANIFEST"
+      rm -f -- "$INSTALL_MANIFEST" 2>/dev/null || true
+      echo "[删除] $INSTALL_MARKER"
+      rm -f -- "$INSTALL_MARKER" 2>/dev/null || true
+      # 只有目录真的空了才 rmdir；只剩 userdata/ 也算非空
+      if [ -z "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+        echo "[删除] $INSTALL_DIR"
+        rmdir "$INSTALL_DIR" 2>/dev/null || kept_dir=1
+      else
+        kept_dir=1
+      fi
+      [ "$kept_dir" = 1 ] && info "保留目录：$INSTALL_DIR（含未识别文件）"
+    else
+      info "保留目录：$INSTALL_DIR（降级路径只删清单文件，不 rmdir）"
+    fi
   fi
   if [ -d "$qq_keep" ]; then
     info "保存的 QQ 归档保留在 $qq_keep"
   fi
+  need_cmd kbuildsycoca6 && kbuildsycoca6 >/dev/null 2>&1 || true
+  need_cmd kbuildsycoca5 && kbuildsycoca5 >/dev/null 2>&1 || true
 
   # 结果汇总（和安装界面同一套卡片风格）
   if ui_fits; then
     card
     card_title "卸载完成"
     if [ "$purge" = 1 ]; then
-      card_line "已彻底清除：代码、配置、会话、工作区"
-      card_line "人设与记忆也已一并删除"
+      card_line "已按清单删除安装器创建的文件"
+      card_line "人设与记忆备份已清除"
     else
-      card_line "代码与依赖已删除"
+      card_line "安装器创建的文件已按清单删除"
       card_line "人设与记忆已保留在 $CONFIG_DIR"
       card_line "下次安装会自动恢复"
     fi
+    card_line "userdata/ 一律保留，未识别文件未动"
     [ -n "$qq_keep" ] && [ -d "$qq_keep" ] &&
       card_line "QQ 归档保留在 $qq_keep"
     card_end
@@ -2084,13 +2422,16 @@ do_uninstall() {
   else
     info "卸载完成"
     if [ "$purge" = 1 ]; then
-      dim "已彻底清除（含人设与记忆）"
+      dim "已按清单删除（含人设与记忆备份）"
     else
       dim "人设与记忆保留在 $CONFIG_DIR，下次安装自动恢复"
     fi
+    dim "userdata/ 与清单外文件一律保留"
     [ -n "$qq_keep" ] && [ -d "$qq_keep" ] &&
       dim "QQ 归档保留在 $qq_keep（卸载不删）"
   fi
+  # 最后几行是条件输出的 && 列表，没有 QQ 归档时返回 1，不能让它影响退出码
+  return 0
 }
 
 # 无参数运行时弹出的交互菜单：检测是否已安装，给出带默认值的选项。
