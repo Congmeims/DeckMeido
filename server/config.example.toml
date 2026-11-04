@@ -144,3 +144,37 @@ permission_mode = "auto"
 # 留空则使用 ~/deckmeido_workspace（自动创建，适配任意用户名）。
 # 这里写绝对路径可把工作区指到别处（如外置 SD 卡），注意别指向 / 或 $HOME 根目录。
 dir = ""
+
+[qq]
+# QQ 远程控制通道（OneBot 11 / NapCat）。
+# Deck 是客户端：主动连到 NapCat 的「WebSocket 服务器」，本机不开任何入站端口。
+# 在 NapCat 里新建一份 WebSocket 服务器配置，把下面的地址和令牌填过去即可。
+# 安全要点：启用后管理员 QQ 可以在私聊里让 AI 操作这台 Deck，务必：
+#   - 只填自己的 QQ 号到 admin_qq；
+#   - 公网入口务必用 wss:// + 访问令牌；
+#   - allow_groups 留空 = 完全不处理群消息；只加确实需要的群。
+enable = false
+# NapCat WebSocket 服务器地址。
+# 本机调试用 ws://127.0.0.1:3001；公网走 wss://你的域名/ws（反向代理加 TLS）。
+ws_url = "ws://127.0.0.1:3001"
+# NapCat 那份 WebSocket 服务器里设置的访问令牌，必须与之一致。
+# 留空 = 拒绝启动（公网入口不能裸奔）。
+access_token = ""
+# 管理员 QQ 号（字符串）。只有这些人能下指令；其他人私聊一律静默忽略。
+admin_qq = []
+# 允许的群号。空列表 = 不处理任何群；群聊必须 @ 机器人且只能聊天，不能下指令。
+allow_groups = []
+# 每个 QQ 每分钟最多处理多少条消息；超限静默丢弃、不回发。0 = 不限。
+rate_per_minute = 20
+# 单条入站消息最多保留多少字符，超出部分截断。
+max_message_chars = 2000
+# 单条回发最多多少字符，超出拆成多条（最多 5 条，再超出就截断并标注）。
+reply_chunk_chars = 500
+# 危险操作等「确认」的有效期（秒）；超时作废，不留着旧操作等下次确认。
+confirm_timeout = 300
+# 断线重连的指数退避：首次等待秒数、封顶秒数。
+reconnect_min = 1
+reconnect_max = 60
+# WebSocket 心跳（秒）：NapCat 侧没响应就判定断线并重连。
+ping_interval = 30
+ping_timeout = 15

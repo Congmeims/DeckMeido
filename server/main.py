@@ -25,13 +25,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import depcheck, memory, persona, policy, power, prompts, remote_input, singleton, tools, updater
+from . import depcheck, memory, persona, policy, power, prompts, qqbot, remote_input, singleton, tools, updater
 from .session_store import set_title as _set_title
 from .session_store import store
 from . import session_store
 from .session_store import SESSIONS_DIR as _sessions_dir
 from .tts import TTS
 from .stt import STT, STTError, record_supported
+from .tomlcfg import ConfigWriteError, write_config
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.toml"
@@ -67,64 +68,19 @@ def load_config() -> dict:
     return cfg
 
 
-def _toml_value(value) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
-    return '"' + str(value).replace('"', '\\"') + '"'
-
-
-def _toml_set(text: str, section: str, key: str, value) -> str:
-    """在 [section] 内改写 key = value，没有这条就追加到该段末尾"""
-    # 段内只匹配到下一个 [ 开头的表头为止，所以子表（如 [persona.style]）不会被误改
-    sec_pat = re.compile(rf"(^\[{re.escape(section)}\]\n(?:[^\[\n].*\n?)*)", re.M)
-    m = sec_pat.search(text)
-    kv_line = f"{key} = {_toml_value(value)}"
-    if m:
-        block = m.group(1)
-        if re.search(rf"^{re.escape(key)}\s*=", block, re.M):
-            new_block = re.sub(rf"^{re.escape(key)}\s*=.*$", kv_line, block, flags=re.M)
-        else:
-            new_block = block.rstrip("\n") + "\n" + kv_line + "\n"
-        return text[: m.start()] + new_block + text[m.end():]
-    return text.rstrip("\n") + f"\n\n[{section}]\n{kv_line}\n"
-
-
 def update_config(updates: dict):
-    """把 {section: {key: value}} 写回 config.toml（保留注释），并重载运行配置
+    """把 {section: {key: value}} 写回 config.toml（保留注释），并重载运行配置"""
+    write_config(CONFIG_PATH, updates, apply=apply_config)
 
-    值为 dict 时当作子表处理（写进 [section.key]），例如 persona.style。
-    旧实现一律按标量格式化，嵌套 dict 会被写成一行字符串，把整份配置弄坏。
-    """
-    text = CONFIG_PATH.read_text(encoding="utf-8")
-    for section, kv in updates.items():
-        for key, value in kv.items():
-            if isinstance(value, dict):
-                sub = f"{section}.{key}"
-                # 先清掉旧版本把整个子表写成一行字符串留下的 `key = "{...}"`：
-                # 它会让 [section.key] 表头变成「重复定义」，整个配置解析失败。
-                # 只在父段内删 —— 全文替换会误伤子表里的同名键。
-                # 注意父段里如果已经有 [section.key] 子表，规则会在表头处停下。
-                sec_m = re.search(rf"^\[{re.escape(section)}\]\n(?:[^\[\n].*\n?)*", text, re.M)
-                if sec_m is None:
-                    # 没有父段就整段现建，之后直接写子表头
-                    text = text.rstrip("\n") + f"\n\n[{section}]\n"
-                elif re.search(rf"^{re.escape(key)}\s*=", sec_m.group(0), re.M):
-                    cleaned = re.sub(rf"^{re.escape(key)}\s*=.*\n", "", sec_m.group(0),
-                                     count=1, flags=re.M)
-                    text = text[: sec_m.start()] + cleaned + text[sec_m.end():]
-                # 子表不存在时先建一个空表头，下面逐项往里写
-                if not re.search(rf"^\[{re.escape(sub)}\]\s*$", text, re.M):
-                    text = text.rstrip("\n") + f"\n\n[{sub}]\n"
-                for sub_key, sub_value in value.items():
-                    text = _toml_set(text, sub, sub_key, sub_value)
-            else:
-                text = _toml_set(text, section, key, value)
-    CONFIG_PATH.write_text(text, encoding="utf-8")
-    apply_config(tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8")))
+
+def save_config(updates: dict):
+    """接口层写配置：失败转成 500 + 明确原因，不能让前端以为保存成功了"""
+    try:
+        update_config(updates)
+    except ConfigWriteError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"写入配置失败：{exc}") from exc
 
 
 CFG = load_config()
@@ -768,6 +724,8 @@ def apply_config(cfg: dict):
         except Exception:
             pass
     SYSTEM_PROMPT = build_system_prompt()
+    # QQ 通道跟着配置热更新：开关/地址/令牌/白名单改完就重连，不用重启后端
+    _qq_apply_config(cfg.get("qq") or {})
 
 
 def reload_persona() -> dict:
@@ -2695,6 +2653,20 @@ class ConfigUpdate(BaseModel):
     remote_input_max_minutes: int | None = None
 
 
+class QQConfigUpdate(BaseModel):
+    """远程连接页的 QQ 通道配置：只改界面上能编辑的字段
+
+    限流、单条长度、确认超时、心跳这些留在 [qq] 段里用默认值，
+    不铺成输入框。字段为 None 表示本次不改。
+    """
+    enable: bool | None = None
+    ws_url: str | None = None
+    access_token: str | None = None
+    # 接受数组（新前端）或逗号/换行分隔的字符串（手写/旧调用）
+    admin_qq: list[str] | str | None = None
+    allow_groups: list[str] | str | None = None
+
+
 class AskTemplateUpdate(BaseModel):
     # 空 / 全空白表示恢复默认模板
     text: str = ""
@@ -3000,7 +2972,7 @@ async def api_set_config(req: ConfigUpdate):
         _pending_token = updates.get("server", {}).get("token")
         try:
             old_token = TOKEN
-            update_config(updates)
+            save_config(updates)
         finally:
             _pending_token = None
         if TOKEN != old_token:
@@ -3023,7 +2995,7 @@ async def api_set_tts(enabled: bool = Query(...)):
     QAM 里没法像网页设置页那样填一整张表单，只带一个参数，走的还是
     update_config 同一条热更新路径（tts.enable 立即生效，不用重启）。
     """
-    update_config({"tts": {"enable": bool(enabled)}})
+    save_config({"tts": {"enable": bool(enabled)}})
     return {"ok": True, "tts_enable": tts.enable}
 
 
@@ -3040,7 +3012,7 @@ async def api_set_ask_template(req: AskTemplateUpdate):
     模板只影响下一次点「截屏询问」，已经发出的那一轮不受影响。
     """
     tpl = req.text.strip() or DEFAULT_ASK_TEMPLATE
-    update_config({"agent": {"ask_template": tpl}})
+    save_config({"agent": {"ask_template": tpl}})
     return {"ok": True, "text": ASK_TEMPLATE}
 
 
@@ -3062,7 +3034,7 @@ async def api_set_translate_template(req: TranslateTemplateUpdate):
     下一次插件发起的翻译请求就会带上这段新提示词。
     """
     tpl = req.text.strip() or DEFAULT_TRANSLATE_TEMPLATE
-    update_config({"agent": {"translate_template": tpl}})
+    save_config({"agent": {"translate_template": tpl}})
     return {"ok": True, "text": TRANSLATE_TEMPLATE}
 
 
@@ -3106,7 +3078,7 @@ async def api_set_stt(enabled: bool = Query(...)):
     关掉时 apply_config 会顺手 stt.unload()，把识别模型从内存里放掉
     （SenseVoice int8 常驻约 100MB+），Dock 上的 15W 预算也少一份占用。
     """
-    update_config({"stt": {"enable": bool(enabled)}})
+    save_config({"stt": {"enable": bool(enabled)}})
     return {"ok": True, "stt_enable": stt.enable}
 
 
@@ -3363,13 +3335,18 @@ async def handle_chat(text: str, announce: bool = True,
                       device: str | None = None,
                       brief: str = "",
                       turn_id: str = "",
-                      surface: str | None = None) -> dict:
+                      surface: str | None = None,
+                      sid: str = "",
+                      hist: list[dict] | None = None,
+                      readonly: bool = False,
+                      force_confirm: bool = False) -> dict:
     """brief 是给界面看的短文案（可选）：截屏询问那套提示词有一百多字，
    插件面板长显会把整个面板撑开。它只随消息存下来供各端显示，
    真正发给模型、算进上下文的仍然是 text。"""
     global pending_action, _ctx_used
     # 本轮归属快照：整轮全程只认这份 sid/epoch，中途别的端新建/切换会话也不影响它
-    turn_sid = store.current_sid
+    # sid 可由外部通道（QQ）显式指定：QQ 用自己的独立会话，不往本地会话里写
+    turn_sid = sid or store.current_sid
     turn_epoch = store.epoch
     store.turn.update({"sid": turn_sid, "epoch": turn_epoch, "active": True,
                        "turn_id": turn_id,
@@ -3387,8 +3364,9 @@ async def handle_chat(text: str, announce: bool = True,
         set_overlay(False)
     _overlay_state["passthrough"] = False
     # 本轮使用的历史对象。会话操作已改成「换对象」而不是原地清空，
-    # 所以这里拿到的引用在被切走之后依然只属于这一轮
-    hist = store.history
+    # 所以这里拿到的引用在被切走之后依然只属于这一轮。
+    # 外部通道（QQ）带来的是它自己那份历史，不拿 store.history 去覆盖
+    hist = store.history if hist is None else hist
     sid_tag = {"sid": turn_sid}
     # 发起端自带的 turn_id 原样回显到这一轮的每条广播上：sid 是整个会话共用的，
     # 别的端提问时 sid 一样，发起端没法靠它认出「哪些 δ 是我这一轮的」
@@ -3441,6 +3419,8 @@ async def handle_chat(text: str, announce: bool = True,
         client=client or "",
         device=device or "",
         boot_id=_system_boot_id(),
+        readonly=readonly,
+        force_confirm=force_confirm,
     )
     # 带图轮的单轮策略按入口区分：大屏聊天页放开多轮；询问页/截图翻译
     # （包括 QAM 的全部截图轮）继续一问一答，行为保持原样
@@ -3611,8 +3591,10 @@ async def handle_chat(text: str, announce: bool = True,
         await manager.broadcast({"type": "assistant_message", "text": reply, "ts": asst_ts,
                                  "events": events, **sid_tag, **src_tag})
         feed_push("assistant_message", text=reply, events=events)
-        # 语音播报：只播报最终回复，不播报思维链/工具过程（后台进行，不阻塞）
-        asyncio.create_task(tts.speak(reply))
+        # 语音播报：只播报最终回复，不播报思维链/工具过程（后台进行，不阻塞）。
+        # QQ 通道的回答不在本机播报：那是别人在手机上说的话，不该从 Deck 的喇叭里出来
+        if (client or "") != "qq":
+            asyncio.create_task(tts.speak(reply))
     return {"reply": reply, "events": events}
 
 
@@ -5183,13 +5165,17 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 # 完全访问：用户已预先授权一切操作，连 gamepad / install_game 这些
                 # 往常必须点头的也不拦。只有升级例外 —— 它会让服务重启、对话中断，
                 # 属于「做完就跟当前这轮没关系了」的操作，无论什么模式都要确认
-                needs_approval = False if PERMISSION_MODE == "full" else name in tools.DANGEROUS
+                needs_approval = (False if (PERMISSION_MODE == "full" and not ctx.force_confirm)
+                                  else name in tools.DANGEROUS)
                 # 升级会让服务重启、对话中断，无论什么权限模式都要用户点头
                 if name == "self_update" and args.get("action") == "upgrade":
                     needs_approval = True
                 if name == "run_command":
                     cmd = str(args.get("command", ""))
-                    if PERMISSION_MODE == "manual":
+                    if ctx.force_confirm:
+                        # 远程入口（QQ）：full 模式下也只放行不碰电源/系统的普通命令
+                        needs_approval = tools.is_dangerous(cmd)
+                    elif PERMISSION_MODE == "manual":
                         needs_approval = True
                     elif PERMISSION_MODE == "auto":
                         needs_approval = tools.is_dangerous(cmd)
@@ -5479,6 +5465,222 @@ async def local_shot(name: str = Query(default="")):
     if not target.is_file():
         raise HTTPException(status_code=404, detail="file not found")
     return FileResponse(target)
+
+
+# ---------- QQ 远程控制通道（OneBot 11 / NapCat 客户端） ----------
+
+def _qq_nickname() -> str:
+    """触发前缀就是软件里配置的昵称；昵称为空时由 qqbot 退回默认词"""
+    return str(PERSONA.get("name") or "")
+
+
+async def _qq_status_info() -> dict:
+    gaming = await asyncio.to_thread(tools.mode_is_gaming)
+    return {
+        "core": "运行中",
+        "mode": "游戏模式" if gaming else "桌面模式",
+        "version": VERSION,
+    }
+
+
+async def _qq_screenshot() -> tuple[bytes | None, str]:
+    """抓一张当前画面给 /shot 用；返回 (图片字节, 说明)
+
+    走和图聊同一套截图能力（1280×800，游戏模式抓 gamescope，桌面模式用
+    spectacle/mss），优先回传压缩过的 vision JPEG，避免 base64 太大。
+    """
+    try:
+        note = await tools.execute("screenshot", {})
+    except Exception as e:
+        return None, f"截图失败（{type(e).__name__}）"
+    holder = tools.SHOT_STATE
+    if str(holder.get("error") or ""):
+        return None, str(holder["error"])
+    path = holder.get("vision")
+    if path:
+        try:
+            p = Path(path)
+            if p.is_file():
+                return await asyncio.to_thread(p.read_bytes), note
+        except OSError:
+            pass
+    # 状态容器可能被别的轮次换掉：退一步取最近一张压缩图
+    try:
+        shots = sorted((STATIC_DIR / "shots").glob("vision_*.jpg"),
+                       key=lambda p: p.stat().st_mtime)
+    except OSError:
+        shots = []
+    for p in reversed(shots):
+        try:
+            return await asyncio.to_thread(p.read_bytes), note
+        except OSError:
+            continue
+    return None, note
+
+
+def _qq_clear_pending(device: str, sid: str) -> None:
+    """QQ 侧确认超时后，把仍然属于这条来源的挂起操作撤掉"""
+    global pending_action
+    p = pending_action
+    if (isinstance(p, dict) and (p.get("client") or "") == "qq"
+            and (p.get("device") or "") == device
+            and (p.get("sid") or "") == sid):
+        pending_action = None
+
+
+async def _qq_run_turn(text: str, *, sid: str, device: str,
+                       readonly: bool, turn_id: str = "") -> dict:
+    """QQ 通道的一轮对话
+
+    走现有 handle_chat，但用 QQ 自己的会话（sid）和来源标记（device）：
+    本地界面正在看的会话不会被追答写进去，历史里也能分清每条来自哪个 QQ / 群。
+    """
+    global _ctx_used, pending_action
+    if not turn_id:
+        turn_id = "qq-" + secrets.token_hex(6)
+    # 挂起的危险操作只认「同一个 QQ 来源」的确认，并且必须沿用那一轮的 turn_id，
+    # 才符合 handle_chat 的认领校验（见 _pending_matches_turn）。
+    # 会话已经切走（epoch 变了）或者 sid 对不上的，确认也放行不了，直接作废
+    pend = pending_action
+    if (isinstance(pend, dict) and (pend.get("client") or "") == "qq"
+            and (pend.get("device") or "") == device):
+        if qqbot.is_confirm_text(text):
+            if ((pend.get("sid") or "") == sid
+                    and (pend.get("epoch") or 0) == store.epoch
+                    and (pend.get("turn_id") or "")):
+                turn_id = str(pend.get("turn_id"))
+            else:
+                pending_action = None
+    # 本地端正在跑另一轮时不要插进来：store.turn / pending_action 都是全局单份的，
+    # 两边同时跑会把「这一轮是谁提的」搅乱。等本地这轮结束再发即可
+    if (store.turn.get("active") and (store.turn.get("client") or "") != "qq"):
+        return {"reply": "设备正在处理本地端发起的操作，等它结束再发；这一条没有提交。",
+                "busy": True}
+    # QQ 的会话独立于本地当前会话：历史从它自己的文件读，不碰 store.history
+    if sid == store.current_sid:
+        hist = store.history
+    else:
+        data = await asyncio.to_thread(store.read_session, sid)
+        hist = data.get("history") if isinstance(data.get("history"), list) else []
+    try:
+        result = await handle_chat(text, client="qq", device=device,
+                                   turn_id=turn_id, surface=policy.SURFACE_CHAT,
+                                   sid=sid, hist=hist, readonly=readonly,
+                                   force_confirm=True)
+    finally:
+        # handle_chat 会把本轮的 token 用量写进全局估算值，那是给本地会话看的；
+        # QQ 这轮结束后归零，让本地/status 下次重新按自己的历史估算
+        _ctx_used = 0
+    out = {"reply": str(result.get("reply") or "")}
+    p = pending_action
+    if (isinstance(p, dict) and (p.get("client") or "") == "qq"
+            and (p.get("device") or "") == device and (p.get("sid") or "") == sid
+            and (p.get("epoch") or 0) == store.epoch):
+        out["pending"] = {"turn_id": p.get("turn_id") or "",
+                          "description": p.get("description") or ""}
+    return out
+
+
+def _qq_apply_config(raw: dict) -> None:
+    qq_bot.configure(qqbot.parse_config(raw))
+
+
+qq_bot = qqbot.QQBot(
+    runner=_qq_run_turn,
+    screenshot=_qq_screenshot,
+    status_provider=_qq_status_info,
+    nickname=_qq_nickname,
+    pending_clear=_qq_clear_pending,
+)
+qq_bot.configure(qqbot.parse_config(CFG.get("qq") or {}))
+
+
+@app.on_event("startup")
+async def _boot_qqbot():
+    await qq_bot.start()
+
+
+@app.on_event("shutdown")
+async def _stop_qqbot():
+    await qq_bot.stop()
+
+
+@app.get("/api/qq/status", dependencies=[Depends(check_token)])
+async def api_qq_status():
+    """QQ 通道的连接状态与统计（令牌不回显），供远程连接页用"""
+    return qq_bot.state()
+
+
+_QQ_ID_SPLIT = re.compile(r"[,，、\s]+")
+
+
+def _qq_id_list(value) -> list[str]:
+    """把数组或「逗号/换行分隔」的文本归一成去重后的 QQ 号列表"""
+    if value is None:
+        return []
+    chunks = [value] if isinstance(value, str) else list(value)
+    ids: list[str] = []
+    seen: set[str] = set()
+    for chunk in chunks:
+        for part in _QQ_ID_SPLIT.split(str(chunk)):
+            part = part.strip()
+            if part and part not in seen:
+                seen.add(part)
+                ids.append(part)
+    return ids
+
+
+def _qq_public_config() -> dict:
+    """远程连接页要回填的可编辑字段；限流/超时只读展示，不给输入框"""
+    cfg = qqbot.parse_config(CFG.get("qq") or {})
+    return {
+        "enable": cfg.enable,
+        "ws_url": cfg.ws_url,
+        # 这个页面本身就要令牌才能打开，回明文才能「点编辑才可见」；
+        # 状态接口始终不回显
+        "access_token": cfg.access_token,
+        "admin_qq": list(cfg.admin_qq),
+        "allow_groups": list(cfg.allow_groups),
+        "rate_per_minute": cfg.rate_per_minute,
+        "max_message_chars": cfg.max_message_chars,
+        "reply_chunk_chars": cfg.reply_chunk_chars,
+        "confirm_timeout": cfg.confirm_timeout,
+        "prefix": qqbot.prefix_for(_qq_nickname()),
+    }
+
+
+@app.get("/api/qq/config", dependencies=[Depends(check_token)])
+async def api_qq_config():
+    return _qq_public_config()
+
+
+@app.post("/api/qq/config", dependencies=[Depends(check_token_any)])
+async def api_save_qq_config(req: QQConfigUpdate):
+    """保存 QQ 配置并立即按新值重连；写盘统一走 write_config（先校验后原子写）"""
+    updates: dict = {}
+    if req.enable is not None:
+        updates["enable"] = bool(req.enable)
+    if req.ws_url is not None:
+        updates["ws_url"] = req.ws_url.strip()
+    if req.access_token is not None:
+        updates["access_token"] = req.access_token.strip()
+    if req.admin_qq is not None:
+        updates["admin_qq"] = _qq_id_list(req.admin_qq)
+    if req.allow_groups is not None:
+        updates["allow_groups"] = _qq_id_list(req.allow_groups)
+    if updates:
+        save_config({"qq": updates})
+        # save_config 会经 apply_config 热更新配置；这里再等一次重连落定，
+        # 让接口返回的状态已经是新配置下的结果（不是旧的 connected）
+        await qq_bot.reconnect()
+    return {"ok": True, "state": qq_bot.state(), "config": _qq_public_config()}
+
+
+@app.post("/api/qq/reconnect", dependencies=[Depends(check_token_any)])
+async def api_qq_reconnect():
+    """不写配置，只按当前配置重连一次"""
+    await qq_bot.reconnect()
+    return {"ok": True, "state": qq_bot.state()}
 
 
 # 静态网页控制台（放最后挂载，避免覆盖 API 路由）

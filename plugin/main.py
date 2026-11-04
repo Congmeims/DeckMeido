@@ -82,7 +82,7 @@ def _workspace() -> str:
 
 # 面板底部显示版本号：优先用后端 config 里报的版本（和网页设置页一致），
 # 后端连不上时退回插件自己的 package.json
-_PLUGIN_VERSION = "0.6.2"
+_PLUGIN_VERSION = "0.6.6"
 try:
     _pkg = json.loads((Path(__file__).resolve().parent / "package.json").read_text(encoding="utf-8"))
     _PLUGIN_VERSION = str(_pkg.get("version") or _PLUGIN_VERSION)
@@ -90,13 +90,45 @@ except Exception:
     pass
 
 
+_SERVER_CFG_ERROR = ""
+_SERVER_CFG_LOGGED = ""
+
+
 def _load_server_cfg() -> dict:
-    """读后端的 [server] 段，拿 port 和 token"""
+    """读后端的 [server] 段，拿 port 和 token
+
+    读不到 / 解析失败 / 没有 token 是三种不同的问题，不能一律报成「没有
+    token」：配置被写坏时（例如多行模板造成的 TOMLDecodeError）用户会去
+    找一个其实存在的 token。错误原文（带行号）留在 _SERVER_CFG_ERROR，
+    由 get_status 的错误文案和日志原样带出。
+    """
+    global _SERVER_CFG_ERROR, _SERVER_CFG_LOGGED
     try:
-        cfg = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        return cfg.get("server") or {}
-    except Exception:
-        return {}
+        raw = CONFIG_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        _SERVER_CFG_ERROR = f"找不到配置文件 {CONFIG_PATH}"
+    except OSError as exc:
+        _SERVER_CFG_ERROR = f"读不了配置文件 {CONFIG_PATH}：{exc}"
+    else:
+        try:
+            cfg = tomllib.loads(raw)
+        except Exception as exc:
+            _SERVER_CFG_ERROR = f"配置文件解析失败 {CONFIG_PATH}：{exc}"
+        else:
+            if _SERVER_CFG_ERROR:
+                _SERVER_CFG_ERROR = ""
+                _SERVER_CFG_LOGGED = ""
+            return cfg.get("server") or {}
+    # 同一段错误只写一次日志，get_status 每秒都会读配置，别刷屏
+    if _SERVER_CFG_ERROR and _SERVER_CFG_ERROR != _SERVER_CFG_LOGGED:
+        decky.logger.error(_SERVER_CFG_ERROR)
+        _SERVER_CFG_LOGGED = _SERVER_CFG_ERROR
+    return {}
+
+
+def _cfg_error_text() -> str:
+    """「为什么没有 token」：配置错误优先，否则才是真的缺 token"""
+    return _SERVER_CFG_ERROR or "配置里没有 token"
 
 
 # ---------- 本机鉴权 ----------
@@ -2060,7 +2092,7 @@ async def _core_http(port: int, token: str, method: str, path: str,
     后端认的（ws 握手失败时前端只会看到连不上）。
     """
     if not token:
-        return {"ok": False, "error": "配置里没有 token"}
+        return {"ok": False, "error": _cfg_error_text()}
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
     except Exception as exc:
@@ -2489,7 +2521,7 @@ class Plugin:
         port = int(cfg.get("port", 18765))
         token = str(cfg.get("token", "") or "").strip()
         if not token:
-            return {"ok": False, "error": "配置里没有 token"}
+            return {"ok": False, "error": _cfg_error_text()}
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
         except Exception as exc:
@@ -2836,7 +2868,7 @@ class Plugin:
         return {"ok": True}
 
     async def _main(self):
-        decky.logger.info(f"DeckMeido 插件已加载，安装目录 {INSTALL_DIR}")
+        decky.logger.info(f"DeckMeido 插件已加载 v{_PLUGIN_VERSION}，安装目录 {INSTALL_DIR}")
         _run_as()
         # 以 root 加载会把属主写歪，加载时先纠一次，免得 deck 用户 git pull 失败
         _restore_owner()
@@ -2861,7 +2893,7 @@ class Plugin:
         port = int(cfg.get("port", 18765))
         token = str(cfg.get("token", "") or "").strip()
         if not token:
-            decky.logger.warning("自动启动后端跳过：配置里没有 token")
+            decky.logger.warning(f"自动启动后端跳过：{_cfg_error_text()}")
             return
         for attempt in range(1, retries + 1):
             await asyncio.sleep(3 if attempt == 1 else 10)

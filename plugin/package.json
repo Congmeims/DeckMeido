@@ -1,6 +1,6 @@
 {
   "name": "deckmeido-plugin",
-  "version": "0.6.2",
+  "version": "0.6.6",
   "description": "在 QAM 里带上当前游戏画面问 AI",
   "type": "module",
   "main": "dist/index.js",

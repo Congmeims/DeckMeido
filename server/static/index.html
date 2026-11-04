@@ -19,6 +19,19 @@
     --brand: #1a9fff;
     --user-bubble: #1a9fff;
     --danger: #e8463a;
+    /* 跨屏接管提示（顶部横幅 / 侧栏胶囊 / 底部提示条 / 设置卡引导）：
+       默认深色主题用深底亮字；浅色主题在 [data-theme=light] 里换成浅底深字 */
+    --ri-bg: rgba(12,16,26,.96);
+    --ri-fg: #eaf4ff;
+    --ri-line: rgba(120,200,255,.85);
+    --ri-accent: #6fc3ff;
+    --ri-shadow: 0 8px 28px rgba(0,0,0,.55), 0 0 22px rgba(26,159,255,.35);
+    --ri-shadow-sm: 0 2px 10px rgba(0,0,0,.28);
+    --ri-btn-bg: rgba(26,159,255,.26);
+    --ri-btn-bg-hover: rgba(26,159,255,.42);
+    --ri-btn-fg: #ffffff;
+    --ri-focus: rgba(26,159,255,.95);
+    --ri-focus-soft: rgba(26,159,255,.28);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; }
@@ -595,6 +608,8 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     color: var(--text);
   }
+  /* 没有可选项时的占位文案用弱色，和真正选中模型时的正文区分开 */
+  .dd-trigger.dd-empty .dd-label { color: var(--muted); font-weight: 400; }
   .dd-trigger svg {
     position: absolute; right: 9px; top: 50%; transform: translateY(-50%);
     width: 10px; height: 6px; fill: var(--muted); pointer-events: none;
@@ -879,56 +894,56 @@
     background: rgba(26,159,255,.10);
   }
   @keyframes riBreath {
-    0%, 100% { box-shadow: inset 0 0 0 1px rgba(26,159,255,.62), inset 0 0 10px rgba(26,159,255,.16); }
-    50%      { box-shadow: inset 0 0 0 2px rgba(26,159,255,.95), inset 0 0 18px rgba(26,159,255,.45); }
+    0%, 100% { box-shadow: inset 0 0 0 1px var(--ri-focus-soft), inset 0 0 10px var(--ri-focus-soft); }
+    50%      { box-shadow: inset 0 0 0 2px var(--ri-focus), inset 0 0 18px var(--ri-focus-soft); }
   }
   @keyframes riDotPulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
-  /* 「接管中」小字：固定深色底 + 亮色字，浅色主题下也不糊在侧栏背景里 */
+  /* 「接管中」小字：跟随主题（深色深底亮字 / 浅色浅底深字），不糊在侧栏背景里 */
   .sb-brand .bn-ri {
     display: none; flex: 0 0 auto; align-self: center;
-    font-size: 11px; font-weight: 600; color: #eaf4ff;
-    background: rgba(12,16,26,.94);
-    border: 1px solid rgba(120,200,255,.8); border-radius: 999px;
+    font-size: 11px; font-weight: 600; color: var(--ri-fg);
+    background: var(--ri-bg);
+    border: 1px solid var(--ri-line); border-radius: 999px;
     padding: 1px 7px; line-height: 1.2; white-space: nowrap;
-    box-shadow: 0 2px 10px rgba(0,0,0,.28);
+    box-shadow: var(--ri-shadow-sm);
   }
   .sb-brand.ri-active .bn-ri { display: inline; }
   /* 接管中顶部标识：所有端（远程控制端 / Deck 客户端）都走同一条广播。
-     深浅两套主题都不跟随，固定深底亮字，避免浅色主题下变成黑底黑字 */
+     颜色走 --ri-* 变量，浅色主题下是浅底深字，不会变成黑底黑字 */
   #riBanner {
     position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
     z-index: 80; display: flex; align-items: center; gap: 10px;
     padding: 7px 8px 7px 13px; border-radius: 999px;
-    border: 1px solid rgba(120,200,255,.85);
-    background: rgba(12,16,26,.96); color: #eaf4ff; font-weight: 500;
-    box-shadow: 0 8px 28px rgba(0,0,0,.55), 0 0 22px rgba(26,159,255,.35);
+    border: 1px solid var(--ri-line);
+    background: var(--ri-bg); color: var(--ri-fg); font-weight: 500;
+    box-shadow: var(--ri-shadow);
     backdrop-filter: blur(10px); font-size: 12px; white-space: nowrap;
   }
   #riBanner[hidden] { display: none !important; }
   #riBanner .ri-dot {
-    width: 8px; height: 8px; border-radius: 50%; background: #6fc3ff;
-    box-shadow: 0 0 8px #6fc3ff; animation: riDotPulse 1.4s ease-in-out infinite;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--ri-accent);
+    box-shadow: 0 0 8px var(--ri-accent); animation: riDotPulse 1.4s ease-in-out infinite;
   }
   #riStop {
     height: 24px; padding: 0 12px; border-radius: 999px;
-    border: 1px solid rgba(150,215,255,.9); background: rgba(26,159,255,.26);
-    color: #fff; font-size: 12px; cursor: pointer;
+    border: 1px solid var(--ri-line); background: var(--ri-btn-bg);
+    color: var(--ri-btn-fg); font-size: 12px; cursor: pointer;
   }
-  #riStop:hover { background: rgba(26,159,255,.42); }
+  #riStop:hover { background: var(--ri-btn-bg-hover); }
   #riToast {
     position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
     z-index: 90; max-width: 80vw; padding: 9px 14px; border-radius: 10px;
-    background: rgba(18,22,32,.94); border: 1px solid var(--line);
-    color: var(--text); font-size: 12px; line-height: 1.5;
-    box-shadow: 0 10px 30px rgba(0,0,0,.5); display: none;
+    background: var(--ri-bg); border: 1px solid var(--ri-line);
+    color: var(--ri-fg); font-size: 12px; line-height: 1.5;
+    box-shadow: var(--ri-shadow); display: none;
   }
   #riToast.show { display: block; }
   /* 未开启时点 logo 的引导：设置页那张卡片闪两下，眼睛能立刻落到开关上。
      用 inset 阴影，不会像外发光那样被面板裁掉 */
   .ri-guide { animation: riGuide 0.9s ease-in-out 2; }
   @keyframes riGuide {
-    0%, 100% { box-shadow: inset 0 0 0 1px rgba(26,159,255,.2); }
-    50%      { box-shadow: inset 0 0 0 2px rgba(26,159,255,.95), inset 0 0 18px rgba(26,159,255,.28); }
+    0%, 100% { box-shadow: inset 0 0 0 1px var(--ri-focus-soft); }
+    50%      { box-shadow: inset 0 0 0 2px var(--ri-focus), inset 0 0 18px var(--ri-focus-soft); }
   }
   .sb-brand .brand-mark {
     /* 112px 的 1.5 倍 = 168px，仍居中，左右各留 8px 与按钮区对齐 */
@@ -1256,6 +1271,38 @@
     color: var(--text); font-weight: 500; text-align: right;
     word-break: break-all;
   }
+  /* QQ 通道状态卡：底色/描边/文字全部走 --ri-* 变量，浅色主题下是浅底深字。
+     状态点单独给一组颜色，避免在浅色主题里变成看不清的灰点 */
+  .qq-status {
+    display: flex; flex-direction: column; gap: 6px;
+    padding: 10px 12px; margin-bottom: 14px;
+    border: 1px solid var(--ri-line); border-radius: 10px;
+    background: var(--ri-bg); color: var(--ri-fg);
+    box-shadow: var(--ri-shadow-sm);
+  }
+  .qq-status-head {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; font-weight: 600; min-width: 0;
+  }
+  .qq-status-head .qq-dot {
+    width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%;
+    background: var(--ri-accent); box-shadow: 0 0 8px var(--ri-accent);
+  }
+  .qq-status-head .qq-dot.bad { background: #e0a33a; box-shadow: 0 0 8px #e0a33a; }
+  .qq-status-head .qq-dot.off { background: var(--muted); box-shadow: none; }
+  .qq-status-head .qq-state-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .qq-status-detail {
+    font-size: 12px; line-height: 1.55; opacity: .86;
+    word-break: break-word;
+  }
+  .qq-status-grid {
+    display: grid; grid-template-columns: auto minmax(0, 1fr);
+    gap: 2px 10px; font-size: 12px; line-height: 1.5;
+  }
+  .qq-status-grid > span { opacity: .7; }
+  .qq-status-grid > b {
+    font-weight: 500; min-width: 0; word-break: break-all;
+  }
   /* 外观见上方 #saveCfg 那条共用规则，这里只管排版 */
   #updApply { display: none; width: 100%; margin-top: 8px; }
 
@@ -1287,6 +1334,19 @@
     --share-overlay: rgba(16,24,40,.6);
     /* 滚动条 */
     --sb-thumb: rgba(16,24,40,.22); --sb-thumb-hover: rgba(16,24,40,.38);
+    /* 接管提示跟随浅色主题：浅底 + 深字，避免 0.6.2 的深底配 --text 深字
+       （浅色主题下就是黑底黑字）。描边/发光同步换成品牌蓝的深色版本 */
+    --ri-bg: rgba(255,255,255,.97);
+    --ri-fg: #10233a;
+    --ri-line: rgba(11,127,212,.55);
+    --ri-accent: #0b7fd4;
+    --ri-shadow: 0 8px 24px rgba(16,24,40,.18), 0 0 16px rgba(11,127,212,.16);
+    --ri-shadow-sm: 0 2px 8px rgba(16,24,40,.14);
+    --ri-btn-bg: rgba(11,127,212,.14);
+    --ri-btn-bg-hover: rgba(11,127,212,.24);
+    --ri-btn-fg: #0a3f68;
+    --ri-focus: rgba(11,127,212,.9);
+    --ri-focus-soft: rgba(11,127,212,.2);
     /* 告诉浏览内核当前配色，原生滚动条/表单控件才会跟着走 */
     color-scheme: light;
   }
@@ -2530,6 +2590,97 @@
           </div>
         </section>
 
+        <section class="set-pane" data-pane="remote">
+          <h3>远程连接</h3>
+          <p class="pane-desc">
+            从别的设备远程使用这台 Deck：QQ 通道让指定的 QQ 发消息下达指令；
+            跨屏鼠标把电脑上的鼠标键盘接管到这台机器。两项都只在你明确打开后才生效。
+          </p>
+
+          <div class="card">
+            <div class="card-title">QQ 通道</div>
+            <div id="qqStatus" class="qq-status">
+              <div class="qq-status-head">
+                <span class="qq-dot off"></span>
+                <span class="qq-state-text">正在读取状态…</span>
+              </div>
+            </div>
+            <div class="field field-row">
+              <label style="margin:0">启用 QQ 通道</label>
+              <label class="switch">
+                <input id="cfgQqEnable" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field">
+              <label>NapCat WebSocket 地址（ws_url）</label>
+              <input id="cfgQqUrl" type="text" placeholder="wss://napcat.example.com/ws"
+                     autocomplete="off" spellcheck="false">
+              <div class="field-hint">
+                Deck 是客户端，主动连出去，不开入站端口。本机调试用 ws://127.0.0.1:3001；
+                公网入口必须走 wss://，否则令牌等于裸奔。
+              </div>
+            </div>
+            <div class="field">
+              <label>访问令牌（access_token，与 NapCat 的 WebSocket 服务器一致）</label>
+              <div class="token-row">
+                <input id="cfgQqToken" type="password" placeholder="NapCat 里设置的令牌"
+                       autocomplete="off" spellcheck="false">
+                <button id="qqTokenReveal" class="mini-btn" type="button">显示</button>
+              </div>
+            </div>
+            <div class="field">
+              <label>管理员 QQ（逗号或换行分隔，只有这些号能下指令）</label>
+              <textarea id="cfgQqAdmins" rows="3" placeholder="10001, 10002"
+                        spellcheck="false"></textarea>
+            </div>
+            <div class="field">
+              <label>允许的群号（逗号或换行分隔，留空 = 不处理任何群消息）</label>
+              <textarea id="cfgQqGroups" rows="3" placeholder="20001"
+                        spellcheck="false"></textarea>
+              <div class="field-hint">
+                群里必须 @ 机器人才处理，而且只能聊天、不能执行设备操作。
+              </div>
+            </div>
+            <div class="mem-foot">
+              <span class="field-hint" id="qqPrefixHint">当前指令前缀：meido</span>
+              <button id="qqSave" class="mini-btn" type="button">保存</button>
+              <button id="qqReconnect" class="mini-btn" type="button">重新连接</button>
+            </div>
+            <div id="qqHint" class="field-hint"></div>
+          </div>
+
+          <div class="card" id="riEnableCard">
+            <div class="card-title">跨屏鼠标（远程接管）</div>
+            <p class="pane-desc" style="margin-top:0">
+              在电脑浏览器里点左下角 DeckMeido logo 就进入接管：鼠标从电脑上消失，出现在这台 Deck 上，
+              能操作 Steam UI、游戏和这个页面。按 Esc、再点一次 logo，或在 Deck 客户端里点 logo 释放。
+              开关没开时点 logo，会先把你带到这里的开关上。
+            </p>
+            <div class="field field-row">
+              <label style="margin:0">允许局域网设备接管（总开关）</label>
+              <label class="switch">
+                <input id="cfgRiEnabled" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field">
+              <label>指针灵敏度 <span id="cfgRiSensVal" class="field-hint">1.5×</span></label>
+              <input id="cfgRiSens" type="range" min="0.5" max="3" step="0.1" value="1.5"
+                     style="width:100%">
+            </div>
+            <div class="field">
+              <label>单次接管上限（分钟）</label>
+              <input id="cfgRiMax" type="number" min="1" max="120" step="1" value="30">
+            </div>
+            <div class="field-hint" style="color:#e0a33a">
+              安全提示：这个开关同时就是「允许局域网设备接管」。开启后，局域网内任何拿到访问令牌的人
+              都能控制这台机器。只在可信网络里用，用完及时关闭。
+            </div>
+            <div class="field-hint" id="riCfgState">当前状态：未接管</div>
+          </div>
+        </section>
+
         <section class="set-pane" data-pane="plugin">
           <h3>插件设置</h3>
           <p class="pane-desc">
@@ -2600,36 +2751,6 @@
               <span class="field-hint" id="tplHint"></span>
               <button id="tplSave" class="mini-btn" type="button">保存提示词</button>
             </div>
-          </div>
-
-          <div class="card" id="riEnableCard">
-            <div class="card-title">跨屏键鼠接管</div>
-            <p class="pane-desc" style="margin-top:0">
-              在电脑浏览器里点左下角 DeckMeido logo 就进入接管：鼠标从电脑上消失，出现在这台 Deck 上，
-              能操作 Steam UI、游戏和这个页面。按 Esc、再点一次 logo，或在 Deck 客户端里点 logo 释放。
-              开关没开时点 logo，会先把你带到这里的开关上。
-            </p>
-            <div class="field field-row">
-              <label style="margin:0">允许局域网设备接管（总开关）</label>
-              <label class="switch">
-                <input id="cfgRiEnabled" type="checkbox">
-                <span class="slider"></span>
-              </label>
-            </div>
-            <div class="field">
-              <label>指针灵敏度 <span id="cfgRiSensVal" class="field-hint">1.5×</span></label>
-              <input id="cfgRiSens" type="range" min="0.5" max="3" step="0.1" value="1.5"
-                     style="width:100%">
-            </div>
-            <div class="field">
-              <label>单次接管上限（分钟）</label>
-              <input id="cfgRiMax" type="number" min="1" max="120" step="1" value="30">
-            </div>
-            <div class="field-hint" style="color:#e0a33a">
-              安全提示：这个开关同时就是「允许局域网设备接管」。开启后，局域网内任何拿到访问令牌的人
-              都能控制这台机器。只在可信网络里用，用完及时关闭。
-            </div>
-            <div class="field-hint" id="riCfgState">当前状态：未接管</div>
           </div>
 
           <div class="card">
@@ -7039,6 +7160,20 @@
   var cfgRiMax = document.getElementById('cfgRiMax');
   var riEnableCard = document.getElementById('riEnableCard');
   var riCfgState = document.getElementById('riCfgState');
+  // QQ 通道（远程连接页）：状态轮询 + 配置回填
+  var cfgQqEnable = document.getElementById('cfgQqEnable');
+  var cfgQqUrl = document.getElementById('cfgQqUrl');
+  var cfgQqToken = document.getElementById('cfgQqToken');
+  var cfgQqAdmins = document.getElementById('cfgQqAdmins');
+  var cfgQqGroups = document.getElementById('cfgQqGroups');
+  var qqTokenReveal = document.getElementById('qqTokenReveal');
+  var qqSaveBtn = document.getElementById('qqSave');
+  var qqReconnectBtn = document.getElementById('qqReconnect');
+  var qqStatusBox = document.getElementById('qqStatus');
+  var qqPrefixHint = document.getElementById('qqPrefixHint');
+  var qqHint = document.getElementById('qqHint');
+  var qqStatusTimer = 0;
+  var qqConfigLoaded = false;
   // 插件设置（和 Decky 插件端共用一份后端配置）
   var cfgWithShot = document.getElementById('cfgWithShot');
   var cfgStt = document.getElementById('cfgStt');
@@ -7176,6 +7311,9 @@
     loadMemory();
     loadVersion();
     loadCfgForm();
+    loadQqConfig();
+    loadQqStatus();
+    startQqStatusPolling();
     loadSttStatus();
     loadCoreState();
   }
@@ -7455,7 +7593,8 @@
   // 名称与顺序固定，和内容区各 <section data-pane> 一一对应
   var setNav = document.getElementById('setNav');
   [['model', '模型接入'], ['persona', '女仆人设'],
-   ['device', '设备连接'], ['plugin', '插件设置'], ['about', '关于更新']].forEach(function (it) {
+   ['device', '设备连接'], ['remote', '远程连接'],
+   ['plugin', '插件设置'], ['about', '关于更新']].forEach(function (it) {
     var b = document.createElement('button');
     b.type = 'button';
     b.className = 'set-tab';
@@ -7687,6 +7826,168 @@
         coreState.innerHTML = '<div class="state-row"><span>核心</span><b>连不上（可能正在重启）</b></div>';
       });
   }
+
+  // ---------- 远程连接页：QQ 通道 ----------
+  var QQ_STATE_TEXT = {
+    disabled: '已关闭',
+    misconfigured: '配置不完整，未连接',
+    connecting: '正在连接',
+    connected: '已连接',
+    reconnecting: '重连中',
+    stopped: '已停止'
+  };
+
+  // 逗号（中英文）/顿号/空白/换行都当作分隔符，和后端 _qq_id_list 一致
+  function qqSplitList(text) {
+    return String(text || '').split(/[,，、\s]+/).filter(function (v) { return v; });
+  }
+
+  function qqFmtDuration(sec) {
+    sec = Math.max(0, Math.floor(Number(sec) || 0));
+    var h = Math.floor(sec / 3600);
+    var m = Math.floor((sec % 3600) / 60);
+    var s = sec % 60;
+    if (h) return h + ' 小时 ' + m + ' 分';
+    if (m) return m + ' 分 ' + s + ' 秒';
+    return s + ' 秒';
+  }
+
+  function renderQqStatus(s) {
+    if (!qqStatusBox) return;
+    if (!s) {
+      qqStatusBox.innerHTML = '<div class="qq-status-head">'
+        + '<span class="qq-dot off"></span>'
+        + '<span class="qq-state-text">读不到状态（后端可能正在重启）</span></div>';
+      return;
+    }
+    var state = String(s.state || '');
+    var label = QQ_STATE_TEXT[state] || (state || '未知');
+    var dot = 'qq-dot';
+    if (state === 'connected') {
+      // 已连接：亮蓝点
+    } else if (state === 'misconfigured' || state === 'reconnecting') {
+      dot += ' bad';
+    } else {
+      dot += ' off';
+    }
+    var connectedFor = '';
+    if (state === 'connected' && s.connected_at) {
+      connectedFor = qqFmtDuration(Date.now() / 1000 - Number(s.connected_at));
+    }
+    var stats = s.stats || {};
+    var sendRecv = '收 ' + (Number(stats.received) || 0) + ' · 回 ' + (Number(stats.replies) || 0);
+    if (Number(stats.rate_limited)) sendRecv += ' · 限流丢 ' + Number(stats.rate_limited);
+    var rows = [
+      ['主机', s.url || '—'],
+      ['连接时长', connectedFor || '—'],
+      ['重连次数', String(Number(stats.reconnects) || 0)],
+      ['收发统计', sendRecv],
+      ['最后错误', s.last_error || '无']
+    ];
+    var detail = String(s.detail || '');
+    qqStatusBox.innerHTML = '<div class="qq-status-head">'
+      + '<span class="' + dot + '"></span>'
+      + '<span class="qq-state-text">' + escapeHtml(label) + '</span></div>'
+      + (detail ? '<div class="qq-status-detail">' + escapeHtml(detail) + '</div>' : '')
+      + '<div class="qq-status-grid">'
+      + rows.map(function (r) {
+        return '<span>' + escapeHtml(r[0]) + '</span><b>' + escapeHtml(String(r[1])) + '</b>';
+      }).join('')
+      + '</div>';
+    if (qqPrefixHint) qqPrefixHint.textContent = '当前指令前缀：' + (s.prefix || 'meido');
+  }
+
+  function loadQqStatus() {
+    return memFetch('/api/qq/status', {}).then(function (s) {
+      renderQqStatus(s);
+      return s;
+    }).catch(function () {
+      // 状态读不到不弹错误条：页面其它部分照常可用，下一次轮询会自动重试
+      renderQqStatus(null);
+      return null;
+    });
+  }
+
+  // 只在设置页打开时轮询；关掉设置就自然停了，不占额外的请求
+  function startQqStatusPolling() {
+    if (qqStatusTimer) return;
+    qqStatusTimer = setInterval(function () {
+      if (document.body.classList.contains('settings-mode')) loadQqStatus();
+    }, 5000);
+  }
+
+  function loadQqConfig() {
+    return memFetch('/api/qq/config', {}).then(function (c) {
+      cfgQqEnable.checked = !!c.enable;
+      cfgQqUrl.value = c.ws_url || '';
+      cfgQqToken.value = c.access_token || '';
+      cfgQqToken.type = 'password';
+      qqTokenReveal.textContent = '显示';
+      cfgQqAdmins.value = (c.admin_qq || []).join('\n');
+      cfgQqGroups.value = (c.allow_groups || []).join('\n');
+      if (qqPrefixHint) qqPrefixHint.textContent = '当前指令前缀：' + (c.prefix || 'meido');
+      qqConfigLoaded = true;
+      return c;
+    }).catch(function (err) {
+      var msg = (err && err.message) || '';
+      qqHint.textContent = /Failed to fetch|NetworkError|Load failed/i.test(msg)
+        ? '连不上服务，读不到 QQ 配置' : ('读取 QQ 配置失败：' + (msg || '未知错误'));
+      return null;
+    });
+  }
+
+  /**
+   * 提交 QQ 表单。保存按钮和重新连接按钮都走这里：
+   * 后端 POST /api/qq/config 会写盘、热更新并等重连落定；
+   * 配置没变时 configure 会提前返回，但接口里的 reconnect 仍会强制重连一次。
+   * withReconnect 只影响提示文案，动作都是「应用当前表单并重连」。
+   */
+  function submitQq(withReconnect) {
+    // 配置没读回来时表单是空的，直接提交会把已有域名/令牌清空
+    if (!qqConfigLoaded) {
+      qqHint.textContent = '配置还没读到，先刷新页面或稍后重试';
+      return;
+    }
+    qqHint.textContent = withReconnect ? '正在按当前表单重新连接…' : '保存中…';
+    var payload = {
+      enable: !!cfgQqEnable.checked,
+      ws_url: cfgQqUrl.value.trim(),
+      access_token: cfgQqToken.value.trim(),
+      admin_qq: qqSplitList(cfgQqAdmins.value),
+      allow_groups: qqSplitList(cfgQqGroups.value)
+    };
+    return memFetch('/api/qq/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      if (res && res.config) {
+        qqPrefixHint.textContent = '当前指令前缀：' + (res.config.prefix || 'meido');
+      }
+      if (res && res.state) renderQqStatus(res.state);
+      else return loadQqStatus();
+      qqHint.textContent = withReconnect
+        ? '已按当前表单重新连接；状态会在上方刷新'
+        : '已保存，连接已按新配置重启';
+      return res;
+    }).catch(function (err) {
+      var msg = (err && err.message) || '';
+      qqHint.textContent = /Failed to fetch|NetworkError|Load failed/i.test(msg)
+        ? '连不上服务，请稍等几秒重试'
+        : ('保存失败：' + (msg || '未知错误'));
+      return null;
+    });
+  }
+
+  qqSaveBtn.addEventListener('click', function () { void submitQq(false); });
+  qqReconnectBtn.addEventListener('click', function () { void submitQq(true); });
+
+  // 令牌默认掩码显示；点「显示」才切成明文，再点切回
+  qqTokenReveal.addEventListener('click', function () {
+    var show = cfgQqToken.type === 'password';
+    cfgQqToken.type = show ? 'text' : 'password';
+    qqTokenReveal.textContent = show ? '隐藏' : '显示';
+  });
 
   // 提示词模板走插件端同一条独立接口；空文本由后端归一成默认模板
   function saveTpl(endpoint, box) {
@@ -7921,8 +8222,8 @@
   function riGuideEnable() {
     riToast('跨屏接管还没开启：已打开设置页，把总开关打开并保存，再点 logo 即可接管');
     if (!document.body.classList.contains('settings-mode')) openSettings();
-    // openSettings 默认落在「模型接入」，这里再切到「插件设置」（接管开关已并到这组）
-    showSetPane('plugin');
+    // openSettings 默认落在「模型接入」，这里再切到「远程连接」（接管开关和 QQ 通道在这组）
+    showSetPane('remote');
     // 等这一帧的切页真正落定再滚动：showSetPane 会把 .set-body 的滚动位置归零
     setTimeout(function () {
       if (riEnableCard) {
@@ -8649,9 +8950,15 @@
 
     function refreshLabel() {
       var o = sel.options[sel.selectedIndex];
-      label.textContent = o ? o.textContent : '';
+      // 列表没拉到时（没有 Key / /api/models 失败 / 配置读取失败）别留一个空胶囊：
+      // 240px 宽、只有箭头的空条看着像一条坏掉的 toast。给个占位文案，用户知道
+      // 这里是「模型选择」，点开还能重新拉列表
+      var isModel = sel.id === 'modelSelect' || sel.id === 'modelCapsSelect';
+      label.textContent = (o && o.textContent) || (isModel ? '选择模型' : '请选择');
+      wrap.classList.toggle('dd-empty', !(o && o.value));
     }
     sel._dd.refresh = refreshLabel;
+    refreshLabel();  // 建出来就先给占位文案，别等 /api/config 回来才不是空条
     function close() {
       wrap.classList.remove('open');
       if (_ddOpen === sel) _ddOpen = null;

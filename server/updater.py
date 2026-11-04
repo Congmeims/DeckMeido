@@ -619,10 +619,13 @@ def apply(restart_service: bool = True, tag: str = "") -> dict:
         return {"ok": True, "restarted": False, "version": target, "source": used,
                 "message": f"代码已更新到 {target}，但找不到 bash 来跑升级脚本，请手动重启程序"}
     with open(log_path, "ab") as log:
+        # 内联升级没有终端：显式声明非交互，install.sh 才会自动更新 QAM 插件。
+        # 否则 ask_yes 读不到 /dev/tty 会回答「不」，插件就静默停在旧版本。
+        env = dict(os.environ, DECKMEIDO_NONINTERACTIVE="1")
         subprocess.Popen(
             [bash, str(INSTALL_DIR / "install.sh"), "upgrade"],
             cwd=str(INSTALL_DIR), stdout=log, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL, start_new_session=True,
+            stdin=subprocess.DEVNULL, start_new_session=True, env=env,
         )
     src_note = "（镜像站）" if used == "mirror" else "（GitHub）"
     return {"ok": True, "restarted": True, "version": target, "source": used,

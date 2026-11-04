@@ -26,6 +26,13 @@ INTENT_TTL = 600.0
 # 不能一概当成电源命令；具体的电源判定见 _segment_action。
 POWER_ACTIONS = {"reboot", "poweroff", "halt", "shutdown", "restart", "kexec"}
 
+# 只读会话（QQ 群聊里的普通成员）允许调用的工具：全是纯查询 / 看图 / 提问，
+# 不碰设备也不改文件。不在名单里的一律拒绝
+READONLY_TOOLS = {
+    "get_weather", "web_search", "find_game", "list_installed_games",
+    "list_emulator_roms", "screenshot", "list_dir", "read_file", "ask_user",
+}
+
 # systemctl restart 指向这些 unit 时等同于重启/关机，必须继续拦截
 _POWER_UNIT_RE = re.compile(
     r"(reboot|poweroff|halt|kexec|shutdown|final)", re.IGNORECASE)
@@ -97,6 +104,12 @@ class TurnContext:
     client: str = ""
     device: str = ""
     boot_id: str = ""
+    # 只读会话：QQ 群聊里普通成员的轮次只能聊天，任何会动设备的工具都不许。
+    # 名单外的工具一律拒绝，这样以后新增的操作类工具默认也是拒绝的。
+    readonly: bool = False
+    # 强制二次确认：QQ 这类「远程、无人值守」的入口即使处于 full 模式，
+    # 危险工具也必须等用户回「确认」才执行
+    force_confirm: bool = False
 
 
 @dataclass
@@ -459,6 +472,13 @@ def check(name: str, args: dict, ctx: TurnContext | None = None,
     args = args or {}
     ctx = ctx or TurnContext()
     now = time.time() if now is None else now
+    # 只读会话：群聊里的普通成员只能聊天，除纯查询/看图类工具外一律不执行。
+    # 放在最前面，电源判定、密码授权、确认放行都不能绕过它
+    if ctx.readonly and name not in READONLY_TOOLS:
+        return PolicyDecision(
+            False, code="readonly", action=risky_action(name, args),
+            reason="这个会话只能聊天（QQ 群里的普通成员），不能执行设备操作。",
+        )
     action = risky_action(name, args)
     if not action:
         return PolicyDecision(True, code="not_power")
