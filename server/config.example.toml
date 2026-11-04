@@ -1,17 +1,34 @@
 # ============================================================================
 # DeckMeido 配置文件
 #
-# 这个文件只管「怎么跑」——地址、密钥、端口、更新源这类运行参数。
+# 数据根（配置、人设、记忆、会话、上传、QQ 归档都放这里）按顺序解析：
+#   1. 环境变量 DECKMEIDO_DATA_DIR
+#   2. <安装目录>/userdata/（install.sh 创建；不存在或只读时回退）
+#   3. ~/.local/share/deckmeido/（回退目录，日志标 fallback）
+# 目录结构：
+#   userdata/config.toml
+#   userdata/persona/meidosoul.json
+#   userdata/memory.json
+#   userdata/sessions/
+#   userdata/uploads/
+#   userdata/meidobot/{images,inbox_index.jsonl,text_log.txt}
+#
+# 旧布局兼容：升级后第一次读会回退到 server/config.toml、server/meidosoul.json、
+# server/memory.json、server/sessions 与 server/uploads（只读，不删除）；
+# 第一次写入时把旧文件复制到新数据根并记「已迁移读取」。旧 QQ 归档 userdata/qq/
+# 存在而 userdata/meidobot/ 不存在时，读索引/文本会回退旧目录（legacy_dir=qq）。
+#
+# 本文件只管「怎么跑」——地址、密钥、端口、更新源这类运行参数。
 # 它不存人格和记忆，那些拆在另外两个文件里（和 config.toml 放在同一目录）：
-#   meidosoul.json  人设：她是谁、怎么称呼你、用什么语气。可在网页「设置」里改，
-#                   保存后立即生效，改坏/删掉会自动回落到默认人设。
-#   memory.json     长期记忆：关于你的事、这台机器上的经验。
+#   persona/meidosoul.json  人设：她是谁、怎么称呼你、用什么语气。可在网页「设置」里改，
+#                           保存后立即生效，改坏/删掉会自动回落到默认人设。
+#   memory.json             长期记忆：关于你的事、这台机器上的经验。
 #
 # 为什么要拆开：人格是会反复调的东西，记忆是会一直长的东西；把它们和
 # 密钥、端口混在一份文件里，既不好单独备份，也容易在改配置时误删。
 # 想把她这个人整个带走，只备份上面两个 json 就够了。
 #
-# 本文件是模板：首次启动会自动复制成 config.toml 供程序读取。
+# 本文件是模板：首次启动会自动复制成数据根下的 config.toml 供程序读取。
 # 之后以 config.toml 为准，改 config.toml 生效；重新删掉 config.toml 会再
 # 用本模板重新生成一份（等于恢复出厂配置）。
 # 修改后重启后端生效（或直接在网页「设置」里改，保存即热更新）。

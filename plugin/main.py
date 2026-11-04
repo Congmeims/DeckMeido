@@ -65,7 +65,27 @@ def _find_install_dir() -> Path:
 
 
 INSTALL_DIR = _find_install_dir()
-CONFIG_PATH = INSTALL_DIR / "server" / "config.toml"
+
+
+def _config_paths() -> list[Path]:
+    """配置读取顺序：DECKMEIDO_DATA_DIR > <安装目录>/userdata > ~/.local/share > 旧 server/"""
+    env = (os.environ.get("DECKMEIDO_DATA_DIR") or "").strip()
+    if env:
+        return [Path(env).expanduser() / "config.toml"]
+    return [
+        INSTALL_DIR / "userdata" / "config.toml",
+        Path.home() / ".local" / "share" / "deckmeido" / "config.toml",
+        INSTALL_DIR / "server" / "config.toml",   # 旧布局，只读
+    ]
+
+
+def _config_path() -> Path:
+    """第一个存在的配置；都不存在时返回首选路径用于报错"""
+    candidates = _config_paths()
+    for path in candidates:
+        if path.is_file():
+            return path
+    return candidates[0]
 
 
 def _workspace() -> str:
@@ -75,7 +95,7 @@ def _workspace() -> str:
     不存在（或无权限）的目录上，工具全部报错。没配就不发，让后端用自己的默认值。
     """
     try:
-        cfg = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        cfg = tomllib.loads(_config_path().read_text(encoding="utf-8"))
         return str((cfg.get("workspace") or {}).get("dir") or "").strip()
     except Exception:
         return ""
@@ -103,17 +123,18 @@ def _load_server_cfg() -> dict:
     由 get_status 的错误文案和日志原样带出。
     """
     global _SERVER_CFG_ERROR, _SERVER_CFG_LOGGED
+    path = _config_path()
     try:
-        raw = CONFIG_PATH.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        _SERVER_CFG_ERROR = f"找不到配置文件 {CONFIG_PATH}"
+        _SERVER_CFG_ERROR = f"找不到配置文件 {path}"
     except OSError as exc:
-        _SERVER_CFG_ERROR = f"读不了配置文件 {CONFIG_PATH}：{exc}"
+        _SERVER_CFG_ERROR = f"读不了配置文件 {path}：{exc}"
     else:
         try:
             cfg = tomllib.loads(raw)
         except Exception as exc:
-            _SERVER_CFG_ERROR = f"配置文件解析失败 {CONFIG_PATH}：{exc}"
+            _SERVER_CFG_ERROR = f"配置文件解析失败 {path}：{exc}"
         else:
             if _SERVER_CFG_ERROR:
                 _SERVER_CFG_ERROR = ""
@@ -2023,8 +2044,8 @@ async def _ensure_backend() -> tuple[_Backend | None, str]:
     """拿到可用的后端连接，第二个返回值是错误说明"""
     global _BACKEND, _READER
     cfg = _load_server_cfg()
-    if not CONFIG_PATH.exists():
-        return None, f"找不到配置：{CONFIG_PATH}"
+    if not _config_path().exists():
+        return None, f"找不到配置：{_config_path()}"
     port = int(cfg.get("port", 18765))
     token = str(cfg.get("token", "") or "").strip().lower()
     if not token:
@@ -2218,7 +2239,7 @@ class Plugin:
         )
         return {
             "install_dir": str(INSTALL_DIR),
-            "config_ok": CONFIG_PATH.exists(),
+            "config_ok": _config_path().exists(),
             "port": port,
             # token 只在插件后端内部拼 URL 用，不再交给前端
             "token_ok": bool(str(cfg.get("token", "") or "").strip()),

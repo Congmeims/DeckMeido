@@ -35,6 +35,8 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from . import paths
+
 INSTALL_DIR = Path(__file__).resolve().parent.parent
 
 # 默认更新源。镜像站是纯静态目录：放 latest.json、deckmeido-<ver>.tar.gz、SHA256SUMS
@@ -119,7 +121,7 @@ def update_cfg() -> dict:
     }
     try:
         import tomllib
-        cfg_file = INSTALL_DIR / "server" / "config.toml"
+        cfg_file = paths.read_path(paths.config_path(), paths.legacy_config_path())
         if not cfg_file.exists():
             return defaults
         cfg = tomllib.loads(cfg_file.read_text(encoding="utf-8"))

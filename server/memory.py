@@ -21,7 +21,10 @@ import time
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
-MEMORY_PATH = BASE_DIR / "memory.json"
+from . import paths
+
+# 新位置 <data>/memory.json；旧 server/memory.json 只读兼容
+MEMORY_PATH = paths.memory_path()
 
 # 三类记忆的中文名，注入提示词和前端展示共用
 KINDS = {"profile": "用户画像", "env": "环境经验", "note": "知识条目"}
@@ -66,7 +69,8 @@ def _empty() -> dict:
 def load() -> dict:
     """读取全部记忆；文件坏了就当没有，不要因为一份记忆文件把服务拖挂"""
     try:
-        data = json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
+        data = json.loads(paths.read_path(
+            MEMORY_PATH, paths.legacy_memory_path()).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return _empty()
     if not isinstance(data, dict) or not isinstance(data.get("items"), list):
@@ -97,6 +101,9 @@ def _save(data: dict) -> None:
     """
     _persist_used(data)
     data["updated"] = time.time()
+    # 第一次写新位置前把旧记忆复制过来；旧文件保留，不删
+    paths.ensure_migrated(MEMORY_PATH, paths.legacy_memory_path())
+    MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = MEMORY_PATH.with_suffix(f".json.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     os.replace(tmp, MEMORY_PATH)

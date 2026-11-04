@@ -34,6 +34,8 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from . import paths
+
 DEFAULT_PREFIX = "meido"
 DEFAULT_RATE_PER_MINUTE = 20
 DEFAULT_MAX_MESSAGE_CHARS = 2000
@@ -126,9 +128,9 @@ _INJECTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 归档目录：默认放在安装目录下，卸载不删；不可写时回退到用户目录
-ARCHIVE_SUBDIR = Path("userdata") / "qq"
-FALLBACK_ARCHIVE_DIR = "~/.local/share/deckmeido/qq"
+# 归档目录：数据根里的 meidobot/，卸载不删；旧的 qq/ 只读兼容
+ARCHIVE_SUBDIR = Path("userdata") / "meidobot"
+FALLBACK_ARCHIVE_DIR = "~/.local/share/deckmeido/meidobot"
 INDEX_NAME = "inbox_index.jsonl"
 TEXT_LOG_NAME = "text_log.txt"
 
@@ -316,34 +318,20 @@ def looks_like_injection(text: str) -> bool:
 
 def install_root() -> Path:
     """安装根目录：优先环境变量（部署/测试可覆盖），否则从本文件上推两级"""
-    env = os.environ.get("DECKMEIDO_INSTALL_DIR", "").strip()
-    if env:
-        return Path(env).expanduser()
-    return Path(__file__).resolve().parent.parent
+    return paths.install_root()
 
 
 def archive_root(configured: str = "") -> tuple[Path, bool]:
-    """QQ 归档根目录：显式配置优先；否则 <安装目录>/userdata/qq，不可写时回退。
+    """QQ 归档根目录：显式配置优先；否则数据根下的 meidobot/。
 
-    返回 (目录, 是否回退)。回退目录是 ~/.local/share/deckmeido/qq。
+    数据根按 server/paths.py 的规则解析（env > userdata > fallback），
+    返回 (目录, 是否回退)。旧 qq/ 目录存在时会在首次写入时补拷索引/文本，
+    但旧目录本身不删除。
     """
     raw = (configured or "").strip()
     if raw:
         return Path(raw).expanduser(), False
-    primary = install_root() / ARCHIVE_SUBDIR
-    try:
-        primary.mkdir(parents=True, exist_ok=True)
-        probe = primary / ".write_test"
-        probe.write_text("", encoding="utf-8")
-        probe.unlink()
-        return primary, False
-    except OSError:
-        fallback = Path(FALLBACK_ARCHIVE_DIR).expanduser()
-        try:
-            fallback.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
-        return fallback, True
+    return paths.meidobot_dir(), paths.data_root_label() == "fallback"
 
 
 def image_archive(cfg: QQConfig) -> tuple[Path, Path, bool]:

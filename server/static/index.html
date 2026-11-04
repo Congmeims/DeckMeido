@@ -2701,17 +2701,18 @@
               </div>
             </div>
             <div class="field">
-              <label>图片保存目录（image_save_dir，留空 = 安装目录下的 userdata/qq/images）</label>
+              <label>图片保存目录（image_save_dir，留空 = 数据根下的 meidobot/images）</label>
               <input id="cfgQqImageDir" type="text"
                      placeholder="留空则用默认归档目录" autocomplete="off" spellcheck="false">
             </div>
             <div class="field">
-              <label>文本存档文件（text_log_path，留空 = userdata/qq/text_log.txt）</label>
+              <label>文本存档文件（text_log_path，留空 = 数据根下的 meidobot/text_log.txt）</label>
               <input id="cfgQqTextLog" type="text"
                      placeholder="留空则用默认归档目录" autocomplete="off" spellcheck="false">
               <div class="field-hint">
-                QQ 归档放在 <b>安装目录/userdata/qq/</b>（图片、inbox_index.jsonl、text_log.txt）。
-                <b>卸载不删</b>；安装目录不可写时自动回退到 ~/.local/share/deckmeido/qq/，
+                QQ 归档放在数据根下的 <b>userdata/meidobot/</b>（图片、inbox_index.jsonl、text_log.txt）。
+                <b>卸载不删</b>；安装目录不可写时自动回退到 ~/.local/share/deckmeido/meidobot/，
+                旧的 userdata/qq/ 仍可只读兼容。
                 并在日志与回复里标注 fallback。这里填路径可覆盖默认位置。
               </div>
             </div>

@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from server import policy, qqbot
+from server import paths, policy, qqbot
 
 
 # ---------- 纯函数部分 ----------
@@ -699,7 +699,9 @@ class ArchivePathTest(unittest.TestCase):
         self.fallback = tempfile.mkdtemp(prefix="dm-fallback-")
         self._env = mock.patch.dict(os.environ, {"DECKMEIDO_INSTALL_DIR": self.tmp})
         self._env.start()
-        self._fb = mock.patch.object(qqbot, "FALLBACK_ARCHIVE_DIR", self.fallback)
+        (Path(self.tmp) / "userdata").mkdir(exist_ok=True)
+        self._fb = mock.patch.object(paths, "fallback_dir",
+                                     return_value=Path(self.fallback))
         self._fb.start()
 
     def tearDown(self):
@@ -710,22 +712,23 @@ class ArchivePathTest(unittest.TestCase):
 
     def test_default_points_to_install_userdata(self):
         root, fallback = qqbot.archive_root("")
-        self.assertEqual(root, Path(self.tmp) / "userdata" / "qq")
+        self.assertEqual(root, Path(self.tmp) / "userdata" / "meidobot")
         self.assertTrue(root.is_dir())
         self.assertFalse(fallback)
 
     def test_image_archive_layout(self):
         cfg = qqbot.parse_config({})
         index_root, images_root, fallback = qqbot.image_archive(cfg)
-        self.assertEqual(index_root, Path(self.tmp) / "userdata" / "qq")
-        self.assertEqual(images_root, Path(self.tmp) / "userdata" / "qq" / "images")
+        self.assertEqual(index_root, Path(self.tmp) / "userdata" / "meidobot")
+        self.assertEqual(images_root, Path(self.tmp) / "userdata" / "meidobot" / "images")
         self.assertFalse(fallback)
 
     def test_unwritable_install_falls_back(self):
         # 把 userdata 做成普通文件，模拟安装目录不可写
+        shutil.rmtree(Path(self.tmp, "userdata"), ignore_errors=True)
         Path(self.tmp, "userdata").write_text("not a dir", encoding="utf-8")
         root, fallback = qqbot.archive_root("")
-        self.assertEqual(root, Path(self.fallback))
+        self.assertEqual(root, Path(self.fallback) / "meidobot")
         self.assertTrue(fallback)
 
     def test_explicit_overrides(self):
@@ -856,7 +859,9 @@ class QqArchiveFlowTest(unittest.IsolatedAsyncioTestCase):
         self.fallback = tempfile.mkdtemp(prefix="dm-fallback-")
         self._env = mock.patch.dict(os.environ, {"DECKMEIDO_INSTALL_DIR": self.tmp})
         self._env.start()
-        self._fb = mock.patch.object(qqbot, "FALLBACK_ARCHIVE_DIR", self.fallback)
+        (Path(self.tmp) / "userdata").mkdir(exist_ok=True)
+        self._fb = mock.patch.object(paths, "fallback_dir",
+                                     return_value=Path(self.fallback))
         self._fb.start()
 
     async def asyncTearDown(self):
@@ -866,7 +871,7 @@ class QqArchiveFlowTest(unittest.IsolatedAsyncioTestCase):
         shutil.rmtree(self.fallback, ignore_errors=True)
 
     def archive_root(self):
-        return Path(self.tmp) / "userdata" / "qq"
+        return Path(self.tmp) / "userdata" / "meidobot"
 
     def text_log(self):
         return self.archive_root() / "text_log.txt"
@@ -1037,12 +1042,13 @@ class QqArchiveFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("群 20001 10001: 只有正文", text)
 
     async def test_save_text_fallback_when_install_unwritable(self):
+        shutil.rmtree(Path(self.tmp, "userdata"), ignore_errors=True)
         Path(self.tmp, "userdata").write_text("not a dir", encoding="utf-8")
         payload = {"message_id": "r5", "user_id": 10001, "sender": {},
                    "message": [seg_text("回退内容")]}
         bot, ws, _ = await start_bot(FakeWS(api_data={"get_msg": payload}))
         ws.feed(private_event("10001", "保存文本", reply_id="r5"))
-        target = Path(self.fallback) / "text_log.txt"
+        target = Path(self.fallback) / "meidobot" / "text_log.txt"
         self.assertTrue(await wait_until(lambda: target.exists()))
         self.assertIn("回退内容", target.read_text(encoding="utf-8"))
         self.assertIn("已回退到", sent_text(ws))

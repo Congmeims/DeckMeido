@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import depcheck, memory, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
+from . import depcheck, memory, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
 from .session_store import set_title as _set_title
 from .session_store import store
 from . import session_store
@@ -36,7 +36,9 @@ from .stt import STT, STTError, record_supported
 from .tomlcfg import ConfigWriteError, write_config
 
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.toml"
+# 配置写在新数据根（userdata/config.toml）；旧 server/config.toml 只读兼容
+CONFIG_PATH = paths.config_path()
+LEGACY_CONFIG_PATH = paths.legacy_config_path()
 STATIC_DIR = BASE_DIR / "static"
 
 # 安装目录（install.sh 会把代码放在这里，并写入 VERSION 文件）
@@ -56,12 +58,17 @@ def gen_token(length: int = 5) -> str:
 
 
 def load_config() -> dict:
-    if not CONFIG_PATH.exists():
+    src = paths.read_path(CONFIG_PATH, LEGACY_CONFIG_PATH)
+    if not src.exists():
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(BASE_DIR / "config.example.toml", CONFIG_PATH)
-    cfg = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    # token 留空（用户手动清空）时补一个，并写回配置文件方便查看
+        src = CONFIG_PATH
+    cfg = tomllib.loads(src.read_text(encoding="utf-8"))
+    # token 留空（用户手动清空）时补一个，并写回新配置文件方便查看
     if not cfg["server"].get("token"):
         token = gen_token()
+        # 读的是旧位置时先复制到新位置，之后的写入一律落在新数据根
+        paths.ensure_migrated(CONFIG_PATH, src)
         text = CONFIG_PATH.read_text(encoding="utf-8")
         text = re.sub(r'^token\s*=\s*""', f'token = "{token}"', text, count=1, flags=re.M)
         CONFIG_PATH.write_text(text, encoding="utf-8")
@@ -71,6 +78,8 @@ def load_config() -> dict:
 
 def update_config(updates: dict):
     """把 {section: {key: value}} 写回 config.toml（保留注释），并重载运行配置"""
+    # 配置还在旧位置时先搬到新数据根；旧文件保留，不删
+    paths.ensure_migrated(CONFIG_PATH, LEGACY_CONFIG_PATH)
     write_config(CONFIG_PATH, updates, apply=apply_config)
 
 
@@ -1299,9 +1308,7 @@ def init_sessions():
     global _ctx_used
     # index.json 是侧栏索引，*.side.json 是流式正文的副档案：
     # 都不是会话文件，混进来的话会被当成坏文件反复改名
-    files = sorted((p for p in SESSIONS_DIR.glob("*.json")
-                    if p.name != "index.json" and not p.name.endswith(".side.json")),
-                   key=lambda p: p.stat().st_mtime, reverse=True)
+    files = session_store.all_session_files()
     if not files:
         save_current_session()
         return
@@ -1894,7 +1901,7 @@ async def api_upload(file: UploadFile):
 
     if ext in _IMG_EXT or not ext:
         ext = ext if ext in _IMG_EXT else ".png"
-        up = STATIC_DIR / "uploads"
+        up = paths.uploads_dir()
         up.mkdir(exist_ok=True)
         name = f"up_{ts}{ext}"
         (up / name).write_bytes(raw)
@@ -2793,6 +2800,9 @@ async def api_get_config():
         "persona_forbid": "，".join((PERSONA.get("style") or {}).get("forbid") or []),
         # 状态栏隐藏提示词：插件/网页只读它做展示，改走 POST /api/config
         "status_prompt": status_prompt_text(),
+        # 数据根（配置/会话/记忆/上传/QQ 归档都在这里），排障用
+        "data_dir": str(paths.data_dir()),
+        "data_root": paths.data_root_label(),
         # 「截屏询问」的提示词模板：插件设置区里可以直接改
         "ask_template": ASK_TEMPLATE,
         "ask_template_default": DEFAULT_ASK_TEMPLATE,
@@ -5961,5 +5971,7 @@ async def api_qq_reconnect():
     return {"ok": True, "state": qq_bot.state()}
 
 
+# 图片上传落在数据根（userdata/uploads），不再写进 server/static
+app.mount("/uploads", StaticFiles(directory=str(paths.uploads_dir())), name="uploads")
 # 静态网页控制台（放最后挂载，避免覆盖 API 路由）
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
