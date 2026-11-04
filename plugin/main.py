@@ -82,7 +82,7 @@ def _workspace() -> str:
 
 # 面板底部显示版本号：优先用后端 config 里报的版本（和网页设置页一致），
 # 后端连不上时退回插件自己的 package.json
-_PLUGIN_VERSION = "0.6.1"
+_PLUGIN_VERSION = "0.6.2"
 try:
     _pkg = json.loads((Path(__file__).resolve().parent / "package.json").read_text(encoding="utf-8"))
     _PLUGIN_VERSION = str(_pkg.get("version") or _PLUGIN_VERSION)
@@ -2674,7 +2674,8 @@ class Plugin:
         return {"ok": True}
 
     async def start_turn(
-        self, text: str, shot: str | None = None, brief: str = "", ticket: str = ""
+        self, text: str, shot: str | None = None, brief: str = "", ticket: str = "",
+        surface: str = "", client: str = "",
     ) -> dict:
         """把一轮对话发给后端。返回后流式内容通过 deckmeido_delta 推给前端
 
@@ -2682,6 +2683,10 @@ class Plugin:
         塞进 Decky 的 IPC 会让整次调用静默失败，所以图只在插件进程内部读。
         brief 只在面板上顶替正文：截屏询问的提示词有一百多字，长显会把面板撑开，
         发出去的仍然是 text 本身。
+        surface 标明这一轮来自哪个入口：chat=大屏聊天页（放开多轮），
+        ask/translate=询问页与截图翻译（保持一问一答）。不传按旧行为处理。
+        client 标明是哪个界面发起的：bigscreen=大屏，其余（默认）按 qam 面板处理；
+        后端据此保证只有大屏聊天页放开单轮限制。
         """
         decky.logger.info(f"start_turn 被调用：{len(text or '')} 字，图 {shot or '(无)'}")
         _require(ticket, "start_turn")
@@ -2726,6 +2731,10 @@ class Plugin:
                    "turn_id": bk.turn}
         if brief:
             payload["brief"] = str(brief).strip()
+        if surface:
+            payload["surface"] = str(surface).strip()
+        if client:
+            payload["client"] = str(client).strip()
         if image:
             payload["image"] = image
             payload["image_prompt"] = "（这是当前游戏画面，结合画面回答用户的问题）"

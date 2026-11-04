@@ -5,9 +5,8 @@ import {
   GamepadButton,
   Navigation,
   showModal,
-  TextField,
 } from "@decky/ui";
-import { ACCENT, DIM, ERR_COLOR, Md, TEXT } from "./ui";
+import { ACCENT, DIM, ERR_COLOR, ImeTextArea, ImeTextField, Md, TEXT } from "./ui";
 import { Item, useSession } from "./useSession";
 import { useVoiceInput } from "./useVoiceInput";
 
@@ -407,15 +406,10 @@ function ChatLog({
 }
 
 /**
- * 多行提示词编辑框。@decky/ui 的 TextField 只有单行，装不下整段提示词，
- * 所以这里用原生 textarea：撑满卡片剩余高度、内部滚动，全文可见。
- * 焦点树只认 Focusable，按 A 时把 DOM 焦点交给 textarea，Steam 会照常
- * 弹出虚拟键盘；B 退出键盘后焦点回到这层 Focusable。
- */
-/**
- * 提示词编辑模态：卡内 textarea 在 Steam 游戏模式下拿焦点不会弹键盘，
- * 所以按 A 弹这个模态，用 @decky/ui 的 TextField 编辑（自动弹虚拟键盘）。
- * TextField 是单行，编辑长文本时配合左右摇杆滚动；确认才写回。
+ * 提示词编辑模态。卡内的 textarea 只是预览：Steam 游戏模式下原生 textarea
+ * 拿焦点不弹虚拟键盘，所以按 A 弹这个模态，用 ImeTextArea（Steam 的 TextArea）
+ * 做真正的多行编辑——它注册了虚拟键盘，聚焦即弹键盘，固定高度 + 内部滚动。
+ * 确认才写回外层。
  */
 function PromptEditModal({
   initial,
@@ -432,11 +426,33 @@ function PromptEditModal({
   return (
     <div style={{ width: 720, padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>编辑提示词</div>
-      <TextField
+      <ImeTextArea
         value={draft}
         focusOnMount
-        onChange={(e) => setDraft(e.target.value)}
-        style={{ width: "100%", fontSize: 14 }}
+        onValueChange={setDraft}
+        // 固定高度 + 内部滚动：多行提示词不会把模态撑破，也不会被裁掉
+        nMinHeight={190}
+        nMaxHeight={190}
+        spellCheck={false}
+        style={{
+          width: "100%",
+          height: 190,
+          minHeight: 190,
+          maxHeight: 190,
+          boxSizing: "border-box",
+          padding: "8px 10px",
+          resize: "none",
+          overflowY: "auto",
+          borderRadius: 3,
+          border: "1px solid rgba(90,169,230,.22)",
+          borderLeft: "2px solid #5AA9E6",
+          background: "rgba(14,20,28,.92)",
+          color: TEXT,
+          fontSize: 14,
+          lineHeight: 1.5,
+          fontFamily: "inherit",
+          outline: "none",
+        }}
       />
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <div style={{ width: 96 }}>
@@ -457,6 +473,11 @@ function PromptEditModal({
   );
 }
 
+/**
+ * 提示词卡片：卡内 textarea 只做全文预览（只读、撑满卡片、内部滚动），
+ * 真正编辑走 PromptEditModal。不要把可编辑输入直接放在卡里——原生 textarea
+ * 在游戏模式下拿焦点不弹虚拟键盘。
+ */
 function PromptEditor({
   value,
   onChange,
@@ -472,8 +493,7 @@ function PromptEditor({
       onOKActionDescription="编辑"
       onActivate={() => {
         // Steam 游戏模式下原生 textarea 拿到 DOM 焦点不会弹虚拟键盘。
-        // 标准做法：弹 Decky 模态框，里面放 @decky/ui 的 TextField
-        // （聚焦时 Steam 自动弹键盘，和聊天页输入框同一原理），确认后写回
+        // 所以按 A 弹模态，模态里用 ImeTextArea（注册了虚拟键盘的多行框）
         const close = showModal(
           <PromptEditModal
             initial={value}
@@ -489,7 +509,7 @@ function PromptEditor({
       <textarea
         ref={ref}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        readOnly
         spellCheck={false}
         style={{
           width: "100%",
@@ -498,7 +518,8 @@ function PromptEditor({
           resize: "none",
           overflowY: "auto",
           boxSizing: "border-box",
-          padding: "0 4px",
+          // 上下留白和模态里一致，首行文字不会贴着上边框，光标/行高也对得齐
+          padding: "8px 10px",
           borderRadius: 3,
           border: "1px solid rgba(90,169,230,.22)",
           borderLeft: "2px solid #5AA9E6",
@@ -664,7 +685,7 @@ export default function BigScreen() {
         if (!detail) return;
         // 松开 R2 结束录音；这里不看 tab：按下时还在聊天页，松手前切走了也要收尾，
         // 否则麦克风会一直开着
-        if (detail.button === GamepadButton.TRIGGER_RIGHT && voice.phase === "recording") {
+        if (detail.button === GamepadButton.TRIGGER_RIGHT) {
           void voice.stop();
         }
       }}
@@ -797,10 +818,10 @@ export default function BigScreen() {
               插件以 root 运行，输入访问令牌后才能使用（默认 meido）。
             </div>
             <Focusable autoFocus onOKActionDescription="输入" style={{ width: "100%" }}>
-              <TextField
+              <ImeTextField
                 value={s.tokenInput}
                 placeholder="访问令牌"
-                onChange={(e) => s.setTokenInput(e.target.value)}
+                onValueChange={s.setTokenInput}
                 style={{ width: "100%" }}
               />
             </Focusable>
@@ -1023,10 +1044,10 @@ export default function BigScreen() {
                 padding: 0,
               }}
             >
-              <TextField
+              <ImeTextField
                 value={input}
                 placeholder="问问 Meido..."
-                onChange={(e) => setInput(e.target.value)}
+                onValueChange={setInput}
                 style={{
                   width: "100%",
                   maxWidth: "100%",

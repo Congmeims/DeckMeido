@@ -367,12 +367,17 @@ export function useSession() {
         body = `当前游戏：《${gname}》${aid}。\n${text}`;
       }
 
-      const res = (await call<[string, string | null, string, string], { ok: boolean; error?: string }>(
+      // 入口标记：聊天页发起的一轮放开多轮推进；询问/翻译保持一问一答。
+      // client=bigscreen 让后端区分「大屏」和「QAM 面板」，避免 QAM 也被放开
+      const surface = action === "send" ? "chat" : action || "";
+      const res = (await call<[string, string | null, string, string, string, string], { ok: boolean; error?: string }>(
         "start_turn",
         body,
         shotPath,
         brief,
-        tk
+        tk,
+        surface,
+        "bigscreen"
       )) as { ok: boolean; error?: string };
       if (!res.ok) throw new Error(res.error ?? "发不出去");
 
