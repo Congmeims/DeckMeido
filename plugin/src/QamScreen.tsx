@@ -10,7 +10,7 @@ import {
   TextField,
   ToggleField,
 } from "@decky/ui";
-import { ACCENT, DIM, ERR_COLOR, Md, TEXT } from "./ui";
+import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, TEXT } from "./ui";
 import { statusLineFor } from "./statusLine";
 import { applyPadOrder, logPadOrder, steamClient } from "./padOrder";
 import { useVoiceInput } from "./useVoiceInput";
@@ -41,6 +41,27 @@ const GAP = 8;
 const TABS = ["询问", "聊天", "设置"] as const;
 
 const TITLE = "#eaf2fb";
+
+/** QAM 提示词多行框：固定 84px（11.5px 字号约 5 行），内部滚动 */
+const qamTplStyle: React.CSSProperties = {
+  width: "100%",
+  height: 84,
+  minHeight: 84,
+  maxHeight: 84,
+  boxSizing: "border-box",
+  padding: "6px 8px",
+  resize: "none",
+  overflowY: "auto",
+  borderRadius: 4,
+  border: "1px solid rgba(90,169,230,.22)",
+  borderLeft: `2px solid ${ACCENT}`,
+  background: "rgba(14,20,28,.92)",
+  color: TEXT,
+  fontSize: 11.5,
+  lineHeight: 1.45,
+  fontFamily: "inherit",
+  outline: "none",
+};
 
 const dividerStyle: React.CSSProperties = {
   height: 1,
@@ -1509,10 +1530,13 @@ export default function QamScreen() {
           <Card title="提示词">
             <div style={{ fontSize: 11, color: DIM }}>截屏询问</div>
             <Focusable onOKActionDescription="编辑" style={{ width: "100%", padding: 0 }}>
-              <TextField
+              <ImeTextArea
                 value={s.askTplEdit}
-                onChange={(e) => s.setAskTplEdit(e.target.value)}
-                style={{ width: "100%" }}
+                onValueChange={s.setAskTplEdit}
+                nMinHeight={84}
+                nMaxHeight={84}
+                spellCheck={false}
+                style={{ ...qamTplStyle }}
               />
             </Focusable>
             <div style={{ display: "flex", gap: 6, width: "100%" }}>
@@ -1540,10 +1564,13 @@ export default function QamScreen() {
 
             <div style={{ fontSize: 11, color: DIM, marginTop: 2 }}>截图翻译</div>
             <Focusable onOKActionDescription="编辑" style={{ width: "100%", padding: 0 }}>
-              <TextField
+              <ImeTextArea
                 value={s.translateTplEdit}
-                onChange={(e) => s.setTranslateTplEdit(e.target.value)}
-                style={{ width: "100%" }}
+                onValueChange={s.setTranslateTplEdit}
+                nMinHeight={84}
+                nMaxHeight={84}
+                spellCheck={false}
+                style={{ ...qamTplStyle }}
               />
             </Focusable>
             <div style={{ display: "flex", gap: 6, width: "100%" }}>
