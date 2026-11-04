@@ -867,7 +867,56 @@
     display: flex; flex-direction: column; align-items: center;
     /* 左右内边距与下方「浅色模式/设置」按钮区完全一致（8px），logo 铺满这整块宽度 */
     gap: 8px; padding: 12px 8px 10px;
+    /* 跨屏接管入口：点 logo 进入/释放 Pointer Lock，不做跳转 */
+    cursor: pointer; position: relative; border-radius: 14px;
+    transition: box-shadow .18s ease, background .18s ease;
   }
+  .sb-brand:hover { background: rgba(26,159,255,.06); }
+  /* 接管中：一圈高亮描边 + 呼吸，避免用户不知道现在是不是在接管 */
+  .sb-brand.ri-active {
+    animation: riBreath 1.6s ease-in-out infinite;
+    background: rgba(26,159,255,.10);
+  }
+  @keyframes riBreath {
+    0%, 100% { box-shadow: 0 0 0 1px rgba(26,159,255,.55), 0 0 6px rgba(26,159,255,.18); }
+    50%      { box-shadow: 0 0 0 2px rgba(26,159,255,.95), 0 0 20px rgba(26,159,255,.55); }
+  }
+  .sb-brand .bn-ri {
+    display: none; flex: 0 0 auto; align-self: center;
+    font-size: 11px; color: var(--brand);
+    border: 1px solid rgba(26,159,255,.45); border-radius: 999px;
+    padding: 1px 6px; line-height: 1.2; white-space: nowrap;
+  }
+  .sb-brand.ri-active .bn-ri { display: inline; }
+  /* 接管中顶部标识：所有端（远程控制端 / Deck 客户端）都走同一条广播 */
+  #riBanner {
+    position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+    z-index: 80; display: flex; align-items: center; gap: 10px;
+    padding: 7px 8px 7px 13px; border-radius: 999px;
+    border: 1px solid rgba(26,159,255,.65);
+    background: rgba(18,22,32,.82); color: var(--text);
+    box-shadow: 0 8px 28px rgba(0,0,0,.45), 0 0 18px rgba(26,159,255,.18);
+    backdrop-filter: blur(10px); font-size: 12px; white-space: nowrap;
+  }
+  #riBanner[hidden] { display: none !important; }
+  #riBanner .ri-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--brand);
+    box-shadow: 0 0 8px var(--brand); animation: riBreath 1.4s infinite;
+  }
+  #riStop {
+    height: 24px; padding: 0 12px; border-radius: 999px;
+    border: 1px solid rgba(26,159,255,.7); background: rgba(26,159,255,.16);
+    color: var(--text); font-size: 12px; cursor: pointer;
+  }
+  #riStop:hover { background: rgba(26,159,255,.28); }
+  #riToast {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+    z-index: 90; max-width: 80vw; padding: 9px 14px; border-radius: 10px;
+    background: rgba(18,22,32,.94); border: 1px solid var(--line);
+    color: var(--text); font-size: 12px; line-height: 1.5;
+    box-shadow: 0 10px 30px rgba(0,0,0,.5); display: none;
+  }
+  #riToast.show { display: block; }
   .sb-brand .brand-mark {
     /* 112px 的 1.5 倍 = 168px，仍居中，左右各留 8px 与按钮区对齐 */
     width: 75%; height: auto; max-height: 24dvh; object-fit: contain;
@@ -2136,6 +2185,13 @@
 </head>
 <body>
 
+<div id="riBanner" hidden>
+  <span class="ri-dot"></span>
+  <span id="riBannerText">正在接管 Deck · Esc 退出</span>
+  <button id="riStop" type="button">停止接管</button>
+</div>
+<div id="riToast"></div>
+
 <div id="app">
 <aside id="sidebar">
   <!-- 折叠态只剩这条窄条：点「会话」或者箭头都能展开 -->
@@ -2174,11 +2230,13 @@
     <div class="sb-sess-head"><span>设置</span><button id="setClose" title="返回对话">返回</button></div>
     <div id="setNav"></div>
   </div>
-  <div class="sb-brand">
+  <div class="sb-brand" id="brandLogo" role="button" tabindex="-1"
+       title="点击接管 Deck（远程浏览器）／释放接管（本机客户端）">
     <img class="brand-mark" src="logo-mark.png" alt="DeckMeido">
     <span class="brand-name">
       <span class="bn-text">DeckMeido</span>
       <span class="bn-ver" id="brandVer">v…</span>
+      <span class="bn-ri" id="brandRi">接管中</span>
     </span>
   </div>
   <div class="sb-foot">
@@ -2450,6 +2508,41 @@
             </div>
             <div id="ctrlHint" class="upd-note"></div>
             <div id="ctrlLog" class="ctrl-log"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">跨屏键鼠接管</div>
+            <p class="pane-desc" style="margin-top:0">
+              在电脑浏览器里点左下角 DeckMeido logo 就进入接管：鼠标从电脑上消失，出现在这台 Deck 上，
+              能操作 Steam UI、游戏和这个页面。按 Esc、再点一次 logo，或在 Deck 客户端里点 logo 释放。
+            </p>
+            <div class="field field-row">
+              <label style="margin:0">启用跨屏接管（默认关闭）</label>
+              <label class="switch">
+                <input id="cfgRiEnabled" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field field-row">
+              <label style="margin:0">允许局域网设备接管</label>
+              <label class="switch">
+                <input id="cfgRiBindLan" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field">
+              <label>指针灵敏度 <span id="cfgRiSensVal" class="field-hint">1.5×</span></label>
+              <input id="cfgRiSens" type="range" min="0.5" max="3" step="0.1" value="1.5"
+                     style="width:100%">
+            </div>
+            <div class="field">
+              <label>单次接管上限（分钟）</label>
+              <input id="cfgRiMax" type="number" min="1" max="120" step="1" value="30">
+            </div>
+            <div class="field-hint" style="color:#e0a33a">
+              安全提示：开启「允许局域网设备接管」后，局域网内任何拿到访问令牌的人都能控制这台机器。
+              只在可信网络里用，用完及时关闭。
+            </div>
+            <div class="field-hint" id="riCfgState">当前状态：未接管</div>
           </div>
         </section>
 
@@ -5623,6 +5716,8 @@
       if (onboardState === '') onboardState = 'pending';
       lastMsgAt = Date.now();
       startHeartbeat();
+      // 重连后补拉接管状态：广播只在状态变化时发，断线期间可能错过
+      if (typeof loadRemoteStatus === 'function') loadRemoteStatus();
     };
 
     ws.onmessage = function (ev) {
@@ -5636,6 +5731,10 @@
       if (msg.sid && currentSid && msg.sid !== currentSid
           && TURN_SCOPED.indexOf(msg.type) >= 0) return;
       switch (msg.type) {
+        case 'remote_input':
+          // 跨屏接管状态广播：远程控制端和 Deck 客户端都要显示同一条横幅
+          onRemoteInputBroadcast(msg);
+          break;
         case 'history':
           if (msg.sid) currentSid = msg.sid;
           // 本端身份以后端这条连接实际看到的为准：前端按 UA 猜只是兜底
@@ -6836,6 +6935,13 @@
   var updApply = document.getElementById('updApply');
   var cfgUpdSource = document.getElementById('cfgUpdSource');
   var updSourceHint = document.getElementById('updSourceHint');
+  // 跨屏接管设置
+  var cfgRiEnabled = document.getElementById('cfgRiEnabled');
+  var cfgRiBindLan = document.getElementById('cfgRiBindLan');
+  var cfgRiSens = document.getElementById('cfgRiSens');
+  var cfgRiSensVal = document.getElementById('cfgRiSensVal');
+  var cfgRiMax = document.getElementById('cfgRiMax');
+  var riCfgState = document.getElementById('riCfgState');
   var verLoaded = false;
 
   // 后端回来的「实际用到的源」→ 给用户看的名字
@@ -6989,6 +7095,11 @@
         cfgTts.checked = c.tts_enable;
         cfgPerm.value = c.permission_mode || 'auto';
         cfgWorkspace.value = c.workspace || '';
+        cfgRiEnabled.checked = !!c.remote_input_enabled;
+        cfgRiBindLan.checked = !!c.remote_input_bind_lan;
+        cfgRiSens.value = c.remote_input_sensitivity || 1.5;
+        cfgRiSensVal.textContent = Number(cfgRiSens.value).toFixed(1) + '×';
+        cfgRiMax.value = c.remote_input_max_minutes || 30;
         document.getElementById('cfgPersonaName').value = c.persona_name || '';
         document.getElementById('cfgPersonaTraits').value = c.persona_traits || '';
         document.getElementById('cfgPersonaExtra').value = c.persona_extra || '';
@@ -7357,7 +7468,11 @@
       persona_ending: document.getElementById('cfgPersonaEnding').value,
       persona_suffix: document.getElementById('cfgPersonaSuffix').value,
       persona_forbid: document.getElementById('cfgPersonaForbid').value,
-      update_source: cfgUpdSource.value
+      update_source: cfgUpdSource.value,
+      remote_input_enabled: !!cfgRiEnabled.checked,
+      remote_input_bind_lan: !!cfgRiBindLan.checked,
+      remote_input_sensitivity: Number(cfgRiSens.value) || 1.5,
+      remote_input_max_minutes: parseInt(cfgRiMax.value, 10) || 30
     };
     if (keyInput) { payload.api_key = keyInput; }
     if (apiKeyClear) { payload.clear_api_key = true; }
@@ -7403,6 +7518,310 @@
         cfgHint.textContent = offline ? '连不上服务，请稍等几秒重试' : (msg || '保存失败');
       });
   });
+
+  // ---------- 跨屏键鼠接管（PC 浏览器 ↔ Deck） ----------
+  // 远程 PC 点 logo → Pointer Lock → 相对位移/按键走 /ws/input；
+  // Deck 客户端（native=1）点 logo → POST release，走同一个后端释放路径。
+  var brandLogo = document.getElementById('brandLogo');
+  var riBanner = document.getElementById('riBanner');
+  var riBannerText = document.getElementById('riBannerText');
+  var riStop = document.getElementById('riStop');
+  var riToastEl = document.getElementById('riToast');
+  var riState = {
+    enabled: false, bind_lan: false, sensitivity: 1.5, max_minutes: 30,
+    active: false, by: '', remaining: 0
+  };
+  var riWs = null, riActive = false, riStarting = false;
+  var riPingTimer = 0, riToastTimer = 0, riClosing = false;
+  var riSkipMove = 0;  // 刚锁定指针时浏览器会甩出一大段 movementX/Y，丢掉前两帧
+
+  if (cfgRiSens) cfgRiSens.addEventListener('input', function () {
+    cfgRiSensVal.textContent = Number(cfgRiSens.value).toFixed(1) + '×';
+  });
+
+  function riToast(text) {
+    riToastEl.textContent = text;
+    riToastEl.classList.add('show');
+    clearTimeout(riToastTimer);
+    riToastTimer = setTimeout(function () { riToastEl.classList.remove('show'); }, 3200);
+  }
+
+  function riPaint() {
+    // logo 状态：高亮描边 + 「接管中」小字，远程端和 Deck 端表现一致
+    brandLogo.classList.toggle('ri-active', riActive);
+    riBanner.hidden = !riActive;
+    if (riActive) {
+      riBannerText.textContent = IS_NATIVE
+        ? '远端正在接管 Deck · 点 logo 或「停止接管」释放'
+        : (riState.by
+            ? ('正在接管 Deck · 来源 ' + riState.by + ' · Esc 退出')
+            : '正在接管 Deck · Esc 退出');
+    }
+    if (riCfgState) {
+      riCfgState.textContent = riActive
+        ? ('当前状态：接管中' + (riState.by ? '（来源 ' + riState.by + '）' : '')
+           + (riState.remaining > 0 ? '，剩余约 ' + Math.ceil(riState.remaining / 60) + ' 分钟' : ''))
+        : '当前状态：未接管';
+    }
+  }
+
+  function loadRemoteStatus() {
+    if (!token) return;
+    fetch('/api/remote-input/status?token=' + encodeURIComponent(token))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (st) {
+        if (!st) return;
+        riState.enabled = !!st.enabled;
+        riState.bind_lan = !!st.bind_lan;
+        riState.sensitivity = Number(st.sensitivity) || 1.5;
+        riState.max_minutes = Number(st.max_minutes) || 30;
+        riState.active = !!st.active;
+        riState.by = st.by || '';
+        riState.remaining = Number(st.remaining) || 0;
+        // 不覆盖本端正在进行的接管：广播可能会晚到
+        if (!riActive) { riActive = !!st.active; }
+        riPaint();
+      })
+      .catch(function () { /* 状态拉不到不影响页面其它功能 */ });
+  }
+
+  function riPostRelease() {
+    if (!token) return;
+    fetch('/api/remote-input/release?token=' + encodeURIComponent(token), {
+      method: 'POST'
+    }).catch(function () { /* 释放失败也无所谓：WS 断开后服务端还会兜底 */ });
+  }
+
+  var RI_ERR_TEXT = {
+    RI_DISABLED: '跨屏接管没有开启，请先在 Deck 的设置 → 设备连接里启用',
+    RI_LOCAL_ONLY: '只允许本机接管，请在 Deck 设置里打开「允许局域网设备接管」并保存',
+    RI_UNAUTHORIZED: '访问令牌已失效，请重新登录',
+    RI_BUSY: '已经有人在接管这台 Deck 了',
+    RI_NO_YDOTOOL: 'Deck 上没有可用的按键注入服务（ydotoold 未运行）',
+    RI_NO_UINPUT: 'Deck 上无权创建虚拟输入设备',
+    RI_INJECT_FAILED: '按键注入失败，接管已结束',
+    RI_TIMEOUT: '接管超时，已自动释放',
+    RI_DISCONNECTED: '与 Deck 的连接断开，已释放所有按键',
+    RI_RELEASED: '已释放接管',
+    RI_BAD_MSG: '接管消息不合法，已结束'
+  };
+
+  function riSend(obj) {
+    if (riWs && riWs.readyState === 1) {
+      try { riWs.send(JSON.stringify(obj)); } catch (e) { /* 下一帧心跳会暴露断线 */ }
+    }
+  }
+
+  function riTeardown(sendRelease) {
+    if (riClosing) return;
+    riClosing = true;
+    if (sendRelease) {
+      riSend({ t: 'release' });
+      riPostRelease();  // 双保险：WS 半死时 HTTP 仍能走统一释放路径
+    }
+    if (riWs) {
+      try { riWs.close(); } catch (e) {}
+    }
+    riWs = null;
+    if (riPingTimer) { clearInterval(riPingTimer); riPingTimer = 0; }
+    riActive = false;
+    riStarting = false;
+    riState.active = false;
+    if (document.pointerLockElement) {
+      try { document.exitPointerLock(); } catch (e) {}
+    }
+    riPaint();
+    // 焦点还给页面，别让 logo 卡住后续键盘操作
+    try { brandLogo.blur(); } catch (e) {}
+    setTimeout(function () { riClosing = false; }, 150);
+  }
+
+  function riFail(code, detail) {
+    riTeardown(false);  // 握手失败时绝不能发 release，否则会把别人的会话踢掉
+    var text = RI_ERR_TEXT[code] || ('接管失败：' + code);
+    if (detail && code === 'RI_INJECT_FAILED') text += '（' + detail + '）';
+    riToast(text);
+  }
+
+  function riOnServerState(msg) {
+    if (msg.ok && msg.code === 'RI_ACTIVE') {
+      riActive = true;
+      riState.active = true;
+      if (msg.backend) riState.backend = msg.backend;
+      if (msg.max_minutes) riState.max_minutes = msg.max_minutes;
+      riPaint();
+      riToast('已接管 Deck，按 Esc 退出');
+      return;
+    }
+    if (!msg.ok) { riFail(msg.code, msg.detail); return; }
+    // 正常释放确认：服务端已经收尾，不再重复发 release
+    riTeardown(false);
+  }
+
+  function riOpenSocket() {
+    if (!token || riWs) return;
+    var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    riWs = new WebSocket(proto + '://' + location.host
+      + '/ws/input?token=' + encodeURIComponent(token));
+    riWs.onopen = function () {
+      if (!document.pointerLockElement) { riTeardown(false); return; }
+      riSend({ t: 'ping' });
+      clearInterval(riPingTimer);
+      riPingTimer = setInterval(function () {
+        if (riWs && riWs.readyState === 1) riSend({ t: 'ping' });
+      }, 3000);  // 服务端 10 秒收不到心跳就自动释放
+    };
+    riWs.onmessage = function (ev) {
+      var msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (msg.t === 'state') riOnServerState(msg);
+    };
+    riWs.onclose = function () {
+      riWs = null;
+      if (riPingTimer) { clearInterval(riPingTimer); riPingTimer = 0; }
+      if (riActive && !riClosing) riFail('RI_DISCONNECTED');
+    };
+    riWs.onerror = function () {
+      if (riActive && !riClosing) riFail('RI_DISCONNECTED');
+    };
+  }
+
+  function startRemoteInput() {
+    if (IS_NATIVE || riActive || riStarting) return;
+    if (typeof brandLogo.requestPointerLock !== 'function') {
+      riToast('当前环境不支持指针锁定，无法接管（请用桌面版 Chrome / Edge）');
+      return;
+    }
+    riStarting = true;
+    riClosing = false;
+    loadRemoteStatus();  // 拿最新开关/灵敏度，失败也不会挡路
+    try {
+      brandLogo.requestPointerLock();
+    } catch (e) {
+      riStarting = false;
+      riToast('无法捕获鼠标：' + ((e && e.message) || e));
+    }
+  }
+
+  function onRemoteInputBroadcast(msg) {
+    var active = msg.state === 'active';
+    riState.active = active;
+    riState.by = msg.by || '';
+    riState.remaining = Number(msg.remaining) || 0;
+    if (active) {
+      // 广播先于本端握手到达时也要亮状态，避免「已接管但没标识」
+      if (!riActive) { riActive = true; }
+    } else if (riActive) {
+      // 服务端已经收尾（可能是别的端点的停止按钮），本地只清状态，不再发 release
+      riTeardown(false);
+    }
+    riPaint();
+  }
+
+  function riIsLocked() {
+    return !IS_NATIVE && riActive && !!document.pointerLockElement;
+  }
+
+  document.addEventListener('pointerlockchange', function () {
+    if (document.pointerLockElement) {
+      riStarting = false;
+      riSkipMove = 2;
+      if (!IS_NATIVE) riOpenSocket();
+    } else {
+      riStarting = false;
+      // Esc 由浏览器原生解除锁定；这里只负责把释放指令发给后端
+      if (riActive) riTeardown(true);
+    }
+  });
+
+  document.addEventListener('pointerlockerror', function () {
+    riStarting = false;
+    riToast('浏览器拒绝了指针锁定：请直接点击 logo（需要用户手势）');
+  });
+
+  document.addEventListener('mousemove', function (e) {
+    if (!riIsLocked()) return;
+    if (riSkipMove > 0) { riSkipMove--; return; }
+    var s = riState.sensitivity || 1;
+    var dx = Math.round((e.movementX || 0) * s);
+    var dy = Math.round((e.movementY || 0) * s);
+    if (dx || dy) riSend({ t: 'move', dx: dx, dy: dy });
+  });
+
+  document.addEventListener('mousedown', function (e) {
+    if (!riIsLocked()) return;
+    e.preventDefault();
+    // 浏览器 0 左 / 1 中 / 2 右 → 协议 0 左 / 1 右 / 2 中
+    var b = e.button === 0 ? 0 : (e.button === 2 ? 1 : (e.button === 1 ? 2 : -1));
+    if (b >= 0) riSend({ t: 'btn', b: b, p: true });
+  });
+
+  document.addEventListener('mouseup', function (e) {
+    if (!riIsLocked()) return;
+    e.preventDefault();
+    var b = e.button === 0 ? 0 : (e.button === 2 ? 1 : (e.button === 1 ? 2 : -1));
+    if (b >= 0) riSend({ t: 'btn', b: b, p: false });
+  });
+
+  document.addEventListener('contextmenu', function (e) {
+    if (riIsLocked()) e.preventDefault();
+  });
+
+  document.addEventListener('wheel', function (e) {
+    if (!riIsLocked()) return;
+    e.preventDefault();
+    riSend({ t: 'wheel', d: e.deltaY > 0 ? 1 : -1 });
+  }, { passive: false });
+
+  document.addEventListener('keydown', function (e) {
+    if (!riIsLocked()) return;
+    // Esc 不能拦：它要留给浏览器原生退出 Pointer Lock
+    if (e.key === 'Escape') return;
+    e.preventDefault();
+    if (!e.repeat) riSend({ t: 'key', code: e.code, p: true });
+  });
+
+  document.addEventListener('keyup', function (e) {
+    if (!riIsLocked()) return;
+    if (e.key === 'Escape') return;
+    e.preventDefault();
+    riSend({ t: 'key', code: e.code, p: false });
+  });
+
+  document.addEventListener('visibilitychange', function () {
+    if (riActive && document.hidden) riTeardown(true);
+  });
+
+  function stopRemoteInput() {
+    if (!riActive && !riStarting && !riWs) return;
+    riTeardown(true);
+  }
+
+  brandLogo.addEventListener('click', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    // 接管中点击会被 Pointer Lock 吃掉，这个事件可能来自「发给 Deck 的那一下」，
+    // 绝不能把它当成退出指令，否则 Deck 上任何一次点击都会断开接管
+    if (document.pointerLockElement === brandLogo) return;
+    brandLogo.blur();
+    if (IS_NATIVE) {
+      // 本机 Deck 客户端：点 logo 只释放，不会接管自己
+      if (riActive) { stopRemoteInput(); riToast('已停止接管'); }
+      else { riToast('当前没有接管会话'); }
+      return;
+    }
+    if (riActive) { stopRemoteInput(); }
+    else { startRemoteInput(); }
+  });
+
+  riStop.addEventListener('click', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    stopRemoteInput();
+  });
+
+  // 页面首次加载时恢复状态（例如接管已经开始后才打开这个页面）
+  loadRemoteStatus();
 
   // ---------- 分享：把一条消息生成图片 ----------
   var shareOverlay = document.getElementById('shareOverlay');

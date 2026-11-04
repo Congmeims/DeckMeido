@@ -28,6 +28,24 @@ port = 18765
 # 局域网访问地址: http://<deck-ip>:18765/?token=<token>
 token = "meido"
 
+[remote_input]
+# 跨屏键鼠接管：在电脑浏览器里点网页左下角的 DeckMeido logo，就把鼠标键盘
+# 交给这台 Deck（Steam UI、游戏、DeckMeido 页面都收得到）。按 Esc 或点客户端
+# 自己的 logo 释放。
+#
+# 默认关闭，必须显式打开。打开后请确认：
+#   - 只有拿到访问令牌的人能连；
+#   - bind_lan = false 时只接受本机回环连接（远程电脑连不上，等于只能在
+#     Deck 本机浏览器里用）。要让电脑接管，必须同时把下面这项改成 true；
+#   - 浏览器里的安全提示不是吓唬人：局域网内拿到令牌的人都能控制这台机器。
+enabled = false
+# 是否允许局域网设备接管。默认 false（只接受 127.0.0.1 / ::1）。
+bind_lan = false
+# 指针灵敏度（前端滑杆也按这个初值）。1.0 = 原始位移，建议 1.2~2.0。
+sensitivity = 1.5
+# 单次接管最长分钟数，到点自动释放并断开。
+max_minutes = 30
+
 [llm]
 # OpenAI 兼容接口。默认填 DeepSeek：地址不带 /v1 也认，模型 deepseek-chat（非思考）。
 # 想换成 GPT / Claude(代理) / Qwen / LM Studio 时，把地址和模型一起改掉即可。

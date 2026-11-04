@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import depcheck, memory, persona, policy, power, prompts, singleton, tools, updater
+from . import depcheck, memory, persona, policy, power, prompts, remote_input, singleton, tools, updater
 from .session_store import set_title as _set_title
 from .session_store import store
 from . import session_store
@@ -1539,6 +1539,14 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+async def _broadcast_remote_input(state: dict):
+    """跨屏接管状态变化：广播给所有页面（远程控制端和 Deck 本机都要看到）"""
+    await manager.broadcast({"type": "remote_input", **state})
+
+
+remote_input.manager.set_hook(_broadcast_remote_input)
+
+
 async def _broadcast_pad_order(action: str):
     """虚拟手柄建好/销毁时喊 QAM 插件去换 Steam 的控制器排序
 
@@ -2319,6 +2327,153 @@ async def ws_terminal(ws: WebSocket, token: str = Query(default="")):
             pass
 
 
+@app.websocket("/ws/input")
+async def ws_input(ws: WebSocket, token: str = Query(default="")):
+    """跨屏键鼠接管 WebSocket（PC 浏览器 ↔ Deck 输入注入）
+
+    协议（JSON 帧，前后端共同约定）：
+      浏览器 → 后端：
+        {"t":"move","dx":int,"dy":int}      相对位移（已乘灵敏度）
+        {"t":"btn","b":0|1|2,"p":true|false} 左/右/中键，0=左 1=右 2=中
+        {"t":"wheel","d":int}               滚轮格数，正=向下
+        {"t":"key","code":"KeyA","p":bool}  浏览器 KeyboardEvent.code
+        {"t":"ping"}                        心跳（建议 3 秒一次）
+        {"t":"release"}                     结束接管
+      后端 → 浏览器：
+        {"t":"state","ok":bool,"code":"RI_..."}
+
+    鉴权失败直接 4401 关闭；其余失败先回一条 state 再关，原因码不吞。
+    位移在 remote_input.InputSession 里按 ~16ms 合并，不按每个 mousemove 刷进程。
+    """
+    client_ip = ws.client.host if ws.client else ""
+    cfg = CFG.get("remote_input") or {}
+    code = remote_input.access_error(cfg, client_ip, TOKEN, token)
+    if code == remote_input.RI_UNAUTHORIZED:
+        await ws.accept()
+        await ws.close(code=4401)
+        return
+    if code:
+        await ws.accept()
+        await ws.send_json({"t": "state", "ok": False, "code": code})
+        await ws.close(code=1008)
+        return
+
+    await ws.accept()
+    try:
+        sess = await remote_input.manager.begin(cfg, owner=client_ip)
+    except remote_input.RemoteInputError as exc:
+        await ws.send_json({"t": "state", "ok": False, "code": exc.code,
+                            "detail": exc.detail})
+        await ws.close(code=1008)
+        return
+    await ws.send_json({"t": "state", "ok": True, "code": "RI_ACTIVE",
+                        "backend": sess.backend.kind, "max_minutes": sess.max_minutes})
+
+    end_code = remote_input.RI_DISCONNECTED
+    try:
+        while True:
+            remain = sess.deadline - time.monotonic()
+            if remain <= 0:
+                end_code = remote_input.RI_TIMEOUT
+                try:
+                    await ws.send_json({"t": "state", "ok": False,
+                                        "code": remote_input.RI_TIMEOUT})
+                except Exception:
+                    pass
+                break
+            # 同时等「下一条消息」和「外部释放」：客户端点 logo / 停止按钮时
+            # 由 /api/remote-input/release 结束会话，这里必须立刻醒来收尾
+            recv_task = asyncio.create_task(ws.receive_json())
+            stop_task = asyncio.create_task(sess.stop_event.wait())
+            done, pending = await asyncio.wait(
+                {recv_task, stop_task},
+                timeout=min(remote_input.HEARTBEAT_S, remain),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if not done:
+                end_code = remote_input.RI_TIMEOUT
+                try:
+                    await ws.send_json({"t": "state", "ok": False,
+                                        "code": remote_input.RI_TIMEOUT})
+                except Exception:
+                    pass
+                break
+            if stop_task in done:
+                end_code = sess.end_code or remote_input.RI_RELEASED
+                if end_code != remote_input.RI_RELEASED:
+                    try:
+                        await ws.send_json({"t": "state", "ok": False,
+                                            "code": end_code})
+                    except Exception:
+                        pass
+                break
+            try:
+                msg = recv_task.result()
+            except WebSocketDisconnect:
+                end_code = remote_input.RI_DISCONNECTED
+                break
+            except Exception:
+                end_code = remote_input.RI_DISCONNECTED
+                break
+            sess.touch()
+            try:
+                action = await sess.handle(msg)
+            except remote_input.RemoteInputError as exc:
+                end_code = exc.code
+                try:
+                    await ws.send_json({"t": "state", "ok": False,
+                                        "code": exc.code, "detail": exc.detail})
+                except Exception:
+                    pass
+                break
+            if action == remote_input.RI_RELEASED:
+                end_code = remote_input.RI_RELEASED
+                try:
+                    await ws.send_json({"t": "state", "ok": True,
+                                        "code": remote_input.RI_RELEASED})
+                except Exception:
+                    pass
+                break
+    except WebSocketDisconnect:
+        end_code = remote_input.RI_DISCONNECTED
+    except Exception as exc:
+        print(f"[DeckMeido] 跨屏接管异常：{exc}", file=sys.stderr)
+        end_code = remote_input.RI_INJECT_FAILED
+    finally:
+        # 无论正常释放、断线、超时还是异常，都走同一个结束路径释放所有按键
+        try:
+            await remote_input.manager.finish(end_code)
+        finally:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+
+@app.get("/api/remote-input/status", dependencies=[Depends(check_token)])
+async def api_remote_input_status():
+    """接管开关 + 当前会话状态：页面加载/重连后据此恢复横幅与 logo 状态"""
+    cfg = CFG.get("remote_input") or {}
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "bind_lan": bool(cfg.get("bind_lan", False)),
+        "sensitivity": float(cfg.get("sensitivity", 1.5) or 1.5),
+        "max_minutes": int(cfg.get("max_minutes", 30) or 30),
+        **remote_input.manager.status(),
+    }
+
+
+@app.post("/api/remote-input/release", dependencies=[Depends(check_token)])
+async def api_remote_input_release():
+    """任何已鉴权页面都能释放接管（Deck 客户端点 logo 走这条）"""
+    released = await remote_input.manager.finish(remote_input.RI_RELEASED)
+    return {"ok": True, "released": released}
+
+
 @app.get("/files/{path:path}", dependencies=[Depends(check_token)])
 async def api_workspace_file(path: str):
     """下载工作区里的文件（网页端附件卡片用）
@@ -2528,6 +2683,11 @@ class ConfigUpdate(BaseModel):
     ask_template: str | None = None
     # 更新源：mirror / github / mirror-only / github-only
     update_source: str | None = None
+    # 跨屏键鼠接管：开关、是否允许局域网、灵敏度、单次时长上限
+    remote_input_enabled: bool | None = None
+    remote_input_bind_lan: bool | None = None
+    remote_input_sensitivity: float | None = None
+    remote_input_max_minutes: int | None = None
 
 
 class AskTemplateUpdate(BaseModel):
@@ -2612,6 +2772,11 @@ async def api_get_config():
         "update_mirror": updater.update_cfg()["mirror"],
         # 长期记忆的条数概览（正文单独走 /api/memory，设置页按需拉）
         "memory": memory.stats(),
+        # 跨屏键鼠接管：设置页表单与安全提示用
+        "remote_input_enabled": bool((CFG.get("remote_input") or {}).get("enabled", False)),
+        "remote_input_bind_lan": bool((CFG.get("remote_input") or {}).get("bind_lan", False)),
+        "remote_input_sensitivity": float((CFG.get("remote_input") or {}).get("sensitivity", 1.5) or 1.5),
+        "remote_input_max_minutes": int((CFG.get("remote_input") or {}).get("max_minutes", 30) or 30),
     }
 
 
@@ -2800,6 +2965,18 @@ async def api_set_config(req: ConfigUpdate):
     if req.update_source in ("mirror", "github", "mirror-only", "github-only"):
         # 只写 source；mirror / github_repo 的地址留给 [update] 段（一般不用改）
         updates["update"] = {"source": req.update_source}
+    ri = {}
+    if req.remote_input_enabled is not None:
+        ri["enabled"] = bool(req.remote_input_enabled)
+    if req.remote_input_bind_lan is not None:
+        ri["bind_lan"] = bool(req.remote_input_bind_lan)
+    if req.remote_input_sensitivity is not None:
+        # 灵敏度夹在 0.5~3，太小指针几乎不动，太大一碰就飞出屏幕
+        ri["sensitivity"] = max(0.5, min(3.0, float(req.remote_input_sensitivity)))
+    if req.remote_input_max_minutes is not None:
+        ri["max_minutes"] = max(1, min(120, int(req.remote_input_max_minutes)))
+    if ri:
+        updates["remote_input"] = ri
     if req.token is not None:
         # 统一存成小写，避免 config 里大小写混着看花眼（校验本来就不分大小写）
         new_token = req.token.strip().lower()
@@ -2817,6 +2994,9 @@ async def api_set_config(req: ConfigUpdate):
             _pending_token = None
         if TOKEN != old_token:
             await manager.close_all(4401)
+    if ri.get("enabled") is False:
+        # 关掉总开关时立刻结束正在进行的接管，不等下一次心跳
+        await remote_input.manager.finish(remote_input.RI_DISABLED)
     return {"ok": True, "llm_configured": llm.configured, "workspace": str(tools.WORKSPACE),
             "token": TOKEN,
             # 回传归一之后的实值：前端滑条按它落位（比如 DeepSeek 上的「中」实际是 high）
