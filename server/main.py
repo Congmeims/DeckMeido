@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import glob
 import io
 import json
@@ -2665,6 +2666,16 @@ class QQConfigUpdate(BaseModel):
     # 接受数组（新前端）或逗号/换行分隔的字符串（手写/旧调用）
     admin_qq: list[str] | str | None = None
     allow_groups: list[str] | str | None = None
+    group_admin_commands: bool | None = None
+    # 传空字符串 = 恢复内置默认；超长由 normalize_guest_prompt 拒绝（400）
+    guest_prompt: str | None = None
+    allow_image: bool | None = None
+    max_image_mb: float | None = None
+    image_save_dir: str | None = None
+    image_recent_minutes: float | None = None
+    text_log_path: str | None = None
+    auto_launch_after_install: bool | None = None
+    auto_launch_wait_seconds: float | None = None
 
 
 class AskTemplateUpdate(BaseModel):
@@ -3327,6 +3338,37 @@ def _safe_clear_stream(sid: str) -> None:
         print(f"[DeckMeido] 清理流式残留失败（{sid}）：{e}", file=sys.stderr)
 
 
+def _qq_log(level: str, event: str, detail: str = "") -> None:
+    """往 QQ 日志区补一条事件（qq_bot 在模块后段才创建，这里延迟取）"""
+    try:
+        qq_bot.log_event(level, event, detail)
+    except Exception:
+        pass
+
+
+async def _guest_reply(hist: list[dict], sys_prompt: str, text: str) -> str:
+    """普通群友的一轮：只带 guest prompt + 自己会话最近几轮，零工具"""
+    if qqbot.looks_like_injection(text):
+        _qq_log("warn", "injection_suspect", "群友消息命中提示注入关键词")
+    if not llm.configured:
+        return "（还没配置模型，等主人配好我再来陪你聊。）"
+    msgs = [{"role": "system", "content": sys_prompt or qqbot.DEFAULT_GUEST_PROMPT}]
+    for item in (hist or [])[-6:]:
+        role = item.get("role")
+        content = str(item.get("content") or "")
+        if role in ("user", "assistant") and content:
+            msgs.append({"role": role, "content": content[:600]})
+    try:
+        out = await llm.chat(msgs)
+    except Exception as e:
+        print(f"[DeckMeido][qq] 群友轮次失败：{e!r}", file=sys.stderr)
+        return "这一轮没接上，稍后再试。"
+    out, changed = qqbot.redact_output(str(out or ""))
+    if changed:
+        _qq_log("info", "output_redacted", "群友回复命中脱敏规则")
+    return out.strip() or "嗯，我在。"
+
+
 async def handle_chat(text: str, announce: bool = True,
                       image: str | None = None,
                       image_prompt: str = "（这是当前游戏画面，结合画面回答用户的问题）",
@@ -3339,7 +3381,9 @@ async def handle_chat(text: str, announce: bool = True,
                       sid: str = "",
                       hist: list[dict] | None = None,
                       readonly: bool = False,
-                      force_confirm: bool = False) -> dict:
+                      force_confirm: bool = False,
+                      guest: bool = False,
+                      guest_prompt_text: str = "") -> dict:
     """brief 是给界面看的短文案（可选）：截屏询问那套提示词有一百多字，
    插件面板长显会把整个面板撑开。它只随消息存下来供各端显示，
    真正发给模型、算进上下文的仍然是 text。"""
@@ -3450,7 +3494,11 @@ async def handle_chat(text: str, announce: bool = True,
         # 的入口 —— 那时候用户的手没法直接按终止。翻文件、跑后台命令、查天气这些
         # 不需要看屏幕的活儿不再挡视线，省得连「清空回收站」都要盖住全屏。
         # 遮罩的起落就在下面调用工具的前后（见 tools.touches_screen），这里不再常开。
-        if not llm.configured:
+        if guest:
+            # 普通群友：零工具、只给群友提示词，不注入模式/PERSONA/记忆，
+            # 也不看当前桌面截图；输出做脱敏后再回
+            reply = await _guest_reply(hist, guest_prompt_text, text)
+        elif not llm.configured:
             reply = "还没有配置模型。点右上角「设置」填好 API 地址和 Key 就能开始对话。"
         elif pending_action and not _pending_matches_turn(
                 pending_action, turn_sid, turn_epoch, turn_id, client, device):
@@ -3460,7 +3508,7 @@ async def handle_chat(text: str, announce: bool = True,
                                              tool_log=tool_log, client=client,
                                              turn_ctx=turn_ctx,
                                              shot_lock=shot_lock, surface=surface)
-        elif pending_action and tools.is_confirm(text):
+        elif pending_action and (tools.is_confirm(text) or policy.is_hard_confirm(text)):
             # 用户确认了挂起的危险操作：这是显式的「窗口里点了确认」，
             # 不是历史文本推断出来的授权，policy 用 approved=True 放行并记账
             action, pending_action = pending_action, None
@@ -3482,6 +3530,9 @@ async def handle_chat(text: str, announce: bool = True,
                       f"{decision.reason}", file=sys.stderr)
                 result = f"策略拒绝：{decision.reason}"
             tool_log.append({"name": action["name"], "summary": action["description"]})
+            # 补上执行结果，QQ 的「装完自动打开」要靠 exit=0 判断成功
+            if events:
+                events[-1]["output"] = str(result)[:1500]
             reply = (f"已完成：{action['description']}\n{result}" if decision.allowed
                      else f"未执行：{action['description']}\n{result}")
         elif pending_action:
@@ -5133,6 +5184,28 @@ async def run_agent(events: list[dict], extra_system: str = "",
                                              **ask, **_turn_tag()})
                     return q or prompts.part("ask_empty")
 
+                # 远程三档：只有 QQ（force_confirm）才走这里，本机入口完全不变。
+                # deny 直接回固定文案并终止本轮；hard 必须回「确认执行」；
+                # 其余落到原来的单段确认流程。
+                remote_risk = (policy.classify_remote_tool(name, args, remote=True)
+                               if ctx.force_confirm else policy.REMOTE_NORMAL)
+                if remote_risk.level == "deny":
+                    label = tools.cn_name(name)
+                    summary = tools.summarize_tool(name, args)
+                    deny_event = {"type": "tool", "name": name, "label": label,
+                                  "summary": summary, "files": [], "denied": True,
+                                  "reason": remote_risk.reason}
+                    events.append(deny_event)
+                    await manager.broadcast({"type": "tool_done", "event": deny_event,
+                                             "ts": time.time(), **_turn_tag()})
+                    print(f"[DeckMeido][risk] 远程拒绝 {remote_risk.rule}"
+                          f"（会话 {turn_sid}）：{remote_risk.reason}", file=sys.stderr)
+                    _qq_log("warn", "远程风险拒绝",
+                            f"{remote_risk.rule}: {remote_risk.reason}")
+                    return (f"这条操作在 QQ 远程被拒绝了"
+                            f"（{remote_risk.rule}：{remote_risk.reason}）。"
+                            f"为了安全不会执行，也不要换一种写法绕过。")
+
                 # 授权闸门：电源类命令只认本轮 user_text + 有效的 pending_intent。
                 # full 模式也必须过这一关 —— 它只决定「要不要弹审批」，
                 # 不决定「模型有没有资格执行」
@@ -5181,11 +5254,13 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         needs_approval = tools.is_dangerous(cmd)
                     # full 模式下不拦截
 
-                if needs_approval:
+                if needs_approval or remote_risk.level == "hard_confirm":
                     # 挂起危险操作，等用户下一轮确认。把「谁在哪提的」一并记下，
-                    # 确认时校验（见 _pending_matches），别的端说的「好」不算数
+                    # 确认时校验（见 _pending_matches），别的端说的「好」不算数。
+                    # hard 档只认「确认执行」，qqbot 侧会按这个标记收紧确认口径
                     pending_action = {"name": name, "args": args,
                                       "description": tools.describe(name, args),
+                                      "hard": remote_risk.level == "hard_confirm",
                                       "sid": store.turn.get("sid") or store.current_sid,
                                       "epoch": store.turn.get("epoch") or store.epoch,
                                       "turn_id": store.turn.get("turn_id") or "",
@@ -5193,8 +5268,12 @@ async def run_agent(events: list[dict], extra_system: str = "",
                                       "device": store.turn.get("device") or ""}
                     print(f"[DeckMeido] 工具待确认 {name}（模式 {PERMISSION_MODE}）："
                           f"{pending_action['description']}")
-                    return prompts.part("pending_approval").format(
+                    text_out = prompts.part("pending_approval").format(
                         description=pending_action['description'])
+                    if pending_action["hard"]:
+                        text_out += ("\n这项操作在 QQ 远程属于高风险，"
+                                     "只有回复「确认执行」才会执行。")
+                    return text_out
 
                 # 文件改动识别（run_command）
                 files = tools.extract_writes(str(args.get("command", ""))) if name == "run_command" else []
@@ -5518,6 +5597,78 @@ async def _qq_screenshot() -> tuple[bytes | None, str]:
     return None, note
 
 
+# 远程「装完就打开」：只认明确的安装类命令，且必须 exit=0
+_QQ_INSTALL_RE = re.compile(
+    r"(install\.sh|"
+    r"\b(?:apt|apt-get|dnf|yum|zypper)\b[^\n]*\binstall\b|"
+    r"\bpacman\b[^\n]*\s-{1,2}S\w*|"
+    r"\bflatpak\s+install\b|"
+    r"\b(?:curl|wget)\b[^\n|]*\|\s*(?:bash|sh))",
+    re.IGNORECASE)
+
+
+def _qq_install_target(cmd: str) -> str:
+    """从安装命令里猜要启动的可执行名（猜不到返回空串）"""
+    text = str(cmd or "")
+    patterns = (
+        r"\b(?:apt|apt-get|dnf|yum|zypper)\b[^\n]*\binstall\b([^\n]*)",
+        r"\bpacman\b[^\n]*\s-{1,2}S\w*\s+([^\n]*)",
+        r"\bflatpak\s+install\b([^\n]*)",
+    )
+    for pattern in patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if not m:
+            continue
+        tail = m.group(1)
+        for token in re.split(r"\s+", tail.strip()):
+            token = token.strip("\"'")
+            if token and not token.startswith("-") and not token.endswith(".sh"):
+                return token
+    return ""
+
+
+async def _qq_maybe_launch_after_install(events: list) -> dict:
+    """安装类命令跑成功后自动拉起程序并截一张图；只用于 QQ 管理员轮次"""
+    cfg = qqbot.parse_config(CFG.get("qq") or {})
+    if not cfg.auto_launch_after_install:
+        return {}
+    for ev in events or []:
+        if not isinstance(ev, dict) or ev.get("name") != "run_command":
+            continue
+        if ev.get("denied"):
+            continue
+        cmd = str(ev.get("summary") or "")
+        if not _QQ_INSTALL_RE.search(cmd):
+            continue
+        output = str(ev.get("output") or "")
+        if not output.startswith("exit=0"):
+            _qq_log("warn", "自动启动跳过", "安装命令未成功退出")
+            continue
+        target = _qq_install_target(cmd)
+        if not target:
+            _qq_log("info", "自动启动跳过", "猜不到可执行名")
+            continue
+        if cfg.auto_launch_wait_seconds > 0:
+            await asyncio.sleep(min(30.0, cfg.auto_launch_wait_seconds))
+        exe = shutil.which(target) or target
+        try:
+            await asyncio.to_thread(
+                subprocess.Popen, [exe],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True, cwd=str(Path.home()))
+        except Exception as e:
+            _qq_log("error", "自动启动失败", f"{type(e).__name__}: {e}")
+            return {"reply": f"已装好，但没能自动打开 {exe}（{type(e).__name__}）。"}
+        _qq_log("info", "自动启动", f"{exe}")
+        blob, _note = await _qq_screenshot()
+        caption = (f"已装好：{target}，已经自动打开了。"
+                   f"游戏模式下窗口可能看不到，切回桌面看一眼。")
+        if blob:
+            return {"reply": caption, "caption": caption, "image": blob}
+        return {"reply": caption + "\n（截图没抓到，就不附图了。）"}
+    return {}
+
+
 def _qq_clear_pending(device: str, sid: str) -> None:
     """QQ 侧确认超时后，把仍然属于这条来源的挂起操作撤掉"""
     global pending_action
@@ -5529,7 +5680,8 @@ def _qq_clear_pending(device: str, sid: str) -> None:
 
 
 async def _qq_run_turn(text: str, *, sid: str, device: str,
-                       readonly: bool, turn_id: str = "") -> dict:
+                       readonly: bool, turn_id: str = "",
+                       image: bytes | None = None) -> dict:
     """QQ 通道的一轮对话
 
     走现有 handle_chat，但用 QQ 自己的会话（sid）和来源标记（device）：
@@ -5544,7 +5696,7 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
     pend = pending_action
     if (isinstance(pend, dict) and (pend.get("client") or "") == "qq"
             and (pend.get("device") or "") == device):
-        if qqbot.is_confirm_text(text):
+        if qqbot.is_confirm_text(text) or qqbot.is_hard_confirm(text):
             if ((pend.get("sid") or "") == sid
                     and (pend.get("epoch") or 0) == store.epoch
                     and (pend.get("turn_id") or "")):
@@ -5562,11 +5714,17 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
     else:
         data = await asyncio.to_thread(store.read_session, sid)
         hist = data.get("history") if isinstance(data.get("history"), list) else []
+    image_part = _qq_image_data_url(image)
+    qq_cfg = CFG.get("qq") or {}
+    guest_text = (qqbot.guest_prompt(qq_cfg.get("guest_prompt"), _qq_nickname())
+                  if readonly else "")
     try:
         result = await handle_chat(text, client="qq", device=device,
                                    turn_id=turn_id, surface=policy.SURFACE_CHAT,
                                    sid=sid, hist=hist, readonly=readonly,
-                                   force_confirm=True)
+                                   force_confirm=True, image=image_part,
+                                   guest=bool(readonly),
+                                   guest_prompt_text=guest_text)
     finally:
         # handle_chat 会把本轮的 token 用量写进全局估算值，那是给本地会话看的；
         # QQ 这轮结束后归零，让本地/status 下次重新按自己的历史估算
@@ -5577,8 +5735,30 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
             and (p.get("device") or "") == device and (p.get("sid") or "") == sid
             and (p.get("epoch") or 0) == store.epoch):
         out["pending"] = {"turn_id": p.get("turn_id") or "",
-                          "description": p.get("description") or ""}
+                          "description": p.get("description") or "",
+                          "hard": bool(p.get("hard"))}
+    if not readonly:
+        extra = await _qq_maybe_launch_after_install(result.get("events") or [])
+        if extra:
+            out.update(extra)
     return out
+
+
+def _qq_image_data_url(blob: bytes | None) -> str | None:
+    """QQ 图片字节 → handle_chat 能吃的 data URL"""
+    if not blob:
+        return None
+    if blob[:3] == b"\xff\xd8\xff":
+        mime = "image/jpeg"
+    elif blob[:8] == b"\x89PNG\r\n\x1a\n":
+        mime = "image/png"
+    elif blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
+        mime = "image/webp"
+    elif blob[:6] in (b"GIF87a", b"GIF89a"):
+        mime = "image/gif"
+    else:
+        return None
+    return f"data:{mime};base64," + base64.b64encode(blob).decode("ascii")
 
 
 def _qq_apply_config(raw: dict) -> None:
@@ -5591,6 +5771,8 @@ qq_bot = qqbot.QQBot(
     status_provider=_qq_status_info,
     nickname=_qq_nickname,
     pending_clear=_qq_clear_pending,
+    # 单条图文的 base64 超 3MB 时，压到长边 1024 / q82 再发
+    image_optimizer=lambda blob: _jpeg_for_llm(blob, max_side=1024, quality=82),
 )
 qq_bot.configure(qqbot.parse_config(CFG.get("qq") or {}))
 
@@ -5609,6 +5791,12 @@ async def _stop_qqbot():
 async def api_qq_status():
     """QQ 通道的连接状态与统计（令牌不回显），供远程连接页用"""
     return qq_bot.state()
+
+
+@app.get("/api/qq/logs", dependencies=[Depends(check_token)])
+async def api_qq_logs(limit: int = Query(default=100, ge=1, le=300)):
+    """QQ 事件日志：只含事件与计数，不含令牌/消息正文；新的在前"""
+    return {"logs": qq_bot.logs(limit), "state": qq_bot.state()}
 
 
 _QQ_ID_SPLIT = re.compile(r"[,，、\s]+")
@@ -5641,6 +5829,18 @@ def _qq_public_config() -> dict:
         "access_token": cfg.access_token,
         "admin_qq": list(cfg.admin_qq),
         "allow_groups": list(cfg.allow_groups),
+        "group_admin_commands": cfg.group_admin_commands,
+        **qqbot.guest_prompt_fields(cfg.guest_prompt),
+        "guest_prompt_max": qqbot.MAX_GUEST_PROMPT,
+        "allow_image": cfg.allow_image,
+        "max_image_mb": cfg.max_image_mb,
+        "image_save_dir": cfg.image_save_dir,
+        "image_recent_minutes": cfg.image_recent_minutes,
+        "text_log_path": cfg.text_log_path,
+        "auto_launch_after_install": cfg.auto_launch_after_install,
+        "auto_launch_wait_seconds": cfg.auto_launch_wait_seconds,
+        "archive_dir_default": str(qqbot.install_root() / qqbot.ARCHIVE_SUBDIR),
+        "archive_dir_fallback": str(Path(qqbot.FALLBACK_ARCHIVE_DIR).expanduser()),
         "rate_per_minute": cfg.rate_per_minute,
         "max_message_chars": cfg.max_message_chars,
         "reply_chunk_chars": cfg.reply_chunk_chars,
@@ -5668,6 +5868,28 @@ async def api_save_qq_config(req: QQConfigUpdate):
         updates["admin_qq"] = _qq_id_list(req.admin_qq)
     if req.allow_groups is not None:
         updates["allow_groups"] = _qq_id_list(req.allow_groups)
+    if req.group_admin_commands is not None:
+        updates["group_admin_commands"] = bool(req.group_admin_commands)
+    if req.guest_prompt is not None:
+        try:
+            updates["guest_prompt"] = qqbot.normalize_guest_prompt(req.guest_prompt)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if req.allow_image is not None:
+        updates["allow_image"] = bool(req.allow_image)
+    if req.max_image_mb is not None:
+        updates["max_image_mb"] = max(0.1, float(req.max_image_mb))
+    if req.image_save_dir is not None:
+        updates["image_save_dir"] = req.image_save_dir.strip()
+    if req.image_recent_minutes is not None:
+        updates["image_recent_minutes"] = max(0.0, float(req.image_recent_minutes))
+    if req.text_log_path is not None:
+        updates["text_log_path"] = req.text_log_path.strip()
+    if req.auto_launch_after_install is not None:
+        updates["auto_launch_after_install"] = bool(req.auto_launch_after_install)
+    if req.auto_launch_wait_seconds is not None:
+        updates["auto_launch_wait_seconds"] = max(
+            0.0, float(req.auto_launch_wait_seconds))
     if updates:
         save_config({"qq": updates})
         # save_config 会经 apply_config 热更新配置；这里再等一次重连落定，
