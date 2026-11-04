@@ -4436,7 +4436,10 @@ def _ensure_overlay_locked() -> None:
 
     def spawn() -> bool:
         """拉起一层遮罩并确认它活着且有套接字"""
-        log = open(BASE_DIR / "overlay.log", "ab")
+        try:
+            log = open(paths.logs_dir() / "overlay.log", "ab")
+        except OSError:
+            log = subprocess.DEVNULL
         try:
             proc = subprocess.Popen(
                 [sys.executable, str(BASE_DIR / "overlay.py"), "--force"],

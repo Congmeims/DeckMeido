@@ -54,5 +54,4 @@ _backup_*/
 server/*.bak*
 server/static/*.bak*
 server/backup*.log*
-server/backend.log*
 server/static/_logo_prev.png

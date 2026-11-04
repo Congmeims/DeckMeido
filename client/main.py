@@ -47,19 +47,21 @@ API = f"http://127.0.0.1:{PORT}"
 WINDOW_W, WINDOW_H = 1240, 760
 
 
-BACKEND_LOG = DECKMEIDO_DIR / "server" / "backend.log"
+_DATA_DIR = _resolve_data_dir()
+# 运行期文件统一放数据根：代码目录升级时会被整份覆盖，日志不能放在那里
+BACKEND_LOG = _DATA_DIR / "logs" / "backend.log"
 _BACKEND_LOG_MAX = 5 * 1024 * 1024   # 5 MB，只留一代 backend.log.1
 _log_handle = None
 
 # 插件大屏页「关闭核心」留下的标记：存在时 watchdog 不自动重拉，保证
 # 「关闭后保持停止、只有用户点启动才起来」。插件点「启动」会删掉它；
 # 手动打开客户端属于显式启动，不受这个标记限制。
-CORE_STOP_MARKER = DECKMEIDO_DIR / "server" / ".core_stopped"
+CORE_STOP_MARKER = _DATA_DIR / "core.stopped"
 
 # 客户端崩溃日志：切游戏模式时 gamescope 会话重建会掐断 Wayland 连接，
 # Qt 在那种情况下是 abort()，Python 层 try/except 拦不住，只有 faulthandler
 # 能在进程死前把栈写下来。没有它就只能看到一句 "Wayland connection broke"。
-CRASH_LOG = DECKMEIDO_DIR / "server" / "client-crash.log"
+CRASH_LOG = _DATA_DIR / "logs" / "client-crash.log"
 
 
 def _enable_crash_log() -> None:
@@ -67,7 +69,16 @@ def _enable_crash_log() -> None:
     try:
         import faulthandler
 
+        CRASH_LOG.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            CRASH_LOG.parent.chmod(0o700)
+        except OSError:
+            pass
         f = open(CRASH_LOG, "a", encoding="utf-8")
+        try:
+            os.chmod(CRASH_LOG, 0o600)
+        except OSError:
+            pass
         faulthandler.enable(file=f, all_threads=True)
         f.write(f"\n===== client start {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
         f.flush()
@@ -140,9 +151,17 @@ def _backend_log_fd():
         return _log_handle.fileno()
     try:
         BACKEND_LOG.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            BACKEND_LOG.parent.chmod(0o700)
+        except OSError:
+            pass
         if BACKEND_LOG.exists() and BACKEND_LOG.stat().st_size > _BACKEND_LOG_MAX:
             os.replace(BACKEND_LOG, BACKEND_LOG.with_name("backend.log.1"))
         _log_handle = open(BACKEND_LOG, "ab", buffering=0)
+        try:
+            os.chmod(BACKEND_LOG, 0o600)
+        except OSError:
+            pass
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         _log_handle.write(f"\n===== backend start {stamp} =====\n".encode())
         return _log_handle.fileno()
@@ -547,12 +566,12 @@ def main() -> int:
                 return RuntimeError("旧核心没有退出，重启已中止。")
             proc = _start_backend()
             if proc is None:
-                return RuntimeError("拉起新核心失败，详见 server/backend.log。")
+                return RuntimeError(f"拉起新核心失败，详见 {BACKEND_LOG}。")
             for _ in range(20):
                 if backend_alive(timeout=1.0):
                     return proc
                 time.sleep(0.5)
-            return RuntimeError("新核心 10 秒内没有应答，详见 server/backend.log。")
+            return RuntimeError(f"新核心 10 秒内没有应答，详见 {BACKEND_LOG}。")
         finally:
             restart_state["running"] = False
 
@@ -636,7 +655,7 @@ def main() -> int:
         kick_backend()
         if backend["proc"] is None:
             # 拉起失败别再 restore 打扰用户：托盘提示一下，下一轮再试
-            tray.showMessage("DeckMeido", "后端重启失败，详见 server/backend.log", icon, 3000)
+            tray.showMessage("DeckMeido", f"后端重启失败，详见 {BACKEND_LOG}", icon, 3000)
             return
         # 不 restore()：用户可能正在别的窗口里干活，硬把本窗口提到前台很烦，
         # 托盘给个提示就够，需要时点托盘图标回来

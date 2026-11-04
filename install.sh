@@ -52,8 +52,8 @@
 # 绝不 rmdir），userdata/ 永远保留。
 # 用户可修改数据统一放 <安装目录>/userdata（可用 DECKMEIDO_DATA_DIR 覆盖）：
 # config.toml、persona/meidosoul.json、memory.json、sessions/、uploads/、
-# meidobot/。只保留这一套标准布局；升级同步排除整个 userdata/，卸载按清单
-# 删除代码、userdata/ 整目录保留。
+# meidobot/、models/sensevoice/、logs/、core.stopped。只保留这一套标准布局；
+# 升级同步排除整个 userdata/，卸载按清单删除代码、userdata/ 整目录保留。
 set -euo pipefail
 
 APP=deckmeido
@@ -95,6 +95,8 @@ DATA_MEMORY="$DATA_DIR/memory.json"
 DATA_SESSIONS="$DATA_DIR/sessions"        # 会话目录固定叫 sessions（复数）
 DATA_UPLOADS="$DATA_DIR/uploads"
 DATA_BOT="$DATA_DIR/meidobot"             # meidobot（QQ）通道归档
+DATA_LOGS="$DATA_DIR/logs"                # backend.log / overlay.log / client-crash.log
+DATA_MODELS="$DATA_DIR/models"            # 语音识别模型（sensevoice/）
 
 # 是否通过「curl | sh -」管道执行。管道执行时脚本不在磁盘上，$BASH_SOURCE[0]
 # 不是真实文件，sync_files 依赖的 $HERE/* 会指向错误位置；此时自动走
@@ -1478,8 +1480,8 @@ progress_bar() {
 # ---------- 数据目录 ----------
 # 数据根权限：userdata 及子目录 0700，配置 0600（Linux 凭据不外泄）
 ensure_data_layout() {
-  ( umask 077; mkdir -p "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" ) 2>/dev/null || true
-  chmod 700 "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" 2>/dev/null || true
+  ( umask 077; mkdir -p "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" "$DATA_LOGS" "$DATA_MODELS" ) 2>/dev/null || true
+  chmod 700 "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" "$DATA_LOGS" "$DATA_MODELS" 2>/dev/null || true
 }
 
 # 首次安装生成 config.toml；已有则原样保留

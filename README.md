@@ -62,7 +62,7 @@ QAM 面板由 Decky 插件提供；插件以 root 运行，首次使用要在面
 
 ### 语音
 
-- **语音输入**：sherpa-onnx + SenseVoice-Small int8，纯 CPU 离线识别，中英混说带标点；模型约 155MB，首次按键时按需下载，闲置一段时间自动释放。
+- **语音输入**：sherpa-onnx + SenseVoice-Small int8，纯 CPU 离线识别，中英混说带标点；模型压缩包约 1GB（只解出约 250MB），首次按键时按需下载到 `userdata/models/sensevoice/`，闲置一段时间自动释放。
 - **语音播报**：调用 `espeak-ng`（可选 `espeak` / `spd-say`），默认关闭，可设语言、语速与单次字数上限。
 
 ### 设备操作
@@ -124,7 +124,7 @@ bash install.sh speedtest            # 只测 pip 源速率
 
 1. 预检 Python 版本、venv、`systemctl`、磁盘余量、端口占用与图形会话。
 2. 把程序同步到安装目录（默认 `~/deckmeido`，可用 `DECKMEIDO_DIR` 覆盖）。
-3. 创建数据根 `userdata/` 及 `persona/`、`sessions/`、`uploads/`、`meidobot/`，目录权限 `700`。
+3. 创建数据根 `userdata/` 及 `persona/`、`sessions/`、`uploads/`、`meidobot/`、`logs/`、`models/`，目录权限 `700`。
 4. 建 `.venv` 并安装依赖；默认装 PySide6，`DECKMEIDO_SKIP_GUI=1` 可跳过。
 5. 从 `server/config.example.toml` 生成 `userdata/config.toml`，权限 `600`。
 6. 写桌面快捷方式与 `uninstall.sh`，并清理旧版遗留的 systemd 单元；**不再注册开机自启服务**，后端由客户端拉起。
@@ -190,6 +190,12 @@ userdata/
 ├── memory.json              长期记忆
 ├── sessions/                会话记录
 ├── uploads/                 用户上传与工作区文件
+├── models/sensevoice/       语音识别模型（首次使用时按需下载）
+├── logs/
+│   ├── backend.log          后端日志（滚动保留 backend.log.1）
+│   ├── overlay.log          操作遮罩日志
+│   └── client-crash.log     客户端崩溃栈
+├── core.stopped             插件「关闭核心」标记，与客户端共享
 └── meidobot/                QQ 归档
     ├── images/<日期>/       存图
     ├── inbox_index.jsonl    图片索引
@@ -257,13 +263,13 @@ bash ~/deckmeido/uninstall.sh --purge    # 额外删安装器创建的配置备�
 | 现象 | 排查 |
 | --- | --- |
 | 插件版本没变 | 看安装日志里是否有「插件已安装 v…」；到 设置 → Decky Loader 点「重新载入」，或运行 `bash ~/deckmeido/plugin/deploy.sh` |
-| 后端没起来 | 看 `~/deckmeido/server/backend.log`（旧一代在 `backend.log.1`）；确认 `18765` 没被别的进程占用 |
+| 后端没起来 | 看 `~/deckmeido/userdata/logs/backend.log`（旧一代在 `backend.log.1`）；确认 `18765` 没被别的进程占用 |
 | 配置写坏了 | 删除 `userdata/config.toml` 后重启，会按模板重新生成（自定义项会丢）；人设 JSON 坏了会自动回落默认人设 |
 | QQ 连不上 | 网页 QQ 状态页看 `detail`；确认 `access_token` 非空且与 NapCat 一致、`ws_url` 可达、机器人已登录 |
 | 截图 / 点击不灵 | 跑 `bash install.sh check`；`ydotoold` 没运行会让 ydotool 报 socket 错误 |
 | 升级后打不开 | 多半是旧后端占着端口；再跑一次 `bash install.sh upgrade` 会清理残留进程 |
 
-日志位置：后端 `server/backend.log`；QQ 事件可在状态页查看，也可调 `/api/qq/logs`；依赖安装日志 `pip-install.log` 在安装目录。
+日志位置：后端 `userdata/logs/backend.log`、遮罩 `userdata/logs/overlay.log`、客户端崩溃栈 `userdata/logs/client-crash.log`；QQ 事件可在状态页查看，也可调 `/api/qq/logs`；依赖安装日志 `pip-install.log` 在安装目录。
 
 ## 开发
 

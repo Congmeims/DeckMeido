@@ -67,12 +67,17 @@ def _find_install_dir() -> Path:
 INSTALL_DIR = _find_install_dir()
 
 
-def _config_paths() -> list[Path]:
-    """配置路径：DECKMEIDO_DATA_DIR > <安装目录>/userdata/"""
+def _data_dir() -> Path:
+    """数据根：DECKMEIDO_DATA_DIR > <安装目录>/userdata/（与客户端、后端一致）"""
     env = (os.environ.get("DECKMEIDO_DATA_DIR") or "").strip()
     if env:
-        return [Path(env).expanduser() / "config.toml"]
-    return [INSTALL_DIR / "userdata" / "config.toml"]
+        return Path(env).expanduser()
+    return INSTALL_DIR / "userdata"
+
+
+def _config_paths() -> list[Path]:
+    """配置路径：DECKMEIDO_DATA_DIR > <安装目录>/userdata/"""
+    return [_data_dir() / "config.toml"]
 
 
 def _config_path() -> Path:
@@ -266,14 +271,14 @@ def _clear_ticket():
 #
 # 「关闭核心」之后要求保持停止：插件加载时的自动拉起（_autostart_backend）
 # 必须先看这个标记，有标记就跳过。只有用户显式点「启动」（start_backend /
-# core_start）才清掉它。标记放在安装目录的 server/ 下，插件（root）和桌面
+# core_start）才清掉它。标记放在数据根的 core.stopped，插件（root）和桌面
 # 客户端的 watchdog 都能看到，Decky / Steam 重启后仍然生效。
 
 def _core_stopped_path() -> Path:
-    # 和桌面客户端的 watchdog 共用这一个标记：放在安装目录里 root / deck 都能 stat。
+    # 和桌面客户端的 watchdog 共用这一个标记：放在数据根里 root / deck 都能 stat。
     # 存在 = 用户点过「关闭核心」，两条自动拉起路径（插件 _autostart_backend、
     # 客户端 watchdog）都必须跳过；只有显式「启动」才删掉它。
-    return INSTALL_DIR / "server" / ".core_stopped"
+    return _data_dir() / "core.stopped"
 
 
 def _core_stopped() -> bool:
@@ -290,6 +295,9 @@ def _mark_core_stopped(stopped: bool) -> None:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
             os.chmod(path, 0o600)
+            if os.getuid() == 0:
+                # 插件是 root，标记要交给 deck，否则客户端 / 后端那边删不掉
+                os.chown(path, _target_uid(), -1)
         else:
             path.unlink(missing_ok=True)
     except Exception as exc:
@@ -838,13 +846,18 @@ def _backend_log_fd() -> int:
     以前插件拉起后端只能 DEVNULL，崩了连 traceback 都没有；这里照
     client/main.py 的做法留一代备份，超过 5MB 就滚动。
     """
-    log = INSTALL_DIR / "server" / "backend.log"
+    log = _data_dir() / "logs" / "backend.log"
     _restore_owner()
     try:
         log.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(log.parent, 0o700)
         if log.exists() and log.stat().st_size > 5 * 1024 * 1024:
             os.replace(log, log.with_name("backend.log.1"))
-        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        if os.getuid() == 0:
+            # 插件是 root，日志要交给 deck，客户端下次追加时才写得动
+            os.chown(log.parent, _target_uid(), -1)
+            os.chown(log, _target_uid(), -1)
         os.write(fd, f"\n===== backend start {time.strftime('%Y-%m-%d %H:%M:%S')} (plugin) =====\n".encode())
         return fd
     except Exception:
@@ -861,7 +874,6 @@ async def _start_backend(port: int) -> tuple[bool, str]:
     py = INSTALL_DIR / ".venv" / "bin" / "python"
     if not py.exists():
         return False, f"找不到 {py}"
-    log = INSTALL_DIR / "server" / "backend.log"
     try:
         fd = _backend_log_fd()
         # XDG_RUNTIME_DIR 不能指望从 Decky 继承下来：插件是系统服务起的，
