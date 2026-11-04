@@ -2648,6 +2648,8 @@ class ConfigUpdate(BaseModel):
     ask_template: str | None = None
     # 更新源：mirror / github / mirror-only / github-only
     update_source: str | None = None
+    # 双源模式是否探测 GitHub（关掉就只用镜像）
+    update_github_enable: bool | None = None
     # 跨屏键鼠接管：合并成单开关（设置页只展示这一项）、灵敏度、单次时长上限
     remote_input_enabled: bool | None = None
     remote_input_sensitivity: float | None = None
@@ -2758,6 +2760,7 @@ async def api_get_config():
         "update_source": updater.update_cfg()["source"],
         "update_source_label": updater.source_label(),
         "update_mirror": updater.update_cfg()["mirror"],
+        "update_github_enable": bool(updater.update_cfg().get("github_enable", True)),
         # 长期记忆的条数概览（正文单独走 /api/memory，设置页按需拉）
         "memory": memory.stats(),
         # 跨屏键鼠接管：设置页表单与安全提示用（单开关：开 = 允许局域网）
@@ -2955,6 +2958,8 @@ async def api_set_config(req: ConfigUpdate):
     if req.update_source in ("mirror", "github", "mirror-only", "github-only"):
         # 只写 source；mirror / github_repo 的地址留给 [update] 段（一般不用改）
         updates["update"] = {"source": req.update_source}
+    if req.update_github_enable is not None:
+        updates.setdefault("update", {})["github_enable"] = bool(req.update_github_enable)
     ri = {}
     if req.remote_input_enabled is not None:
         value = bool(req.remote_input_enabled)
@@ -3183,6 +3188,10 @@ async def update_watch_loop():
             # used=实际问到结果的源；fallback=前面失败的源（用于提示「已切备用源」）
             used = info.get("source") or ""
             base = {"source": used, "source_label": info.get("source_label", ""),
+                    "source_used": info.get("source_used") or used,
+                    "mirror_version": info.get("mirror_version", ""),
+                    "github_version": info.get("github_version", ""),
+                    "github_reachable": bool(info.get("github_reachable")),
                     "fallback": info.get("fallback_from") or []}
             if info["has_update"]:
                 update_cache = {"has_update": True, "latest": info["tag"],

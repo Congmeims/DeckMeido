@@ -2,11 +2,11 @@
 
 网页设置页的「检查更新 / 立即升级」和 AI 的 self_update 工具共用这里的逻辑。
 
-更新源有两套，按顺序尝试：
+默认同时探测两套更新源，取版本更高者（版本相同时优先镜像）：
 - 国内镜像（纯静态站）：latest.json + deckmeido-<ver>.tar.gz，不依赖 git
-- GitHub：api.github.com + git fetch/checkout
-默认镜像优先、GitHub 兜底，镜像只放 tarball 也能和 GitHub 正常发布并行，
-在 config.toml 的 [update] 段里可以改（网页设置页的「更新源」下拉）。
+- GitHub：api.github.com + Release 资产（git fetch/checkout 安装）
+在 config.toml 的 [update] 段里可以关掉 GitHub（github_enable = false），
+旧的 source = mirror-only / github-only 仍然等价于只开一源。
 
 升级过程会把正在运行的服务换掉，所以分两种走法：
 - restart_service=True（用户点了升级、或 systemd 托管）：交给 install.sh upgrade，
@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -31,6 +32,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 INSTALL_DIR = Path(__file__).resolve().parent.parent
@@ -110,9 +112,10 @@ def _special_cert_note(exc: Exception, host: str) -> str:
 def update_cfg() -> dict:
     """读 [update] 段；没有这一段（老配置）时按默认值走"""
     defaults = {
-        "source": "mirror",          # mirror=镜像优先 / github=GitHub 优先 / mirror-only / github-only
+        "source": "mirror",          # 兼容旧配置：mirror/github 均表示双源；*-only 只开一源
         "mirror": DEFAULT_MIRROR,
         "github_repo": REPO,
+        "github_enable": True,       # 双源模式下是否探测 GitHub
     }
     try:
         import tomllib
@@ -131,22 +134,40 @@ def update_cfg() -> dict:
         out["mirror"] = str(u["mirror"]).strip().rstrip("/")
     if str(u.get("github_repo") or "").strip():
         out["github_repo"] = str(u["github_repo"]).strip()
+    if isinstance(u.get("github_enable"), bool):
+        out["github_enable"] = u["github_enable"]
     return out
 
 
-def source_order(cfg: dict | None = None) -> list[str]:
-    """按配置给出尝试顺序，例如 ['mirror', 'github']"""
+def sources_enabled(cfg: dict | None = None) -> list[str]:
+    """本次实际探测/可用的源。
+
+    旧的 mirror-only / github-only 语义保留；其余情况默认两源都开，
+    只有显式 github_enable = false 才只留镜像。
+    """
     cfg = cfg or update_cfg()
-    return {"mirror": ["mirror", "github"],
-            "github": ["github", "mirror"],
-            "mirror-only": ["mirror"],
-            "github-only": ["github"]}[cfg["source"]]
+    src = cfg["source"]
+    if src == "mirror-only":
+        return ["mirror"]
+    if src == "github-only":
+        return ["github"]
+    return ["mirror", "github"] if cfg.get("github_enable", True) else ["mirror"]
+
+
+def source_order(cfg: dict | None = None) -> list[str]:
+    """兼容旧调用：按配置给出可尝试的源（新逻辑不再按顺序回退）"""
+    return sources_enabled(cfg)
 
 
 def source_label(cfg: dict | None = None) -> str:
     cfg = cfg or update_cfg()
-    return {"mirror": "国内镜像", "github": "GitHub",
-            "mirror-only": "仅国内镜像", "github-only": "仅 GitHub"}[cfg["source"]]
+    enabled = sources_enabled(cfg)
+    if enabled == ["mirror"]:
+        return "仅国内镜像"
+    if enabled == ["github"]:
+        return "仅 GitHub"
+    return "镜像 + GitHub"
+
 
 
 # ---------- 版本 ----------
@@ -187,6 +208,22 @@ def _http_json(url: str, timeout: float = 10.0,
     })
     with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _http_text(url: str, timeout: float = 10.0,
+               context: ssl.SSLContext | None = None) -> str:
+    """拉取纯文本资产（Release 的 .sha256 文件）"""
+    req = urllib.request.Request(url, headers={"User-Agent": "DeckMeido"})
+    with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
+        return resp.read().decode("utf-8", "replace")
+
+
+_SHA256_RE = re.compile(r"\b([0-9a-fA-F]{64})\b")
+
+
+def _sha_from_text(text: str) -> str:
+    m = _SHA256_RE.search(text or "")
+    return m.group(1).lower() if m else ""
 
 
 def mirror_release(mirror: str | None = None) -> dict:
@@ -233,7 +270,12 @@ def mirror_release(mirror: str | None = None) -> dict:
 
 
 def github_release(repo: str | None = None) -> dict:
-    """查 GitHub 最新 release（同步 HTTP，调用方放线程里跑）"""
+    """查 GitHub 最新 release（同步 HTTP，调用方放线程里跑）
+
+    公开 API，不带任何认证头。发布包里优先读 latest.json 资产；没有时
+    用 tag_name + 资产列表拼下载地址。独立 .sha256 也尽量拿，
+    拿不到时留空，由下载环节改验包内 SHA256SUMS。
+    """
     repo = repo or update_cfg()["github_repo"]
     try:
         data = _http_json(f"{GITHUB_API}/repos/{repo}/releases/latest")
@@ -246,34 +288,99 @@ def github_release(repo: str | None = None) -> dict:
         raise RuntimeError(f"连不上 GitHub：{_brief(exc)}")
     except ValueError as exc:
         raise RuntimeError(f"GitHub 返回内容无法解析：{exc}")
+    raw_tag = str(data.get("tag_name") or "")
+    tag = raw_tag.lstrip("v")
+    assets = {}
+    for a in data.get("assets") or []:
+        if isinstance(a, dict) and a.get("name"):
+            assets[str(a["name"])] = str(a.get("browser_download_url") or "")
+    payload: dict = {}
+    latest_url = assets.get("latest.json") or ""
+    if latest_url:
+        try:
+            payload = _http_json(latest_url)
+        except Exception:
+            payload = {}
+    files = (payload.get("files") or {}) if isinstance(payload, dict) else {}
+    tarball = str(files.get("tarball") or "").strip() or f"deckmeido-{tag}.tar.gz"
+    tarball_url = assets.get(tarball) or (
+        f"https://github.com/{repo}/releases/download/{raw_tag}/{tarball}")
+    sha256 = str(files.get("sha256") or "").strip().lower()
+    if not sha256:
+        sha_url = assets.get(f"{tarball}.sha256") or assets.get("SHA256SUMS")
+        if sha_url:
+            try:
+                sha256 = _sha_from_text(_http_text(sha_url))
+            except Exception:
+                sha256 = ""
     return {
-        "tag": (data.get("tag_name") or "").lstrip("v"),
+        "tag": tag,
         "name": data.get("name") or "",
         "notes": (data.get("body") or "")[:4000],
         "url": data.get("html_url") or "",
         "published_at": data.get("published_at") or "",
         "source": "github",
+        "tarball_url": tarball_url,
+        "sha256": sha256,
     }
 
 
-def latest_release() -> dict:
-    """当前生效源的最新版本（按配置顺序试，失败自动切下一个源）
+def _pick_higher(mirror: dict | None, github: dict | None) -> dict | None:
+    """两源各查一次后选版本更高的；相等时优先镜像"""
+    if not mirror:
+        return github
+    if not github:
+        return mirror
+    return github if ver_tuple(github.get("tag", "")) > ver_tuple(mirror.get("tag", "")) \
+        else mirror
 
-    全部失败才抛 RuntimeError，错误里带上每个源的失败原因，
-    用户才知道「两个都连不上」而不是被一句「连不上 GitHub」误导。
+
+def probe_sources(cfg: dict | None = None) -> dict:
+    """同时探测镜像与 GitHub，单源失败不影响另一源
+
+    返回 {"mirror": info|None, "github": info|None, "mirror_error": str, "github_error": str}
     """
-    cfg = update_cfg()
-    errors: list[str] = []
-    for src in source_order(cfg):
+    cfg = cfg or update_cfg()
+    allowed = sources_enabled(cfg)
+    out: dict = {"mirror": None, "github": None,
+                 "mirror_error": "", "github_error": ""}
+
+    def _probe(src: str) -> tuple[str, dict | None, str]:
         try:
             info = mirror_release(cfg["mirror"]) if src == "mirror" \
                 else github_release(cfg["github_repo"])
-            if errors:
-                info = dict(info, fallback_from=errors)
-            return info
+            return src, info, ""
         except RuntimeError as exc:
-            errors.append(str(exc))
-    raise RuntimeError("；".join(errors) or "查询更新失败")
+            return src, None, str(exc)
+
+    with ThreadPoolExecutor(max_workers=len(allowed)) as pool:
+        for src, info, err in pool.map(_probe, allowed):
+            out[src] = info
+            out[f"{src}_error"] = err
+    return out
+
+
+def latest_release() -> dict:
+    """两源同时探测后取更高版本；两源都失败才抛 RuntimeError"""
+    cfg = update_cfg()
+    probe = probe_sources(cfg)
+    mirror, github = probe["mirror"], probe["github"]
+    chosen = _pick_higher(mirror, github)
+    if not chosen:
+        errors = [e for e in (probe["mirror_error"], probe["github_error"]) if e]
+        raise RuntimeError("；".join(errors) or "查询更新失败")
+    info = dict(chosen)
+    info.update({
+        "source_used": chosen.get("source", ""),
+        "mirror_version": (mirror or {}).get("tag", ""),
+        "github_version": (github or {}).get("tag", ""),
+        "github_reachable": bool(github),
+        "mirror_reachable": bool(mirror),
+    })
+    errors = [e for e in (probe["mirror_error"], probe["github_error"]) if e]
+    if errors:
+        info["fallback_from"] = errors
+    return info
 
 
 async def check() -> dict:
@@ -306,13 +413,34 @@ def _append_log(path: Path, text: str) -> None:
         pass
 
 
+def _sums_verified(tf: tarfile.TarFile, got: str) -> bool | None:
+    """包内如果带 SHA256SUMS，就用它校验；没有返回 None
+
+    拿不到独立 .sha256 资产时（GitHub Release 常见），这是最后一道校验。
+    """
+    for m in tf.getmembers():
+        if not m.isfile() or m.name.rsplit("/", 1)[-1] != "SHA256SUMS":
+            continue
+        fh = tf.extractfile(m)
+        if fh is None:
+            continue
+        text = fh.read().decode("utf-8", "replace")
+        hashes = [h.lower() for h in re.findall(r"[0-9a-fA-F]{64}", text)]
+        if not hashes:
+            return None
+        if got not in hashes:
+            raise RuntimeError("安装包 SHA256SUMS 校验不通过")
+        return True
+    return None
+
+
 def _apply_mirror(info: dict, log_path: Path) -> str:
-    """下载镜像站的 tarball 覆盖到安装目录（不动配置/会话），返回版本号"""
+    """下载安装包覆盖到安装目录（不动配置/会话），返回版本号"""
     url = info.get("tarball_url") or ""
     ver = (info.get("tag") or "").lstrip("v")
     if not url:
-        raise RuntimeError("镜像站没有给出安装包地址（latest.json 缺 files.tarball）")
-    _append_log(log_path, f"从镜像站下载：{url}\n")
+        raise RuntimeError("更新源没有给出安装包地址（latest.json 缺 files.tarball）")
+    _append_log(log_path, f"下载安装包：{url}\n")
     host = urllib.parse.urlsplit(url).hostname or ""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "DeckMeido"})
@@ -328,19 +456,24 @@ def _apply_mirror(info: dict, log_path: Path) -> str:
             raise RuntimeError(f"下载安装包失败：{_special_cert_note(reason, host)}")
         raise RuntimeError(f"下载安装包失败：{_brief(exc)}")
 
-    expect = (info.get("sha256") or "").lower()
+    expect = (info.get("sha256") or "").strip().lower()
+    got = hashlib.sha256(blob).hexdigest()
     if expect:
-        import hashlib
-        got = hashlib.sha256(blob).hexdigest()
         if got != expect:
             raise RuntimeError(f"安装包校验不通过（期望 {expect[:12]}…，实际 {got[:12]}…）")
         _append_log(log_path, "sha256 校验通过\n")
-    else:
-        _append_log(log_path, "latest.json 未提供 sha256，跳过校验\n")
 
     with tempfile.TemporaryDirectory(prefix="deckmeido-upd-") as tmp:
         try:
             with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+                if not expect:
+                    checked = _sums_verified(tf, got)
+                    if checked is None:
+                        _append_log(log_path,
+                                    "未拿到独立 .sha256，包内也没有 SHA256SUMS，跳过校验\n")
+                    else:
+                        _append_log(log_path,
+                                    "未拿到独立 .sha256，已按包内 SHA256SUMS 校验通过\n")
                 _safe_extract(tf, tmp)
         except (tarfile.TarError, OSError) as exc:
             raise RuntimeError(f"安装包解压失败：{exc}")
@@ -358,7 +491,7 @@ def _apply_mirror(info: dict, log_path: Path) -> str:
     if got != ver and ver:
         ver_file.write_text(ver + "\n", encoding="utf-8")
         _append_log(log_path, f"写入 VERSION={ver}\n")
-    _append_log(log_path, f"镜像包已覆盖到 {INSTALL_DIR}\n")
+    _append_log(log_path, f"安装包已覆盖到 {INSTALL_DIR}\n")
     return ver
 
 
@@ -534,22 +667,51 @@ def _apply_git(target: str, log_path: Path) -> str:
     return target
 
 
+def apply_order(primary: str, probe: dict, target: str,
+                cfg: dict | None = None) -> list[str]:
+    """主源失败后能否回退到另一源。
+
+    只有另一源的版本 ≥ 目标版本才允许回退，避免「主源包坏了就降级安装」。
+    """
+    cfg = cfg or update_cfg()
+    allowed = sources_enabled(cfg)
+    order = [primary] if primary in allowed else []
+    other = "github" if primary == "mirror" else "mirror"
+    info = probe.get(other) or {}
+    if other in allowed and info and \
+            ver_tuple((info.get("tag") or "").lstrip("v")) >= ver_tuple(target):
+        order.append(other)
+    return order
+
+
 def apply(restart_service: bool = True, tag: str = "") -> dict:
     """切换到指定版本并（可选）重启服务；返回给调用方的说明文字
 
-    tag 为空时按当前源的最新版本走。分两条路：
+    tag 为空时同时探测两源并取更高版本。下载/校验失败时只在版本不降级
+    的前提下回退另一源：
     - 镜像：下 tarball 覆盖文件，装成 git 仓库的也能用（不动 .git）
     - GitHub：stash 本地改动 → fetch --tags → checkout <tag>，
       失败一律回滚到原 commit，并把回滚命令写进日志
     """
     log_path = INSTALL_DIR / "update.log"
+    cfg = update_cfg()
+    probe = probe_sources(cfg)
     target = (tag or "").lstrip("v")
-    info: dict = {}
     if not target:
-        info = latest_release()
-        target = (info.get("tag") or "").lstrip("v")
+        chosen = _pick_higher(probe["mirror"], probe["github"])
+        if not chosen:
+            errors = [e for e in (probe["mirror_error"], probe["github_error"]) if e]
+            raise RuntimeError("；".join(errors) or "没有可用的更新源")
+        target = (chosen.get("tag") or "").lstrip("v")
+        primary = chosen.get("source") or "mirror"
+    else:
+        # 点名版本时镜像可以直接拼 tarball 地址；GitHub 要已有 Release 信息
+        primary = "mirror" if "mirror" in sources_enabled(cfg) else "github"
     if not target:
         raise RuntimeError("没有可用的版本号：更新源上还没有发布任何版本")
+    order = apply_order(primary, probe, target, cfg)
+    if not order:
+        raise RuntimeError("没有可用的更新源")
     _append_log(log_path, f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} "
                           f"升级到 {target} ====\n")
 
@@ -559,17 +721,16 @@ def apply(restart_service: bool = True, tag: str = "") -> dict:
     backup: Path | None = None
     touched = False          # 镜像包是否已经开始覆盖文件（决定要不要回滚）
 
-    for src in source_order():
+    for src in order:
+        info: dict = {}
         try:
             if src == "mirror":
-                if not info or info.get("source") != "mirror":
-                    info = mirror_release()
-                if (info.get("tag") or "").lstrip("v") != target and tag:
+                info = dict(probe.get("mirror") or {})
+                if (info.get("tag") or "").lstrip("v") != target:
                     # 用户点名了版本：镜像站 latest.json 只描述最新版，
                     # 旧版本按约定文件名拼出来
-                    base = update_cfg()["mirror"].rstrip("/")
                     info = {"tag": target, "sha256": "",
-                            "tarball_url": f"{base}/deckmeido-{target}.tar.gz"}
+                            "tarball_url": f"{cfg['mirror']}/deckmeido-{target}.tar.gz"}
                 # 覆盖式升级没有 git 兜底：先备份。备份本身失败（返回 None）时
                 # 就不能再覆盖了——盖到一半出错没有任何东西可以盖回去
                 backup = backup or _backup(log_path)
@@ -585,7 +746,7 @@ def apply(restart_service: bool = True, tag: str = "") -> dict:
                 _apply_git(target, log_path)
                 used = "github"
             break
-        except Exception as exc:  # 解压/权限等意外也要能走到下一个源
+        except Exception as exc:  # 解压/校验/权限等意外也要能走到下一个源
             errors.append(str(exc))
             _append_log(log_path, f"{src} 升级失败：{exc}\n")
             # 镜像覆盖到一半失败：先还原，免得目录里新旧文件混在一起

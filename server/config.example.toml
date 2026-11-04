@@ -104,17 +104,17 @@ translate_template = """
 keep_awake = true
 
 [update]
-# 更新源。网页「设置 → 关于 → 更新源」可以改，保存即生效。
-#   mirror       国内镜像优先，镜像不可用时自动改用 GitHub
-#   github       GitHub 优先，失败再用镜像
-#   mirror-only  只用国内镜像
-#   github-only  只用 GitHub
+# 默认同时探测「国内镜像」与 GitHub Release，取版本更高者；
+# 版本相同时优先镜像。旧的 source = mirror-only / github-only 仍可用，
+# 等价于只开一个源（保持对老配置的兼容）。
 # 镜像站是纯静态目录，放 latest.json 与 deckmeido-<版本>.tar.gz；
 # 走镜像升级不需要 git，覆盖文件时会保留配置、会话与工作区。
 source = "mirror"
+# 双源模式下是否探测 GitHub；改成 false 就只用国内镜像
+github_enable = true
 # 镜像站目录（末尾不要加斜杠）
 mirror = "https://meido.meagames.cn/deckmeido"
-# GitHub 仓库，改动前确认是 fork 的自己的仓库
+# GitHub 仓库（公开 API，不带认证头），改动前确认是 fork 的自己的仓库
 github_repo = "Congmeims/deckmeido"
 
 [tts]

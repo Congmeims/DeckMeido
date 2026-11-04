@@ -2889,8 +2889,8 @@
             <div class="card-title">更新源</div>
             <div class="field">
               <select id="cfgUpdSource" class="cfg-select">
-                <option value="mirror">国内镜像优先（镜像不通时用 GitHub）</option>
-                <option value="github">GitHub 优先（失败再用镜像）</option>
+                <option value="mirror">自动：镜像 + GitHub（取更高版本）</option>
+                <option value="github">自动：镜像 + GitHub（旧配置兼容）</option>
                 <option value="mirror-only">只用国内镜像</option>
                 <option value="github-only">只用 GitHub</option>
               </select>
@@ -7319,7 +7319,7 @@
 
   // 后端回来的「实际用到的源」→ 给用户看的名字
   function srcName(src) {
-    return src === 'github' ? 'GitHub' : (src === 'mirror' ? '国内镜像' : '');
+    return src === 'github' ? 'GitHub' : (src === 'mirror' ? '镜像' : '');
   }
 
   // 后台自动查到新版本时：设置按钮打红点，设置页里也把提示填好。
@@ -7365,10 +7365,8 @@
   loadBrandVersion();
 
   updCheck.addEventListener('click', function () {
-    // 只回显「优先源」，实际顺序由后端按 [update].source 决定（失败会自动切备用源）
-    var src = cfgUpdSource ? cfgUpdSource.value : 'mirror';
-    var via = src.indexOf('github') === 0 ? 'GitHub' : '国内镜像';
-    updNote.textContent = '正在查询最新版本（优先 ' + via + '）…';
+    // 后端同时探测镜像与 GitHub Release，取版本更高者；这里只负责展示结果
+    updNote.textContent = '正在同时查询镜像与 GitHub…';
     updApply.style.display = 'none';
     updCheck.disabled = true;
     fetch('/api/update/check?token=' + encodeURIComponent(token))
@@ -7378,10 +7376,12 @@
         if (!res.ok) { updNote.textContent = (res.body && res.body.detail) || '检查失败'; return; }
         var d = res.body;
         verTag.textContent = '版本 v' + d.current;
-        // 显示实际查到的源；前面那个源失败了就顺带说明一句
-        var used = srcName(d.source);
+        // 显示实际采用的源；另一源的版本也带上，便于确认「取更高者」生效
+        var used = srcName(d.source_used || d.source);
         var tail = used ? '　更新源：' + used : '';
-        if ((d.fallback_from || []).length) tail += '（备用源）';
+        var other = d.source_used === 'github' ? srcName('mirror') : srcName('github');
+        var otherVer = d.source_used === 'github' ? d.mirror_version : d.github_version;
+        if (other && otherVer) tail += '（另一源 ' + other + ' v' + otherVer + '）';
         if (!d.has_update) {
           updNote.textContent = (d.tag
             ? '已是最新版本（v' + d.current + '）'
