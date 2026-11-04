@@ -2161,7 +2161,9 @@ async def _core_prefs(port: int, token: str) -> dict:
             # 语音输入：配置在 [stt] 段，/api/stt 才有；这里同时带一份供面板显示
             "stt": bool(d.get("stt_enable", True)),
             "version": str(d.get("version") or ""),
-            "model": str(d.get("model") or "")}
+            "model": str(d.get("model") or ""),
+            # 人设昵称：状态行前缀用，缺失时前端有默认称呼兜底
+            "persona_name": str(d.get("persona_name") or "")}
 
 
 async def _session_post(what: str, path: str) -> dict:
@@ -2244,6 +2246,8 @@ class Plugin:
             "version": str(prefs.get("version") or _PLUGIN_VERSION),
             # 设置区：当前模型名，下拉菜单的首帧先显示它，再异步拉全量列表
             "model": str(prefs.get("model") or ""),
+            # 人设昵称：状态行用它做前缀（persona 缺失时前端退回默认称呼）
+            "persona_name": str(prefs.get("persona_name") or ""),
             # 当前正在运行的游戏名：抓帧时会再查一次，这里给面板一个初值，
             # 让用户按「截屏询问」之前就能看到这一问会带上哪款游戏。
             # source / confidence / ts 让面板和日志都能看出名字从哪来、可不可信；

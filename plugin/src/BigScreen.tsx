@@ -7,6 +7,7 @@ import {
   showModal,
 } from "@decky/ui";
 import { ACCENT, DIM, ERR_COLOR, ImeTextArea, ImeTextField, Md, TEXT } from "./ui";
+import { statusLineFor } from "./statusLine";
 import { Item, useSession } from "./useSession";
 import { useVoiceInput } from "./useVoiceInput";
 
@@ -919,7 +920,7 @@ export default function BigScreen() {
                     : "核心异常（点「启动核心」恢复）"
                   : latestLog
                     ? `${latestLog.code} · ${fmtLogTime(latestLog.ts)} · ${latestLog.detail}`
-                    : "待命，等待指令"}
+                    : statusLineFor(s.status, s.busy)}
               </span>
               {s.status && !s.status.core_ok && (
                 <ActionButton

@@ -11,6 +11,7 @@ import {
   ToggleField,
 } from "@decky/ui";
 import { ACCENT, DIM, ERR_COLOR, Md, TEXT } from "./ui";
+import { statusLineFor } from "./statusLine";
 import { applyPadOrder, logPadOrder, steamClient } from "./padOrder";
 import { useVoiceInput } from "./useVoiceInput";
 import {
@@ -1202,7 +1203,9 @@ export default function QamScreen() {
               minWidth: 0,
             }}
           >
-            <span style={{ color: coreColor, flexShrink: 0 }}>{coreLine}</span>
+            <span style={{ color: coreColor, flexShrink: 0 }}>
+              {coreRunning ? statusLineFor(s.status, s.busy) : coreLine}
+            </span>
             <span style={{ color: DIM, flexShrink: 0 }}>
               {s.status ? `${s.status.ip}:${s.status.port}` : "—"}
             </span>

@@ -42,6 +42,8 @@ export type Status = {
   stt: boolean;
   model: string;
   game_name: string;
+  // 后端 persona 的昵称：状态行前缀用，缺失时前端退回默认称呼
+  persona_name: string;
   // 名字来源 / 置信度 / 证据时间：只有 high 才注入提问
   game_source: string;
   game_confidence: string;
