@@ -124,7 +124,7 @@ userdata/
     └── text_log.txt
 ```
 
-- **迁移**：安装/升级时若发现旧位置（`server/config.toml`、`server/config.toml.bak*`、`server/meidosoul.json`、`server/memory.json`、`server/sessions/`、`~/.local/share/deckmeido/qq/`）的数据，会**只复制、不删除**到 `userdata/` 对应位置，旧文件留在原地当备份，并写 `.deckmeido-migrated` 标记避免重复搬。旧的 `userdata/qq/` 会复制到 `userdata/meidobot/`；两边都存在时只补缺文件、不覆盖，并打一条警告。
+- **不做迁移**：安装器只认这一套标准布局，不会自动搬运旧位置的数据。从旧版升级的用户需要自行把旧文件复制到 `userdata/` 对应位置一次（安装器不会删除或覆盖 `userdata/`）。
 - **升级**：同步代码时排除整个 `userdata/`，不会用模板覆盖 `userdata/config.toml`。
 - **卸载**：`userdata/` 整目录保留（含 `meidobot/` 归档）；卸载只按安装清单删除安装器自己放进去的文件，清单外的文件与目录都不动。
 

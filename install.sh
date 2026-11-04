@@ -53,8 +53,8 @@
 # 绝不 rmdir），userdata/ 永远保留。
 # 用户可修改数据统一放 <安装目录>/userdata（可用 DECKMEIDO_DATA_DIR 覆盖）：
 # config.toml、persona/meidosoul.json、memory.json、sessions/、uploads/、
-# meidobot/。安装/升级发现旧布局数据时只复制到 userdata/、不删除原文件；
-# 升级同步排除整个 userdata/，卸载按清单删除代码、userdata/ 整目录保留。
+# meidobot/。只保留这一套标准布局；升级同步排除整个 userdata/，卸载按清单
+# 删除代码、userdata/ 整目录保留。
 set -euo pipefail
 
 APP=deckmeido
@@ -95,8 +95,7 @@ DATA_PERSONA="$DATA_PERSONA_DIR/meidosoul.json"
 DATA_MEMORY="$DATA_DIR/memory.json"
 DATA_SESSIONS="$DATA_DIR/sessions"        # 会话目录固定叫 sessions（复数）
 DATA_UPLOADS="$DATA_DIR/uploads"
-DATA_BOT="$DATA_DIR/meidobot"             # 原 userdata/qq，QQ/meidobot 通道归档
-MIGRATED_MARKER="$DATA_DIR/.deckmeido-migrated"
+DATA_BOT="$DATA_DIR/meidobot"             # meidobot（QQ）通道归档
 
 # 是否通过「curl | sh -」管道执行。管道执行时脚本不在磁盘上，$BASH_SOURCE[0]
 # 不是真实文件，sync_files 依赖的 $HERE/* 会指向错误位置；此时自动走
@@ -308,7 +307,7 @@ cleanup_empty_manifest_dirs() {
 
 # 写入/刷新 .deckmeido-install 与 .deckmeido-manifest。只记录安装器负责的条目：
 #   · 整目录管理的：.venv client assets deploy tools plugin
-#   · server 逐文件列出，保留 config.toml / sessions / uploads / shots / 日志
+#   · server 逐文件列出，跳过日志与运行时缓存
 #   · 顶层文件：requirements、README、install.sh、VERSION、uninstall.sh 等
 #   · 安装目录之外的固定路径（服务单元、桌面项、Decky 插件）
 write_install_records() {
@@ -334,8 +333,7 @@ write_install_records() {
       [ -n "$rel" ] || continue
       printf 'server/%s\n' "$rel" >> "$tmp"
     done < <(cd "$INSTALL_DIR/server" && find . -type f \
-      ! -path './userdata/*' ! -path './config.toml' ! -path './sessions/*' \
-      ! -path './uploads/*' ! -path './shots/*' ! -path '*/__pycache__/*' ! -name '*.log' \
+      ! -path './userdata/*' ! -path '*/__pycache__/*' ! -name '*.log' \
       -printf '%P\n' 2>/dev/null)
   fi
   for it in requirements.txt requirements-gui.txt README.md install.sh RELEASE-NOTES.md VERSION uninstall.sh pip-install.log; do
@@ -1127,12 +1125,11 @@ install_deps() {
 # 那些文件名还在、但早就没人 import 的旧文件，排查时很容易看错。
 #
 # 这里反向再走一遍：安装目录里存在、源码目录里已不存在的代码文件，删掉。
-# 只处理下面这些已知代码目录，用户数据（config.toml / sessions / uploads /
-# shots / *.log / VERSION）一概不碰。
+# 只处理下面这些已知代码目录，*.log / VERSION 与运行时缓存一概不碰。
 CODE_DIRS=(server client assets deploy tools plugin)
 # deploy/deps/ 里的离线依赖包也必须放过：它们不在源码目录里，照常删的话
 # 每次升级都会把 Release 自带的离线包清空，下次断网就装不上依赖了。
-USER_DATA_RE='(^|/)(config\.toml|sessions|uploads|shots)(/|$)|\.log$|(^|/)VERSION$|(^|/)__pycache__(/|$)|^deploy/deps/'
+USER_DATA_RE='\.log$|(^|/)VERSION$|(^|/)__pycache__(/|$)|^deploy/deps/'
 
 prune_stale() {
   [ -d "$INSTALL_DIR" ] || return 0
@@ -1184,11 +1181,8 @@ sync_files() {
   for it in "${items[@]}"; do
     [ -e "$HERE/$it" ] || continue
     if [ -d "$HERE/$it" ]; then
-      # userdata/ 是用户数据根，永远不从源码包覆盖；server 下的旧配置/会话/
-      # 上传/日志也继续排除，避免升级时把用户数据冲掉
-      rsync -a --exclude 'userdata' --exclude '__pycache__' --exclude 'config.toml' \
-            --exclude 'config.toml.bak*' --exclude 'sessions' \
-            --exclude 'uploads' --exclude 'shots' --exclude '*.log' \
+      # userdata/ 是用户数据根，永远不从源码包覆盖
+      rsync -a --exclude 'userdata' --exclude '__pycache__' --exclude '*.log' \
             "$HERE/$it/" "$INSTALL_DIR/$it/" 2>/dev/null ||
         cp -r "$HERE/$it/." "$INSTALL_DIR/$it/"
     else
@@ -1482,94 +1476,11 @@ progress_bar() {
   _progress_on=1
 }
 
-# ---------- 数据目录与迁移 ----------
+# ---------- 数据目录 ----------
 # 数据根权限：userdata 及子目录 0700，配置 0600（Linux 凭据不外泄）
 ensure_data_layout() {
   ( umask 077; mkdir -p "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" ) 2>/dev/null || true
   chmod 700 "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" 2>/dev/null || true
-}
-
-# 复制单个文件：目标已存在就不动（不覆盖用户现有数据）
-MIGRATED=0
-copy_if_missing() {
-  local src="$1" dst="$2"
-  [ -e "$src" ] || return 0
-  [ -e "$dst" ] && return 0
-  mkdir -p "$(dirname "$dst")" 2>/dev/null || true
-  if cp -a -- "$src" "$dst" 2>/dev/null || cp -r -- "$src" "$dst" 2>/dev/null; then
-    dim "已迁移 $src → $dst（旧位置保留）"
-    MIGRATED=1
-  fi
-}
-
-# 目录合并复制：只补目标里缺失的文件，绝不覆盖已有文件；旧目录保留
-MERGE_COPIED=0
-merge_copy_tree() {
-  local src="${1%/}" dst="${2%/}" rel copied=0 existed=0
-  [ -d "$src" ] || return 0
-  [ -d "$dst" ] && existed=1
-  mkdir -p "$dst" 2>/dev/null || true
-  while IFS= read -r rel; do
-    [ -n "$rel" ] || continue
-    [ -e "$dst/$rel" ] && continue
-    mkdir -p "$(dirname "$dst/$rel")" 2>/dev/null || true
-    cp -a -- "$src/$rel" "$dst/$rel" 2>/dev/null || \
-      cp -r -- "$src/$rel" "$dst/$rel" 2>/dev/null || true
-    copied=$((copied + 1))
-  done < <(cd "$src" && find . -type f -printf '%P\n' 2>/dev/null)
-  MERGE_COPIED=$copied
-  if [ "$existed" = 1 ]; then
-    warn "两边都存在：$dst（只补了 $copied 个缺失文件，未覆盖已有文件）"
-  elif [ "$copied" -gt 0 ]; then
-    dim "已迁移 $src → $dst（复制 $copied 个文件，旧目录保留）"
-  fi
-  [ "$copied" -gt 0 ] && MIGRATED=1
-  return 0
-}
-
-write_migrated_marker() {
-  {
-    printf 'format=1\n'
-    printf 'migrated_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    printf 'from=legacy-layout\n'
-  } > "$MIGRATED_MARKER" 2>/dev/null || true
-}
-
-# 旧 userdata/qq 改名兼容：每次都跑但幂等，旧目录一律保留不删。
-# 新目录不存在 → 整份复制；两边都存在 → 只补缺文件并打警告。
-migrate_meidobot_name() {
-  local old="$INSTALL_DIR/userdata/qq"
-  [ -d "$old" ] || return 0
-  [ "${old%/}" = "${DATA_BOT%/}" ] && return 0
-  merge_copy_tree "$old" "$DATA_BOT"
-}
-
-# 旧布局 → userdata/ 的迁移：只复制、不删除；用 .deckmeido-migrated 防重复。
-# 旧位置：server/config.toml(.bak*)、server/meidosoul.json、server/memory.json、
-#          server/sessions/、~/.local/share/deckmeido/qq/
-migrate_legacy_data() {
-  ensure_data_layout
-  MIGRATED=0
-  if [ -f "$MIGRATED_MARKER" ]; then
-    dim "迁移标记已存在：$MIGRATED_MARKER（跳过旧位置扫描）"
-  else
-    local src="$INSTALL_DIR/server" f
-    copy_if_missing "$src/config.toml" "$DATA_CONFIG"
-    for f in "$src"/config.toml.bak*; do
-      [ -f "$f" ] || continue
-      copy_if_missing "$f" "$DATA_DIR/$(basename "$f")"
-    done
-    copy_if_missing "$src/meidosoul.json" "$DATA_PERSONA"
-    copy_if_missing "$src/memory.json" "$DATA_MEMORY"
-    merge_copy_tree "$src/sessions" "$DATA_SESSIONS"
-    local oldbot="$HOME/.local/share/deckmeido/qq"
-    [ -d "$oldbot" ] && merge_copy_tree "$oldbot" "$DATA_BOT"
-    if [ "$MIGRATED" = 1 ]; then
-      write_migrated_marker
-    fi
-  fi
-  migrate_meidobot_name
-  chmod 700 "$DATA_DIR" 2>/dev/null || true
 }
 
 # 首次安装生成 config.toml；已有则原样保留
@@ -1947,7 +1858,6 @@ fi
 
 # 先取消正在跑的任务，再关进程
 CFG="$DATA_CONFIG"
-[ -f "$CFG" ] || CFG="$HERE/server/config.toml"
 if command -v curl >/dev/null 2>&1 && [ -f "$CFG" ]; then
   TOK="$(grep -oP '^token\s*=\s*"\K[^"]*' "$CFG" 2>/dev/null | head -n1 || true)"
   curl -fsS -m 2 -X POST -H "X-Token: $TOK" "http://127.0.0.1:$PORT/api/cancel" >/dev/null 2>&1 || true
@@ -2046,8 +1956,6 @@ write_version_file() {
 
 read_token() {
   local cfg="$DATA_CONFIG"
-  # 尚未迁移的老安装仍读 server/config.toml
-  [ -f "$cfg" ] || cfg="$INSTALL_DIR/server/config.toml"
   [ -f "$cfg" ] || return 0
   grep -oP '^token\s*=\s*"\K[^"]*' "$cfg" 2>/dev/null | head -n1
 }
@@ -2159,7 +2067,7 @@ do_install() {
   if [ "$gui_only" = 1 ]; then
     check_user
     sync_files
-    migrate_legacy_data
+    ensure_data_layout
     venv_install gui
     write_install_records
     return 0
@@ -2171,8 +2079,8 @@ do_install() {
   preflight
   section "同步程序文件"
   sync_files
-  section "迁移用户数据"
-  migrate_legacy_data
+  section "用户数据目录"
+  ensure_data_layout
   section "Python 运行环境"
   # 依赖没装全不该让整个安装中断：代码已经同步好了，联网问题用户之后能自行重试
   venv_install || true
@@ -2245,8 +2153,8 @@ do_upgrade() {
   stop_backend
   section "同步程序文件"
   sync_files
-  section "迁移用户数据"
-  migrate_legacy_data
+  section "用户数据目录"
+  ensure_data_layout
   section "Python 运行环境"
   if [ "$gui_only" = 1 ]; then
     venv_install gui || true
@@ -2382,8 +2290,6 @@ cancel_running_turn() {
 # 以前直接删 $HOME/deckmeido_workspace，而配置里指到别处的工作区根本删不到。
 workspace_dir() {
   local cfg="$DATA_CONFIG" ws=""
-  # 老安装的配置还在 server/config.toml
-  [ -f "$cfg" ] || cfg="$INSTALL_DIR/server/config.toml"
   if [ -f "$cfg" ]; then
     ws=$(grep -oP '^\s*workspace\s*=\s*"\K[^"]*' "$cfg" 2>/dev/null | head -n1)
   fi
@@ -2402,13 +2308,10 @@ workspace_dir() {
 # 但无论哪种模式，userdata/ 都整目录保留。
 # 备份两份文件：meidosoul.json（人设）+ memory.json（长期记忆/偏好）。
 backup_soul() {
-  local dst="$CONFIG_DIR" src="$INSTALL_DIR/server"
+  local dst="$CONFIG_DIR"
   mkdir -p "$dst"
   local saved=0
-  # 新布局：persona/meidosoul.json + memory.json；老安装回退 server/
   local soul="$DATA_PERSONA" mem="$DATA_MEMORY"
-  [ -f "$soul" ] || soul="$src/meidosoul.json"
-  [ -f "$mem" ] || mem="$src/memory.json"
   if [ -f "$soul" ]; then
     cp -f "$soul" "$dst/meidosoul.json" 2>/dev/null && saved=1
   fi
