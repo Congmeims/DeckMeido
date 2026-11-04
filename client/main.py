@@ -8,6 +8,8 @@ URL 带 native=1 标记，网页会据此把「点开图片」改为调用系统
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import signal
 import subprocess
@@ -15,10 +17,9 @@ import sys
 import time
 import tomllib
 import urllib.request
-import hashlib
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QLibraryInfo, QObject, Qt, QTimer, QTranslator, QUrl
+from PySide6.QtCore import QEvent, QLibraryInfo, QObject, Qt, QThread, QTimer, QTranslator, QUrl, Signal
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
@@ -71,6 +72,38 @@ def load_token() -> str:
         return tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))["server"]["token"]
     except Exception:
         return ""
+
+
+def api_json(path: str, timeout: float = 5.0, post: bool = False) -> dict:
+    """带 token 调后端接口，返回解析后的 JSON（空响应按空对象处理）"""
+    url = f"{API}{path}"
+    url += ("&" if "?" in url else "?") + f"token={load_token()}"
+    data = b"" if post else None
+    with urllib.request.urlopen(url, data=data, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8", "replace") or "{}")
+
+
+class _Worker(QThread):
+    """把可能阻塞的操作挪到后台线程，别让托盘菜单把 Qt 主线程冻住"""
+
+    result = Signal(object)
+
+    def __init__(self, fn, parent=None):
+        super().__init__(parent)
+        self._fn = fn
+
+    def run(self):
+        try:
+            self.result.emit(self._fn())
+        except Exception as exc:
+            self.result.emit(exc)
+
+
+def run_worker(fn, on_result, parent) -> None:
+    worker = _Worker(fn, parent)
+    worker.result.connect(on_result)
+    worker.finished.connect(worker.deleteLater)
+    worker.start()
 
 
 def _backend_log_fd():
@@ -398,15 +431,6 @@ def main() -> int:
         view.raise_()
         view.activateWindow()
 
-    menu = QMenu()
-    act_show = QAction("显示主窗口", menu)
-    act_show.triggered.connect(restore)
-    act_quit = QAction("退出", menu)
-    act_quit.triggered.connect(app.quit)
-    menu.addAction(act_show)
-    menu.addSeparator()
-    menu.addAction(act_quit)
-    tray.setContextMenu(menu)
     tray.activated.connect(
         lambda reason: restore() if reason == QSystemTrayIcon.ActivationReason.Trigger else None
     )
@@ -434,6 +458,117 @@ def main() -> int:
         # watchdog 重拉的后端同样是我们 spawn 的，退出时要一并收走
         _STARTED_BACKEND = backend["proc"]
 
+    restart_state = {"running": False}
+
+    def _terminate_work():
+        """终止当前这一轮：复用后端 /api/cancel（取消对话任务 + 砍登记的子进程树）"""
+        try:
+            resp = api_json("/api/cancel?client=client&device=native", timeout=8.0, post=True)
+        except Exception as exc:
+            return ("error", f"终止请求失败：{exc}")
+        if not resp.get("ok"):
+            return ("idle", "当前没有正在执行的操作。")
+        # cancel() 只负责发取消信号，阻塞在子进程管道上的轮次未必立刻收尾；
+        # 给 6 秒观察窗口，仍未结束就如实提示用户去点「重启」
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline:
+            try:
+                if not api_json("/api/status", timeout=2.0).get("running"):
+                    return ("ok", "已终止当前操作。")
+            except Exception:
+                # 后端正在收尾时 /api/status 可能暂时不回话，继续等
+                pass
+            time.sleep(0.4)
+        return ("busy", "已发出终止请求，但本轮仍在执行；可点「重启」重启核心。")
+
+    def report_terminate(result) -> None:
+        if isinstance(result, Exception):
+            tray.showMessage("DeckMeido", f"终止失败：{result}", icon, 4000)
+            return
+        kind, message = result
+        # 成功时界面本身会恢复正常状态，不再额外弹托盘提示
+        if kind != "ok":
+            tray.showMessage("DeckMeido", message, icon, 5000)
+
+    def _stop_for_restart() -> bool:
+        """重启专用：先停掉本机核心
+
+        退出时的 stop_backend 只收自己 spawn 的，避免误杀别人的服务；
+        这里是用户明确点「重启」，端口上的那份就是本机核心，一并收掉。
+        """
+        proc = _STARTED_BACKEND
+        pid = proc.pid if proc is not None and proc.poll() is None else _listener_on_port(PORT)
+        if pid is None:
+            return True
+        print(f"[DeckMeido] 重启前 checkpoint：{checkpoint_backend()}", file=sys.stderr)
+        try:
+            os.kill(pid, 15)
+        except ProcessLookupError:
+            return True
+        except Exception as exc:
+            print(f"[DeckMeido] 停止旧核心失败：{exc}", file=sys.stderr)
+            return False
+        for _ in range(80):
+            if _listener_on_port(PORT) is None:
+                return True
+            time.sleep(0.1)
+        try:
+            os.kill(pid, 9)
+        except Exception:
+            pass
+        return _listener_on_port(PORT) is None
+
+    def _restart_work():
+        restart_state["running"] = True
+        try:
+            if not _stop_for_restart():
+                return RuntimeError("旧核心没有退出，重启已中止。")
+            proc = _start_backend()
+            if proc is None:
+                return RuntimeError("拉起新核心失败，详见 server/backend.log。")
+            for _ in range(20):
+                if backend_alive(timeout=1.0):
+                    return proc
+                time.sleep(0.5)
+            return RuntimeError("新核心 10 秒内没有应答，详见 server/backend.log。")
+        finally:
+            restart_state["running"] = False
+
+    def report_restart(result) -> None:
+        global _STARTED_BACKEND
+        if isinstance(result, Exception):
+            tray.showMessage("DeckMeido", str(result), icon, 5000)
+            return
+        _STARTED_BACKEND = result
+        backend["proc"] = result
+        tray.showMessage("DeckMeido", "核心已重启。", icon, 2500)
+
+    def terminate_ops() -> None:
+        run_worker(_terminate_work, report_terminate, app)
+
+    def restart_core() -> None:
+        if restart_state["running"]:
+            return
+        run_worker(_restart_work, report_restart, app)
+
+    # 托盘菜单顺序固定：终止 → 显示 → 重启 → 退出
+    menu = QMenu()
+    act_terminate = QAction("终止", menu)
+    act_terminate.triggered.connect(terminate_ops)
+    act_show = QAction("显示", menu)
+    act_show.triggered.connect(restore)
+    act_restart = QAction("重启", menu)
+    act_restart.triggered.connect(restart_core)
+    act_quit = QAction("退出", menu)
+    act_quit.triggered.connect(app.quit)
+    menu.addAction(act_terminate)
+    menu.addSeparator()
+    menu.addAction(act_show)
+    menu.addAction(act_restart)
+    menu.addSeparator()
+    menu.addAction(act_quit)
+    tray.setContextMenu(menu)
+
     watch_state = {"last_kick": 0.0, "misses": 0}
 
     def watchdog() -> None:
@@ -449,6 +584,10 @@ def main() -> int:
         插件大屏页点过「关闭核心」时（CORE_STOP_MARKER 在），这里必须原地不动：
         自动重拉等于把用户的「关闭」作废。只有用户显式点「启动」才会清标记。
         """
+        # 手动「重启」期间旧核心已停、新核心还没起来，这里不能插一脚再拉一份
+        if restart_state["running"]:
+            watch_state["misses"] = 0
+            return
         if CORE_STOP_MARKER.exists():
             watch_state["misses"] = 0
             return
