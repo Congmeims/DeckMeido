@@ -127,7 +127,7 @@ bash install.sh speedtest            # 只测 pip 源速率
 3. 创建数据根 `userdata/` 及 `persona/`、`sessions/`、`uploads/`、`meidobot/`、`logs/`、`models/`，目录权限 `700`。
 4. 建 `.venv` 并安装依赖；默认装 PySide6，`DECKMEIDO_SKIP_GUI=1` 可跳过。
 5. 从 `server/config.example.toml` 生成 `userdata/config.toml`，权限 `600`。
-6. 写桌面快捷方式与 `uninstall.sh`，并清理旧版遗留的 systemd 单元；**不再注册开机自启服务**，后端由客户端拉起。
+6. 写桌面快捷方式与 `uninstall.sh`，并移除安装器不再使用的 systemd 单元；**不注册开机自启服务**，后端由客户端拉起。
 7. 检测到 Decky Loader 时询问是否安装 QAM 插件，然后启动客户端。
 
 ### Decky 插件
@@ -152,6 +152,7 @@ bash install.sh speedtest            # 只测 pip 源速率
 | `[security]` | `permission_mode` | `manual` / `auto` / `full` |
 | `[workspace]` | `dir` | 文件工具工作区；留空用 `~/deckmeido_workspace` |
 | `[tts]` | `enable` / `engine` / `voice` / `speed` | 语音播报开关与音色 |
+| `[power]` | `keep_awake` | 后端运行期间抑制系统休眠 |
 | `[update]` | `github_enable` / `mirror` / `github_repo` | 双源更新：默认镜像与 GitHub 都探测，取更高版本 |
 | `[remote_input]` | `enabled` / `sensitivity` / `max_minutes` | 跨屏键鼠总开关、灵敏度、单次最长分钟数 |
 | `[qq]` | 见下 | QQ 远程通道 |
@@ -203,7 +204,7 @@ userdata/
 ```
 
 - 目录权限 `700`、`config.toml` 权限 `600`（安装器创建时收紧）。
-- **不做迁移**：安装器只认这一套布局。从旧版升级的用户需要先删掉旧安装，再重新安装（`userdata/` 之外的数据不会被自动搬运）。
+- 安装器只维护这一套标准布局；数据根位置由 `DECKMEIDO_DATA_DIR`（默认 `<安装目录>/userdata`）决定。
 
 ## 卸载
 
@@ -263,7 +264,7 @@ bash ~/deckmeido/uninstall.sh --purge    # 额外删安装器创建的配置备�
 | 现象 | 排查 |
 | --- | --- |
 | 插件版本没变 | 看安装日志里是否有「插件已安装 v…」；到 设置 → Decky Loader 点「重新载入」，或运行 `bash ~/deckmeido/plugin/deploy.sh` |
-| 后端没起来 | 看 `~/deckmeido/userdata/logs/backend.log`（旧一代在 `backend.log.1`）；确认 `18765` 没被别的进程占用 |
+| 后端没起来 | 看 `~/deckmeido/userdata/logs/backend.log`（轮转备份在 `backend.log.1`）；确认 `18765` 没被别的进程占用 |
 | 配置写坏了 | 删除 `userdata/config.toml` 后重启，会按模板重新生成（自定义项会丢）；人设 JSON 坏了会自动回落默认人设 |
 | QQ 连不上 | 网页 QQ 状态页看 `detail`；确认 `access_token` 非空且与 NapCat 一致、`ws_url` 可达、机器人已登录 |
 | 截图 / 点击不灵 | 跑 `bash install.sh check`；`ydotoold` 没运行会让 ydotool 报 socket 错误 |
@@ -288,7 +289,7 @@ deckmeido/
 ```bash
 py -3 -m unittest discover -s tests     # 当前 197 项
 cd plugin && npm run build              # 构建插件前端到 plugin/dist
-python tools/release.py 0.6.8           # 构建 dist/：tar.gz + 插件 zip + latest.json
+python tools/release.py 0.6.9           # 构建 dist/：tar.gz + 插件 zip + latest.json
 ```
 
 发版：`release.py` 只写 `dist/`；把产物同步进 `winres/deckmeido/` 并提交，然后打 tag，用 `gh release create` 上传 tar.gz、插件 zip、sha256、`latest.json` 与 `install.sh`。
