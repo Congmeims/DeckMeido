@@ -918,9 +918,7 @@ export default function BigScreen() {
                   ? coreStopped
                     ? "核心已停止（不会自动拉起，点「启动核心」恢复）"
                     : "核心异常（点「启动核心」恢复）"
-                  : latestLog
-                    ? `${latestLog.code} · ${fmtLogTime(latestLog.ts)} · ${latestLog.detail}`
-                    : statusLineFor(s.status, s.busy)}
+                  : statusLineFor(s.status, s.busy)}
               </span>
               {s.status && !s.status.core_ok && (
                 <ActionButton

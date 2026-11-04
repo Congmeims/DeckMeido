@@ -1084,8 +1084,6 @@ export default function QamScreen() {
       : "未连上";
   const coreColor = coreRunning ? ACCENT : coreStopped ? DIM : ERR_COLOR;
 
-  const latestLog = s.logs[0];
-
   // 询问页忙碌态：被点的那格原地显示「思考中…」，另一格换成「中断」
   const askRunning = s.busy && s.runningAction !== "translate";
   const translateRunning = s.busy && s.runningAction === "translate";
@@ -1211,7 +1209,7 @@ export default function QamScreen() {
             width: "100%",
           }}
         >
-          {/* 状态行只放结论：核心状态、地址、最近事件码（明细留在设置页） */}
+          {/* 状态行只放结论：昵称状态 + 核心地址；错误码/明细只进设置页维护卡 */}
           <div
             style={{
               height: 16,
@@ -1224,41 +1222,21 @@ export default function QamScreen() {
               minWidth: 0,
             }}
           >
-            <span style={{ color: coreColor, flexShrink: 0 }}>
+            <span
+              style={{
+                color: coreColor,
+                flex: 1,
+                minWidth: 0,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
               {coreRunning ? statusLineFor(s.status, s.busy) : coreLine}
             </span>
             <span style={{ color: DIM, flexShrink: 0 }}>
               {s.status ? `${s.status.ip}:${s.status.port}` : "—"}
             </span>
-            {s.busy && s.activity ? (
-              <span
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  color: DIM,
-                  textAlign: "right",
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {s.activity}
-              </span>
-            ) : latestLog ? (
-              <span
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  color: DIM,
-                  textAlign: "right",
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {latestLog.code} · {fmtLogTime(latestLog.ts)}
-              </span>
-            ) : null}
           </div>
 
           {/* 画面静止的提示：只在需要时占一行，不常驻 */}
