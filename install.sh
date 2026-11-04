@@ -1222,6 +1222,50 @@ stop_service() {
   systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
 }
 
+# 停掉后端进程本身（不是客户端）。
+#
+# 为什么单独停：后端是用 start_new_session 拉起的，客户端被杀不会带走它；
+# 而且客户端启动时如果后端已经在跑（例如游戏模式下 Decky 插件先拉起了核心），
+# 它退出时会刻意不碰那个进程。旧后端还占着端口时，新后端在 singleton.guard
+# 里会直接退出，客户端只能报「后端核心启动失败」——表现就是升级后第一次
+# 打不开、再走一次升级（此时旧进程已经自己退出）才正常。
+# 只认 `python -m uvicorn server.main:app`，避免误杀 runuser 包装或安装脚本。
+stop_backend() {
+  local d pid pids="" i alive dir
+  local -a args
+  # 只收本安装目录下的后端；同机可能还有别的 deckmeido 源码目录在跑
+  dir="$(cd "$INSTALL_DIR" 2>/dev/null && pwd -P)" || return 0
+  for d in /proc/[0-9]*; do
+    [ -r "$d/cmdline" ] || continue
+    args=()
+    mapfile -d '' -t args < "$d/cmdline" 2>/dev/null || continue
+    [ "${#args[@]}" -ge 4 ] || continue
+    case "${args[0]}" in *python*) ;; *) continue ;; esac
+    [ "${args[1]}" = "-m" ] || continue
+    [ "${args[2]}" = "uvicorn" ] || continue
+    [ "${args[3]}" = "server.main:app" ] || continue
+    [ "$(readlink "$d/cwd" 2>/dev/null)" = "$dir" ] || continue
+    pid="${d#/proc/}"
+    [ "$pid" = "$$" ] && continue
+    pids="$pids $pid"
+  done
+  [ -n "$pids" ] || return 0
+  dim "关闭旧后端（升级后由新客户端重新拉起）"
+  # shellcheck disable=SC2086  # 这里就是要按空格拆成多个 pid
+  kill -TERM $pids 2>/dev/null || true
+  for i in $(seq 1 25); do
+    alive=0
+    for pid in $pids; do
+      kill -0 "$pid" 2>/dev/null && alive=1
+    done
+    [ "$alive" = "0" ] && return 0
+    sleep 0.2
+  done
+  # shellcheck disable=SC2086
+  kill -KILL $pids 2>/dev/null || true
+  sleep 0.2
+}
+
 # 把字符串转成可以安全塞进 sed 的 s|...| 替换段：
 # 替换段里的 & 会展开成「整个匹配」，\ 和分隔符 | 会破坏语法
 sed_repl() {
@@ -1600,9 +1644,11 @@ do_upgrade() {
   echo
   section "环境预检"
   check_prereq
-  # 顺序要紧：先停客户端（否则它的 watchdog 会把旧后端拉回来），再停服务
+  # 顺序要紧：先停客户端（否则它的 watchdog 会把旧后端拉回来），再停服务，
+  # 最后把可能已经「脱管」的后端进程也收掉，保证换文件时没有旧进程占着端口
   stop_client
   stop_service
+  stop_backend
   section "同步程序文件"
   sync_files
   section "Python 运行环境"
