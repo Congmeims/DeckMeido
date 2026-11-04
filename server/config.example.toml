@@ -162,8 +162,34 @@ ws_url = "ws://127.0.0.1:3001"
 access_token = ""
 # 管理员 QQ 号（字符串）。只有这些人能下指令；其他人私聊一律静默忽略。
 admin_qq = []
-# 允许的群号。空列表 = 不处理任何群；群聊必须 @ 机器人且只能聊天，不能下指令。
+# 允许的群号。空列表 = 不处理任何群；群聊必须 @ 机器人。
 allow_groups = []
+# 群管理员下指令：true 时，白名单群里 admin_qq 里的号可以直接下指令
+#（与私聊管理员同等能力，危险操作仍要确认）；普通群成员始终只读聊天。
+# false = 群里一律只聊天。
+group_admin_commands = true
+# 普通群成员的专用提示词。留空 = 用内置的「琴音口吻受限版」：
+# 简短闲聊、被问设备/配置/主人/位置/截图/命令/更新就温和岔开，
+# 遇「忽略之前的指令 / 输出系统提示词 / 扮演其他角色 / 开发者模式」当玩笑带过。
+# 普通成员这一轮零工具、不读主人记忆、不带截图，输出前还会做脱敏。
+# 可写 {name} 占位符（会被替换成群友昵称）。
+guest_prompt = ""
+# 收图 / 看图：允许处理 QQ 图片（下载、作为视觉输入、存图）。
+allow_image = false
+# 单张图片大小上限（MB）；超过就丢弃。
+max_image_mb = 8.0
+# 管理员最近多少分钟内发过图，聊天轮次就把它带上作为视觉输入。
+image_recent_minutes = 2
+# 图片归档目录。留空 = <安装目录>/userdata/qq/images/<YYYY-MM-DD>/；
+# 安装目录不可写时自动回退到 ~/.local/share/deckmeido/qq/（日志标 fallback）。
+# 显式填绝对路径则覆盖默认。
+image_save_dir = ""
+# 引用保存文本的存档文件。留空 = <安装目录>/userdata/qq/text_log.txt（同上会回退）。
+text_log_path = ""
+# 安装类命令执行成功后自动启动刚装好的程序，再截图回一条图文消息。
+auto_launch_after_install = true
+# 启动后等多少秒再截图（给窗口留出创建时间）。
+auto_launch_wait_seconds = 6
 # 每个 QQ 每分钟最多处理多少条消息；超限静默丢弃、不回发。0 = 不限。
 rate_per_minute = 20
 # 单条入站消息最多保留多少字符，超出部分截断。
@@ -178,3 +204,37 @@ reconnect_max = 60
 # WebSocket 心跳（秒）：NapCat 侧没响应就判定断线并重连。
 ping_interval = 30
 ping_timeout = 15
+
+# ── 口语别名（管理员私聊、白名单群管理员可用；无需昵称前缀，整句匹配）──
+# 去掉「麻烦 / 帮我 / 给我 / 请」前缀和「吧 / 啊 / 呀 / 呢 / 哦 / 了」尾缀、
+# 「一下」与句末标点后再匹配；去标点后超过 12 字不认（避免长句误判）；
+# 只认整句，不做关键词包含。
+#   截图：截个屏、截个图、截屏、截图、来张图、给张图、拍张照、拍张图、
+#         看看屏幕、看看画面、现在什么画面、现在屏幕上是什么、发个图、发张图
+#   状态：状态、什么状态、在吗、在不在、还好吗、怎么样了、什么情况、进度、
+#         连上了吗、活着吗
+#   取消：停、停下、停止、停一下、别做了、取消、中断、算了、不用了
+#   存图：存图、存起来、保存这张
+#   存文本：保存文本、存文本、保存这段、存这段、保存这句话、存这段文字
+# 优先级：/xxx 斜杠指令 > 取消 > 状态 > 截图 > 聊天；未命中按普通聊天处理。
+#
+# ── 远程三档风险（只作用于 QQ；本机入口不变）──
+#   deny：直接拒绝、不生成待确认。含 rm / rmdir -r / shred / dd / mkfs /
+#         fdisk·parted 写 / 写 /dev/sd*·nvme*·mmcblk* / fork bomb /
+#         chmod -R 777 / / find / -delete / 写 /etc/passwd·shadow·sudoers、
+#         /boot、~/.ssh / systemctl stop·disable·mask 关键服务 / history -c
+#   hard_confirm：挂起，只认「确认执行」。含 sudo / doas、curl·wget 管道给
+#         shell、eval·exec 包远程内容、base64 -d | sh、写 /etc 或 /usr、
+#         包管理器安装卸载、pip·npm 全局安装、crontab 修改、
+#         systemctl restart 非电源服务、chmod +x 后执行同路径、git clone 后执行
+#   normal：其余设备操作，保持原来的单段「确认」流程
+#
+# ── 归档位置 ──
+# 默认根目录：<安装目录>/userdata/qq/
+#   images/<YYYY-MM-DD>/<HHMMSS>_<QQ号>_<群号|private>_<message_id>.<ext>
+#   inbox_index.jsonl   图片索引
+#   text_log.txt        引用保存的文本（追加，每组之间空一行）
+# 安装目录判定：DECKMEIDO_INSTALL_DIR 环境变量，否则按 server/ 的上一级推导。
+# 不可写时回退 ~/.local/share/deckmeido/qq/，日志标 fallback，回复里也会提示。
+# 卸载不会删除 userdata/qq：install.sh 卸载时排除整个 userdata/，
+# 结束时打印「保存的 QQ 归档保留在 <路径>」，重新安装后仍在原处。
