@@ -334,8 +334,8 @@ write_install_records() {
       [ -n "$rel" ] || continue
       printf 'server/%s\n' "$rel" >> "$tmp"
     done < <(cd "$INSTALL_DIR/server" && find . -type f \
-      ! -path './config.toml' ! -path './sessions/*' ! -path './uploads/*' \
-      ! -path './shots/*' ! -path '*/__pycache__/*' ! -name '*.log' \
+      ! -path './userdata/*' ! -path './config.toml' ! -path './sessions/*' \
+      ! -path './uploads/*' ! -path './shots/*' ! -path '*/__pycache__/*' ! -name '*.log' \
       -printf '%P\n' 2>/dev/null)
   fi
   for it in requirements.txt requirements-gui.txt README.md install.sh RELEASE-NOTES.md VERSION uninstall.sh pip-install.log; do
@@ -2505,8 +2505,13 @@ do_uninstall() {
 
   if [ "$purge" = 1 ]; then
     ws="$(workspace_dir)"
-    warn "删除安装器创建的配置备份目录（逐项，不可恢复）"
-    purge_config_dir
+    if [ "$degraded" = 1 ]; then
+      # 降级路径只允许按清单删文件，连配置备份也不碰
+      warn "降级路径不删除配置备份：$CONFIG_DIR"
+    else
+      warn "删除安装器创建的配置备份目录（逐项，不可恢复）"
+      purge_config_dir
+    fi
     # 工作区、家目录、/ 一律拒绝：--purge 不再删除工作区
     case "$ws" in
       ""|"/"|"$HOME") warn "拒绝删除工作区：$ws" ;;
