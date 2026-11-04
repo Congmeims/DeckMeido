@@ -318,7 +318,8 @@ class LLMClient:
     async def chat_with_tools_stream(self, messages: list[dict], tools: list[dict],
                                      on_delta=None, on_thought=None,
                                      max_tokens: int | None = None,
-                                     on_retry=None) -> dict:
+                                     on_retry=None,
+                                     temperature: float | None = None) -> dict:
         """流式调用，失败时自动重试；正文一旦开始输出就不再重试
 
         重试只对「还没往外吐任何字」的失败生效：网络抖动、503、限流都还能救回来，
@@ -342,7 +343,8 @@ class LLMClient:
                     await on_thought(text)
 
             try:
-                return await self._stream_once(messages, tools, _delta, _thought, max_tokens)
+                return await self._stream_once(messages, tools, _delta, _thought, max_tokens,
+                                               temperature=temperature)
             except Exception as exc:
                 if started or not _retryable(exc) or delay is None:
                     raise
@@ -357,7 +359,8 @@ class LLMClient:
 
     async def _stream_once(self, messages: list[dict], tools: list[dict],
                            on_delta=None, on_thought=None,
-                           max_tokens: int | None = None) -> dict:
+                           max_tokens: int | None = None,
+                           temperature: float | None = None) -> dict:
         """流式调用：正文增量经 on_delta、思维链增量经 on_thought 回调，最终返回聚合后的完整 message
 
         max_tokens 传入时覆盖实例默认值，供上层按当前上下文剩余空间动态放大输出额度；
@@ -376,6 +379,9 @@ class LLMClient:
             # 官方的 chat schema 只有 max_tokens（即使新版模型也是这个字段名），
             # 换成 OpenAI 的 max_completion_tokens 在 DeepSeek 上会直接 400
             payload["max_tokens"] = budget
+        if temperature is not None:
+            # 状态栏这类短句用低温，减少同一状态每次措辞都不一样
+            payload["temperature"] = temperature
         if self.reasoning_effort:
             # 两家的开关同名不同义：OpenAI 系（o 系列 / GPT-5）只有 reasoning_effort；
             # DeepSeek 用 thinking 开关（默认就是 enabled），强度也叫 reasoning_effort

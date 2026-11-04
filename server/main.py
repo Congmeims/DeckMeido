@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import depcheck, memory, persona, policy, power, prompts, qqbot, remote_input, singleton, tools, updater
+from . import depcheck, memory, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
 from .session_store import set_title as _set_title
 from .session_store import store
 from . import session_store
@@ -1613,6 +1613,33 @@ def get_status(gaming: bool | None = None) -> dict:
     }
 
 
+# ---------- 状态栏短句 ----------
+
+DEFAULT_STATUS_PROMPT = status_line.DEFAULT_STATUS_PROMPT
+
+
+def status_prompt_text() -> str:
+    """当前生效的状态栏隐藏提示词（配置为空时用默认值）"""
+    return status_line.prompt_text(CFG.get("agent") or {})
+
+
+async def build_status_line(state: str = "", game: str = "",
+                            game_confidence: str = "", nickname: str = "") -> dict:
+    """状态栏文案入口：只传状态摘要，缓存/忙碌/失败规则都在 status_line 模块"""
+    return await status_line.generate(
+        state=state,
+        game=game,
+        game_confidence=game_confidence,
+        nickname=nickname,
+        persona_name=str(PERSONA.get("name") or ""),
+        prompt=status_prompt_text(),
+        busy=bool(current_task and not current_task.done()),
+        configured=llm.configured,
+        chat=lambda messages: llm.chat_with_tools_stream(
+            messages, [], max_tokens=status_line.MAX_TOKENS, temperature=0.3),
+    )
+
+
 # ---------- API ----------
 
 app = FastAPI(title="DeckMeido")
@@ -2548,6 +2575,18 @@ async def api_status():
     return get_status(await asyncio.to_thread(tools.mode_is_gaming))
 
 
+@app.get("/api/status/line", dependencies=[Depends(check_token)])
+async def api_status_line(state: str = Query(default=""),
+                          game: str = Query(default=""),
+                          game_confidence: str = Query(default=""),
+                          nickname: str = Query(default="")):
+    """插件状态栏的一句话（idle/busy/error + 高置信度游戏名 + 昵称）
+
+    不写会话历史、不写 memory.json；失败自动回本地模板，状态栏永不空白。
+    """
+    return await build_status_line(state, game, game_confidence, nickname)
+
+
 @app.get("/api/feed", dependencies=[Depends(check_token)])
 async def api_feed(after: int = Query(default=0)):
     """增量拉取新消息：返回 id > after 的条目和最新 seq"""
@@ -2646,6 +2685,8 @@ class ConfigUpdate(BaseModel):
     persona_forbid: str | None = None
     # 「截屏询问」提示词模板：空字符串表示恢复默认
     ask_template: str | None = None
+    # 状态栏隐藏提示词：空字符串表示恢复默认（只影响 /api/status/line 的文风）
+    status_prompt: str | None = None
     # 更新源：mirror / github / mirror-only / github-only
     update_source: str | None = None
     # 双源模式是否探测 GitHub（关掉就只用镜像）
@@ -2750,6 +2791,8 @@ async def api_get_config():
         "persona_suffix": (PERSONA.get("style") or {}).get("suffix", ""),
         # 禁用词列表在界面上是一行、用逗号隔开
         "persona_forbid": "，".join((PERSONA.get("style") or {}).get("forbid") or []),
+        # 状态栏隐藏提示词：插件/网页只读它做展示，改走 POST /api/config
+        "status_prompt": status_prompt_text(),
         # 「截屏询问」的提示词模板：插件设置区里可以直接改
         "ask_template": ASK_TEMPLATE,
         "ask_template_default": DEFAULT_ASK_TEMPLATE,
@@ -2937,6 +2980,10 @@ async def api_set_config(req: ConfigUpdate):
         # 留成空串会让这个按钮发不出去任何内容
         tpl = req.ask_template.strip() or DEFAULT_ASK_TEMPLATE
         updates.setdefault("agent", {})["ask_template"] = tpl
+    if req.status_prompt is not None:
+        # 状态栏提示词同理：清空恢复默认，避免状态栏只剩一句空话
+        updates.setdefault("agent", {})["status_prompt"] = \
+            req.status_prompt.strip() or DEFAULT_STATUS_PROMPT
     if req.persona_name is not None:
         # 人设存 meidosoul.json（和记忆放在一起，方便导出备份），不写 config.toml。
         # 留空就写回默认值，避免空串把人设搞没。
