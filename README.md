@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>住在 Steam Deck 里的 AI 女仆</b><br>
-  会聊天、查攻略、开游戏、点屏幕 —— 她替你动手，还能把回复念给你听
+  手柄优先，QAM 与大屏两种形态，还能从 QQ 远程使唤她
 </p>
 
 <p align="center">
@@ -17,207 +17,279 @@
 </p>
 
 <p align="center">
-  <a href="#快速开始">快速开始</a> ·
-  <a href="#能做什么">能力</a> ·
-  <a href="#设计取舍">设计取舍</a> ·
-  <a href="#配置">配置</a> ·
-  <a href="#常见问题">FAQ</a>
+  <a href="#安装">安装</a> ·
+  <a href="#功能">功能</a> ·
+  <a href="#首次配置">配置</a> ·
+  <a href="#qq-用法">QQ</a> ·
+  <a href="#故障排查">排查</a>
 </p>
 
 ---
 
 ## 这是什么
 
-一个跑在掌机本机上的 AI Agent。它不是聊天网页——它能**真正操作这台机器**：启动 Chrome 打开网页、在输入框里打字、点击按钮、截图确认结果、翻 Steam 库、扫模拟器 ROM、跑 shell 命令。
+跑在掌机本机上的 AI Agent。她不只会聊天——能截当前画面看图答问、按坐标点击、注入手柄、装游戏、执行命令，也能在 QQ 里接受远程指令。
 
-一套界面两种打开方式：浏览器里的 Web 控制台，和 PySide6 封装的原生客户端（可最小化到托盘）；游戏模式下还能通过 Decky 插件在侧栏里直接对话。
+**核心亮点**
 
-> **Meido**（メイド）是日语「女仆」的读音。人格可改，默认设定是礼貌周全、称你为「主人」的日系女仆。
+- **手柄优先**：QAM 面板里 LB/RB 翻页，X 翻译、Y 截图询问、R2 按住说话；大屏页同样用手柄操作。
+- **两种形态**：游戏内 QAM + 大屏路由，桌面模式有原生客户端（可驻留托盘）与网页控制台。
+- **离线语音**：识别在本机跑，不联网；回复可用 Deck 内置 TTS 念出来。
+- **QQ 远程**：NapCat OneBot 11 接入，管理员私聊或白名单群里 @ 她就能下指令，高危操作有独立风险档位。
+- **真的能动手**：Steam 库、商店、截图、窗口聚焦、虚拟手柄、文件读写、终端都在工具层。
 
-## 快速开始
+## 功能
+
+### 多入口
+
+| 入口 | 说明 |
+| --- | --- |
+| QAM 面板 | 三个页签「询问 / 聊天 / 设置」，窄屏纵向布局，LB/RB 翻页 |
+| 大屏页 | 注册到 GamepadUI 路由，三个页签「询问 / 聊天 / 设置」；L1/R1 翻页，X 翻译、Y 截图询问，聊天页按住 R2 说话 |
+| 桌面客户端 | PySide6 + QWebEngineView，加载与网页版同一个界面；最小化进托盘，双击桌面图标启动 |
+| 网页控制台 | 浏览器打开 `http://<deck-ip>:18765/?token=<token>`，单文件前端，功能与客户端一致 |
+
+QAM 面板由 Decky 插件提供；插件以 root 运行，首次使用要在面板里解锁访问令牌。大屏页从 QAM 直接跳转。
+
+### 对话与画面
+
+- **询问**：单轮问答，可带当前画面；游戏名由插件自动取到并写进提示词。
+- **聊天**：多轮会话，流式输出、思维链、上下文自动压缩、长期记忆。
+- **截图询问**：抓当前画面 + 游戏名，按 `[agent] ask_template` 回答「这一步怎么过」，不剧透。
+- **截图翻译**：抓画面按 `[agent] translate_template` 原文照抄后逐句翻译。
+- **可改提示词**：询问模板、翻译模板、状态栏短句提示词都能在页面或插件设置里改，保存即时生效。
+- **模型可换**：设置页可拉取模型列表并切换，兼容任意 OpenAI 接口（DeepSeek / GPT / Claude 中转 / Qwen / LM Studio 等）。
+
+### 语音
+
+- **语音输入**：sherpa-onnx + SenseVoice-Small int8，纯 CPU 离线识别，中英混说带标点；模型约 155MB，首次按键时按需下载，闲置一段时间自动释放。
+- **语音播报**：调用 `espeak-ng`（可选 `espeak` / `spd-say`），默认关闭，可设语言、语速与单次字数上限。
+
+### 设备操作
+
+- **执行命令**：`manual` 全部审批、`auto` 只读放行 / 危险拦一道、`full` 不审批。
+- **桌面操作**：按窗口名聚焦、按坐标点击、键盘输入；Wayland 下优先 klipper 剪贴板粘贴，其次 ydotool。
+- **虚拟手柄**：插件写 `/dev/uinput` 模拟 Xbox 360 手柄，游戏模式也能用。
+- **截图**：桌面模式走 spectacle/KWin，游戏模式走 gamescope PipeWire 抓帧。
+- **Steam**：列已装游戏、商店搜索、按 appid 安装、检查系统更新；安装属危险操作，强制确认。
+- **文件与终端**：工作区内浏览、读写、精确替换；网页终端与文件预览；模拟器 ROM 扫描。
+
+### QQ 远程
+
+- **OneBot 11 / NapCat**：Deck 主动连 NapCat 的 WebSocket 服务器，本机不开入站端口。
+- **触发方式**：私聊直接发；群里必须 @ 机器人。指令前可带昵称前缀（默认 `meido`），也支持整句口语别名。
+- **权限**：`admin_qq` 私聊可下指令；普通群成员始终只读聊天（零工具、不读记忆、输出脱敏）；`group_admin_commands` 控制群管理员是否可下指令。
+- **风险三档**：`deny` 直接拒绝、`hard_confirm` 只认「确认执行」、`normal` 走普通确认。
+- **归档**：可存图、存文本，图片进 `meidobot/images/<日期>/`，索引与文本分别写入 `inbox_index.jsonl`、`text_log.txt`。
+
+### 跨屏键鼠
+
+在电脑浏览器里点网页左下角 DeckMeido logo，进入 Pointer Lock，把鼠标键盘交给 Deck；再点 logo、按 Esc 或到时间上限即释放。
+
+## 安装
+
+### 前置
+
+- SteamOS / Steam Deck（其它 Linux 桌面也能跑）。
+- Python 3.11+ 与 `venv`（SteamOS 需先开启开发者模式）。
+- 可选：Decky Loader。只有想在游戏模式 QAM 里用才需要。
+- **不要用 sudo 运行 `install.sh`**。脚本装到当前用户家目录；控制类系统包由脚本单独调 `sudo` 安装；Decky 插件本身以 root 运行。
+
+### 命令
 
 ```bash
-git clone https://github.com/Congmeims/deckmeido.git && cd deckmeido && bash install.sh
+git clone https://github.com/Congmeims/deckmeido.git && cd deckmeido
+bash install.sh
 ```
 
-GitHub 连不上时走国内镜像（同一份代码）：
+GitHub 连不上时走国内镜像：
 
 ```bash
 curl -fsSL -o /tmp/dm.sh https://meido.meagames.cn/deckmeido/install.sh
 bash /tmp/dm.sh from-mirror
 ```
 
-装完脚本会打印带令牌的访问地址（默认 `http://<deck-ip>:18765/?token=meido`），首次打开自动弹设置页，填 **API 地址**和 **Key** 即可对话。也可以手机扫码直连。
-
-> 不要用 `sudo` 执行。程序装到当前用户家目录（默认 `~/deckmeido`），root 装会落到 `/root` 下，桌面会话里起不来。
-
-装不下来？先在 Deck 上测一下哪个 pip 源最快：
+其它入口：
 
 ```bash
-bash install.sh speedtest
+bash install.sh menu                 # 交互菜单：安装 / 升级 / 卸载
+bash install.sh install --deps       # 顺带用 sudo 装控制类控件
+bash install.sh install --gui        # 只补装桌面客户端（PySide6）
+bash install.sh from-mirror          # 从镜像站拉最新版覆盖安装
+bash install.sh check                # 逐个实测控制类控件
+bash install.sh speedtest            # 只测 pip 源速率
 ```
 
-想看菜单自己选「安装 / 升级 / 卸载」，不带参数也随时可以重跑（已装则走升级）：
+### 首次安装做了什么
 
-```bash
-bash install.sh menu
-```
+1. 预检 Python 版本、venv、`systemctl`、磁盘余量、端口占用与图形会话。
+2. 把程序同步到安装目录（默认 `~/deckmeido`，可用 `DECKMEIDO_DIR` 覆盖）。
+3. 创建数据根 `userdata/` 及 `persona/`、`sessions/`、`uploads/`、`meidobot/`，目录权限 `700`。
+4. 建 `.venv` 并安装依赖；默认装 PySide6，`DECKMEIDO_SKIP_GUI=1` 可跳过。
+5. 从 `server/config.example.toml` 生成 `userdata/config.toml`，权限 `600`。
+6. 写桌面快捷方式与 `uninstall.sh`，并清理旧版遗留的 systemd 单元；**不再注册开机自启服务**，后端由客户端拉起。
+7. 检测到 Decky Loader 时询问是否安装 QAM 插件，然后启动客户端。
 
-## 能做什么
+### Decky 插件
 
-| 类别 | 说明 |
+安装器发现 Decky 会询问，同意后把 `deploy/deckmeido-plugin.zip` 解到 `~/homebrew/plugins/DeckMeido`，并打印「插件已安装 v…」。到 **设置 → Decky Loader → 重新载入** 即可在 QAM 看到。没装 Decky 会整段跳过；之后想装可先装 Decky 再执行 `bash install.sh upgrade`，或运行 `bash ~/deckmeido/plugin/deploy.sh`。
+
+### 桌面客户端
+
+装完会自动打开一次客户端，同时拉起后端。之后双击桌面上的 DeckMeido 图标即可；窗口最小化驻留托盘，右键菜单可退出。
+
+## 首次配置
+
+网页或客户端打开后进「设置」，填模型地址与 Key 就能对话。也可以直接改 `userdata/config.toml`（改完重启后端生效，网页里改则立即生效）。
+
+| 配置段 | 关键项 | 说明 |
+| --- | --- | --- |
+| `[server]` | `host` / `port` / `token` | 默认 `0.0.0.0:18765`，令牌默认 `meido`；改令牌后所有入口都要用新的 |
+| `[llm]` | `base_url` / `api_key` / `model` | OpenAI 兼容地址与密钥；换服务商时模型名要一起改 |
+| `[llm]` | `reasoning_effort` / `timeout` / `max_continuations` | 思维链强度、请求超时、撞上限自动续写轮数 |
+| `[agent]` | `ask_template` / `translate_template` / `status_prompt` | 截图询问、截图翻译、状态栏短句的提示词 |
+| `[agent]` | `context_window` / `compact_ratio` | 上下文窗口（0 = 按模型名推断）与压缩触发比例 |
+| `[security]` | `permission_mode` | `manual` / `auto` / `full` |
+| `[workspace]` | `dir` | 文件工具工作区；留空用 `~/deckmeido_workspace` |
+| `[tts]` | `enable` / `engine` / `voice` / `speed` | 语音播报开关与音色 |
+| `[update]` | `github_enable` / `mirror` / `github_repo` | 双源更新：默认镜像与 GitHub 都探测，取更高版本 |
+| `[remote_input]` | `enabled` / `sensitivity` / `max_minutes` | 跨屏键鼠总开关、灵敏度、单次最长分钟数 |
+| `[qq]` | 见下 | QQ 远程通道 |
+
+### 截图与 vision
+
+截图询问、截图翻译和「带画面发送」都要求当前模型支持看图。模型能力可在设置页的校验入口查看；不支持时会退化成纯文字回答。
+
+### 语音开关
+
+语音输入默认开启，可在 QAM / 大屏 / 网页设置里切换（写入 `[stt] enable`）；首次使用会下载识别模型，失败只影响语音，不影响其它功能。语音播报在 `[tts] enable` 或设置里打开，依赖 `espeak-ng`。
+
+### `[qq]` 段
+
+| 键 | 说明 |
 | --- | --- |
-| **桌面对话** | 流式回复 + 思维链、多会话、上下文自动压缩、长期记忆、图片上传、分享为长图 |
-| **操作桌面** | 聚焦窗口、按坐标点击、打字、执行命令（超时保护 + 危险命令识别 + 三档权限） |
-| **看屏幕** | 桌面模式 KWin 截图，游戏模式走 gamescope PipeWire 抓帧 |
-| **Steam** | 列已装游戏、商店搜索、拉下载（危险操作，强制确认）、检查系统更新 |
-| **游戏模式** | Decky 插件：QAM 面板对话（LT / RT 翻页）、截屏提问、截图翻译、虚拟手柄注入 |
-| **编程 / 文件** | 工作区内的目录浏览与读写、精确替换编辑（`permission_mode` 决定能否越出工作区） |
-| **自我维护** | 检查并升级自身、语音播报（TTS）、桌面模式下执行任务时阻止息屏 |
-| **其它** | 联网搜索、天气、模拟器 ROM 扫描、系统信息 |
+| `enable` | 总开关，默认关闭 |
+| `ws_url` | NapCat WebSocket 地址；本机调试 `ws://127.0.0.1:3001`，公网用 `wss://` |
+| `access_token` | 必填，必须与 NapCat 侧一致；留空拒绝启动 |
+| `admin_qq` | 管理员 QQ 号列表，只有这些人能下指令 |
+| `allow_groups` | 允许的群号；空 = 不处理任何群 |
+| `group_admin_commands` | `true` 时白名单群里的管理员也能下指令 |
+| `guest_prompt` | 群友专用提示词，可写 `{name}`；留空用内置受限版 |
+| `allow_image` | 是否处理 QQ 图片（下载、看图、存档） |
 
-模型接任意 OpenAI 兼容后端：GPT、Claude（中转）、DeepSeek、Qwen、GLM、Kimi、本地 LM Studio 都行，默认 DeepSeek。
+其余限流、拆条、确认超时、重连退避等键见 [config.example.toml](server/config.example.toml)。
 
-## 设计取舍
+## 数据目录
 
-**遮罩只盖会动屏幕的那一步。** 点击、打字、滚动时才显示半透明遮罩（点一下即终止），跑命令、翻文件这类后台动作不遮视线。注入鼠标的几百毫秒内遮罩自动透明穿透，否则点击会被自己吃掉。遮罩期间按音量键也能中止。
-
-**上下文压缩而不是丢弃。** 占用接近窗口上限时，把旧对话摘要成一条 system 消息（保留目标、偏好、已完成操作、待办），再拼上最近几轮原文。长任务不会因为跨度大而「失忆」。
-
-**为 DeepSeek 前缀缓存让步。** 历史只追加、压缩只推进游标、旧截图换成一枚 `[SHOT:文件名]` 标记不再重发 base64、记忆段拼在 system prompt 最末尾——都是为了发出去的前缀每轮一致，命中硬盘缓存按低价计费。命中率打在日志里，悬停顶栏的上下文徽标也能看到。
-
-**长期记忆是显式教学，不是后台自学。** 只有两种来源：对话里说「记住」时模型调 `remember` 工具，或在设置页手动写。没有后台定时总结——那会让上下文塞满噪声。
-
-**游戏模式抓帧只有 2 帧、12 秒上限。** 早期取 6 帧、超时 25 秒，遇上 gamescope 不推帧就要卡满半分钟。现在超时就重新探节点再试一次，两次都失败会把 `pw-dump` 里的节点状态一并回给前端，而不是只吐一句「抓帧失败」。
-
-**Web 与客户端同源。** 客户端不复制界面，直接用 QWebEngineView 加载 `127.0.0.1:18765`。改一处 HTML 两端同步。
-
-## 配置
-
-网页「设置」里改，保存即时生效，一般不用手改文件。
-
-| 文件 | 内容 |
-| --- | --- |
-| `userdata/config.toml` | 端口、令牌、模型与 API、上下文压缩、权限模式、语音、更新源 |
-| `userdata/persona/meidosoul.json` | 人设：名字、性格、称呼、语气、禁用词 |
-| `userdata/memory.json` | 长期记忆：用户画像 / 环境经验 / 知识条目 |
-| `userdata/sessions/` | 会话记录 |
-| `userdata/uploads/` | 用户上传与工作区文件 |
-| `userdata/meidobot/` | meidobot（QQ）通道归档：`images/`、`inbox_index.jsonl`、`text_log.txt` |
-
-感兴趣的几个键：`[llm] reasoning_effort`（思考深度，`high` / `max`）、`[agent] context_window`（`0` = 按模型名推断）、`[update] github_enable`（是否同时探测 GitHub，`false` 只用国内镜像）、`[security] permission_mode`（`manual` / `auto` / `full`）、`[workspace] dir`（文件工具的工作区，留空用 `~/deckmeido_workspace`）。完整表格见 [config.example.toml](server/config.example.toml)。
-
-### 数据目录
-
-所有可修改数据统一在数据根 `userdata/` 下，默认 `<安装目录>/userdata`，可用环境变量 `DECKMEIDO_DATA_DIR` 覆盖。安装器创建时把目录权限收紧到 `700`，`config.toml` 为 `600`。
+所有可修改数据统一在数据根下，默认 `<安装目录>/userdata`，可用环境变量 `DECKMEIDO_DATA_DIR` 覆盖；服务端找不到数据根会直接报错，不会静默换目录。
 
 ```
 userdata/
-├── config.toml
-├── persona/meidosoul.json
-├── memory.json
-├── sessions/
-├── uploads/
-└── meidobot/
-    ├── images/
-    ├── inbox_index.jsonl
-    └── text_log.txt
+├── config.toml              600
+├── persona/meidosoul.json   人设：名字、性格、称呼、语气
+├── memory.json              长期记忆
+├── sessions/                会话记录
+├── uploads/                 用户上传与工作区文件
+└── meidobot/                QQ 归档
+    ├── images/<日期>/       存图
+    ├── inbox_index.jsonl    图片索引
+    └── text_log.txt         引用保存的文本
 ```
 
-- **不做迁移**：安装器只认这一套标准布局，不会自动搬运旧位置的数据。从旧版升级的用户需要自行把旧文件复制到 `userdata/` 对应位置一次（安装器不会删除或覆盖 `userdata/`）。
-- **升级**：同步代码时排除整个 `userdata/`，不会用模板覆盖 `userdata/config.toml`。
-- **卸载**：`userdata/` 整目录保留（含 `meidobot/` 归档）；卸载只按安装清单删除安装器自己放进去的文件，清单外的文件与目录都不动。
+- 目录权限 `700`、`config.toml` 权限 `600`（安装器创建时收紧）。
+- **不做迁移**：安装器只认这一套布局。从旧版升级的用户需要先删掉旧安装，再重新安装（`userdata/` 之外的数据不会被自动搬运）。
 
-## 常用命令
+## 卸载
+
+用安装目录里的卸载脚本：
 
 ```bash
-bash install.sh                     # 不带参数：没装就装，已装就升级
-bash install.sh menu                # 交互菜单：安装 / 升级 / 卸载
-bash install.sh upgrade             # 升级：同步代码 + 依赖，保留配置与会话
-bash install.sh upgrade --deps      # 升级后顺带检查控制类插件
-bash install.sh install --gui       # 只补装桌面客户端（PySide6）
-bash install.sh from-mirror         # 从镜像站拉最新版覆盖安装
-bash install.sh speedtest           # 只测各 pip 源速率，不安装
-bash install.sh check               # 自检：逐个实测控制类控件是否真能用
-bash install.sh uninstall           # 卸载（只删安装器文件；userdata/ 永远保留）
-bash install.sh service             # 生成 systemd 用户单元（默认不装，由客户端拉起后端）
+bash ~/deckmeido/uninstall.sh            # 按清单删安装器文件，保留 userdata/
+bash ~/deckmeido/uninstall.sh --purge    # 额外删安装器创建的配置备份（人设/记忆备份）
 ```
 
-升级也可以在网页「设置 → 关于」里点，会先备份、校验 sha256，失败整份回滚，配置和会话不受影响。更新源可以在同一页切换镜像站 / GitHub。
+- 卸载按 `.deckmeido-manifest` 逐项删除，清单外的文件与目录都不动；`userdata/` 整目录保留，最后打印归档路径。
+- 只有目录为空（只剩 `userdata/` 也算非空）才会 `rmdir`，否则打印「保留目录：…（含未识别文件）」。
+- **`install.sh uninstall` 会被守卫拒绝**：脚本拒绝删除源码工作区（含 `.git`）、脚本所在目录及其上级，也拒绝没有 `.deckmeido-install` 标记的目录。不要对着 clone 下来的仓库执行卸载；要卸载就装完后的安装目录脚本。
+- `--purge` 只删除安装器创建、且带 `.deckmeido-config` 标记的配置目录（逐项）；工作区、`$HOME`、`/` 一律拒绝，`userdata/` 永不删除。
+- 需要强删无标记目录时才设 `DECKMEIDO_ALLOW_UNSAFE_UNINSTALL=1`，它也只允许删清单文件，不会 `rmdir`。
 
-环境变量：`DECKMEIDO_DIR`（安装目录）、`DECKMEIDO_PORT`（端口）、`DECKMEIDO_MIRROR`（镜像站）、`DECKMEIDO_PIP_INDEX`（指定 pip 源，留空则自动测速）、`DECKMEIDO_SKIP_GUI=1`（不装 PySide6）、`DECKMEIDO_UPDATE_SOURCE`（安装时写进配置的更新源）、`DECKMEIDO_WORKSPACE`（工作区目录）。
+## 升级
 
-## 目录结构
+- **软件内**：设置 → 关于 → 检查更新 → 升级。下载后校验 sha256，失败整份回滚；配置、会话、工作区不受影响，完成后自动重启。
+- **双源**：默认同时探测国内镜像与 GitHub Release，取版本更高者，同版本优先镜像；`[update] github_enable = false` 则只用镜像。
+- **命令行**：`bash ~/deckmeido/install.sh upgrade`，会先停客户端与后端，再同步代码与依赖；`--deps` 顺带检查控制类控件。
+
+## QQ 用法
+
+触发前缀就是软件里配置的昵称，默认 `meido`。私聊管理员直接发；群里必须 @ 机器人。
+
+| 操作 | 斜杠指令 | 口语别名示例 |
+| --- | --- | --- |
+| 查询状态 | `/status` | `状态`、`在吗`、`怎么样了` |
+| 截屏 | `/shot` | `截个屏`、`看看屏幕`、`拍张照` |
+| 取消当前任务 | `/cancel` | `停`、`别做了`、`算了` |
+| 存图 | `/save_image` | `存图`、`保存这张` |
+| 存文本 | `/save_text` | `保存这段`、`存这段文字` |
+
+其余文本按聊天处理，可让她执行设备操作。优先级：斜杠指令 > 取消 > 状态 > 截图 > 聊天。
+
+**管理员与群友**：管理员能下指令并触发设备操作；普通群成员只读聊天，这一轮零工具、不读主人记忆、不带截图，输出还会做脱敏。群里是否允许管理员下指令由 `group_admin_commands` 决定。
+
+**风险控制**：
+
+- `deny`：`rm`、`rmdir -r`、`shred`、`dd`、`mkfs`、分区写入、写 `/dev` 块设备、fork bomb、写系统关键文件等，远程一律拒绝。
+- `hard_confirm`：`sudo`、下载后管道给 shell、`/etc` 或 `/usr` 写入、包管理器安装卸载、`crontab` 修改、非电源类 `systemctl restart` 等，必须回复「确认执行」。
+- `normal`：其余设备操作，按普通确认流程走。
+
+内置指令之外的设备操作，先按 `[security] permission_mode` 判断本机权限，再叠加远程风险档位。
+
+## 跨屏键鼠
+
+1. 网页设置里打开 `[remote_input] enabled`（会先弹一次安全确认）。
+2. 在电脑浏览器点网页左下角 logo 进入接管；指针锁定后移动与按键都发往 Deck。
+3. 再点 logo、按 Esc（浏览器会强制释放 Pointer Lock）或到达 `max_minutes` 自动释放。
+
+注入优先 `ydotool`（由 `ydotoold` 用户服务托管），不可用时直写 `/dev/uinput`——这要求后端有 root 或 `input` 组权限。只有拿到访问令牌的人能接管，且建议只在可信局域网开启。
+
+## 故障排查
+
+| 现象 | 排查 |
+| --- | --- |
+| 插件版本没变 | 看安装日志里是否有「插件已安装 v…」；到 设置 → Decky Loader 点「重新载入」，或运行 `bash ~/deckmeido/plugin/deploy.sh` |
+| 后端没起来 | 看 `~/deckmeido/server/backend.log`（旧一代在 `backend.log.1`）；确认 `18765` 没被别的进程占用 |
+| 配置写坏了 | 删除 `userdata/config.toml` 后重启，会按模板重新生成（自定义项会丢）；人设 JSON 坏了会自动回落默认人设 |
+| QQ 连不上 | 网页 QQ 状态页看 `detail`；确认 `access_token` 非空且与 NapCat 一致、`ws_url` 可达、机器人已登录 |
+| 截图 / 点击不灵 | 跑 `bash install.sh check`；`ydotoold` 没运行会让 ydotool 报 socket 错误 |
+| 升级后打不开 | 多半是旧后端占着端口；再跑一次 `bash install.sh upgrade` 会清理残留进程 |
+
+日志位置：后端 `server/backend.log`；QQ 事件可在状态页查看，也可调 `/api/qq/logs`；依赖安装日志 `pip-install.log` 在安装目录。
+
+## 开发
 
 ```
 deckmeido/
-├── install.sh          一键安装 / 升级 / 卸载 / 镜像安装 / 自检 / 测速
-├── server/
-│   ├── main.py         FastAPI 服务、agent 循环、权限审批、遮罩调度
-│   ├── tools.py        工具定义与执行、工作区边界
-│   ├── llm.py          OpenAI 兼容流式客户端
-│   ├── session_store.py 会话落盘（单线程写、原子替换、压缩游标）
-│   ├── memory.py       长期记忆
-│   ├── persona.py      人设加载与回落
-│   ├── prompts/        系统提示词（system / modes / runtime）
-│   ├── overlay.py      半透明操作遮罩（PySide6）
-│   ├── depcheck.py     控制类控件自检（ydotool / kdotool / wtype / espeak-ng）
-│   ├── power.py        桌面模式下阻止息屏休眠
-│   ├── singleton.py    后端单实例保护
-│   ├── tts.py          语音播报（espeak-ng）
-│   ├── updater.py      自升级：查版本、拉包、校验 sha256、回滚
-│   └── static/         单文件 Web 控制台（index.html）+ 终端组件
-├── client/             PySide6 原生客户端（托盘、单实例、崩溃守护）
-├── plugin/             Decky 插件（QAM 面板）
-├── assets/             图标与来源图（icon-src/）
-├── deploy/             桌面快捷方式模板、systemd 单元、离线依赖（按需生成）
-├── website/            官网静态页
-└── tools/              发版打包、证书与依赖抓取等维护脚本（不进发布包）
+├── install.sh        安装 / 升级 / 卸载 / 镜像安装 / 自检 / 测速
+├── server/           FastAPI 后端：agent 循环、工具、LLM、会话、记忆、QQ、STT/TTS、静态前端
+├── client/           PySide6 客户端（托盘、单实例、后端守护）
+├── plugin/           Decky 插件（QAM + 大屏页）
+├── deploy/           服务单元、桌面项、插件包
+├── tests/            unittest 用例
+├── tools/            发版与维护脚本
+└── website/          官网静态页
 ```
 
-发布包是 `dist/deckmeido-<版本>.tar.gz`，插件单独打成 `dist/deckmeido-plugin-<版本>.zip`（顶层 `DeckMeido/` 文件夹，Decky 商店 / 本地安装都能直接用）。
+```bash
+py -3 -m unittest discover -s tests     # 当前 197 项
+cd plugin && npm run build              # 构建插件前端到 plugin/dist
+python tools/release.py 0.6.8           # 构建 dist/：tar.gz + 插件 zip + latest.json
+```
 
-## 发版（维护者）
-
-1. 升版本号：`plugin/package.json`、`plugin/package-lock.json`（两处）、`plugin/main.py` 的 `_PLUGIN_VERSION`；再 `cd plugin && npm run build`。
-2. 本地构建：仓库根目录执行 `python tools/release.py`（不带参数时读 `plugin/package.json` 的版本）。**产物只写到 `dist/`，脚本不联网上传、也不往桌面复制。**
-3. 把 `dist/` 里的新产物同步进 `winres/deckmeido/`（tar.gz + 插件 zip + 各自 `.sha256` + `latest.json` + `install.sh` + `SHA256SUMS`），提交这次发布。
-4. 打 tag 后用 `gh release create` 上传资产：`deckmeido-<版本>.tar.gz`、`deckmeido-plugin-<版本>.zip`、两个 `.sha256`、`latest.json`、`install.sh`。
-
-## 常见问题
-
-**控制类插件是什么？** `ydotool`（模拟点击和打字）、`kdotool`（按窗口名聚焦）、`espeak-ng`（念出回复）。装它们需要 root，`install.sh` 结尾会问一次；跳过也能用，只是少了「动手」和「开口」的能力。随时补装：`bash install.sh install --deps`。
-
-**SteamOS 更新后点击失灵？** 换镜像会冲掉 `/usr` 下 pacman 装的包，重跑 `bash install.sh install --deps` 即可。`bash install.sh check` 能逐个实测哪些真的没了。
-
-**升级后聊天记录丢了？** 不应该发生——会话在 `userdata/sessions/`，升级不碰。如果确实丢了，多半是有两份后端抢同一端口，跑一次 `bash install.sh upgrade` 会清理残留进程。
-
-**游戏模式下网页打不开？** 正常，SteamOS 游戏模式的浏览器不在。用 Decky 插件的 QAM 面板，或切回桌面模式。
-
-**让助手切桌面模式，结果弹出 drkonqi 崩溃、又退回游戏模式？** 因为它用的是 `steamos-session-select plasma`——这个旧脚本里 `plasma` 指向 `plasmax11.desktop`（X11 会话），在 SteamOS 上 `startplasma-x11` 起不来就崩。正确命令是不带参数的新接口 `steamosctl switch-to-desktop-mode`（取默认会话 `plasma.desktop` = Plasma Wayland），回游戏模式是 `steamosctl switch-to-game-mode`。提示词里已经写明，用旧脚本时必须写 `plasma-wayland`。
-
-**插件装完面板里什么都没有？** 多半是 zip 结构不对——Decky 要求顶层是 `DeckMeido/` 文件夹，文件直接摆在 zip 根目录会报 `No plugin.json found in plugin ZIP`。直接用 Release 里附带的 `deckmeido-plugin-*.zip`。
-
-**让助手「关机」后，它执行了断电，重启后还要重新交代一遍任务？** 因为单纯的「关机」被当成了独立指令。如果同一句话里还带着重启后要接着做的事（「重启后再 clone 一次」），应该用 `systemctl reboot` 而不是 `poweroff`——断电会掐断连接，后续任务没人执行。提示词里已经要求先判断有无后续任务，拿不准时先问一句再动手。
-
-**重启完再交代一次，助手又重启了一遍？** 因为历史里那条「重启」的指令还在上下文里，助手容易照着再做一次，会话就被反复掐断。提示词里已经要求执行前先自检：跑 `uptime -s` 看开机时间、比 `/proc/sys/kernel/random/boot_id` 有没有变，确认刚开过机就直接向用户报告「已重启完成」并接着做后续任务，不再触发第二次重启。想把这条规则真正生效，改完要 `bash install.sh upgrade` 重载后端，提示词是启动时读进内存的。
-
-## 已知限制
-
-- `desktop` 输入：优先走 klipper 剪贴板 + `Ctrl+V`，klipper 不可用时退回 `ydotool type`（仅英文数字符号）
-- 文件工具默认只能碰工作区（`manual` / `auto` 模式）；`full` 模式下不设边界
-- 部分 Wayland 原生窗口无法直接截取，桌面模式依赖 `spectacle`
-- 会话只存本机，没有云端同步
-
-## 待办
-
-- **远程控制** — 让局域网设备注入按键与触摸，实现「远程下一句，agent 代为操作」。前置是网络鉴权（`:18765` 若不带令牌就监听 `0.0.0.0`，等于把执行命令的入口开放给整个局域网）
-- **QAM 全局热键 / 独立截图按钮** — 会和 Steam 输入争抢，暂缓
+发版：`release.py` 只写 `dist/`；把产物同步进 `winres/deckmeido/` 并提交，然后打 tag，用 `gh release create` 上传 tar.gz、插件 zip、sha256、`latest.json` 与 `install.sh`。
 
 ## 许可
 
-本项目采用 [CC BY-NC 4.0](LICENSE)（署名—非商业性使用 4.0 国际）协议发布：
-可自由复制、修改、分发，但须署名，且不得用于商业用途。
+本项目采用 [CC BY-NC 4.0](LICENSE)（署名—非商业性使用 4.0 国际）协议发布：可自由复制、修改、分发，但须署名，且不得用于商业用途。
 
 ---
 
