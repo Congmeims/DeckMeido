@@ -128,8 +128,7 @@ _INJECTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 归档目录：数据根里的 meidobot/，卸载不删
-ARCHIVE_SUBDIR = Path("userdata") / "meidobot"
+# 归档路径统一由 paths.meidobot_dir() 决定（数据根里的 meidobot/，卸载不删）
 INDEX_NAME = "inbox_index.jsonl"
 TEXT_LOG_NAME = "text_log.txt"
 

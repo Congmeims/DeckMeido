@@ -29,7 +29,17 @@ from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 DECKMEIDO_DIR = Path(
     os.environ.get("DECKMEIDO_DIR") or Path(__file__).resolve().parent.parent
 )
-CONFIG_PATH = DECKMEIDO_DIR / "server" / "config.toml"
+
+
+def _resolve_data_dir() -> Path:
+    """数据根：DECKMEIDO_DATA_DIR 优先，其次 <安装目录>/userdata/（与后端一致）。"""
+    env = (os.environ.get("DECKMEIDO_DATA_DIR") or "").strip()
+    if env:
+        return Path(env).expanduser()
+    return DECKMEIDO_DIR / "userdata"
+
+
+CONFIG_PATH = _resolve_data_dir() / "config.toml"
 PORT = os.environ.get("DECKMEIDO_PORT", "18765")
 API = f"http://127.0.0.1:{PORT}"
 
@@ -67,9 +77,21 @@ def _enable_crash_log() -> None:
 
 
 
+_config_missing_warned = False
+
+
 def load_token() -> str:
+    global _config_missing_warned
     try:
         return tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))["server"]["token"]
+    except FileNotFoundError:
+        if not _config_missing_warned:
+            _config_missing_warned = True
+            print(
+                f"[DeckMeido] 未找到 {CONFIG_PATH}，使用默认端口/令牌",
+                file=sys.stderr,
+            )
+        return ""
     except Exception:
         return ""
 
