@@ -1303,6 +1303,38 @@
   .qq-status-grid > b {
     font-weight: 500; min-width: 0; word-break: break-all;
   }
+  /* 群友提示词：固定高度 + 内部滚动，别把整张卡撑长 */
+  .qq-guest-prompt {
+    height: 160px; min-height: 160px; max-height: 160px;
+    resize: none; overflow-y: auto; font-size: 13px; line-height: 1.55;
+  }
+  .qq-guest-meta { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .qq-guest-meta .field-hint { margin-top: 0; flex: 1; min-width: 0; }
+  #qqGuestCount { flex: 0 0 auto; }
+  /* QQ 事件日志：固定高度滚动，级别色区分 */
+  .qq-logs {
+    margin-top: 12px; border: 1px solid var(--ri-line); border-radius: 10px;
+    background: var(--ri-bg); color: var(--ri-fg); overflow: hidden;
+    box-shadow: var(--ri-shadow-sm);
+  }
+  .qq-logs-head {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    font-size: 12px; font-weight: 600; border-bottom: 1px solid var(--ri-line);
+  }
+  .qq-logs-title { flex: 1; min-width: 0; }
+  .qq-logs-body {
+    height: 180px; overflow-y: auto; padding: 6px 10px;
+    font-size: 12px; line-height: 1.55;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .qq-log-row { display: flex; gap: 6px; padding: 1px 0; word-break: break-word; }
+  .qq-log-time { flex: 0 0 auto; opacity: .55; }
+  .qq-log-level { flex: 0 0 auto; font-weight: 600; }
+  .qq-log-row.warn .qq-log-level { color: #e0a33a; }
+  .qq-log-row.error .qq-log-level { color: #e05555; }
+  .qq-log-row.info .qq-log-level { color: var(--ri-accent); }
+  .qq-log-detail { opacity: .8; min-width: 0; }
+  .qq-log-empty { opacity: .6; }
   /* 外观见上方 #saveCfg 那条共用规则，这里只管排版 */
   #updApply { display: none; width: 100%; margin-top: 8px; }
 
@@ -2639,7 +2671,75 @@
               <textarea id="cfgQqGroups" rows="3" placeholder="20001"
                         spellcheck="false"></textarea>
               <div class="field-hint">
-                群里必须 @ 机器人才处理，而且只能聊天、不能执行设备操作。
+                群里必须 @ 机器人才处理。普通群成员只能闲聊；管理员可下指令（危险操作仍要确认）。
+                直接发 /shot、/status、/cancel 或「截个屏」「在吗」「停一下」都算。
+              </div>
+            </div>
+            <div class="field field-row">
+              <label style="margin:0">允许群里管理员下指令（group_admin_commands）</label>
+              <label class="switch">
+                <input id="cfgQqGroupAdmin" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field field-row">
+              <label style="margin:0">收图 / 存图（allow_image）</label>
+              <label class="switch">
+                <input id="cfgQqAllowImage" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field">
+              <label>图片大小上限（MB，max_image_mb）</label>
+              <input id="cfgQqMaxImage" type="number" min="0.1" max="50" step="0.1"
+                     value="8" spellcheck="false">
+              <label style="margin-top:10px">聊天附图有效期（分钟，image_recent_minutes）</label>
+              <input id="cfgQqImageRecent" type="number" min="0" max="60" step="0.5"
+                     value="2" spellcheck="false">
+              <div class="field-hint">
+                管理员最近发过的图会作为下一轮的视觉输入；普通群成员发的图不解析、不落盘。
+              </div>
+            </div>
+            <div class="field">
+              <label>图片保存目录（image_save_dir，留空 = 安装目录下的 userdata/qq/images）</label>
+              <input id="cfgQqImageDir" type="text"
+                     placeholder="留空则用默认归档目录" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field">
+              <label>文本存档文件（text_log_path，留空 = userdata/qq/text_log.txt）</label>
+              <input id="cfgQqTextLog" type="text"
+                     placeholder="留空则用默认归档目录" autocomplete="off" spellcheck="false">
+              <div class="field-hint">
+                QQ 归档放在 <b>安装目录/userdata/qq/</b>（图片、inbox_index.jsonl、text_log.txt）。
+                <b>卸载不删</b>；安装目录不可写时自动回退到 ~/.local/share/deckmeido/qq/，
+                并在日志与回复里标注 fallback。这里填路径可覆盖默认位置。
+              </div>
+            </div>
+            <div class="field field-row">
+              <label style="margin:0">安装完成后自动打开程序</label>
+              <label class="switch">
+                <input id="cfgQqAutoLaunch" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field">
+              <label>自动打开前等待秒数（auto_launch_wait_seconds）</label>
+              <input id="cfgQqAutoLaunchWait" type="number" min="0" max="60" step="1"
+                     value="6" spellcheck="false">
+              <div class="field-hint">
+                只对明确的安装类命令生效（apt/pacman 安装、install.sh、下载即执行等），
+                命令成功后才尝试打开；gamescope 下窗口可能看不到。
+              </div>
+            </div>
+            <div class="field">
+              <label for="cfgQqGuestPrompt">群友提示词（普通群成员使用）</label>
+              <textarea id="cfgQqGuestPrompt" class="qq-guest-prompt" rows="7"
+                        maxlength="2000" spellcheck="false"
+                        placeholder="留空则使用内置默认"></textarea>
+              <div class="qq-guest-meta">
+                <div class="field-hint" id="qqGuestHint"></div>
+                <span class="field-hint" id="qqGuestCount">0 / 2000</span>
+                <button id="qqGuestReset" class="mini-btn" type="button">恢复默认</button>
               </div>
             </div>
             <div class="mem-foot">
@@ -2648,6 +2748,15 @@
               <button id="qqReconnect" class="mini-btn" type="button">重新连接</button>
             </div>
             <div id="qqHint" class="field-hint"></div>
+            <div class="qq-logs">
+              <div class="qq-logs-head">
+                <span class="qq-logs-title">QQ 事件日志</span>
+                <button id="qqLogsRefresh" class="mini-btn" type="button">刷新</button>
+              </div>
+              <div id="qqLogsBody" class="qq-logs-body">
+                <div class="qq-log-empty">还没有日志。</div>
+              </div>
+            </div>
           </div>
 
           <div class="card" id="riEnableCard">
@@ -7166,6 +7275,20 @@
   var cfgQqToken = document.getElementById('cfgQqToken');
   var cfgQqAdmins = document.getElementById('cfgQqAdmins');
   var cfgQqGroups = document.getElementById('cfgQqGroups');
+  var cfgQqGroupAdmin = document.getElementById('cfgQqGroupAdmin');
+  var cfgQqAllowImage = document.getElementById('cfgQqAllowImage');
+  var cfgQqMaxImage = document.getElementById('cfgQqMaxImage');
+  var cfgQqImageRecent = document.getElementById('cfgQqImageRecent');
+  var cfgQqImageDir = document.getElementById('cfgQqImageDir');
+  var cfgQqTextLog = document.getElementById('cfgQqTextLog');
+  var cfgQqAutoLaunch = document.getElementById('cfgQqAutoLaunch');
+  var cfgQqAutoLaunchWait = document.getElementById('cfgQqAutoLaunchWait');
+  var cfgQqGuestPrompt = document.getElementById('cfgQqGuestPrompt');
+  var qqGuestHint = document.getElementById('qqGuestHint');
+  var qqGuestCount = document.getElementById('qqGuestCount');
+  var qqGuestReset = document.getElementById('qqGuestReset');
+  var qqLogsBody = document.getElementById('qqLogsBody');
+  var qqLogsRefresh = document.getElementById('qqLogsRefresh');
   var qqTokenReveal = document.getElementById('qqTokenReveal');
   var qqSaveBtn = document.getElementById('qqSave');
   var qqReconnectBtn = document.getElementById('qqReconnect');
@@ -7174,6 +7297,10 @@
   var qqHint = document.getElementById('qqHint');
   var qqStatusTimer = 0;
   var qqConfigLoaded = false;
+  // 群友提示词：默认原文由后端下发，前端不硬编码；{name} 原样显示
+  var qqGuestDefault = '';
+  var qqGuestSaved = '';
+  var QQ_GUEST_MAX = 2000;
   // 插件设置（和 Decky 插件端共用一份后端配置）
   var cfgWithShot = document.getElementById('cfgWithShot');
   var cfgStt = document.getElementById('cfgStt');
@@ -7313,6 +7440,7 @@
     loadCfgForm();
     loadQqConfig();
     loadQqStatus();
+    loadQqLogs();
     startQqStatusPolling();
     loadSttStatus();
     loadCoreState();
@@ -7852,6 +7980,77 @@
     return s + ' 秒';
   }
 
+  function qqGuestSnippet() {
+    var text = String(qqGuestDefault || '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    return text.length > 80 ? text.slice(0, 80) + '…' : text;
+  }
+
+  function updateQqGuestCount() {
+    if (!qqGuestCount || !cfgQqGuestPrompt) return;
+    var n = cfgQqGuestPrompt.value.length;
+    qqGuestCount.textContent = n + ' / ' + QQ_GUEST_MAX;
+    qqGuestCount.style.color = n > QQ_GUEST_MAX ? '#e05555' : '';
+  }
+
+  function renderQqGuestHint() {
+    if (!qqGuestHint || !cfgQqGuestPrompt) return;
+    var text = cfgQqGuestPrompt.value.trim();
+    if (!text) {
+      var snippet = qqGuestSnippet();
+      qqGuestHint.textContent = '留空则使用内置默认' + (snippet ? '：' + snippet : '');
+    } else {
+      qqGuestHint.textContent = '当前：自定义；清空后保存会改用内置默认';
+    }
+  }
+
+  function qqPrefixText(prefix, guestCustom) {
+    return '当前指令前缀：' + (prefix || 'meido')
+      + '；群友提示词：' + (guestCustom ? '自定义' : '默认');
+  }
+
+  function qqLogTime(ts) {
+    var d = new Date((Number(ts) || 0) * 1000);
+    if (isNaN(d.getTime())) return '--:--:--';
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+
+  function renderQqLogs(logs) {
+    if (!qqLogsBody) return;
+    var list = logs || [];
+    if (!list.length) {
+      qqLogsBody.innerHTML = '<div class="qq-log-empty">还没有日志。</div>';
+      return;
+    }
+    var levelText = { info: 'I', warn: 'W', error: 'E' };
+    qqLogsBody.innerHTML = list.map(function (item) {
+      var level = String((item && item.level) || 'info');
+      var cls = levelText[level] ? level : 'info';
+      var event = escapeHtml(String((item && item.event) || ''));
+      var detail = escapeHtml(String((item && item.detail) || ''));
+      return '<div class="qq-log-row ' + cls + '">'
+        + '<span class="qq-log-time">' + qqLogTime(item && item.ts) + '</span>'
+        + '<span class="qq-log-level">' + (levelText[cls] || 'I') + '</span>'
+        + '<span class="qq-log-event">' + event + '</span>'
+        + (detail ? '<span class="qq-log-detail">' + detail + '</span>' : '')
+        + '</div>';
+    }).join('');
+    // 新的在前：刷新后停在顶部，相当于自动跟随最新
+    qqLogsBody.scrollTop = 0;
+  }
+
+  function loadQqLogs() {
+    if (!qqLogsBody) return Promise.resolve(null);
+    return memFetch('/api/qq/logs?limit=100', {}).then(function (res) {
+      renderQqLogs((res && res.logs) || []);
+      if (res && res.state) renderQqStatus(res.state);
+      return res;
+    }).catch(function () {
+      return null;
+    });
+  }
+
   function renderQqStatus(s) {
     if (!qqStatusBox) return;
     if (!s) {
@@ -7894,7 +8093,7 @@
         return '<span>' + escapeHtml(r[0]) + '</span><b>' + escapeHtml(String(r[1])) + '</b>';
       }).join('')
       + '</div>';
-    if (qqPrefixHint) qqPrefixHint.textContent = '当前指令前缀：' + (s.prefix || 'meido');
+    if (qqPrefixHint) qqPrefixHint.textContent = qqPrefixText(s.prefix, !!s.guest_prompt_custom);
   }
 
   function loadQqStatus() {
@@ -7912,7 +8111,9 @@
   function startQqStatusPolling() {
     if (qqStatusTimer) return;
     qqStatusTimer = setInterval(function () {
-      if (document.body.classList.contains('settings-mode')) loadQqStatus();
+      if (!document.body.classList.contains('settings-mode')) return;
+      loadQqStatus();
+      loadQqLogs();
     }, 5000);
   }
 
@@ -7925,7 +8126,27 @@
       qqTokenReveal.textContent = '显示';
       cfgQqAdmins.value = (c.admin_qq || []).join('\n');
       cfgQqGroups.value = (c.allow_groups || []).join('\n');
-      if (qqPrefixHint) qqPrefixHint.textContent = '当前指令前缀：' + (c.prefix || 'meido');
+      if (cfgQqGroupAdmin) cfgQqGroupAdmin.checked = !!c.group_admin_commands;
+      if (cfgQqAllowImage) cfgQqAllowImage.checked = !!c.allow_image;
+      if (cfgQqMaxImage) cfgQqMaxImage.value = c.max_image_mb != null ? c.max_image_mb : 8;
+      if (cfgQqImageRecent) cfgQqImageRecent.value =
+        c.image_recent_minutes != null ? c.image_recent_minutes : 2;
+      if (cfgQqImageDir) cfgQqImageDir.value = c.image_save_dir || '';
+      if (cfgQqTextLog) cfgQqTextLog.value = c.text_log_path || '';
+      if (cfgQqAutoLaunch) cfgQqAutoLaunch.checked = c.auto_launch_after_install !== false;
+      if (cfgQqAutoLaunchWait) cfgQqAutoLaunchWait.value =
+        c.auto_launch_wait_seconds != null ? c.auto_launch_wait_seconds : 6;
+      // 群友提示词：默认原文原样回填（{name} 不预先替换），空值展示空框
+      qqGuestDefault = String(c.guest_prompt_default || '');
+      QQ_GUEST_MAX = Number(c.guest_prompt_max) || 2000;
+      if (cfgQqGuestPrompt) {
+        cfgQqGuestPrompt.maxLength = QQ_GUEST_MAX;
+        cfgQqGuestPrompt.value = c.guest_prompt || '';
+      }
+      qqGuestSaved = String(c.guest_prompt || '');
+      updateQqGuestCount();
+      renderQqGuestHint();
+      if (qqPrefixHint) qqPrefixHint.textContent = qqPrefixText(c.prefix, qqGuestSaved);
       qqConfigLoaded = true;
       return c;
     }).catch(function (err) {
@@ -7949,12 +8170,29 @@
       return;
     }
     qqHint.textContent = withReconnect ? '正在按当前表单重新连接…' : '保存中…';
+    var guestText = cfgQqGuestPrompt ? cfgQqGuestPrompt.value.trim() : '';
+    if (guestText.length > QQ_GUEST_MAX) {
+      qqHint.textContent = '群友提示词最多 ' + QQ_GUEST_MAX + ' 字（当前 '
+        + guestText.length + ' 字），请删减后再保存';
+      return;
+    }
     var payload = {
       enable: !!cfgQqEnable.checked,
       ws_url: cfgQqUrl.value.trim(),
       access_token: cfgQqToken.value.trim(),
       admin_qq: qqSplitList(cfgQqAdmins.value),
-      allow_groups: qqSplitList(cfgQqGroups.value)
+      allow_groups: qqSplitList(cfgQqGroups.value),
+      group_admin_commands: cfgQqGroupAdmin ? !!cfgQqGroupAdmin.checked : true,
+      guest_prompt: guestText,
+      allow_image: cfgQqAllowImage ? !!cfgQqAllowImage.checked : false,
+      max_image_mb: Number(cfgQqMaxImage && cfgQqMaxImage.value) || 8,
+      image_recent_minutes: (cfgQqImageRecent && cfgQqImageRecent.value !== '')
+        ? Number(cfgQqImageRecent.value) : 2,
+      image_save_dir: cfgQqImageDir ? cfgQqImageDir.value.trim() : '',
+      text_log_path: cfgQqTextLog ? cfgQqTextLog.value.trim() : '',
+      auto_launch_after_install: cfgQqAutoLaunch ? !!cfgQqAutoLaunch.checked : true,
+      auto_launch_wait_seconds: (cfgQqAutoLaunchWait && cfgQqAutoLaunchWait.value !== '')
+        ? Number(cfgQqAutoLaunchWait.value) : 6
     };
     return memFetch('/api/qq/config', {
       method: 'POST',
@@ -7962,13 +8200,19 @@
       body: JSON.stringify(payload)
     }).then(function (res) {
       if (res && res.config) {
-        qqPrefixHint.textContent = '当前指令前缀：' + (res.config.prefix || 'meido');
+        qqGuestSaved = String(res.config.guest_prompt || '');
+        if (res.config.guest_prompt_default) {
+          qqGuestDefault = String(res.config.guest_prompt_default);
+        }
+        updateQqGuestCount();
+        renderQqGuestHint();
+        qqPrefixHint.textContent = qqPrefixText(res.config.prefix, qqGuestSaved);
       }
       if (res && res.state) renderQqStatus(res.state);
       else return loadQqStatus();
       qqHint.textContent = withReconnect
         ? '已按当前表单重新连接；状态会在上方刷新'
-        : '已保存，连接已按新配置重启';
+        : '已保存；群友提示词：' + (qqGuestSaved ? '自定义' : '默认');
       return res;
     }).catch(function (err) {
       var msg = (err && err.message) || '';
@@ -7981,6 +8225,25 @@
 
   qqSaveBtn.addEventListener('click', function () { void submitQq(false); });
   qqReconnectBtn.addEventListener('click', function () { void submitQq(true); });
+
+  if (cfgQqGuestPrompt) {
+    cfgQqGuestPrompt.addEventListener('input', function () {
+      updateQqGuestCount();
+      renderQqGuestHint();
+    });
+  }
+  // 恢复默认：把后端返回的原文（含 {name} 占位符）原样填进编辑框
+  if (qqGuestReset) {
+    qqGuestReset.addEventListener('click', function () {
+      if (cfgQqGuestPrompt) cfgQqGuestPrompt.value = qqGuestDefault;
+      updateQqGuestCount();
+      renderQqGuestHint();
+      qqHint.textContent = '已填入默认文案，点「保存」后生效';
+    });
+  }
+  if (qqLogsRefresh) {
+    qqLogsRefresh.addEventListener('click', function () { void loadQqLogs(); });
+  }
 
   // 令牌默认掩码显示；点「显示」才切成明文，再点切回
   qqTokenReveal.addEventListener('click', function () {
