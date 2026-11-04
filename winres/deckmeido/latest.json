@@ -1,10 +1,10 @@
 {
-  "tag": "0.6.6",
-  "name": "DeckMeido 0.6.6",
-  "notes": "# DeckMeido 0.6.6\n\n- fix(config): 安全写回 config.toml，并修复内联升级插件不更新\n- release: 0.6.2 发布产物与镜像目录更新\n- feat(plugin): QAM 三页签移植与输入法修复，版本升到 0.6.2\n- feat(server): 跨屏接管单开关与开启引导、聊天 surface 策略、网页插件设置组\n- release: 0.6.1 发布产物整理\n- chore(release): 版本号升到 0.6.1\n- fix(install): 升级时强制收掉脱管后端\n- feat(server): 跨屏键鼠接管与远程输入接口\n- feat(qam): 持久化画面开关与语音输入开关，精修大屏设置页布局\n- feat(voice): 大屏聊天页支持离线语音输入\n- docs(prototype): add standalone 1280x800 big screen prototype\n- fix(deploy): stop auto-restart after core close\n- feat(plugin): restructure big screen UI with tabs, receipt and core controls\n- feat(server): make translate prompt configurable\n- fix(plugin): scope game detection to current Steam client session\n- fix(server): gate power commands on current-turn intent with policy and pending_intent\n- feat(plugin): add fullscreen Steam route with gamepad-first big screen chat UI\n- release: 0.5.3\n- chore: 忽略 release.py 生成的插件 zip 中间产物\n- fix(plugin): 恢复 package.json 的 type=module，修掉插件加载报 Unexpected token 'export'\n",
-  "published_at": "2026-11-04T14:52:38+08:00",
+  "tag": "0.6.8",
+  "name": "DeckMeido 0.6.8",
+  "notes": "# DeckMeido 0.6.8\n\n- 删除旧布局与旧配置兼容代码，只保留最新标准实现\n- 删除旧布局兼容代码，仅保留\n- 用户数据统一按数据根读写，QQ 归档改名 meidobot 并保留旧布局只读回退\n- 降级卸载不触碰配置备份，清单排除 server/userdata\n- 新增状态栏短句接口，按状态缓存并在失败时回退本地模板\n- 服务单元注入数据根并补充 userdata 文档\n- 用户数据统一迁入 userdata 并兼容旧布局迁移\n- 更新源改为双源探测取更高版本，新增 github_enable 与下载校验回退\n- 卸载改为按清单逐项删除、无标记目录拒绝\n- 回执收敛：询问页只显示结论，错误码与明细只进设置页\n- QAM 提示词改为多行编辑，复用 ImeTextArea 固定高度内部滚动\n- 状态栏人格化：昵称前缀取自 persona，本地模板兜底并缓存\n- 网页 QQ 卡新增群友提示词编辑框、事件日志区与归档/卸载说明\n- 接入 QQ 三档风险拦截、群友零工具轮次、日志与配置接口、安装后自动启动\n- 补齐 QQ 指令别名、群管理员、事件日志、图片存图与引用文本归档、群友提示词\n- 为 QQ 远程增加三档风险分级（拒绝 / 二次确认 / 普通）\n- 卸载增加删除守卫：拒绝源码工作区与危险路径，保留 userdata/qq 归档\n- 客户端托盘菜单改为「终止、显示、重启、退出」四项\n- 发版脚本：删除镜像上传链路，release 改为纯本地构建\n- release: 0.6.6 发布产物与镜像目录更新\n",
+  "published_at": "2026-11-04T20:41:10+08:00",
   "files": {
-    "tarball": "deckmeido-0.6.6.tar.gz",
-    "sha256": "e16beaf41f9e00860f6f8f5d77b63b96fdce0c301168a3b30b3c30ae43a1d2fc"
+    "tarball": "deckmeido-0.6.8.tar.gz",
+    "sha256": "695f8c340d00fc0c1a5329566ada919f681138efcdfbe3b9076545f17b1ffd8c"
   }
 }
