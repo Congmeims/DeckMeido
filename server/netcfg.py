@@ -47,3 +47,13 @@ def is_loopback(ip: str | None) -> bool:
     if not value:
         return True
     return value in ("127.0.0.1", "::1", "localhost") or value.startswith("127.")
+
+
+# 鉴权免检只认真正的回环地址；空来源 / localhost 字符串一律不放行，
+# 避免代理头缺失或伪造时把外部请求误当成本机。
+LOCAL_ADDRS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
+def is_local(ip: str | None) -> bool:
+    """鉴权用的严格回环判断：只有 127.0.0.1 / ::1 免令牌。"""
+    return (ip or "").strip().lower() in LOCAL_ADDRS

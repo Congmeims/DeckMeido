@@ -182,3 +182,14 @@ class NetcfgTest(unittest.TestCase):
         self.assertTrue(netcfg.is_loopback("::1"))
         self.assertTrue(netcfg.is_loopback(""))
         self.assertFalse(netcfg.is_loopback("192.168.1.10"))
+
+    def test_auth_loopback_is_strict(self):
+        """鉴权免检只认真正的回环地址，空来源/伪造字符串不算本机。"""
+        self.assertTrue(netcfg.is_local("127.0.0.1"))
+        self.assertTrue(netcfg.is_local("::1"))
+        self.assertTrue(netcfg.is_local("::ffff:127.0.0.1"))
+        self.assertFalse(netcfg.is_local(""))
+        self.assertFalse(netcfg.is_local("localhost"))
+        self.assertFalse(netcfg.is_local("192.168.1.10"))
+        self.assertFalse(netcfg.is_local("10.0.0.2"))
+        self.assertFalse(netcfg.is_local("127.0.0.1.evil.example"))

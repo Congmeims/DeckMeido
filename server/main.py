@@ -1636,6 +1636,10 @@ def _set_device_cookie(response: Response, request: Request, token: str,
 def check_token(request: Request, token: str | None = Query(default=None),
                 x_token: str | None = Header(default=None)):
     ip = _client_ip(request)
+    # 本机回环免验证：客户端 / 插件 / 掌机自己的请求不再需要令牌。
+    # 只认 127.0.0.1 与 ::1；局域网来源照旧走令牌或设备 Cookie。
+    if netcfg.is_local(ip):
+        return
     _check_fail_limit(ip)
     if TOKEN and (authguard.token_eq(TOKEN, token) or authguard.token_eq(TOKEN, x_token)):
         return
@@ -1655,6 +1659,8 @@ def check_token_any(request: Request, token: str | None = Query(default=None),
     不放开这一条会导致「改完自己把自己锁在外面」。
     """
     ip = _client_ip(request)
+    if netcfg.is_local(ip):
+        return
     _check_fail_limit(ip)
     for expected in {_norm_token(TOKEN), _norm_token(_pending_token)} - {""}:
         if authguard.token_eq(expected, token) or authguard.token_eq(expected, x_token):
@@ -1680,6 +1686,9 @@ def _ws_cookie_auth(ws: WebSocket) -> bool:
 
 
 def _ws_authorized(ws: WebSocket, token: str | None) -> bool:
+    # 回环来源（掌机自带客户端 / 本地调试）直接放行，局域网仍要令牌或设备 Cookie
+    if netcfg.is_local(ws.client.host if ws.client else ""):
+        return True
     if TOKEN and authguard.token_eq(TOKEN, token):
         return True
     return _ws_cookie_auth(ws)
@@ -2516,8 +2525,9 @@ async def ws_input(ws: WebSocket, token: str = Query(default="")):
         await ws.accept()
         await ws.close(code=4429)
         return
-    # 已配对的浏览器没有 12 位令牌，用 Cookie 认证时把当前令牌当作「已通过」传给校验器
-    offered = TOKEN if _ws_cookie_auth(ws) else token
+    # 已配对的浏览器没有 12 位令牌，用 Cookie 认证时把当前令牌当作「已通过」传给校验器；
+    # 本机回环同样免令牌
+    offered = TOKEN if (_ws_cookie_auth(ws) or netcfg.is_local(client_ip)) else token
     code = remote_input.access_error(cfg, client_ip, TOKEN, offered)
     if code == remote_input.RI_UNAUTHORIZED:
         authguard.limiter.record(client_ip)
@@ -3304,13 +3314,15 @@ async def api_auth_session(request: Request, token: str | None = Query(default=N
     网页打开时先问一次，已配对就直接进主界面，不再要求输入 12 位令牌。
     """
     device = None
-    authenticated = bool(TOKEN and (authguard.token_eq(TOKEN, token)
-                                   or authguard.token_eq(TOKEN, x_token)))
+    local = netcfg.is_local(_client_ip(request))
+    authenticated = bool(local or (TOKEN and (authguard.token_eq(TOKEN, token)
+                                             or authguard.token_eq(TOKEN, x_token))))
     if not authenticated:
         device = _cookie_device(request)
         authenticated = bool(device)
     return {
         "authenticated": authenticated,
+        "local": local,
         "device": device,
         "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
         "device_days": _device_days(),
