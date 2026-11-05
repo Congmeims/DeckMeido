@@ -477,11 +477,11 @@ def _apply_mirror(info: dict, log_path: Path) -> str:
                 if not expect:
                     checked = _sums_verified(tf, got)
                     if checked is None:
-                        _append_log(log_path,
-                                    "未拿到独立 .sha256，包内也没有 SHA256SUMS，跳过校验\n")
-                    else:
-                        _append_log(log_path,
-                                    "未拿到独立 .sha256，已按包内 SHA256SUMS 校验通过\n")
+                        # 没有任何可用的校验值就不能装：否则被篡改的包会被直接覆盖进代码目录
+                        raise RuntimeError(
+                            "拿不到校验值（没有独立 .sha256，包内也没有 SHA256SUMS），已拒绝安装")
+                    _append_log(log_path,
+                                "未拿到独立 .sha256，已按包内 SHA256SUMS 校验通过\n")
                 _safe_extract(tf, tmp)
         except (tarfile.TarError, OSError) as exc:
             raise RuntimeError(f"安装包解压失败：{exc}")

@@ -236,6 +236,36 @@ class ApplyFallbackTest(unittest.TestCase):
                 updater._apply_mirror(info, Path(td) / "update.log")
         self.assertIn("校验不通过", str(ctx.exception))
 
+    def _tarball(self) -> bytes:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            body = b"hello\n"
+            ti = tarfile.TarInfo("deckmeido-0.6.10/README.md")
+            ti.size = len(body)
+            tf.addfile(ti, io.BytesIO(body))
+        return buf.getvalue()
+
+    def test_no_checksum_refuses_install(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return self.data
+
+        resp = _Resp()
+        resp.data = self._tarball()
+        info = {"tag": "0.6.10", "tarball_url": "https://mirror.test/x.tar.gz",
+                "sha256": ""}
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(updater.urllib.request, "urlopen", return_value=resp):
+            with self.assertRaises(RuntimeError) as ctx:
+                updater._apply_mirror(info, Path(td) / "update.log")
+        self.assertIn("拒绝安装", str(ctx.exception))
+
     def test_internal_sha256_sums(self):
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tf:
