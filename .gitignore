@@ -10,7 +10,15 @@ server/meidosoul.json
 # Python
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .venv/
+
+# 测试生成的截图/临时产物
+.screenshots/
+
+# 编辑器/合并工具临时文件
+*.orig
+*.rej
 
 # 日志与临时文件
 *.log
