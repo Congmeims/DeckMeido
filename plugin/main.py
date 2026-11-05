@@ -169,6 +169,18 @@ def _cfg_error_text() -> str:
     return _SERVER_CFG_ERROR or "配置里没有 token"
 
 
+def _gamepad_from_core(core: dict) -> dict:
+    """后端 /api/status 的手柄可用性 → 面板字段。
+
+    ok=None 表示后端没给这个字段（旧版本或后端没连上），前端据此显示「未知」，
+    绝不能默认可用于是给出一个错误绿灯。
+    """
+    data = (core or {}).get("data") or {}
+    ok = data.get("gamepad_ok")
+    return {"ok": ok if isinstance(ok, bool) else None,
+            "reason": str(data.get("gamepad_reason") or "")}
+
+
 # ---------- 插件状态目录 ----------
 #
 # 插件以 root 加载，但本机（QAM / 大屏）不再单独设解锁门：能加载插件就视为
@@ -1880,6 +1892,7 @@ class Plugin:
         token = str(cfg.get("token", "") or "").strip()
         node, why = await _gamescope_pw_node()
         core = await _core_status(port, token)
+        gamepad = _gamepad_from_core(core)
         # 后端在、但插件这边没连着（比如后端重启过）就顺手补一条：
         # 换序这类全局广播全靠这条长连接，断了就静默丢消息
         if core.get("ok") and _BACKEND is None:
@@ -1980,8 +1993,11 @@ class Plugin:
             "game_source": (game.get("source") or ""),
             "game_confidence": (game.get("confidence") or ""),
             "game_ts": (game.get("ts") or 0),
-            # 虚拟手柄能不能用：设备节点在 + 进程有写权限
-            "gamepad": os.access("/dev/uinput", os.W_OK) if os.path.exists("/dev/uinput") else False,
+            # 虚拟手柄能不能用：只透传后端 /api/status 的判断（插件是 root，
+            # 它自己的权限不等于后端进程的权限）。后端没给这个字段（旧版本或
+            # 后端没连上）时保持 None，前端显示「未知」而不是假设可用。
+            "gamepad_ok": gamepad.get("ok"),
+            "gamepad_reason": gamepad.get("reason", ""),
             # 读不到后端配置 / 令牌：前端据此显示明确原因，不再让用户猜口令
             "config_error": "" if token else _cfg_error_text(),
         }

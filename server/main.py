@@ -1736,6 +1736,8 @@ def get_status(gaming: bool | None = None) -> dict:
     win = context_window()
     used = _ctx_used or _cached_estimate()
     pct = round(min(used / win, 1.0) * 100, 1) if win else 0
+    # 虚拟手柄的可用性由后端自己判断（插件是 root，权限和这里不一样）
+    gamepad_ok, gamepad_reason = tools.pad_available()
     return {
         "battery": int(battery) if battery.isdigit() else None,
         "charging": charging or None,
@@ -1773,6 +1775,9 @@ def get_status(gaming: bool | None = None) -> dict:
         "security_note": _security_note(),
         "pending_pair": len(pairing.manager.pending()),
         "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
+        # 虚拟手柄能不能用（后端视角）：给插件/大屏透传，避免靠 root 权限误判
+        "gamepad_ok": gamepad_ok,
+        "gamepad_reason": gamepad_reason,
     }
 
 

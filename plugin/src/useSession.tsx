@@ -34,7 +34,9 @@ export type Status = {
   // 用户点过「关闭核心」且没再点「启动核心」：显示「已停止」并禁用重启核心
   core_stopped: boolean;
   workspace: string;
-  gamepad: boolean;
+  // 虚拟手柄可用性由后端判断：true/false 为后端结论，null = 后端没上报（显示「未知」）
+  gamepad_ok: boolean | null;
+  gamepad_reason?: string;
   tts: boolean;
   // 带画面询问：后端 [agent] with_shot，面板重开后按它恢复
   with_shot: boolean;

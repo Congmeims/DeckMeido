@@ -2368,6 +2368,20 @@ class _VirtualPad:
 _PAD = _VirtualPad()
 
 
+def pad_available() -> tuple[bool, str]:
+    """后端这一侧能不能操作虚拟手柄（只看权限，不真的建设备）。
+
+    插件以 root 跑，它看到的是自己的权限；真正写 /dev/uinput 的是后端进程，
+    所以状态页必须以这里的判断为准，否则会出现「面板说可用、AI 一按就报没权限」。
+    不实际创建设备：那会让 Steam 误以为接了手柄，留下一个空设备。
+    """
+    if not os.path.exists("/dev/uinput"):
+        return False, "未加载 uinput 内核模块（没有 /dev/uinput）"
+    if not os.access("/dev/uinput", os.W_OK):
+        return False, "后端进程没有写 /dev/uinput 的权限（需要 root 或 udev 规则）"
+    return True, ""
+
+
 async def _gamepad(action: str, button: str = "", ms: int = 0,
                    x: float = 0.0, y: float = 0.0, side: str = "left",
                    value: float = 1.0) -> str:
