@@ -6109,6 +6109,19 @@
           // 后端还在跑这一轮（流式正文写在半路、还没进 history）：屏幕上的内容是活的，
           // 不补；而且发给前端的那份历史里最后一条还是用户消息，此时补就是重复
           var running = (msg.inflight || []).indexOf(currentSid) >= 0;
+          // 这一轮还在跑、但刚才清空重建了 DOM：把服务端内存里的 parts 补回来。
+          // 不补的话，长任务只要 WebSocket 闪断一次，正在攒的整块思考记录就蒸发，
+          // 后续 delta 重新开一个新块，看着像「思考到一半被删了」。
+          if (running && msg.partial) {
+            var pTexts = [], pEvs = [];
+            (msg.partial.parts || []).forEach(function (p) {
+              if (!p) return;
+              if (p.type === 'text' && p.content) pTexts.push(p.content);
+              else if (p.type === 'event' && p.event) pEvs.push(p.event);
+            });
+            var pText = pTexts.join('\n\n') || String(msg.partial.text || '');
+            if (pText || pEvs.length) addMsg('assistant', pText, msg.partial.ts, pEvs);
+          }
           // 崩溃补丁：后端被杀时最后一条正文可能只发到浏览器、没来得及写盘。
           // 本地缓存里若有一条服务端历史里没有的回复，补在末尾，避免「我的回复凭空消失」
           try {

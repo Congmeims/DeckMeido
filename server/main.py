@@ -828,6 +828,22 @@ def _inflight_sids() -> set[str]:
     return set(_stream_bufs)
 
 
+def _inflight_snapshot(sid: str) -> dict | None:
+    """给重连的前端一份「这一轮已经出现过什么」
+
+    长任务断线重连时，握手只发 history：这一轮还没收尾，正文和思考记录
+    都还没进历史，前端清空重建后那整块思维链就没了。这里把内存里的 parts
+    （正文段 + 思维链/工具事件的有序块）一起带上，前端重建后再补回来。
+    """
+    buf = _stream_bufs.get(sid or "")
+    if not buf:
+        return None
+    parts = _trim_parts(list(buf.get("parts") or []))
+    if not parts and not (buf.get("text") or "").strip():
+        return None
+    return {"text": buf.get("text") or "", "parts": parts, "ts": time.time()}
+
+
 def _write_streaming(sid: str, text: str, parts: list[dict] | None = None) -> None:
     """把半截正文写进会话的副档案（不碰主文件）
 
@@ -5494,7 +5510,8 @@ async def ws_endpoint(ws: WebSocket, token: str = Query(default="")):
         # 否则 currentSid 一直是空值，代次过滤整条失效）
         await ws.send_json({"type": "history", "messages": store.history,
                             "sid": store.current_sid, "my_client": ua_client,
-                            "inflight": inflight, "boot": boot_id})
+                            "inflight": inflight, "boot": boot_id,
+                            "partial": _inflight_snapshot(store.current_sid)})
         await ws.send_json({"type": "status",
                             "data": {**get_status(), "mode": ws_mode}})
         while True:
@@ -5509,7 +5526,8 @@ async def ws_endpoint(ws: WebSocket, token: str = Query(default="")):
                 await ws.send_json({"type": "history", "messages": store.history,
                                     "sid": store.current_sid, "my_client": ua_client,
                                     "inflight": sorted(_inflight_sids()),
-                                    "boot": boot_id})
+                                    "boot": boot_id,
+                                    "partial": _inflight_snapshot(store.current_sid)})
                 continue
             if data.get("type") == "chat":
                 # 开始发问就刷新：这条连接此刻在什么模式下，就是它自己的模式
