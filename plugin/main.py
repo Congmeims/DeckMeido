@@ -2243,6 +2243,14 @@ class Plugin:
         if core.get("ok") and _BACKEND is None:
             await self._stay_connected()
         prefs = await _core_prefs(port, token) if core.get("ok") else {}
+        # 更新检测走 /api/version 里的缓存结果（后端启动时查过一次，之后每天刷新），
+        # 设置页只是展示，不在这条路径上现发网络请求
+        ver = {}
+        if core.get("ok"):
+            vr = await _core_http(port, token, "GET", "/api/version", timeout=3.0)
+            if vr.get("ok"):
+                ver = vr.get("data") or {}
+        upd = ver.get("update") or {}
         # 查游戏名要扫进程表、读 Steam 日志，放线程里做：面板一刷新就调这个接口，
         # 同步跑会把 Decky 的事件循环卡住
         game = await asyncio.to_thread(_current_game)
@@ -2283,6 +2291,9 @@ class Plugin:
             # 语音输入开关（[stt] enable）：关掉时后端会释放识别模型省内存
             "stt": bool(prefs.get("stt", True)),
             "version": str(prefs.get("version") or _PLUGIN_VERSION),
+            # 更新检测：两处设置页统一显示「有更新 / 当前最新」，不摆占位横线
+            "update_has": bool(upd.get("has_update")),
+            "update_latest": str(upd.get("latest") or ""),
             # 设置区：当前模型名，下拉菜单的首帧先显示它，再异步拉全量列表
             "model": str(prefs.get("model") or ""),
             # 人设昵称：状态行用它做前缀（persona 缺失时前端退回默认称呼）

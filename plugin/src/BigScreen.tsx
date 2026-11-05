@@ -1274,7 +1274,16 @@ export default function BigScreen() {
               <StatRow label="核心版本" value={s.status?.version || "—"} />
               <StatRow label="设备地址" value={s.status ? `${s.status.ip}:${s.status.port}` : "—"} />
               <StatRow label="虚拟手柄" value={s.status?.gamepad ? "可用" : "不可用"} />
-              <StatRow label="更新检测" value="—" />
+              <StatRow
+                label="更新检测"
+                value={
+                  !s.status
+                    ? "检测中"
+                    : s.status.update_has
+                      ? `有更新${s.status.update_latest ? `（v${s.status.update_latest}）` : ""}`
+                      : "当前最新"
+                }
+              />
             </div>
           </SectionCard>
 

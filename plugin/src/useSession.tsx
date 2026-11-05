@@ -40,6 +40,9 @@ export type Status = {
   with_shot: boolean;
   // 语音输入开关（后端 [stt] enable）：关掉后后端会释放识别模型
   stt: boolean;
+  // 更新检测（后端缓存的 /api/version.update）：设置页显示「有更新 / 当前最新」
+  update_has?: boolean;
+  update_latest?: string;
   model: string;
   game_name: string;
   // 后端 persona 的昵称：状态行前缀用，缺失时前端退回默认称呼

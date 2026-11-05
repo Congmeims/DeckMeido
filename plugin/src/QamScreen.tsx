@@ -1688,7 +1688,17 @@ export default function QamScreen() {
                 label="屏幕截图"
                 value={s.status?.capture_ok ? "可用" : s.status?.capture_reason || "不可用"}
               />
-              <StatCell label="核心版本" value={s.status?.version || "—"} />
+              <StatCell
+                label="更新检测"
+                value={
+                  !s.status
+                    ? "检测中"
+                    : s.status.update_has
+                      ? `有更新${s.status.update_latest ? `（v${s.status.update_latest}）` : ""}`
+                      : "当前最新"
+                }
+              />
+              <StatCell label="核心版本" value={s.status?.version || "读取中"} />
               <StatCell
                 label="语音输入"
                 value={
