@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import audiomute, depcheck, i18n, memory, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
+from . import authguard, audiomute, depcheck, i18n, memory, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
 from .session_store import set_title as _set_title
 from .session_store import store
 from . import session_store
@@ -46,13 +46,9 @@ VERSION = updater.current_version()
 
 # ---------- 配置 ----------
 
-def gen_token(length: int = 5) -> str:
-    """生成访问令牌：小写字母 + 数字，如 x7k2m。
-
-    去掉了容易看错的 0/o/1/l/i；校验时不分大小写，全大写输入也能连上。
-    """
-    alphabet = "23456789abcdefghjkmnpqrstuvwxyz"
-    return "".join(secrets.choice(alphabet) for _ in range(length))
+def gen_token(length: int = authguard.TOKEN_LEN) -> str:
+    """生成访问令牌（默认 16 位），见 server/authguard.py。"""
+    return authguard.gen_token(length)
 
 
 def load_config() -> dict:
@@ -87,6 +83,11 @@ def save_config(updates: dict):
 
 CFG = load_config()
 TOKEN = CFG["server"]["token"].strip().lower()
+# 老配置沿用原令牌不强制轮换（换掉会让现有客户端与手机书签全部失效），
+# 但出厂口令和过短的令牌必须留一条明确告警，提醒用户去设置页重新生成。
+if TOKEN == "meido" or len(TOKEN) < 8:
+    print("[DeckMeido] 警告：访问令牌过弱（出厂默认或少于 8 位），"
+          "请在设置页重新生成 16 位随机令牌", file=sys.stderr)
 
 # 单实例守卫：必须在 init_sessions() 之前跑。init_sessions 在导入期就会
 # 读/写会话文件，如果本进程注定绑定端口失败却先把内存里的空历史写了盘，

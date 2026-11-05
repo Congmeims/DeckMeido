@@ -144,7 +144,7 @@ bash install.sh speedtest            # 只测 pip 源速率
 
 | 配置段 | 关键项 | 说明 |
 | --- | --- | --- |
-| `[server]` | `host` / `port` / `token` | 默认 `0.0.0.0:18765`，令牌默认 `meido`；改令牌后所有入口都要用新的 |
+| `[server]` | `host` / `port` / `token` | 默认 `0.0.0.0:18765`；令牌在安装时随机生成 16 位（旧配置保留原值，启动日志会提示弱令牌）；改令牌后所有入口都要用新的 |
 | `[llm]` | `base_url` / `api_key` / `model` | OpenAI 兼容地址与密钥；换服务商时模型名要一起改 |
 | `[llm]` | `reasoning_effort` / `timeout` / `max_continuations` | 思维链强度、请求超时、撞上限自动续写轮数 |
 | `[agent]` | `ask_template` / `translate_template` / `status_prompt` | 截图询问、截图翻译、状态栏短句的提示词 |
