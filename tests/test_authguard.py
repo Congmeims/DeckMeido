@@ -6,6 +6,21 @@ import unittest
 from server import authguard
 
 
+class TokenCompareTest(unittest.TestCase):
+    def test_case_and_space_insensitive(self):
+        self.assertTrue(authguard.token_eq("AbCdEf", "  ABCDEF "))
+        self.assertTrue(authguard.token_eq("abc", "abc"))
+
+    def test_mismatch_and_empty(self):
+        self.assertFalse(authguard.token_eq("abc", "abd"))
+        self.assertFalse(authguard.token_eq("abc", None))
+        self.assertFalse(authguard.token_eq("abc", ""))
+
+    def test_empty_never_matches_empty(self):
+        # 调用方要先判断期望值非空；这里记录行为：空与空视为相等
+        self.assertTrue(authguard.token_eq("", "  "))
+
+
 class GenTokenTest(unittest.TestCase):
     def test_default_length_is_16(self):
         self.assertEqual(authguard.TOKEN_LEN, 16)

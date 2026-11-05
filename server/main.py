@@ -1578,11 +1578,11 @@ _pending_token: str | None = None
 
 def _norm_token(value: str | None) -> str:
     """令牌统一按小写比较，输入不分大小写"""
-    return (value or "").strip().lower()
+    return authguard.norm(value)
 
 
 def check_token(token: str | None = Query(default=None), x_token: str | None = Header(default=None)):
-    if _norm_token(TOKEN) and _norm_token(TOKEN) in (_norm_token(token), _norm_token(x_token)):
+    if TOKEN and (authguard.token_eq(TOKEN, token) or authguard.token_eq(TOKEN, x_token)):
         return
     raise HTTPException(status_code=401, detail="invalid token")
 
@@ -1593,9 +1593,10 @@ def check_token_any(token: str | None = Query(default=None), x_token: str | None
     设置页保存新令牌时，前端还带着旧令牌，而校验已经换成新的了，
     不放开这一条会导致「改完自己把自己锁在外面」。
     """
-    ok = {_norm_token(TOKEN), _norm_token(_pending_token)} - {""}
-    if _norm_token(token) not in ok and _norm_token(x_token) not in ok:
-        raise HTTPException(status_code=401, detail="invalid token")
+    for expected in {_norm_token(TOKEN), _norm_token(_pending_token)} - {""}:
+        if authguard.token_eq(expected, token) or authguard.token_eq(expected, x_token):
+            return
+    raise HTTPException(status_code=401, detail="invalid token")
 
 
 # ---------- 系统状态 ----------
@@ -2314,7 +2315,7 @@ async def ws_terminal(ws: WebSocket, token: str = Query(default="")):
 
     用 base64 传字节：WebSocket 文本帧不能塞任意字节，二进制帧又不好混 JSON 头。
     """
-    if not _norm_token(TOKEN) or _norm_token(token) != _norm_token(TOKEN):
+    if not _norm_token(TOKEN) or not authguard.token_eq(TOKEN, token):
         await ws.accept()
         await ws.close(code=4401)
         return
@@ -5574,7 +5575,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket, token: str = Query(default="")):
-    if not _norm_token(TOKEN) or _norm_token(token) != _norm_token(TOKEN):
+    if not _norm_token(TOKEN) or not authguard.token_eq(TOKEN, token):
         # 先 accept 再 close，浏览器才能拿到 4401 这个原因码，否则只会看到 1006 而无限重连
         await ws.accept()
         await ws.close(code=4401)

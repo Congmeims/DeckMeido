@@ -21,6 +21,8 @@ import struct
 import sys
 import time
 
+from . import authguard
+
 # fcntl 只在 Linux 上有；Windows 开发机跑单元测试时也要能 import 本模块
 try:
     import fcntl
@@ -127,7 +129,7 @@ def access_error(cfg: dict, client_ip: str, token: str, provided: str) -> str | 
 
     cfg 是 [remote_input] 段；token 是当前有效令牌（空令牌一律拒绝）。
     """
-    if not (token or "").strip() or (provided or "").strip().lower() != token.strip().lower():
+    if not (token or "").strip() or not authguard.token_eq(token, provided):
         return RI_UNAUTHORIZED
     if not enabled(cfg):
         return RI_DISABLED
