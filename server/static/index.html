@@ -879,6 +879,34 @@
     background: var(--brand); color: #fff;
     font-size: 16px; font-weight: 600;
   }
+  /* 配对：新设备不需要手输 12 位令牌，PIN 由掌机展示 */
+  .auth-secondary {
+    width: 100%;
+    padding: 10px 20px;
+    border: 1px solid var(--line); border-radius: 10px;
+    background: transparent; color: var(--text);
+    font-size: 14px; font-weight: 600;
+  }
+  .auth-secondary:hover { border-color: var(--brand); }
+  .pair-box { width: 100%; display: flex; flex-direction: column; gap: 10px; }
+  .pair-box[hidden] { display: none; }
+  #pairPin {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 22px;
+    letter-spacing: 8px;
+    text-align: center;
+    outline: none;
+  }
+  #pairPin:focus { border-color: var(--brand); }
+  .pair-remember { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .pair-actions { display: flex; gap: 8px; }
+  .pair-actions button { flex: 1; }
+  .auth-or { font-size: 12px; color: var(--muted); }
   .auth-tip { font-size: 12px; color: var(--muted); text-align: center; line-height: 1.6; }
 
   /* 设置按钮与面板 */
@@ -1128,6 +1156,17 @@
     position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%;
     padding: 0; border: 0; margin: 0; cursor: pointer; z-index: 2;
   }
+  /* 设备配对：待配对卡片与已配对列表 */
+  .pair-list { display: flex; flex-direction: column; gap: 8px; }
+  .pair-row {
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 6px; background: var(--surface-2);
+  }
+  .pair-row-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .pair-row-head strong { font-size: 20px; letter-spacing: 4px; font-family: ui-monospace, monospace; }
+  .pair-row-meta { font-size: 12px; color: var(--muted); word-break: break-all; }
+  .pair-row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pair-empty { font-size: 12.5px; color: var(--muted); }
   /* 令牌一行：输入框 + 随机生成按钮 */
   .token-row { display: flex; gap: 8px; align-items: stretch; }
   .token-row input { flex: 1; font-family: ui-monospace, monospace; letter-spacing: 1px; }
@@ -2606,6 +2645,22 @@
           <div class="card">
             <div class="card-title">局域网访问</div>
             <div class="field">
+              <label>局域网访问开关（切换后需重启后端生效）</label>
+              <select id="cfgLanEnable" class="cfg-select">
+                <option value="off">关闭：只监听 127.0.0.1（仅本机）</option>
+                <option value="on">开启：监听 0.0.0.0（局域网可访问）</option>
+              </select>
+              <div id="lanWarn" class="field-hint"></div>
+            </div>
+            <div class="field">
+              <label>服务端口（1024-65535，重启后端生效）</label>
+              <div class="token-row">
+                <input id="cfgPort" type="number" min="1024" max="65535" step="1" autocomplete="off">
+                <button id="savePort" class="mini-btn" type="button">保存端口</button>
+              </div>
+              <div id="portHint" class="field-hint"></div>
+            </div>
+            <div class="field">
               <label>局域网地址（手机 / 平板 / 电脑浏览器打开）</label>
               <div class="token-row">
                 <input id="lanUrl" type="text" readonly autocomplete="off">
@@ -2636,6 +2691,31 @@
               </div>
               <div id="qrBox" class="qr-box"></div>
             </div>
+          </div>
+          <div class="card">
+            <div class="card-title">设备配对</div>
+            <div class="field-hint" style="margin-top:0">
+              新设备打开局域网地址后点「配对新设备」，PIN 会显示在这里。
+              点「允许」后把 4 位 PIN 告诉对方；PIN 60 秒有效，最多试 3 次。
+            </div>
+            <div id="pairPendingList" class="pair-list"></div>
+            <div id="pairHostHint" class="field-hint"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">已配对设备</div>
+            <div id="pairDevList" class="pair-list"></div>
+            <div class="mem-foot">
+              <span id="pairDevCount" class="field-hint"></span>
+              <button id="pairRemoveAll" class="mini-btn" type="button">移除全部设备</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">登录与配对审计</div>
+            <div class="field-hint" style="margin-top:0">
+              只读记录最近 50 条鉴权失败与配对尝试（时间 / 来源 IP / 原因 / 结果），
+              不含 PIN 或设备令牌。
+            </div>
+            <div id="auditList" class="pair-list"></div>
           </div>
           <div class="card">
             <div class="card-title">桌面控件自检</div>
@@ -2975,12 +3055,25 @@
   <div class="auth-card">
     <img class="auth-logo" src="logo.png" alt="DeckMeido">
     <h1>DeckMeido <small>控制台</small></h1>
-    <p>输入访问令牌即可连接这台 Steam Deck</p>
+    <p>这台设备还没有配对。可以配对新设备，或输入访问令牌应急直连</p>
+    <button id="pairBtn" class="auth-secondary">配对新设备</button>
+    <div id="pairBox" class="pair-box" hidden>
+      <div id="pairMsg" class="auth-err"></div>
+      <input id="pairPin" type="text" inputmode="numeric" maxlength="4"
+             placeholder="掌机上显示的 4 位 PIN" autocomplete="off">
+      <label class="pair-remember"><input id="pairRemember" type="checkbox" checked> 保持登录（30 天）</label>
+      <div class="pair-actions">
+        <button id="pairConfirm">配对</button>
+        <button id="pairCancel" class="auth-secondary">取消</button>
+      </div>
+    </div>
+    <div class="auth-or">或使用访问令牌</div>
     <input id="tokenInput" type="password" placeholder="访问令牌（可粘贴 XXXX-XXXX-XXXX）" autocomplete="off" spellcheck="false">
     <div id="authErr" class="auth-err"></div>
     <button id="tokenBtn">连接</button>
     <div class="auth-tip">
       令牌在掌机 QAM / 大屏 / 客户端设置的「局域网访问」里查看<br>
+      配对入口在「设置 → 设备配对」<br>
       当前版本 <span id="authVer">…</span>
     </div>
   </div>
@@ -3079,6 +3172,13 @@
   var tokenBtn = document.getElementById('tokenBtn');
   var authErr = document.getElementById('authErr');
   var authVer = document.getElementById('authVer');
+  var pairBtn = document.getElementById('pairBtn');
+  var pairBox = document.getElementById('pairBox');
+  var pairMsg = document.getElementById('pairMsg');
+  var pairPin = document.getElementById('pairPin');
+  var pairConfirm = document.getElementById('pairConfirm');
+  var pairCancel = document.getElementById('pairCancel');
+  var pairRemember = document.getElementById('pairRemember');
 
   // 令牌归一化：大小写不敏感，去掉空格/连字符，I/L→1、O→0。
   // 掌机 / 大屏 / 客户端展示的是 XXXX-XXXX-XXXX，粘贴过来也能直接通过。
@@ -3111,6 +3211,10 @@
   var typingEl = null;
   var reconnectTimer = null;
   var backoff = 1000;
+  // 设备配对登录：Cookie 已经生效时不用 12 位令牌也能连（旧 ?token= 路径照旧可用）
+  var deviceSession = false;
+  var pairingId = '';
+  var pairTimer = null;
 
   // 当前会话号（会话列表加载后回填）。提前声明：WS 消息回调里要用它做过期判定
   var currentSid = null;
@@ -6136,12 +6240,13 @@
   }
 
   function connect() {
-    if (!token) { showAuth(''); return; }
+    // 已配对设备靠 HttpOnly Cookie 认证，token 为空也能连；两者都没有才回鉴权页
+    if (!token && !deviceSession) { showAuth(''); return; }
     // 防重入：已有连接正在建/已建立时不要再开一条，
     // 否则两条 ws 同时收消息、onclose 互相打架，重连风暴会打乱忙碌态
     if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
     var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(proto + '://' + location.host + '/ws?token=' + encodeURIComponent(token));
+    ws = new WebSocket(proto + '://' + location.host + '/ws?token=' + encodeURIComponent(token || ''));
 
     ws.onopen = function () {
       setConnected(true);
@@ -6582,11 +6687,12 @@
       // 只清内存不动 localStorage：后端真被杀时，盘上那份缓存才是补回的依据
       turnCache.segs = []; turnCache.cur = '';
       if (ev.code === 4401) {
-        // 令牌被拒：清掉本地缓存并停在鉴权页，不要继续重连（否则会无限弹回）
+        // 令牌/设备凭据被拒：清掉本地状态并停在鉴权页，不要继续重连
         token = '';
+        deviceSession = false;
         localStorage.removeItem('deckmeido_token');
         clearTimeout(reconnectTimer);
-        showAuth('令牌不正确，请重新输入');
+        showAuth('登录已失效，请重新配对或输入令牌');
         return;
       }
       reconnectTimer = setTimeout(function () { reconnectTimer = null; connect(); }, backoff);
@@ -6596,6 +6702,85 @@
     ws.onerror = function () { try { ws.close(); } catch (e) {} };
   }
 
+  // ---------- 配对新设备（Sunshine 式：PIN 在掌机上，浏览器只负责提交） ----------
+  function pairReset() {
+    clearTimeout(pairTimer);
+    pairTimer = null;
+    pairingId = '';
+    pairBox.hidden = true;
+    pairMsg.textContent = '';
+    pairPin.value = '';
+  }
+
+  function pairPoll() {
+    if (!pairingId) return;
+    fetch('/api/pair/status?pair_id=' + encodeURIComponent(pairingId))
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        var d = res.d || {};
+        if (!res.ok) { pairMsg.textContent = d.detail || '配对请求已失效'; return; }
+        if (d.state === 'approved') {
+          pairMsg.textContent = '掌机已允许，请输入 PIN';
+          pairTimer = setTimeout(pairPoll, 2000);
+        } else if (d.state === 'denied') {
+          pairMsg.textContent = '掌机已拒绝这次配对';
+        } else if (d.state === 'expired') {
+          pairMsg.textContent = 'PIN 已过期，请在掌机上刷新后重新配对';
+        } else if (d.state === 'paired') {
+          pairMsg.textContent = '配对成功';
+        } else {
+          pairMsg.textContent = '等待掌机允许（设置 → 设备配对）';
+          pairTimer = setTimeout(pairPoll, 2000);
+        }
+      })
+      .catch(function () { pairTimer = setTimeout(pairPoll, 3000); });
+  }
+
+  function pairStart() {
+    authErr.textContent = '';
+    pairMsg.textContent = '正在创建配对请求…';
+    pairBox.hidden = false;
+    pairPin.value = '';
+    fetch('/api/pair/start', { method: 'POST' })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) { pairMsg.textContent = res.d.detail || '创建配对请求失败'; return; }
+        pairingId = res.d.pair_id || '';
+        pairMsg.textContent = '等待掌机允许（设置 → 设备配对）';
+        pairTimer = setTimeout(pairPoll, 1000);
+        pairPin.focus();
+      })
+      .catch(function () { pairMsg.textContent = '连不上服务，请稍后重试'; });
+  }
+
+  function pairSubmit() {
+    var pin = String(pairPin.value || '').replace(/\D/g, '');
+    if (!pairingId) { pairMsg.textContent = '请先点「配对新设备」'; return; }
+    if (pin.length !== 4) { pairMsg.textContent = '请输入掌机上显示的 4 位 PIN'; return; }
+    pairMsg.textContent = '正在校验…';
+    fetch('/api/pair/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pair_id: pairingId, pin: pin, remember: !!pairRemember.checked }),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          pairMsg.textContent = res.d.detail || '配对失败';
+          authErr.textContent = res.d.detail || '';
+          return;
+        }
+        // 服务端已下发 HttpOnly Cookie；进入主界面，不再要求令牌
+        deviceSession = true;
+        token = '';
+        localStorage.removeItem('deckmeido_token');
+        pairReset();
+        authOverlay.classList.remove('show');
+        reconnectNow();
+      })
+      .catch(function () { pairMsg.textContent = '连不上服务，请稍后重试'; });
+  }
+
   function showAuth(err) {
     setConnected(false);
     authErr.textContent = err || '';
@@ -6603,6 +6788,27 @@
     tokenInput.value = '';
     loadAuthVersion();
     setTimeout(function () { tokenInput.focus(); }, 50);
+  }
+
+  // 启动时先问后端：Cookie 已配对就直接进主界面，不再要求 12 位令牌
+  function bootAuth() {
+    var q = token ? ('?token=' + encodeURIComponent(token)) : '';
+    fetch('/api/auth/session' + q)
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.authenticated) {
+          deviceSession = !token;
+          if (!token && d.version) authVer.textContent = 'v' + d.version;
+          connect();
+          return;
+        }
+        deviceSession = false;
+        showAuth('');
+      })
+      .catch(function () {
+        // 老后端没有这个接口时保持原来的令牌直连行为
+        if (token) connect(); else showAuth('');
+      });
   }
 
   // 鉴权页显示版本号：这个接口不校验令牌，未登录也能查
@@ -7487,6 +7693,14 @@
     syncJumpLatest();
   });
 
+  pairBtn.addEventListener('click', pairStart);
+  pairConfirm.addEventListener('click', pairSubmit);
+  pairCancel.addEventListener('click', pairReset);
+  pairPin.addEventListener('keydown', function (e) { if (e.key === 'Enter') pairSubmit(); });
+  pairPin.addEventListener('input', function () {
+    pairPin.value = String(pairPin.value || '').replace(/\D/g, '').slice(0, 4);
+  });
+
   tokenBtn.addEventListener('click', function () {
     var t = normToken(tokenInput.value);
     if (!t) { authErr.textContent = '请先输入令牌'; return; }
@@ -7532,6 +7746,18 @@
   var tokenHint = document.getElementById('tokenHint');
   var lanUrl = document.getElementById('lanUrl');
   var lanToken = document.getElementById('lanToken');
+  var cfgLanEnable = document.getElementById('cfgLanEnable');
+  var lanWarn = document.getElementById('lanWarn');
+  var cfgPort = document.getElementById('cfgPort');
+  var portHint = document.getElementById('portHint');
+  var savePort = document.getElementById('savePort');
+  var pairPendingList = document.getElementById('pairPendingList');
+  var pairDevList = document.getElementById('pairDevList');
+  var pairDevCount = document.getElementById('pairDevCount');
+  var pairRemoveAll = document.getElementById('pairRemoveAll');
+  var pairHostHint = document.getElementById('pairHostHint');
+  var auditList = document.getElementById('auditList');
+  var pairPollTimer = 0;
   var saveCfg = document.getElementById('saveCfg');
   var cfgHint = document.getElementById('cfgHint');
   var cfgUrl = document.getElementById('cfgUrl');
@@ -7727,6 +7953,170 @@
       });
   });
 
+  // ---------- 设置页：设备配对与已配对设备 ----------
+  function devTime(ts) {
+    if (!ts) return '—';
+    try { return new Date(ts * 1000).toLocaleString(); } catch (e) { return '—'; }
+  }
+
+  function pairButton(label, handler, danger) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'mini-btn';
+    b.textContent = label;
+    if (danger) b.style.color = '#e06c75';
+    b.addEventListener('click', handler);
+    return b;
+  }
+
+  function pairPost(path, body) {
+    fetch(path + '?token=' + encodeURIComponent(token), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        pairHostHint.textContent = res.ok ? '' : (res.d.detail || '操作失败');
+        loadPairInfo();
+      })
+      .catch(function () { pairHostHint.textContent = '连不上服务，请稍后重试'; });
+  }
+
+  function loadPairInfo() {
+    var q = '?token=' + encodeURIComponent(token);
+    Promise.all([
+      fetch('/api/pair/pending' + q).then(function (r) { return r.json(); }),
+      fetch('/api/devices' + q).then(function (r) { return r.json(); }),
+      fetch('/api/audit?limit=50&token=' + encodeURIComponent(token))
+        .then(function (r) { return r.json(); }),
+    ])
+      .then(function (all) {
+        var sessions = (all[0] && all[0].sessions) || [];
+        var devices = (all[1] && all[1].devices) || [];
+        var events = (all[2] && all[2].events) || [];
+        pairPendingList.textContent = '';
+        if (!sessions.length) {
+          var empty = document.createElement('div');
+          empty.className = 'pair-empty';
+          empty.textContent = '暂无待配对设备。';
+          pairPendingList.appendChild(empty);
+        }
+        sessions.forEach(function (p) {
+          var row = document.createElement('div');
+          row.className = 'pair-row';
+          var head = document.createElement('div');
+          head.className = 'pair-row-head';
+          var pin = document.createElement('strong');
+          pin.textContent = p.pin || '----';
+          head.appendChild(pin);
+          var title = document.createElement('span');
+          title.textContent = (p.name || '未知设备') + ' · ' + (p.ip || '未知来源');
+          head.appendChild(title);
+          row.appendChild(head);
+          var meta = document.createElement('div');
+          meta.className = 'pair-row-meta';
+          meta.textContent = '剩余 ' + Math.max(0, p.expires_in) + ' 秒 · 已试 ' +
+            (p.attempts || 0) + '/3 次';
+          row.appendChild(meta);
+          var actions = document.createElement('div');
+          actions.className = 'pair-row-actions';
+          actions.appendChild(pairButton('允许', function () {
+            pairPost('/api/pair/decision', { pair_id: p.pair_id, allow: true });
+          }));
+          actions.appendChild(pairButton('拒绝', function () {
+            pairPost('/api/pair/decision', { pair_id: p.pair_id, allow: false });
+          }, true));
+          actions.appendChild(pairButton('刷新 PIN', function () {
+            pairPost('/api/pair/refresh', { pair_id: p.pair_id });
+          }));
+          row.appendChild(actions);
+          pairPendingList.appendChild(row);
+        });
+
+        pairDevList.textContent = '';
+        if (!devices.length) {
+          var none = document.createElement('div');
+          none.className = 'pair-empty';
+          none.textContent = '还没有已配对设备。';
+          pairDevList.appendChild(none);
+        }
+        devices.forEach(function (d) {
+          var row = document.createElement('div');
+          row.className = 'pair-row';
+          var name = document.createElement('div');
+          name.className = 'pair-row-head';
+          var strong = document.createElement('strong');
+          strong.style.fontSize = '14px';
+          strong.style.letterSpacing = '0';
+          strong.textContent = d.name || '未命名设备';
+          name.appendChild(strong);
+          row.appendChild(name);
+          var meta = document.createElement('div');
+          meta.className = 'pair-row-meta';
+          meta.textContent = (d.ip || '—') + ' · 配对于 ' + devTime(d.created_at) +
+            ' · 最后在线 ' + devTime(d.last_seen);
+          row.appendChild(meta);
+          var actions = document.createElement('div');
+          actions.className = 'pair-row-actions';
+          actions.appendChild(pairButton('改名', function () {
+            var next = window.prompt('设备名称（最多 40 字）', d.name || '');
+            if (next === null) return;
+            pairPost('/api/devices/rename', { device_id: d.device_id, name: next });
+          }));
+          actions.appendChild(pairButton('移除', function () {
+            if (!window.confirm('移除后该设备需要重新配对，确定移除？')) return;
+            pairPost('/api/devices/remove', { device_id: d.device_id });
+          }, true));
+          row.appendChild(actions);
+          pairDevList.appendChild(row);
+        });
+        auditList.textContent = '';
+        if (!events.length) {
+          var noEv = document.createElement('div');
+          noEv.className = 'pair-empty';
+          noEv.textContent = '暂无记录。';
+          auditList.appendChild(noEv);
+        }
+        events.forEach(function (ev) {
+          var row = document.createElement('div');
+          row.className = 'pair-row';
+          var head = document.createElement('div');
+          head.className = 'pair-row-head';
+          var result = document.createElement('span');
+          result.textContent = ev.result === 'ok' ? '成功' : (ev.result === 'blocked' ? '已限速' : '失败');
+          result.style.color = ev.result === 'ok' ? '#8bc34a' : '#e06c75';
+          var label = document.createElement('span');
+          label.textContent = devTime(ev.ts) + ' · ' + (ev.kind || '') + '/' + (ev.action || '');
+          head.appendChild(result);
+          head.appendChild(label);
+          row.appendChild(head);
+          var meta = document.createElement('div');
+          meta.className = 'pair-row-meta';
+          meta.textContent = (ev.ip || '—') +
+            (ev.reason ? (' · ' + ev.reason) : '') +
+            (ev.detail ? (' · ' + ev.detail) : '');
+          row.appendChild(meta);
+          auditList.appendChild(row);
+        });
+        pairDevCount.textContent = '共 ' + devices.length + ' 台设备';
+        pairRemoveAll.disabled = !devices.length;
+        pairHostHint.textContent = (all[0] && all[0].detail) || (all[1] && all[1].detail) || '';
+      })
+      .catch(function () { pairHostHint.textContent = '读取配对信息失败'; });
+  }
+
+  function startPairPoll() {
+    loadPairInfo();
+    clearInterval(pairPollTimer);
+    pairPollTimer = setInterval(loadPairInfo, 2000);
+  }
+
+  function stopPairPoll() {
+    clearInterval(pairPollTimer);
+    pairPollTimer = 0;
+  }
+
   function openSettings() {
     // 设置顶替主界面：主区域换成设置页，侧栏会话列表换成分区导航。
     // 窄屏不自动拉开抽屉——一拉开就盖住整块设置，还得再点一下才看得见内容；
@@ -7755,6 +8145,7 @@
     startQqStatusPolling();
     loadSttStatus();
     loadCoreState();
+    startPairPoll();
   }
 
   // 读一次配置填进设置页表单。导入备份改了人设之后也要再填一遍，
@@ -7812,6 +8203,17 @@
         // 服务端给出真实局域网 IP：桌面客户端本机访问时 location.origin 是 127.0.0.1
         lanUrl.value = c.lan_url || location.origin;
         lanToken.value = groupToken(c.token || '');
+        // 局域网开关：关闭时只监听 127.0.0.1；开启后要重启后端才生效
+        cfgLanEnable.value = c.lan_enable ? 'on' : 'off';
+        if (c.lan_enable) {
+          lanWarn.textContent = '局域网内已启用访问，可随时关闭。新设备打开下方地址后点「配对新设备」。';
+          lanWarn.style.color = '#e0a33a';
+        } else {
+          lanWarn.textContent = '当前仅本机可访问（127.0.0.1）。开启并重启后端后，局域网设备才能配对。';
+          lanWarn.style.color = 'var(--muted)';
+        }
+        cfgPort.value = c.port || 18765;
+        portHint.textContent = '';
         cfgUrl.value = (c.lan_url || location.origin) + '/?token=' + encodeURIComponent(c.token || '');
         // 更新源：双源探测，这里只控制是否同时查 GitHub
         cfgUpdGithub.checked = c.update_github_enable !== false;
@@ -8081,6 +8483,7 @@
     setHdrTitle(curSessTitle);
     settingsBtn.textContent = '设置';
     settingsBtn.title = '设置';
+    stopPairPoll();
   }
 
   document.getElementById('setClose').addEventListener('click', closeSettings);
@@ -8124,6 +8527,45 @@
     fbCopyText(lanToken.value);
   });
 
+  // 端口单独保存：只提交 port，避免顺带改动别的表单项
+  savePort.addEventListener('click', function () {
+    var port = parseInt(cfgPort.value, 10);
+    if (!(port >= 1024 && port <= 65535)) {
+      portHint.textContent = '端口需为 1024-65535 之间的整数';
+      portHint.style.color = '#e06c75';
+      cfgPort.focus();
+      return;
+    }
+    portHint.textContent = '保存中…';
+    fetch('/api/config?token=' + encodeURIComponent(token), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ port: port }),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) { portHint.textContent = res.d.detail || '保存失败'; return; }
+        portHint.style.color = '#e0a33a';
+        portHint.textContent = '已保存，需重启后端生效（客户端/插件下次拉起后端会用新端口）';
+        lanUrl.value = 'http://' + (lanUrl.value.replace(/^http:\/\//, '').split(':')[0] || '127.0.0.1') + ':' + port;
+      })
+      .catch(function () { portHint.textContent = '连不上服务，请稍后重试'; });
+  });
+
+  // 开关只改界面提示；真正落盘要点底部「保存」
+  cfgLanEnable.addEventListener('change', function () {
+    var on = cfgLanEnable.value === 'on';
+    lanWarn.textContent = on
+      ? '局域网内已启用访问，可随时关闭。点「保存」后需重启后端生效。'
+      : '关闭后只监听 127.0.0.1（仅本机）。点「保存」后需重启后端生效。';
+    lanWarn.style.color = on ? '#e0a33a' : 'var(--muted)';
+  });
+
+  pairRemoveAll.addEventListener('click', function () {
+    if (!window.confirm('移除全部已配对设备？所有设备都需要重新配对。')) return;
+    pairPost('/api/devices/remove_all', {});
+  });
+
   // 随机生成一个新的 12 位令牌（只填入输入框，点保存才生效）
   genToken.addEventListener('click', function () {
     fetch('/api/token/gen?token=' + encodeURIComponent(token))
@@ -8165,6 +8607,12 @@
     // 只有输入框里真有内容才提交 api_key：留空表示「保持原样」。
     // 旧逻辑无条件回传输入框的值，而新设备打开设置页时输入框是空的，
     // 于是任何一次保存（哪怕只改了令牌）都会把 Key 抹掉。
+    var port = parseInt(cfgPort.value, 10);
+    if (!(port >= 1024 && port <= 65535)) {
+      portHint.textContent = '端口需为 1024-65535 之间的整数';
+      portHint.style.color = '#e06c75';
+      return;
+    }
     var keyInput = cfgApiKey.value.trim();
     var payload = {
       base_url: cfgBaseUrl.value,
@@ -8188,7 +8636,10 @@
       update_github_enable: !!cfgUpdGithub.checked,
       remote_input_enabled: !!cfgRiEnabled.checked,
       remote_input_sensitivity: Number(cfgRiSens.value) || 1.5,
-      remote_input_max_minutes: parseInt(cfgRiMax.value, 10) || 30
+      remote_input_max_minutes: parseInt(cfgRiMax.value, 10) || 30,
+      // 局域网开关与端口：写入 [server]，绑定地址/端口需重启后端生效
+      lan_enable: cfgLanEnable.value === 'on',
+      port: port
     };
     if (keyInput) { payload.api_key = keyInput; }
     if (apiKeyClear) { payload.clear_api_key = true; }
@@ -8226,7 +8677,14 @@
         riState.enabled = !!cfgRiEnabled.checked;
         loadRemoteStatus();
         loadSttStatus();
-        cfgHint.textContent = res.llm_configured ? '已保存，正在拉取模型列表…' : '已保存（API Key 为空，对话暂不可用）';
+        var restartNote = res.restart_required ? '（局域网开关/端口需重启后端生效）' : '';
+        cfgHint.textContent = res.llm_configured
+          ? ('已保存，正在拉取模型列表…' + restartNote)
+          : ('已保存（API Key 为空，对话暂不可用）' + restartNote);
+        if (res.restart_required) {
+          portHint.style.color = '#e0a33a';
+          portHint.textContent = '已保存，需重启后端生效';
+        }
         if (!res.llm_configured) {
           // 全屏设置页不再自动关闭：主人可能还要接着改下一项，
           // 想退出点「关闭」或按 Esc 即可
@@ -9714,7 +10172,8 @@
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d.error) return;
-        document.getElementById('sysIp').textContent = d.ip ? (d.ip + ':18765') : '–';
+        // 端口跟随当前页面实际端口，不再写死 18765（用户可在设置里改）
+        document.getElementById('sysIp').textContent = d.ip ? (d.ip + ':' + (location.port || '18765')) : '–';
         if (d.hostname) document.getElementById('sysHost').textContent = d.hostname;
         setBar(document.getElementById('cpuFill'), document.getElementById('cpuVal'), d.cpu, Math.round(d.cpu) + '%');
         setBar(document.getElementById('memFill'), document.getElementById('memVal'), d.mem_pct,
@@ -9897,7 +10356,7 @@
   });
 
   _xtLoad();   // 检测 xterm.js / FitAddon 是否就绪，就绪后放行排队里的会话创建
-  connect();   // 主对话 / 事件 WebSocket
+  bootAuth();  // 先确认设备 Cookie / 令牌，再连主对话 WebSocket
 
   // 连上之后才知道有没有令牌；文件面板首屏在这里补加载一次
   setTimeout(function () {
