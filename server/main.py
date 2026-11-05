@@ -21,12 +21,12 @@ from pathlib import Path
 
 import tomllib
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Header, HTTPException, Depends, UploadFile, Response, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import authguard, audiomute, depcheck, i18n, memory, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
+from . import audit, authguard, audiomute, depcheck, i18n, memory, netcfg, pairing, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
 from .session_store import store
 from . import session_store
 from .tts import TTS
@@ -1586,7 +1586,51 @@ def _client_ip(request: Request) -> str:
 
 def _check_fail_limit(ip: str) -> None:
     if authguard.limiter.blocked(ip):
+        audit.record("auth", "rate", "blocked", ip=ip, reason="too_many")
         raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
+
+
+def _device_days() -> int:
+    """设备凭据有效期（天），[security] device_days，默认 30。"""
+    try:
+        days = int(CFG.get("security", {}).get("device_days", pairing.DEFAULT_DEVICE_DAYS))
+    except (TypeError, ValueError):
+        days = pairing.DEFAULT_DEVICE_DAYS
+    return max(1, min(days, 3650))
+
+
+def _cookie_device(request: Request) -> dict | None:
+    """Cookie 里的设备凭据 → 设备记录（只按哈希查，令牌明文不落盘）。"""
+    raw = request.cookies.get(pairing.COOKIE_NAME)
+    return pairing.manager.devices.authenticate(raw) if raw else None
+
+
+def _csrf_ok(request: Request) -> bool:
+    """Cookie 认证的写操作必须同源；令牌认证不受此限。"""
+    return (authguard.same_origin(request.headers.get("origin"),
+                                 request.headers.get("host"))
+            and authguard.same_site(request.headers.get("sec-fetch-site")))
+
+
+def _auth_device(request: Request) -> dict | None:
+    device = _cookie_device(request)
+    if not device:
+        return None
+    if request.method not in ("GET", "HEAD", "OPTIONS") and not _csrf_ok(request):
+        audit.record("auth", "csrf", "fail", ip=_client_ip(request),
+                     detail=request.url.path)
+        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    return device
+
+
+def _set_device_cookie(response: Response, request: Request, token: str,
+                       remember: bool) -> None:
+    secure = (request.url.scheme == "https"
+              or request.headers.get("x-forwarded-proto", "").lower() == "https")
+    response.set_cookie(
+        pairing.COOKIE_NAME, token, path="/", httponly=True, samesite="strict",
+        secure=secure, max_age=_device_days() * 86400 if remember else None,
+    )
 
 
 def check_token(request: Request, token: str | None = Query(default=None),
@@ -1595,6 +1639,10 @@ def check_token(request: Request, token: str | None = Query(default=None),
     _check_fail_limit(ip)
     if TOKEN and (authguard.token_eq(TOKEN, token) or authguard.token_eq(TOKEN, x_token)):
         return
+    if _auth_device(request):
+        return
+    audit.record("auth", "api", "fail", ip=ip, reason="bad_token",
+                 detail=request.url.path)
     authguard.limiter.record(ip)
     raise HTTPException(status_code=401, detail="invalid token")
 
@@ -1611,8 +1659,44 @@ def check_token_any(request: Request, token: str | None = Query(default=None),
     for expected in {_norm_token(TOKEN), _norm_token(_pending_token)} - {""}:
         if authguard.token_eq(expected, token) or authguard.token_eq(expected, x_token):
             return
+    if _auth_device(request):
+        return
+    audit.record("auth", "token_change", "fail", ip=ip, reason="bad_token")
     authguard.limiter.record(ip)
     raise HTTPException(status_code=401, detail="invalid token")
+
+
+def _ws_cookie_auth(ws: WebSocket) -> bool:
+    """WebSocket 的 Cookie 认证：浏览器会自动带上同源 Cookie。
+
+    跨站网页也能发起 WebSocket，所以这里必须校验 Origin 与 Host 同源。
+    """
+    raw = ws.cookies.get(pairing.COOKIE_NAME)
+    if not raw:
+        return False
+    if not authguard.same_origin(ws.headers.get("origin"), ws.headers.get("host")):
+        return False
+    return bool(pairing.manager.devices.authenticate(raw))
+
+
+def _ws_authorized(ws: WebSocket, token: str | None) -> bool:
+    if TOKEN and authguard.token_eq(TOKEN, token):
+        return True
+    return _ws_cookie_auth(ws)
+
+
+def _security_note() -> str:
+    """掌机状态行的一句话：有配对请求优先，其次是最近的失败。"""
+    pending = pairing.manager.pending()
+    if pending:
+        s = pending[0]
+        return f"{len(pending)} 台设备等待配对（{s['ip'] or '未知来源'}）"
+    now = time.time()
+    fails = [e for e in audit.recent(50)
+             if e["result"] in ("fail", "blocked") and now - e["ts"] <= 300]
+    if fails:
+        return f"最近 5 分钟有 {len(fails)} 次鉴权/配对失败"
+    return ""
 
 
 # ---------- 系统状态 ----------
@@ -1677,6 +1761,10 @@ def get_status(gaming: bool | None = None) -> dict:
         "controls": depcheck.summary(),
         # 桌面模式下执行命令/亮遮罩时是否正压着「别息屏」（前端不展示，排障用）
         "keep_awake": power.keeper.status(),
+        # 掌机状态行：有人尝试配对 / 连续失败时给出提示，空串表示一切正常
+        "security_note": _security_note(),
+        "pending_pair": len(pairing.manager.pending()),
+        "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
     }
 
 
@@ -1728,6 +1816,20 @@ async def _no_cache_html(request, call_next):
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
     return resp
+
+
+@app.middleware("http")
+async def _lan_guard(request, call_next):
+    """lan_enable 关闭时拒绝非本机来源。
+
+    正常启动会直接绑定 127.0.0.1；这里再兜一层，防止旧快捷方式 / 手写的
+    systemd 单元仍然用 0.0.0.0 启动时把局域网暴露出去。
+    """
+    server_cfg = CFG.get("server", {})
+    ip = request.client.host if request.client else ""
+    if not netcfg.lan_enabled(server_cfg) and not netcfg.is_loopback(ip):
+        return JSONResponse({"detail": "局域网访问未开启，请在掌机设置里启用"}, status_code=403)
+    return await call_next(request)
 
 
 class ChatRequest(BaseModel):
@@ -2336,8 +2438,9 @@ async def ws_terminal(ws: WebSocket, token: str = Query(default="")):
         await ws.accept()
         await ws.close(code=4429)
         return
-    if not _norm_token(TOKEN) or not authguard.token_eq(TOKEN, token):
+    if not _ws_authorized(ws, token):
         authguard.limiter.record(client_ip)
+        audit.record("auth", "ws_terminal", "fail", ip=client_ip, reason="bad_token")
         await ws.accept()
         await ws.close(code=4401)
         return
@@ -2413,7 +2516,9 @@ async def ws_input(ws: WebSocket, token: str = Query(default="")):
         await ws.accept()
         await ws.close(code=4429)
         return
-    code = remote_input.access_error(cfg, client_ip, TOKEN, token)
+    # 已配对的浏览器没有 12 位令牌，用 Cookie 认证时把当前令牌当作「已通过」传给校验器
+    offered = TOKEN if _ws_cookie_auth(ws) else token
+    code = remote_input.access_error(cfg, client_ip, TOKEN, offered)
     if code == remote_input.RI_UNAUTHORIZED:
         authguard.limiter.record(client_ip)
         await ws.accept()
@@ -2776,6 +2881,34 @@ class ConfigUpdate(BaseModel):
     remote_input_enabled: bool | None = None
     remote_input_sensitivity: float | None = None
     remote_input_max_minutes: int | None = None
+    # 局域网访问开关与监听端口：写入 [server]，绑定地址要重启后端才生效
+    lan_enable: bool | None = None
+    port: int | None = None
+
+
+class PairConfirmRequest(BaseModel):
+    pair_id: str
+    pin: str
+    # 保持登录：勾选时写 30 天有效期的持久 Cookie，否则是会话 Cookie
+    remember: bool = True
+
+
+class PairDecisionRequest(BaseModel):
+    pair_id: str
+    allow: bool
+
+
+class PairIdRequest(BaseModel):
+    pair_id: str
+
+
+class DeviceRenameRequest(BaseModel):
+    device_id: str
+    name: str
+
+
+class DeviceIdRequest(BaseModel):
+    device_id: str
 
 
 class QQConfigUpdate(BaseModel):
@@ -2866,8 +2999,11 @@ async def api_get_config():
         "workspace": str(tools.WORKSPACE),
         "token": TOKEN,
         "port": CFG["server"].get("port", 18765),
+        # 局域网访问开关：默认 false 只监听 127.0.0.1；开启后设置页显示地址与配对入口
+        "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
         # 局域网访问地址：掌机 / 大屏 / 客户端设置页直接展示，别的设备照这个连
         "lan_url": f"http://{_lan_ip()}:{CFG['server'].get('port', 18765)}",
+        "device_days": _device_days(),
         "llm_configured": llm.configured,
         "version": VERSION,
         # 人设：设置页表单用，默认值和后台提示词里的一致
@@ -3110,13 +3246,23 @@ async def api_set_config(req: ConfigUpdate):
         ri["max_minutes"] = max(1, min(120, int(req.remote_input_max_minutes)))
     if ri:
         updates["remote_input"] = ri
+    if req.lan_enable is not None:
+        updates.setdefault("server", {})["lan_enable"] = bool(req.lan_enable)
+        audit.record("config", "lan", "ok", ip=_client_ip(request),
+                     detail="on" if req.lan_enable else "off")
+    if req.port is not None:
+        port = netcfg.valid_port(req.port)
+        if port is None:
+            raise HTTPException(status_code=400, detail="端口需为 1024-65535 之间的整数")
+        updates.setdefault("server", {})["port"] = port
+        audit.record("config", "port", "ok", ip=_client_ip(request), detail=str(port))
     if req.token is not None:
         # 统一存成小写，避免 config 里大小写混着看花眼（校验本来就不分大小写）
         new_token = req.token.strip().lower()
         # 令牌只允许 4-32 位数字/字母，太短容易被猜，太长在掌机上不好敲
         if not re.fullmatch(r"[a-z0-9]{4,32}", new_token):
             raise HTTPException(status_code=400, detail="令牌需为 4-32 位数字或字母")
-        updates["server"] = {"token": new_token}
+        updates.setdefault("server", {})["token"] = new_token
     if updates:
         # 改令牌期间临时放行旧令牌，改完清掉；令牌换掉后旧连接一并踢下线
         _pending_token = updates.get("server", {}).get("token")
@@ -3135,7 +3281,147 @@ async def api_set_config(req: ConfigUpdate):
             # 回传归一之后的实值：前端滑条按它落位（比如 DeepSeek 上的「中」实际是 high）
             "reasoning_effort": llm.reasoning_effort,
             "with_shot": bool((CFG.get("agent") or {}).get("with_shot", True)),
-            "model": llm.model}
+            "model": llm.model,
+            # 绑定地址与端口都只在后端启动时读取，改完必须重启核心
+            "port": CFG["server"].get("port", 18765),
+            "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
+            "restart_required": bool(req.lan_enable is not None or req.port is not None)}
+
+
+# ---------- 设备配对 ----------
+# 浏览器侧：start → 等掌机允许 → confirm（PIN）→ 下发设备 Cookie。
+# 掌机侧：pending / refresh / decision 三个接口都要求令牌或已配对 Cookie。
+
+def _pair_http(exc: pairing.PairError) -> HTTPException:
+    return HTTPException(status_code=exc.status, detail=exc.message)
+
+
+@app.get("/api/auth/session")
+async def api_auth_session(request: Request, token: str | None = Query(default=None),
+                           x_token: str | None = Header(default=None)):
+    """未登录也能查：当前是不是已经凭令牌/设备 Cookie 登录。
+
+    网页打开时先问一次，已配对就直接进主界面，不再要求输入 12 位令牌。
+    """
+    device = None
+    authenticated = bool(TOKEN and (authguard.token_eq(TOKEN, token)
+                                   or authguard.token_eq(TOKEN, x_token)))
+    if not authenticated:
+        device = _cookie_device(request)
+        authenticated = bool(device)
+    return {
+        "authenticated": authenticated,
+        "device": device,
+        "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
+        "device_days": _device_days(),
+        "version": VERSION,
+    }
+
+
+@app.post("/api/pair/start")
+async def api_pair_start(request: Request):
+    """浏览器发起配对：返回 pair_id，此时还不能访问任何接口。"""
+    ip = _client_ip(request)
+    _check_fail_limit(ip)
+    try:
+        session = pairing.manager.start(ip, request.headers.get("user-agent", ""))
+    except pairing.PairError as exc:
+        raise _pair_http(exc) from exc
+    return {"ok": True, **session}
+
+
+@app.get("/api/pair/status")
+async def api_pair_status(pair_id: str = Query(...)):
+    """浏览器轮询自己的配对状态（看不到 PIN，PIN 只在掌机侧展示）。"""
+    try:
+        return {"ok": True, **pairing.manager.status(pair_id)}
+    except pairing.PairError as exc:
+        raise _pair_http(exc) from exc
+
+
+@app.post("/api/pair/confirm")
+async def api_pair_confirm(req: PairConfirmRequest, request: Request,
+                           response: Response):
+    """提交 PIN：一次性、60 秒有效、最多 3 次；成功后下发设备 Cookie。"""
+    ip = _client_ip(request)
+    _check_fail_limit(ip)
+    try:
+        device, token = pairing.manager.confirm(req.pair_id, req.pin, ip)
+    except pairing.PairError as exc:
+        if exc.code in ("bad_pin", "expired", "denied", "too_many", "not_found",
+                        "not_approved"):
+            authguard.limiter.record(ip)
+        raise _pair_http(exc) from exc
+    _set_device_cookie(response, request, token, bool(req.remember))
+    return {"ok": True, "device": device, "remember": bool(req.remember),
+            "device_days": _device_days()}
+
+
+@app.get("/api/pair/pending", dependencies=[Depends(check_token)])
+async def api_pair_pending():
+    """掌机设置页：待配对设备 + PIN + 倒计时。"""
+    sessions = pairing.manager.pending()
+    return {"ok": True, "sessions": sessions, "device_days": _device_days()}
+
+
+@app.post("/api/pair/refresh", dependencies=[Depends(check_token)])
+async def api_pair_refresh(req: PairIdRequest):
+    try:
+        return {"ok": True, **pairing.manager.refresh(req.pair_id)}
+    except pairing.PairError as exc:
+        raise _pair_http(exc) from exc
+
+
+@app.post("/api/pair/decision", dependencies=[Depends(check_token)])
+async def api_pair_decision(req: PairDecisionRequest, request: Request):
+    try:
+        return {"ok": True, **pairing.manager.decide(
+            req.pair_id, bool(req.allow), _client_ip(request))}
+    except pairing.PairError as exc:
+        raise _pair_http(exc) from exc
+
+
+# ---------- 已配对设备 ----------
+
+@app.get("/api/devices", dependencies=[Depends(check_token)])
+async def api_devices():
+    return {"ok": True, "devices": pairing.manager.devices.list(),
+            "device_days": _device_days()}
+
+
+@app.post("/api/devices/rename", dependencies=[Depends(check_token)])
+async def api_device_rename(req: DeviceRenameRequest, request: Request):
+    try:
+        device = pairing.manager.devices.rename(req.device_id, req.name)
+    except pairing.PairError as exc:
+        raise _pair_http(exc) from exc
+    audit.record("device", "rename", "ok", ip=_client_ip(request),
+                 detail=device.get("name", ""))
+    return {"ok": True, "device": device}
+
+
+@app.post("/api/devices/remove", dependencies=[Depends(check_token)])
+async def api_device_remove(req: DeviceIdRequest, request: Request):
+    if not pairing.manager.devices.remove(req.device_id):
+        raise HTTPException(status_code=404, detail="设备不存在或已被移除")
+    audit.record("device", "remove", "ok", ip=_client_ip(request),
+                 detail=req.device_id[:8])
+    return {"ok": True, "devices": pairing.manager.devices.list()}
+
+
+@app.post("/api/devices/remove_all", dependencies=[Depends(check_token)])
+async def api_device_remove_all(request: Request):
+    n = pairing.manager.devices.remove_all()
+    audit.record("device", "remove_all", "ok", ip=_client_ip(request), detail=str(n))
+    return {"ok": True, "removed": n}
+
+
+# ---------- 登录与配对审计 ----------
+
+@app.get("/api/audit", dependencies=[Depends(check_token)])
+async def api_audit(limit: int = Query(default=50, ge=1, le=audit.MAX_EVENTS)):
+    """只读审计：最近若干条鉴权失败 / 配对尝试，不包含 PIN 或设备令牌。"""
+    return {"ok": True, "events": audit.recent(limit)}
 
 
 @app.post("/api/tts", dependencies=[Depends(check_token_any)])
@@ -3371,6 +3657,47 @@ async def update_watch_loop():
             update_cache = {"has_update": False, "current": updater.current_version(),
                             "error": str(exc)[:300]}
         await asyncio.sleep(UPDATE_INTERVAL)
+
+
+def _uvicorn_binding() -> tuple[str | None, int | None]:
+    """从启动命令行/环境变量里取实际监听地址与端口（取不到返回 None）。"""
+    host = port = None
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if i + 1 >= len(argv):
+            continue
+        if arg == "--host":
+            host = argv[i + 1]
+        elif arg in ("--port", "-p"):
+            try:
+                port = int(argv[i + 1])
+            except ValueError:
+                pass
+    if port is None:
+        try:
+            port = int(os.environ.get("DECKMEIDO_PORT") or "") or None
+        except ValueError:
+            port = None
+    return host, port
+
+
+@app.on_event("startup")
+async def _check_binding():
+    """启动时对账：实际监听端口/地址与 config.toml 不一致就明确告警。
+
+    端口可能被 DECKMEIDO_PORT 或启动命令覆盖，这是允许的；但配置里写的是
+    另一个值时，设置页显示、局域网地址和用户预期都会对不上，必须说出来。
+    """
+    host, actual_port = _uvicorn_binding()
+    cfg_port = int((CFG.get("server") or {}).get("port", 18765))
+    if actual_port is not None and actual_port != cfg_port:
+        print(f"[DeckMeido] 警告：实际监听端口 {actual_port} 与配置端口 {cfg_port} 不一致；"
+              "请同步 DECKMEIDO_PORT、config.toml [server].port 与启动命令",
+              file=sys.stderr)
+    if host and host not in ("127.0.0.1", "::1", "localhost") \
+            and not netcfg.lan_enabled(CFG.get("server") or {}):
+        print("[DeckMeido] 警告：lan_enable=false 但仍在 0.0.0.0 上监听；"
+              "HTTP 层已拒绝局域网请求，建议用 127.0.0.1 重启后端", file=sys.stderr)
 
 
 @app.on_event("startup")
@@ -5610,9 +5937,10 @@ async def ws_endpoint(ws: WebSocket, token: str = Query(default="")):
         await ws.accept()
         await ws.close(code=4429)
         return
-    if not _norm_token(TOKEN) or not authguard.token_eq(TOKEN, token):
+    if not _ws_authorized(ws, token):
         # 先 accept 再 close，浏览器才能拿到 4401 这个原因码，否则只会看到 1006 而无限重连
         authguard.limiter.record(client_ip)
+        audit.record("auth", "ws", "fail", ip=client_ip, reason="bad_token")
         await ws.accept()
         await ws.close(code=4401)
         return
