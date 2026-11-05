@@ -289,7 +289,7 @@ deckmeido/
 ```bash
 py -3 -m unittest discover -s tests     # 当前 197 项
 cd plugin && npm run build              # 构建插件前端到 plugin/dist
-python tools/release.py 0.6.9           # 构建 dist/：tar.gz + 插件 zip + latest.json
+python tools/release.py 0.6.10          # 构建 dist/：tar.gz + 插件 zip + latest.json
 ```
 
 发版：`release.py` 只写 `dist/`；把产物同步进 `winres/deckmeido/` 并提交，然后打 tag，用 `gh release create` 上传 tar.gz、插件 zip、sha256、`latest.json` 与 `install.sh`。

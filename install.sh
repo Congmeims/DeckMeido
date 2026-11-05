@@ -1268,7 +1268,7 @@ sync_files() {
     info "安装到 $INSTALL_DIR"
   fi
   mkdir -p "$INSTALL_DIR"
-  local items=(server client assets deploy tools plugin requirements.txt requirements-gui.txt README.md install.sh)
+  local items=(server client assets deploy tools plugin requirements.txt requirements-gui.txt requirements-stt.txt README.md install.sh)
   # RELEASE-NOTES.md 只在发布包里存在，有就一起带上，方便用户在安装目录里查更新内容
   [ -f "$HERE/RELEASE-NOTES.md" ] && items+=(RELEASE-NOTES.md)
   for it in "${items[@]}"; do
