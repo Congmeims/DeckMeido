@@ -8010,11 +8010,13 @@
   function renderQqGuestHint() {
     if (!qqGuestHint || !cfgQqGuestPrompt) return;
     var text = cfgQqGuestPrompt.value.trim();
-    if (!text) {
+    // 恢复默认会把默认原文直接填进编辑框。这时内容虽然「有字」，语义上仍是默认。
+    // 所以不能只看是否为空，还要和默认原文比对，否则点完恢复默认还显示「自定义」
+    if (!text || text === qqGuestDefault.trim()) {
       var snippet = qqGuestSnippet();
-      qqGuestHint.textContent = '留空则使用内置默认' + (snippet ? '：' + snippet : '');
+      qqGuestHint.textContent = '当前：默认' + (snippet ? '（留空保存即用内置默认）：' + snippet : '（留空保存即用内置默认）');
     } else {
-      qqGuestHint.textContent = '当前：自定义；清空后保存会改用内置默认';
+      qqGuestHint.textContent = '当前：自定义；清空或点「恢复默认」保存后会改回内置默认';
     }
   }
 
@@ -8190,6 +8192,9 @@
         + guestText.length + ' 字），请删减后再保存';
       return;
     }
+    // 「恢复默认」填进来的原文不能当自定义值落库：内容与默认一致就存空串，
+    // 后端才会按「用内置默认」处理（之后内置文案升级也能跟着变）
+    var guestValue = guestText === qqGuestDefault.trim() ? '' : guestText;
     var payload = {
       enable: !!cfgQqEnable.checked,
       ws_url: cfgQqUrl.value.trim(),
@@ -8197,7 +8202,7 @@
       admin_qq: qqSplitList(cfgQqAdmins.value),
       allow_groups: qqSplitList(cfgQqGroups.value),
       group_admin_commands: cfgQqGroupAdmin ? !!cfgQqGroupAdmin.checked : true,
-      guest_prompt: guestText,
+      guest_prompt: guestValue,
       allow_image: cfgQqAllowImage ? !!cfgQqAllowImage.checked : false,
       max_image_mb: Number(cfgQqMaxImage && cfgQqMaxImage.value) || 8,
       image_recent_minutes: (cfgQqImageRecent && cfgQqImageRecent.value !== '')
