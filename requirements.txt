@@ -18,6 +18,5 @@ ptyprocess    # 真 PTY 终端面板（server/tools.py 模块级裸 import，缺
 # 联网搜索工具（web_search 依赖；不需要联网搜索可注释掉，工具会返回报错而不是静默失败）
 ddgs
 
-# 语音输入（server/stt.py 的可选依赖）：缺了不影响后端启动，/api/stt 会报 runtime=false。
-# 模型不在这里，第一次用时由 /api/stt/download 下到 <数据根>/models/sensevoice/（约 1GB）。
-sherpa-onnx
+# 语音输入（server/stt.py）是可选项，依赖在 requirements-stt.txt：
+# 安装脚本会单独询问，装不上也不影响后端/网页/桌面客户端启动

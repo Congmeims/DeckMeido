@@ -6,6 +6,7 @@
 #   bash install.sh install       直接全新安装（跳过菜单）
 #   bash install.sh install --deps      顺带用 sudo 安装控制类插件（不再询问）
 #   bash install.sh install --gui       只补装桌面客户端（PySide6），不动别的
+#   bash install.sh install --stt       只补装语音输入依赖（sherpa-onnx，可选）
 #   bash install.sh upgrade        升级代码与依赖，保留配置
 #   bash install.sh upgrade --deps      升级后顺带检查并安装控制类插件
 #   bash install.sh check          自检：逐个实测控制类控件是否真的能用
@@ -41,6 +42,7 @@
 #   DECKMEIDO_MIRROR     镜像站目录，默认 https://meido.meagames.cn/deckmeido
 #   DECKMEIDO_PIP_INDEX  pip 源；留空则实测各源下载速率，自动用最快的那个
 #   DECKMEIDO_SKIP_GUI   设为 1 则跳过 PySide6（只要网页版 / 后端时用）
+#   DECKMEIDO_INSTALL_STT 语音依赖：1 装 / 0 跳过；不设时交互询问、非交互跳过
 #
 # 注意：不要用 sudo 执行。脚本会把程序装到当前用户家目录、注册用户级桌面项，
 #       用 root 装会装到 /root 下，桌面会话里起不来；也不注册开机自启服务。
@@ -1304,7 +1306,48 @@ human_size() {
   fi
 }
 
-# 建 venv + 装依赖。$1 = gui 时只装桌面客户端（PySide6），不动服务端依赖。
+# 语音输入依赖（可选安装项）。$1 python，$2 起始源下标
+#
+# 策略说明（避免「装到一半卡住」）：
+#   DECKMEIDO_INSTALL_STT=1  强制安装
+#   DECKMEIDO_INSTALL_STT=0  强制跳过
+#   未设置时：交互安装会问一句（默认不装）；非交互（管道/无 tty）默认跳过，绝不阻塞。
+# 装不上只警告，不影响后端、网页和桌面客户端 —— /api/stt 会如实报 runtime=false。
+install_stt_deps() {
+  local py="$1" start="${2:-0}"
+  [ -x "$py" ] || return 0
+  if "$py" -c "import sherpa_onnx" >/dev/null 2>&1; then
+    dim "语音输入依赖已就绪（sherpa-onnx）"
+    return 0
+  fi
+  local mode="${DECKMEIDO_INSTALL_STT:-ask}"
+  case "$mode" in
+    1|yes|on|true) ;;
+    0|no|off|false)
+      dim "已跳过语音输入依赖（DECKMEIDO_INSTALL_STT=$mode）"
+      return 0 ;;
+    *)
+      if [ ! -t 0 ] && [ ! -r /dev/tty ]; then
+        dim "非交互安装：默认跳过语音输入依赖"
+        dim "需要时运行：bash $INSTALL_DIR/install.sh install --stt"
+        return 0
+      fi
+      if ! ask_yes "现在安装语音输入依赖（sherpa-onnx，约 30MB）？不装也能正常聊天，之后随时可补"; then
+        dim "已跳过语音输入依赖；补装：bash $INSTALL_DIR/install.sh install --stt"
+        return 0
+      fi
+      ;;
+  esac
+  section "语音输入依赖（可选）"
+  if pip_install_with_switch "$py" requirements-stt.txt "$start"; then
+    dim "语音输入依赖已就绪"
+    return 0
+  fi
+  warn "语音输入依赖没装上：不影响其他功能，稍后重跑 install --stt 即可"
+  return 0
+}
+
+# 建 venv + 装依赖。$1 = gui 时只装桌面客户端（PySide6），stt 时只补语音依赖。
 #
 # 依赖分成两份：requirements.txt（服务端，必装）和 requirements-gui.txt
 # （PySide6 + WebEngine，解包后 700MB 上下）。以前合成一份，PySide6 一超时
@@ -1333,6 +1376,12 @@ venv_install() {
   "$py" -m pip install --upgrade pip -q -i "${PIP_INDEXES[$start]}" >/dev/null 2>&1 ||
     "$py" -m pip install --upgrade pip -q >/dev/null 2>&1 || true
 
+  if [ "$only_gui" = "stt" ]; then
+    # 只补语音依赖：别顺手重装服务端/桌面客户端
+    install_stt_deps "$py" "$start"
+    return 0
+  fi
+
   if [ "$only_gui" != "gui" ]; then
     section "Python 依赖（服务端）"
     if ! pip_install_with_switch "$py" requirements.txt "$start"; then
@@ -1340,6 +1389,8 @@ venv_install() {
       dim "手动指定源：DECKMEIDO_PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple bash install.sh upgrade"
       return 1
     fi
+    # 语音输入是可选能力：单独询问，失败不影响主流程
+    install_stt_deps "$py" "$start"
   fi
 
   if [ -n "${DECKMEIDO_SKIP_GUI:-}" ]; then
@@ -1364,11 +1415,14 @@ venv_install() {
 pip_install_with_switch() {
   local py="$1" req="$2" start="${3:-0}"
   local n=${#PIP_INDEXES[@]} i k ok=0 log="$INSTALL_DIR/pip-install.log"
-  local ret=0 pid t0 cur got total rate prev_got
+  local ret=0 pid t0 cur got total rate prev_got base_got=0
   # pip 下载的 wheel 先落缓存目录、下载完才装进 venv：下载阶段 venv 体积
   # 不动、缓存增长，只盯 venv 会把下载速度误判成 0。所以「已下载」取
   # venv + 缓存 两者体积之和，任何阶段都有增量可测。
   local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/pip"
+  # 进度按「本次新增」算：先把起点体积记下来，百分比才不会从 60% 起步
+  base_got=$(du -sb "$INSTALL_DIR/.venv" "$cache_dir" 2>/dev/null | awk '{s += $1} END {print s+0}')
+  base_got=${base_got:-0}
   for ((i = 0; i < n; i++)); do
     k=$(((start + i) % n))
     if [ "$i" -gt 0 ]; then dim "换源重试：${PIP_INDEXES[$k]}"; fi
@@ -1384,6 +1438,8 @@ pip_install_with_switch() {
       # 已下载字节：venv + pip 缓存 的落盘体积（单调递增）
       got=$(du -sb "$INSTALL_DIR/.venv" "$cache_dir" 2>/dev/null | awk '{s += $1} END {print s+0}')
       got=${got:-0}
+      got=$((got - base_got))
+      [ "$got" -lt 0 ] && got=0
       # 总下载字节：日志里出现过的所有 Downloading (SIZE) 累加
       total=$(grep -oE '^  Downloading[^(]*\([0-9.]+ ?[kKmMgG]?i?B?\)' "$log" 2>/dev/null \
                 | grep -oE '\([0-9.]+ ?[kKmMgG]?i?B?\)' \
@@ -1448,7 +1504,16 @@ progress_clear() {
 # progress_bar <已下载字节> <总字节> <速度(字节/秒)> <当前包名>
 progress_bar() {
   local got="${1:-0}" total="${2:-0}" rate="${3:-0}" cur="${4:-}" spin_c
-  local eta_text spd_text
+  local eta_text spd_text pct=0 size_text
+  if [ "$total" -gt 0 ] && [ "$got" -gt 0 ]; then
+    pct=$((got * 100 / total))
+    [ "$pct" -gt 100 ] && pct=100
+  fi
+  if [ "$total" -gt 0 ]; then
+    size_text="$(human_size "$got")/$(human_size "$total")"
+  else
+    size_text="$(human_size "$got")/未知"
+  fi
   if [ "$rate" -gt 0 ] && [ "$total" -gt 0 ] && [ "$got" -lt "$total" ]; then
     eta_text="剩余 $(human_dur $(((total - got) / rate)))"
   else
@@ -1464,17 +1529,15 @@ progress_bar() {
   if [ ! -t 1 ]; then
     # 非终端：当前包变了才打一行，重定向到日志时也能看出进度
     if [ -n "$cur" ] && [ "$cur" != "$_progress_last" ]; then
-      printf '    [%s] %s\n' "$eta_text" "$cur"
+      printf '    [%s%%] %s  %s  %s\n' "$pct" "$size_text" "$eta_text" "$cur"
       _progress_last="$cur"
     fi
     return 0
   fi
   spin_c="${_spin:$((got % ${#_spin})):1}"
-  # 只显示 当前包 + 速度 + 剩余时间。不显示「已下载/总量」：pip 在
-  # --progress-bar off 下不落盘当前包的部分进度，venv 体积和下载字节又是
-  # 两个量纲（解压后膨胀），硬凑一对数字只会误导。
-  printf '\r\033[K%s%s%s  %s  %s  %s' \
-    "$C_C" "$spin_c" "$C_END" "$cur" "$spd_text" "$eta_text"
+  # 文件名 / 已下载 / 总大小 / 百分比 / 速度 / 剩余时间：六项都在，避免「看着像卡住」
+  printf '\r\033[K%s%s%s  %s  %s  %s%%  %s  %s' \
+    "$C_C" "$spin_c" "$C_END" "$cur" "$size_text" "$pct" "$spd_text" "$eta_text"
   _progress_on=1
 }
 
@@ -2048,13 +2111,22 @@ print_done() {
 
 # ---------- 子命令 ----------
 do_install() {
-  local deps="" gui_only=0
+  local deps="" gui_only=0 stt_only=0
   for a in "$@"; do
     case "$a" in
       --deps) deps="--deps" ;;
       --gui)  gui_only=1 ;;   # 只补装桌面客户端（PySide6），不动别的
+      --stt)  stt_only=1 ;;   # 只补装语音输入依赖（sherpa-onnx）
     esac
   done
+  if [ "$stt_only" = 1 ]; then
+    check_user
+    sync_files
+    ensure_data_layout
+    DECKMEIDO_INSTALL_STT=1 venv_install stt
+    write_install_records
+    return 0
+  fi
   if [ "$gui_only" = 1 ]; then
     check_user
     sync_files
@@ -2192,6 +2264,49 @@ json_tag() {
 github_latest_tag() { json_tag "$GH_LATEST/latest.json"; }
 mirror_latest_tag() { json_tag "$MIRROR/latest.json"; }
 
+# curl_progress <url> <输出文件> [显示名]
+# 边下边报：文件名 / 已下载 / 总大小 / 百分比 / 速度。裸 curl -o 在 Deck 的
+# 小屏上等于「没有任何反馈」，几十 MB 的包会被当成卡死。
+# 非终端（重定向/日志）时只在百分比跨过 10% 时打一行，避免刷屏。
+curl_progress() {
+  local url="$1" dest="$2" label="${3:-$(basename "$2")}"
+  local total pid rc got pct=0 rate prev=0 t0 last_pct=-10
+  total=$(curl -fsSIL -m 20 "$url" 2>/dev/null | tr -d '\r' \
+    | awk 'tolower($1)=="content-length:"{v=$2} END{print v+0}')
+  total=${total:-0}
+  : > "$dest" 2>/dev/null || true
+  curl -fL --retry 2 -m 600 -o "$dest" "$url" &
+  pid=$!
+  t0=$SECONDS
+  while kill -0 "$pid" 2>/dev/null; do
+    got=$(stat -c %s "$dest" 2>/dev/null || echo 0)
+    got=${got:-0}
+    rate=$((got - prev))
+    prev=$got
+    if [ "$total" -gt 0 ] && [ "$got" -gt 0 ]; then
+      pct=$((got * 100 / total)); [ "$pct" -gt 100 ] && pct=100
+    fi
+    if [ -t 1 ]; then
+      printf '\r\033[K%s%s%s  %s  %s/%s  %s%%  %s' \
+        "$C_C" '.' "$C_END" "$label" "$(human_size "$got")" \
+        "$([ "$total" -gt 0 ] && human_size "$total" || echo 未知)" \
+        "$pct" "$([ "$rate" -gt 0 ] && human_rate "$rate" || echo 测速中)"
+    elif [ "$((pct / 10))" != "$((last_pct / 10))" ]; then
+      printf '    [%s%%] %s  %s\n' "$pct" "$(human_size "$got")" "$label"
+      last_pct=$pct
+    fi
+    sleep 0.5
+  done
+  wait "$pid"; rc=$?
+  if [ -t 1 ]; then printf '\r\033[K'; fi
+  [ "$rc" = 0 ] || return "$rc"
+  if [ ! -s "$dest" ]; then
+    warn "下载得到的文件是空的：$url"
+    return 1
+  fi
+  return 0
+}
+
 # 下载发布包并校验。$4=1 表示必须有 .sha256（GitHub 路径），校验缺失或失败都算失败；
 # 镜像路径沿用旧行为：拿不到校验文件就跳过，只打提示。
 fetch_pkg() {
@@ -2199,7 +2314,7 @@ fetch_pkg() {
   local url="$base/deckmeido-$tag.tar.gz"
   rm -f "$tmp/pkg.tar.gz" "$tmp/pkg.sha256"
   info "下载 $url"
-  curl -fL --retry 2 -m 600 -o "$tmp/pkg.tar.gz" "$url" || {
+  curl_progress "$url" "$tmp/pkg.tar.gz" "deckmeido-$tag.tar.gz" || {
     warn "下载失败：$url"
     return 1
   }
