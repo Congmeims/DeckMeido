@@ -4212,6 +4212,18 @@ async def api_session_delete(sid: str):
     # 先拉黑再删文件：反过来的话，删完到拉黑之间那一瞬间的落盘（流式回调）
     # 就能把文件写回来，等于白删
     store.deleted_sids.add(sid)
+    # 内存里按 sid 挂着的摘要/意图/流式缓冲也一并清掉。QQ 通道的 sid 是按
+    # uin/群号算死的，不清的话同一个人下一条消息又会把旧摘要当上文复读
+    store.forget_session(sid)
+    _stream_bufs.pop(sid, None)
+    if sid.startswith("qq-"):
+        try:
+            qq_bot.drop_session(sid)
+        except Exception:
+            pass
+    pend = pending_action
+    if isinstance(pend, dict) and (pend.get("sid") or "") == sid:
+        pending_action = None
     # 删除是低频操作，但这里要「等」而不是「发出去就走」：删完到 IO 线程真正执行
     # 之间的那一小段里若有落盘排队，文件就会被写回来，等于白删。等它又不该卡住事件循环，
     # 所以用 to_thread 把 .result() 挪到线程里
@@ -5745,7 +5757,16 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
         return {"reply": "设备正在处理本地端发起的操作，等它结束再发；这一条没有提交。",
                 "busy": True}
     # QQ 的会话独立于本地当前会话：历史从它自己的文件读，不碰 store.history
-    if sid == store.current_sid:
+    if sid in store.deleted_sids:
+        # 这个 sid 之前被用户删过。QQ 的 sid 是按 uin/群号算死的，
+        # 上一轮已收尾的话就允许开一条全新的，但历史必须从空开始 ——
+        # 绝不能把删掉那轮的内容（或它的摘要）再带回来
+        active_sid = str(store.turn.get("sid") or "") if store.turn.get("active") else ""
+        if not store.allow_fresh(sid, active_sid):
+            return {"reply": "上一条会话还在收尾，等它结束再发；这一条没有提交。",
+                    "busy": True}
+        hist = []
+    elif sid == store.current_sid:
         hist = store.history
     else:
         data = await asyncio.to_thread(store.read_session, sid)

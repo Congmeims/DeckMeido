@@ -176,6 +176,41 @@ class SessionStore:
     def drop_compact(self, sid: str) -> None:
         self.compact_map.pop(sid, None)
 
+    def forget_session(self, sid: str) -> None:
+        """删除会话时把内存里所有按 sid 记录的引用一次清干净
+
+        只删文件是不够的：compact_map 里的摘要、intent_map 里的挂起意图、
+        written/created 指纹、流式缓冲都还攥着这个 sid。QQ 通道的 sid 是按
+        uin/群号算出来的固定值，删掉之后同一个人的下一条消息又落回同一个 sid，
+        旧摘要就会被当成「他刚才说过什么」重新注入 —— 表现就是删了还在复读。
+        """
+        if not sid:
+            return
+        with self.lock:
+            self.deleted_sids.add(sid)
+            self.compact_map.pop(sid, None)
+            self.intent_map.pop(sid, None)
+            self.created_map.pop(sid, None)
+            self.wrote_map.pop(sid, None)
+            self.flushed_sids.discard(sid)
+
+    def allow_fresh(self, sid: str, active_sid: str = "") -> bool:
+        """已删除的固定 sid 是否可以当「全新会话」再开
+
+        QQ 的 sid 是固定算法，删掉之后不放开的话，这个人以后每句话都写不进
+        文件（deleted_sids 会拦掉所有落盘）。这里只在「没有仍在跑的同 sid 轮次」
+        时撤掉墓碑，保证旧内容绝不回来，但新对话能正常存。
+        """
+        if not sid:
+            return False
+        with self.lock:
+            if sid not in self.deleted_sids:
+                return False
+            if active_sid and active_sid == sid:
+                return False
+            self.deleted_sids.discard(sid)
+            return True
+
     # ---------- 挂起意图 ----------
 
     def get_intent(self, sid: str) -> dict | None:

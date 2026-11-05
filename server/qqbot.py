@@ -751,6 +751,18 @@ class QQBot:
                     print(f"[DeckMeido][qq] 清理挂起操作失败：{e!r}", file=sys.stderr)
         self._pending_conf.clear()
 
+    def drop_session(self, sid: str) -> None:
+        """某个 QQ 会话被删除：撤掉它名下的挂起确认
+
+        不撤掉的话，下一条消息发「确认」仍会匹配到已删除会话那一轮的
+        danger 操作，等于拿旧会话的上下文把新会话带跑偏。
+        """
+        if not sid:
+            return
+        for device, info in list(self._pending_conf.items()):
+            if str(info.get("sid") or "") == sid:
+                self._pending_conf.pop(device, None)
+
     def configure(self, cfg: QQConfig | dict | None) -> None:
         cfg = cfg if isinstance(cfg, QQConfig) else parse_config(cfg)
         if cfg == self._cfg:
