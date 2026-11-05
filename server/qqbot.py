@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import json
-import os
 import random
 import re
 import secrets
+import socket
 import sys
 import time
 import traceback
@@ -35,6 +36,61 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from . import paths
+
+# ---------- 图片链接安全校验 ----------
+# NapCat 传来的图片地址是外部输入：必须挡住 file:// 等本地协议、
+# 指向 127.0.0.1 / 内网 / 保留地址的链接（SSRF），以及重定向绕道。
+# 只允许 http(s)、默认端口、解析结果全部是公网地址，并逐跳复检 Location。
+
+_MAX_REDIRECTS = 3
+_ALLOWED_PORTS = {None, 80, 443}
+
+
+def _url_reason(url: str) -> str:
+    """检查图片链接是否允许访问；返回空串表示通过，否则是拒绝原因。"""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "链接无法解析"
+    if parts.scheme.lower() not in ("http", "https"):
+        return f"不允许的协议 {parts.scheme or '（空）'}"
+    host = parts.hostname or ""
+    if not host:
+        return "缺少主机名"
+    try:
+        port = parts.port
+    except ValueError:
+        return "端口无效"
+    if port not in _ALLOWED_PORTS:
+        return f"不允许的端口 {port}"
+    try:
+        infos = socket.getaddrinfo(host, port or 443, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return f"域名解析失败：{host}"
+    for info in infos:
+        raw = str(info[4][0]).split("%")[0]
+        try:
+            addr = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if not addr.is_global:
+            return f"地址不在白名单：{addr}"
+    return ""
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """重定向每一跳都重新做同样的校验，防止先公网再跳到内网。"""
+
+    max_redirections = _MAX_REDIRECTS
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        reason = _url_reason(newurl)
+        if reason:
+            raise ValueError(f"重定向被拒绝：{reason}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_SAFE_OPENER = urllib.request.build_opener(_SafeRedirectHandler())
 
 DEFAULT_PREFIX = "meido"
 DEFAULT_RATE_PER_MINUTE = 20
@@ -1377,7 +1433,9 @@ class QQBot:
         def _fetch():
             req = urllib.request.Request(
                 url, headers={"User-Agent": "DeckMeido/0.6"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            # 协议、地址、逐跳重定向都在 _url_reason 里校验：
+            # file:// 之类的本地协议与指向内网的链接一律拒绝
+            with _SAFE_OPENER.open(req, timeout=15) as resp:
                 status = getattr(resp, "status", 200)
                 ctype = str(resp.headers.get("Content-Type") or "")
                 data = resp.read(max_bytes + 1)
@@ -1385,6 +1443,9 @@ class QQBot:
 
         try:
             status, ctype, data = await asyncio.to_thread(_fetch)
+        except ValueError as e:
+            self._log("warn", "图片链接被拒绝", str(e)[:200])
+            return None, "链接被拒绝"
         except urllib.error.HTTPError as e:
             self._log("error", "图片下载失败", f"HTTP {e.code}")
             return None, f"HTTP {e.code}"

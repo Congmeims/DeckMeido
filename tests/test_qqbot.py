@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import tempfile
 import time
 import unittest
@@ -56,6 +57,37 @@ class PrefixTest(unittest.TestCase):
     def test_none_without_prefix(self):
         self.assertIsNone(qqbot.parse_command("你好", "DeckMeido"))
         self.assertIsNone(qqbot.parse_command("", "DeckMeido"))
+
+
+class ImageUrlGuardTest(unittest.TestCase):
+    """QQ 图片链接的协议 / 地址 / 重定向校验。"""
+
+    @staticmethod
+    def _addr(ip: str):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 443))]
+
+    def test_rejects_file_and_other_schemes(self):
+        self.assertIn("协议", qqbot._url_reason("file:///etc/passwd"))
+        self.assertIn("协议", qqbot._url_reason("ftp://example.com/a.png"))
+
+    def test_rejects_private_loopback_and_link_local(self):
+        for ip in ("127.0.0.1", "10.0.0.5", "192.168.1.10", "169.254.1.1", "::1"):
+            with mock.patch.object(qqbot.socket, "getaddrinfo", return_value=self._addr(ip)):
+                reason = qqbot._url_reason("https://example.com/a.png")
+            self.assertIn("白名单", reason, ip)
+
+    def test_allows_public_address(self):
+        with mock.patch.object(qqbot.socket, "getaddrinfo", return_value=self._addr("1.2.3.4")):
+            self.assertEqual(qqbot._url_reason("https://example.com/a.png"), "")
+
+    def test_rejects_non_default_port(self):
+        self.assertIn("端口", qqbot._url_reason("http://example.com:8080/a.png"))
+
+    def test_redirect_hop_is_rechecked(self):
+        handler = qqbot._SafeRedirectHandler()
+        with mock.patch.object(qqbot.socket, "getaddrinfo", return_value=self._addr("127.0.0.1")):
+            with self.assertRaises(ValueError):
+                handler.redirect_request(None, None, 302, "Found", {}, "http://127.0.0.1/a.png")
 
 
 class RouteTest(unittest.TestCase):
