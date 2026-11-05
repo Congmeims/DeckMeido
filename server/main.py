@@ -5701,6 +5701,17 @@ async def local_shot(name: str = Query(default="")):
     return FileResponse(target)
 
 
+@app.post("/api/screenshot", dependencies=[Depends(check_token)])
+async def api_screenshot():
+    """插件端专用：抓一张当前画面，返回压缩 JPEG 的 base64
+
+    游戏模式下插件自己从 gamescope 的 PipeWire 节点抓帧，不走这条；桌面
+    模式（含从桌面进 Big Picture）插件没有抓帧能力，转到这里复用本后端
+    spectacle/mss 那条桌面路径，避免插件端再养一套抓帧逻辑。
+    """
+    return await tools.screenshot_payload()
+
+
 # ---------- QQ 远程控制通道（OneBot 11 / NapCat 客户端） ----------
 
 def _qq_nickname() -> str:

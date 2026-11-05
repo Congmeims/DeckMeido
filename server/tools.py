@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import glob
 import json
 import os
@@ -862,9 +863,38 @@ async def _set_overlay_lift(on: bool):
         await ON_OVERLAY_LIFT(on)
 
 
+def _fix_session_env(env: dict, uid: int, runtime: str):
+    """补 Wayland / D-Bus 会话变量：spectacle 走 KWin 截屏时要连对会话总线
+
+    插件以 root 加载、后端再降权到 deck 跑，继承下来的是 root 的环境：
+    这两个变量要么没有，要么总线地址还指着 /run/user/0。spectacle 连不上
+    KWin 的截屏接口时会退回抓 Xwayland 的根窗口，拿到的是一张黑图
+    （会被 _screenshot 的 <10KB 判据当成失败）。
+    只补缺失的或明显指错的，已有的正确值不覆盖；root 身份下不动（没会话）。
+    """
+    if uid == 0:
+        return
+    root = Path(runtime)
+    bus_path = root / "bus"
+    bus = env.get("DBUS_SESSION_BUS_ADDRESS") or ""
+    if bus_path.exists() and (not bus or "/run/user/0/" in bus):
+        env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
+    if not env.get("WAYLAND_DISPLAY"):
+        try:
+            # wayland-0 旁边还会有 wayland-0.lock，只认 socket
+            socks = sorted(p for p in root.glob("wayland-[0-9]*")
+                           if p.suffix not in (".lock", ".pid"))
+        except OSError:
+            socks = []
+        if socks:
+            env["WAYLAND_DISPLAY"] = socks[0].name
+
+
 def _fix_display_env(env: dict):
     """补全桌面会话环境变量：X11/Wayland(Xwayland) 授权文件路径每次开机随机"""
     env.setdefault("DISPLAY", ":0")
+    uid = os.getuid()
+    _fix_session_env(env, uid, env.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}")
     # 后端是从 Decky 插件（系统服务）拉起来的，环境里根本没有 TERM，
     # 子进程于是拿到 TERM=dumb：ncdump / ncview / less 这类用 ncurses 的程序
     # 会直接报「cannot initialize terminal type ($TERM=unknown)」退出。
@@ -2597,7 +2627,7 @@ async def _screenshot() -> str:
         print("[DeckMeido] 截图走游戏模式（gamescope PipeWire）")
         err = await _screenshot_gamescope(path)
         if not err:
-            return await _finish_shot(path, name, shots_dir, time)
+            return await _finish_shot(path, name, shots_dir, time, holder)
         holder["error"] = err
         print(f"[DeckMeido] 游戏模式截图失败：{err}", file=sys.stderr)
         return (f"截图失败：{err}。现在没有当前画面可用，"
@@ -2635,12 +2665,15 @@ async def _screenshot() -> str:
         path.unlink(missing_ok=True)
         return (f"截图失败：{holder['error']}。现在没有当前画面可用，"
                 "请直接告诉用户这次没截到图，不要凭空描述屏幕内容。")
-    return await _finish_shot(path, name, shots_dir, time)
+    return await _finish_shot(path, name, shots_dir, time, holder)
 
 
-async def _finish_shot(path: Path, name: str, shots_dir: Path, time_mod) -> str:
+async def _finish_shot(path: Path, name: str, shots_dir: Path, time_mod,
+                       holder: dict | None = None) -> str:
     """压缩一份给多模态模型看（1280 宽 JPEG），并返回给模型的结果文本"""
-    holder = SHOT_STATE
+    # holder 由调用方传入时用它，别再读全局：插件截图接口会临时换掉
+    # SHOT_STATE，还在跑的另一轮不能被写串
+    holder = holder if holder is not None else SHOT_STATE
     holder.pop("vision", None)
     try:
         from PIL import Image
@@ -2657,6 +2690,39 @@ async def _finish_shot(path: Path, name: str, shots_dir: Path, time_mod) -> str:
                 f"（{holder['error']}）。这次你收不到画面，"
                 "请直接告诉用户没看到图，不要凭空描述屏幕内容。")
     return f"截图完成：/shots/{name}。当前画面已附上，你可以直接根据画面内容回答用户的问题。"
+
+
+async def screenshot_payload() -> dict:
+    """给插件端的一张画面：跑一次 screenshot 工具，返回压缩 JPEG 的 base64
+
+    插件侧的「截屏询问」在桌面模式没有抓帧能力（它只会从 gamescope 的
+    PipeWire 节点取帧），所以转到这里复用 spectacle/mss 那条桌面路径。
+    截图状态是模块级的：这里独占一份，结束后若当前仍是自己那份再还原，
+    免得把正在跑的另一轮画面状态清掉。
+    """
+    global SHOT_STATE
+    prev = SHOT_STATE
+    mine = new_shot_state()
+    try:
+        note = await execute("screenshot", {})
+        if str(mine.get("error") or ""):
+            return {"ok": False, "error": str(mine["error"])}
+        vpath = mine.get("vision")
+        if not vpath:
+            return {"ok": False, "error": "没有拿到可用的画面"}
+        try:
+            raw = await asyncio.to_thread(Path(str(vpath)).read_bytes)
+        except OSError as exc:
+            return {"ok": False, "error": f"读画面失败（{exc}）"}
+        # 走 base64 是因为插件要先把图落盘再交给 start_turn；直接回文件路径
+        # 在跨进程/权限边界上更绕。这张是 1280 宽的 JPEG，一百多 KB 量级
+        return {"ok": True, "image": base64.b64encode(raw).decode("ascii"),
+                "note": note}
+    except Exception as exc:               # 工具内部异常也要给插件一句人话
+        return {"ok": False, "error": f"抓帧失败（{type(exc).__name__}）"}
+    finally:
+        if SHOT_STATE is mine:
+            SHOT_STATE = prev
 
 
 async def _kdotool(*args: str) -> tuple[int, str]:
