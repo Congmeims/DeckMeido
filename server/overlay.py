@@ -635,9 +635,6 @@ class Mask(QWidget):
         self.card.setFixedHeight(h)
 
         has_logo = not self.logo.isNull()
-        # 可见图形高度 = 裁掉留白后的 pixmap 高度（SwayLogo 里按原尺寸居中绘制）
-        pm = self.logo.pixmap()
-        vis_h = pm.height() if has_logo else 0
         # 画布高度可选：按图形高度 + 旋转/浮动余量，避免留一大块透明底把
         # 眼睛看到的间距撑大
         box_h = self.logo.box_height()

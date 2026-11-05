@@ -1528,7 +1528,7 @@ class QQBot:
         payload = await self._reply_payload(ev)
         if payload is None:
             return None
-        text, _ats, images, _rid = _segments(payload.get("message"))
+        _text, _ats, images, _rid = _segments(payload.get("message"))
         if not images:
             self._log("info", "引用图已忽略", "引用消息里没有图片")
             return None
