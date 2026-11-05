@@ -8283,12 +8283,45 @@
       return res;
     });
   }
+  // 提示词是「唯一数据源」：网页/客户端与插件大屏/QAM 都读写同一份
+  // userdata/config.toml（经 /api/config、/api/ask-template、/api/translate-template）。
+  // 页面如果只在打开时读一次，在 Deck 上用插件改完回来就会看到旧换行/旧文本，
+  // 所以回到前台时做一次静默同步；正在编辑的那个框不动，避免覆盖未保存内容。
+  var tplDirtyAsk = false, tplDirtyTrn = false, promptSyncing = false;
+  if (cfgAskTemplate) cfgAskTemplate.addEventListener('input', function () { tplDirtyAsk = true; });
+  if (cfgTranslateTemplate) cfgTranslateTemplate.addEventListener('input', function () { tplDirtyTrn = true; });
+  function syncPromptTemplates() {
+    if (promptSyncing || !cfgAskTemplate || !cfgTranslateTemplate) return;
+    var ae = document.activeElement;
+    if (ae === cfgAskTemplate || ae === cfgTranslateTemplate || ae === cfgQqGuestPrompt) return;
+    promptSyncing = true;
+    memFetch('/api/config').then(function (c) {
+      if (!c) return;
+      var ask = c.ask_template || '', trn = c.translate_template || '';
+      if (c.ask_template_default) askTplDefault = c.ask_template_default;
+      if (c.translate_template_default) trnTplDefault = c.translate_template_default;
+      // 后端值没变就不动 DOM：保留用户正在编辑但还没保存的换行
+      if (!tplDirtyAsk && cfgAskTemplate.value !== ask) cfgAskTemplate.value = ask;
+      if (!tplDirtyTrn && cfgTranslateTemplate.value !== trn) cfgTranslateTemplate.value = trn;
+    }).catch(function () {
+      /* 离线时保持现状，下次回到前台再试 */
+    }).then(function () {
+      promptSyncing = false;
+    });
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) syncPromptTemplates();
+  });
+  window.addEventListener('focus', function () { setTimeout(syncPromptTemplates, 60); });
   tplSave.addEventListener('click', function () {
     tplHint.textContent = '保存中…';
     Promise.all([
       saveTpl('/api/ask-template', cfgAskTemplate),
       saveTpl('/api/translate-template', cfgTranslateTemplate)
     ]).then(function () {
+      // 保存成功：这两份内容已经是服务端最终值，后续前台同步以服务端为准
+      tplDirtyAsk = false;
+      tplDirtyTrn = false;
       tplHint.textContent = '提示词已保存：插件端「截屏询问 / 截图翻译」读到的就是这份';
     }).catch(function (err) {
       var msg = (err && err.message) || '';
