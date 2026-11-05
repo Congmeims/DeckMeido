@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import audiomute, depcheck, memory, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
+from . import audiomute, depcheck, i18n, memory, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
 from .session_store import set_title as _set_title
 from .session_store import store
 from . import session_store
@@ -125,6 +125,17 @@ llm = LLMClient(
 llm.normalize()
 
 PERSONA = persona.load()
+
+# ---------- 界面语言 ----------
+# [ui] language = "zh" / "en"（默认 zh）。只切界面文案与内置提示词模板的
+# 默认值，用户自己改过的模板照旧优先；不涉及模型、路径等运行参数。
+# 英文文案是机翻版本，集中放在 server/i18n.py，避免散落进逻辑里。
+def ui_language(cfg: dict | None = None) -> str:
+    raw = str((cfg or CFG).get("ui", {}).get("language", "zh") or "").strip().lower()
+    return "en" if raw in ("en", "english", "en-us", "en_us") else "zh"
+
+UI_LANG = ui_language()
+
 # 「截屏询问」的提示词模板。插件点按钮时会把这段连同当前画面发过来，
 # 所以模板本身放在配置里，用户可以在设置页随时改（例如换个问法、加一条自己的要求）。
 DEFAULT_ASK_TEMPLATE = (
@@ -133,7 +144,20 @@ DEFAULT_ASK_TEMPLATE = (
     "再总结成几条可以直接照做的步骤，200 字以内。\n"
     "不要剧透：只讲眼前这一步怎么过，不要提前说后面的剧情、结局或其他关卡的解法。"
 )
-ASK_TEMPLATE = str(CFG.get("agent", {}).get("ask_template") or "").strip() or DEFAULT_ASK_TEMPLATE
+# 英文模式的内置默认（机翻）：与上面中文版语义一致，同样是「不剧透、少搜索」
+DEFAULT_ASK_TEMPLATE_EN = (
+    "Look at where I'm stuck and tell me what to do in this screen. "
+    "If the screenshot is enough, don't search; search at most twice and stop at one answer.\n"
+    "Then summarize it as a few steps I can follow directly, under 200 words.\n"
+    "No spoilers: only how to get past this step, no later story, endings, or other levels."
+)
+
+
+def default_ask_template() -> str:
+    return DEFAULT_ASK_TEMPLATE_EN if UI_LANG == "en" else DEFAULT_ASK_TEMPLATE
+
+
+ASK_TEMPLATE = str(CFG.get("agent", {}).get("ask_template") or "").strip() or default_ask_template()
 # 「截图翻译」的提示词模板。以前写死在插件前端，用户改不了；现在和截屏询问一样
 # 存进 [agent] translate_template，插件设置区保存后下一次翻译就用新的。
 DEFAULT_TRANSLATE_TEMPLATE = (
@@ -141,9 +165,20 @@ DEFAULT_TRANSLATE_TEMPLATE = (
     "已经是中文就原样说明，不要翻译。\n"
     "只翻译、不解释剧情、不剧透，保持原文的换行和顺序。"
 )
+DEFAULT_TRANSLATE_TEMPLATE_EN = (
+    "Copy the original text on screen first, then translate it sentence by sentence into English. "
+    "If it is already English, say so and do not translate.\n"
+    "Translate only: no story explanation, no spoilers, keep the original line breaks and order."
+)
+
+
+def default_translate_template() -> str:
+    return DEFAULT_TRANSLATE_TEMPLATE_EN if UI_LANG == "en" else DEFAULT_TRANSLATE_TEMPLATE
+
+
 TRANSLATE_TEMPLATE = (
     str(CFG.get("agent", {}).get("translate_template") or "").strip()
-    or DEFAULT_TRANSLATE_TEMPLATE
+    or default_translate_template()
 )
 # 单轮最多几轮工具往返。以前默认 0 = 不限，模型一旦陷进「截图 → 没看懂 → 再截图」
 # 这种循环就会一直跑下去，只能靠用户点终止。12 步对稍微复杂一点的活儿（找文件、
@@ -672,18 +707,20 @@ audiomute.set_enabled(bool(_stt_cfg.get("duck_output", True)))
 def apply_config(cfg: dict):
     """热更新运行配置（LLM / TTS / 权限模式 / 访问令牌），无需重启"""
     global CFG, TOKEN, PERMISSION_MODE, PERSONA, SYSTEM_PROMPT, MAX_TOOL_ROUNDS, ASK_TEMPLATE
-    global TRANSLATE_TEMPLATE
+    global TRANSLATE_TEMPLATE, UI_LANG
     CFG = cfg
+    # [ui] language 热更新：先换语言，内置模板默认值才会跟着切
+    UI_LANG = ui_language(cfg)
     # 人设不在这里取：它存在 meidosoul.json，改完由 update_config 的调用方
     # 直接 reload_persona()，config.toml 里即使还留着旧的 [persona] 段也不再生效
     TOKEN = (cfg["server"].get("token") or TOKEN).strip().lower()
     MAX_TOOL_ROUNDS = (int(cfg.get("agent", {}).get("max_tool_rounds", 0))
                        or DEFAULT_MAX_TOOL_ROUNDS)
     ASK_TEMPLATE = (str(cfg.get("agent", {}).get("ask_template") or "").strip()
-                    or DEFAULT_ASK_TEMPLATE)
+                    or default_ask_template())
     TRANSLATE_TEMPLATE = (
         str(cfg.get("agent", {}).get("translate_template") or "").strip()
-        or DEFAULT_TRANSLATE_TEMPLATE
+        or default_translate_template()
     )
     c = cfg["llm"]
     llm.base_url = c["base_url"].rstrip("/")
@@ -2679,6 +2716,8 @@ class ConfigUpdate(BaseModel):
     stt_enable: bool | None = None
     # 录音期间静音外放：写入 [stt] duck_output
     stt_duck_output: bool | None = None
+    # 界面语言："zh"（默认）/ "en"；写 [ui] language
+    ui_language: str | None = None
     # 发送时是否附带给游戏画面（面板上的「画面：开/关」）
     with_shot: bool | None = None
     permission_mode: str | None = None
@@ -2791,6 +2830,8 @@ async def api_get_config():
         # 设置页据此提示「这台机器不支持静音」，但开关仍可保存
         "stt_duck_output": audiomute.enabled(),
         "stt_duck": audiomute.status(),
+        # [ui] language：网页/客户端据此显示语言下拉，切换后整页重载
+        "ui_language": UI_LANG,
         "permission_mode": PERMISSION_MODE,
         "workspace": str(tools.WORKSPACE),
         "token": TOKEN,
@@ -2985,6 +3026,8 @@ async def api_set_config(req: ConfigUpdate):
     if req.stt_duck_output is not None:
         # 和 stt_enable 写同一段，用 setdefault 合并，避免后一项覆盖前一项
         updates.setdefault("stt", {})["duck_output"] = bool(req.stt_duck_output)
+    if req.ui_language is not None:
+        updates["ui"] = {"language": ui_language({"ui": {"language": req.ui_language}})}
     if req.with_shot is not None:
         # 带画面开关落盘到 [agent]：面板关掉再打开要还是上次选的那个
         updates.setdefault("agent", {})["with_shot"] = bool(req.with_shot)
@@ -3206,6 +3249,19 @@ async def api_version():
         "is_git": (INSTALL_DIR / ".git").exists(),
         "install_dir": str(INSTALL_DIR),
         "update": update_cache,
+    }
+
+
+@app.get("/api/i18n")
+async def api_i18n():
+    """界面语言与英文替换表（纯静态文案，不需要令牌）
+
+    [ui] language = "en" 时网页/客户端启动后替换静态文案；中文模式返回空表，
+    前端保持原样。插件端暂未接入，可后续直接读这个接口。
+    """
+    return {
+        "language": UI_LANG,
+        "strings": i18n.strings() if UI_LANG == "en" else {},
     }
 
 

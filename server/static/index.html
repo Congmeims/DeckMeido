@@ -2897,6 +2897,19 @@
           <h3>关于更新</h3>
           <p class="pane-desc">版本信息与升级渠道。升级会保留配置、会话与长期记忆。</p>
           <div class="card">
+            <div class="card-title">界面语言</div>
+            <div class="field">
+              <label>Language</label>
+              <select id="cfgLang" class="cfg-select">
+                <option value="zh">简体中文（默认）</option>
+                <option value="en">English（机翻）</option>
+              </select>
+              <div class="field-hint">
+                网页与客户端的文案跟着切换；插件面板当前仍是中文。保存后立即生效，等同于 config.toml 的 [ui] language。
+              </div>
+            </div>
+          </div>
+          <div class="card">
             <div class="card-title">版本</div>
             <div class="about-row">
               <span class="ver-tag" id="verTag">版本 …</span>
@@ -3287,6 +3300,47 @@
   var IS_NATIVE = new URLSearchParams(location.search).get('native') === '1';
   // 客户端专属控件（如底部语音按钮）用 body.native 控制显隐
   if (IS_NATIVE) document.body.classList.add('native');
+
+  /* ---------- 界面语言（[ui] language = en 时生效） ----------
+     后端 /api/i18n 下发「中文原文 → 英文译文」的机翻表，这里只替换静态文案，
+     对话内容、代码、报错原文不动。没收录的句子保持中文，不做半截拼接。 */
+  var UI_LANG = 'zh';
+  var I18N_MAP = {};
+  function tr(s) { return UI_LANG === 'en' ? (I18N_MAP[s] || s) : s; }
+  function applyI18n(root) {
+    if (UI_LANG !== 'en' || !root) return;
+    // 文本节点：整段精确匹配，替换时保留原有首尾空白
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    var nodes = [], n;
+    while ((n = walker.nextNode())) nodes.push(n);
+    nodes.forEach(function (node) {
+      var raw = node.nodeValue || '';
+      var key = raw.trim();
+      if (!key || !I18N_MAP[key]) return;
+      var lead = raw.match(/^\s*/)[0], tail = raw.match(/\s*$/)[0];
+      node.nodeValue = lead + I18N_MAP[key] + tail;
+    });
+    // placeholder / title / aria-label 里的中文
+    root.querySelectorAll('input[placeholder], textarea[placeholder], [title], [aria-label]')
+      .forEach(function (el) {
+        ['placeholder', 'title', 'aria-label'].forEach(function (attr) {
+          var v = el.getAttribute(attr);
+          if (v && I18N_MAP[v.trim()]) el.setAttribute(attr, I18N_MAP[v.trim()]);
+        });
+      });
+  }
+  function loadI18n(cb) {
+    fetch('/api/i18n').then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.language === 'en' && d.strings) {
+        UI_LANG = 'en';
+        I18N_MAP = d.strings;
+        applyI18n(document.body);
+      }
+      if (cb) cb();
+    }).catch(function () { if (cb) cb(); });
+  }
+  // 脚本在 body 末尾，元素已就绪：立刻拉一次英文表，晚到的界面更新由 tr() 兜住
+  loadI18n();
 
   // 本端来源标识：优先用后端在 history 里回传的 my_client（那是它实际看到的
   // UA），没收到之前先按 UA 自己猜。桌面客户端内嵌的也是这个页面，
@@ -7002,15 +7056,15 @@
     // 只要 agent 在跑就一直是「终止」——主人希望任何时刻都能一键叫停。
     // 排队改由回车承担，跟输入框里有没有字无关。
     if (busy) {
-      sendBtn.textContent = '终止';
+      sendBtn.textContent = tr('终止');
       sendBtn.classList.add('stop');
-      sendBtn.title = '终止当前操作（输入框里按回车 = 加入队列）';
-      input.placeholder = '按回车加入队列，等这一轮结束自动发送';
+      sendBtn.title = tr('终止当前操作（输入框里按回车 = 加入队列）');
+      input.placeholder = tr('按回车加入队列，等这一轮结束自动发送');
     } else {
-      sendBtn.textContent = '发送';
+      sendBtn.textContent = tr('发送');
       sendBtn.classList.remove('stop');
       sendBtn.title = '';
-      input.placeholder = '@ 添加上下文，/ 使用命令';
+      input.placeholder = tr('@ 添加上下文，/ 使用命令');
     }
   }
 
@@ -7342,7 +7396,7 @@
     duckOutput(true);
     micState = 'recording';
     micBtn.classList.add('rec');
-    micBtn.textContent = '停止';
+    micBtn.textContent = tr('停止');
     micBtn.title = '再点一下结束录音';
     // 兜底：最长 60 秒，防止忘了关一直占着麦克风
     micTimer = setTimeout(function () { if (micState === 'recording') micStop(); }, 60000);
@@ -7353,7 +7407,7 @@
     micState = 'working';
     micBtn.classList.remove('rec');
     micBtn.classList.add('busy');
-    micBtn.textContent = '识别中';
+    micBtn.textContent = tr('识别中');
     var chunks = micChunks.slice(), rate = micRate;
     micReset();
     duckOutput(false);
@@ -7373,7 +7427,7 @@
     } finally {
       micState = 'idle';
       micBtn.classList.remove('busy');
-      micBtn.textContent = '语音';
+      micBtn.textContent = tr('语音');
       micBtn.title = '语音输入（仅桌面客户端）';
     }
   }
@@ -7498,6 +7552,7 @@
   var cfgWithShot = document.getElementById('cfgWithShot');
   var cfgStt = document.getElementById('cfgStt');
   var cfgSttDuck = document.getElementById('cfgSttDuck');
+  var cfgLang = document.getElementById('cfgLang');
   var cfgAskTemplate = document.getElementById('cfgAskTemplate');
   var cfgTranslateTemplate = document.getElementById('cfgTranslateTemplate');
   var tplHint = document.getElementById('tplHint');
@@ -7699,6 +7754,8 @@
         cfgStt.checked = !!c.stt_enable;
         // 录音时静音外放：老配置没有这项，后端缺省即开
         cfgSttDuck.checked = c.stt_duck_output !== false;
+        // [ui] language：以服务端为准（老配置没有这一项就是 zh）
+        if (cfgLang) cfgLang.value = c.ui_language === 'en' ? 'en' : 'zh';
         cfgAskTemplate.value = c.ask_template || '';
         askTplDefault = c.ask_template_default || '';
         cfgTranslateTemplate.value = c.translate_template || '';
@@ -8070,6 +8127,8 @@
       with_shot: !!cfgWithShot.checked,
       stt_enable: !!cfgStt.checked,
       stt_duck_output: !!cfgSttDuck.checked,
+      // [ui] language：切到 en 后整页重载，让 i18n 表重新拉取并替换静态文案
+      ui_language: cfgLang ? cfgLang.value : 'zh',
       permission_mode: cfgPerm.value,
       workspace: cfgWorkspace.value,
       token: newToken,
@@ -8110,6 +8169,12 @@
           localStorage.setItem('deckmeido_token', newToken);
           tokenHint.textContent = '令牌已更新，其他设备需用新令牌重新连接';
           reconnectNow();
+        }
+        // 界面语言刚改过：文案由后端下发的替换表处理，重载一次最干净
+        if (cfgLang && cfgLang.value !== UI_LANG) {
+          cfgHint.textContent = '语言已切换，正在重载界面…';
+          setTimeout(function () { location.reload(); }, 200);
+          return null;
         }
         // 开关可能刚改过：先按表单值立刻更新本地判断，再拉一次服务端状态校准
         riState.enabled = !!cfgRiEnabled.checked;
