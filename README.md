@@ -127,7 +127,7 @@ bash install.sh speedtest            # 只测 pip 源速率
 3. 创建数据根 `userdata/` 及 `persona/`、`sessions/`、`uploads/`、`meidobot/`、`logs/`、`models/`，目录权限 `700`。
 4. 建 `.venv` 并安装依赖；默认装 PySide6，`DECKMEIDO_SKIP_GUI=1` 可跳过。
 5. 从 `server/config.example.toml` 生成 `userdata/config.toml`，权限 `600`。
-6. 写桌面快捷方式与 `uninstall.sh`，并移除安装器不再使用的 systemd 单元；**不注册开机自启服务**，后端由客户端拉起。
+6. 写桌面快捷方式与 `uninstall.sh`；**不生成、不安装任何 systemd 单元**，后端只由客户端与插件拉起。
 7. 检测到 Decky Loader 时询问是否安装 QAM 插件，然后启动客户端。
 
 ### Decky 插件
