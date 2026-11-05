@@ -714,6 +714,8 @@ _stt_cfg = CFG.get("stt", {})
 stt = STT(
     model_root=paths.stt_model_dir(),
     enable=bool(_stt_cfg.get("enable", True)),
+    # 下载源：auto（默认，国内镜像→GitHub）/ mirror / github / 自定义 URL
+    model_source=str(_stt_cfg.get("model_source", "auto") or "auto"),
 )
 # 录音期间是否静音外放：默认开（按住说话时游戏外放会灌进麦克风），
 # 设置里可关；工具缺失时 audiomute 自己静默降级，不影响录音
@@ -759,6 +761,7 @@ def apply_config(cfg: dict):
     # 语音输入开关热更新；关掉时顺手把已加载的模型释放掉，别让它白占内存
     s = cfg.get("stt", {})
     stt.enable = bool(s.get("enable", True))
+    stt.model_source = str(s.get("model_source", "auto") or "auto")
     if not stt.enable:
         stt.unload()
     # 录音时静音外放：热更新；关掉时把可能还静着的输出立刻恢复
@@ -3464,7 +3467,7 @@ async def api_stt_status():
 
 @app.post("/api/stt/download", dependencies=[Depends(check_token_any)])
 async def api_stt_download():
-    """启动语音模型下载（压缩包约 1GB，解出约 250MB）
+    """启动语音模型下载（镜像直取约 250MB，GitHub 回退为 1GB 压缩包）
 
     改成「后台任务 + 轮询进度」：原先这个接口要同步等几分钟，Decky 桥接请求
     超时后前端只能看到失败，模型其实还在下；下完了也得等下一次重启才认。

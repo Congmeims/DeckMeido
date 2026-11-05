@@ -8756,11 +8756,15 @@
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.runtime && d.model) {
-          sttHint.textContent = '语音输入可用。';
+          // 模型源按 [stt] model_source 显示：auto 是国内镜像优先、GitHub 兜底
+          var src = d.model_source === 'mirror' ? 'hf-mirror 镜像'
+            : d.model_source === 'github' ? 'GitHub'
+            : d.model_source ? '自定义源' : '国内镜像优先';
+          sttHint.textContent = '语音输入可用（下载源：' + src + '）。';
         } else if (d && !d.runtime) {
           sttHint.textContent = '这台机器还没安装语音识别运行时（sherpa-onnx）：开关可以保存，但暂时识别不了。';
         } else {
-          sttHint.textContent = '语音识别模型还没下载（约 155MB），在插件端点下载后才能用。';
+          sttHint.textContent = '语音识别模型还没下载（约 250MB，默认走国内镜像），在插件端点下载后才能用。';
         }
       })
       .catch(function () { sttHint.textContent = ''; });

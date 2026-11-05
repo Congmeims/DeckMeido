@@ -164,10 +164,15 @@ max_chars = 300
 
 [stt]
 # 语音输入（离线识别）：开启后首次录音会按需下载 SenseVoice-Small 模型
-#（压缩包约 1GB，只解出约 250MB）到 <数据根>/models/sensevoice，纯 CPU
-# 运行，不联网。关闭后释放模型、不再占用内存；识别语言由模型自动判定，
-# 中英混说即可。
+#（int8 模型约 250MB）到 <数据根>/models/sensevoice，纯 CPU 运行，不联网。
+# 关闭后释放模型、不再占用内存；识别语言由模型自动判定，中英混说即可。
 enable = true
+# 模型下载源：auto（默认，国内镜像 hf-mirror.com 优先，失败回退 GitHub）
+#   mirror = 只用国内镜像；github = 只用 GitHub Releases 的 tar.bz2；
+#   也可以直接填一个 tar.bz2 的完整 URL 当自定义源。
+# 普通用户没有代理时 GitHub 基本不可用，所以默认不是 GitHub。
+# 下载前会先短超时探测各源，中途失败自动切下一个，.part 支持断点续传。
+model_source = "auto"
 # 录音期间静音系统/游戏外放（默认开）：按住说话时外放会灌进麦克风，
 # 录完立刻恢复；机器上没有 wpctl / pactl 时自动跳过，不影响录音本身。
 duck_output = true
