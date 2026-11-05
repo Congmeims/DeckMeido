@@ -1626,6 +1626,12 @@ def _set_device_cookie(response: Response, request: Request, token: str,
     )
 
 
+# 同一 IP 打同一路径的无效凭据，60 秒内只记一条：旧页面缓存会每 3 秒用空
+# 令牌轮询一次，不合并且然把审计缓冲刷成同一件事的 50 条重复
+_bad_token_marks: dict[tuple[str, str], float] = {}
+_BAD_TOKEN_NOTICE_S = 60.0
+
+
 def _reject_bad_token(ip: str, action: str, detail: str = "") -> None:
     """凭据不对：记一条审计并返回 401。
 
@@ -1634,7 +1640,15 @@ def _reject_bad_token(ip: str, action: str, detail: str = "") -> None:
     暴力猜令牌由 12 位 Crockford Base32（≈60 bit）本身挡住；配对则靠
     单次会话最多 3 次尝试（见 server/pairing.py）。
     """
-    audit.record("auth", action, "fail", ip=ip, reason="bad_token", detail=detail)
+    now = time.time()
+    key = (ip, detail or action)
+    if now - _bad_token_marks.get(key, 0.0) >= _BAD_TOKEN_NOTICE_S:
+        _bad_token_marks[key] = now
+        if len(_bad_token_marks) > 200:
+            for stale in [k for k, t in _bad_token_marks.items()
+                          if now - t >= _BAD_TOKEN_NOTICE_S]:
+                _bad_token_marks.pop(stale, None)
+        audit.record("auth", action, "fail", ip=ip, reason="bad_token", detail=detail)
     raise HTTPException(status_code=401, detail="invalid token")
 
 
