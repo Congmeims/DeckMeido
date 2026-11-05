@@ -25,6 +25,7 @@
 #
 # 怎么装（最傻瓜的一条命令，装完能反复用来自动升级 / 卸载）：
 #   curl -sL https://meido.meagames.cn/deckmeido/install.sh | bash
+#   —— 镜像站优先；镜像不可用或校验失败时自动回落到 GitHub Release
 #   —— 第一次跑：全新安装；之后再跑同一条：询问「升级 / 卸载」，选完才继续
 #   想手动选操作（含卸载）：下载脚本后 bash install.sh menu
 #   git 方式（需要本地源码目录时）：git clone ... && cd deckmeido && bash install.sh
@@ -100,7 +101,7 @@ DATA_MODELS="$DATA_DIR/models"            # 语音识别模型（sensevoice/）
 
 # 是否通过「curl | sh -」管道执行。管道执行时脚本不在磁盘上，$BASH_SOURCE[0]
 # 不是真实文件，sync_files 依赖的 $HERE/* 会指向错误位置；此时自动走
-# from-mirror（下载完整发布包再安装），让「一行命令来回用」成为可能。
+# 远程发布包安装（镜像优先、GitHub 兜底），让「一行命令来回用」成为可能。
 _is_piped() {
   local src="${BASH_SOURCE[0]:-}"
   # 管道执行时 BASH_SOURCE[0] 通常是空 / "bash" / "sh" / "-"，不是真实文件
@@ -2176,13 +2177,45 @@ do_upgrade() {
   fi
 }
 
-# ---------- 从镜像站安装 ----------
-# GitHub 不通、也没有现成源码目录时用这个：拉一份最新的发布包，解到临时目录，
+# ---------- 远程发布包安装（镜像优先，GitHub 兜底） ----------
+# 管道执行 / GitHub 不通 / 没有现成源码目录时：拉一份最新的发布包，解到临时目录，
 # 再交给正常的 install 流程（等价于自己下载解压后跑 bash install.sh）。
-mirror_latest_tag() {
-  curl -fsSL -m 15 "$MIRROR/latest.json" 2>/dev/null |
+GH_RELEASES="https://github.com/$GITHUB_REPO/releases"
+GH_LATEST="$GH_RELEASES/latest/download"
+
+json_tag() {
+  curl -fsSL -m 15 "$1" 2>/dev/null |
     grep -oE '"tag"[[:space:]]*:[[:space:]]*"[^"]+"' | head -n1 |
     sed -E 's/.*"([^"]+)"$/\1/' | sed 's/^v//'
+}
+
+github_latest_tag() { json_tag "$GH_LATEST/latest.json"; }
+mirror_latest_tag() { json_tag "$MIRROR/latest.json"; }
+
+# 下载发布包并校验。$4=1 表示必须有 .sha256（GitHub 路径），校验缺失或失败都算失败；
+# 镜像路径沿用旧行为：拿不到校验文件就跳过，只打提示。
+fetch_pkg() {
+  local base="$1" tag="$2" tmp="$3" require_sha="$4"
+  local url="$base/deckmeido-$tag.tar.gz"
+  rm -f "$tmp/pkg.tar.gz" "$tmp/pkg.sha256"
+  info "下载 $url"
+  curl -fL --retry 2 -m 600 -o "$tmp/pkg.tar.gz" "$url" || {
+    warn "下载失败：$url"
+    return 1
+  }
+  if curl -fsSL -m 15 -o "$tmp/pkg.sha256" "$url.sha256" 2>/dev/null; then
+    ( cd "$tmp" && sed "s|deckmeido-$tag.tar.gz|pkg.tar.gz|" pkg.sha256 | sha256sum -c - >/dev/null 2>&1 ) || {
+      warn "sha256 校验不通过：$url"
+      return 1
+    }
+    dim "sha256 校验通过"
+  elif [ "$require_sha" = 1 ]; then
+    warn "拿不到校验文件：$url.sha256"
+    return 1
+  else
+    warn "没有拿到校验文件，跳过校验：$url.sha256"
+  fi
+  return 0
 }
 
 # 管道执行时「装 / 升 / 卸」怎么定：
@@ -2190,11 +2223,13 @@ mirror_latest_tag() {
 #   装了   → 必须手动选「升级」还是「卸载」，不设默认值
 # 之所以不给默认值：回车就升级的话，想卸载的人一旦手滑就直接覆盖安装，
 # 卸载入口等于藏起来了。这里强制敲 1 或 2。
-mirror_pick_action() {
+# 结果写进 REMOTE_ACTION（不用命令替换捕获：横幅与提示都走 stdout，捕获会把它们混进来）
+REMOTE_ACTION=""
+remote_pick_action() {
   print_banner
   if [ ! -f "$INSTALL_DIR/VERSION" ]; then
     info "未检测到已安装的 $APP，直接开始全新安装（$INSTALL_DIR）"
-    printf 'install'
+    REMOTE_ACTION=install
     return 0
   fi
   local ver; ver=$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)
@@ -2214,22 +2249,23 @@ mirror_pick_action() {
     return 3
   }
   case "$choice" in
-    1) printf 'upgrade' ;;
-    2) printf 'uninstall' ;;
-    0|""|q|Q) printf 'quit' ;;
+    1) REMOTE_ACTION=upgrade ;;
+    2) REMOTE_ACTION=uninstall ;;
+    0|""|q|Q) REMOTE_ACTION=quit ;;
     *) return 4 ;;
   esac
 }
 
-do_from_mirror() {
-  need_cmd curl || die "需要 curl：先装 curl（sudo pacman -S curl）"
-  local action rc=0
-  action="$(mirror_pick_action)" || rc=$?
+# 处理「装 / 升 / 卸」选择；卸载与退出在这里直接结束，其余返回时 REMOTE_ACTION 已就绪。
+remote_action_or_exit() {
+  local rc=0
+  REMOTE_ACTION=""
+  remote_pick_action || rc=$?
   if [ "$rc" != 0 ]; then
     [ "$rc" = 3 ] && exit 0
     die "无效选择，已退出（输入 1 升级 / 2 卸载 / 0 退出）"
   fi
-  case "$action" in
+  case "$REMOTE_ACTION" in
     quit) info "已取消"; exit 0 ;;
     uninstall)
       # 卸载不需要安装包：直接用这张脚本自带的 do_uninstall，
@@ -2237,34 +2273,74 @@ do_from_mirror() {
       do_uninstall
       exit 0 ;;
   esac
+}
+
+# 显式指定 from-mirror 时只走镜像站。
+do_from_mirror() {
+  need_cmd curl || die "需要 curl：先装 curl（sudo pacman -S curl）"
+  remote_action_or_exit
 
   print_banner
   info "镜像站：$MIRROR"
   local tag; tag="$(mirror_latest_tag || true)"
   [ -n "$tag" ] || die "读不到镜像站的版本信息（$MIRROR/latest.json），请检查网络或稍后再试"
   info "最新版本：v$tag"
-  local url="$MIRROR/deckmeido-$tag.tar.gz"
   local tmp; tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
-  info "下载 $url"
-  curl -fL --retry 2 -m 600 -o "$tmp/pkg.tar.gz" "$url" ||
-    die "下载失败：$url"
-  # 有校验和就核一遍，防止半包 / 被篡改
-  if curl -fsSL -m 15 -o "$tmp/pkg.sha256" "$url.sha256" 2>/dev/null; then
-    ( cd "$tmp" && sed "s|deckmeido-$tag.tar.gz|pkg.tar.gz|" pkg.sha256 | sha256sum -c - >/dev/null 2>&1 ) ||
-      die "安装包校验不通过，可能没下完整，请重试"
-    dim "sha256 校验通过"
-  fi
+  fetch_pkg "$MIRROR" "$tag" "$tmp" 0 || die "下载失败：$MIRROR/deckmeido-$tag.tar.gz"
   tar -xzf "$tmp/pkg.tar.gz" -C "$tmp" || die "解压失败"
   local src; src="$(find "$tmp" -maxdepth 2 -name install.sh -printf '%h\n' | head -n1)"
   [ -n "$src" ] || die "安装包结构不对：里面没有 install.sh"
-  info "开始执行：$action（来源：$src）"
+  info "开始执行：$REMOTE_ACTION（来源：$src）"
   # 让子进程沿用这次用的镜像地址，写进配置的就是它。
   # 子命令明确传下去：上面已经问过「升级还是卸载」，不能让子脚本再猜一次
-  case "$action" in
-    upgrade) DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" upgrade ;;
-    *)       DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" install ;;
-  esac
+  DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" "$REMOTE_ACTION"
+}
+
+# 管道执行 / 一行命令自举：先镜像，镜像不可用再 GitHub。
+do_from_piped() {
+  need_cmd curl || die "需要 curl：先装 curl（sudo pacman -S curl）"
+  remote_action_or_exit
+
+  print_banner
+  local tmp; tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+
+  local tag="" origin=""
+  # 1) 镜像主路径：沿用原有 latest.json + tar.gz + sha256 逻辑
+  tag="$(mirror_latest_tag || true)"
+  if [ -n "$tag" ]; then
+    info "镜像站最新版本：v$tag"
+    if fetch_pkg "$MIRROR" "$tag" "$tmp" 0; then
+      origin="镜像站"
+    else
+      warn "镜像站安装包不可用，改用 GitHub Release"
+    fi
+  else
+    warn "读不到镜像站的版本信息（$MIRROR/latest.json），改用 GitHub Release"
+  fi
+
+  # 2) GitHub 兜底：必须拿到 latest.json，并且 tar.gz 与 .sha256 都校验通过
+  if [ -z "$origin" ]; then
+    tag="$(github_latest_tag || true)"
+    if [ -n "$tag" ]; then
+      info "GitHub 最新版本：v$tag"
+      if fetch_pkg "$GH_LATEST" "$tag" "$tmp" 1; then
+        origin="GitHub"
+      else
+        die "镜像站与 GitHub 都下载失败：$GH_LATEST/deckmeido-$tag.tar.gz"
+      fi
+    else
+      die "镜像站与 GitHub 都读不到版本信息（$MIRROR/latest.json / $GH_LATEST/latest.json），请检查网络或稍后再试"
+    fi
+  fi
+
+  tar -xzf "$tmp/pkg.tar.gz" -C "$tmp" || die "解压失败"
+  local src; src="$(find "$tmp" -maxdepth 2 -name install.sh -printf '%h\n' | head -n1)"
+  [ -n "$src" ] || die "安装包结构不对：里面没有 install.sh"
+  info "开始执行：$REMOTE_ACTION（来源：$src，包来自$origin）"
+  # 镜像地址仍写进配置，供软件内更新作为兜底源；本次安装包来源由 origin 决定。
+  DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" "$REMOTE_ACTION"
 }
 
 # 正在跑的任务要先取消：卸载时把后端直接杀掉，正在执行的命令会变成孤儿进程
@@ -2564,7 +2640,7 @@ smart_default() {
 # 下载最新发布包到临时目录再交给正常的 install 流程。这样用户记住一行命令，
 # 不管全新安装还是之后升级，都能用同一条命令反复跑。
 if _is_piped; then
-  do_from_mirror "${1:-}"
+  do_from_piped "${1:-}"
   exit $?
 fi
 

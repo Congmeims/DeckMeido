@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DeckMeido · 住在 Steam Deck 里的 AI 女仆</title>
-<meta name="description" content="DeckMeido 是跑在 Steam Deck 本机上的 AI 桌面代理。会聊天、查攻略、开游戏、点屏幕——她替你动手，还能把回复念给你听。">
+<title>DeckMeido · Steam Deck 上的女仆型 AI 代理</title>
+<meta name="description" content="住在掌机里的 AI 女仆：离线语音、自己看屏、跨屏键鼠；QAM / 大屏 / 客户端 / 网页四入口，也能在 QQ 里远程使唤。">
 <link rel="icon" type="image/png" href="logo.png">
 <style>
 :root {
@@ -241,7 +241,7 @@ footer { border-top: 1px solid var(--line); padding: 48px 0 60px; margin-top: 40
   <header class="hero">
     <img class="logo-big" src="logo.png" alt="DeckMeido 图标">
     <h1>住在 <span class="accent">Steam Deck</span> 里的<br>AI 女仆</h1>
-    <p class="tagline">会聊天、查攻略、开游戏、点屏幕<br><b>她替你动手</b>，还能把回复念给你听。</p>
+    <p class="tagline">会聊天、看攻略、开游戏，也能自己看屏幕动手<br>语音离线识别，人在电脑前或 QQ 里都能使唤她。</p>
 
     <div class="install-box">
       <div class="install-label">一键安装 · 之后反复跑同一命令即可升级</div>
@@ -249,13 +249,13 @@ footer { border-top: 1px solid var(--line); padding: 48px 0 60px; margin-top: 40
         <code id="install-cmd">curl -sL https://meido.meagames.cn/deckmeido/install.sh | bash</code>
         <button class="copy-btn" id="copy-btn" onclick="copyCmd()">复制</button>
       </div>
-      <div class="install-note">在 Deck 桌面模式打开 Konsole 粘贴执行。首次全新安装，之后再跑会问「升级还是卸载」。不用 <code>sudo</code>。</div>
+      <div class="install-note">在 Deck 桌面模式打开 Konsole 粘贴执行。镜像站优先，镜像不可用时自动回落 GitHub Release；首次全新安装，之后再跑会问「升级还是卸载」。脚本本身不用 <code>sudo</code>，控制类依赖会单独提示。</div>
     </div>
 
     <div class="hero-meta">
-      <div class="m"><b>本机运行</b><span>数据不离开掌机</span></div>
-      <div class="m"><b>任意模型</b><span>GPT · Claude · DeepSeek · Qwen</span></div>
-      <div class="m"><b>三种界面</b><span>网页 · 客户端 · Decky 插件</span></div>
+      <div class="m"><b>本机工具</b><span>操作与数据留在掌机</span></div>
+      <div class="m"><b>离线语音</b><span>SenseVoice 本地转写</span></div>
+      <div class="m"><b>四种形态</b><span>QAM · 大屏 · 客户端 · 网页</span></div>
     </div>
   </header>
 </div>
@@ -274,29 +274,39 @@ footer { border-top: 1px solid var(--line); padding: 48px 0 60px; margin-top: 40
         <p>流式回复 + 思维链、多会话、上下文自动压缩、长期记忆、图片上传、分享为长图。</p>
       </div>
       <div class="card reveal">
-        <div class="icon">🖱️</div>
-        <h3>操作桌面</h3>
-        <p>聚焦窗口、按坐标点击、打字、执行命令，带超时保护 + 危险命令识别 + 三档权限。</p>
-      </div>
-      <div class="card reveal">
         <div class="icon">👁️</div>
         <h3>看屏幕</h3>
-        <p>桌面模式 KWin 截图，游戏模式走 gamescope PipeWire 抓帧，看懂了再动手。</p>
+        <p>桌面模式 KWin 截图，游戏模式走 gamescope PipeWire 抓帧；支持截图询问与截图翻译，游戏名自动识别。</p>
+      </div>
+      <div class="card reveal">
+        <div class="icon">🎙️</div>
+        <h3>离线语音</h3>
+        <p>sherpa-onnx + SenseVoice-Small，纯 CPU 本地转写，中英混说带标点；可选 espeak-ng 语音播报。</p>
+      </div>
+      <div class="card reveal">
+        <div class="icon">🖱️</div>
+        <h3>跨屏键鼠</h3>
+        <p>在电脑浏览器里接管 Deck：指针锁定后移动与按键都发往掌机；点 logo、按 Esc 或到时自动释放。</p>
+      </div>
+      <div class="card reveal">
+        <div class="icon">📨</div>
+        <h3>QQ 远程</h3>
+        <p>OneBot 11 / NapCat 接入：管理员私聊可下指令，群管理员可开关放行，普通群友只聊天、零工具。</p>
       </div>
       <div class="card reveal">
         <div class="icon">🎮</div>
-        <h3>Steam 控制</h3>
-        <p>列已装游戏、商店搜索、拉下载——危险操作强制确认。</p>
+        <h3>设备与 Steam</h3>
+        <p>聚焦窗口、点击、打字、执行命令；列游戏库、商店搜索、安装游戏。危险操作强制确认。</p>
       </div>
       <div class="card reveal">
         <div class="icon">🕹️</div>
-        <h3>游戏模式</h3>
-        <p>Decky 插件：QAM 侧栏直接对话、截屏提问、虚拟手柄按键。</p>
+        <h3>游戏内双形态</h3>
+        <p>QAM 三页签 + 大屏路由；L1/R1 翻页、X 翻译、Y 截图询问、R2 按住说话，全程手柄可用。</p>
       </div>
       <div class="card reveal">
-        <div class="icon">🔊</div>
-        <h3>更多</h3>
-        <p>联网搜索、天气、文件读写、模拟器 ROM 扫描、系统信息、语音播报（TTS）。</p>
+        <div class="icon">🗂️</div>
+        <h3>人格 · 记忆 · 数据根</h3>
+        <p>人设与长期记忆都是显式文件，统一放在 <code>userdata/</code>；升级不覆盖，卸载保留。</p>
       </div>
     </div>
   </div>
@@ -324,11 +334,15 @@ footer { border-top: 1px solid var(--line); padding: 48px 0 60px; margin-top: 40
       </div>
       <div class="note reveal">
         <div class="idx">04</div>
-        <div><h3>长期记忆是显式教学</h3><p>只有「记住」时她才记录，没有后台自学噪声，记忆干净可控。</p></div>
+        <div><h3>人格与记忆都是显式文件</h3><p>人设存 <code>persona/meidosoul.json</code>，长期记忆存 <code>memory.json</code>；只有「记住」时才写入，没有后台自学噪声，随时可读可改。</p></div>
       </div>
       <div class="note reveal">
         <div class="idx">05</div>
         <div><h3>Web 与客户端同源</h3><p>客户端不复制界面，直接加载本地服务，改一处两端同步。</p></div>
+      </div>
+      <div class="note reveal">
+        <div class="idx">06</div>
+        <div><h3>数据只有一个根</h3><p><code>userdata/</code> 下放 <code>config.toml</code>、<code>persona/</code>、<code>memory.json</code>、<code>sessions/</code>、<code>uploads/</code>、<code>models/sensevoice/</code>、<code>logs/</code>、<code>meidobot/</code>；升级不覆盖，卸载保留。</p></div>
       </div>
     </div>
   </div>
@@ -345,7 +359,7 @@ footer { border-top: 1px solid var(--line); padding: 48px 0 60px; margin-top: 40
       <div class="card reveal">
         <h3>① 一行命令（推荐）</h3>
         <p style="margin-top:6px; font-family:var(--mono); font-size:12.5px; color:var(--rose-2);">curl -sL https://meido.meagames.cn/deckmeido/install.sh | bash</p>
-        <p style="margin-top:8px;">第一次全新安装，之后再跑会问「升级还是卸载」。适合大多数用户。</p>
+        <p style="margin-top:8px;">第一次全新安装，之后再跑会问「升级还是卸载」。镜像站优先，失败自动回落 GitHub Release。</p>
       </div>
       <div class="card reveal">
         <h3>② Git 源码</h3>
@@ -366,7 +380,7 @@ footer { border-top: 1px solid var(--line); padding: 48px 0 60px; margin-top: 40
     <div class="sec-head reveal">
       <div class="eyebrow">Download</div>
       <h2>下载最新版</h2>
-      <p>版本信息自动从镜像站读取。</p>
+      <p>版本信息自动获取；镜像不可用时回退到 GitHub Release。</p>
     </div>
     <div class="download-grid">
       <div class="dl-card reveal">
@@ -379,7 +393,7 @@ footer { border-top: 1px solid var(--line); padding: 48px 0 60px; margin-top: 40
         <h3>Decky 插件</h3>
         <div class="ver" id="dl-plugin-ver">前端已编译，无需 npm</div>
         <a class="btn" id="dl-plugin-link" href="#">下载 .zip</a>
-        <div class="hint">解压到 ~/homebrew/plugins/DeckMeido</div>
+        <div class="hint">解压到 ~/homebrew/plugins/，得到 DeckMeido/ 文件夹</div>
       </div>
     </div>
   </div>
@@ -402,11 +416,27 @@ footer { border-top: 1px solid var(--line); padding: 48px 0 60px; margin-top: 40
       </details>
       <details>
         <summary>升级后聊天记录丢了？</summary>
-        <div class="a">不应该发生——会话存在 server/sessions/，升级不碰。如果确实丢了，多半是有两份后端抢同一端口，跑一次 <code>bash install.sh upgrade</code> 会清理残留进程。</div>
+        <div class="a">不应该发生——会话存在 <code>userdata/sessions/</code>，升级不碰。如果确实丢了，多半是有两份后端抢同一端口，跑一次 <code>bash install.sh upgrade</code> 会清理残留进程。</div>
+      </details>
+      <details>
+        <summary>QQ 怎么接？</summary>
+        <div class="a">Deck 主动连 NapCat 的 OneBot 11 WebSocket，本机不开入站端口。在网页「远程连接」里填 <code>ws_url</code> 与 <code>access_token</code>，只有 <code>admin_qq</code> 列表里的号能下指令；群聊需要 @ 机器人，是否允许群管理员下指令由 <code>group_admin_commands</code> 控制。</div>
+      </details>
+      <details>
+        <summary>语音模型要下多大？</summary>
+        <div class="a">首次按键时按需下载到 <code>userdata/models/sensevoice/</code>，压缩包约 1GB，解出约 250MB；下载或识别失败只影响语音，不影响其它功能。</div>
+      </details>
+      <details>
+        <summary>跨屏键鼠怎么开？</summary>
+        <div class="a">先在网页设置里打开跨屏键鼠开关（会弹一次局域网安全确认），再在电脑浏览器点网页左下角 logo 进入接管；再点 logo、按 Esc 或到时间上限即释放。</div>
+      </details>
+      <details>
+        <summary>数据存在哪，升级会丢吗？</summary>
+        <div class="a">统一放在数据根 <code>userdata/</code>：<code>config.toml</code>、<code>persona/</code>、<code>memory.json</code>、<code>sessions/</code>、<code>uploads/</code>、<code>models/sensevoice/</code>、<code>logs/</code>、<code>meidobot/</code>。升级不覆盖配置与会话，卸载保留整个目录。</div>
       </details>
       <details>
         <summary>游戏模式下网页打不开？</summary>
-        <div class="a">正常，SteamOS 游戏模式的浏览器不在。用 Decky 插件的 QAM 面板，或切回桌面模式。</div>
+        <div class="a">正常，SteamOS 游戏模式的浏览器不在。用 Decky 插件的 QAM 面板，或从 QAM 进大屏页，也可以切回桌面模式。</div>
       </details>
       <details>
         <summary>装不下、下载很慢？</summary>
@@ -419,7 +449,7 @@ footer { border-top: 1px solid var(--line); padding: 48px 0 60px; margin-top: 40
 <footer>
   <div class="wrap foot-inner">
     <img class="logo" src="logo.png" alt="DeckMeido">
-    <p>DeckMeido · 为你守着这台掌机的女仆</p>
+    <p>© 2026 DeckMeido · CC BY-NC 4.0 · 为你守着这台掌机的女仆</p>
     <div class="links">
       <a href="https://github.com/Congmeims/deckmeido">GitHub</a>
       <a href="https://github.com/Congmeims/deckmeido/releases">Releases</a>
@@ -455,33 +485,53 @@ const io = new IntersectionObserver((entries) => {
 }, { threshold: 0.12 });
 document.querySelectorAll('.reveal').forEach(el => io.observe(el));
 
-// 从镜像站 latest.json 读取最新版本，填充下载链接
+// 版本源：主源=镜像站，兜底=GitHub Release；版本号不写死，全部从 latest.json 推导
+const REPO = 'Congmeims/deckmeido';
+const RELEASES = 'https://github.com/' + REPO + '/releases';
+const MIRROR = 'https://meido.meagames.cn/deckmeido'; // 主源
+const GH_LATEST = RELEASES + '/latest/download';      // 兜底
+
+function applyRelease(base, data) {
+  const ver = String((data && data.tag) || '').replace(/^v/, '');
+  const tarball = data && data.files && data.files.tarball;
+  if (!ver || !tarball) throw new Error('latest.json 字段缺失');
+
+  document.getElementById('dl-tar-ver').textContent = 'v' + ver;
+  const tarLink = document.getElementById('dl-tar-link');
+  tarLink.href = base + '/' + tarball;
+  tarLink.setAttribute('download', tarball);
+
+  const pluginFile = 'deckmeido-plugin-' + ver + '.zip';
+  const pluginLink = document.getElementById('dl-plugin-link');
+  pluginLink.href = base + '/' + pluginFile;
+  pluginLink.setAttribute('download', pluginFile);
+  document.getElementById('dl-plugin-ver').textContent = 'v' + ver;
+}
+
+async function readLatest(base) {
+  const res = await fetch(base + '/latest.json', { cache: 'no-store' });
+  if (!res.ok) throw new Error('http ' + res.status);
+  return res.json();
+}
+
+function markUnavailable() {
+  document.getElementById('dl-tar-ver').textContent = '暂不可用';
+  document.getElementById('dl-plugin-ver').textContent = '暂不可用';
+  document.getElementById('dl-tar-link').href = RELEASES;
+  document.getElementById('dl-plugin-link').href = RELEASES;
+}
+
 (async () => {
-  const mirror = 'https://meido.meagames.cn/deckmeido';
-  try {
-    const res = await fetch(mirror + '/latest.json', { cache: 'no-store' });
-    if (!res.ok) throw new Error('http ' + res.status);
-    const data = await res.json();
-    const ver = data.tag || '';
-    const tarball = (data.files && data.files.tarball) || '';
-    document.getElementById('dl-tar-ver').textContent = ver ? 'v' + ver : '最新版';
-    if (tarball) {
-      document.getElementById('dl-tar-link').href = mirror + '/' + tarball;
-      document.getElementById('dl-tar-link').setAttribute('download', tarball);
-      // 插件 zip：约定与 tar.gz 同版本同名
-      const pluginName = tarball.replace(/\.tar\.gz$/, '') + '-plugin.zip';
-      // 尝试用固定命名，实际以发布脚本为准：deckmeido-plugin-<ver>.zip
-      const pluginVer = ver.replace(/^v/, '');
-      const pluginFile = 'deckmeido-plugin-' + pluginVer + '.zip';
-      document.getElementById('dl-plugin-link').href = mirror + '/' + pluginFile;
-      document.getElementById('dl-plugin-link').setAttribute('download', pluginFile);
-      document.getElementById('dl-plugin-ver').textContent = 'v' + pluginVer;
+  // 先镜像，失败再 GitHub Release，两边都失败才标记暂不可用
+  for (const base of [MIRROR, GH_LATEST]) {
+    try {
+      applyRelease(base, await readLatest(base));
+      return;
+    } catch (e) {
+      console.warn('版本源不可用：' + base, e);
     }
-  } catch (e) {
-    document.getElementById('dl-tar-ver').textContent = '暂不可用';
-    document.getElementById('dl-tar-link').href = 'https://github.com/Congmeims/deckmeido/releases';
-    document.getElementById('dl-plugin-link').href = 'https://github.com/Congmeims/deckmeido/releases';
   }
+  markUnavailable();
 })();
 </script>
 </body>
