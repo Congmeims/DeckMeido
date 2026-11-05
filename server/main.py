@@ -1581,21 +1581,38 @@ def _norm_token(value: str | None) -> str:
     return authguard.norm(value)
 
 
-def check_token(token: str | None = Query(default=None), x_token: str | None = Header(default=None)):
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else ""
+
+
+def _check_fail_limit(ip: str) -> None:
+    if authguard.limiter.blocked(ip):
+        raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
+
+
+def check_token(request: Request, token: str | None = Query(default=None),
+                x_token: str | None = Header(default=None)):
+    ip = _client_ip(request)
+    _check_fail_limit(ip)
     if TOKEN and (authguard.token_eq(TOKEN, token) or authguard.token_eq(TOKEN, x_token)):
         return
+    authguard.limiter.record(ip)
     raise HTTPException(status_code=401, detail="invalid token")
 
 
-def check_token_any(token: str | None = Query(default=None), x_token: str | None = Header(default=None)):
+def check_token_any(request: Request, token: str | None = Query(default=None),
+                    x_token: str | None = Header(default=None)):
     """改令牌专用：旧令牌或新令牌任一都能通过。
 
     设置页保存新令牌时，前端还带着旧令牌，而校验已经换成新的了，
     不放开这一条会导致「改完自己把自己锁在外面」。
     """
+    ip = _client_ip(request)
+    _check_fail_limit(ip)
     for expected in {_norm_token(TOKEN), _norm_token(_pending_token)} - {""}:
         if authguard.token_eq(expected, token) or authguard.token_eq(expected, x_token):
             return
+    authguard.limiter.record(ip)
     raise HTTPException(status_code=401, detail="invalid token")
 
 
@@ -2315,7 +2332,13 @@ async def ws_terminal(ws: WebSocket, token: str = Query(default="")):
 
     用 base64 传字节：WebSocket 文本帧不能塞任意字节，二进制帧又不好混 JSON 头。
     """
+    client_ip = ws.client.host if ws.client else ""
+    if authguard.limiter.blocked(client_ip):
+        await ws.accept()
+        await ws.close(code=4429)
+        return
     if not _norm_token(TOKEN) or not authguard.token_eq(TOKEN, token):
+        authguard.limiter.record(client_ip)
         await ws.accept()
         await ws.close(code=4401)
         return
@@ -2387,8 +2410,13 @@ async def ws_input(ws: WebSocket, token: str = Query(default="")):
     """
     client_ip = ws.client.host if ws.client else ""
     cfg = CFG.get("remote_input") or {}
+    if authguard.limiter.blocked(client_ip):
+        await ws.accept()
+        await ws.close(code=4429)
+        return
     code = remote_input.access_error(cfg, client_ip, TOKEN, token)
     if code == remote_input.RI_UNAUTHORIZED:
+        authguard.limiter.record(client_ip)
         await ws.accept()
         await ws.close(code=4401)
         return
@@ -5575,8 +5603,14 @@ async def run_agent(events: list[dict], extra_system: str = "",
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket, token: str = Query(default="")):
+    client_ip = ws.client.host if ws.client else ""
+    if authguard.limiter.blocked(client_ip):
+        await ws.accept()
+        await ws.close(code=4429)
+        return
     if not _norm_token(TOKEN) or not authguard.token_eq(TOKEN, token):
         # 先 accept 再 close，浏览器才能拿到 4401 这个原因码，否则只会看到 1006 而无限重连
+        authguard.limiter.record(client_ip)
         await ws.accept()
         await ws.close(code=4401)
         return
