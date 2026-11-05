@@ -2866,6 +2866,8 @@ async def api_get_config():
         "workspace": str(tools.WORKSPACE),
         "token": TOKEN,
         "port": CFG["server"].get("port", 18765),
+        # 局域网访问地址：掌机 / 大屏 / 客户端设置页直接展示，别的设备照这个连
+        "lan_url": f"http://{_lan_ip()}:{CFG['server'].get('port', 18765)}",
         "llm_configured": llm.configured,
         "version": VERSION,
         # 人设：设置页表单用，默认值和后台提示词里的一致

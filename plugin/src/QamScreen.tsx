@@ -10,7 +10,7 @@ import {
   TextField,
   ToggleField,
 } from "@decky/ui";
-import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, TEXT } from "./ui";
+import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, TEXT, copyText, groupToken } from "./ui";
 import { statusLineFor } from "./statusLine";
 import { applyPadOrder, logPadOrder, steamClient } from "./padOrder";
 import { useVoiceInput } from "./useVoiceInput";
@@ -1519,6 +1519,43 @@ export default function QamScreen() {
             paddingRight: 2,
           }}
         >
+          {/* 局域网访问：地址与令牌都从这里拿，别的设备照着填 */}
+          <Card title="局域网访问">
+            <div style={{ fontSize: 11, color: DIM, lineHeight: 1.5 }}>
+              手机 / 平板 / 电脑浏览器连这个地址；令牌每 4 位一组，输入时可带可不带连字符。
+            </div>
+            <div style={{ fontSize: 12, color: TEXT, wordBreak: "break-all" }}>
+              {s.status?.lan_url || "—"}
+            </div>
+            <Btn
+              height={26}
+              size={11}
+              onClick={() => void copyText(s.status?.lan_url || "")}
+              description="复制局域网地址"
+            >
+              复制地址
+            </Btn>
+            <div
+              style={{
+                fontSize: 14,
+                color: TEXT,
+                fontFamily: "monospace",
+                letterSpacing: 1,
+                wordBreak: "break-all",
+              }}
+            >
+              {groupToken(s.status?.lan_token || "") || "—"}
+            </div>
+            <Btn
+              height={26}
+              size={11}
+              onClick={() => void copyText(groupToken(s.status?.lan_token || ""))}
+              description="复制访问令牌"
+            >
+              复制令牌
+            </Btn>
+          </Card>
+
           {/* 模型 */}
           <Card title="模型">
             <div style={{ width: "100%", display: "flex" }}>

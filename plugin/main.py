@@ -247,16 +247,6 @@ def _mark_core_stopped(stopped: bool) -> None:
         decky.logger.warning(f"写入核心停止标记失败：{exc}")
 
 
-def _token() -> str:
-    """插件访问后端用的令牌：只从后端配置读取（见 _load_server_cfg）
-
-    本机面板不再需要用户输入令牌；这里保留统一入口，读不到时返回空串，
-    由调用方给出「读不到后端配置」的明确错误。
-    """
-    cfg = _load_server_cfg()
-    return str(cfg.get("token", "") or "").strip()
-
-
 # ---------- 当前在玩的游戏 ----------
 #
 # 查攻略时「哪个游戏」比画面本身还关键：认错了游戏，搜回来的攻略全废。
@@ -2204,11 +2194,13 @@ class Plugin:
             f"游戏 {game.get('name') or '无'}"
             f"（来源 {game.get('source') or 'none'} / 置信 {game.get('confidence') or 'none'}）"
         )
+        lan_ip = _lan_ip()
         return {
             "install_dir": str(INSTALL_DIR),
             "config_ok": _config_path().exists(),
             "port": port,
-            # token 只在插件后端内部拼 URL 用，不再交给前端
+            # token 只在本机面板 / 大屏设置里展示给用户抄到别的设备，
+            # 不在任何画面或对话内容里出现
             "token_ok": bool(str(cfg.get("token", "") or "").strip()),
             "gamescope": node is not None,
             # 画面可用性：游戏模式看 gamescope 节点 + gst；桌面模式插件自己不
@@ -2220,7 +2212,10 @@ class Plugin:
             "as_user": " ".join(_run_as()) or "(self)",
             "proxy": "websockets" if _ws_connect else "raw",
             # 面板第二行显示成「192.168.x.x:18765」，别的设备照这个地址连
-            "ip": _lan_ip(),
+            "ip": lan_ip,
+            # 「局域网访问」区块：地址与令牌，前端分组展示并提供复制
+            "lan_url": f"http://{lan_ip or '127.0.0.1'}:{port}",
+            "lan_token": token,
             # 女仆核心（后端自身的 /api/status）在不在、跑没跑起来
             "core_ok": bool(core.get("ok")),
             "core_reason": str(core.get("error") or ""),

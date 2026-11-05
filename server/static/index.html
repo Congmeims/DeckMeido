@@ -2604,17 +2604,32 @@
             </div>
           </div>
           <div class="card">
-            <div class="card-title">连接</div>
+            <div class="card-title">局域网访问</div>
             <div class="field">
-              <label>访问令牌（连接这台 Deck 用，4-32 位数字或字母，不分大小写）</label>
+              <label>局域网地址（手机 / 平板 / 电脑浏览器打开）</label>
               <div class="token-row">
-                <input id="cfgToken" type="text" placeholder="例如 x7k2m" autocomplete="off" maxlength="32" spellcheck="false">
+                <input id="lanUrl" type="text" readonly autocomplete="off">
+                <button id="lanUrlCopy" class="mini-btn" type="button">复制</button>
+              </div>
+            </div>
+            <div class="field">
+              <label>访问令牌（每 4 位一组，输入时可带可不带连字符）</label>
+              <div class="token-row">
+                <input id="lanToken" type="text" readonly autocomplete="off">
+                <button id="lanTokenCopy" class="mini-btn" type="button">复制</button>
+              </div>
+              <div class="field-hint">令牌也可在掌机 QAM / 大屏 / 客户端设置的「局域网访问」里查看。</div>
+            </div>
+            <div class="field">
+              <label>修改访问令牌（4-32 位数字或字母；新安装默认 12 位）</label>
+              <div class="token-row">
+                <input id="cfgToken" type="text" placeholder="例如 ABCD-EFGH-JKMN" autocomplete="off" maxlength="32" spellcheck="false">
                 <button id="genToken" class="mini-btn" type="button">随机生成</button>
               </div>
               <div id="tokenHint" class="field-hint"></div>
             </div>
             <div class="field">
-              <label>手机/其他设备连接</label>
+              <label>带令牌的完整链接（手机扫码）</label>
               <div class="token-row">
                 <input id="cfgUrl" type="text" readonly autocomplete="off">
                 <button id="qrBtn" class="mini-btn" type="button">二维码</button>
@@ -2961,11 +2976,11 @@
     <img class="auth-logo" src="logo.png" alt="DeckMeido">
     <h1>DeckMeido <small>控制台</small></h1>
     <p>输入访问令牌即可连接这台 Steam Deck</p>
-    <input id="tokenInput" type="password" placeholder="访问令牌" autocomplete="off" spellcheck="false">
+    <input id="tokenInput" type="password" placeholder="访问令牌（可粘贴 XXXX-XXXX-XXXX）" autocomplete="off" spellcheck="false">
     <div id="authErr" class="auth-err"></div>
     <button id="tokenBtn">连接</button>
     <div class="auth-tip">
-      令牌默认为 meido 可在客户端设置页修改<br>
+      令牌在掌机 QAM / 大屏 / 客户端设置的「局域网访问」里查看<br>
       当前版本 <span id="authVer">…</span>
     </div>
   </div>
@@ -3065,8 +3080,25 @@
   var authErr = document.getElementById('authErr');
   var authVer = document.getElementById('authVer');
 
+  // 令牌归一化：大小写不敏感，去掉空格/连字符，I/L→1、O→0。
+  // 掌机 / 大屏 / 客户端展示的是 XXXX-XXXX-XXXX，粘贴过来也能直接通过。
+  function normToken(v) {
+    return String(v || '')
+      .toUpperCase()
+      .replace(/[\s-]/g, '')
+      .replace(/I/g, '1')
+      .replace(/L/g, '1')
+      .replace(/O/g, '0')
+      .toLowerCase();
+  }
+  function groupToken(v) {
+    var t = String(v || '').toUpperCase().replace(/[\s-]/g, '')
+      .replace(/I/g, '1').replace(/L/g, '1').replace(/O/g, '0');
+    return t.replace(/(.{4})/g, '$1-').replace(/-+$/g, '');
+  }
+
   // token：URL > localStorage
-  var token = (new URLSearchParams(location.search).get('token') || localStorage.getItem('deckmeido_token') || '').trim().toLowerCase();
+  var token = normToken(new URLSearchParams(location.search).get('token') || localStorage.getItem('deckmeido_token') || '');
   if (token) {
     localStorage.setItem('deckmeido_token', token);
     // 令牌已存到本地，把 URL 里的抹掉，避免截图/分享时泄露
@@ -7456,7 +7488,7 @@
   });
 
   tokenBtn.addEventListener('click', function () {
-    var t = tokenInput.value.trim().toLowerCase();
+    var t = normToken(tokenInput.value);
     if (!t) { authErr.textContent = '请先输入令牌'; return; }
     token = t;
     localStorage.setItem('deckmeido_token', t);
@@ -7498,6 +7530,8 @@
   var cfgToken = document.getElementById('cfgToken');
   var genToken = document.getElementById('genToken');
   var tokenHint = document.getElementById('tokenHint');
+  var lanUrl = document.getElementById('lanUrl');
+  var lanToken = document.getElementById('lanToken');
   var saveCfg = document.getElementById('saveCfg');
   var cfgHint = document.getElementById('cfgHint');
   var cfgUrl = document.getElementById('cfgUrl');
@@ -7774,8 +7808,11 @@
         document.getElementById('cfgPersonaEnding').value = c.persona_ending || '';
         document.getElementById('cfgPersonaSuffix').value = c.persona_suffix || '';
         document.getElementById('cfgPersonaForbid').value = c.persona_forbid || '';
-        cfgToken.value = c.token || '';
-        cfgUrl.value = location.origin + '/?token=' + encodeURIComponent(c.token || '');
+        cfgToken.value = groupToken(c.token || '');
+        // 服务端给出真实局域网 IP：桌面客户端本机访问时 location.origin 是 127.0.0.1
+        lanUrl.value = c.lan_url || location.origin;
+        lanToken.value = groupToken(c.token || '');
+        cfgUrl.value = (c.lan_url || location.origin) + '/?token=' + encodeURIComponent(c.token || '');
         // 更新源：双源探测，这里只控制是否同时查 GitHub
         cfgUpdGithub.checked = c.update_github_enable !== false;
         ddRefreshAll();
@@ -8079,11 +8116,19 @@
       .catch(function () { qrBox.innerHTML = '<p>二维码生成失败，可直接复制上面的地址</p>'; });
   });
 
-  // 随机生成一个新的 5 位令牌（只填入输入框，点保存才生效）
+  // 局域网访问区块的「复制」按钮：地址与分组令牌
+  document.getElementById('lanUrlCopy').addEventListener('click', function () {
+    fbCopyText(lanUrl.value);
+  });
+  document.getElementById('lanTokenCopy').addEventListener('click', function () {
+    fbCopyText(lanToken.value);
+  });
+
+  // 随机生成一个新的 12 位令牌（只填入输入框，点保存才生效）
   genToken.addEventListener('click', function () {
     fetch('/api/token/gen?token=' + encodeURIComponent(token))
       .then(function (r) { return r.json(); })
-      .then(function (res) { cfgToken.value = res.token; tokenHint.textContent = '已生成，点保存后生效'; })
+      .then(function (res) { cfgToken.value = groupToken(res.token); tokenHint.textContent = '已生成，点保存后生效'; })
       .catch(function () { tokenHint.textContent = '生成失败'; });
   });
 
@@ -8109,12 +8154,12 @@
   }
 
   saveCfg.addEventListener('click', function () {
-    var newToken = cfgToken.value.trim().toLowerCase();
+    var newToken = normToken(cfgToken.value);
     if (!/^[a-z0-9]{4,32}$/.test(newToken)) {
       tokenHint.textContent = '令牌需为 4-32 位数字或字母';
       return;
     }
-    cfgToken.value = newToken;
+    cfgToken.value = groupToken(newToken);
     var tokenChanged = newToken !== token;
     cfgHint.textContent = '保存中…';
     // 只有输入框里真有内容才提交 api_key：留空表示「保持原样」。
@@ -8167,6 +8212,7 @@
           // 令牌已换：本地存的还是旧的，直接续上会 401，这里先换成新令牌再重连
           token = newToken;
           localStorage.setItem('deckmeido_token', newToken);
+          lanToken.value = groupToken(newToken);
           tokenHint.textContent = '令牌已更新，其他设备需用新令牌重新连接';
           reconnectNow();
         }

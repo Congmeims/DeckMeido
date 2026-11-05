@@ -6,7 +6,7 @@ import {
   Navigation,
   showModal,
 } from "@decky/ui";
-import { ACCENT, DIM, ERR_COLOR, ImeTextArea, ImeTextField, Md, TEXT } from "./ui";
+import { ACCENT, DIM, ERR_COLOR, ImeTextArea, ImeTextField, Md, TEXT, copyText, groupToken } from "./ui";
 import { statusLineFor } from "./statusLine";
 import { Item, useSession } from "./useSession";
 import { useVoiceInput } from "./useVoiceInput";
@@ -1243,7 +1243,7 @@ export default function BigScreen() {
             minHeight: 0,
             width: "100%",
             margin: "0 auto",
-            // 5 张卡 flex 1 平均分配，卡内内容各自垂直居中
+            // 6 张卡按 flex 权重分配，卡内内容各自垂直居中
             display: "flex",
             flexDirection: "column",
             gap: 6,
@@ -1310,6 +1310,63 @@ export default function BigScreen() {
                       : "当前最新"
                 }
               />
+            </div>
+          </SectionCard>
+
+          {/* 局域网访问：地址与令牌都从这里拿，别的设备照着填 */}
+          <SectionCard
+            title="局域网访问"
+            inlineTitle
+            accent={C.cyber}
+            style={{ padding: 6, flex: 0.7 }}
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr) 190px",
+                columnGap: 10,
+                alignItems: "stretch",
+                minHeight: 0,
+                width: "100%",
+                flex: 1,
+              }}
+            >
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateRows: "1fr 1fr",
+                  gap: 4,
+                  minWidth: 0,
+                  minHeight: 0,
+                }}
+              >
+                <StatRow label="地址" value={s.status?.lan_url || "—"} />
+                <StatRow label="令牌" value={groupToken(s.status?.lan_token || "") || "—"} />
+              </div>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateRows: "1fr 1fr",
+                  gap: 4,
+                  minWidth: 0,
+                  minHeight: 0,
+                }}
+              >
+                <ActionButton
+                  onClick={() => void copyText(s.status?.lan_url || "")}
+                  description="复制局域网地址"
+                  compact
+                >
+                  复制地址
+                </ActionButton>
+                <ActionButton
+                  onClick={() => void copyText(groupToken(s.status?.lan_token || ""))}
+                  description="复制访问令牌"
+                  compact
+                >
+                  复制令牌
+                </ActionButton>
+              </div>
             </div>
           </SectionCard>
 

@@ -58,6 +58,9 @@ export type Status = {
   version: string;
   // 读不到后端配置 / 令牌时的明确原因（空串表示正常）
   config_error: string;
+  // 局域网访问：地址与访问令牌（设置页展示、复制用）
+  lan_url: string;
+  lan_token: string;
 };
 
 export type Item = {

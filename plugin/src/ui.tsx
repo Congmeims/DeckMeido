@@ -252,6 +252,34 @@ export function ImeTextArea({
   );
 }
 
+/** 令牌分组展示：按 4 位一组，大写；长度不足 12 的旧令牌也照切 */
+export function groupToken(value: string): string {
+  const compact = String(value || "")
+    .replace(/[\s-]/g, "")
+    .toUpperCase()
+    .replace(/I/g, "1")
+    .replace(/L/g, "1")
+    .replace(/O/g, "0");
+  return compact.replace(/(.{4})/g, "$1-").replace(/-+$/g, "");
+}
+
+/** 复制文本：Steam 的 CEF 里 navigator.clipboard 可能不可用，退回临时 textarea */
+export async function copyText(text: string): Promise<void> {
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+}
+
 type Block =
   | { t: "h"; text: string }
   | { t: "ul"; items: string[] }
