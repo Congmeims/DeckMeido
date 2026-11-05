@@ -7,7 +7,8 @@
   4. 校验通过后签发设备专属 Cookie，服务端只保存 token 的哈希。
 
 安全约定：
-  - PIN 一次性、60 秒有效、最多 3 次尝试，失败计入 authguard 限速；
+  - PIN 一次性、60 秒有效、最多 3 次尝试；错满 3 次本次配对作废，
+    需要重新发起配对（不按 IP 封禁）；
   - device token 只在下发那一刻存在于响应 Cookie 里，落盘的是 sha256；
   - 审计日志只记 IP/UA 摘要/结果，绝不记录 PIN 或 token。
 """
@@ -36,6 +37,9 @@ STATE_APPROVED = "approved"
 STATE_DENIED = "denied"
 STATE_EXPIRED = "expired"
 STATE_PAIRED = "paired"
+# 错满 3 次：本次配对直接作废，浏览器必须重新发起（与「掌机拒绝」区分开，
+# 前端据此收起 PIN 输入并引导重新配对）
+STATE_FAILED = "failed"
 _ACTIVE = (STATE_PENDING, STATE_APPROVED)
 
 
@@ -263,7 +267,7 @@ class PairingManager:
         with self._lock:
             self._expire_locked()
             if len([s for s in self._sessions.values() if s["state"] in _ACTIVE]) >= MAX_PENDING:
-                raise PairError("too_many", "待配对设备过多，请稍后再试", 429)
+                raise PairError("too_many", "待配对设备过多，请稍后再试", 409)
             pair_id = secrets.token_urlsafe(12)
             now = self._now()
             session = {
@@ -357,6 +361,10 @@ class PairingManager:
                 audit.record("pair", "confirm", "fail", ip=ip, reason="denied",
                              detail=s["name"])
                 raise PairError("denied", "掌机已拒绝这次配对", 403)
+            if s["state"] == STATE_FAILED:
+                audit.record("pair", "confirm", "fail", ip=ip, reason="exhausted",
+                             detail=s["name"])
+                raise PairError("too_many", "PIN 错误次数过多，本次配对已作废，请重新发起配对", 409)
             if s["state"] == STATE_PAIRED:
                 audit.record("pair", "confirm", "fail", ip=ip, reason="used",
                              detail=s["name"])
@@ -366,16 +374,16 @@ class PairingManager:
                              detail=s["name"])
                 raise PairError("not_approved", "请先在掌机上点「允许」", 409)
             if s["attempts"] >= PIN_MAX_ATTEMPTS:
-                s["state"] = STATE_DENIED
-                raise PairError("too_many", "PIN 错误次数过多，请在掌机上刷新 PIN", 429)
+                s["state"] = STATE_FAILED
+                raise PairError("too_many", "PIN 错误次数过多，本次配对已作废，请重新发起配对", 409)
             if not entered or not hmac.compare_digest(s["pin"], entered):
                 s["attempts"] += 1
                 audit.record("pair", "confirm", "fail", ip=ip, reason="pin",
                              detail=s["name"])
                 if s["attempts"] >= PIN_MAX_ATTEMPTS:
-                    s["state"] = STATE_DENIED
+                    s["state"] = STATE_FAILED
                     s["pin"] = ""
-                    raise PairError("too_many", "PIN 错误次数过多，请在掌机上刷新 PIN", 429)
+                    raise PairError("too_many", "PIN 错误次数过多，本次配对已作废，请重新发起配对", 409)
                 left = PIN_MAX_ATTEMPTS - s["attempts"]
                 raise PairError("bad_pin", f"PIN 不正确，还可以尝试 {left} 次", 401)
             # PIN 一次性：成功后立即作废，避免同一请求被重放

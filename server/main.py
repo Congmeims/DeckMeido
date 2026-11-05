@@ -1583,15 +1583,6 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else ""
 
 
-def _check_fail_limit(ip: str) -> None:
-    if authguard.limiter.blocked(ip):
-        wait = authguard.limiter.retry_after(ip)
-        audit.record("auth", "rate", "blocked", ip=ip, reason="too_many")
-        raise HTTPException(status_code=429,
-                            detail=f"尝试过于频繁，请等待 {wait} 秒后重试",
-                            headers={"Retry-After": str(wait)})
-
-
 def _device_days() -> int:
     """设备凭据有效期（天），[security] device_days，默认 30。"""
     try:
@@ -1636,16 +1627,14 @@ def _set_device_cookie(response: Response, request: Request, token: str,
 
 
 def _reject_bad_token(ip: str, action: str, detail: str = "") -> None:
-    """凭据不对时的统一出口：已被限流就 429，否则记一次失败并 401。
+    """凭据不对：记一条审计并返回 401。
 
-    注意顺序：调用方必须先验令牌 / 设备 Cookie，只有验证失败才走到这里。
-    以前是先查限流再验证，后果是「令牌本身是对的，也被上一次失败拖累封掉」，
-    用户怎么重试都进不来。
+    不按 IP 封禁：登录页会周期轮询、刷新页面、旧书签带过期令牌，这些都
+    可能连续 401；按次数封 IP 的结果是「用户什么都没做错却进不来」。
+    暴力猜令牌由 12 位 Crockford Base32（≈60 bit）本身挡住；配对则靠
+    单次会话最多 3 次尝试（见 server/pairing.py）。
     """
-    if authguard.limiter.blocked(ip):
-        _check_fail_limit(ip)
     audit.record("auth", action, "fail", ip=ip, reason="bad_token", detail=detail)
-    authguard.limiter.record(ip)
     raise HTTPException(status_code=401, detail="invalid token")
 
 
@@ -2429,12 +2418,7 @@ async def ws_terminal(ws: WebSocket, token: str = Query(default="")):
     用 base64 传字节：WebSocket 文本帧不能塞任意字节，二进制帧又不好混 JSON 头。
     """
     client_ip = ws.client.host if ws.client else ""
-    if authguard.limiter.blocked(client_ip):
-        await ws.accept()
-        await ws.close(code=4429)
-        return
     if not _ws_authorized(ws, token):
-        authguard.limiter.record(client_ip)
         audit.record("auth", "ws_terminal", "fail", ip=client_ip, reason="bad_token")
         await ws.accept()
         await ws.close(code=4401)
@@ -2507,16 +2491,11 @@ async def ws_input(ws: WebSocket, token: str = Query(default="")):
     """
     client_ip = ws.client.host if ws.client else ""
     cfg = CFG.get("remote_input") or {}
-    if authguard.limiter.blocked(client_ip):
-        await ws.accept()
-        await ws.close(code=4429)
-        return
     # 已配对的浏览器没有 12 位令牌，用 Cookie 认证时把当前令牌当作「已通过」传给校验器；
     # 本机回环同样免令牌
     offered = TOKEN if (_ws_cookie_auth(ws) or netcfg.is_local(client_ip)) else token
     code = remote_input.access_error(cfg, client_ip, TOKEN, offered)
     if code == remote_input.RI_UNAUTHORIZED:
-        authguard.limiter.record(client_ip)
         await ws.accept()
         await ws.close(code=4401)
         return
@@ -3299,7 +3278,6 @@ async def api_auth_session(request: Request, token: str | None = Query(default=N
 async def api_pair_start(request: Request):
     """浏览器发起配对：返回 pair_id，此时还不能访问任何接口。"""
     ip = _client_ip(request)
-    _check_fail_limit(ip)
     try:
         session = pairing.manager.start(ip, request.headers.get("user-agent", ""))
     except pairing.PairError as exc:
@@ -3324,11 +3302,8 @@ async def api_pair_confirm(req: PairConfirmRequest, request: Request,
     try:
         device, token = pairing.manager.confirm(req.pair_id, req.pin, ip)
     except pairing.PairError as exc:
-        # 只有「PIN 真的输错」才计入 IP 限流。未允许 / 已过期 / 已失效都是
-        # 正常流程状态（用户刷新页面、后端重启都会走到这里），把它们当失败
-        # 计数会在几次操作内就把整个 IP 封掉，连正确令牌一起拒之门外。
-        if exc.code == "bad_pin":
-            authguard.limiter.record(ip)
+        # 不按 IP 计数：未允许 / 已过期 / 已失效都是正常流程状态。
+        # 输错 PIN 的上限由单次配对会话自己管（3 次作废）。
         raise _pair_http(exc) from exc
     _set_device_cookie(response, request, token, bool(req.remember))
     return {"ok": True, "device": device, "remember": bool(req.remember),
@@ -5826,13 +5801,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket, token: str = Query(default="")):
     client_ip = ws.client.host if ws.client else ""
-    if authguard.limiter.blocked(client_ip):
-        await ws.accept()
-        await ws.close(code=4429)
-        return
     if not _ws_authorized(ws, token):
         # 先 accept 再 close，浏览器才能拿到 4401 这个原因码，否则只会看到 1006 而无限重连
-        authguard.limiter.record(client_ip)
         audit.record("auth", "ws", "fail", ip=client_ip, reason="bad_token")
         await ws.accept()
         await ws.close(code=4401)

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import unittest
-from unittest import mock
 
 from server import authguard
 
@@ -56,34 +55,6 @@ class CsrfTest(unittest.TestCase):
         self.assertTrue(authguard.same_site("none"))
         self.assertFalse(authguard.same_site("cross-site"))
         self.assertFalse(authguard.same_site("same-site"))
-
-
-class FailureLimiterTest(unittest.TestCase):
-    def _at(self, limiter, now: float):
-        return mock.patch.object(authguard.time, "monotonic", return_value=now)
-
-    def test_blocks_after_20_failures_in_5_minutes(self):
-        limiter = authguard.FailureLimiter()
-        with self._at(limiter, 1000.0):
-            for _ in range(20):
-                self.assertFalse(limiter.blocked("1.2.3.4"))
-                limiter.record("1.2.3.4")
-            self.assertTrue(limiter.blocked("1.2.3.4"))
-
-    def test_window_slides_and_other_ip_unaffected(self):
-        limiter = authguard.FailureLimiter()
-        with self._at(limiter, 1000.0):
-            for _ in range(20):
-                limiter.record("1.2.3.4")
-            self.assertFalse(limiter.blocked("5.6.7.8"))
-        with self._at(limiter, 1301.0):
-            self.assertFalse(limiter.blocked("1.2.3.4"))
-
-    def test_empty_ip_never_blocks(self):
-        limiter = authguard.FailureLimiter()
-        for _ in range(50):
-            limiter.record("")
-        self.assertFalse(limiter.blocked(""))
 
 
 class GenTokenTest(unittest.TestCase):
