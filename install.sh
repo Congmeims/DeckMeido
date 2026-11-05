@@ -2289,6 +2289,9 @@ write_version_file() {
     ver=$(git -C "$INSTALL_DIR" describe --tags --always 2>/dev/null || true)
   fi
   [ -n "$ver" ] || ver=$(git -C "$HERE" describe --tags --always 2>/dev/null || true)
+  # 手工解包/无 git 的部署：退回插件 package.json 的 version，
+  # 避免 VERSION 被写成 0.0.0 导致界面显示 v0.0.0
+  [ -n "$ver" ] || ver=$(sed -nE 's/^  "version": "([^"]*)".*/\1/p' "$INSTALL_DIR/plugin/package.json" 2>/dev/null | head -n1)
   [ -n "$ver" ] || ver="0.0.0"
   printf '%s\n' "${ver#v}" > "$INSTALL_DIR/VERSION"
   dim "版本：$(cat "$INSTALL_DIR/VERSION")"

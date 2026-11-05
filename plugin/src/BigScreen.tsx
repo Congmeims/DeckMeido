@@ -571,6 +571,8 @@ let lastTab = 0;
 
 export default function BigScreen() {
   const s = useSession();
+  // 聊天区的滚动容器：追加消息后自动贴底（chatLog 里的 ChatLog 挂这个 ref）
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const [tab, setTabState] = useState(lastTab);
   const setTab = (t: number | ((prev: number) => number)) => {
     setTabState((prev) => {
