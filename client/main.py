@@ -40,7 +40,35 @@ def _resolve_data_dir() -> Path:
 
 
 CONFIG_PATH = _resolve_data_dir() / "config.toml"
-PORT = os.environ.get("DECKMEIDO_PORT", "18765")
+
+
+def _server_cfg() -> dict:
+    """读 [server] 段；读不到就返回空字典，由下面的默认值兜底。"""
+    try:
+        cfg = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        return cfg.get("server") or {}
+    except Exception:
+        return {}
+
+
+def _resolve_port(server_cfg: dict) -> str:
+    """端口优先级：DECKMEIDO_PORT > config.toml [server].port > 18765。
+
+    起后端与健康检查（API 基址）都用这一个结果，不会再出现「后端换端口、
+    客户端还去问旧端口」的半动态状态。
+    """
+    for candidate in (os.environ.get("DECKMEIDO_PORT"), server_cfg.get("port")):
+        try:
+            port = int(str(candidate).strip())
+        except (TypeError, ValueError):
+            continue
+        if 1024 <= port <= 65535:
+            return str(port)
+    return "18765"
+
+
+_SERVER_CFG = _server_cfg()
+PORT = _resolve_port(_SERVER_CFG)
 API = f"http://127.0.0.1:{PORT}"
 
 # Steam Deck 桌面 1280x800，窗口不超过它
@@ -239,9 +267,11 @@ def _start_backend():
         print(f"[DeckMeido] 找不到解释器 {python}，请重跑 install.sh", file=sys.stderr)
         return None
     try:
+        # 每次拉起都重新读配置：设置页切换 lan_enable 后重启后端即可生效
+        host = "0.0.0.0" if bool(_server_cfg().get("lan_enable", False)) else "127.0.0.1"
         return subprocess.Popen(
             [str(python), "-m", "uvicorn",
-             "server.main:app", "--host", "0.0.0.0", "--port", PORT],
+             "server.main:app", "--host", host, "--port", PORT],
             cwd=DECKMEIDO_DIR,
             stdout=_backend_log_fd(), stderr=subprocess.STDOUT,
             start_new_session=True,

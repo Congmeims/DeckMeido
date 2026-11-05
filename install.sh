@@ -92,6 +92,46 @@ case "$DATA_DIR" in
   *) DATA_DIR="$PWD/$DATA_DIR" ;;
 esac
 DATA_CONFIG="$DATA_DIR/config.toml"
+
+# 端口解析：已有配置优先，没有配置才用 DECKMEIDO_PORT，最后是 18765。
+# 升级/重装时用户可能已经在 config.toml 或设置页里改过端口，预检、卸载和
+# systemd 单元都必须跟着这个值，不能一律拿环境变量覆盖掉。
+config_port() {
+  local cfg="${1:-}"
+  [ -f "$cfg" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 - "$cfg" <<'PY' 2>/dev/null || return 1
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as f:
+        port = int((tomllib.load(f).get("server") or {}).get("port"))
+except Exception:
+    raise SystemExit(1)
+if not 1024 <= port <= 65535:
+    raise SystemExit(1)
+print(port)
+PY
+}
+_existing_port="$(config_port "$DATA_CONFIG" || true)"
+if [ -n "$_existing_port" ]; then
+  PORT="$_existing_port"
+fi
+
+# 局域网开关：读已有配置的 [server].lan_enable（默认 false，只绑回环）
+config_lan_enable() {
+  local cfg="${1:-}"
+  [ -f "$cfg" ] || { printf '0'; return 0; }
+  command -v python3 >/dev/null 2>&1 || { printf '0'; return 0; }
+  python3 - "$cfg" <<'PY' 2>/dev/null || printf '0'
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as f:
+        print("1" if (tomllib.load(f).get("server") or {}).get("lan_enable") else "0")
+except Exception:
+    print("0")
+PY
+}
+
 DATA_PERSONA_DIR="$DATA_DIR/persona"
 DATA_PERSONA="$DATA_PERSONA_DIR/meidosoul.json"
 DATA_MEMORY="$DATA_DIR/memory.json"
@@ -1663,7 +1703,10 @@ prepare_config() {
     if [ -n "$tok" ]; then
       sed -i -E "s/^token *= *\"[^\"]*\"/token = \"$tok\"/" "$cfg"
     fi
-    info "生成配置 $cfg（访问令牌已随机生成）"
+    # 新装把本次安装使用的端口写进配置：运行时（客户端/插件）读的就是它，
+    # 避免出现「安装脚本用 DECKMEIDO_PORT=18766，配置里还写着 18765」
+    sed -i -E "s/^port *= *[0-9]+/port = $PORT/" "$cfg"
+    info "生成配置 $cfg（访问令牌已随机生成，端口 $PORT）"
   fi
   # 不论新旧，配置里都可能有令牌，统一收紧到 0600
   chmod 600 "$cfg" 2>/dev/null || true
@@ -1746,7 +1789,13 @@ sed_repl() {
 
 # 手动安装 systemd 单元（默认不装：后端由客户端拉起，见 install_service 注释）
 render_service() {
-  sed "s|__INSTALL_DIR__|$(sed_repl "$INSTALL_DIR")|g; s|__PORT__|$(sed_repl "$PORT")|g" \
+  # 监听地址按当前配置的 lan_enable 渲染：关闭时只绑回环，开启才 0.0.0.0。
+  # 之后从设置页切换开关仍需重新渲染单元（或直接由客户端拉起后端）。
+  local host="127.0.0.1"
+  if [ "$(config_lan_enable "$DATA_CONFIG" || printf '0')" = "1" ]; then
+    host="0.0.0.0"
+  fi
+  sed "s|__INSTALL_DIR__|$(sed_repl "$INSTALL_DIR")|g; s|__PORT__|$(sed_repl "$PORT")|g; s|__HOST__|$(sed_repl "$host")|g" \
     "$INSTALL_DIR/deploy/$UNIT" > "$UNIT_DIR/$UNIT"
 }
 
@@ -1930,6 +1979,21 @@ CONFIG_MANIFEST="$CONFIG_DIR/.deckmeido-config-manifest"
 DATA_DIR="${DECKMEIDO_DATA_DIR:-$HERE/userdata}"
 case "$DATA_DIR" in "~"/*) DATA_DIR="$HOME/${DATA_DIR#\~/}" ;; esac
 DATA_CONFIG="$DATA_DIR/config.toml"
+# 端口解析与安装脚本一致：已有配置优先，没有配置才退回 DECKMEIDO_PORT
+if [ -f "$DATA_CONFIG" ] && command -v python3 >/dev/null 2>&1; then
+  _cfg_port="$(python3 - "$DATA_CONFIG" <<'PY' 2>/dev/null || true
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as f:
+        port = int((tomllib.load(f).get("server") or {}).get("port"))
+except Exception:
+    raise SystemExit(0)
+if 1024 <= port <= 65535:
+    print(port)
+PY
+)"
+  if [ -n "${_cfg_port:-}" ]; then PORT="$_cfg_port"; fi
+fi
 KEEP_NOTE="$DATA_DIR/README-KEPT.txt"
 DEP_RECORD="$DATA_DIR/.deckmeido-deps"
 
