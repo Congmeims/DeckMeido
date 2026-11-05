@@ -4540,7 +4540,9 @@ async def api_message_delete(req: MsgDeleteReq):
 
 @app.delete("/api/sessions/{sid}", dependencies=[Depends(check_token)])
 async def api_session_delete(sid: str):
-    global _ctx_used
+    # pending_action 在本函数里既读又写（下面要清掉指向被删会话的挂起操作），
+    # 没有 global 声明时 Python 会把它当局部变量，读到第 4570 行就 UnboundLocalError
+    global _ctx_used, pending_action
     # 删除一个还在跑的会话前，先强制终止它在跑的那一轮，否则它那轮 run_agent
     # 协程仍持有 store.history 并继续往外写，会把上一个会话的流程串进新会话。
     if sid == store.current_sid and current_task and not current_task.done():
