@@ -115,11 +115,6 @@ class SwayLogo(QWidget):
         self._dy = dy
         self.update()
 
-    def reset_sway(self):
-        self._ang = 0.0
-        self._dy = 0.0
-        self.update()
-
     def paintEvent(self, _ev):
         if self._pm.isNull():
             return

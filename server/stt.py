@@ -34,8 +34,6 @@ from pathlib import Path
 # 模型署名：Apache-2.0 要求保留，界面上展示「语音识别」的地方一并显示
 ATTRIBUTION = "SenseVoice-Small (FunAudioLLM) · sherpa-onnx · Apache-2.0"
 
-# 模型与运行时都放在用户数据目录，不进插件包、也不进 venv
-MODEL_DIR_NAME = "sensevoice-small-int8"
 # 官方发布的 tar.bz2（内含 model.int8.onnx / tokens.txt）
 MODEL_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"

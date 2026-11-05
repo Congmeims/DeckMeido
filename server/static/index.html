@@ -1119,18 +1119,6 @@
     .card { padding: 14px; }
     .set-foot { padding: 8px 10px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
   }
-  .sheet {
-    background: var(--surface);
-    width: 100%;
-    border-radius: 16px 16px 0 0;
-    padding: 18px 16px;
-    padding-bottom: calc(18px + env(safe-area-inset-bottom));
-    max-height: 85dvh;
-    max-height: 85svh;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-  }
-  .sheet h2 { font-size: 17px; margin-bottom: 14px; }
   .field { margin-bottom: 14px; }
   .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
   .field input {
@@ -1574,11 +1562,9 @@
   .sb-head .sys-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; line-height: 1.2; }
   .sb-head .sys-title { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
   .sb-head .sys-title > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sys-head .sys-title { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
   /* 系统状态卡（设备名已提到 .sb-head，这里只剩 CPU / RAM / SSD 几行）
      内边距收到 8px：侧栏窄屏下横向空间最值钱，进度条越长越好认 */
   .sys-card { padding: 8px; border-bottom: 1px solid var(--line); }
-  .sys-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; margin-bottom: 10px; }
   .sys-ip { font-size: 11.5px; color: var(--muted); font-family: ui-monospace, monospace; font-weight: 400; }
   /* .sb-head 里 IP 行带端口（如 <deck-ip>:18765），比纯 IP 长，
      字号降到 10px 并允许省略，避免顶出栏宽 */
@@ -1636,7 +1622,7 @@
   /* 会话列表 */
   .sb-sess-head {
     display: flex; align-items: center; justify-content: space-between;
-    /* 与系统状态卡顶部的设备名（.sys-head）同字号同字重，避免「会话」发灰看不清 */
+    /* 与会话标题同字号同字重，避免「会话」发灰看不清 */
     padding: 10px 14px 6px; font-size: 14px; font-weight: 600; color: var(--text);
   }
   .sb-sess-head > span { letter-spacing: .01em; }
@@ -2114,8 +2100,6 @@
   }
   #fbViewer.term-mode .fv-keys { display: block; }
   #fbViewer.term-mode .fv-keys:focus { outline: 1px solid var(--brand); }
-  /* 小窗里也要能点进去按键：光标落在画面上 */
-  .tm-term.tm-focus { outline: 1px solid var(--brand); outline-offset: -1px; }
   #fbViewer .fv-body {
     flex: 1 1 auto; min-height: 0; overflow: auto;
     display: flex; align-items: center; justify-content: center;
@@ -2401,7 +2385,7 @@
     <span class="brand-name">
       <span class="bn-text">DeckMeido</span>
       <span class="bn-ver" id="brandVer">v…</span>
-      <span class="bn-ri" id="brandRi">接管中</span>
+      <span class="bn-ri">接管中</span>
     </span>
   </div>
   <div class="sb-foot">
@@ -5494,31 +5478,6 @@
         gone = true;
       }
     };
-  }
-
-  // 把 it.xt 挂到 host 容器（小窗或放大浮层）。会话已退出时只读不连。
-  function termMountSession(it, host) {
-    if (!it.xt) return;
-    // xterm.js 不支持重复 open 到新容器；放大浮层用「dispose 旧实例 + 重建」
-    // 会让历史输出全没。这里改成：始终只 open 一次，第一次挂到哪个容器就在哪。
-    // 放大浮层用 CSS 把小窗的容器挪过来不现实；xterm.js 的官方做法是 open 一次，
-    // 之后只能改容器尺寸。所以小窗就是「主容器」，放大浮层把小窗 DOM 整块搬过去。
-    // ——但搬 DOM 会让小窗位置空掉。折中：放大浮层里放一个克隆提示，让用户回小窗操作；
-    // 或者用 Element 类的 elementAttached 判断。
-    // 简化做法：xterm.js 实例 open 后，把 host DOM 节点整块 appendChild 到新父级，
-    // xterm 会跟着走（它内部 canvas 渲染基于 ResizeObserver，搬家后自动重绘）。
-    if (it.xt._openedHost === host) { it.xt.refit(); return; }
-    if (!it.xt._openedHost) {
-      try { it.xt.term.open(host); it.xt.fit.fit(); it.xt._openedHost = host; } catch (e) {}
-    } else {
-      // 已经 open 过：把原来的 host 整块搬过去
-      var old = it.xt._openedHost;
-      if (old && old.parentNode) {
-        host.appendChild(old);
-        it.xt._openedHost = host;
-        try { it.xt.fit.fit(); } catch (e) {}
-      }
-    }
   }
 
   // 兼容旧调用：判断输出里有没有控制序列（决定用 xterm 还是 pre）。

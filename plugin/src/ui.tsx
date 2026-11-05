@@ -2,7 +2,6 @@ import type {
   ChangeEvent,
   ComponentProps,
   CompositionEvent,
-  CSSProperties,
   KeyboardEvent,
   ReactNode,
   TextareaHTMLAttributes,
@@ -10,43 +9,11 @@ import type {
 import { useEffect, useRef } from "react";
 import { CommonUIModule, TextField } from "@decky/ui";
 
-// 全插件共用的颜色和卡片样式，QAM 与大屏页都从这里取，避免两边各抄一套。
+// 全插件共用的颜色，QAM 与大屏页都从这里取，避免两边各抄一套。
 export const ACCENT = "#5aa9e6";
 export const DIM = "#8b929a";
 export const ERR_COLOR = "#e06c75";
 export const TEXT = "#dcdedf";
-
-export const CARD: CSSProperties = {
-  padding: "8px 10px",
-  marginBottom: 6,
-  borderRadius: 4,
-  fontSize: 12,
-  lineHeight: 1.45,
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-  overflowWrap: "anywhere",
-};
-
-/**
- * 并排小按钮的样式：QAM 里两个 ButtonItem 塞进同一 flex 行会互相压住
- * （ButtonItem 外层固定 100% 宽、文字居中溢出），所以并排场景改用
- * 普通 div 仿按钮，宽高、圆角、底色都对着 GamepadUI 的按钮取值。
- * 大屏页不再使用它，改由 DialogButton 承担。
- */
-export const FAKE_BTN: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  minHeight: 40,
-  padding: "0 14px",
-  borderRadius: 2,
-  background: "rgba(255,255,255,.10)",
-  color: TEXT,
-  fontSize: 14,
-  whiteSpace: "nowrap",
-  boxSizing: "border-box",
-  cursor: "pointer",
-};
 
 type ImeTextFieldProps = Omit<ComponentProps<typeof TextField>, "value" | "onChange"> & {
   value: string;

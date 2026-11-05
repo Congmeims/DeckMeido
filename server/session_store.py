@@ -82,11 +82,6 @@ def io_submit(fn, *args):
     return _IO.submit(fn, *args)
 
 
-def io_pending() -> int:
-    """还没开始跑的写任务数（用来判断「内存里的东西是不是已经在磁盘上」）"""
-    return _IO._work_queue.qsize()  # noqa: SLF001  标准库没有公开接口
-
-
 class SessionStore:
     """当前会话的内存状态 + 会话文件的读写"""
 
@@ -448,14 +443,6 @@ class SessionStore:
                 self.intent_map.pop(sid, None)
         data["_from_disk_mtime"] = mtime
         return data
-
-    def rewrite_session(self, sid: str, data: dict) -> None:
-        """把改过的会话 dict 原子写回（同步版，供启动阶段使用）
-
-        运行期间请走 io_submit(self.rewrite_file, ...)，否则又会阻塞事件循环。
-        """
-        with self.lock:
-            self._write_file(sid, data, data.get("created") or time.time())
 
     def rewrite_file(self, sid: str, data: dict) -> None:
         """把改过的会话 dict 写回（在 IO 线程里跑）"""

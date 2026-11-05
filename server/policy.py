@@ -261,10 +261,6 @@ def risky_action(name: str, args: dict) -> str | None:
     return power_action(cmd) or steamosctl_action(cmd)
 
 
-def is_power_command(name: str, args: dict) -> bool:
-    return name == "run_command" and bool(power_action(str((args or {}).get("command") or "")))
-
-
 # ---------- 三档远程风险（只作用于 QQ 远程；本机 remote=False 不变） ----------
 
 @dataclass(frozen=True)
@@ -451,8 +447,6 @@ def blocks_in_locked_shot(name: str, args: dict) -> bool:
 # 插件发起的一轮属于哪个入口：大屏聊天页 / 大屏询问页 / 截图翻译
 # 没标（老前端）按「非 chat」处理，保持原来的单轮行为
 SURFACE_CHAT = "chat"
-SURFACE_ASK = "ask"
-SURFACE_TRANSLATE = "translate"
 
 # chat 入口连续「只说不做」时最多补几次催促；补完仍不动手就按最终答复收尾。
 # 取 2：第一次用来纠正「我去看看」这类过渡话，第二次留给模型重新组织计划；

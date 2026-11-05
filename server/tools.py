@@ -461,10 +461,6 @@ _KDOTOOL_INPUT_SUBS = {
 # 用户以为点了没反应。
 _POINTER_CLICK_SUBS = {"click", "mousedown", "mouseup", "drag", "scroll", "wheel"}
 
-# 输入注入工具的调用点。只取到本段命令结束（;&| 或换行），
-# 避免把后续无关命令里的同名单词也当成子命令
-_INPUT_TOOLS_RE = re.compile(
-    r"(?:^|[\s|;&(`'\"/])(xdotool|ydotool|dotool|wtype|kdotool)\b([^\n;&|]*)")
 # 这些选项后面跟一个值，解析子命令时要连值一起跳掉。
 # 少了 --name/--class 这类，「找标题里带 type 的窗口」会被当成要打字
 _OPTS_WITH_VALUE = {
@@ -580,15 +576,6 @@ def _invocations(cmd: str) -> list[tuple[str, list[str], list[str]]]:
             continue
         found.append((tool, _parse_subs(tool, args), args))
     return found
-
-
-def _input_invoked(cmd: str) -> bool:
-    """这条命令会不会真的动光标或敲键盘"""
-    for tool, subs, _args in _invocations(cmd):
-        allowed = _KDOTOOL_INPUT_SUBS if tool == "kdotool" else _XDOTOOL_INPUT_SUBS
-        if any(s in allowed for s in subs):
-            return True
-    return False
 
 
 def _pointer_click(cmd: str) -> bool:
@@ -808,8 +795,8 @@ def extract_paths(cmd: str) -> str:
 
 
 
-# 判断「这条命令会不会注入鼠标键盘」的逻辑见上方 _invocations / _input_invoked /
-# _pointer_click：解析真实子命令，而不是拿关键词在整串命令里模糊匹配
+# 判断「这条命令会不会注入鼠标键盘」的逻辑见上方 _invocations / _pointer_click：
+# 解析真实子命令，而不是拿关键词在整串命令里模糊匹配
 
 # 由 main 注入：切换遮罩的鼠标穿透状态 / 截图时收起遮罩
 ON_OVERLAY_PASSTHROUGH = None
@@ -927,39 +914,6 @@ _BG_PROCS: set[asyncio.subprocess.Process] = set()
 # output 是最近读到的 stdout 快照（读循环边读边更新），面板据此显示进度。
 # 只保留最近一条，历史上跑过什么由前端自己攒。
 CURRENT_CMD: dict | None = None
-# 面板敲的 tty 命令的 stdin 写端。ncdu / top / vim 这类全屏程序要一直能收键盘，
-# 所以这条命令的 stdin 不能像带 stdin 的普通命令那样写完就关：
-#   - 关掉（或给 DEVNULL）程序读到 EOF 就自己退，面板里等于没法操作；
-#   - 留着不关，前端每次按键就能通过 /api/terminal/input 写进去。
-# 进程退出时在 finally 里关掉并清空。
-#
-# 按进程记，不存「全局最后一条」：面板点「终止」之后再敲命令时，旧命令的
-# 收尾（还在收尾里跑）会把这份指针清成 None，新命令的按键就全丢了。
-_TTY_STDIN: dict[int, asyncio.StreamWriter] = {}
-
-
-def _live_tty_stdin() -> asyncio.StreamWriter | None:
-    """面板按键该进哪条管道：排在最后的那条还活着的 tty 命令"""
-    for pid in list(_TTY_STDIN.keys())[::-1]:
-        w = _TTY_STDIN.get(pid)
-        if w is None or w.is_closing():
-            _TTY_STDIN.pop(pid, None)
-            continue
-        return w
-    return None
-
-
-async def feed_tty_input(data: str) -> bool:
-    """把面板里敲的按键交给正在跑的那条 tty 命令，返回是否写进去了"""
-    w = _live_tty_stdin()
-    if w is None:
-        return False
-    try:
-        w.write(data.encode())
-        await w.drain()
-        return True
-    except Exception:
-        return False
 
 
 # ---------- 真 PTY 会话（xterm.js 专用） ----------
@@ -1194,35 +1148,6 @@ def get_active_pty() -> "PtySession | None":
     return None
 
 
-async def stop_active_pty() -> bool:
-    """终止面板里正在跑的那条 PTY 会话"""
-    sess = get_active_pty()
-    if sess is None:
-        return False
-    sess.stop()
-    # 清理列表
-    _LIVE_PTY_SESSIONS[:] = [s for s in _LIVE_PTY_SESSIONS if s.is_alive()]
-    return True
-
-
-async def write_pty(data: bytes) -> bool:
-    """前端按键 → 当前活跃 PTY 的 stdin"""
-    sess = get_active_pty()
-    if sess is None:
-        return False
-    sess.write(data)
-    return True
-
-
-async def resize_pty(cols: int, rows: int) -> bool:
-    """窗口大小变化"""
-    sess = get_active_pty()
-    if sess is None:
-        return False
-    sess.resize(cols, rows)
-    return True
-
-
 async def abort_all_procs(grace: float = 2.0) -> int:
     """杀掉所有登记在案的子进程树，返回处理条数（终止按钮的第二道保险）"""
     # 先关 PTY 会话
@@ -1232,13 +1157,6 @@ async def abort_all_procs(grace: float = 2.0) -> int:
             s.stop()
             pty_count += 1
     _LIVE_PTY_SESSIONS.clear()
-    # 先关写端再杀：留着这条管道，被杀的 shell 收尾时可能还挂在写端上
-    for w in list(_TTY_STDIN.values()):
-        try:
-            w.close()
-        except Exception:
-            pass
-    _TTY_STDIN.clear()
     procs = list(_LIVE_PROCS) + list(_BG_PROCS)
     for p in procs:
         try:
@@ -1350,7 +1268,7 @@ async def _spawn_detached(command: str, env: dict, cwd: str | None = None,
     return f"{msg}\n{text}" if text else msg
 
 
-def _bg_drain(proc: asyncio.subprocess.Process, tty: bool = False) -> Path:
+def _bg_drain(proc: asyncio.subprocess.Process) -> Path:
     """把仍在运行的进程转后台：开任务持续把 stdout 抄进日志文件并登记，返回日志路径
 
     进程的 stdout 还挂在我们创建的管道上，一旦没人读，输出写满管道缓冲区（64KB）
@@ -1367,10 +1285,6 @@ def _bg_drain(proc: asyncio.subprocess.Process, tty: bool = False) -> Path:
                 if not chunk:
                     break
                 os.write(fd, chunk)
-                # 面板里跑的 tty 程序（ncdu / top）转后台后还要能看见画面变化，
-                # 光写日志文件的话用户按键之后就只剩一片空白
-                if tty:
-                    _push_cmd_output([chunk])
         except Exception:
             pass
         finally:
@@ -1531,7 +1445,7 @@ async def _comm_bounded(proc: asyncio.subprocess.Process, feed: bytes | None,
 
 
 async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin: str = "",
-                       detach: bool = False, tty: bool = False) -> str:
+                       detach: bool = False) -> str:
     global CURRENT_CMD
     timeout = max(1, min(int(timeout or 60), 300))
     env = dict(os.environ)
@@ -1560,26 +1474,6 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
         # -e 必须加：不加的话 script 不管子进程怎么退出都返回 0，退出码就丢了
         command = f"script -qefc {shlex.quote(command)} /dev/null"
         feed = (stdin if stdin.endswith("\n") else stdin + "\n").encode()
-    elif tty:
-        # 终端面板手动敲的命令：从这里起也要伪终端。不开的话 stdin 是 /dev/null，
-        # command substitution 里的程序会报「stdin is not a TTY」（典型是
-        # $EDITOR / vim / ssh / 需要确认的安装器），面板里敲出来全是这种错。
-        # stdin 给 PIPE 并一直开着：ncdu / top / vim 这类全屏程序中途要读键盘，
-        # 给 DEVNULL 读到 EOF 就自己退了，面板里点不了任何东西。每次按键由
-        # /api/terminal/input 写进这个管道（见 feed_tty_input）
-        #
-        # 窗口定死成 120x36 再报给程序：script 的伪终端默认 80x24，
-        # 而且没有写端调整窗口大小，ncdu / top 会塞在 80 列里把自己画碎。
-        # 别给太大：面板缩略图只有 300px 宽、放大浮层上限 1280px，
-        # 200 列在浮层里只能压到 10px 的字，120 列能放到 16px，还更好读。
-        # COLUMNS/LINES 是给不走 ioctl 的程序（python 的 os.get_terminal_size 等）看的
-        env.setdefault("COLUMNS", "120")
-        env.setdefault("LINES", "36")
-        #
-        # -f：每次读完键盘都立刻把输出刷出来。ncdu / top 改了状态之后只是往伪终端
-        #     写、不主动 flush，script 不刷的话那边要等 4KB 缓冲攒满才吐一次，
-        #     面板上就是「按了键要愣好几秒画面才动」
-        command = f"stty cols 120 rows 36 2>/dev/null; script -qefc {shlex.quote(command)} /dev/null"
     # 命令里的程序一启动就记录进程组号；进程自己退出后组号不会复用，事后可据此判断「到底起没起来」
     group_file = None
     # 包了 script 之后首词是 script，_is_launcher 认不出真正的程序，所以查原始形态
@@ -1595,20 +1489,16 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
         return await _spawn_detached(command, env, cwd, reason=reason)
     proc = await asyncio.create_subprocess_shell(
         command,
-        # tty 也要 PIPE：键盘输入要能一直往里写（见上面 elif tty 的注释）
-        stdin=asyncio.subprocess.PIPE if (feed or tty) else None,
+        # 带 stdin 的命令要 PIPE：输入内容要能写进去
+        stdin=asyncio.subprocess.PIPE if feed else None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=cwd,
-        # tty 那段会往 env 里补 COLUMNS/LINES，传副本，避免污染同一进程里的其它调用
         env=dict(env),
         executable="/bin/bash",
         start_new_session=True,
     )
     _LIVE_PROCS.add(proc)
-    if tty:
-        # 面板之后每次按键都写进这条管道（/api/terminal/input）
-        _TTY_STDIN[proc.pid] = proc.stdin
     # 终端面板看到的「当前命令」：在子进程起来之后登记，退出时统一收尾。
     # 用 id(proc) 区分，避免并发时旧命令的收尾把新命令的状态清掉
     CURRENT_CMD = {"cmd": command, "command": command, "reason": reason, "cwd": cwd,
@@ -1635,19 +1525,6 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
                 launcher_done = True
             except asyncio.TimeoutError:
                 launcher_done = False
-                out = b""
-        elif tty:
-            # 面板手动敲的命令：用户就是要当场看结果，哪怕它一直开着（ncdu、top、
-            # htop）。走「常驻探测」会读到首屏就判成后台程序，把还在跑的窗口记成
-            # 已结束；一直读满 timeout 才收尾，中途输出照常进 CURRENT_CMD。
-            #
-            # ncdu / less 这类全屏程序中途会再读一次键盘，读到 EOF 就自己退出。
-            # 读满超时后进程若还活着（它是被超时打断等待，不是自己结束），面板
-            # 要能看到「执行中」和终止按钮，所以这里用「等它真退出」来收尾
-            try:
-                out2 = await _read_rest(proc, timeout)
-                out = out2
-            except asyncio.TimeoutError:
                 out = b""
         elif feed is not None:
             # 交互式命令（带 stdin 输入）不能提前判常驻，走原来的等超时路径。
@@ -1682,16 +1559,7 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
         # 超时不等于命令出错。还活着且撑满整个超时的，基本都是常驻程序。
         alive = proc.returncode is None
         if alive:
-            log_path = _bg_drain(proc, tty=tty)
-            if tty:
-                # 面板敲的命令（ncdu / top 这类全屏程序）本来就一直在跑。它没退出
-                # 但也不该标成「已转后台」——那会让面板显示「已结束」，而用户眼
-                # 里程序还在刷画面。保持 running=True，由终止按钮或程序自己退出收尾。
-                # _bg_drain 会派任务持续把 stdout 推进 CURRENT_CMD，所以用户
-                # 之后在面板上按的键，画面变化都能马上看到
-                _BG_PROCS.add(proc)
-                return (f"命令已运行 {timeout}s 仍在继续（进程号 {proc.pid}），"
-                        f"可以直接在面板里按方向键、q 等操作，点「终止」可以停掉。")
+            log_path = _bg_drain(proc)
             # 面板同步标成已转后台，否则会一直转圈到下次命令覆盖
             _BG_PROCS.add(proc)
             if CURRENT_CMD is cur:
@@ -1719,23 +1587,11 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
         # 这一轮的 await 链已经走完，从登记表里摘掉：
         # 不摘的话「终止」的二次保险会去砍已经交差的、甚至用户故意留着常驻的程序
         _LIVE_PROCS.discard(proc)
-        # 终端面板收尾：只结束自己那条，别把后来者的状态清掉。
-        # tty 超时那条例外——进程还活着，面板要照实显示「执行中」，
-        # 否则用户看到「完成」却还能在别的窗口里看见程序在跑
-        if CURRENT_CMD is cur and not (tty and proc.returncode is None):
+        # 终端面板收尾：只结束自己那条，别把后来者的状态清掉
+        if CURRENT_CMD is cur:
             cur["running"] = False
             cur["exit"] = proc.returncode
             cur["ended"] = time.time()
-        # tty 的写端只在这条命令真结束（或被杀）后关：超时那条 return 是
-        # 「还在跑，等用户点终止」，这时关掉 stdin 等于替用户把程序按死了
-        if tty and proc.returncode is not None:
-            # 只摘自己这条，别动别人的（新旧命令交替时会把按键写进死管道）
-            w = _TTY_STDIN.pop(proc.pid, None)
-            if w is not None:
-                try:
-                    w.close()
-                except Exception:
-                    pass
     text = out.decode("utf-8", "replace").strip()
     if stdin:
         # 伪终端会回显输入，把疑似密码的行打码（短输入如菜单选项保留）
@@ -2216,29 +2072,6 @@ async def _gst_grab(node: str, raw: Path, uid: int, user: str,
         return True, ""
     except Exception as exc:
         return False, f"抓帧进程启动失败：{exc}"
-
-
-# 抓帧时「戳一下重绘」的摇杆幅度：3% 量程，拨 40ms 回中
-_POKE_AMT = 0.03
-
-
-async def _poke_redraw() -> None:
-    """让画面动一下，逼 gamescope 吐帧
-
-    gamescope 只在画面内容变化时才往 PipeWire 投帧。游戏静止时（模拟器停在
-    列表页、玩家没在操作）pipewiresrc 连上去会一直空等到超时——实测挂 60 秒
-    一帧都没有，journal 里只有 streaming → paused。
-
-    这里轻推一下右摇杆再回中（幅度 3%，拨 40ms）：模拟器菜单里相当于没动，
-    3D 游戏里就是视角极轻微晃一下。用后端自己那套 uinput 虚拟手柄，不依赖
-    xdotool 和 DISPLAY。
-    """
-    try:
-        await _PAD.stick(_POKE_AMT, _POKE_AMT, "right")
-        await asyncio.sleep(0.04)
-        await _PAD.stick(0.0, 0.0, "right")
-    except Exception:
-        pass
 
 
 async def _screenshot_gamescope(path: Path) -> str:
@@ -3259,18 +3092,14 @@ async def execute(name: str, args: dict) -> str:
     # 执行期间别让屏幕黑掉/机器睡着：run_command 可能跑几分钟，
     # 用户回来看到的应该是进度，而不是一个锁屏界面。
     # 桌面模式判断和非空原因计数都在 power 里，游戏模式/纯查询工具会自动跳过。
-    # 面板里敲的 tty 命令也不挂：它会一直挂着等用户按键（ncdu / top），
-    # 挂上抑制就永远解除不了，设备永远不休眠——用户自己就在屏幕前操作
-    keep = name not in _NO_KEEP_AWAKE and not args.get("tty")
+    keep = name not in _NO_KEEP_AWAKE
     if keep:
         power.keeper.hold("command", f"正在{cn_name(name)}")
     try:
         # 启动类命令（打开应用）会挂遮罩让用户能随时点停，就不能堵在这里等它退出：
         # 打开 QQ 之后后台会一直卡在 communicate()，遮罩一直亮着空转。
-        # tty（终端面板手动执行）不放进后台：面板本来就是当场看结果的，
-        # 而且 _spawn_detached 那条路不做伪终端，放进去就白包了一层 script
         if name == "run_command" and _is_launcher(str(args.get("command", ""))) \
-                and not args.get("stdin") and not args.get("tty"):
+                and not args.get("stdin"):
             args["detach"] = True
         budget = _TOOL_TIMEOUT.get(name, _TOOL_TIMEOUT_DEFAULT)
         if name in _TOOL_NO_TIMEOUT:

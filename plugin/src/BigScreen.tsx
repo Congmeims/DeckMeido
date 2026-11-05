@@ -22,7 +22,6 @@ const CHAT_FONT = 14;
 const CHAT_LH = 1.5;
 const TAB_H = 26;
 const ACTION_H = 46;
-const COMPACT_H = 28;
 
 /** 维护行的日志时间只到秒，24 小时制 */
 const fmtLogTime = (ts: number) => {

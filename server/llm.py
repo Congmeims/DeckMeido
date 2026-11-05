@@ -95,13 +95,14 @@ def strip_tool_markup(text: str) -> str:
 
 
 class LLMClient:
-    def __init__(self, base_url: str, api_key: str, model: str, timeout: float = 60.0,
-                 max_tokens: int = 4096, reasoning_effort: str = "high"):
+    def __init__(self, base_url: str, api_key: str, model: str,
+                 max_tokens: int | None, timeout: float = 60.0,
+                 reasoning_effort: str = "high"):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
-        # 不传 max_tokens 时服务端默认值往往偏小，流式输出会在工具调用中途被硬截断，
-        # 导致半截标记漏进正文、整轮操作中断
+        # 只有真正发对话请求时才需要这个值；探活 / 拉模型列表的临时客户端
+        # 传 None 即可，不再给一个会被误当成「实际额度」的默认值。
         self.max_tokens = max_tokens
         # 实测 deepseek-v4.1-flash 等服务商默认不产出 reasoning_content，
         # 必须显式传 reasoning_effort 才会返回思维链
@@ -300,20 +301,6 @@ class LLMClient:
         # 输出算完才返回，长摘要会卡到超时；流式还能顺带拿到 usage（缓存命中统计）
         msg = await self.chat_with_tools_stream(messages, [], max_tokens=0)
         return msg.get("content") or ""
-
-    async def chat_with_tools(self, messages: list[dict], tools: list[dict]) -> dict:
-        """带工具调用的对话，返回完整 message（含 content / tool_calls）"""
-        payload = {"model": self.model, "messages": messages}
-        if tools:
-            payload["tools"] = tools
-        resp = await self._client.post(
-            f"{self.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json=payload,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]
 
     async def chat_with_tools_stream(self, messages: list[dict], tools: list[dict],
                                      on_delta=None, on_thought=None,

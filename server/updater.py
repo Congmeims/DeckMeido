@@ -815,34 +815,3 @@ def apply(restart_service: bool = True, tag: str = "") -> dict:
     return {"ok": True, "restarted": True, "version": target, "source": used,
             "log": str(log_path),
             "message": f"已更新到 {target}{src_note}，服务重启后生效"}
-
-
-async def verify(expected: str, timeout: float = 60.0) -> dict:
-    """升级后自检：等 /api/version 报出新版本才算成功
-
-    升级流程是异步拉起的（install.sh 会先停客户端再重启），调用方拿不到
-    它的退出码，只能轮询自己：新进程起来之后报的版本对得上就说明成功。
-    端口跟着 [server] 段走，不再写死 18765。
-    """
-    port = 18765
-    try:
-        import tomllib
-        cfg_file = INSTALL_DIR / "server" / "config.toml"
-        cfg = tomllib.loads(cfg_file.read_text(encoding="utf-8"))
-        port = int(cfg["server"].get("port", 18765))
-    except (OSError, ValueError, KeyError):
-        port = int(os.environ.get("DECKMEIDO_PORT") or 18765)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/api/version", headers={"User-Agent": "DeckMeido"})
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            got = str(data.get("version") or "").lstrip("v")
-            if not expected or got == expected.lstrip("v"):
-                return {"ok": True, "version": got}
-        except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
-            pass
-        await asyncio.sleep(1.5)
-    return {"ok": False, "version": current_version(), "expected": expected.lstrip("v")}

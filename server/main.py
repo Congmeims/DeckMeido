@@ -132,8 +132,10 @@ llm = LLMClient(
     base_url=CFG["llm"]["base_url"],
     api_key=CFG["llm"]["api_key"],
     model=CFG["llm"]["model"],
+    # 每次对话都由 run_agent 按上下文剩余空间显式传入 output 额度，
+    # 这里不再从配置读一个全局默认值
+    max_tokens=None,
     timeout=CFG["llm"].get("timeout", 60),
-    max_tokens=int(CFG["llm"].get("max_tokens", 4096)),
     # 留空则完全不传，交由服务商默认行为
     reasoning_effort=str(CFG["llm"].get("reasoning_effort", "high")),
 )
@@ -461,8 +463,6 @@ def _aborted_note(hist: list[dict]) -> str:
 # 单张图 base64 的上限。网关实测 1600 万字符必挂；给到 200 万字符（约 1.5MB 原图）
 # 已经远超正常截图，留足余量的同时保证单个请求体不会把链路撑爆
 _MAX_IMG_CHARS = 2_000_000
-# 原图字节数的对应上限（base64 大约是原图的 1.37 倍）
-_MAX_IMG_BYTES = int(_MAX_IMG_CHARS / 1.37 * 0.9)
 # 历史里最多保留几张原图，更早的换成定长文案。留 2 张是为了让「和上一张比」
 # 这类追问还能成立；再往前的画面模型本来也用不上
 _HIST_IMG_KEEP = 2
@@ -811,10 +811,6 @@ except Exception:
 # 这里保留原来的名字，调用点不用改；但这些都是「读 store」的视图，不是第二份状态。
 
 
-# 会话文件的写入锁，见 session_store.SessionStore.lock
-_SESS_WRITE_LOCK = store.lock
-
-
 def _turn_detached(epoch: int) -> bool:
     """这轮开始时快照的 epoch 是否已过期（会话被切走或重建）"""
     return store.turn_detached(epoch)
@@ -863,7 +859,6 @@ def _write_session(sid: str, hist: list[dict]):
 
 _STREAM_FLUSH_INTERVAL = 0.6   # 秒（越短丢得越少；写的是小文件，代价可接受）
 _STREAM_FLUSH_CHARS = 200      # 或自上次落盘以来又累积这么多字
-_RESTORE_MIN_CHARS = 0         # 恢复门槛已取消：一个字也救回来，见 init_sessions
 # events 槽：本轮到目前为止「屏幕上已经出现过」的有序内容块。
 # 只存最后那段正文的话，一轮里先说话、再调工具、再说一段的，中途被杀就只剩最后一段
 # 按 sid 各存一份：两轮并发（不同会话）时共用单槽会互相覆盖 —— A 的正文被 B 清掉，
@@ -1478,23 +1473,11 @@ def init_sessions():
     save_current_session()
 
 
-_load_initial_sessions = init_sessions
 _init_sessions = init_sessions
 # 侧栏索引要先建好：/api/sessions 只读它，不建就是空列表。
 # 放在 init_sessions 之前：恢复会话时写的那个文件会顺带把索引补齐一次
 store.load_index()
 _init_sessions()
-
-# 消息 feed（供原生客户端轮询同步，增量拉取）
-feed: list[dict] = []
-_feed_seq = 0
-
-
-def feed_push(type_: str, **kw):
-    global _feed_seq
-    _feed_seq += 1
-    feed.append({"id": _feed_seq, "type": type_, "ts": time.time(), **kw})
-    del feed[:-200]  # 最多保留 200 条
 
 # 待确认的危险操作 {name, args, description, sid, epoch, turn_id, client, device}
 # sid/epoch/client/device 是「谁在什么会话里提的」：确认只认原会话原来源，
@@ -1855,20 +1838,6 @@ async def _lan_guard(request, call_next):
     if not netcfg.lan_enabled(server_cfg) and not netcfg.is_loopback(ip):
         return JSONResponse({"detail": "局域网访问未开启，请在掌机设置里启用"}, status_code=403)
     return await call_next(request)
-
-
-class ChatRequest(BaseModel):
-    message: str
-    # 可选的附带图片（data URL 或纯 base64），供 Decky 插件把游戏画面直接塞进这一轮
-    image: str | None = None
-    image_prompt: str = "（这是当前游戏画面，结合画面回答用户的问题）"
-    # 发起端身份：危险操作挂起后，只有「同一个端」说的「确认」才算数。
-    # 不传的话挂起记录里是空值，插件端和网页端都会退化成同一个来源
-    client: str | None = None
-    device: str | None = None
-    # 插件里的入口：chat=大屏聊天页（放开多轮），ask=询问页/截图询问，
-    # translate=截图翻译（后两者保持一问一答）。网页/桌面端不传
-    surface: str | None = None
 
 
 _CTX_RE = re.compile(r"@\{([^}]+)\}")
@@ -2384,20 +2353,6 @@ def _term_lock_get() -> asyncio.Lock:
     return _term_lock
 
 
-@app.post("/api/terminal/input", dependencies=[Depends(check_token)])
-async def api_terminal_input(payload: dict):
-    """把面板里敲的按键交给正在跑的那条 tty 命令（ncdu / top / vim 的键盘）
-
-    前端只负责把按键翻成终端转义序列（方向键是 ESC [ A 这种），这里原样写进
-    子进程的 stdin，不走审批：这是用户已经批准过的那条命令的运行时输入。
-    """
-    data = str(payload.get("data") or "")
-    if not data:
-        return {"ok": False, "written": False}
-    ok = await tools.feed_tty_input(data)
-    return {"ok": True, "written": ok}
-
-
 @app.post("/api/terminal/run", dependencies=[Depends(check_token)])
 async def api_terminal_run(payload: dict):
     """面板里手动执行一条命令（终端 tab 的输入框）
@@ -2797,27 +2752,6 @@ async def api_status_line(state: str = Query(default=""),
     return await build_status_line(state, game, game_confidence, nickname)
 
 
-@app.get("/api/feed", dependencies=[Depends(check_token)])
-async def api_feed(after: int = Query(default=0)):
-    """增量拉取新消息：返回 id > after 的条目和最新 seq"""
-    return {"items": [m for m in feed if m["id"] > after], "seq": _feed_seq}
-
-
-@app.post("/api/chat", dependencies=[Depends(check_token)])
-async def api_chat(req: ChatRequest, workspace: str | None = Query(default=None)):
-    text = req.message.strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="empty message")
-    # workspace：Decky 插件以 root 身份跑，Path.home() 是 /root，必须由它把
-    # 真实工作区（/home/deck/...）传进来，否则 @{文件} 引用全部读不到
-    root = Path(workspace).expanduser() if workspace else None
-    if root is not None and not root.is_dir():
-        root = None
-    return await start_chat(text, image=req.image, image_prompt=req.image_prompt,
-                            workspace=root, client=req.client, device=req.device,
-                            surface=req.surface)
-
-
 # 当前正在处理的对话任务（用于终止按钮）
 current_task: asyncio.Task | None = None
 
@@ -3169,7 +3103,7 @@ async def _pick_model(base_url: str, api_key: str) -> str:
     fallback = llm.model
     try:
         probe = LLMClient(base_url=_norm_base_url(base_url), api_key=api_key,
-                          model=fallback, timeout=30.0)
+                          model=fallback, max_tokens=None, timeout=30.0)
         try:
             names = await probe.list_models()
         finally:
@@ -3746,6 +3680,7 @@ async def api_models(base_url: str = "", api_key: str = ""):
                 base_url=_norm_base_url(base_url),
                 api_key=(api_key or llm.api_key).strip(),
                 model=llm.model,
+                max_tokens=None,
                 timeout=30.0,
             )
             try:
@@ -3757,85 +3692,6 @@ async def api_models(base_url: str = "", api_key: str = ""):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"拉取模型列表失败：{exc}")
     return {"models": names}
-
-
-@app.get("/api/llm/capabilities", dependencies=[Depends(check_token)])
-async def api_llm_capabilities(base_url: str = "", api_key: str = "", model: str = ""):
-    """真实探测当前模型能力（vision / tools / reasoning），供校验页展示。
-
-    带上 base_url/api_key/model 时用面板里刚填的值临时探测（不落盘），
-    否则探测运行中的那套配置。探测是真实发 1×1 图 + 空工具的小请求，
-    结果告诉前端「这个模型到底支不支持看图/调工具」，而不是靠猜模型名。
-    """
-    try:
-        if base_url.strip() or model.strip():
-            probe = LLMClient(
-                base_url=_norm_base_url(base_url or llm.base_url),
-                api_key=(api_key or llm.api_key).strip(),
-                model=(model or llm.model).strip(),
-                timeout=30.0,
-            )
-            try:
-                caps = await probe.probe_capabilities()
-            finally:
-                await probe.close()
-        else:
-            caps = await llm.probe_capabilities()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"能力探测失败：{exc}")
-    return {"model": model or llm.model, **caps}
-
-
-@app.get("/api/llm/capabilities/all", dependencies=[Depends(check_token)])
-async def api_llm_capabilities_all(base_url: str = "", api_key: str = ""):
-    """拉取该地址下所有模型，并逐个探测能力，返回带能力标签的清单。
-
-    设置页「保存」后调用，让主人一眼看清每个模型支不支持看图/调工具/思考。
-    逐个探测太慢（几十个模型串行要几分钟），用信号量限制并发 + 单模型短超时，
-    且探测请求 max_tokens=1，token 开销几乎为 0。
-    """
-    try:
-        if base_url.strip() or api_key.strip():
-            probe = LLMClient(
-                base_url=_norm_base_url(base_url or llm.base_url),
-                api_key=(api_key or llm.api_key).strip(),
-                model=llm.model,
-                timeout=20.0,
-            )
-            use = probe
-        else:
-            use = llm
-        names = await use.list_models()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"拉取模型列表失败：{exc}")
-
-    results: dict[str, dict] = {}
-
-    # 中转站普遍对并发敏感：改成串行逐条 + 每条间隔 5 秒，
-    # 避免瞬间几十上百请求被限流/封号，也给短暂冷却的上游留喘息。
-    total = len(names)
-    for idx, mid in enumerate(names):
-        c = LLMClient(
-            base_url=use.base_url, api_key=use.api_key,
-            model=mid, timeout=20.0,
-        )
-        try:
-            caps = await c.probe_capabilities()
-            results[mid] = {"id": mid, **caps}
-        except Exception as exc:
-            results[mid] = {"id": mid, "vision": False, "tools": False,
-                            "reasoning": False, "error": str(exc)}
-        finally:
-            await c.close()
-        # 最后一条不再等
-        if idx < total - 1:
-            await asyncio.sleep(10)
-
-    if use is not llm:
-        await use.close()
-    # 按模型名排序，展示稳定
-    ordered = sorted(results.values(), key=lambda r: r["id"].lower())
-    return {"models": ordered}
 
 
 @app.post("/api/retry", dependencies=[Depends(check_token)])
@@ -3976,7 +3832,6 @@ async def handle_chat(text: str, announce: bool = True,
         await manager.broadcast({"type": "user_message", "text": text, "ts": user_ts,
                                  **sid_tag, **src_tag,
                                  **({"events": [shot_event]} if shot_event else {})})
-        feed_push("user_message", text=text)
     # @{文件} 展开为内容；图片标记在 run_agent 里转成多模态 content
     # 画面在历史里只留一条 [SHOT:文件名] 标记（见 _shot_ref_content）。
     # 标记挂在 llm 字段上；content 仍然只有文字 —— 各端渲染的是 content，
@@ -4084,7 +3939,6 @@ async def handle_chat(text: str, announce: bool = True,
         await manager.broadcast({"type": "assistant_message", "text": "已终止当前操作",
                                  "ts": time.time(), "events": events, "cancelled": True,
                                  **sid_tag, **src_tag})
-        feed_push("assistant_message", text="已终止当前操作", events=events)
         # 终止时把已经生成的部分保住：屏幕上出现过的每一段正文都留下，
         # 不能只用最后那段（工具调用前的过渡话也在屏幕上显示过）
         partial = _stream_buf(turn_sid).get("text") or ""
@@ -4154,7 +4008,6 @@ async def handle_chat(text: str, announce: bool = True,
         # 否则用户看到的是「回答消失了」
         await manager.broadcast({"type": "system", "text": "该会话已被删除，本轮回答未保存",
                                  "ts": time.time()})
-        feed_push("system", text="该会话已被删除，本轮回答未保存")
     # 收尾前把还攒着的正文批次推出去：final=True 那条必须排在它后面，
     # 否则残留批次会晚于终态到达，界面刚定稿又被追加一截
     flush_delta_now(turn_sid)
@@ -4168,11 +4021,9 @@ async def handle_chat(text: str, announce: bool = True,
         # （否则新会话里会冒出一段不属于它的回答），只提示一句
         await manager.broadcast({"type": "system", "text": "上一轮对话已完成，结果保存在原会话中",
                                  "ts": time.time()})
-        feed_push("system", text="上一轮对话已完成，结果保存在原会话中")
     else:
         await manager.broadcast({"type": "assistant_message", "text": reply, "ts": asst_ts,
                                  "events": events, **sid_tag, **src_tag})
-        feed_push("assistant_message", text=reply, events=events)
         # 语音播报：只播报最终回复，不播报思维链/工具过程（后台进行，不阻塞）。
         # QQ 通道的回答不在本机播报：那是别人在手机上说的话，不该从 Deck 的喇叭里出来
         if (client or "") != "qq":
@@ -4325,7 +4176,6 @@ async def compact_history(auto: bool = False, hist: list[dict] | None = None,
     note = (f"{'已自动压缩上下文' if auto else '已压缩上下文'}"
             f"（{len(old)} 条旧消息 → 摘要，聊天记录完整保留）")
     await manager.broadcast({"type": "system", "text": note, "ts": time.time()})
-    feed_push("system", text=note)
     return summary
 
 
@@ -4566,7 +4416,6 @@ async def api_session_create():
                              "sid": store.current_sid})
     await manager.broadcast({"type": "session_changed", "current": store.current_sid})
     await manager.broadcast({"type": "system", "text": "已开始新会话", "ts": time.time()})
-    feed_push("system", text="已开始新会话")
     return {"ok": True, "id": store.current_sid}
 
 
@@ -6074,27 +5923,6 @@ async def shots_local(path: str = Query(default="")):
     return FileResponse(real, media_type="image/jpeg")
 
 
-@app.get("/api/local_shot", dependencies=[Depends(check_token)])
-async def local_shot(name: str = Query(default="")):
-    """按文件名回读一张随提问落盘的画面
-
-    图在历史里只留一条 [SHOT:文件名] 标记，发给模型时才按文件读成 base64
-    （见 _shot_ref_content）。所以这个文件不是「纯展示副本」：删了，模型也
-    看不到那张画面了，界面上则是破图。因此除了 /shots/ 静态目录，再留这条
-    按文件名取的路径，各端都按文件名取图，和 /shots/ 是同一份文件。
-    name 只接受纯文件名（相对 shots 目录），不允许带目录分隔符，防目录穿越。
-    库里没有这张文件时回 404，前端据此显示占位而不是一直转圈。
-    """
-    fname = Path(name).name
-    if not name or fname != name:
-        raise HTTPException(status_code=404, detail="file not found")
-    shots_dir = Path(__file__).resolve().parent / "static" / "shots"
-    target = shots_dir / fname
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail="file not found")
-    return FileResponse(target)
-
-
 @app.post("/api/screenshot", dependencies=[Depends(check_token)])
 async def api_screenshot():
     """插件端专用：抓一张当前画面，返回压缩 JPEG 的 base64
@@ -6464,13 +6292,6 @@ async def api_save_qq_config(req: QQConfigUpdate):
         # 让接口返回的状态已经是新配置下的结果（不是旧的 connected）
         await qq_bot.reconnect()
     return {"ok": True, "state": qq_bot.state(), "config": _qq_public_config()}
-
-
-@app.post("/api/qq/reconnect", dependencies=[Depends(check_token_any)])
-async def api_qq_reconnect():
-    """不写配置，只按当前配置重连一次"""
-    await qq_bot.reconnect()
-    return {"ok": True, "state": qq_bot.state()}
 
 
 # 图片上传落在数据根（userdata/uploads），不再写进 server/static

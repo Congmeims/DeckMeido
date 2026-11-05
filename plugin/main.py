@@ -1406,6 +1406,8 @@ class _Gamepad:
 
 
 _GAMEPAD = _Gamepad()
+# 说明：QAM 面板不再暴露虚拟手柄按键（gamepad_press / stick / trigger / close 已移除），
+# 这里保留类与实例，便于以后需要时重新接回；当前没有任何调用点，因此不会创建 /dev/uinput 设备。
 
 
 # ---------- 与后端 :18765 的通话 ----------
@@ -1649,9 +1651,7 @@ _LAST_SHOT_PATH = ""
 # 以前只在 start_turn 里清，而且 user_message 只认 _LAST_SHOT_PATH，
 # 于是「后端广播没带 events」这条路上就没有图可补
 _TURN_SHOT_PATH = ""
-# 面板展示的来源标记，和后端、网页端的叫法保持一致：
-# 电脑（PC 浏览器）/ 手机（手机浏览器）/ 掌机（Deck 桌面客户端）/ 插件（QAM）
-_CLIENT_LABEL = {"web": "电脑", "mobile": "手机", "client": "掌机", "qam": "插件"}
+# 面板上的来源标记由后端打标后原样带过来，这里不再维护一份名字映射
 
 
 def _push_thread(item: dict):
@@ -1954,16 +1954,6 @@ def _nearby_client() -> str:
         if m.get("role") == "user":
             return str(m.get("client") or "")
     return ""
-
-
-async def _connect_backend() -> _Backend:
-    """按当前配置建一条新连接（不登记，调用方自己决定挂到哪）"""
-    cfg = _load_server_cfg()
-    port = int(cfg.get("port", 18765))
-    token = str(cfg.get("token", "") or "").strip().lower()
-    bk = _Backend(_backend_url(port, token))
-    await bk.open()
-    return bk
 
 
 async def _reconnect(delay: float) -> _Backend | None:
@@ -2776,29 +2766,6 @@ class Plugin:
         # 几十 KB 的 JPEG 才塞得进返回值
         return {"ok": True, "shot": str(shot), "thumb": _make_thumb(shot), "game": game}
 
-    async def gamepad_press(self, key: str, ms: int = 80) -> dict:
-        """模拟按一下手柄键：a/b/x/y/lb/rb/up/down/left/right/start/select/guide/l3/r3/share"""
-        # 面板按键是换序的唯一触发点，日志里必须能看见它到底有没有被调到
-        decky.logger.info(f"面板按键 {key}（{ms}ms），设备{'已存在' if _GAMEPAD._fd else '将新建'}")
-        r = await _GAMEPAD.press(key, ms)
-        decky.logger.info(f"面板按键结果 {r}")
-        return r
-
-    async def gamepad_stick(self, x: float, y: float,
-                            side: str = "left") -> dict:
-        """摇杆推到 (x, y)，范围 -1..1；推完不会自动回中，
-        面板松手时会再调一次 gamepad_stick(0, 0)。side 取 left / right"""
-        return await _GAMEPAD.stick(x, y, side)
-
-    async def gamepad_trigger(self, which: str, value: float = 1.0) -> dict:
-        """扳机力度：which 取 lt / rt，value 是 0..1（0 松开、1 到底）"""
-        return await _GAMEPAD.trigger(which, value)
-
-    async def gamepad_close(self) -> dict:
-        """收掉虚拟手柄设备（不再需要时才调，避免 Steam 一直以为接了手柄）"""
-        await _GAMEPAD.close()
-        return {"ok": True}
-
     async def start_turn(
         self, text: str, shot: str | None = None, brief: str = "",
         surface: str = "", client: str = "",
@@ -2953,15 +2920,6 @@ class Plugin:
         decky.logger.info(f"[probe] {text}")
         return True
 
-    async def pad_order(self, action: str) -> dict:
-        """让前端去换 Steam 的控制器排序（后端管不到，排序只在 Steam 进程内存里）
-
-        调完不 waiting 结果 —— 前端那边异步做完只写 console，这里返回的
-        {"ok": True} 表示「请求已经发出去」。
-        """
-        _emit({"kind": "pad_order", "action": str(action or "")})
-        return {"ok": True}
-
     async def _main(self):
         decky.logger.info(f"DeckMeido 插件已加载 v{_PLUGIN_VERSION}，安装目录 {INSTALL_DIR}")
         _run_as()
@@ -3029,11 +2987,8 @@ class Plugin:
 
     async def _unload(self):
         await _drop_backend()
-        # 不显式销毁的话，虚拟手柄会跟着内核一直挂着，下一次加载前都算「有手柄连着」
-        await _GAMEPAD.close()
         decky.logger.info("DeckMeido 插件卸载")
 
     async def _uninstall(self):
         await _drop_backend()
-        await _GAMEPAD.close()
         decky.logger.info("DeckMeido 插件卸载")
