@@ -32,7 +32,11 @@ const PLUGIN_VERSION =
 
 // QAM 面板只有 300~400px 宽，按窄屏重排：整页固定高度，消息区吃满剩余空间，
 // 减少一长串纵向滚动。设置页内部允许滚动，但一屏最多露出三张卡。
-const PAGE_H = 460;
+//
+// 高度不能写死 460：QAM 的可用高度随分辨率和侧栏状态变化，写死会比可视区高，
+// 面板整体被外层滚动裁掉一截 —— 手柄焦点滚到底就成了「一块空白」。
+// 这里取「460 与可视区高度」的较小值，短屏自动收缩，长屏仍按原比例。
+const PAGE_H = "min(460px, calc(100vh - 90px))";
 const TAB_H = 26;
 const ACTION_H = 34;
 const INPUT_H = 32;
@@ -304,6 +308,9 @@ function ChatLog({
         display: "block",
         boxSizing: "border-box",
         paddingRight: 2,
+        // 让焦点滚动停在内容末端，不要多滚出一个空档
+        overscrollBehavior: "contain",
+        scrollPaddingBottom: 4,
       }}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
@@ -1117,6 +1124,9 @@ export default function QamScreen() {
             flexDirection: "column",
             gap: GAP,
             minWidth: 0,
+            minHeight: 0,
+            // 内容不能溢出到固定高度之外，否则外层滚动会出现空白带
+            overflow: "hidden",
             boxSizing: "border-box",
           }}
         >
@@ -1537,6 +1547,9 @@ export default function QamScreen() {
             minHeight: 0,
             width: "100%",
             overflowY: "auto",
+            overscrollBehavior: "contain",
+            scrollPaddingBottom: 6,
+            paddingBottom: 2,
             display: "flex",
             flexDirection: "column",
             gap: GAP,
