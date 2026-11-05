@@ -3112,7 +3112,7 @@ async def _pick_model(base_url: str, api_key: str) -> str:
 
 
 @app.post("/api/config", dependencies=[Depends(check_token_any)])
-async def api_set_config(req: ConfigUpdate):
+async def api_set_config(req: ConfigUpdate, request: Request):
     global _pending_token
     llm_updates = {}
     if req.base_url is not None:
