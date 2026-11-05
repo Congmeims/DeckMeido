@@ -859,26 +859,6 @@
   }
   .auth-card p { color: var(--muted); font-size: 13.5px; text-align: center; line-height: 1.6; margin: 0; }
   .auth-err { color: #e5484d; font-size: 13px; min-height: 18px; }
-  #tokenInput {
-    width: 100%;
-    padding: 12px 14px;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--surface-2);
-    color: var(--text);
-    font-size: 18px;
-    letter-spacing: 2px;
-    outline: none;
-    text-align: center;
-  }
-  #tokenInput:focus { border-color: var(--brand); }
-  #tokenBtn {
-    width: 100%;
-    padding: 12px 32px;
-    border: none; border-radius: 10px;
-    background: var(--brand); color: #fff;
-    font-size: 16px; font-weight: 600;
-  }
   /* 配对：新设备不需要手输 12 位令牌，PIN 由掌机展示 */
   .auth-secondary {
     width: 100%;
@@ -906,7 +886,6 @@
   .pair-remember { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
   .pair-actions { display: flex; gap: 8px; }
   .pair-actions button { flex: 1; }
-  .auth-or { font-size: 12px; color: var(--muted); }
   .auth-tip { font-size: 12px; color: var(--muted); text-align: center; line-height: 1.6; }
 
   /* 设置按钮与面板 */
@@ -2606,7 +2585,7 @@
         </section>
 
         <section class="set-pane" data-pane="device">
-          <h3>设备连接</h3>
+          <h3>本地连接</h3>
           <p class="pane-desc">她的权限范围、工作目录，以及其他设备连上这台 Deck 的方式。</p>
           <div class="card">
             <div class="card-title">权限</div>
@@ -3040,7 +3019,7 @@
   <div class="auth-card">
     <img class="auth-logo" src="logo.png" alt="DeckMeido">
     <h1>DeckMeido <small>控制台</small></h1>
-    <p>这台设备还没有配对。可以配对新设备，或输入访问令牌应急直连</p>
+    <p>这台设备还没有配对。先点下面的按钮，再在掌机「设置 → 本地连接 → 设备配对」里点「允许」，把掌机上显示的 4 位 PIN 填进来</p>
     <button id="pairBtn" class="auth-secondary">配对新设备</button>
     <div id="pairBox" class="pair-box" hidden>
       <div id="pairMsg" class="auth-err"></div>
@@ -3052,13 +3031,9 @@
         <button id="pairCancel" class="auth-secondary">取消</button>
       </div>
     </div>
-    <div class="auth-or">或使用访问令牌</div>
-    <input id="tokenInput" type="password" placeholder="访问令牌（可粘贴 XXXX-XXXX-XXXX）" autocomplete="off" spellcheck="false">
     <div id="authErr" class="auth-err"></div>
-    <button id="tokenBtn">连接</button>
     <div class="auth-tip">
-      令牌在掌机 QAM / 大屏 / 客户端设置的「局域网访问」里查看<br>
-      配对入口在「设置 → 设备配对」<br>
+      没看到 PIN？在 Deck 上打开 QAM / 大屏 / 客户端 → 设置 → 本地连接 → 设备配对<br>
       当前版本 <span id="authVer">…</span>
     </div>
   </div>
@@ -3153,8 +3128,6 @@
   var modeBadge = document.getElementById('modeBadge');
   var ctxBadge = document.getElementById('ctxBadge');
   var authOverlay = document.getElementById('authOverlay');
-  var tokenInput = document.getElementById('tokenInput');
-  var tokenBtn = document.getElementById('tokenBtn');
   var authErr = document.getElementById('authErr');
   var authVer = document.getElementById('authVer');
   var pairBtn = document.getElementById('pairBtn');
@@ -3183,6 +3156,7 @@
   }
 
   // token：URL > localStorage
+  // 浏览器端只走 PIN 配对，这里保留老链接的 ?token= 兼容（不展示、不提示）
   var token = normToken(new URLSearchParams(location.search).get('token') || localStorage.getItem('deckmeido_token') || '');
   if (token) {
     localStorage.setItem('deckmeido_token', token);
@@ -6652,7 +6626,7 @@
         deviceSession = false;
         localStorage.removeItem('deckmeido_token');
         clearTimeout(reconnectTimer);
-        showAuth('登录已失效，请重新配对或输入令牌');
+        showAuth('登录已失效，请重新配对');
         return;
       }
       reconnectTimer = setTimeout(function () { reconnectTimer = null; connect(); }, backoff);
@@ -6727,7 +6701,6 @@
       .then(function (res) {
         if (!res.ok) {
           pairMsg.textContent = res.d.detail || '配对失败';
-          authErr.textContent = res.d.detail || '';
           return;
         }
         // 服务端已下发 HttpOnly Cookie；进入主界面，不再要求令牌
@@ -6745,9 +6718,8 @@
     setConnected(false);
     authErr.textContent = err || '';
     authOverlay.classList.add('show');
-    tokenInput.value = '';
     loadAuthVersion();
-    setTimeout(function () { tokenInput.focus(); }, 50);
+    setTimeout(function () { pairBtn.focus(); }, 50);
   }
 
   // 启动时先问后端：Cookie 已配对就直接进主界面，不再要求 12 位令牌
@@ -6852,7 +6824,7 @@
     fillCtrlPanel(c);
   }
 
-  // ---------- 控件自检（挂在「设置 → 设备连接」子模块里） ----------
+  // ---------- 控件自检（挂在「设置 → 本地连接」子模块里） ----------
   var ctrlList = document.getElementById('ctrlList');
   var ctrlYd = document.getElementById('ctrlYd');
   var ctrlHint = document.getElementById('ctrlHint');
@@ -6894,7 +6866,7 @@
   }
 
   function openCtrlPanel() {
-    // 跳转到「设置 → 设备连接」里的自检子模块，而不是弹独立窗口
+    // 跳转到「设置 → 本地连接」里的自检子模块，而不是弹独立窗口
     if (!document.body.classList.contains('settings-mode')) openSettings();
     showSetPane('device');
     ctrlLog.textContent = '';
@@ -7661,22 +7633,6 @@
     pairPin.value = String(pairPin.value || '').replace(/\D/g, '').slice(0, 4);
   });
 
-  tokenBtn.addEventListener('click', function () {
-    var t = normToken(tokenInput.value);
-    if (!t) { authErr.textContent = '请先输入令牌'; return; }
-    token = t;
-    localStorage.setItem('deckmeido_token', t);
-    // 右侧工具栏的首次加载发生在脚本末尾，那时可能还没有令牌；
-    // 这里补一次，免得登录后文件面板一直是「加载中…」
-    if (!fb.path) fbLoad(fb.follow ? fb.aiPath : '');
-    // 旧连接（用的是被拒的旧令牌）还挂在 ws 上，readyState 是 0/1，
-    // 直接 connect() 会被防重入挡掉，主人看到的就是「输对了令牌却一直转圈」
-    reconnectNow();
-  });
-  tokenInput.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') { e.preventDefault(); tokenBtn.click(); }
-  });
-
   // 连接中临时关闭自动重连（改令牌时会被服务端踢下线，不能让旧逻辑又弹回鉴权页）
   var suppressReconnect = false;
   // 首次引导的状态机：'' 未检查 → 'pending' 等 status 报出配置情况 → 'done'
@@ -8187,7 +8143,7 @@
       })
       .catch(function (e) {
         var msg = (e && e.message) || '';
-        if (/401/.test(msg)) { showAuth('旧令牌已失效，请重新输入'); }
+        if (/401/.test(msg)) { showAuth('旧令牌已失效，请重新配对'); }
         // 同「保存」：fetch 层失败只给一句人话，别把 Failed to fetch 摆到界面上
         else if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
           cfgHint.textContent = '连不上服务，请稍等几秒重试';
@@ -8402,7 +8358,7 @@
   // 名称与顺序固定，和内容区各 <section data-pane> 一一对应
   var setNav = document.getElementById('setNav');
   [['model', '模型接入'], ['persona', '女仆人设'],
-   ['device', '设备连接'], ['remote', '远程连接'],
+   ['device', '本地连接'], ['remote', '远程连接'],
    ['plugin', '插件设置'], ['about', '关于更新']].forEach(function (it) {
     var b = document.createElement('button');
     b.type = 'button';
@@ -9198,7 +9154,7 @@
 
   var RI_ERR_TEXT = {
     RI_DISABLED: '跨屏接管没有开启，已打开设置页：把「允许局域网设备接管」打开并保存，再点 logo',
-    RI_UNAUTHORIZED: '访问令牌已失效，请重新登录',
+    RI_UNAUTHORIZED: '登录已失效，请重新配对',
     RI_BUSY: '已经有人在接管这台 Deck 了',
     RI_NO_YDOTOOL: 'Deck 上没有可用的按键注入服务（ydotoold 未运行）',
     RI_NO_UINPUT: 'Deck 上无权创建虚拟输入设备',

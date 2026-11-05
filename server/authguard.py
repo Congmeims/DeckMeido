@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import math
 import secrets
 import time
 from urllib.parse import urlsplit
@@ -102,6 +103,21 @@ class FailureLimiter:
         if not ip:
             return False
         return len(self._prune(ip, time.monotonic())) >= self.max_fails
+
+    def retry_after(self, ip: str) -> int:
+        """还要等多少秒才不再被封（未封禁返回 0）。
+
+        失败记录按时间顺序追加，要让数量回落到阈值以下，得等最早的多出来的
+        那几条滑出窗口。给用户看到具体秒数，比一句「稍后再试」有用得多。
+        """
+        if not ip:
+            return 0
+        now = time.monotonic()
+        recent = self._prune(ip, now)
+        excess = len(recent) - self.max_fails + 1
+        if excess <= 0:
+            return 0
+        return max(1, int(math.ceil(recent[excess - 1] + self.window - now)))
 
     def record(self, ip: str) -> None:
         if not ip:

@@ -1585,8 +1585,11 @@ def _client_ip(request: Request) -> str:
 
 def _check_fail_limit(ip: str) -> None:
     if authguard.limiter.blocked(ip):
+        wait = authguard.limiter.retry_after(ip)
         audit.record("auth", "rate", "blocked", ip=ip, reason="too_many")
-        raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
+        raise HTTPException(status_code=429,
+                            detail=f"尝试过于频繁，请等待 {wait} 秒后重试",
+                            headers={"Retry-After": str(wait)})
 
 
 def _device_days() -> int:
@@ -1632,6 +1635,20 @@ def _set_device_cookie(response: Response, request: Request, token: str,
     )
 
 
+def _reject_bad_token(ip: str, action: str, detail: str = "") -> None:
+    """凭据不对时的统一出口：已被限流就 429，否则记一次失败并 401。
+
+    注意顺序：调用方必须先验令牌 / 设备 Cookie，只有验证失败才走到这里。
+    以前是先查限流再验证，后果是「令牌本身是对的，也被上一次失败拖累封掉」，
+    用户怎么重试都进不来。
+    """
+    if authguard.limiter.blocked(ip):
+        _check_fail_limit(ip)
+    audit.record("auth", action, "fail", ip=ip, reason="bad_token", detail=detail)
+    authguard.limiter.record(ip)
+    raise HTTPException(status_code=401, detail="invalid token")
+
+
 def check_token(request: Request, token: str | None = Query(default=None),
                 x_token: str | None = Header(default=None)):
     ip = _client_ip(request)
@@ -1639,15 +1656,11 @@ def check_token(request: Request, token: str | None = Query(default=None),
     # 只认 127.0.0.1 与 ::1；局域网来源照旧走令牌或设备 Cookie。
     if netcfg.is_local(ip):
         return
-    _check_fail_limit(ip)
     if TOKEN and (authguard.token_eq(TOKEN, token) or authguard.token_eq(TOKEN, x_token)):
         return
     if _auth_device(request):
         return
-    audit.record("auth", "api", "fail", ip=ip, reason="bad_token",
-                 detail=request.url.path)
-    authguard.limiter.record(ip)
-    raise HTTPException(status_code=401, detail="invalid token")
+    _reject_bad_token(ip, "api", request.url.path)
 
 
 def check_token_any(request: Request, token: str | None = Query(default=None),
@@ -1660,15 +1673,12 @@ def check_token_any(request: Request, token: str | None = Query(default=None),
     ip = _client_ip(request)
     if netcfg.is_local(ip):
         return
-    _check_fail_limit(ip)
     for expected in {_norm_token(TOKEN), _norm_token(_pending_token)} - {""}:
         if authguard.token_eq(expected, token) or authguard.token_eq(expected, x_token):
             return
     if _auth_device(request):
         return
-    audit.record("auth", "token_change", "fail", ip=ip, reason="bad_token")
-    authguard.limiter.record(ip)
-    raise HTTPException(status_code=401, detail="invalid token")
+    _reject_bad_token(ip, "token_change")
 
 
 def _ws_cookie_auth(ws: WebSocket) -> bool:
@@ -3311,12 +3321,13 @@ async def api_pair_confirm(req: PairConfirmRequest, request: Request,
                            response: Response):
     """提交 PIN：一次性、60 秒有效、最多 3 次；成功后下发设备 Cookie。"""
     ip = _client_ip(request)
-    _check_fail_limit(ip)
     try:
         device, token = pairing.manager.confirm(req.pair_id, req.pin, ip)
     except pairing.PairError as exc:
-        if exc.code in ("bad_pin", "expired", "denied", "too_many", "not_found",
-                        "not_approved"):
+        # 只有「PIN 真的输错」才计入 IP 限流。未允许 / 已过期 / 已失效都是
+        # 正常流程状态（用户刷新页面、后端重启都会走到这里），把它们当失败
+        # 计数会在几次操作内就把整个 IP 封掉，连正确令牌一起拒之门外。
+        if exc.code == "bad_pin":
             authguard.limiter.record(ip)
         raise _pair_http(exc) from exc
     _set_device_cookie(response, request, token, bool(req.remember))

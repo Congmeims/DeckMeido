@@ -367,7 +367,7 @@ class PairingManager:
                 raise PairError("not_approved", "请先在掌机上点「允许」", 409)
             if s["attempts"] >= PIN_MAX_ATTEMPTS:
                 s["state"] = STATE_DENIED
-                raise PairError("too_many", "PIN 错误次数过多，请在掌机上刷新", 429)
+                raise PairError("too_many", "PIN 错误次数过多，请在掌机上刷新 PIN", 429)
             if not entered or not hmac.compare_digest(s["pin"], entered):
                 s["attempts"] += 1
                 audit.record("pair", "confirm", "fail", ip=ip, reason="pin",
@@ -375,8 +375,9 @@ class PairingManager:
                 if s["attempts"] >= PIN_MAX_ATTEMPTS:
                     s["state"] = STATE_DENIED
                     s["pin"] = ""
-                    raise PairError("too_many", "PIN 错误次数过多，请在掌机上刷新", 429)
-                raise PairError("bad_pin", "PIN 不正确", 401)
+                    raise PairError("too_many", "PIN 错误次数过多，请在掌机上刷新 PIN", 429)
+                left = PIN_MAX_ATTEMPTS - s["attempts"]
+                raise PairError("bad_pin", f"PIN 不正确，还可以尝试 {left} 次", 401)
             # PIN 一次性：成功后立即作废，避免同一请求被重放
             s["pin"] = ""
             s["state"] = STATE_PAIRED
