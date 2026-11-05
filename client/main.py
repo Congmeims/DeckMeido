@@ -20,7 +20,7 @@ import urllib.request
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QLibraryInfo, QObject, Qt, QThread, QTimer, QTranslator, QUrl, Signal
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QFont, QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
@@ -388,11 +388,32 @@ def install_translators(app: QApplication) -> None:
             app.installTranslator(tr)
 
 
+def apply_app_font(app: QApplication) -> None:
+    """和插件端对齐字体：插件不设 font-family，继承的是 Steam 游戏模式界面字体
+
+    SteamOS 上是 Motiva Sans（Steam 客户端 UI 字体），中文由 Noto Sans CJK 兜底。
+    客户端跑在桌面/SteamOS 上，按同样的顺序取：先 Motiva Sans，没有就退到系统
+    自带的 Noto Sans CJK / Segoe UI / 微软雅黑，最后交给平台的 sans-serif。
+    这样 Deck 上两端观感一致，Windows 开发机上也不会因为缺字变成方框。
+    """
+    font = QFont()
+    font.setFamilies([
+        "Motiva Sans",          # Steam 游戏模式界面字体（插件端继承的就是它）
+        "Noto Sans CJK SC",     # SteamOS 自带中文字体
+        "Noto Sans",
+        "Segoe UI",             # Windows 开发机
+        "Microsoft YaHei",
+        "sans-serif",
+    ])
+    app.setFont(font)
+
+
 def main() -> int:
     _enable_crash_log()
     QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
     app.setApplicationName("DeckMeido")
+    apply_app_font(app)
     install_translators(app)
     # 关掉窗口时先最小化到托盘，由托盘菜单决定是否真退出
     app.setQuitOnLastWindowClosed(False)
