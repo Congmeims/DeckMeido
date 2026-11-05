@@ -56,8 +56,8 @@ export type Status = {
   game_confidence: string;
   game_ts: number;
   version: string;
-  unlocked: boolean;
-  ticket: string;
+  // 读不到后端配置 / 令牌时的明确原因（空串表示正常）
+  config_error: string;
 };
 
 export type Item = {
@@ -132,8 +132,6 @@ export function useSession() {
   const [translateTpl, setTranslateTpl] = useState(DEFAULT_TRANSLATE_TPL);
   const [translateTplEdit, setTranslateTplEdit] = useState(DEFAULT_TRANSLATE_TPL);
   const [translateTplDefault, setTranslateTplDefault] = useState(DEFAULT_TRANSLATE_TPL);
-  const [tokenInput, setTokenInput] = useState("");
-  const [ticket, setTicket] = useState("");
   const [probing, setProbing] = useState(true);
   const [restarting, setRestarting] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -183,11 +181,10 @@ export function useSession() {
     if (cancelled) setError("这一轮已中断");
   };
 
-  const loadTemplates = async (tk: string) => {
+  const loadTemplates = async () => {
     try {
-      const r = (await call<[string], { ok: boolean; text?: string; default?: string }>(
-        "get_ask_template",
-        tk
+      const r = (await call<[], { ok: boolean; text?: string; default?: string }>(
+        "get_ask_template"
       )) as { ok: boolean; text?: string; default?: string };
       if (r.ok && r.text) {
         setAskTpl(r.text);
@@ -198,9 +195,8 @@ export function useSession() {
       /* 取不到就用后端默认模板 */
     }
     try {
-      const r = (await call<[string], { ok: boolean; text?: string; default?: string }>(
-        "get_translate_template",
-        tk
+      const r = (await call<[], { ok: boolean; text?: string; default?: string }>(
+        "get_translate_template"
       )) as { ok: boolean; text?: string; default?: string };
       if (r.ok && r.text) {
         setTranslateTpl(r.text);
@@ -223,8 +219,7 @@ export function useSession() {
       setSttDuck(st.stt_duck !== false);
       setSttDuckAvailable(!!st.stt_duck_available);
       if (st.model) setModel(st.model);
-      setTicket(st.ticket || "");
-      if (st.ticket) void loadTemplates(st.ticket);
+      void loadTemplates();
       return st;
     } catch (e: any) {
       fail("BACKEND_DOWN", `插件后端未就绪：${String(e?.message ?? e)}`);
@@ -234,47 +229,21 @@ export function useSession() {
     }
   };
 
-  const applyTicket = async (tk: string) => {
-    const r = (await call<[string], { ok: boolean; ticket?: string; error?: string }>(
-      "unlock",
-      tk
-    )) as { ok: boolean; ticket?: string; error?: string };
-    if (!r.ok || !r.ticket) {
-      fail("AUTH_FAILED", r.error ?? "解锁失败");
-      return;
-    }
-    setTicket(r.ticket);
-    setTokenInput("");
-    setError("");
-    await refreshStatus();
-  };
-
-  const unlock = async () => {
-    const tk = tokenInput.trim();
-    if (!tk) return;
-    try {
-      await applyTicket(tk);
-    } catch (e: any) {
-      fail("AUTH_FAILED", String(e?.message ?? e));
-    }
-  };
-
   const startBackend = async () => {
     if (starting) return;
     setStarting(true);
     setError("");
     try {
-      const r = (await call<[string], { ok: boolean; error?: string; already?: boolean }>(
-        "start_backend",
-        ticket
+      const r = (await call<[], { ok: boolean; error?: string; already?: boolean }>(
+        "start_backend"
       )) as { ok: boolean; error?: string; already?: boolean };
       if (!r.ok) {
         fail("CORE_START_FAILED", r.error ?? "拉起后端失败");
         return;
       }
       await refreshStatus();
-      await call<[string], { ok: boolean; error?: string }>("session_open", ticket);
-      await call<[string], { ok: boolean }>("ready", ticket);
+      await call<[], { ok: boolean; error?: string }>("session_open");
+      await call<[], { ok: boolean }>("ready");
       pushLog("BACKEND_STARTED", "插件后端已拉起");
     } catch (e: any) {
       fail("CORE_START_FAILED", String(e?.message ?? e));
@@ -310,8 +279,6 @@ export function useSession() {
       if (!st) throw new Error("插件后端未就绪");
       if (!st.config_ok) throw new Error(`找不到配置：${st.install_dir}/server/config.toml`);
       if (!st.token_ok) throw new Error("后端配置里的 token 是空的，先在网页设置页生成一个");
-      if (!st.unlocked || !st.ticket) throw new Error("插件未解锁，先输入访问令牌");
-      const tk = st.ticket;
 
       let shotPath: string | null = null;
       let game: {
@@ -340,7 +307,7 @@ export function useSession() {
         }
         await wait(SHOT_LEAVE_MS);
         const snap = (await call<
-          [string, boolean],
+          [boolean],
           {
             ok: boolean;
             shot?: string;
@@ -355,7 +322,7 @@ export function useSession() {
               ts?: number;
             };
           }
-        >("screenshot", tk, false).catch((e: any) => ({
+        >("screenshot", false).catch((e: any) => ({
           ok: false,
           error: String(e?.message ?? e),
         }))) as {
@@ -392,12 +359,11 @@ export function useSession() {
       // 入口标记：聊天页发起的一轮放开多轮推进；询问/翻译保持一问一答。
       // client=bigscreen 让后端区分「大屏」和「QAM 面板」，避免 QAM 也被放开
       const surface = action === "send" ? "chat" : action || "";
-      const res = (await call<[string, string | null, string, string, string, string], { ok: boolean; error?: string }>(
+      const res = (await call<[string, string | null, string, string, string], { ok: boolean; error?: string }>(
         "start_turn",
         body,
         shotPath,
         brief,
-        tk,
         surface,
         "bigscreen"
       )) as { ok: boolean; error?: string };
@@ -407,10 +373,9 @@ export function useSession() {
       // 挂载后的 ready 会补推一次 running 状态，界面不会漏掉这一轮
       backToBigScreen();
 
-      const fin = (await call<[number, string], { ok: boolean; text?: string; error?: string }>(
+      const fin = (await call<[number], { ok: boolean; text?: string; error?: string }>(
         "wait_final",
-        900,
-        tk
+        900
       )) as { ok: boolean; text?: string; error?: string };
       if (busyRef.current) {
         if (fin.ok && fin.text) {
@@ -462,7 +427,7 @@ export function useSession() {
     setRunningAction("");
     setActivity("");
     try {
-      await call<[string], { ok: boolean; error?: string }>("cancel", ticket);
+      await call<[], { ok: boolean; error?: string }>("cancel");
     } catch {
       /* 断开本身已经够用 */
     }
@@ -475,9 +440,8 @@ export function useSession() {
     setNewing(true);
     setError("");
     try {
-      const r = (await call<[string], { ok: boolean; error?: string; unchanged?: boolean }>(
-        "session_new",
-        ticket
+      const r = (await call<[], { ok: boolean; error?: string; unchanged?: boolean }>(
+        "session_new"
       )) as { ok: boolean; error?: string; unchanged?: boolean };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受");
       if (r.unchanged) {
@@ -500,18 +464,16 @@ export function useSession() {
     if (loadingModels) return;
     setLoadingModels(true);
     try {
-      const r = (await call<[string], { ok: boolean; model?: string; error?: string }>(
-        "get_models",
-        ticket
+      const r = (await call<[], { ok: boolean; model?: string; error?: string }>(
+        "get_models"
       )) as { ok: boolean; model?: string; error?: string };
       if (r.ok && r.model) setModel(r.model);
     } catch {
       /* 当前模型拿不到就保持原样 */
     }
     try {
-      const r = (await call<[string], { ok: boolean; models?: string[]; error?: string }>(
-        "refresh_models",
-        ticket
+      const r = (await call<[], { ok: boolean; models?: string[]; error?: string }>(
+        "refresh_models"
       )) as { ok: boolean; models?: string[]; error?: string };
       if (r.ok) setModelList(r.models || []);
     } catch {
@@ -525,10 +487,9 @@ export function useSession() {
     const prev = model;
     setModel(name);
     try {
-      const r = (await call<[string, string], { ok: boolean; model?: string; error?: string }>(
+      const r = (await call<[string], { ok: boolean; model?: string; error?: string }>(
         "set_model",
-        name,
-        ticket
+        name
       )) as { ok: boolean; model?: string; error?: string };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
       setModel(r.model ?? name);
@@ -542,10 +503,9 @@ export function useSession() {
   const toggleStt = async (v: boolean) => {
     setStt(v);
     try {
-      const r = (await call<[boolean, string], { ok: boolean; stt?: boolean; error?: string }>(
+      const r = (await call<[boolean], { ok: boolean; stt?: boolean; error?: string }>(
         "set_stt",
-        v,
-        ticket
+        v
       )) as { ok: boolean; stt?: boolean; error?: string };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
       setStt(!!r.stt);
@@ -558,10 +518,9 @@ export function useSession() {
   const toggleSttDuck = async (v: boolean) => {
     setSttDuck(v);
     try {
-      const r = (await call<[boolean, string], { ok: boolean; stt_duck?: boolean; error?: string }>(
+      const r = (await call<[boolean], { ok: boolean; stt_duck?: boolean; error?: string }>(
         "set_stt_duck",
-        v,
-        ticket
+        v
       )) as { ok: boolean; stt_duck?: boolean; error?: string };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
       setSttDuck(r.stt_duck !== false);
@@ -574,10 +533,9 @@ export function useSession() {
   const toggleWithShot = async (v: boolean) => {
     setWithShot(v);
     try {
-      const r = (await call<[boolean, string], { ok: boolean; with_shot?: boolean; error?: string }>(
+      const r = (await call<[boolean], { ok: boolean; with_shot?: boolean; error?: string }>(
         "set_with_shot",
-        v,
-        ticket
+        v
       )) as { ok: boolean; with_shot?: boolean; error?: string };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
       setWithShot(!!r.with_shot);
@@ -589,10 +547,9 @@ export function useSession() {
 
   const saveAskTpl = async () => {
     try {
-      const r = (await call<[string, string], { ok: boolean; text?: string; error?: string }>(
+      const r = (await call<[string], { ok: boolean; text?: string; error?: string }>(
         "set_ask_template",
-        askTplEdit,
-        ticket
+        askTplEdit
       )) as { ok: boolean; text?: string; error?: string };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
       setAskTpl(r.text ?? "");
@@ -605,10 +562,9 @@ export function useSession() {
 
   const saveTranslateTpl = async () => {
     try {
-      const r = (await call<[string, string], { ok: boolean; text?: string; error?: string }>(
+      const r = (await call<[string], { ok: boolean; text?: string; error?: string }>(
         "set_translate_template",
-        translateTplEdit,
-        ticket
+        translateTplEdit
       )) as { ok: boolean; text?: string; error?: string };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
       setTranslateTpl(r.text ?? "");
@@ -624,14 +580,13 @@ export function useSession() {
     setStarting(true);
     setError("");
     try {
-      const r = (await call<[string], { ok: boolean; version?: string; error?: string }>(
-        "core_start",
-        ticket
+      const r = (await call<[], { ok: boolean; version?: string; error?: string }>(
+        "core_start"
       )) as { ok: boolean; version?: string; error?: string };
       if (!r.ok) throw new Error(r.error ?? "核心没有起来");
       await refreshStatus();
-      await call<[string], { ok: boolean; error?: string }>("session_open", ticket);
-      await call<[string], { ok: boolean }>("ready", ticket);
+      await call<[], { ok: boolean; error?: string }>("session_open");
+      await call<[], { ok: boolean }>("ready");
       pushLog("CORE_STARTED", "核心已启动");
     } catch (e: any) {
       fail("CORE_START_FAILED", `启动核心失败：${String(e?.message ?? e)}`);
@@ -645,9 +600,8 @@ export function useSession() {
     setRestarting(true);
     setError("");
     try {
-      const r = (await call<[string], { ok: boolean; version?: string; error?: string }>(
-        "core_restart",
-        ticket
+      const r = (await call<[], { ok: boolean; version?: string; error?: string }>(
+        "core_restart"
       )) as { ok: boolean; version?: string; error?: string };
       if (!r.ok) throw new Error(r.error ?? "核心没有回来");
       await refreshStatus();
@@ -664,9 +618,8 @@ export function useSession() {
     setKilling(true);
     setError("");
     try {
-      const r = (await call<[string], { ok: boolean; error?: string }>(
-        "core_kill",
-        ticket
+      const r = (await call<[], { ok: boolean; error?: string }>(
+        "core_kill"
       )) as { ok: boolean; error?: string };
       if (!r.ok) throw new Error(r.error ?? "核心没有停下来");
       // 标记已落盘：后端不会再自动拉起，只有「启动核心」能恢复
@@ -684,16 +637,15 @@ export function useSession() {
   }, []);
 
   useEffect(() => {
-    if (!ticket) return;
     (async () => {
       try {
-        await call<[string], { ok: boolean; error?: string }>("session_open", ticket);
-        await call<[string], { ok: boolean }>("ready", ticket);
+        await call<[], { ok: boolean; error?: string }>("session_open");
+        await call<[], { ok: boolean }>("ready");
       } catch {
         /* 连不上会在 get_status 里体现 */
       }
     })();
-  }, [ticket]);
+  }, []);
 
   useEffect(() => {
     const onDelta = (msg: Delta) => {
@@ -776,9 +728,6 @@ export function useSession() {
     translateTplEdit,
     setTranslateTplEdit,
     translateTplDefault,
-    tokenInput,
-    setTokenInput,
-    ticket,
     probing,
     restarting,
     starting,
@@ -786,7 +735,6 @@ export function useSession() {
     newing,
     pendingPoke,
     refreshStatus,
-    unlock,
     startBackend,
     send,
     shotAsk,

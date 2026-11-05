@@ -583,7 +583,7 @@ export default function BigScreen() {
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // 语音结果追加到已有输入后面，不覆盖用户已经打的字
-  const voice = useVoiceInput(s.ticket, (t) =>
+  const voice = useVoiceInput((t) =>
     setInput((prev) => (prev.trim() ? prev.replace(/\s*$/, " ") + t : t))
   );
 
@@ -595,11 +595,12 @@ export default function BigScreen() {
 
   // 进设置页再拉模型列表，和 QAM 的行为一致
   useEffect(() => {
-    if (tab === 2 && s.ticket) void s.loadModels();
-  }, [tab, s.ticket]);
+    if (tab === 2) void s.loadModels();
+  }, [tab]);
 
-  const locked = !!s.status && !s.status.unlocked;
-  const ready = !!s.status && s.status.unlocked;
+  // 读不到后端配置 / 令牌：显示明确原因，不再弹「需要访问令牌」
+  const configError = s.status?.config_error || "";
+  const ready = !!s.status && !configError;
   const coreRunning = !!s.status?.core_ok;
   const coreStopped = !!s.status?.core_stopped;
   const coreLine = s.status
@@ -638,7 +639,7 @@ export default function BigScreen() {
     if (voice.downloadError) return { text: voice.downloadError, color: ERR_COLOR, canDownload: true };
     if (voice.error) return { text: voice.error, color: ERR_COLOR, canDownload: false };
     const st = voice.status;
-    // ticket 还没到、或者插件桥报错时 status 就是空的：这也要说出来，
+    // 插件桥报错时 status 就是空的：这也要说出来，
     // 否则按钮只是灰着，用户不知道在等什么
     if (!st) return { text: "语音状态读取中…", color: DIM, canDownload: false };
     if (!st.ok) return { text: "语音不可用：后端没连上", color: DIM, canDownload: false };
@@ -808,7 +809,7 @@ export default function BigScreen() {
         </div>
 
         {/* 页签收进页头右侧；L1/R1 没有原生图例槽位，用键帽就地标出 */}
-        {!locked && ready && (
+        {ready && (
           <div
             style={{
               display: "flex",
@@ -856,23 +857,18 @@ export default function BigScreen() {
             </ActionButton>
           </div>
         </div>
-      ) : locked ? (
+      ) : configError ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ ...cardStyle, width: "min(560px, 100%)", alignItems: "stretch" }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: "#fff" }}>需要访问令牌</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#fff" }}>读不到后端配置</div>
             <div style={{ color: DIM, fontSize: 13, lineHeight: 1.5 }}>
-              插件以 root 运行，输入访问令牌后才能使用（默认 meido）。
+              读不到后端配置：{configError}
             </div>
-            <Focusable autoFocus onOKActionDescription="输入" style={{ width: "100%" }}>
-              <ImeTextField
-                value={s.tokenInput}
-                placeholder="访问令牌"
-                onValueChange={s.setTokenInput}
-                style={{ width: "100%" }}
-              />
-            </Focusable>
-            <ActionButton onClick={() => void s.unlock()} primary description="解锁">
-              解锁
+            <div style={{ color: DIM, fontSize: 13, lineHeight: 1.5 }}>
+              检查数据目录里的 config.toml（通常在 userdata/），确认能读到后重试。
+            </div>
+            <ActionButton onClick={() => void s.refreshStatus()} primary description="重试">
+              重试连接
             </ActionButton>
           </div>
         </div>

@@ -14,10 +14,8 @@
 
 import asyncio
 import base64
-import hashlib
 import inspect
 import itertools
-import hmac
 import json
 import os
 import re
@@ -153,51 +151,36 @@ def _cfg_error_text() -> str:
     return _SERVER_CFG_ERROR or "配置里没有 token"
 
 
-# ---------- 本机鉴权 ----------
+# ---------- 插件状态目录 ----------
 #
-# 插件后端以 root 加载，get_status / screenshot / gamepad_press 这些方法一旦
-# 被别的东西调起来，等于把「root 写 /dev/uinput」「读游戏画面」直接送出去。
-# 这里加一道令牌门：插件的调用方必须先在 QAM 里解锁，之后每次调用带上会话票据。
-#
-# 插件本机的解锁令牌默认 meido，和后端访问令牌是两回事：后端新装时
-# 已经随机生成 16 位，实际值由插件从后端配置里读取，不靠这里猜测。
-# 票据是解锁时随机生成的，存在插件数据目录里，Decky 重启后不用重新输入。
+# 插件以 root 加载，但本机（QAM / 大屏）不再单独设解锁门：能加载插件就视为
+# 已解锁，访问后端所需的令牌由插件自己从后端配置读取，并通过 X-Token 发送。
+# 这里只保留设备标识的落盘目录（decky.DECKY_PLUGIN_SETTINGS_DIR），
+# 老版本 Decky 没有该属性时退回 ~/.deckmeido。
 
-DEFAULT_PLUGIN_TOKEN = "meido"
-
-# 暴力猜令牌的限制：连续错这么多次就冷却
-_MAX_FAILS = 5
-_FAIL_COOLDOWN = 30.0
-_fails: list[float] = []
-
-_SESSION_PATH: Path | None = None
-_SESSION_TICKET = ""
-_TICKET_TTL = 12 * 3600.0
-_ticket_at = 0.0
+_STATE_DIR: Path | None = None
 
 
-def _session_path() -> Path:
-    """票据落盘位置：插件数据目录（decky.DECKY_PLUGIN_SETTINGS_DIR）"""
-    global _SESSION_PATH
-    if _SESSION_PATH is not None:
-        return _SESSION_PATH
+def _state_dir() -> Path:
+    """插件状态目录（设备标识等），不存放任何鉴权凭据"""
+    global _STATE_DIR
+    if _STATE_DIR is not None:
+        return _STATE_DIR
     cand = ""
     try:
         cand = str(getattr(decky, "DECKY_PLUGIN_SETTINGS_DIR", "") or "")
     except Exception:
         cand = ""
     if not cand:
-        # 老版本 Decky 没有这个属性，退到用户目录下的隐藏目录
         cand = str(Path.home() / ".deckmeido")
     p = Path(cand)
     try:
         p.mkdir(parents=True, exist_ok=True)
-        # 票据只有属主能读：root 跑的时候别让 deck 读到
         os.chmod(p, 0o700)
     except Exception:
         pass
-    _SESSION_PATH = p / "qam_session.json"
-    return _SESSION_PATH
+    _STATE_DIR = p
+    return _STATE_DIR
 
 
 def _qam_device_id() -> str:
@@ -206,9 +189,9 @@ def _qam_device_id() -> str:
     后端用 (client, device) 判断「这条待确认操作是不是你自己提的」，
     插件端原先只发了 client=qam 不带 device，于是 pending_action 永远
     匹配不上：在面板上回「确认」，模型会把确认提示语再问一遍。
-    这里和票据放同一个目录，装在这个 Deck 上就一直是同一个值。
+    这里和设备标识放同一个目录，装在这个 Deck 上就一直是同一个值。
     """
-    path = _session_path().parent / "device_id"
+    path = _state_dir() / "device_id"
     try:
         val = path.read_text(encoding="utf-8").strip()
         if val:
@@ -225,47 +208,6 @@ def _qam_device_id() -> str:
 
 
 _QAM_DEVICE = _qam_device_id()
-
-
-def _load_ticket() -> str:
-    """读上次解锁留下的票据（没有或过期就当没解锁）"""
-    global _SESSION_TICKET, _ticket_at
-    if _SESSION_TICKET:
-        return _SESSION_TICKET
-    try:
-        data = json.loads(_session_path().read_text(encoding="utf-8"))
-        ticket = str(data.get("ticket") or "")
-        at = float(data.get("at") or 0)
-    except Exception:
-        return ""
-    if not ticket or time.time() - at > _TICKET_TTL:
-        return ""
-    _SESSION_TICKET, _ticket_at = ticket, at
-    return ticket
-
-
-def _save_ticket(ticket: str):
-    global _SESSION_TICKET, _ticket_at
-    _SESSION_TICKET = ticket
-    _ticket_at = time.time()
-    _restore_owner()
-    path = _session_path()
-    try:
-        path.write_text(
-            json.dumps({"ticket": ticket, "at": _ticket_at}), encoding="utf-8"
-        )
-        os.chmod(path, 0o600)
-    except Exception as exc:
-        decky.logger.warning(f"票据落盘失败（本次仍可用）：{exc}")
-
-
-def _clear_ticket():
-    global _SESSION_TICKET, _ticket_at
-    _SESSION_TICKET, _ticket_at = "", 0.0
-    try:
-        _session_path().unlink(missing_ok=True)
-    except Exception:
-        pass
 
 
 # ---------- 核心停止标记 ----------
@@ -306,58 +248,13 @@ def _mark_core_stopped(stopped: bool) -> None:
 
 
 def _token() -> str:
-    """插件自己的令牌：环境变量 > 插件配置 > 默认 meido。
+    """插件访问后端用的令牌：只从后端配置读取（见 _load_server_cfg）
 
-    环境变量 DECKMEIDO_QAM_TOKEN 优先，方便排查时临时换一个，不用改盘上的配置；
-    插件配置指 <插件设置目录>/plugin.toml 里的 [plugin] qam_token。
+    本机面板不再需要用户输入令牌；这里保留统一入口，读不到时返回空串，
+    由调用方给出「读不到后端配置」的明确错误。
     """
-    env = os.environ.get("DECKMEIDO_QAM_TOKEN", "").strip().lower()
-    if env:
-        return env
-    settings = str(getattr(decky, "DECKY_PLUGIN_SETTINGS_DIR", "") or "")
-    if settings:
-        try:
-            cfg = tomllib.loads((Path(settings) / "plugin.toml").read_text(encoding="utf-8"))
-            val = str((cfg.get("plugin") or {}).get("qam_token") or "").strip().lower()
-            if val:
-                return val
-        except Exception:
-            pass
-    return DEFAULT_PLUGIN_TOKEN
-
-
-def _same(a: str, b: str) -> bool:
-    """定长比较，避免按字符猜令牌"""
-    return hmac.compare_digest(
-        hashlib.sha256(a.encode()).digest(), hashlib.sha256(b.encode()).digest()
-    )
-
-
-def _unlocked() -> bool:
-    """当前是否有有效的解锁票据"""
-    if not _load_ticket():
-        return False
-    if time.time() - _ticket_at > _TICKET_TTL:
-        _clear_ticket()
-        return False
-    return True
-
-
-def _require(ticket: str, method: str):
-    """每个受保护方法进来先过这道门，没过就抛，前端会收到错误字符串"""
-    if not _unlocked():
-        raise PermissionError(f"{method}: 未解锁，先在 QAM 面板输入访问令牌")
-    if not _same(str(ticket or ""), _SESSION_TICKET):
-        raise PermissionError(f"{method}: 票据不对，请重新解锁")
-
-
-def _too_many_fails() -> int:
-    """返回还要等几秒才能重试；0 表示可以试"""
-    now = time.time()
-    _fails[:] = [t for t in _fails if now - t < _FAIL_COOLDOWN]
-    if len(_fails) < _MAX_FAILS:
-        return 0
-    return int(_FAIL_COOLDOWN - (now - _fails[0])) + 1
+    cfg = _load_server_cfg()
+    return str(cfg.get("token", "") or "").strip()
 
 
 # ---------- 当前在玩的游戏 ----------
@@ -2258,8 +2155,8 @@ class Plugin:
     async def get_status(self) -> dict:
         """QAM 打开时先问一次：后端连得上吗、截图能不能用
 
-        这个方法故意不要求解锁：前端要先知道「解锁了没」才能决定显示
-        输入框还是正常面板，而且它只报能力，不含任何画面或对话内容。
+        本机面板不再需要解锁；这里只报能力，不含画面或对话内容。
+        读不到后端配置 / 令牌时通过 config_error 给出明确原因。
         """
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
@@ -2303,7 +2200,7 @@ class Plugin:
             f"get_status：核心 {'正常' if core.get('ok') else '异常'}"
             f"{'' if core.get('ok') else '（' + str(core.get('error') or '') + '）'}，"
             f"画面节点 {'有' if node else '没有'}"
-            f"{'' if node else '（' + why + '）'}，已解锁 {_unlocked()}，"
+            f"{'' if node else '（' + why + '）'}，"
             f"游戏 {game.get('name') or '无'}"
             f"（来源 {game.get('source') or 'none'} / 置信 {game.get('confidence') or 'none'}）"
         )
@@ -2358,32 +2255,26 @@ class Plugin:
             "game_ts": (game.get("ts") or 0),
             # 虚拟手柄能不能用：设备节点在 + 进程有写权限
             "gamepad": os.access("/dev/uinput", os.W_OK) if os.path.exists("/dev/uinput") else False,
-            # 本机鉴权状态：false 时前端只显示解锁框
-            "unlocked": _unlocked(),
-            # 后端记着的那张票据。前端把它当成「本机已解锁」的凭据接回来：
-            # QAM 面板一关一开组件会重挂载、useState 归零，不补回来的话
-            # 「截屏询问」先收面板再展开时就成了「明明解锁了却报未解锁」
-            "ticket": _SESSION_TICKET if _unlocked() else "",
+            # 读不到后端配置 / 令牌：前端据此显示明确原因，不再让用户猜口令
+            "config_error": "" if token else _cfg_error_text(),
         }
 
-    async def session_open(self, ticket: str = "") -> dict:
+    async def session_open(self) -> dict:
         """面板打开时调一次：连上后端并拉回全部对话（所有端的提问与回复）
 
         连上后 _read_loop 会先收到 history 并推一条 thread 事件，前端不必等这里的返回。
         """
-        _require(ticket, "session_open")
         bk, why = await _ensure_backend()
         if not bk:
             return {"ok": False, "error": why}
         return {"ok": True}
 
-    async def ready(self, ticket: str = "") -> dict:
+    async def ready(self) -> dict:
         """前端挂好监听后调一次：把积攒下来的对话补推过去
 
         Decky 是先渲染面板、后挂 addEventListener，而 history 那条 thread 可能在
         面板首帧之前就推完了。这里不重新连后端，只把快照再发一遍。
         """
-        _require(ticket, "ready")
         if _LAST_THREAD:
             _emit(_LAST_THREAD)
         elif _THREAD:
@@ -2393,13 +2284,12 @@ class Plugin:
         _emit({"kind": "status", "running": _STREAM_RUNNING, "since": _STREAM_SINCE})
         return {"ok": True}
 
-    async def start_backend(self, ticket: str = "") -> dict:
+    async def start_backend(self) -> dict:
         """面板上的「启动后端」：重开机进游戏模式后后端通常是没跑的
 
         先探一下再拉，避免和客户端同时拉起两份（后端有单实例守卫，
         多半是白等 40 秒才返回成功）。
         """
-        _require(ticket, "start_backend")
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
         token = str(cfg.get("token", "") or "").strip()
@@ -2420,44 +2310,16 @@ class Plugin:
         await _ensure_backend()
         return {"ok": True, "already": False}
 
-    async def session_new(self, ticket: str = "") -> dict:
+    async def session_new(self) -> dict:
         """新建会话：QAM 上这一轮聊下去不对劲时，从这里重新开一头
 
         走 HTTP 而不是 ws：后端受理后会向所有连接广播 history/session_changed，
         插件侧的 _read_loop 收到就自然刷新，不需要在这里额外处理返回值。
         """
-        _require(ticket, "session_new")
         return await _session_post("session_new", "/api/sessions/create")
 
-    async def unlock(self, token: str) -> dict:
-        """用访问令牌解锁插件能力，成功后拿到票据，之后的调用都要带上
-
-        连续错 _MAX_FAILS 次会冷却 _FAIL_COOLDOWN 秒：QAM 上的输入框是唯一入口，
-        不设限的话可以脚本化穷举 4 位令牌。
-        """
-        wait = _too_many_fails()
-        if wait:
-            return {"ok": False, "error": f"错误次数太多，{wait} 秒后再试"}
-        if _same(str(token or "").strip().lower(), _token()):
-            _fails.clear()
-            ticket = secrets.token_urlsafe(24)
-            _save_ticket(ticket)
-            decky.logger.info("QAM 已解锁")
-            return {"ok": True, "ticket": ticket}
-        _fails.append(time.time())
-        left = max(0, _MAX_FAILS - len(_fails))
-        hint = f"，还可以试 {left} 次" if left else f"，冷却 {int(_FAIL_COOLDOWN)} 秒"
-        return {"ok": False, "error": f"令牌不对{hint}"}
-
-    async def lock(self, ticket: str = "") -> dict:
-        """退出解锁（换人用这台机器时用），票据落盘一并删掉"""
-        _require(ticket, "lock")
-        _clear_ticket()
-        return {"ok": True}
-
-    async def set_tts(self, enabled: bool, ticket: str = "") -> dict:
+    async def set_tts(self, enabled: bool) -> dict:
         """切语音播报：交给后端写入 [tts] enable，热更新、不用重启"""
-        _require(ticket, "set_tts")
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
         token = str(cfg.get("token", "") or "").strip()
@@ -2467,9 +2329,8 @@ class Plugin:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
         return {"ok": True, "tts": bool((r.get("data") or {}).get("tts_enable"))}
 
-    async def set_with_shot(self, enabled: bool, ticket: str = "") -> dict:
+    async def set_with_shot(self, enabled: bool) -> dict:
         """切「带画面询问」：写进后端 [agent] with_shot，面板重开后仍是这个值"""
-        _require(ticket, "set_with_shot")
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
         token = str(cfg.get("token", "") or "").strip()
@@ -2479,9 +2340,8 @@ class Plugin:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
         return {"ok": True, "with_shot": bool((r.get("data") or {}).get("with_shot", enabled))}
 
-    async def set_stt(self, enabled: bool, ticket: str = "") -> dict:
+    async def set_stt(self, enabled: bool) -> dict:
         """切语音输入：写后端 [stt] enable，关掉时后端顺手释放识别模型"""
-        _require(ticket, "set_stt")
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
         token = str(cfg.get("token", "") or "").strip()
@@ -2491,9 +2351,8 @@ class Plugin:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
         return {"ok": True, "stt": bool((r.get("data") or {}).get("stt_enable", enabled))}
 
-    async def set_stt_duck(self, enabled: bool, ticket: str = "") -> dict:
+    async def set_stt_duck(self, enabled: bool) -> dict:
         """切「录音时静音外放」：写后端 [stt] duck_output，热更新"""
-        _require(ticket, "set_stt_duck")
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
         token = str(cfg.get("token", "") or "").strip()
@@ -2504,13 +2363,12 @@ class Plugin:
         return {"ok": True,
                 "stt_duck": bool((r.get("data") or {}).get("stt_duck_output", enabled))}
 
-    async def stt_duck(self, on: bool, ticket: str = "") -> dict:
+    async def stt_duck(self, on: bool) -> dict:
         """录音开始/结束时静音或恢复系统输出
 
         后端的静音失败本身就是静默降级，这里再兜一层：任何异常都返回
         ok=True，前端按「发完就忘」处理，绝不能让静音影响录音。
         """
-        _require(ticket, "stt_duck")
         try:
             cfg = _load_server_cfg()
             r = await _core_http(int(cfg.get("port", 18765)),
@@ -2521,9 +2379,8 @@ class Plugin:
         except Exception:
             return {"ok": True, "ducked": False}
 
-    async def get_ask_template(self, ticket: str = "") -> dict:
+    async def get_ask_template(self) -> dict:
         """读「截屏询问」的提示词模板（存在后端配置里，网页设置页改的也是这份）"""
-        _require(ticket, "get_ask_template")
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
                              str(cfg.get("token", "") or "").strip(),
@@ -2534,14 +2391,13 @@ class Plugin:
         return {"ok": True, "text": str(data.get("text") or ""),
                 "default": str(data.get("default") or "")}
 
-    async def get_models(self, ticket: str = "") -> dict:
+    async def get_models(self) -> dict:
         """当前模型 + 服务商可用模型列表，供面板上的下拉菜单用
 
         列表要现场问服务商，网络差的时候十几秒没有回音，Decky 会把它看成
         「插件卡死」并把整个 QAM 挂住。所以这里只读本机配置里的当前模型
         （本机 HTTP，毫秒级），列表另走 refresh_models，前端异步拿。
         """
-        _require(ticket, "get_models")
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
         token = str(cfg.get("token", "") or "").strip()
@@ -2550,9 +2406,8 @@ class Plugin:
             return {"ok": False, "error": cur.get("error") or "读不到后端配置", "model": ""}
         return {"ok": True, "model": str((cur.get("data") or {}).get("model") or "")}
 
-    async def refresh_models(self, ticket: str = "") -> dict:
+    async def refresh_models(self) -> dict:
         """问服务商要模型列表：慢就放弃，让下拉菜单保持「只有当前模型」"""
-        _require(ticket, "refresh_models")
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
         token = str(cfg.get("token", "") or "").strip()
@@ -2567,9 +2422,8 @@ class Plugin:
             models.insert(0, model)
         return {"ok": True, "model": model, "models": models}
 
-    async def set_model(self, model: str, ticket: str = "") -> dict:
+    async def set_model(self, model: str) -> dict:
         """切模型：写回后端配置，下一个回合就生效"""
-        _require(ticket, "set_model")
         name = str(model or "").strip()
         if not name:
             return {"ok": False, "error": "模型名不能为空"}
@@ -2581,9 +2435,8 @@ class Plugin:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
         return {"ok": True, "model": str((r.get("data") or {}).get("model") or name)}
 
-    async def set_ask_template(self, text: str, ticket: str = "") -> dict:
+    async def set_ask_template(self, text: str) -> dict:
         """改「截屏询问」的提示词模板：传空串表示恢复默认"""
-        _require(ticket, "set_ask_template")
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
                              str(cfg.get("token", "") or "").strip(),
@@ -2592,9 +2445,8 @@ class Plugin:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
         return {"ok": True, "text": str((r.get("data") or {}).get("text") or "")}
 
-    async def get_translate_template(self, ticket: str = "") -> dict:
+    async def get_translate_template(self) -> dict:
         """读「截图翻译」的提示词模板（存在后端配置里，真正用于翻译请求）"""
-        _require(ticket, "get_translate_template")
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
                              str(cfg.get("token", "") or "").strip(),
@@ -2605,9 +2457,8 @@ class Plugin:
         return {"ok": True, "text": str(data.get("text") or ""),
                 "default": str(data.get("default") or "")}
 
-    async def set_translate_template(self, text: str, ticket: str = "") -> dict:
+    async def set_translate_template(self, text: str) -> dict:
         """改「截图翻译」的提示词模板：传空串表示恢复默认"""
-        _require(ticket, "set_translate_template")
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
                              str(cfg.get("token", "") or "").strip(),
@@ -2616,9 +2467,8 @@ class Plugin:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
         return {"ok": True, "text": str((r.get("data") or {}).get("text") or "")}
 
-    async def stt_status(self, ticket: str = "") -> dict:
+    async def stt_status(self) -> dict:
         """语音输入可用性：依赖、模型、录音设备三者都齐了按钮才亮"""
-        _require(ticket, "stt_status")
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
                              str(cfg.get("token", "") or "").strip(),
@@ -2627,12 +2477,11 @@ class Plugin:
             return {"ok": False, "error": r.get("error") or "读不到语音状态"}
         return {"ok": True, **(r.get("data") or {})}
 
-    async def stt_download_model(self, ticket: str = "") -> dict:
+    async def stt_download_model(self) -> dict:
         """启动语音模型下载（约 1GB）：后端已改成后台任务，这里秒回状态
 
         进度走 stt_status 里的 download 字段轮询，不再让桥接请求挂 10 分钟。
         """
-        _require(ticket, "stt_download_model")
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
                              str(cfg.get("token", "") or "").strip(),
@@ -2641,9 +2490,8 @@ class Plugin:
             return {"ok": False, "error": r.get("error") or "模型下载启动失败"}
         return {"ok": True, **(r.get("data") or {})}
 
-    async def stt_download_cancel(self, ticket: str = "") -> dict:
+    async def stt_download_cancel(self) -> dict:
         """取消模型下载：清掉半包，状态回到 cancelled"""
-        _require(ticket, "stt_download_cancel")
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
                              str(cfg.get("token", "") or "").strip(),
@@ -2652,13 +2500,12 @@ class Plugin:
             return {"ok": False, "error": r.get("error") or "取消失败"}
         return {"ok": True, **(r.get("data") or {})}
 
-    async def stt_transcribe(self, wav_b64: str, ticket: str = "") -> dict:
+    async def stt_transcribe(self, wav_b64: str) -> dict:
         """WAV(base64) → 文字
 
         音频走 base64 而不是二进制参数：Decky 的方法桥只传 JSON，
         320KB 的 10 秒录音编成 base64 约 430KB，一次传完没问题。
         """
-        _require(ticket, "stt_transcribe")
         try:
             wav = base64.b64decode(wav_b64 or "", validate=True)
         except Exception:
@@ -2712,14 +2559,13 @@ class Plugin:
             return {"ok": False, "error": str(data.get("detail") or "识别失败")}
         return {"ok": True, "text": str(data.get("text") or "")}
 
-    async def core_start(self, ticket: str = "") -> dict:
+    async def core_start(self) -> dict:
         """「启动」按钮：显式清掉停止标记，再把核心拉起来
 
         和 start_backend 的区别：这个面向大屏页的三个核心按钮，返回里带
         already / version，前端据此决定按钮状态；停止标记只在这里和
         start_backend 里清除。
         """
-        _require(ticket, "core_start")
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
         token = str(cfg.get("token", "") or "").strip()
@@ -2743,7 +2589,7 @@ class Plugin:
         return {"ok": True, "already": False,
                 "version": str((ver.get("data") or {}).get("version") or "")}
 
-    async def core_restart(self, ticket: str = "") -> dict:
+    async def core_restart(self) -> dict:
         """重启女仆核心：由插件自己收掉旧进程，再用启动时那套命令拉起
 
         不能让后端自己重启（见 server/main.py 的 /api/restart）：
@@ -2753,7 +2599,6 @@ class Plugin:
         实测结果就是旧进程没了、新的没起来，重启变成「把后端关掉」。
         插件这边握着完整的启动命令（_start_backend），所以由它来重放。
         """
-        _require(ticket, "core_restart")
         # 「关闭」之后必须保持停止：重启不算启动，不能顺手把标记清掉
         if _core_stopped():
             return {"ok": False, "error": "核心已停止，先点「启动」"}
@@ -2770,14 +2615,13 @@ class Plugin:
         ver = str((back.get("data") or {}).get("version") or "") if back["ok"] else ""
         return {"ok": True, "version": ver}
 
-    async def core_kill(self, ticket: str = "") -> dict:
+    async def core_kill(self) -> dict:
         """关闭核心并保持停止：先落停止标记，再收进程
 
         标记先写：这样即便正好有一次自动拉起在排队，看到标记也会跳过。
         插件加载时的 _autostart_backend、以及系统的 restart 策略都不会再拉它；
         只有用户点「启动」（core_start / start_backend）才会恢复。
         """
-        _require(ticket, "core_kill")
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
         _mark_core_stopped(True)
@@ -2786,7 +2630,7 @@ class Plugin:
         await _drop_backend()
         return {"ok": True}
 
-    async def screenshot(self, ticket: str = "", hide: bool = False) -> dict:
+    async def screenshot(self, hide: bool = False) -> dict:
         """抓当前游戏画面
 
         hide=True 时前端会先把 QAM 收起来：gamescope 的 pipewiresrc 抓的是
@@ -2794,7 +2638,6 @@ class Plugin:
         —— 面板的收起动画加一次重绘接近 1 秒，短了抓到的还是「游戏 + 侧栏」，
         甚至抓到侧栏正在切走的通知页。
         """
-        _require(ticket, "screenshot")
         # 和抓帧一起把当前游戏的 appid/名字带回去：查攻略时要拼进提示词，
         # 单独再开一次接口既慢又容易和画面错位。这一项要读 vdf、翻进程表，
         # 放在等画面之前做，省下来的时间正好也留给侧栏收干净。
@@ -2840,36 +2683,31 @@ class Plugin:
         # 几十 KB 的 JPEG 才塞得进返回值
         return {"ok": True, "shot": str(shot), "thumb": _make_thumb(shot), "game": game}
 
-    async def gamepad_press(self, key: str, ms: int = 80, ticket: str = "") -> dict:
+    async def gamepad_press(self, key: str, ms: int = 80) -> dict:
         """模拟按一下手柄键：a/b/x/y/lb/rb/up/down/left/right/start/select/guide/l3/r3/share"""
-        _require(ticket, "gamepad_press")
         # 面板按键是换序的唯一触发点，日志里必须能看见它到底有没有被调到
         decky.logger.info(f"面板按键 {key}（{ms}ms），设备{'已存在' if _GAMEPAD._fd else '将新建'}")
         r = await _GAMEPAD.press(key, ms)
         decky.logger.info(f"面板按键结果 {r}")
         return r
 
-    async def gamepad_stick(self, x: float, y: float, ticket: str = "",
+    async def gamepad_stick(self, x: float, y: float,
                             side: str = "left") -> dict:
         """摇杆推到 (x, y)，范围 -1..1；推完不会自动回中，
         面板松手时会再调一次 gamepad_stick(0, 0)。side 取 left / right"""
-        _require(ticket, "gamepad_stick")
         return await _GAMEPAD.stick(x, y, side)
 
-    async def gamepad_trigger(self, which: str, value: float = 1.0,
-                              ticket: str = "") -> dict:
+    async def gamepad_trigger(self, which: str, value: float = 1.0) -> dict:
         """扳机力度：which 取 lt / rt，value 是 0..1（0 松开、1 到底）"""
-        _require(ticket, "gamepad_trigger")
         return await _GAMEPAD.trigger(which, value)
 
-    async def gamepad_close(self, ticket: str = "") -> dict:
+    async def gamepad_close(self) -> dict:
         """收掉虚拟手柄设备（不再需要时才调，避免 Steam 一直以为接了手柄）"""
-        _require(ticket, "gamepad_close")
         await _GAMEPAD.close()
         return {"ok": True}
 
     async def start_turn(
-        self, text: str, shot: str | None = None, brief: str = "", ticket: str = "",
+        self, text: str, shot: str | None = None, brief: str = "",
         surface: str = "", client: str = "",
     ) -> dict:
         """把一轮对话发给后端。返回后流式内容通过 deckmeido_delta 推给前端
@@ -2884,7 +2722,6 @@ class Plugin:
         后端据此保证只有大屏聊天页放开单轮限制。
         """
         decky.logger.info(f"start_turn 被调用：{len(text or '')} 字，图 {shot or '(无)'}")
-        _require(ticket, "start_turn")
         global _ACC, _LAST_REPLY, _STREAM_RUNNING, _STREAM_SINCE, _TURN_SHOT_PATH
         text = str(text or "").strip()
         if not text:
@@ -2958,9 +2795,8 @@ class Plugin:
         _LAST_SHOT_PATH = ""
         return {"ok": True}
 
-    async def wait_final(self, timeout: float = 900, ticket: str = "") -> dict:
+    async def wait_final(self, timeout: float = 900) -> dict:
         """等本轮收尾，返回完整正文。前端收到 final 事件就不用调这个"""
-        _require(ticket, "wait_final")
         try:
             await asyncio.wait_for(_FINAL_EVENT.wait(), timeout=timeout)
         except asyncio.TimeoutError:
@@ -2969,7 +2805,7 @@ class Plugin:
             return {"ok": False, "error": f"等了 {timeout:.0f}s 还没有答复"}
         return {"ok": True, "text": _LAST_REPLY}
 
-    async def cancel(self, ticket: str = "") -> dict:
+    async def cancel(self) -> dict:
         """掐掉这一轮：直接调后端的 /api/cancel，连接保持不动
 
         以前这里先 _drop_backend() 再发请求，等于每次终止都把 ws 拆掉：
@@ -2978,7 +2814,6 @@ class Plugin:
         现在只发 HTTP 终止请求，收尾交给后端广播（它会带 cancelled=True 的
         assistant_message），连接一直活着。
         """
-        _require(ticket, "cancel")
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
         token = str(cfg.get("token", "") or "")
@@ -3025,13 +2860,12 @@ class Plugin:
         decky.logger.info(f"[probe] {text}")
         return True
 
-    async def pad_order(self, action: str, ticket: str = "") -> dict:
+    async def pad_order(self, action: str) -> dict:
         """让前端去换 Steam 的控制器排序（后端管不到，排序只在 Steam 进程内存里）
 
         调完不 waiting 结果 —— 前端那边异步做完只写 console，这里返回的
         {"ok": True} 表示「请求已经发出去」。
         """
-        _require(ticket, "pad_order")
         _emit({"kind": "pad_order", "action": str(action or "")})
         return {"ok": True}
 
@@ -3109,5 +2943,4 @@ class Plugin:
     async def _uninstall(self):
         await _drop_backend()
         await _GAMEPAD.close()
-        _clear_ticket()
         decky.logger.info("DeckMeido 插件卸载")

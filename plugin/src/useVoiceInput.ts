@@ -116,7 +116,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
   });
 }
 
-export function useVoiceInput(ticket: string, onText: (t: string) => void) {
+export function useVoiceInput(onText: (t: string) => void) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState("");
@@ -150,10 +150,9 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
     (on: boolean) => {
       if (duckedRef.current === on) return;
       duckedRef.current = on;
-      if (!ticket) return;
-      void call<[boolean, string], { ok: boolean }>("stt_duck", on, ticket).catch(() => undefined);
+      void call<[boolean], { ok: boolean }>("stt_duck", on).catch(() => undefined);
     },
-    [ticket]
+    []
   );
 
   /** state 提交是异步的，按键事件读到的可能是上一帧的值；ref 同步改，保证松开能命中 */
@@ -163,11 +162,10 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
   }, []);
 
   const refresh = useCallback(async (): Promise<Status | null> => {
-    if (!ticket) return statusRef.current;
     if (refreshingRef.current) return statusRef.current;
     refreshingRef.current = true;
     try {
-      const r = (await call<[string], Status>("stt_status", ticket)) as Status;
+      const r = (await call<[], Status>("stt_status")) as Status;
       statusRef.current = r;
       setStatus(r);
       return r;
@@ -179,13 +177,11 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
     } finally {
       refreshingRef.current = false;
     }
-  }, [ticket]);
+  }, []);
 
   useEffect(() => {
-    if (!ticket) return;
     void refresh();
-    // ticket 可能比组件挂载晚到（要先 get_status 才拿到），空票直接跳过。
-    // 注意依赖里只能有 refresh：status 每次都换新对象，写进依赖会自己触发自己，
+    // status 每次都换新对象，写进依赖会自己触发自己，
     // 变成每秒几十次 stt_status 的死循环，把桥接和主线程都拖死
     const id = window.setInterval(() => void refresh(), 5000);
     return () => window.clearInterval(id);
@@ -267,10 +263,9 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
     try {
       const wav = encodeWav(merged, SAMPLE_RATE);
       const r = (await withTimeout(
-        call<[string, string], { ok: boolean; text?: string; error?: string }>(
+        call<[string], { ok: boolean; text?: string; error?: string }>(
           "stt_transcribe",
-          toBase64(wav),
-          ticket
+          toBase64(wav)
         ) as Promise<{ ok: boolean; text?: string; error?: string }>,
         CALL_TIMEOUT_MS,
         "识别超时，请重试"
@@ -290,7 +285,7 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
     } finally {
       applyPhase("idle");
     }
-  }, [applyPhase, cleanup, onText, ticket]);
+  }, [applyPhase, cleanup, onText]);
 
   const start = useCallback(async () => {
     if (phaseRef.current !== "idle") return;
@@ -393,9 +388,8 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
     setDownloading(true);
     setError("");
     try {
-      const r = (await call<[string], { ok: boolean; error?: string }>(
-        "stt_download_model",
-        ticket
+      const r = (await call<[], { ok: boolean; error?: string }>(
+        "stt_download_model"
       )) as { ok: boolean; error?: string };
       if (!r.ok) {
         setError(r.error || "模型下载启动失败");
@@ -419,18 +413,18 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
       downloadBusyRef.current = false;
       setDownloading(false);
     }
-  }, [refresh, ticket]);
+  }, [refresh]);
 
   const cancelDownload = useCallback(async () => {
     downloadCancelRef.current = true;
     try {
-      await call<[string], { ok: boolean; error?: string }>("stt_download_cancel", ticket);
+      await call<[], { ok: boolean; error?: string }>("stt_download_cancel");
     } catch {
       /* 取消失败就让后台自然结束，界面不额外报错 */
     } finally {
       await refresh();
     }
-  }, [refresh, ticket]);
+  }, [refresh]);
 
   const dl = status?.download;
   return {

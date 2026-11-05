@@ -359,8 +359,6 @@ function useQamSession() {
   const [translateTpl, setTranslateTpl] = useState(DEFAULT_TRANSLATE_TPL);
   const [translateTplEdit, setTranslateTplEdit] = useState(DEFAULT_TRANSLATE_TPL);
   const [translateTplDefault, setTranslateTplDefault] = useState(DEFAULT_TRANSLATE_TPL);
-  const [tokenInput, setTokenInput] = useState("");
-  const [ticket, setTicket] = useState("");
   const [probing, setProbing] = useState(true);
   const [restarting, setRestarting] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -408,11 +406,10 @@ function useQamSession() {
     if (cancelled) setError("这一轮已中断");
   };
 
-  const loadTemplates = async (tk: string) => {
+  const loadTemplates = async () => {
     try {
-      const r = (await call<[string], { ok: boolean; text?: string; default?: string }>(
-        "get_ask_template",
-        tk
+      const r = (await call<[], { ok: boolean; text?: string; default?: string }>(
+        "get_ask_template"
       )) as { ok: boolean; text?: string; default?: string };
       if (r.ok && r.text) {
         setAskTpl(r.text);
@@ -423,9 +420,8 @@ function useQamSession() {
       /* 取不到就用后端默认模板 */
     }
     try {
-      const r = (await call<[string], { ok: boolean; text?: string; default?: string }>(
-        "get_translate_template",
-        tk
+      const r = (await call<[], { ok: boolean; text?: string; default?: string }>(
+        "get_translate_template"
       )) as { ok: boolean; text?: string; default?: string };
       if (r.ok && r.text) {
         setTranslateTpl(r.text);
@@ -448,8 +444,7 @@ function useQamSession() {
       setSttDuck(st.stt_duck !== false);
       setSttDuckAvailable(!!st.stt_duck_available);
       if (st.model) setModel(st.model);
-      setTicket(st.ticket || "");
-      if (st.ticket) void loadTemplates(st.ticket);
+      void loadTemplates();
       return st;
     } catch (e: any) {
       fail("BACKEND_DOWN", `插件后端未就绪：${String(e?.message ?? e)}`);
@@ -459,47 +454,21 @@ function useQamSession() {
     }
   };
 
-  const applyTicket = async (tk: string) => {
-    const r = (await call<[string], { ok: boolean; ticket?: string; error?: string }>(
-      "unlock",
-      tk
-    )) as { ok: boolean; ticket?: string; error?: string };
-    if (!r.ok || !r.ticket) {
-      fail("AUTH_FAILED", r.error ?? "解锁失败");
-      return;
-    }
-    setTicket(r.ticket);
-    setTokenInput("");
-    setError("");
-    await refreshStatus();
-  };
-
-  const unlock = async () => {
-    const tk = tokenInput.trim();
-    if (!tk) return;
-    try {
-      await applyTicket(tk);
-    } catch (e: any) {
-      fail("AUTH_FAILED", String(e?.message ?? e));
-    }
-  };
-
   const startBackend = async () => {
     if (starting) return;
     setStarting(true);
     setError("");
     try {
-      const r = (await call<[string], { ok: boolean; error?: string; already?: boolean }>(
-        "start_backend",
-        ticket
+      const r = (await call<[], { ok: boolean; error?: string; already?: boolean }>(
+        "start_backend"
       )) as { ok: boolean; error?: string; already?: boolean };
       if (!r.ok) {
         fail("CORE_START_FAILED", r.error ?? "拉起后端失败");
         return;
       }
       await refreshStatus();
-      await call<[string], { ok: boolean; error?: string }>("session_open", ticket);
-      await call<[string], { ok: boolean }>("ready", ticket);
+      await call<[], { ok: boolean; error?: string }>("session_open");
+      await call<[], { ok: boolean }>("ready");
       pushLog("BACKEND_STARTED", "插件后端已拉起");
     } catch (e: any) {
       fail("CORE_START_FAILED", String(e?.message ?? e));
@@ -520,14 +489,8 @@ function useQamSession() {
     }
   };
 
-  const restoreQamSafe = async (tk: string) => {
+  const restoreQamSafe = async () => {
     restoreQam();
-    if (!tk) return;
-    try {
-      await applyTicket(tk);
-    } catch (e: any) {
-      setError(`${String(e?.message ?? e)}（面板已打开，需要重新输入访问令牌）`);
-    }
   };
 
   const openBigScreen = () => {
@@ -560,8 +523,6 @@ function useQamSession() {
       if (!st) throw new Error("插件后端未就绪");
       if (!st.config_ok) throw new Error(`找不到配置：${st.install_dir}/server/config.toml`);
       if (!st.token_ok) throw new Error("后端配置里的 token 是空的，先在网页设置页生成一个");
-      if (!st.unlocked || !st.ticket) throw new Error("插件未解锁，先输入访问令牌");
-      const tk = st.ticket;
 
       let shotPath: string | null = null;
       let game: {
@@ -583,7 +544,7 @@ function useQamSession() {
         if (hideQam) Navigation.CloseSideMenus();
         if (hideQam) await wait(1200);
         const snap = (await call<
-          [string, boolean],
+          [boolean],
           {
             ok: boolean;
             shot?: string;
@@ -598,7 +559,7 @@ function useQamSession() {
               ts?: number;
             };
           }
-        >("screenshot", tk, hideQam).catch((e: any) => ({
+        >("screenshot", hideQam).catch((e: any) => ({
           ok: false,
           error: String(e?.message ?? e),
         }))) as {
@@ -609,7 +570,7 @@ function useQamSession() {
           needPoke?: boolean;
           game?: { appid?: string; name?: string };
         };
-        if (hideQam) await restoreQamSafe(tk);
+        if (hideQam) await restoreQamSafe();
         if (snap.needPoke) {
           setPendingPoke({ text, brief, hideQam, action });
           setBusyBoth(false);
@@ -635,18 +596,17 @@ function useQamSession() {
       // surface 决定后端是否放开多轮：聊天页 = chat，询问/翻译保持一问一答
       const surface = action === "send" ? "chat" : action;
       const res = (await call<
-        [string, string | null, string, string, string],
+        [string, string | null, string, string],
         { ok: boolean; error?: string }
-      >("start_turn", body, shotPath, brief, tk, surface)) as {
+      >("start_turn", body, shotPath, brief, surface)) as {
         ok: boolean;
         error?: string;
       };
       if (!res.ok) throw new Error(res.error ?? "发不出去");
 
-      const fin = (await call<[number, string], { ok: boolean; text?: string; error?: string }>(
+      const fin = (await call<[number], { ok: boolean; text?: string; error?: string }>(
         "wait_final",
-        900,
-        tk
+        900
       )) as { ok: boolean; text?: string; error?: string };
       if (busyRef.current) {
         if (fin.ok && fin.text) {
@@ -662,7 +622,7 @@ function useQamSession() {
       setRunningAction("");
       setActivity("");
       setStreaming("");
-      if (grab && hideQam) void restoreQamSafe("");
+      if (grab && hideQam) void restoreQamSafe();
     }
   };
 
@@ -695,7 +655,7 @@ function useQamSession() {
     setRunningAction("");
     setActivity("");
     try {
-      await call<[string], { ok: boolean; error?: string }>("cancel", ticket);
+      await call<[], { ok: boolean; error?: string }>("cancel");
     } catch {
       /* 断开本身已经够用，取消失败不再打扰用户 */
     }
@@ -709,9 +669,8 @@ function useQamSession() {
     setNewing(true);
     setError("");
     try {
-      const r = (await call<[string], { ok: boolean; error?: string; unchanged?: boolean }>(
-        "session_new",
-        ticket
+      const r = (await call<[], { ok: boolean; error?: string; unchanged?: boolean }>(
+        "session_new"
       )) as { ok: boolean; error?: string; unchanged?: boolean };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受");
       if (r.unchanged) {
@@ -734,18 +693,16 @@ function useQamSession() {
     if (loadingModels) return;
     setLoadingModels(true);
     try {
-      const r = (await call<[string], { ok: boolean; model?: string; error?: string }>(
-        "get_models",
-        ticket
+      const r = (await call<[], { ok: boolean; model?: string; error?: string }>(
+        "get_models"
       )) as { ok: boolean; model?: string; error?: string };
       if (r.ok && r.model) setModel(r.model);
     } catch {
       /* 当前模型拿不到就保持原样 */
     }
     try {
-      const r = (await call<[string], { ok: boolean; models?: string[]; error?: string }>(
-        "refresh_models",
-        ticket
+      const r = (await call<[], { ok: boolean; models?: string[]; error?: string }>(
+        "refresh_models"
       )) as { ok: boolean; models?: string[]; error?: string };
       if (r.ok) setModelList(r.models || []);
     } catch {
@@ -759,10 +716,9 @@ function useQamSession() {
     const prev = model;
     setModel(name);
     try {
-      const r = (await call<[string, string], { ok: boolean; model?: string; error?: string }>(
+      const r = (await call<[string], { ok: boolean; model?: string; error?: string }>(
         "set_model",
-        name,
-        ticket
+        name
       )) as { ok: boolean; model?: string; error?: string };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
       setModel(r.model ?? name);
@@ -776,10 +732,9 @@ function useQamSession() {
   const toggleStt = async (v: boolean) => {
     setStt(v);
     try {
-      const r = (await call<[boolean, string], { ok: boolean; stt?: boolean; error?: string }>(
+      const r = (await call<[boolean], { ok: boolean; stt?: boolean; error?: string }>(
         "set_stt",
-        v,
-        ticket
+        v
       )) as { ok: boolean; stt?: boolean; error?: string };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
       setStt(!!r.stt);
@@ -792,10 +747,9 @@ function useQamSession() {
   const toggleSttDuck = async (v: boolean) => {
     setSttDuck(v);
     try {
-      const r = (await call<[boolean, string], { ok: boolean; stt_duck?: boolean; error?: string }>(
+      const r = (await call<[boolean], { ok: boolean; stt_duck?: boolean; error?: string }>(
         "set_stt_duck",
-        v,
-        ticket
+        v
       )) as { ok: boolean; stt_duck?: boolean; error?: string };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
       setSttDuck(r.stt_duck !== false);
@@ -808,10 +762,9 @@ function useQamSession() {
   const toggleTts = async (v: boolean) => {
     setTts(v);
     try {
-      const r = (await call<[boolean, string], { ok: boolean; tts?: boolean; error?: string }>(
+      const r = (await call<[boolean], { ok: boolean; tts?: boolean; error?: string }>(
         "set_tts",
-        v,
-        ticket
+        v
       )) as { ok: boolean; tts?: boolean; error?: string };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
       setTts(!!r.tts);
@@ -824,10 +777,9 @@ function useQamSession() {
   const toggleWithShot = async (v: boolean) => {
     setWithShot(v);
     try {
-      const r = (await call<[boolean, string], { ok: boolean; with_shot?: boolean; error?: string }>(
+      const r = (await call<[boolean], { ok: boolean; with_shot?: boolean; error?: string }>(
         "set_with_shot",
-        v,
-        ticket
+        v
       )) as { ok: boolean; with_shot?: boolean; error?: string };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
       setWithShot(!!r.with_shot);
@@ -839,10 +791,9 @@ function useQamSession() {
 
   const saveAskTpl = async () => {
     try {
-      const r = (await call<[string, string], { ok: boolean; text?: string; error?: string }>(
+      const r = (await call<[string], { ok: boolean; text?: string; error?: string }>(
         "set_ask_template",
-        askTplEdit,
-        ticket
+        askTplEdit
       )) as { ok: boolean; text?: string; error?: string };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
       setAskTpl(r.text ?? "");
@@ -855,10 +806,9 @@ function useQamSession() {
 
   const saveTranslateTpl = async () => {
     try {
-      const r = (await call<[string, string], { ok: boolean; text?: string; error?: string }>(
+      const r = (await call<[string], { ok: boolean; text?: string; error?: string }>(
         "set_translate_template",
-        translateTplEdit,
-        ticket
+        translateTplEdit
       )) as { ok: boolean; text?: string; error?: string };
       if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
       setTranslateTpl(r.text ?? "");
@@ -874,14 +824,13 @@ function useQamSession() {
     setStarting(true);
     setError("");
     try {
-      const r = (await call<[string], { ok: boolean; version?: string; error?: string }>(
-        "core_start",
-        ticket
+      const r = (await call<[], { ok: boolean; version?: string; error?: string }>(
+        "core_start"
       )) as { ok: boolean; version?: string; error?: string };
       if (!r.ok) throw new Error(r.error ?? "核心没有起来");
       await refreshStatus();
-      await call<[string], { ok: boolean; error?: string }>("session_open", ticket);
-      await call<[string], { ok: boolean }>("ready", ticket);
+      await call<[], { ok: boolean; error?: string }>("session_open");
+      await call<[], { ok: boolean }>("ready");
       pushLog("CORE_STARTED", "核心已启动");
     } catch (e: any) {
       fail("CORE_START_FAILED", `启动核心失败：${String(e?.message ?? e)}`);
@@ -895,9 +844,8 @@ function useQamSession() {
     setRestarting(true);
     setError("");
     try {
-      const r = (await call<[string], { ok: boolean; version?: string; error?: string }>(
-        "core_restart",
-        ticket
+      const r = (await call<[], { ok: boolean; version?: string; error?: string }>(
+        "core_restart"
       )) as { ok: boolean; version?: string; error?: string };
       if (!r.ok) throw new Error(r.error ?? "核心没有回来");
       await refreshStatus();
@@ -914,9 +862,8 @@ function useQamSession() {
     setKilling(true);
     setError("");
     try {
-      const r = (await call<[string], { ok: boolean; error?: string }>(
-        "core_kill",
-        ticket
+      const r = (await call<[], { ok: boolean; error?: string }>(
+        "core_kill"
       )) as { ok: boolean; error?: string };
       if (!r.ok) throw new Error(r.error ?? "核心没有停下来");
       await refreshStatus();
@@ -933,16 +880,15 @@ function useQamSession() {
   }, []);
 
   useEffect(() => {
-    if (!ticket) return;
     (async () => {
       try {
-        await call<[string], { ok: boolean; error?: string }>("session_open", ticket);
-        await call<[string], { ok: boolean }>("ready", ticket);
+        await call<[], { ok: boolean; error?: string }>("session_open");
+        await call<[], { ok: boolean }>("ready");
       } catch {
         /* 连不上会在 get_status 里体现 */
       }
     })();
-  }, [ticket]);
+  }, []);
 
   useEffect(() => {
     const onDelta = (msg: Delta) => {
@@ -1019,9 +965,6 @@ function useQamSession() {
     translateTplEdit,
     setTranslateTplEdit,
     translateTplDefault,
-    tokenInput,
-    setTokenInput,
-    ticket,
     probing,
     restarting,
     starting,
@@ -1029,7 +972,6 @@ function useQamSession() {
     newing,
     pendingPoke,
     refreshStatus,
-    unlock,
     startBackend,
     send,
     shotAsk,
@@ -1061,7 +1003,7 @@ export default function QamScreen() {
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // 语音结果追加到已有输入后面，不覆盖已经打的字
-  const voice = useVoiceInput(s.ticket, (t) =>
+  const voice = useVoiceInput((t) =>
     setInput((prev) => (prev.trim() ? prev.replace(/\s*$/, " ") + t : t))
   );
 
@@ -1091,8 +1033,8 @@ export default function QamScreen() {
 
   // 进设置页拉一次模型列表，和之前的 QAM 行为一致
   useEffect(() => {
-    if (tab === 2 && s.ticket) void s.loadModels();
-  }, [tab, s.ticket]);
+    if (tab === 2) void s.loadModels();
+  }, [tab]);
 
   // LB / RB 翻页：沿用 Steam 前端的控制器输入回调（LB=6、RB=7，不是 Linux 键码）
   useEffect(() => {
@@ -1125,7 +1067,7 @@ export default function QamScreen() {
     void s.send(text);
   };
 
-  const ready = !!s.status?.unlocked;
+  const configError = s.status?.config_error || "";
   const coreRunning = !!s.status?.core_ok;
   const coreStopped = !!s.status?.core_stopped;
   const coreLine = s.status
@@ -1221,28 +1163,18 @@ export default function QamScreen() {
     );
   }
 
-  // 未解锁：只留解锁卡片
-  if (!ready) {
+  // 读不到后端配置 / 令牌：只留明确的错误卡片，不再让用户猜口令
+  if (configError) {
     return shell(
       <>
-        <Card title="解锁">
+        <Card title="读不到后端配置">
+          <div style={{ fontSize: 12, color: TEXT }}>读不到后端配置：{configError}</div>
           <div style={{ fontSize: 11, color: DIM, lineHeight: 1.5 }}>
-            插件以 root 运行，输入访问令牌后才能使用（默认 meido）。
+            检查数据目录里的 config.toml（通常在 userdata/），确认能读到后重试。
           </div>
-          <Focusable onOKActionDescription="输入" style={{ width: "100%", padding: 0 }}>
-            <TextField
-              value={s.tokenInput}
-              placeholder="访问令牌"
-              onChange={(e) => s.setTokenInput(e.target.value)}
-              style={{ width: "100%" }}
-            />
-          </Focusable>
-          <Btn primary onClick={() => void s.unlock()} description="解锁">
-            解锁
+          <Btn primary onClick={() => void s.refreshStatus()} description="重试">
+            重试连接
           </Btn>
-          {s.error && (
-            <div style={{ fontSize: 11, color: ERR_COLOR, lineHeight: 1.4 }}>{s.error}</div>
-          )}
           <Btn height={26} size={11} onClick={s.openBigScreen} description="打开大屏">
             打开大屏
           </Btn>
