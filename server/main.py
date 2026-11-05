@@ -2597,12 +2597,13 @@ async def api_file_stat_batch(payload: dict):
 
 
 @app.get("/api/zip", dependencies=[Depends(check_token)])
-async def api_zip(path: list[str] = Query(default=[]), name: str = Query(default="files.zip")):
+async def api_zip(path: list[str] | None = Query(default=None), name: str = Query(default="files.zip")):
     """把多个工作区文件打成一个 zip 下载（网页端「打包下载」用）
 
     在内存里打：一次打包的通常是模型刚生成的几个文档，几十 MB 量级，
     落到临时文件反而要操心清理。
     """
+    path = path or []          # 不用 [] 作默认值：可变对象会被所有请求共享
     if not path:
         raise HTTPException(status_code=400, detail="no files")
     buf = io.BytesIO()
