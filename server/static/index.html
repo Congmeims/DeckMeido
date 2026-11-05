@@ -1659,12 +1659,6 @@
     body.sb-collapsed #sbRail { display: none; }
     #sbToggle { display: none; }
     #btnMenu { display: block; }
-    /* 抽屉拉开时在设置页盖一层：点哪儿都会先收起导航，不会出现「导航挡住设置
-       却怎么也关不掉」——PC 端窄窗口尤其容易踩到 */
-    body.settings-mode.sb-open .set-main::after {
-      content: ''; position: fixed; z-index: 14;
-      inset: 0 0 0 240px; background: rgba(0,0,0,.35);
-    }
   }
   /* 手机竖屏（≈390px）：顶栏、时间线、输入栏都要单独收窄，否则会被挤出屏幕 */
   @media (max-width: 560px) {
@@ -2297,6 +2291,13 @@
   }
   #btnRight { display: none; }
   @media (max-width: 1080px) { #btnRight { display: block; } }
+  /* 左右抽屉共用同一层遮罩：任何一边拉开时显示，点一下就把两边都收起。
+     抽屉自身（z-15 / z-16）在遮罩之上，点面板内部照常可用、不会误关 */
+  #drawerMask {
+    position: fixed; inset: 0; z-index: 14; display: none;
+    background: rgba(0,0,0,.35);
+  }
+  body.sb-open #drawerMask, body.rb-open #drawerMask { display: block; }
   /* 宽屏折叠态：右栏只剩一个浮动的展开按钮，必须把它显式显示出来。
      #rbToggle 平时是 display:none（展开时那一行放的是分段控件，没有它），
      放在媒体查询之后，保证宽屏折叠时不会被上面那条 #rbToggle 规则盖掉 */
@@ -3125,6 +3126,9 @@
     <div class="fv-body" id="fvBody"></div>
   </div>
 </div>
+
+<!-- 左右抽屉共用的遮罩：body 上挂 sb-open / rb-open 时显示，点它收起两边 -->
+<div id="drawerMask"></div>
 
 <script>
 (function () {
@@ -4296,6 +4300,8 @@
   // 左侧会话栏的折叠：<=760 走抽屉（sb-open），更宽的窗口收成 44px 窄条
   function sbApplyLayout() {
     var narrow = window.matchMedia('(max-width: 760px)').matches;
+    // 抽屉态只在窄屏成立：窗口拉宽后残留的 sb-open 会让遮罩一直盖着整页
+    if (!narrow) document.body.classList.remove('sb-open');
     document.body.classList.toggle('sb-collapsed', !narrow && SB.collapsed);
     try {
       localStorage.setItem('deckmeido_sb', JSON.stringify({ collapsed: SB.collapsed }));
@@ -10181,14 +10187,19 @@
   document.getElementById('btnMenu').addEventListener('click', function () {
     document.body.classList.toggle('sb-open');
   });
-  // 点消息区 = 接着聊天，顺手收起抽屉
-  messages.addEventListener('click', function () {
+  // 左右抽屉统一走这一个收起入口：点遮罩、点消息区、点设置内容区都只调它，
+  // 保证两侧行为一致（右栏以前没有遮罩，点空白完全收不起来）
+  function closeDrawers() {
     document.body.classList.remove('sb-open');
-  });
+    if (RB.open) { RB.open = false; rbApplyLayout(); }
+  }
+  document.getElementById('drawerMask').addEventListener('click', closeDrawers);
+  // 点消息区 = 接着聊天，顺手收起抽屉
+  messages.addEventListener('click', closeDrawers);
   // 设置页内容区同理：窄屏抽屉盖住整块设置，点内容区就该退出，否则导航一直挡着
   settingsPanel.addEventListener('click', function (e) {
     if (e.target && e.target.closest && e.target.closest('input, textarea, select, button')) return;
-    document.body.classList.remove('sb-open');
+    closeDrawers();
   });
 
   // ---------- 侧栏：系统状态卡 ----------
@@ -10333,7 +10344,7 @@
             }).then(function (r) {
               if (!r.ok) addSystem('切换会话失败（HTTP ' + r.status + '）');
             }).catch(function () { addSystem('切换会话失败'); });
-            document.body.classList.remove('sb-open');
+            closeDrawers();
           });
           sessList.appendChild(row);
         });
