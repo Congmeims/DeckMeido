@@ -113,6 +113,24 @@ _SERVER_CFG_ERROR = ""
 _SERVER_CFG_LOGGED = ""
 
 
+def _resolve_port(server: dict) -> dict:
+    """端口优先级：DECKMEIDO_PORT > config.toml [server].port > 18765。
+
+    直接在返回的 [server] 字典里归一，所有 int(cfg.get("port", ...)) 的调用点
+    自动拿到同一个值，避免「状态页显示一个端口、健康检查问另一个端口」。
+    """
+    for candidate in (os.environ.get("DECKMEIDO_PORT"), server.get("port")):
+        try:
+            port = int(str(candidate).strip())
+        except (TypeError, ValueError):
+            continue
+        if 1024 <= port <= 65535:
+            server["port"] = port
+            return server
+    server["port"] = 18765
+    return server
+
+
 def _load_server_cfg() -> dict:
     """读后端的 [server] 段，拿 port 和 token
 
@@ -138,7 +156,7 @@ def _load_server_cfg() -> dict:
             if _SERVER_CFG_ERROR:
                 _SERVER_CFG_ERROR = ""
                 _SERVER_CFG_LOGGED = ""
-            return cfg.get("server") or {}
+            return _resolve_port(cfg.get("server") or {})
     # 同一段错误只写一次日志，get_status 每秒都会读配置，别刷屏
     if _SERVER_CFG_ERROR and _SERVER_CFG_ERROR != _SERVER_CFG_LOGGED:
         decky.logger.error(_SERVER_CFG_ERROR)
@@ -774,9 +792,12 @@ async def _start_backend(port: int) -> tuple[bool, str]:
         if not _run_as():
             kwargs["start_new_session"] = True
         try:
+            # 绑定地址每次拉起都重新读配置：lan_enable 关闭时只绑回环，
+            # 开启才允许局域网（设置页改完点重启，下一次拉起即按新值）
+            host = "0.0.0.0" if bool(_load_server_cfg().get("lan_enable", False)) else "127.0.0.1"
             proc = await asyncio.create_subprocess_exec(
                 *_run_as(), str(py), "-m", "uvicorn", "server.main:app",
-                "--host", "0.0.0.0", "--port", str(port),
+                "--host", host, "--port", str(port),
                 # 心跳放宽：默认 20 秒收不到 pong 就主动断开。Deck 睡眠、切桌面/游戏模式、
                 # 跑一条刷屏命令时事件循环偶尔卡几十秒，默认值会让它把好好的连接踢掉，
                 # 前台表现就是「回答到一半突然整段消失、重连后又冒出来」
@@ -2214,8 +2235,13 @@ class Plugin:
             # 面板第二行显示成「192.168.x.x:18765」，别的设备照这个地址连
             "ip": lan_ip,
             # 「局域网访问」区块：地址与令牌，前端分组展示并提供复制
+            # lan_enable=false 时只监听回环，前端把地址标成「仅本机」并给出开关提示
+            "lan_enable": bool(cfg.get("lan_enable", False)),
             "lan_url": f"http://{lan_ip or '127.0.0.1'}:{port}",
             "lan_token": token,
+            # 掌机状态行：有人尝试配对 / 连续鉴权失败时显示一句提示
+            "security_note": str((core.get("data") or {}).get("security_note") or ""),
+            "pending_pair": int((core.get("data") or {}).get("pending_pair") or 0),
             # 女仆核心（后端自身的 /api/status）在不在、跑没跑起来
             "core_ok": bool(core.get("ok")),
             "core_reason": str(core.get("error") or ""),
@@ -2253,6 +2279,55 @@ class Plugin:
             # 读不到后端配置 / 令牌：前端据此显示明确原因，不再让用户猜口令
             "config_error": "" if token else _cfg_error_text(),
         }
+
+    async def pair_info(self) -> dict:
+        """设备配对：待配对会话（带 PIN/倒计时）与已配对设备。
+
+        仅供掌机设置页轮询；PIN 只在这里返回，浏览器侧的 /api/pair/status
+        永远拿不到 PIN。
+        """
+        cfg = _load_server_cfg()
+        port = int(cfg.get("port", 18765))
+        token = _load_token()
+        if not token:
+            return {"ok": False, "error": _cfg_error_text()}
+        pending = await _core_http(port, token, "GET", "/api/pair/pending")
+        devices = await _core_http(port, token, "GET", "/api/devices")
+        return {
+            "ok": bool(pending.get("ok")),
+            "sessions": (pending.get("data") or {}).get("sessions") or [],
+            "devices": (devices.get("data") or {}).get("devices") or [],
+            "lan_enable": bool(cfg.get("lan_enable", False)),
+            "error": str(pending.get("error") or devices.get("error") or ""),
+        }
+
+    async def pair_refresh(self, pair_id: str) -> dict:
+        cfg = _load_server_cfg()
+        return await _core_http(int(cfg.get("port", 18765)), _load_token(),
+                                "POST", "/api/pair/refresh", body={"pair_id": pair_id})
+
+    async def pair_decide(self, pair_id: str, allow: bool) -> dict:
+        cfg = _load_server_cfg()
+        return await _core_http(int(cfg.get("port", 18765)), _load_token(),
+                                "POST", "/api/pair/decision",
+                                body={"pair_id": pair_id, "allow": bool(allow)})
+
+    async def pair_remove(self, device_id: str) -> dict:
+        cfg = _load_server_cfg()
+        return await _core_http(int(cfg.get("port", 18765)), _load_token(),
+                                "POST", "/api/devices/remove",
+                                body={"device_id": device_id})
+
+    async def pair_rename(self, device_id: str, name: str) -> dict:
+        cfg = _load_server_cfg()
+        return await _core_http(int(cfg.get("port", 18765)), _load_token(),
+                                "POST", "/api/devices/rename",
+                                body={"device_id": device_id, "name": name})
+
+    async def pair_remove_all(self) -> dict:
+        cfg = _load_server_cfg()
+        return await _core_http(int(cfg.get("port", 18765)), _load_token(),
+                                "POST", "/api/devices/remove_all")
 
     async def session_open(self) -> dict:
         """面板打开时调一次：连上后端并拉回全部对话（所有端的提问与回复）

@@ -593,9 +593,13 @@ export default function BigScreen() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [s.items, s.streaming, tab]);
 
-  // 进设置页再拉模型列表，和 QAM 的行为一致
+  // 进设置页拉模型列表；配对信息每 2 秒刷新（PIN 倒计时 / 新设备提示）
   useEffect(() => {
-    if (tab === 2) void s.loadModels();
+    if (tab !== 2) return;
+    void s.loadModels();
+    void s.loadPairInfo();
+    const timer = setInterval(() => void s.loadPairInfo(), 2000);
+    return () => clearInterval(timer);
   }, [tab]);
 
   // 读不到后端配置 / 令牌：显示明确原因，不再弹「需要访问令牌」
@@ -1367,6 +1371,140 @@ export default function BigScreen() {
                   复制令牌
                 </ActionButton>
               </div>
+            </div>
+          </SectionCard>
+
+          {/* 设备配对：PIN 只在掌机显示，允许后才接受浏览器提交的 PIN */}
+          <SectionCard
+            title="设备配对"
+            inlineTitle
+            accent={C.cyber}
+            style={{ padding: 6, flex: 0.75 }}
+          >
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 3,
+                width: "100%",
+                minHeight: 0,
+                overflow: "hidden",
+              }}
+            >
+              {s.status?.security_note ? (
+                <div style={{ fontSize: 11, color: "#e0a33a" }}>{s.status.security_note}</div>
+              ) : null}
+              {!s.status?.lan_enable ? (
+                <div style={{ fontSize: 10.5, color: DIM }}>
+                  局域网访问已关闭（仅本机）；开启并重启后端后才能配对。
+                </div>
+              ) : null}
+              {s.pairSessions.length === 0 ? (
+                <div style={{ fontSize: 11, color: DIM }}>无待配对设备</div>
+              ) : (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                    <span
+                      style={{
+                        fontSize: 20,
+                        letterSpacing: 4,
+                        color: TEXT,
+                        fontFamily: "monospace",
+                      }}
+                    >
+                      {s.pairSessions[0].pin}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 10.5,
+                        color: DIM,
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      剩余 {Math.max(0, s.pairSessions[0].expires_in)} 秒 ·{" "}
+                      {s.pairSessions[0].name} · {s.pairSessions[0].ip}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <ActionButton
+                      onClick={() => void s.pairDecide(s.pairSessions[0].pair_id, true)}
+                      description="允许这台设备配对"
+                      compact
+                      style={{ width: "auto", padding: "0 10px" }}
+                    >
+                      允许
+                    </ActionButton>
+                    <ActionButton
+                      onClick={() => void s.pairDecide(s.pairSessions[0].pair_id, false)}
+                      description="拒绝这台设备"
+                      compact
+                      style={{ width: "auto", padding: "0 10px" }}
+                    >
+                      拒绝
+                    </ActionButton>
+                    <ActionButton
+                      onClick={() => void s.pairRefresh(s.pairSessions[0].pair_id)}
+                      description="刷新 PIN"
+                      compact
+                      style={{ width: "auto", padding: "0 10px" }}
+                    >
+                      刷新 PIN
+                    </ActionButton>
+                  </div>
+                </>
+              )}
+              <div style={{ fontSize: 10.5, color: DIM }}>
+                已配对 {s.pairDevices.length} 台
+                {s.pairDevices.length
+                  ? `：${s.pairDevices.slice(0, 3).map((d) => d.name || "未命名").join("、")}${
+                      s.pairDevices.length > 3 ? " 等" : ""
+                    }`
+                  : ""}
+              </div>
+              {s.pairDevices.map((d) => (
+                <div
+                  key={d.device_id}
+                  style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}
+                >
+                  <span
+                    style={{
+                      flex: 1,
+                      fontSize: 10.5,
+                      color: TEXT,
+                      minWidth: 0,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {d.name || "未命名"} · {d.ip || "—"}
+                  </span>
+                  <ActionButton
+                    onClick={() => void s.pairRemove(d.device_id)}
+                    description="移除这台设备"
+                    compact
+                    style={{ width: "auto", padding: "0 8px", minHeight: 22, height: 22 }}
+                  >
+                    移除
+                  </ActionButton>
+                </div>
+              ))}
+              {s.pairDevices.length > 0 ? (
+                <ActionButton
+                  onClick={() => void s.pairRemoveAll()}
+                  description="移除全部已配对设备"
+                  compact
+                  style={{ width: "auto", padding: "0 10px", minHeight: 22, height: 22 }}
+                >
+                  移除全部设备
+                </ActionButton>
+              ) : null}
+              {s.pairError ? (
+                <div style={{ fontSize: 10.5, color: ERR_COLOR }}>{s.pairError}</div>
+              ) : null}
             </div>
           </SectionCard>
 

@@ -993,6 +993,8 @@ function useQamSession() {
 export default function QamScreen() {
   const s = useQamSession();
   const [tab, setTabState] = useState(lastTab);
+  // 设备改名草稿：按 device_id 保存输入框里的值，保存后才写回后端
+  const [renameDrafts, setRenameDrafts] = useState<Record<string, string>>({});
   const setTab = (t: number | ((prev: number) => number)) => {
     setTabState((prev) => {
       const next = typeof t === "function" ? t(prev) : t;
@@ -1031,9 +1033,13 @@ export default function QamScreen() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [s.items, s.streaming, tab]);
 
-  // 进设置页拉一次模型列表，和之前的 QAM 行为一致
+  // 进设置页拉一次模型列表；配对信息每 2 秒刷新一次（PIN 倒计时/新设备提示）
   useEffect(() => {
-    if (tab === 2) void s.loadModels();
+    if (tab !== 2) return;
+    void s.loadModels();
+    void s.loadPairInfo();
+    const timer = setInterval(() => void s.loadPairInfo(), 2000);
+    return () => clearInterval(timer);
   }, [tab]);
 
   // LB / RB 翻页：沿用 Steam 前端的控制器输入回调（LB=6、RB=7，不是 Linux 键码）
@@ -1554,6 +1560,106 @@ export default function QamScreen() {
             >
               复制令牌
             </Btn>
+          </Card>
+
+          {/* 设备配对：PIN 只在掌机上显示，浏览器输入 PIN 才能拿到设备凭据 */}
+          <Card title="设备配对">
+            {s.status?.security_note ? (
+              <div style={{ fontSize: 11.5, color: "#e0a33a", lineHeight: 1.5 }}>
+                {s.status.security_note}
+              </div>
+            ) : null}
+            {!s.status?.lan_enable ? (
+              <div style={{ fontSize: 11, color: DIM, lineHeight: 1.5 }}>
+                局域网访问当前关闭（仅本机）。在网页设置里开启并重启后端后，新设备才能配对。
+              </div>
+            ) : null}
+            {s.pairSessions.length === 0 ? (
+              <div style={{ fontSize: 11, color: DIM }}>
+                暂无待配对设备。对方点「配对新设备」后会出现在这里。
+              </div>
+            ) : (
+              s.pairSessions.map((p) => (
+                <div
+                  key={p.pair_id}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 4,
+                    padding: "8px 9px",
+                    borderRadius: 4,
+                    background: "rgba(255,255,255,.05)",
+                    border: "1px solid rgba(90,169,230,.16)",
+                  }}
+                >
+                  <div style={{ fontSize: 11, color: TEXT }}>
+                    {p.name || "未知设备"} · {p.ip || "未知来源"}
+                  </div>
+                  <div style={{ fontSize: 22, letterSpacing: 6, color: TITLE, fontFamily: "monospace" }}>
+                    {p.pin}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: DIM }}>
+                    剩余 {Math.max(0, p.expires_in)} 秒 · 已试 {p.attempts}/3 次
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <Btn height={26} size={10.5} onClick={() => void s.pairDecide(p.pair_id, true)}>
+                      允许
+                    </Btn>
+                    <Btn height={26} size={10.5} onClick={() => void s.pairDecide(p.pair_id, false)}>
+                      拒绝
+                    </Btn>
+                    <Btn height={26} size={10.5} onClick={() => void s.pairRefresh(p.pair_id)}>
+                      刷新 PIN
+                    </Btn>
+                  </div>
+                </div>
+              ))
+            )}
+            {s.pairDevices.length === 0 ? (
+              <div style={{ fontSize: 11, color: DIM }}>还没有已配对设备。</div>
+            ) : (
+              s.pairDevices.map((d) => (
+                <div key={d.device_id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ fontSize: 11, color: TEXT }}>
+                    {d.name || "未命名设备"} · {d.ip || "—"}
+                  </div>
+                  <div style={{ fontSize: 10, color: DIM }}>
+                    最后在线 {d.last_seen ? new Date(d.last_seen * 1000).toLocaleString() : "—"}
+                  </div>
+                  <TextField
+                    value={renameDrafts[d.device_id] ?? d.name}
+                    onChange={(e) =>
+                      setRenameDrafts((prev) => ({ ...prev, [d.device_id]: e.target.value }))
+                    }
+                  />
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <Btn
+                      height={24}
+                      size={10.5}
+                      onClick={() =>
+                        void s.pairRename(
+                          d.device_id,
+                          renameDrafts[d.device_id] ?? d.name
+                        )
+                      }
+                    >
+                      保存名称
+                    </Btn>
+                    <Btn height={24} size={10.5} onClick={() => void s.pairRemove(d.device_id)}>
+                      移除
+                    </Btn>
+                  </div>
+                </div>
+              ))
+            )}
+            {s.pairDevices.length > 0 ? (
+              <Btn height={24} size={10.5} onClick={() => void s.pairRemoveAll()}>
+                移除全部设备
+              </Btn>
+            ) : null}
+            {s.pairError ? (
+              <div style={{ fontSize: 10.5, color: ERR_COLOR }}>{s.pairError}</div>
+            ) : null}
           </Card>
 
           {/* 模型 */}
