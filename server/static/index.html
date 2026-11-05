@@ -2927,7 +2927,7 @@
           <div class="card">
             <div class="card-title">提示词模板</div>
             <p class="pane-desc" style="margin-top:0">
-              和插件端「截屏询问 / 截图翻译」是同一份配置。留空保存即恢复默认，默认值由后端下发。
+              和插件端「截屏询问 / 截屏翻译」是同一份配置。留空保存即恢复默认，默认值由后端下发。
             </p>
             <div class="field">
               <label>截屏询问提示词</label>
@@ -2938,10 +2938,10 @@
               </div>
             </div>
             <div class="field">
-              <label>截图翻译提示词</label>
+              <label>截屏翻译提示词</label>
               <textarea id="cfgTranslateTemplate" rows="6" placeholder="留空保存即恢复默认"></textarea>
               <div class="mem-foot">
-                <span class="field-hint">插件端点「截图翻译」时的翻译指令。</span>
+                <span class="field-hint">插件端点「截屏翻译」时的翻译指令。</span>
                 <button id="trnTplReset" class="mini-btn" type="button">恢复默认</button>
               </div>
             </div>
@@ -9152,7 +9152,7 @@
       // 保存成功：这两份内容已经是服务端最终值，后续前台同步以服务端为准
       tplDirtyAsk = false;
       tplDirtyTrn = false;
-      tplHint.textContent = '提示词已保存：插件端「截屏询问 / 截图翻译」读到的就是这份';
+      tplHint.textContent = '提示词已保存：插件端「截屏询问 / 截屏翻译」读到的就是这份';
     }).catch(function (err) {
       var msg = (err && err.message) || '';
       var offline = /Failed to fetch|NetworkError|Load failed/i.test(msg);

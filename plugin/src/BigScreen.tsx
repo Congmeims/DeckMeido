@@ -8,6 +8,7 @@ import {
 } from "@decky/ui";
 import { ACCENT, DIM, ERR_COLOR, ImeTextArea, ImeTextField, Md, TEXT } from "./ui";
 import { statusLineFor } from "./statusLine";
+import { bumpOnce, stepTab } from "./tabNav";
 import { Item, useSession } from "./useSession";
 import { useVoiceInput } from "./useVoiceInput";
 
@@ -693,7 +694,7 @@ export default function BigScreen() {
       {...(tab === 0 && ready && !s.busy
         ? {
             onSecondaryActionDescription: "翻译",
-            onOptionsActionDescription: "截图询问",
+            onOptionsActionDescription: "截屏询问",
           }
         : {})}
       {...(s.busy && (tab === 0 || s.runningAction === "send")
@@ -702,12 +703,10 @@ export default function BigScreen() {
       onButtonDown={(evt) => {
         const detail = evt?.detail;
         if (!detail || detail.is_repeat) return;
-        if (detail.button === GamepadButton.BUMPER_LEFT) {
-          setTab((t) => Math.max(0, t - 1));
-          return;
-        }
-        if (detail.button === GamepadButton.BUMPER_RIGHT) {
-          setTab((t) => Math.min(TABS.length - 1, t + 1));
+        // L1/R1 翻开页签：和 QAM 共用 tabNav 里的同一套判断
+        const step = bumpOnce(detail.button);
+        if (step) {
+          setTab((t) => stepTab(t, step, TABS.length));
           return;
         }
         if (detail.button === GamepadButton.START && s.busy) {
@@ -721,7 +720,7 @@ export default function BigScreen() {
           return;
         }
         if (tab !== 0 || !ready || s.busy) return;
-        // X = 翻译，Y = 截图询问
+        // X = 翻译，Y = 截屏询问
         if (detail.button === GamepadButton.SECONDARY) {
           void s.shotTranslate();
         } else if (detail.button === GamepadButton.OPTIONS) {
@@ -910,7 +909,7 @@ export default function BigScreen() {
             </div>
           )}
 
-          {/* 状态行：回执卡 + 截图询问/截图翻译按钮。
+          {/* 状态行：回执卡 + 截屏询问/截屏翻译按钮。
               与聊天页输入行同层级、同高 46px，分隔线位置才能完全一致 */}
           <div
             style={{
@@ -989,10 +988,10 @@ export default function BigScreen() {
                   primary
                   disabled={!ready}
                   onClick={() => void s.shotAsk()}
-                  description="截图询问"
+                  description="截屏询问"
                   style={{ width: 138 }}
                 >
-                  截图询问
+                  截屏询问
                 </ActionButton>
               ) : askRunning ? (
                 <ActionButton
@@ -1015,10 +1014,10 @@ export default function BigScreen() {
                 <ActionButton
                   disabled={!ready}
                   onClick={() => void s.shotTranslate()}
-                  description="截图翻译"
+                  description="截屏翻译"
                   style={{ width: 138 }}
                 >
-                  截图翻译
+                  截屏翻译
                 </ActionButton>
               ) : translateRunning ? (
                 <ActionButton
@@ -1261,7 +1260,7 @@ export default function BigScreen() {
             minHeight: 0,
             width: "100%",
             margin: "0 auto",
-            // 5 张卡等权平分高度，卡内内容各自垂直居中
+            // 5 张卡按权重分高：状态卡压矮，省下的高度给两张提示词卡（各 1.3）
             display: "flex",
             flexDirection: "column",
             gap: 6,
@@ -1271,12 +1270,12 @@ export default function BigScreen() {
             paddingTop: 6,
           }}
         >
-          {/* 连接 */}
+          {/* 状态 */}
           <SectionCard
-            title="连接"
+            title="状态"
             inlineTitle
             accent={C.cyber}
-            style={{ padding: 6, flex: 1 }}
+            style={{ padding: 6, flex: 0.8 }}
           >
             {/* 四分栏两行：一行 4 列读数，一屏全展开 */}
             <div
@@ -1294,15 +1293,18 @@ export default function BigScreen() {
               <StatRow
                 label="当前游戏"
                 value={
-                  s.status?.game_name
-                    ? `${s.status.game_name}（${s.status.game_source || "?"}）`
-                    : "—"
+                  !s.status
+                    ? "—"
+                    : s.status.game_name
+                      ? `${s.status.game_name}（${s.status.game_source || "?"}）`
+                      : "未运行游戏"
                 }
               />
               <StatRow
                 label="屏幕截图"
                 value={s.status?.capture_ok ? "可用" : s.status?.capture_reason || "不可用"}
               />
+              <StatRow label="核心版本" value={s.status?.version || "—"} />
               <StatRow
                 label="语音输入"
                 value={
@@ -1315,7 +1317,6 @@ export default function BigScreen() {
                         : "不可用"
                 }
               />
-              <StatRow label="核心版本" value={s.status?.version || "—"} />
               <StatRow label="设备地址" value={s.status ? `${s.status.ip}:${s.status.port}` : "—"} />
               <StatRow
                 label="虚拟手柄"
@@ -1342,12 +1343,12 @@ export default function BigScreen() {
             </div>
           </SectionCard>
 
-          {/* 模型 */}
+          {/* 模型选择 */}
           <SectionCard
-            title="模型"
+            title="模型选择"
             inlineTitle
             accent={C.model}
-            style={{ padding: 6, flex: 1 }}
+            style={{ padding: 6, flex: 0.95 }}
           >
             {/* 左侧模型下拉拉满剩余宽度，右栏固定 190px（与截屏卡按钮列等宽） */}
             <div
@@ -1526,7 +1527,7 @@ export default function BigScreen() {
             title="截屏询问"
             inlineTitle
             accent={C.prompt}
-            style={{ padding: 6, flex: 1 }}
+            style={{ padding: 6, flex: 1.3 }}
           >
             {/* 左 4/5 放提示词框，右 1/5 竖排两个按钮（宽度减半给文本框让路） */}
             <div
@@ -1570,12 +1571,12 @@ export default function BigScreen() {
             </div>
           </SectionCard>
 
-          {/* 截图翻译 */}
+          {/* 截屏翻译 */}
           <SectionCard
-            title="截图翻译"
+            title="截屏翻译"
             inlineTitle
             accent={C.prompt}
-            style={{ padding: 6, flex: 1 }}
+            style={{ padding: 6, flex: 1.3 }}
           >
             {/* 同上：左 4/5 文本框，右 1/5 按钮 */}
             <div
@@ -1624,7 +1625,7 @@ export default function BigScreen() {
             title="维护"
             inlineTitle
             accent={C.ops}
-            style={{ padding: 6, flex: 1 }}
+            style={{ padding: 6, flex: 0.95 }}
           >
             {/* 左栏拉满剩余宽度；右栏固定 190px 与"保存"按钮等宽 */}
             <div

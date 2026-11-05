@@ -12,6 +12,7 @@ import {
 } from "@decky/ui";
 import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, TEXT, copyText, groupToken } from "./ui";
 import { statusLineFor } from "./statusLine";
+import { bumpOnce, stepTab } from "./tabNav";
 import { applyPadOrder, steamClient } from "./padOrder";
 import { useVoiceInput } from "./useVoiceInput";
 import {
@@ -1172,7 +1173,9 @@ export default function QamScreen() {
     return () => clearInterval(timer);
   }, [tab]);
 
-  // LB / RB 翻页：沿用 Steam 前端的控制器输入回调（LB=6、RB=7，不是 Linux 键码）
+  // L1 / R1 翻页：页签事件与大屏共用 tabNav 的同一套按键映射。
+  // 原来这里按 6/7 判断（把 6 当 L1），实际 BUMPER_LEFT=5、BUMPER_RIGHT=6，
+  // 于是 L1 完全没绑上、R1 反而变成「上一页」——用户看到的就是切换失效。
   useEffect(() => {
     let reg: any = null;
     try {
@@ -1180,12 +1183,12 @@ export default function QamScreen() {
       if (api && typeof api.RegisterForControllerInputMessages === "function") {
         reg = api.RegisterForControllerInputMessages((msg: any) => {
           if (!msg || msg.is_repeat) return;
-          if (msg.button === 6) setTab((p) => Math.max(0, p - 1));
-          else if (msg.button === 7) setTab((p) => Math.min(TABS.length - 1, p + 1));
+          const step = bumpOnce(msg.button ?? msg.nButton);
+          if (step) setTab((p) => stepTab(p, step, TABS.length));
         });
       }
     } catch {
-      // 绑定失败不影响使用：翻页改用标签点按
+      // 绑定失败不影响使用：页签仍可点按切换
     }
     return () => {
       try {
@@ -1224,7 +1227,15 @@ export default function QamScreen() {
   const shell = (children: React.ReactNode) => (
     <PanelSection>
       <PanelSectionRow>
-        <div
+        {/* 根节点做成 Focusable：焦点在面板内任意控件上时，L1/R1 也会冒泡到这里。
+            它和上面的控制器消息回调共用 bumpOnce 去重，同一次按键只翻一页。 */}
+        <Focusable
+          onButtonDown={(evt) => {
+            const d = evt?.detail;
+            if (!d || d.is_repeat) return;
+            const step = bumpOnce(d.button);
+            if (step) setTab((p) => stepTab(p, step, TABS.length));
+          }}
           style={{
             width: "100%",
             height: PAGE_H,
@@ -1239,7 +1250,7 @@ export default function QamScreen() {
           }}
         >
           {children}
-        </div>
+        </Focusable>
       </PanelSectionRow>
     </PanelSection>
   );
@@ -1419,8 +1430,8 @@ export default function QamScreen() {
           >
             <div style={{ flex: "1 1 0", minWidth: 0 }}>
               {!s.busy ? (
-                <Btn primary onClick={() => void s.shotAsk()} description="截图询问">
-                  截图询问
+                <Btn primary onClick={() => void s.shotAsk()} description="截屏询问">
+                  截屏询问
                 </Btn>
               ) : askRunning ? (
                 <Btn running onClick={() => {}} description="思考中">
@@ -1434,8 +1445,8 @@ export default function QamScreen() {
             </div>
             <div style={{ flex: "1 1 0", minWidth: 0 }}>
               {!s.busy ? (
-                <Btn onClick={() => void s.shotTranslate()} description="截图翻译">
-                  截图翻译
+                <Btn onClick={() => void s.shotTranslate()} description="截屏翻译">
+                  截屏翻译
                 </Btn>
               ) : translateRunning ? (
                 <Btn running onClick={() => {}} description="思考中">
@@ -1901,7 +1912,7 @@ export default function QamScreen() {
               </div>
             </div>
 
-            <div style={{ fontSize: 11, color: DIM, marginTop: 2 }}>截图翻译</div>
+            <div style={{ fontSize: 11, color: DIM, marginTop: 2 }}>截屏翻译</div>
             <Focusable onOKActionDescription="编辑" style={{ width: "100%", padding: 0 }}>
               <ImeTextArea
                 value={s.translateTplEdit}
@@ -1955,9 +1966,11 @@ export default function QamScreen() {
               <StatCell
                 label="当前游戏"
                 value={
-                  s.status?.game_name
-                    ? `${s.status.game_name}（${s.status.game_source || "?"}）`
-                    : "—"
+                  !s.status
+                    ? "—"
+                    : s.status.game_name
+                      ? `${s.status.game_name}（${s.status.game_source || "?"}）`
+                      : "未运行游戏"
                 }
               />
               <StatCell
