@@ -1159,7 +1159,8 @@ async def _node_state_note() -> str:
     return f"节点 {node}"
 
 
-async def grab_screenshot() -> tuple[bool, str, bool]:
+async def grab_screenshot(node: str | None = None,
+                          node_reason: str = "") -> tuple[bool, str, bool]:
     """抓一帧游戏画面，返回 (成功, base64 或错误说明, 是不是「画面静止」)
 
     写法和 server/tools.py 的 _screenshot_gamescope 保持一致。
@@ -1168,10 +1169,14 @@ async def grab_screenshot() -> tuple[bool, str, bool]:
     （xdotool / ydotool / 自建虚拟手柄全试过，只有真摇杆能触发重绘），
     推摇杆那一步注定失败，只会白等一轮 12 秒。改成把这个状态交回给前端，
     由面板弹卡片请用户自己动一下。
+
+    node 由调用方先探好时直接传进来（面板那条路要先按模式分流，避免重复
+    跑一次 pw-dump）；为 None 时这里自己探。
     """
-    node, why = await _gamescope_pw_node()
+    if node is None:
+        node, node_reason = await _gamescope_pw_node()
     if not node:
-        return False, why, False
+        return False, node_reason, False
 
     gst = _find_gst()
     if not gst:
@@ -1197,6 +1202,25 @@ async def grab_screenshot() -> tuple[bool, str, bool]:
             decky.logger.error(f"抓帧两次失败：{first} / {payload}（节点 {node}->{node2}）")
             return False, f"{payload}（连试两次；节点 {node2}，第一次：{first}）", False
     return True, payload, False
+
+
+async def _desktop_screenshot(port: int, token: str) -> tuple[bool, str]:
+    """桌面模式：插件自己没有抓帧能力，交给后端（spectacle/mss）那条路
+
+    返回 (成功, base64 或错误说明)。后端给的是压缩过的 1280 宽 JPEG，
+    和 gamescope 那条的产物一样，先落盘再交给 start_turn。
+    """
+    r = await _core_http(port, token, "POST", "/api/screenshot",
+                         timeout=25.0, body={})
+    if not r["ok"]:
+        return False, str(r.get("error") or "后端没有应答")
+    d = r.get("data") or {}
+    if not d.get("ok"):
+        return False, str(d.get("error") or "后端没有抓到画面")
+    image = str(d.get("image") or "")
+    if not image:
+        return False, "后端没有返回画面"
+    return True, image
 
 
 # ---------- 虚拟手柄（uinput） ----------
@@ -2257,6 +2281,22 @@ class Plugin:
         # 查游戏名要扫进程表、读 Steam 日志，放线程里做：面板一刷新就调这个接口，
         # 同步跑会把 Decky 的事件循环卡住
         game = await asyncio.to_thread(_current_game)
+        if node:
+            cap_ok = _find_gst() is not None
+            cap_reason = "" if cap_ok else (
+                why or "机器上没有 gst-launch-1.0（gst-plugins-base 未安装）")
+        else:
+            # 桌面模式：后端 /api/status 里 spectacle 的探测结果
+            ctrls = (core.get("data") or {}).get("controls") or {}
+            spec = next((i for i in (ctrls.get("items") or [])
+                         if i.get("key") == "spectacle"), None)
+            cap_ok = bool(core.get("ok")) and bool(spec and spec.get("ok"))
+            if not core.get("ok"):
+                cap_reason = "核心没起来，桌面模式下暂时截不到画面"
+            elif not (spec and spec.get("ok")):
+                cap_reason = "没装 spectacle，桌面模式下暂时截不到画面"
+            else:
+                cap_reason = ""
         # 面板只会写「探测失败（原因）」，日志里留一份，事后能对上时间点
         decky.logger.info(
             f"get_status：核心 {'正常' if core.get('ok') else '异常'}"
@@ -2273,8 +2313,11 @@ class Plugin:
             # token 只在插件后端内部拼 URL 用，不再交给前端
             "token_ok": bool(str(cfg.get("token", "") or "").strip()),
             "gamescope": node is not None,
-            "capture_ok": node is not None and _find_gst() is not None,
-            "capture_reason": why,
+            # 画面可用性：游戏模式看 gamescope 节点 + gst；桌面模式插件自己不
+            # 抓帧，改由后端 spectacle/mss 抓，所以看「后端在不在 + spectacle
+            # 装没装」。前端据此决定是直接给提示，还是照常退页去抓（省掉白等）
+            "capture_ok": cap_ok,
+            "capture_reason": cap_reason,
             "uid": os.getuid(),
             "as_user": " ".join(_run_as()) or "(self)",
             "proxy": "websockets" if _ws_connect else "raw",
@@ -2757,17 +2800,32 @@ class Plugin:
         game = await asyncio.to_thread(_current_game)
         if hide:
             await asyncio.sleep(1.2)
-        ok, payload, need_poke = await grab_screenshot()
+        cfg = _load_server_cfg()
+        port = int(cfg.get("port", 18765))
+        token = str(cfg.get("token", "") or "").strip()
+        # 先按模式分流：有 gamescope 节点才是游戏模式，插件自己从 PipeWire 抓；
+        # 桌面模式（含从桌面进 Big Picture）没有节点，交给后端的 spectacle/mss
+        node, node_why = await _gamescope_pw_node()
+        if node:
+            ok, payload, need_poke = await grab_screenshot(node, node_why)
+        else:
+            ok, payload = await _desktop_screenshot(port, token)
+            need_poke = False
         if not ok:
             if need_poke:
                 # 画面静止：这是「请用户配合一下」，不是故障，用 info 记
                 decky.logger.info(f"screenshot 需要用户动一下画面：{payload}")
                 return {"ok": False, "error": payload, "needPoke": True, "game": game}
-            # 失败时顺手把节点状态记一笔：gamescope 节点在 idle 时是 suspended，
-            # 「节点在但状态不对」和「节点没了」要分得开，否则只能反复猜
-            state = await _node_state_note()
-            decky.logger.error(f"screenshot 失败：{payload}；{state}")
-            return {"ok": False, "error": f"{payload}（{state}）", "game": game}
+            if node:
+                # 失败时顺手把节点状态记一笔：gamescope 节点在 idle 时是 suspended，
+                # 「节点在但状态不对」和「节点没了」要分得开，否则只能反复猜
+                state = await _node_state_note()
+                decky.logger.error(f"screenshot 失败：{payload}；{state}")
+                return {"ok": False, "error": f"{payload}（{state}）", "game": game}
+            # 桌面模式：再附「没找到 gamescope 节点」只会误导人，给一句人话
+            decky.logger.error(f"桌面模式截图失败：{payload}")
+            return {"ok": False,
+                    "error": f"桌面模式下暂时截不到画面（{payload}）", "game": game}
         # 图片只落到本地文件，不经过 Decky 的 IPC 回传：一张 1280x800 的 PNG
         # base64 有 16MB 左右，这么大的字符串塞进 JS↔Python 的调用会静默失败
         # ——前端既收不到图，随后的 start_turn 也整个派发不到后端。

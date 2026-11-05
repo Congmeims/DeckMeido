@@ -321,7 +321,14 @@ export function useSession() {
         confidence?: string;
         ts?: number;
       } | null = null;
-      if (grab) {
+      if (grab && !st.capture_ok) {
+        // 抓不到就别退页白等了：capture_reason 已经是人话（桌面模式没装
+        // spectacle / 核心没起来 / 缺 gst），这轮照常只发文字
+        fail(
+          "SHOT_FAILED",
+          `当前模式暂时截不到画面：${st.capture_reason || "原因未知"}，这轮只发文字`
+        );
+      } else if (grab) {
         // gamescope 抓的是合成后的整屏，/deckmeido 这页本身会一起被拍进去。
         // 所以先退回游戏、等路由退场动画走完再抓，抓完立刻导航回来。
         try {

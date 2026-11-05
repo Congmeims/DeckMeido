@@ -571,7 +571,14 @@ function useQamSession() {
         confidence?: string;
         ts?: number;
       } | null = null;
-      if (grab) {
+      if (grab && !st.capture_ok) {
+        // 抓不到就别收侧栏白等了：capture_reason 已经是人话（桌面模式没装
+        // spectacle / 核心没起来 / 缺 gst），这轮照常只发文字
+        fail(
+          "SHOT_FAILED",
+          `当前模式暂时截不到画面：${st.capture_reason || "原因未知"}，这轮只发文字`
+        );
+      } else if (grab) {
         // QAM 收起后 Steam 还要重绘一帧游戏画面，抓早了会把正在消失的侧栏拍进去
         if (hideQam) Navigation.CloseSideMenus();
         if (hideQam) await wait(1200);
