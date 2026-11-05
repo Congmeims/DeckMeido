@@ -141,7 +141,20 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
   // 最长 60 秒兜底定时器：只该管这一次录音，必须能清掉
   const timerRef = useRef<number | null>(null);
   const refreshingRef = useRef(false);
+  // 录音期间是否已让后端静音外放：开/关各只发一次，别每帧都打桥接
+  const duckedRef = useRef(false);
   phaseRef.current = phase;
+
+  /** 录音开始/结束时静音、恢复系统输出；失败一律不管，录音本身不能受影响 */
+  const setDuck = useCallback(
+    (on: boolean) => {
+      if (duckedRef.current === on) return;
+      duckedRef.current = on;
+      if (!ticket) return;
+      void call<[boolean, string], { ok: boolean }>("stt_duck", on, ticket).catch(() => undefined);
+    },
+    [ticket]
+  );
 
   /** state 提交是异步的，按键事件读到的可能是上一帧的值；ref 同步改，保证松开能命中 */
   const applyPhase = useCallback((p: Phase) => {
@@ -179,6 +192,8 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
   }, [refresh]);
 
   const cleanup = useCallback(() => {
+    // 麦克风一放掉就恢复外放：不能等识别结束，识别可能要几秒
+    setDuck(false);
     const node = nodeRef.current;
     nodeRef.current = null;
     try {
@@ -206,7 +221,7 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
     } catch {
       /* 已经关闭 */
     }
-  }, []);
+  }, [setDuck]);
 
   // 组件卸载时一定释放麦克风，否则录制指示灯会一直亮
   useEffect(() => cleanup, [cleanup]);
@@ -307,6 +322,8 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
     // 才 setPhase，这段时间里松开按键会被 onButtonUp 忽略，麦克风一直开着，
     // 下一次按下去就被「phase !== idle」挡住 —— 表现就是只能问一句
     applyPhase("recording");
+    // 录音期间把外放静音，减少环境余音进麦克风；工具不可用时后端会静默忽略
+    setDuck(true);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -367,7 +384,7 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
       applyPhase("idle");
       setError("打不开麦克风：" + String(e?.message ?? e));
     }
-  }, [applyPhase, cleanup, status, stop]);
+  }, [applyPhase, cleanup, setDuck, status, stop]);
 
   const downloadModel = useCallback(async () => {
     if (downloadBusyRef.current) return;

@@ -347,6 +347,8 @@ function useQamSession() {
   const [activity, setActivity] = useState("");
   const [withShot, setWithShot] = useState(true);
   const [stt, setStt] = useState(true);
+  const [sttDuck, setSttDuck] = useState(true);
+  const [sttDuckAvailable, setSttDuckAvailable] = useState(false);
   const [tts, setTts] = useState(false);
   const [model, setModel] = useState("");
   const [modelList, setModelList] = useState<string[]>([]);
@@ -443,6 +445,8 @@ function useQamSession() {
       setTts(!!st.tts);
       setWithShot(!!st.with_shot);
       setStt(!!st.stt);
+      setSttDuck(st.stt_duck !== false);
+      setSttDuckAvailable(!!st.stt_duck_available);
       if (st.model) setModel(st.model);
       setTicket(st.ticket || "");
       if (st.ticket) void loadTemplates(st.ticket);
@@ -778,6 +782,22 @@ function useQamSession() {
     }
   };
 
+  const toggleSttDuck = async (v: boolean) => {
+    setSttDuck(v);
+    try {
+      const r = (await call<[boolean, string], { ok: boolean; stt_duck?: boolean; error?: string }>(
+        "set_stt_duck",
+        v,
+        ticket
+      )) as { ok: boolean; stt_duck?: boolean; error?: string };
+      if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
+      setSttDuck(r.stt_duck !== false);
+    } catch (e: any) {
+      setSttDuck(!v);
+      fail("STT_DUCK_TOGGLE_FAILED", `静音外放开关切换失败：${String(e?.message ?? e)}`);
+    }
+  };
+
   const toggleTts = async (v: boolean) => {
     setTts(v);
     try {
@@ -976,6 +996,9 @@ function useQamSession() {
     logs,
     withShot,
     stt,
+    sttDuck,
+    sttDuckAvailable,
+    toggleSttDuck,
     toggleWithShot,
     toggleStt,
     tts,
@@ -1586,6 +1609,16 @@ export default function QamScreen() {
             </Btn>
             <ToggleField label="带画面发送" checked={s.withShot} onChange={s.toggleWithShot} />
             <ToggleField label="语音输入" checked={s.stt} onChange={s.toggleStt} />
+            <ToggleField
+              label="录音时静音外放"
+              description={
+                s.sttDuckAvailable
+                  ? "按住说话时把游戏声音静音，松开自动恢复"
+                  : "这台机器没有 wpctl/pactl，开关只保存不生效"
+              }
+              checked={s.sttDuck}
+              onChange={s.toggleSttDuck}
+            />
             <ToggleField label="语音播报回复" checked={s.tts} onChange={s.toggleTts} />
           </Card>
 

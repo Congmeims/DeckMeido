@@ -2837,6 +2837,13 @@
                 <span class="slider"></span>
               </label>
             </div>
+            <div class="field field-row">
+              <label style="margin:0">录音时静音外放（录完自动恢复）</label>
+              <label class="switch">
+                <input id="cfgSttDuck" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
             <div id="sttHint" class="field-hint"></div>
           </div>
 
@@ -7324,6 +7331,7 @@
   // 插件设置（和 Decky 插件端共用一份后端配置）
   var cfgWithShot = document.getElementById('cfgWithShot');
   var cfgStt = document.getElementById('cfgStt');
+  var cfgSttDuck = document.getElementById('cfgSttDuck');
   var cfgAskTemplate = document.getElementById('cfgAskTemplate');
   var cfgTranslateTemplate = document.getElementById('cfgTranslateTemplate');
   var tplHint = document.getElementById('tplHint');
@@ -7523,6 +7531,8 @@
         // 插件设置：与插件端同一个 GET /api/config 来源，开关和模板都按后端值回填
         cfgWithShot.checked = c.with_shot !== false;
         cfgStt.checked = !!c.stt_enable;
+        // 录音时静音外放：老配置没有这项，后端缺省即开
+        cfgSttDuck.checked = c.stt_duck_output !== false;
         cfgAskTemplate.value = c.ask_template || '';
         askTplDefault = c.ask_template_default || '';
         cfgTranslateTemplate.value = c.translate_template || '';
@@ -7893,6 +7903,7 @@
       tts_enable: cfgTts.checked,
       with_shot: !!cfgWithShot.checked,
       stt_enable: !!cfgStt.checked,
+      stt_duck_output: !!cfgSttDuck.checked,
       permission_mode: cfgPerm.value,
       workspace: cfgWorkspace.value,
       token: newToken,

@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import depcheck, memory, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
+from . import audiomute, depcheck, memory, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
 from .session_store import set_title as _set_title
 from .session_store import store
 from . import session_store
@@ -664,6 +664,9 @@ stt = STT(
     model_root=paths.stt_model_dir(),
     enable=bool(_stt_cfg.get("enable", True)),
 )
+# 录音期间是否静音外放：默认开（按住说话时游戏外放会灌进麦克风），
+# 设置里可关；工具缺失时 audiomute 自己静默降级，不影响录音
+audiomute.set_enabled(bool(_stt_cfg.get("duck_output", True)))
 
 
 def apply_config(cfg: dict):
@@ -705,6 +708,8 @@ def apply_config(cfg: dict):
     stt.enable = bool(s.get("enable", True))
     if not stt.enable:
         stt.unload()
+    # 录音时静音外放：热更新；关掉时把可能还静着的输出立刻恢复
+    audiomute.set_enabled(bool(s.get("duck_output", True)))
     PERMISSION_MODE = cfg.get("security", {}).get("permission_mode", "auto")
     # 文件工具的边界跟着权限模式走：full 不设限（与 run_command 一致），
     # 其余模式只能碰工作区。这里同步一份，热更新后立刻生效
@@ -2672,6 +2677,8 @@ class ConfigUpdate(BaseModel):
     tts_enable: bool | None = None
     # 语音输入开关：和 tts_enable 一样走热更新，插件端 /api/stt/toggle 写的是同一份 [stt]
     stt_enable: bool | None = None
+    # 录音期间静音外放：写入 [stt] duck_output
+    stt_duck_output: bool | None = None
     # 发送时是否附带给游戏画面（面板上的「画面：开/关」）
     with_shot: bool | None = None
     permission_mode: str | None = None
@@ -2780,6 +2787,10 @@ async def api_get_config():
         "with_shot": bool((CFG.get("agent") or {}).get("with_shot", True)),
         # 语音输入开关：和语音播报一样，面板上要能显示和切换
         "stt_enable": stt.enable,
+        # 录音期间静音外放（[stt] duck_output，默认开）；duck 里带工具可用性，
+        # 设置页据此提示「这台机器不支持静音」，但开关仍可保存
+        "stt_duck_output": audiomute.enabled(),
+        "stt_duck": audiomute.status(),
         "permission_mode": PERMISSION_MODE,
         "workspace": str(tools.WORKSPACE),
         "token": TOKEN,
@@ -2971,6 +2982,9 @@ async def api_set_config(req: ConfigUpdate):
     if req.stt_enable is not None:
         # 语音输入：apply_config 里关掉时会顺手 unload 模型，和插件端 toggle 走同一条路径
         updates["stt"] = {"enable": bool(req.stt_enable)}
+    if req.stt_duck_output is not None:
+        # 和 stt_enable 写同一段，用 setdefault 合并，避免后一项覆盖前一项
+        updates.setdefault("stt", {})["duck_output"] = bool(req.stt_duck_output)
     if req.with_shot is not None:
         # 带画面开关落盘到 [agent]：面板关掉再打开要还是上次选的那个
         updates.setdefault("agent", {})["with_shot"] = bool(req.with_shot)
@@ -3114,6 +3128,9 @@ async def api_stt_status():
         **stt.status(),
         "record": rec["ok"],
         "record_reason": rec["reason"],
+        # 录音期间静音外放的开关与可用性（工具缺失时只提示，不影响录音）
+        "duck_output": audiomute.enabled(),
+        "duck": audiomute.status(),
     }
 
 
@@ -3143,6 +3160,18 @@ async def api_set_stt(enabled: bool = Query(...)):
     """
     save_config({"stt": {"enable": bool(enabled)}})
     return {"ok": True, "stt_enable": stt.enable}
+
+
+@app.post("/api/stt/duck", dependencies=[Depends(check_token_any)])
+async def api_stt_duck(on: bool = Query(...)):
+    """录音开始/结束时静音、恢复系统输出
+
+    失败一律静默降级：接口永远返回 ok=True，前端不需要处理错误，
+    更不会因为静音失败把录音拦下来。多端同时录音时按引用计数恢复。
+    """
+    if on:
+        return audiomute.duck()
+    return audiomute.restore()
 
 
 @app.post("/api/stt/transcribe", dependencies=[Depends(check_token_any)])

@@ -40,6 +40,10 @@ export type Status = {
   with_shot: boolean;
   // 语音输入开关（后端 [stt] enable）：关掉后后端会释放识别模型
   stt: boolean;
+  // 录音期间静音外放（后端 [stt] duck_output，默认开）
+  stt_duck: boolean;
+  // 这台机器有没有 wpctl/pactl：没有时开关照旧可存，只是不生效
+  stt_duck_available: boolean;
   // 更新检测（后端缓存的 /api/version.update）：设置页显示「有更新 / 当前最新」
   update_has?: boolean;
   update_latest?: string;
@@ -114,6 +118,8 @@ export function useSession() {
   const [activity, setActivity] = useState("");
   const [withShot, setWithShot] = useState(true);
   const [stt, setStt] = useState(true);
+  const [sttDuck, setSttDuck] = useState(true);
+  const [sttDuckAvailable, setSttDuckAvailable] = useState(false);
   const [tts, setTts] = useState(false);
   const [model, setModel] = useState("");
   const [modelList, setModelList] = useState<string[]>([]);
@@ -214,6 +220,8 @@ export function useSession() {
       setTts(!!st.tts);
       setWithShot(!!st.with_shot);
       setStt(!!st.stt);
+      setSttDuck(st.stt_duck !== false);
+      setSttDuckAvailable(!!st.stt_duck_available);
       if (st.model) setModel(st.model);
       setTicket(st.ticket || "");
       if (st.ticket) void loadTemplates(st.ticket);
@@ -540,6 +548,22 @@ export function useSession() {
     }
   };
 
+  const toggleSttDuck = async (v: boolean) => {
+    setSttDuck(v);
+    try {
+      const r = (await call<[boolean, string], { ok: boolean; stt_duck?: boolean; error?: string }>(
+        "set_stt_duck",
+        v,
+        ticket
+      )) as { ok: boolean; stt_duck?: boolean; error?: string };
+      if (!r.ok) throw new Error(r.error ?? "后端没有接受这次修改");
+      setSttDuck(r.stt_duck !== false);
+    } catch (e: any) {
+      setSttDuck(!v);
+      fail("STT_DUCK_TOGGLE_FAILED", `静音外放开关切换失败：${String(e?.message ?? e)}`);
+    }
+  };
+
   const toggleWithShot = async (v: boolean) => {
     setWithShot(v);
     try {
@@ -729,6 +753,9 @@ export function useSession() {
     logs,
     withShot,
     stt,
+    sttDuck,
+    sttDuckAvailable,
+    toggleSttDuck,
     toggleWithShot,
     tts,
     model,

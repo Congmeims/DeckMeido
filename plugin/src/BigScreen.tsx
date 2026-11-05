@@ -1401,11 +1401,11 @@ export default function BigScreen() {
                   minHeight: 0,
                 }}
               >
-                {/* 两个开关并排；小字号 + 紧凑内边距防出界 */}
+                {/* 三个开关并排；小字号 + 紧凑内边距防出界 */}
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+                    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
                     gap: 4,
                     minWidth: 0,
                     minHeight: 0,
@@ -1431,6 +1431,29 @@ export default function BigScreen() {
                     }}
                   >
                     语音输入
+                  </ActionButton>
+                  <ActionButton
+                    onClick={() => void s.toggleSttDuck(!s.sttDuck)}
+                    description={
+                      s.sttDuckAvailable
+                        ? "录音时静音外放，录完自动恢复"
+                        : "这台机器没有音频控制工具，开关只保存不生效"
+                    }
+                    compact
+                    style={{
+                      background: s.sttDuck ? "rgba(90,169,230,.28)" : "rgba(255,255,255,.06)",
+                      border: `1px solid ${s.sttDuck ? "rgba(90,169,230,.55)" : "rgba(255,255,255,.10)"}`,
+                      color: s.sttDuck ? "#eaf2fb" : DIM,
+                      fontSize: 12,
+                      paddingLeft: 4,
+                      paddingRight: 4,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      minHeight: 0,
+                      height: "100%",
+                    }}
+                  >
+                    静音外放
                   </ActionButton>
                   <ActionButton
                     onClick={() => void s.toggleWithShot(!s.withShot)}

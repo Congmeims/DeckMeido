@@ -2199,6 +2199,9 @@ async def _core_prefs(port: int, token: str) -> dict:
             "with_shot": bool(d.get("with_shot", True)),
             # 语音输入：配置在 [stt] 段，/api/stt 才有；这里同时带一份供面板显示
             "stt": bool(d.get("stt_enable", True)),
+            # 录音时静音外放（[stt] duck_output，默认开）
+            "stt_duck": bool(d.get("stt_duck_output", True)),
+            "stt_duck_available": bool((d.get("stt_duck") or {}).get("available")),
             "version": str(d.get("version") or ""),
             "model": str(d.get("model") or ""),
             # 人设昵称：状态行前缀用，缺失时前端有默认称呼兜底
@@ -2290,6 +2293,9 @@ class Plugin:
             "with_shot": bool(prefs.get("with_shot", True)),
             # 语音输入开关（[stt] enable）：关掉时后端会释放识别模型省内存
             "stt": bool(prefs.get("stt", True)),
+            # 录音时静音外放：设置页的开关，机器不支持时仍可保存、只是不起作用
+            "stt_duck": bool(prefs.get("stt_duck", True)),
+            "stt_duck_available": bool(prefs.get("stt_duck_available", False)),
             "version": str(prefs.get("version") or _PLUGIN_VERSION),
             # 更新检测：两处设置页统一显示「有更新 / 当前最新」，不摆占位横线
             "update_has": bool(upd.get("has_update")),
@@ -2440,6 +2446,36 @@ class Plugin:
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
         return {"ok": True, "stt": bool((r.get("data") or {}).get("stt_enable", enabled))}
+
+    async def set_stt_duck(self, enabled: bool, ticket: str = "") -> dict:
+        """切「录音时静音外放」：写后端 [stt] duck_output，热更新"""
+        _require(ticket, "set_stt_duck")
+        cfg = _load_server_cfg()
+        port = int(cfg.get("port", 18765))
+        token = str(cfg.get("token", "") or "").strip()
+        r = await _core_http(port, token, "POST", "/api/config",
+                             body={"stt_duck_output": bool(enabled)})
+        if not r["ok"]:
+            return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
+        return {"ok": True,
+                "stt_duck": bool((r.get("data") or {}).get("stt_duck_output", enabled))}
+
+    async def stt_duck(self, on: bool, ticket: str = "") -> dict:
+        """录音开始/结束时静音或恢复系统输出
+
+        后端的静音失败本身就是静默降级，这里再兜一层：任何异常都返回
+        ok=True，前端按「发完就忘」处理，绝不能让静音影响录音。
+        """
+        _require(ticket, "stt_duck")
+        try:
+            cfg = _load_server_cfg()
+            r = await _core_http(int(cfg.get("port", 18765)),
+                                 str(cfg.get("token", "") or "").strip(),
+                                 "POST", f"/api/stt/duck?on={'true' if on else 'false'}",
+                                 timeout=3.0)
+            return {"ok": True, **(r.get("data") or {})}
+        except Exception:
+            return {"ok": True, "ducked": False}
 
     async def get_ask_template(self, ticket: str = "") -> dict:
         """读「截屏询问」的提示词模板（存在后端配置里，网页设置页改的也是这份）"""
