@@ -683,6 +683,30 @@ export function useSession() {
     }
   };
 
+  /** 保存后端端口：QAM / 大屏共用，越界由插件后端拒绝并回传原因。 */
+  const savePort = async (port: number) => {
+    try {
+      const r = (await call<
+        [number],
+        { ok: boolean; port?: number; restart_required?: boolean; error?: string }
+      >("set_port", port)) as {
+        ok: boolean;
+        port?: number;
+        restart_required?: boolean;
+        error?: string;
+      };
+      if (!r.ok) throw new Error(r.error ?? "端口保存失败");
+      await refreshStatus();
+      return {
+        ok: true as const,
+        port: r.port ?? port,
+        restartRequired: r.restart_required ?? true,
+      };
+    } catch (e: any) {
+      return { ok: false as const, error: String(e?.message ?? e) };
+    }
+  };
+
   const coreStart = async () => {
     if (starting) return;
     setStarting(true);
@@ -864,6 +888,7 @@ export function useSession() {
     toggleStt,
     saveAskTpl,
     saveTranslateTpl,
+    savePort,
     coreStart,
     coreRestart,
     coreKill,

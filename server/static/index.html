@@ -2657,6 +2657,7 @@
               <div class="token-row">
                 <input id="cfgPort" type="number" min="1024" max="65535" step="1" autocomplete="off">
                 <button id="savePort" class="mini-btn" type="button">保存端口</button>
+                <button id="restartPort" class="mini-btn" type="button">重启后端</button>
               </div>
               <div id="portHint" class="field-hint"></div>
             </div>
@@ -7751,6 +7752,7 @@
   var cfgPort = document.getElementById('cfgPort');
   var portHint = document.getElementById('portHint');
   var savePort = document.getElementById('savePort');
+  var restartPort = document.getElementById('restartPort');
   var pairPendingList = document.getElementById('pairPendingList');
   var pairDevList = document.getElementById('pairDevList');
   var pairDevCount = document.getElementById('pairDevCount');
@@ -8546,8 +8548,24 @@
       .then(function (res) {
         if (!res.ok) { portHint.textContent = res.d.detail || '保存失败'; return; }
         portHint.style.color = '#e0a33a';
-        portHint.textContent = '已保存，需重启后端生效（客户端/插件下次拉起后端会用新端口）';
+        portHint.textContent = '已保存，重启后端后生效';
         lanUrl.value = 'http://' + (lanUrl.value.replace(/^http:\/\//, '').split(':')[0] || '127.0.0.1') + ':' + port;
+      })
+      .catch(function () { portHint.textContent = '连不上服务，请稍后重试'; });
+  });
+
+  // 明确按钮：请求重启后端。后端自己不能杀自己，实际重启由插件/客户端执行
+  restartPort.addEventListener('click', function () {
+    portHint.style.color = 'var(--muted)';
+    portHint.textContent = '正在请求重启…';
+    fetch('/api/restart?token=' + encodeURIComponent(token), { method: 'POST' })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) { portHint.textContent = res.d.detail || '重启请求失败'; return; }
+        portHint.style.color = '#e0a33a';
+        portHint.textContent = res.d.delegate
+          ? '已请求重启：由掌机插件 / 桌面客户端执行，本页会短暂断开后自动重连'
+          : '重启已开始，稍等几秒后刷新本页';
       })
       .catch(function () { portHint.textContent = '连不上服务，请稍后重试'; });
   });

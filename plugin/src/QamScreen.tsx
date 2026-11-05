@@ -21,6 +21,8 @@ import {
   Delta,
   Item,
   LogEntry,
+  PairedDevice,
+  PairSession,
   SHOT_ASK_BRIEF,
   SHOT_TRANSLATE_BRIEF,
   Status,
@@ -369,6 +371,9 @@ function useQamSession() {
   >(null);
   const [runningAction, setRunningActionState] = useState<ActionKind>(activeAction);
   const [logs, setLogs] = useState<LogEntry[]>(logStore);
+  const [pairSessions, setPairSessions] = useState<PairSession[]>([]);
+  const [pairDevices, setPairDevices] = useState<PairedDevice[]>([]);
+  const [pairError, setPairError] = useState("");
 
   const curRef = useRef("");
   const busyRef = useRef(false);
@@ -430,6 +435,103 @@ function useQamSession() {
       if (r.ok && r.default) setTranslateTplDefault(r.default);
     } catch {
       /* 取不到就用本地兜底模板 */
+    }
+  };
+
+  // ---------- 设备配对（QAM 侧展示 PIN、允许/拒绝、设备列表） ----------
+  const loadPairInfo = async () => {
+    try {
+      const r = (await call<[], {
+        ok: boolean;
+        sessions?: PairSession[];
+        devices?: PairedDevice[];
+        error?: string;
+      }>("pair_info")) as {
+        ok: boolean;
+        sessions?: PairSession[];
+        devices?: PairedDevice[];
+        error?: string;
+      };
+      setPairSessions(r.sessions || []);
+      setPairDevices(r.devices || []);
+      setPairError(r.ok ? "" : r.error || "读取配对状态失败");
+    } catch (e: any) {
+      setPairError(String(e?.message ?? e));
+    }
+  };
+
+  const pairRefresh = async (pairId: string) => {
+    try {
+      const r = (await call<[string], { ok: boolean; error?: string }>(
+        "pair_refresh", pairId
+      )) as { ok: boolean; error?: string };
+      if (!r.ok) setPairError(r.error || "刷新 PIN 失败");
+    } catch (e: any) {
+      setPairError(String(e?.message ?? e));
+    }
+    await loadPairInfo();
+  };
+
+  const pairDecide = async (pairId: string, allow: boolean) => {
+    try {
+      const r = (await call<[string, boolean], { ok: boolean; error?: string }>(
+        "pair_decide", pairId, allow
+      )) as { ok: boolean; error?: string };
+      if (!r.ok) setPairError(r.error || "操作失败");
+    } catch (e: any) {
+      setPairError(String(e?.message ?? e));
+    }
+    await loadPairInfo();
+  };
+
+  const pairRemove = async (deviceId: string) => {
+    try {
+      await call<[string], { ok: boolean }>("pair_remove", deviceId);
+    } catch (e: any) {
+      setPairError(String(e?.message ?? e));
+    }
+    await loadPairInfo();
+  };
+
+  const pairRename = async (deviceId: string, name: string) => {
+    try {
+      await call<[string, string], { ok: boolean }>("pair_rename", deviceId, name);
+    } catch (e: any) {
+      setPairError(String(e?.message ?? e));
+    }
+    await loadPairInfo();
+  };
+
+  const pairRemoveAll = async () => {
+    try {
+      await call<[], { ok: boolean }>("pair_remove_all");
+    } catch (e: any) {
+      setPairError(String(e?.message ?? e));
+    }
+    await loadPairInfo();
+  };
+
+  /** 保存后端端口：与网页/大屏共用 [server].port。 */
+  const savePort = async (port: number) => {
+    try {
+      const r = (await call<
+        [number],
+        { ok: boolean; port?: number; restart_required?: boolean; error?: string }
+      >("set_port", port)) as {
+        ok: boolean;
+        port?: number;
+        restart_required?: boolean;
+        error?: string;
+      };
+      if (!r.ok) throw new Error(r.error ?? "端口保存失败");
+      await refreshStatus();
+      return {
+        ok: true as const,
+        port: r.port ?? port,
+        restartRequired: r.restart_required ?? true,
+      };
+    } catch (e: any) {
+      return { ok: false as const, error: String(e?.message ?? e) };
     }
   };
 
@@ -971,6 +1073,16 @@ function useQamSession() {
     killing,
     newing,
     pendingPoke,
+    pairSessions,
+    pairDevices,
+    pairError,
+    loadPairInfo,
+    pairRefresh,
+    pairDecide,
+    pairRemove,
+    pairRename,
+    pairRemoveAll,
+    savePort,
     refreshStatus,
     startBackend,
     send,
@@ -995,6 +1107,25 @@ export default function QamScreen() {
   const [tab, setTabState] = useState(lastTab);
   // 设备改名草稿：按 device_id 保存输入框里的值，保存后才写回后端
   const [renameDrafts, setRenameDrafts] = useState<Record<string, string>>({});
+  // 端口草稿与提示：保存后提示需重启，改一处另两处下次读取即生效
+  const [portDraft, setPortDraft] = useState("");
+  const [portHint, setPortHint] = useState("");
+  useEffect(() => {
+    if (!portDraft && s.status?.port) setPortDraft(String(s.status.port));
+  }, [s.status?.port]);
+  const savePortDraft = async () => {
+    const n = Number(portDraft.trim());
+    if (!Number.isInteger(n) || n < 1024 || n > 65535) {
+      setPortHint("端口需为 1024-65535 之间的整数");
+      return;
+    }
+    const r = await s.savePort(n);
+    if (!r.ok) {
+      setPortHint(r.error ?? "端口保存失败");
+      return;
+    }
+    setPortHint(`已保存端口 ${r.port}，重启后端后生效`);
+  };
   const setTab = (t: number | ((prev: number) => number)) => {
     setTabState((prev) => {
       const next = typeof t === "function" ? t(prev) : t;
@@ -1560,6 +1691,37 @@ export default function QamScreen() {
             >
               复制令牌
             </Btn>
+            <div style={{ fontSize: 11, color: DIM }}>
+              当前端口 {s.status?.port ?? "—"}（改后需重启后端）
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <TextField
+                value={portDraft}
+                onChange={(e) => setPortDraft(e.target.value)}
+              />
+              <Btn
+                height={26}
+                size={10.5}
+                onClick={() => void savePortDraft()}
+                description="保存端口"
+              >
+                保存端口
+              </Btn>
+              <Btn
+                height={26}
+                size={10.5}
+                disabled={s.restarting}
+                onClick={() => void s.coreRestart()}
+                description="重启后端使端口生效"
+              >
+                {s.restarting ? "重启中…" : "重启后端"}
+              </Btn>
+            </div>
+            {portHint ? (
+              <div style={{ fontSize: 10.5, color: "#e0a33a", lineHeight: 1.4 }}>
+                {portHint}
+              </div>
+            ) : null}
           </Card>
 
           {/* 设备配对：PIN 只在掌机上显示，浏览器输入 PIN 才能拿到设备凭据 */}

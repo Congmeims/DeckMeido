@@ -2410,6 +2410,29 @@ class Plugin:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
         return {"ok": True, "with_shot": bool((r.get("data") or {}).get("with_shot", enabled))}
 
+    async def set_port(self, port: int) -> dict:
+        """设置后端端口：写 [server].port，返回新端口与「需重启」标记。
+
+        三处设置页（QAM / 大屏 / 网页）共用这一个配置键；保存后由调用方
+        再点「重启后端」或自动重启，新端口才会真正生效。
+        """
+        try:
+            value = int(port)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "端口需为 1024-65535 之间的整数"}
+        if not 1024 <= value <= 65535:
+            return {"ok": False, "error": "端口需为 1024-65535 之间的整数"}
+        cfg = _load_server_cfg()
+        cur_port = int(cfg.get("port", 18765))
+        token = str(cfg.get("token", "") or "").strip()
+        r = await _core_http(cur_port, token, "POST", "/api/config",
+                             body={"port": value})
+        if not r["ok"]:
+            return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
+        data = r.get("data") or {}
+        return {"ok": True, "port": int(data.get("port", value)),
+                "restart_required": bool(data.get("restart_required", True))}
+
     async def set_stt(self, enabled: bool) -> dict:
         """切语音输入：写后端 [stt] enable，关掉时后端顺手释放识别模型"""
         cfg = _load_server_cfg()

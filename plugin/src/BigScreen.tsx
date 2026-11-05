@@ -581,7 +581,25 @@ export default function BigScreen() {
     });
   };
   const [input, setInput] = useState("");
-  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // 端口草稿与提示：三处设置页共用 [server].port，改完需重启后端
+  const [portDraft, setPortDraft] = useState("");
+  const [portHint, setPortHint] = useState("");
+  useEffect(() => {
+    if (!portDraft && s.status?.port) setPortDraft(String(s.status.port));
+  }, [s.status?.port]);
+  const savePortDraft = async () => {
+    const n = Number(portDraft.trim());
+    if (!Number.isInteger(n) || n < 1024 || n > 65535) {
+      setPortHint("端口需为 1024-65535 之间的整数");
+      return;
+    }
+    const r = await s.savePort(n);
+    if (!r.ok) {
+      setPortHint(r.error ?? "端口保存失败");
+      return;
+    }
+    setPortHint(`已保存端口 ${r.port}，重启后端后生效`);
+  };
   // 语音结果追加到已有输入后面，不覆盖用户已经打的字
   const voice = useVoiceInput((t) =>
     setInput((prev) => (prev.trim() ? prev.replace(/\s*$/, " ") + t : t))
@@ -1372,6 +1390,38 @@ export default function BigScreen() {
                 </ActionButton>
               </div>
             </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+              <span style={{ fontSize: 11, color: DIM, flexShrink: 0 }}>
+                端口 {s.status?.port ?? "—"}
+              </span>
+              <ImeTextField
+                value={portDraft}
+                onValueChange={setPortDraft}
+                style={{ flex: 1, minWidth: 0 }}
+              />
+              <ActionButton
+                onClick={() => void savePortDraft()}
+                description="保存端口"
+                compact
+                style={{ width: 96, flexShrink: 0 }}
+              >
+                保存端口
+              </ActionButton>
+              <ActionButton
+                onClick={() => void s.coreRestart()}
+                disabled={s.restarting}
+                description="重启后端使端口生效"
+                compact
+                style={{ width: 96, flexShrink: 0 }}
+              >
+                {s.restarting ? "重启中…" : "重启后端"}
+              </ActionButton>
+            </div>
+            {portHint ? (
+              <div style={{ fontSize: 10.5, color: "#e0a33a", lineHeight: 1.3 }}>
+                {portHint}
+              </div>
+            ) : null}
           </SectionCard>
 
           {/* 设备配对：PIN 只在掌机显示，允许后才接受浏览器提交的 PIN */}
