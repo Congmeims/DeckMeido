@@ -89,22 +89,32 @@ def _enable_crash_log() -> None:
 
 
 _config_missing_warned = False
+_config_error = ""
 
 
 def load_token() -> str:
-    global _config_missing_warned
+    """读后端令牌；读不到时记录明确原因，交给界面提示并回落到手动输入"""
+    global _config_missing_warned, _config_error
     try:
-        return tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))["server"]["token"]
+        cfg = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        token = str((cfg.get("server") or {}).get("token", "") or "").strip()
     except FileNotFoundError:
-        if not _config_missing_warned:
-            _config_missing_warned = True
-            print(
-                f"[DeckMeido] 未找到 {CONFIG_PATH}，使用默认端口/令牌",
-                file=sys.stderr,
-            )
-        return ""
-    except Exception:
-        return ""
+        _config_error = f"未找到 {CONFIG_PATH}"
+    except Exception as exc:
+        _config_error = f"读取 {CONFIG_PATH} 失败：{exc}"
+    else:
+        if token:
+            _config_error = ""
+            return token
+        _config_error = f"{CONFIG_PATH} 里没有 token"
+    if not _config_missing_warned:
+        _config_missing_warned = True
+        print(
+            f"[DeckMeido] 读不到配置：{_config_error}（请检查数据目录），"
+            "可在界面里手动输入访问令牌",
+            file=sys.stderr,
+        )
+    return ""
 
 
 def api_json(path: str, timeout: float = 5.0, post: bool = False) -> dict:
@@ -471,7 +481,16 @@ def main() -> int:
     icon_path = DECKMEIDO_DIR / "assets" / "logo.png"
     icon = QIcon(str(icon_path)) if icon_path.exists() else QIcon()
     view.setWindowIcon(icon)
-    view.load(QUrl(f"{API}/?token={load_token()}&native=1"))
+    token = load_token()
+    if _config_error:
+        QMessageBox.warning(
+            None,
+            "DeckMeido",
+            "读不到配置，请检查数据目录：\n"
+            f"{CONFIG_PATH}\n\n原因：{_config_error}\n\n"
+            "接下来的页面可以手动输入访问令牌。",
+        )
+    view.load(QUrl(f"{API}/?token={token}&native=1"))
     view.show()
     # 缩放只作用于这个网页，不影响系统里其他 Qt 程序；网页端（浏览器打开）保持原样。
     # 取 1.1 而非 1.2：右终端栏的隐藏断点是 max-width:1080px，1.2 时 CSS 视口
