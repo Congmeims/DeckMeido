@@ -1,5 +1,3 @@
-import { call } from "@decky/api";
-
 /**
  * 把 DeckMeido 的虚拟手柄换到 1P（Steam 的 0 号槽位）。
  *
@@ -110,12 +108,6 @@ async function fetchControllers(client: any): Promise<SteamController[]> {
   return [];
 }
 
-/** 换序结果同时写进插件日志：QAM 里看不到 console，出问题只能靠日志 */
-export function logPadOrder(msg: string) {
-  console.log("[DeckMeido]", msg);
-  call("_probe_log", "[padOrder] " + msg).catch(() => undefined);
-}
-
 export async function applyPadOrder(action: "to1p" | "revert"): Promise<void> {
   // 防重入：面板重挂载会重新注册监听，同一个请求可能来两次；
   // 两路同时正在换会把顺序搅乱
@@ -137,7 +129,6 @@ let padOrderBusy = false;
 async function doPadOrder(action: "to1p" | "revert"): Promise<void> {
   const client = steamClient();
   if (!client) {
-    logPadOrder(`没有 SteamClient，跳过换序（${action}）`);
     return;
   }
   const api: SteamWsApi | undefined = client.WebSocket;
@@ -158,8 +149,7 @@ async function doPadOrder(action: "to1p" | "revert"): Promise<void> {
       const pad = withSlot.find((x) => isVirtualPad(x.c));
       if (!pad) continue;
       if (pad.slot === 0) return; // 已经是 1P
-      const ok = swapBy(client, api || {}, pad.c, 0);
-      logPadOrder(`换到 1P ${ok ? "已发出" : "失败"}：${JSON.stringify(list)}`);
+      swapBy(client, api || {}, pad.c, 0);
       return;
     }
 
@@ -168,9 +158,7 @@ async function doPadOrder(action: "to1p" | "revert"): Promise<void> {
     if (!first || !isVirtualPad(first.c)) return;
     const deck = withSlot.find((x) => !isVirtualPad(x.c));
     if (!deck) return;
-    const ok = swapBy(client, api || {}, deck.c, 0);
-    logPadOrder(`还原 ${ok ? "已发出" : "失败"}：${JSON.stringify(list)}`);
+    swapBy(client, api || {}, deck.c, 0);
     return;
   }
-  logPadOrder(`换序未完成（${action}）：Steam 一直没枚举到虚拟手柄`);
 }

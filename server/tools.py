@@ -441,19 +441,6 @@ def _shlex_words(seg: str) -> list[str]:
         return seg.split()
 
 
-# 真正会注入输入的子命令（xdotool / ydotool / dotool 同名）
-_XDOTOOL_INPUT_SUBS = {
-    "click", "mousedown", "mouseup",
-    "mousemove", "mousemove_relative", "move",
-    "type", "key", "keydown", "keyup",
-    "drag", "scroll", "wheel", "text",
-}
-# kdotool 的输入类子命令；window* 系列属于窗口管理，不动光标不敲键盘
-_KDOTOOL_INPUT_SUBS = {
-    "type", "key", "keydown", "keyup",
-    "mousemove", "mousemove_relative", "move",
-    "click", "mousedown", "mouseup", "scroll", "wheel", "text",
-}
 # 会让光标按下去的子命令：这些必须打开遮罩穿透，否则点会落在遮罩上变成「用户终止」。
 # mousemove/move 刻意不在里面：只挪光标不会产生按下事件，遮罩放着不动也点不到它，
 # 反而能给用户留一个「随时点一下终止」的入口。以前把 move 也算进来，于是
@@ -956,7 +943,7 @@ class PtySession:
         self.out_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=256)
         self._reader: asyncio.Task | None = None
         self._closed = False
-        # tmux 会话名（tmux 方案用）；非 tmux 会话时为 None
+        # tmux 会话名，创建会话时赋值（见 start_pty_session）
         self.tmux_name: str | None = None
         # 给 CURRENT_CMD 兼容用的累积输出（截断，避免内存爆）
         self._output_buf = ""
@@ -973,27 +960,19 @@ class PtySession:
     def resize(self, cols: int, rows: int) -> None:
         """窗口大小变化时通知终端
 
-        tmux 会话：用 tmux resize-window 强制网格尺寸（tmux 自己把 SIGWINCH
-        转发给里面的程序，重绘对齐由 tmux 保证，不依赖 ioctl 时序）。
-        非 tmux：直接 ioctl TIOCSWINSZ。
+        会话一律由 tmux 接管（见 start_pty_session），所以用 tmux resize-window
+        强制网格尺寸：tmux 自己把 SIGWINCH 转发给里面的程序，重绘对齐由它保证，
+        不依赖 ioctl 时序。
         """
         if self._closed or self.exit_code is not None:
             return
         self.cols, self.rows = cols, rows
-        if self.tmux_name:
-            try:
-                subprocess.run(
-                    ["tmux", "resize-window", "-t", self.tmux_name,
-                     "-x", str(cols), "-y", str(rows)],
-                    timeout=2, capture_output=True,
-                )
-            except Exception:
-                pass
-            return
         try:
-            import struct, fcntl, termios
-            fcntl.ioctl(self.proc.fd, termios.TIOCSWINSZ,
-                        struct.pack("HHHH", rows, cols, 0, 0))
+            subprocess.run(
+                ["tmux", "resize-window", "-t", self.tmux_name,
+                 "-x", str(cols), "-y", str(rows)],
+                timeout=2, capture_output=True,
+            )
         except Exception:
             pass
 

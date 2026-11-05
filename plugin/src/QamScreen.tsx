@@ -12,7 +12,7 @@ import {
 } from "@decky/ui";
 import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, TEXT, copyText, groupToken } from "./ui";
 import { statusLineFor } from "./statusLine";
-import { applyPadOrder, logPadOrder, steamClient } from "./padOrder";
+import { applyPadOrder, steamClient } from "./padOrder";
 import { useVoiceInput } from "./useVoiceInput";
 import {
   BIG_SCREEN_ROUTE,
@@ -999,7 +999,6 @@ function useQamSession() {
         return;
       }
       if (msg.kind === "pad_order") {
-        logPadOrder(`QAM 收到 pad_order/${msg.action}`);
         if (msg.action === "to1p" || msg.action === "revert") applyPadOrder(msg.action);
         return;
       }
@@ -1185,8 +1184,8 @@ export default function QamScreen() {
           else if (msg.button === 7) setTab((p) => Math.min(TABS.length - 1, p + 1));
         });
       }
-    } catch (e) {
-      logPadOrder(`LB/RB 绑定失败，翻页改用标签点按：${String(e)}`);
+    } catch {
+      // 绑定失败不影响使用：翻页改用标签点按
     }
     return () => {
       try {
