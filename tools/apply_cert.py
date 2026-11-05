@@ -2,19 +2,11 @@
 """用宝塔内置 acme_v2.py 申请证书（HTTP 验证）。"""
 import os
 
-import os
-
 import paramiko
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 c.connect(os.environ.get("DEPLOY_HOST", ""), port=int(os.environ.get("DEPLOY_PORT", "22")), username=os.environ.get("DEPLOY_USER", "root"), password=os.environ.get("DEPLOY_PASS", ""), timeout=30)
-    os.environ.get("DEPLOY_HOST", ""),
-    port=int(os.environ.get("DEPLOY_PORT", "22")),
-    username=os.environ.get("DEPLOY_USER", "root"),
-    password=os.environ.get("DEPLOY_PASS", ""),
-    timeout=30,
-)
 
 DOMAIN = 'meido.meagames.cn'
 WEBROOT = f'/www/wwwroot/{DOMAIN}'
