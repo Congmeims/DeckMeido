@@ -830,7 +830,7 @@
     .qchip .q-act { opacity: 1; }
   }
 
-  /* token 输入遮罩 */
+  /* 登录 / 配对遮罩：只保留 PIN 一种入口 */
   #authOverlay {
     position: fixed; inset: 0;
     background: var(--bg);
@@ -843,10 +843,10 @@
   #authOverlay.show { display: flex; }
   .auth-card {
     display: flex; flex-direction: column; align-items: center;
-    gap: 14px; width: 100%; max-width: 360px;
+    gap: 18px; width: 100%; max-width: 340px;
   }
   .auth-logo {
-    width: 88px; height: 88px; border-radius: 22px;
+    width: 76px; height: 76px; border-radius: 20px;
     box-shadow: 0 6px 20px rgba(0,0,0,.14);
   }
   .auth-card h1 {
@@ -857,35 +857,46 @@
     font-size: 12px; font-weight: 400; color: var(--muted);
     border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px;
   }
-  .auth-card p { color: var(--muted); font-size: 13.5px; text-align: center; line-height: 1.6; margin: 0; }
-  .auth-err { color: #e5484d; font-size: 13px; min-height: 18px; }
-  /* 配对：新设备不需要手输 12 位令牌，PIN 由掌机展示 */
-  .auth-secondary {
-    width: 100%;
-    padding: 10px 20px;
-    border: 1px solid var(--line); border-radius: 10px;
-    background: transparent; color: var(--text);
-    font-size: 14px; font-weight: 600;
+  .auth-err {
+    color: #e5484d; font-size: 13px; line-height: 18px;
+    min-height: 18px; text-align: center;
   }
-  .auth-secondary:hover { border-color: var(--brand); }
-  .pair-box { width: 100%; display: flex; flex-direction: column; gap: 10px; }
+  /* 主操作：与界面里的蓝色主色保持一致，不再是浏览器默认按钮 */
+  .auth-primary {
+    width: 100%;
+    padding: 13px 20px;
+    border: none; border-radius: 12px;
+    background: var(--brand); color: #fff;
+    font-size: 15px; font-weight: 600;
+    cursor: pointer;
+    transition: filter .15s ease, opacity .15s ease;
+  }
+  .auth-primary:hover { filter: brightness(1.06); }
+  .auth-primary:disabled { opacity: .45; cursor: default; filter: none; }
+  .auth-link {
+    align-self: center;
+    border: none; background: none; color: var(--muted);
+    font-size: 13px; padding: 2px 8px; cursor: pointer;
+  }
+  .auth-link:hover { color: var(--text); }
+  .pair-box { width: 100%; display: flex; flex-direction: column; gap: 12px; }
   .pair-box[hidden] { display: none; }
-  #pairPin {
-    width: 100%;
-    padding: 12px 14px;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--surface-2);
-    color: var(--text);
-    font-size: 22px;
-    letter-spacing: 8px;
-    text-align: center;
-    outline: none;
+  /* 4 位 PIN：一框一位，等宽等距，窄屏自动收缩不溢出 */
+  .pin-row { display: flex; gap: 10px; width: 100%; justify-content: center; }
+  .pin-digit {
+    flex: 1 1 0; min-width: 0; max-width: 62px; height: 64px;
+    border: 1px solid var(--line); border-radius: 12px;
+    background: var(--surface); color: var(--text);
+    font-size: 28px; font-weight: 600; line-height: 1;
+    text-align: center; font-variant-numeric: tabular-nums;
+    outline: none; caret-color: var(--brand);
+    transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
   }
-  #pairPin:focus { border-color: var(--brand); }
-  .pair-remember { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
-  .pair-actions { display: flex; gap: 8px; }
-  .pair-actions button { flex: 1; }
+  .pin-digit:focus {
+    border-color: var(--brand);
+    background: var(--surface-2);
+    box-shadow: 0 0 0 3px rgba(26,159,255,.16);
+  }
   .auth-tip { font-size: 12px; color: var(--muted); text-align: center; line-height: 1.6; }
 
   /* 设置按钮与面板 */
@@ -3019,23 +3030,20 @@
   <div class="auth-card">
     <img class="auth-logo" src="logo.png" alt="DeckMeido">
     <h1>DeckMeido <small>控制台</small></h1>
-    <p>这台设备还没有配对。先点下面的按钮，再在掌机「设置 → 本地连接 → 设备配对」里点「允许」，把掌机上显示的 4 位 PIN 填进来</p>
-    <button id="pairBtn" class="auth-secondary">配对新设备</button>
+    <button id="pairBtn" class="auth-primary" type="button">配对新设备</button>
     <div id="pairBox" class="pair-box" hidden>
-      <div id="pairMsg" class="auth-err"></div>
-      <input id="pairPin" type="text" inputmode="numeric" maxlength="4"
-             placeholder="掌机上显示的 4 位 PIN" autocomplete="off">
-      <label class="pair-remember"><input id="pairRemember" type="checkbox" checked> 保持登录（30 天）</label>
-      <div class="pair-actions">
-        <button id="pairConfirm">配对</button>
-        <button id="pairCancel" class="auth-secondary">取消</button>
+      <div class="pin-row" id="pinRow">
+        <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="PIN 第 1 位">
+        <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN 第 2 位">
+        <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN 第 3 位">
+        <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN 第 4 位">
       </div>
+      <div id="pairMsg" class="auth-err" role="status"></div>
+      <button id="pairConfirm" class="auth-primary" type="button" disabled>配对</button>
+      <button id="pairCancel" class="auth-link" type="button">重新发起</button>
     </div>
     <div id="authErr" class="auth-err"></div>
-    <div class="auth-tip">
-      没看到 PIN？在 Deck 上打开 QAM / 大屏 / 客户端 → 设置 → 本地连接 → 设备配对<br>
-      当前版本 <span id="authVer">…</span>
-    </div>
+    <div class="auth-tip">PIN 显示在 Deck 设置里 · <span id="authVer">…</span></div>
   </div>
 </div>
 </main>
@@ -3133,10 +3141,10 @@
   var pairBtn = document.getElementById('pairBtn');
   var pairBox = document.getElementById('pairBox');
   var pairMsg = document.getElementById('pairMsg');
-  var pairPin = document.getElementById('pairPin');
+  var pinRow = document.getElementById('pinRow');
+  var pinDigits = Array.prototype.slice.call(pinRow.querySelectorAll('.pin-digit'));
   var pairConfirm = document.getElementById('pairConfirm');
   var pairCancel = document.getElementById('pairCancel');
-  var pairRemember = document.getElementById('pairRemember');
 
   // 令牌归一化：大小写不敏感，去掉空格/连字符，I/L→1、O→0。
   // 掌机 / 大屏 / 客户端展示的是 XXXX-XXXX-XXXX，粘贴过来也能直接通过。
@@ -6637,13 +6645,53 @@
   }
 
   // ---------- 配对新设备（Sunshine 式：PIN 在掌机上，浏览器只负责提交） ----------
+  var pairBusy = false;
+  var pairApproved = false;
+
+  function pinValue() {
+    return pinDigits.map(function (el) { return el.value || ''; }).join('');
+  }
+
+  function pinSync() {
+    pairConfirm.disabled = pairBusy || pinValue().length !== 4;
+  }
+
+  function pinClear(focus) {
+    pinDigits.forEach(function (el) { el.value = ''; });
+    pinSync();
+    if (focus) pinDigits[0].focus();
+  }
+
+  // 整串（粘贴 / 手机自动填充）一次性铺进 4 格，然后贴到第一个空格
+  function pinFill(text) {
+    var digits = String(text || '').replace(/\D/g, '').split('');
+    pinDigits.forEach(function (el, i) { el.value = digits[i] || ''; });
+    pinSync();
+    var next = pinDigits.findIndex(function (el) { return !el.value; });
+    (next < 0 ? pinDigits[3] : pinDigits[next]).focus();
+    maybeAutoSubmit();
+  }
+
+  function maybeAutoSubmit() {
+    if (pinValue().length !== 4) return;
+    if (!pairApproved) {
+      // 掌机还没点允许，先别提交：否则只会换来一条 409，还得重输
+      pairMsg.textContent = '等待 Deck 上点「允许」';
+      return;
+    }
+    setTimeout(pairSubmit, 0);
+  }
+
   function pairReset() {
     clearTimeout(pairTimer);
     pairTimer = null;
     pairingId = '';
+    pairApproved = false;
+    pairBusy = false;
     pairBox.hidden = true;
+    pairBtn.hidden = false;
     pairMsg.textContent = '';
-    pairPin.value = '';
+    pinClear(false);
   }
 
   function pairPoll() {
@@ -6654,16 +6702,22 @@
         var d = res.d || {};
         if (!res.ok) { pairMsg.textContent = d.detail || '配对请求已失效'; return; }
         if (d.state === 'approved') {
-          pairMsg.textContent = '掌机已允许，请输入 PIN';
+          pairApproved = true;
+          pairMsg.textContent = pinValue().length === 4 ? '' : 'Deck 已允许，请输入 PIN';
           pairTimer = setTimeout(pairPoll, 2000);
+          maybeAutoSubmit();
+        } else if (d.state === 'failed') {
+          pairReset();
+          authErr.textContent = 'PIN 错误次数过多，请重新发起配对';
+          pairBtn.focus();
         } else if (d.state === 'denied') {
-          pairMsg.textContent = '掌机已拒绝这次配对';
+          pairMsg.textContent = 'Deck 已拒绝这次配对';
         } else if (d.state === 'expired') {
-          pairMsg.textContent = 'PIN 已过期，请在掌机上刷新后重新配对';
+          pairMsg.textContent = 'PIN 已过期，请重新发起配对';
         } else if (d.state === 'paired') {
           pairMsg.textContent = '配对成功';
         } else {
-          pairMsg.textContent = '等待掌机允许（设置 → 设备配对）';
+          pairMsg.textContent = '等待 Deck 上点「允许」';
           pairTimer = setTimeout(pairPoll, 2000);
         }
       })
@@ -6674,33 +6728,54 @@
     authErr.textContent = '';
     pairMsg.textContent = '正在创建配对请求…';
     pairBox.hidden = false;
-    pairPin.value = '';
+    pairBtn.hidden = true;
+    pairApproved = false;
+    pinClear(false);
     fetch('/api/pair/start', { method: 'POST' })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
-        if (!res.ok) { pairMsg.textContent = res.d.detail || '创建配对请求失败'; return; }
+        if (!res.ok) {
+          pairMsg.textContent = res.d.detail || '创建配对请求失败';
+          pairBtn.hidden = false;
+          pairBox.hidden = true;
+          return;
+        }
         pairingId = res.d.pair_id || '';
-        pairMsg.textContent = '等待掌机允许（设置 → 设备配对）';
+        pairMsg.textContent = '等待 Deck 上点「允许」';
         pairTimer = setTimeout(pairPoll, 1000);
-        pairPin.focus();
+        pinDigits[0].focus();
       })
       .catch(function () { pairMsg.textContent = '连不上服务，请稍后重试'; });
   }
 
   function pairSubmit() {
-    var pin = String(pairPin.value || '').replace(/\D/g, '');
+    if (pairBusy) return;
+    var pin = pinValue();
     if (!pairingId) { pairMsg.textContent = '请先点「配对新设备」'; return; }
-    if (pin.length !== 4) { pairMsg.textContent = '请输入掌机上显示的 4 位 PIN'; return; }
-    pairMsg.textContent = '正在校验…';
+    if (pin.length !== 4) { pairMsg.textContent = '请输入 4 位 PIN'; return; }
+    pairBusy = true;
+    pairConfirm.disabled = true;
+    pairMsg.textContent = '';
     fetch('/api/pair/confirm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pair_id: pairingId, pin: pin, remember: !!pairRemember.checked }),
+      body: JSON.stringify({ pair_id: pairingId, pin: pin, remember: true }),
     })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
+        pairBusy = false;
         if (!res.ok) {
-          pairMsg.textContent = res.d.detail || '配对失败';
+          var msg = String(res.d.detail || '配对失败');
+          var m = msg.match(/还可以尝试\s*(\d+)\s*次/);
+          if (m) msg = 'PIN 不正确，剩 ' + m[1] + ' 次';
+          if (/作废|不存在|已失效|已过期/.test(msg)) {
+            pairReset();
+            authErr.textContent = msg;
+            pairBtn.focus();
+          } else {
+            pairMsg.textContent = msg;
+            pinClear(true);
+          }
           return;
         }
         // 服务端已下发 HttpOnly Cookie；进入主界面，不再要求令牌
@@ -6711,7 +6786,11 @@
         authOverlay.classList.remove('show');
         reconnectNow();
       })
-      .catch(function () { pairMsg.textContent = '连不上服务，请稍后重试'; });
+      .catch(function () {
+        pairBusy = false;
+        pairMsg.textContent = '连不上服务，请稍后重试';
+        pinSync();
+      });
   }
 
   function showAuth(err) {
@@ -7240,6 +7319,9 @@
 
   function refreshStatus() {
     if (document.hidden) return;
+    // 未连上（登录遮罩阶段）不发请求：空令牌每 3 秒一次毫无意义，
+    // 只会刷一屏 401 审计，旧版限流还会因此把本机 IP 封掉
+    if (!ws || ws.readyState !== 1) return;
     fetch('/api/status?token=' + encodeURIComponent(token))
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (s) { if (s) renderStatus(s); })
@@ -7627,10 +7709,44 @@
 
   pairBtn.addEventListener('click', pairStart);
   pairConfirm.addEventListener('click', pairSubmit);
-  pairCancel.addEventListener('click', pairReset);
-  pairPin.addEventListener('keydown', function (e) { if (e.key === 'Enter') pairSubmit(); });
-  pairPin.addEventListener('input', function () {
-    pairPin.value = String(pairPin.value || '').replace(/\D/g, '').slice(0, 4);
+  pairCancel.addEventListener('click', function () {
+    pairReset();
+    authErr.textContent = '';
+    pairBtn.focus();
+  });
+
+  // 4 格 PIN：输入一位自动跳格，退格回上一格并清空，粘贴整串一次填满
+  pinDigits.forEach(function (el, idx) {
+    el.addEventListener('input', function () {
+      var raw = String(el.value || '').replace(/\D/g, '');
+      if (raw.length > 1) { el.value = ''; pinFill(raw); return; }
+      el.value = raw;
+      pinSync();
+      if (raw && idx < 3) pinDigits[idx + 1].focus();
+      maybeAutoSubmit();
+    });
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Backspace') {
+        e.preventDefault();
+        if (el.value) { el.value = ''; pinSync(); return; }
+        if (idx > 0) {
+          pinDigits[idx - 1].value = '';
+          pinDigits[idx - 1].focus();
+          pinSync();
+        }
+        return;
+      }
+      if (e.key === 'ArrowLeft' && idx > 0) { e.preventDefault(); pinDigits[idx - 1].focus(); }
+      if (e.key === 'ArrowRight' && idx < 3) { e.preventDefault(); pinDigits[idx + 1].focus(); }
+      if (e.key === 'Enter') { e.preventDefault(); pairSubmit(); }
+    });
+    el.addEventListener('paste', function (e) {
+      var data = (e.clipboardData || window.clipboardData).getData('text') || '';
+      if (!/\d/.test(data)) return;
+      e.preventDefault();
+      pinFill(data);
+    });
+    el.addEventListener('focus', function () { el.select(); });
   });
 
   // 连接中临时关闭自动重连（改令牌时会被服务端踢下线，不能让旧逻辑又弹回鉴权页）
