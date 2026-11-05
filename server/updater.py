@@ -60,14 +60,21 @@ _KEEP_PREFIX = ("server/sessions/", "server/uploads/", "server/static/shots/")
 
 # ---------- TLS ----------
 #
-# 镜像站是纯静态的发布目录，内容还带 sha256 校验，所以它的证书校验可以放宽：
-# 设备上常挂着代理（DeckyClash 之类）的 TUN 模式，DNS 被劫持到 198.18.0.0/15
-# 的 fake-ip 段，规则没匹配上的域名会被送进错误节点，回一张自签名的假证书
-# （实测 Subject/Issuer 全空、签名算法还是 MD5），校验必然失败。
-# 那种情况下与其让「检查更新」永久报错，不如连上去——包里内容仍按 sha256 验。
+# 默认强制校验证书。设备上常挂着代理（DeckyClash 之类）的 TUN 模式，DNS 被
+# 劫持到 198.18.0.0/15 的 fake-ip 段，规则没匹配上的域名会被送进错误节点，
+# 回一张自签名的假证书，校验必然失败。此时不再自动放宽，只给出明确提示，
+# 由用户显式设置环境变量 DECKMEIDO_TLS_INSECURE=1 后才跳过证书校验。
 #
-# GitHub 那条路不放宽：它的规则走真实节点，证书是好的，而且走 git 操作，
-# 没有 sha256 兜底，放宽了等于把代码来源的可靠性交出去。
+# GitHub 那条路同样不放宽：它走 git 操作，没有 sha256 兜底，
+# 放宽了等于把代码来源的可靠性交出去。
+
+INSECURE_ENV = "DECKMEIDO_TLS_INSECURE"
+
+
+def _insecure_tls_allowed() -> bool:
+    """只有显式环境变量才允许放宽证书校验（1/true/yes/on）。"""
+    return str(os.environ.get(INSECURE_ENV, "")).strip().lower() in ("1", "true", "yes", "on")
+
 
 def _is_fake_ip(host: str) -> bool:
     """解析结果落在 198.18.0.0/15：几乎可以确定是本机代理的 fake-ip 段"""
@@ -81,10 +88,10 @@ def _is_fake_ip(host: str) -> bool:
 def _mirror_ssl_context(host: str) -> ssl.SSLContext | None:
     """镜像站用的 SSL 上下文：返回 None 表示走系统默认（严格校验）
 
-    只有确认出口是本机代理的 fake-ip 时才放宽，其它情况保持校验，
-    免得把正常的证书错误也一起吞掉。
+    默认一律严格校验；只有显式设置 DECKMEIDO_TLS_INSECURE=1 才放宽。
+    这样代理链路出问题时不会悄悄退化成「不验证书」。
     """
-    if _is_fake_ip(host):
+    if _insecure_tls_allowed():
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -104,8 +111,11 @@ def _special_cert_note(exc: Exception, host: str) -> str:
     if not isinstance(exc, ssl.SSLError) and "CERTIFICATE_VERIFY_FAILED" not in raw:
         return raw
     if "self-signed" in raw or "self signed" in raw:
+        hint = f"在代理里给 {host} 加一条直连规则即可"
+        if _is_fake_ip(host):
+            hint += f"；确认是代理 fake-ip 时也可临时设置 {INSECURE_ENV}=1"
         return (f"{host} 返回了自签名证书，多半是本机代理（DeckyClash 之类）"
-                f"把这个域名送进了错误节点。在代理里给 {host} 加一条直连规则即可")
+                f"把这个域名送进了错误节点。{hint}")
     return f"{host} 证书校验失败（{raw}）"
 
 

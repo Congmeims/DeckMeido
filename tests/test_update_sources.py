@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import io
+import os
+import ssl
 import tarfile
 import tempfile
 import unittest
@@ -179,6 +181,20 @@ class GithubReleaseParseTest(unittest.TestCase):
                 mock.patch.object(updater, "_http_text", side_effect=fake_text):
             info = updater.github_release("example/deckmeido")
         self.assertEqual(info["sha256"], "b" * 64)
+
+
+class MirrorTlsTest(unittest.TestCase):
+    def test_default_is_strict(self):
+        with mock.patch.dict(os.environ, {updater.INSECURE_ENV: ""}):
+            self.assertIsNone(updater._mirror_ssl_context("mirror.test"))
+            self.assertFalse(updater._insecure_tls_allowed())
+
+    def test_env_relaxes_only_when_set(self):
+        with mock.patch.dict(os.environ, {updater.INSECURE_ENV: "1"}):
+            ctx = updater._mirror_ssl_context("mirror.test")
+        self.assertIsNotNone(ctx)
+        self.assertEqual(ctx.verify_mode, ssl.CERT_NONE)
+        self.assertFalse(ctx.check_hostname)
 
 
 class ApplyFallbackTest(unittest.TestCase):
