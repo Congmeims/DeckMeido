@@ -367,6 +367,19 @@ def latest_release() -> dict:
     return info
 
 
+def notes_summary(text) -> str:
+    """取发布说明里第一句非空内容，给「版本」旁边那句更新总结用"""
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Release notes 的常见写法：先去掉 markdown 标题/列表符号
+        line = line.lstrip("#*- ").strip()
+        if line:
+            return line[:120]
+    return ""
+
+
 async def check() -> dict:
     """比对当前版本与最新 release"""
     latest = await asyncio.to_thread(latest_release)
@@ -376,6 +389,7 @@ async def check() -> dict:
         "current": current,
         "has_update": bool(latest["tag"]) and ver_tuple(latest["tag"]) > ver_tuple(current),
         "source_label": source_label(cfg),
+        "notes_summary": notes_summary(latest.get("notes")),
         **latest,
     }
 

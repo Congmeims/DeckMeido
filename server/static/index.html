@@ -1257,6 +1257,11 @@
     padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px;
   }
   .about-row .mini-btn { margin-left: auto; min-height: 32px; font-size: 13px; }
+  /* 版本旁边那句更新总结：有发布说明就显示首行，没有就写「已是最新版本」 */
+  .ver-summary {
+    flex: 1 1 120px; min-width: 0; font-size: 12px; color: var(--muted);
+    line-height: 1.45; white-space: normal; word-break: break-word;
+  }
   .upd-note {
     margin-top: 8px; font-size: 13px; color: var(--muted);
     white-space: pre-wrap; word-break: break-word; line-height: 1.5;
@@ -2880,6 +2885,7 @@
             <div class="card-title">版本</div>
             <div class="about-row">
               <span class="ver-tag" id="verTag">版本 …</span>
+              <span class="ver-summary" id="verSummary">正在读取版本信息…</span>
               <button id="updCheck" class="mini-btn" type="button">检查更新</button>
             </div>
             <div class="upd-note" id="updNote"></div>
@@ -7338,10 +7344,16 @@
 
   // 后台自动查到新版本时：设置按钮打红点，设置页里也把提示填好。
   // 版本号来自更新检查（远端仓库的 tag），照样要转义：它最终拼进 innerHTML
-  function markUpdate(latest, current) {
+  var verSummaryEl = document.getElementById('verSummary');
+  function markUpdate(latest, current, notes) {
     settingsBtn.classList.add('has-update');
     settingsBtn.title = '有新版本 v' + latest;
     verTag.textContent = '版本 v' + (current || '?');
+    // 版本号旁边补一句更新总结：优先用发布说明首行，没有就给一句兜底，
+    // 不让这块一直空着
+    if (verSummaryEl) {
+      verSummaryEl.textContent = notes ? ('更新内容：' + notes) : '有新版本可用，可在下方升级';
+    }
     updNote.innerHTML = '发现新版本 <b>v' + escapeHtml(latest) + '</b>，点下方按钮即可升级';
     updApply.style.display = 'block';
   }
@@ -7353,10 +7365,20 @@
       .then(function (r) { return r.json(); })
       .then(function (v) {
         verTag.textContent = '版本 v' + (v.version || '?');
+        var vu = (v && v.update) || {};
         // 后台已查到新版本：打开设置页就能直接看到并升级
-        if (v.update && v.update.has_update) markUpdate(v.update.latest, v.version);
+        if (vu.has_update) {
+          markUpdate(vu.latest, v.version, vu.notes_summary);
+        } else if (verSummaryEl) {
+          verSummaryEl.textContent = vu.notes_summary
+            ? ('已是最新版本 · ' + vu.notes_summary)
+            : '已是最新版本';
+        }
       })
-      .catch(function () { verTag.textContent = '版本未知'; });
+      .catch(function () {
+        verTag.textContent = '版本未知';
+        if (verSummaryEl) verSummaryEl.textContent = '已是最新版本';
+      });
   }
 
   // 侧栏字标后的版本徽章：/api/version 不校验令牌，登录前也能拿到，
@@ -7396,11 +7418,23 @@
         var other = d.source_used === 'github' ? srcName('mirror') : srcName('github');
         var otherVer = d.source_used === 'github' ? d.mirror_version : d.github_version;
         if (other && otherVer) tail += '（另一源 ' + other + ' v' + otherVer + '）';
+        // 版本号旁那句总结跟着这次检查结果一起刷新，
+        // 否则手动点「检查更新」后标题区还是打开设置页时的旧内容
         if (!d.has_update) {
+          if (verSummaryEl) {
+            verSummaryEl.textContent = d.notes_summary
+              ? ('已是最新版本 · ' + d.notes_summary)
+              : '已是最新版本';
+          }
           updNote.textContent = (d.tag
             ? '已是最新版本（v' + d.current + '）'
             : '还没有发布版本信息，已是最新') + tail;
           return;
+        }
+        if (verSummaryEl) {
+          verSummaryEl.textContent = d.notes_summary
+            ? ('更新内容：' + d.notes_summary)
+            : '有新版本可用，可在下方升级';
         }
         updNote.innerHTML = '发现新版本 <b>v' + escapeHtml(d.tag) + '</b>' +
           (d.published_at ? '（' + escapeHtml(String(d.published_at).slice(0, 10)) + '）' : '') + '\n' +

@@ -3241,10 +3241,14 @@ async def update_watch_loop():
                     "fallback": info.get("fallback_from") or []}
             if info["has_update"]:
                 update_cache = {"has_update": True, "latest": info["tag"],
-                                "current": info["current"], "url": info.get("url", ""), **base}
+                                "current": info["current"], "url": info.get("url", ""),
+                                "notes_summary": updater.notes_summary(info.get("notes")),
+                                **base}
                 await manager.broadcast({"type": "update_available", **update_cache})
             else:
-                update_cache = {"has_update": False, "current": info["current"], **base}
+                update_cache = {"has_update": False, "current": info["current"],
+                                "notes_summary": updater.notes_summary(info.get("notes")),
+                                **base}
         except Exception as exc:
             # 两个源都连不上（断网、被墙）属正常情况，记下原因下次再试
             update_cache = {"has_update": False, "current": updater.current_version(),
