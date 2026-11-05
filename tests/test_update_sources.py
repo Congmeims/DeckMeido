@@ -183,6 +183,47 @@ class GithubReleaseParseTest(unittest.TestCase):
         self.assertEqual(info["sha256"], "b" * 64)
 
 
+class SafeExtractTest(unittest.TestCase):
+    def _extract(self, ti: tarfile.TarInfo):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            tf.addfile(ti)
+        buf.seek(0)
+        with tarfile.open(fileobj=buf, mode="r:gz") as tf, \
+                tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(RuntimeError):
+                updater._safe_extract(tf, td)
+
+    def test_rejects_symlink_escape(self):
+        ti = tarfile.TarInfo("deckmeido-0.6.10/evil")
+        ti.type = tarfile.SYMTYPE
+        ti.linkname = "/etc/passwd"
+        self._extract(ti)
+
+    def test_rejects_relative_symlink_escape(self):
+        ti = tarfile.TarInfo("deckmeido-0.6.10/evil")
+        ti.type = tarfile.SYMTYPE
+        ti.linkname = "../../outside"
+        self._extract(ti)
+
+    def test_accepts_inner_symlink_and_normal_file(self):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            link = tarfile.TarInfo("deckmeido-0.6.10/a")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "README.md"
+            tf.addfile(link)
+            body = b"hi\n"
+            f = tarfile.TarInfo("deckmeido-0.6.10/README.md")
+            f.size = len(body)
+            tf.addfile(f, io.BytesIO(body))
+        buf.seek(0)
+        with tarfile.open(fileobj=buf, mode="r:gz") as tf, \
+                tempfile.TemporaryDirectory() as td:
+            updater._safe_extract(tf, td)
+            self.assertTrue((Path(td) / "deckmeido-0.6.10/README.md").exists())
+
+
 class MirrorTlsTest(unittest.TestCase):
     def test_default_is_strict(self):
         with mock.patch.dict(os.environ, {updater.INSECURE_ENV: ""}):

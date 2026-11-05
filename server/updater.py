@@ -536,18 +536,33 @@ def _merge(src: Path, dst: Path) -> None:
         shutil.copy2(item, target)
 
 
-def _safe_extract(tf: tarfile.TarFile, dest: str) -> None:
-    """解压 tarball 到 dest，拒绝路径穿越。
+def _unsafe_member(root: Path, m: tarfile.TarInfo) -> str:
+    """成员路径或链接目标是否越界；返回空串表示安全。"""
+    p = (root / m.name).resolve()
+    if p != root and root not in p.parents:
+        return f"成员路径越界：{m.name}"
+    if m.issym() or m.islnk():
+        # 符号链接相对所在目录，硬链接相对包根；绝对目标会被 Path 拼接直接带出 root
+        base = (root / m.name).parent if m.issym() else root
+        target = (base / m.linkname).resolve()
+        if target != root and root not in target.parents:
+            return f"链接指向越界：{m.name} -> {m.linkname}"
+    return ""
 
-    Python 3.12 的 filter="data" 已经做这件事；更老版本没有 filter 参数，
-    这里先手工校验成员路径再走 extractall 兜底（镜像包若未提供 sha256 且
-    站点被攻破，恶意成员可能把文件写进任意目录）。
+
+def _safe_extract(tf: tarfile.TarFile, dest: str) -> None:
+    """解压 tarball 到 dest，拒绝路径穿越与越界符号链接。
+
+    Python 3.12 的 filter="data" 已经做这些事；更老版本没有 filter 参数，
+    这里先手工校验成员路径与链接目标再走 extractall 兜底（镜像包若未提供
+    sha256 且站点被攻破，恶意成员可能把文件写进任意目录，或先放一个
+    指向 /etc 的符号链接再借后续成员写出去）。
     """
     root = Path(dest).resolve()
     for m in tf.getmembers():
-        p = (root / m.name).resolve()
-        if p != root and root not in p.parents:
-            raise RuntimeError(f"安装包里有越界成员：{m.name}")
+        reason = _unsafe_member(root, m)
+        if reason:
+            raise RuntimeError(f"安装包里有不安全成员：{reason}")
     try:
         tf.extractall(dest, filter="data")
     except TypeError:  # Python < 3.12 没有 filter 参数
