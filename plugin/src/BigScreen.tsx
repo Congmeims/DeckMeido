@@ -6,7 +6,7 @@ import {
   Navigation,
   showModal,
 } from "@decky/ui";
-import { ACCENT, DIM, ERR_COLOR, ImeTextArea, ImeTextField, Md, TEXT, copyText, groupToken } from "./ui";
+import { ACCENT, DIM, ERR_COLOR, ImeTextArea, ImeTextField, Md, TEXT } from "./ui";
 import { statusLineFor } from "./statusLine";
 import { Item, useSession } from "./useSession";
 import { useVoiceInput } from "./useVoiceInput";
@@ -582,25 +582,6 @@ export default function BigScreen() {
     });
   };
   const [input, setInput] = useState("");
-  // 端口草稿与提示：三处设置页共用 [server].port，改完需重启后端
-  const [portDraft, setPortDraft] = useState("");
-  const [portHint, setPortHint] = useState("");
-  useEffect(() => {
-    if (!portDraft && s.status?.port) setPortDraft(String(s.status.port));
-  }, [s.status?.port]);
-  const savePortDraft = async () => {
-    const n = Number(portDraft.trim());
-    if (!Number.isInteger(n) || n < 1024 || n > 65535) {
-      setPortHint("端口需为 1024-65535 之间的整数");
-      return;
-    }
-    const r = await s.savePort(n);
-    if (!r.ok) {
-      setPortHint(r.error ?? "端口保存失败");
-      return;
-    }
-    setPortHint(`已保存端口 ${r.port}，重启后端后生效`);
-  };
   // 语音结果追加到已有输入后面，不覆盖用户已经打的字
   const voice = useVoiceInput((t) =>
     setInput((prev) => (prev.trim() ? prev.replace(/\s*$/, " ") + t : t))
@@ -612,13 +593,10 @@ export default function BigScreen() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [s.items, s.streaming, tab]);
 
-  // 进设置页拉模型列表；配对信息每 2 秒刷新（PIN 倒计时 / 新设备提示）
+  // 进设置页拉模型列表（配对信息在 QAM 里看，大屏不再轮询）
   useEffect(() => {
     if (tab !== 2) return;
     void s.loadModels();
-    void s.loadPairInfo();
-    const timer = setInterval(() => void s.loadPairInfo(), 2000);
-    return () => clearInterval(timer);
   }, [tab]);
 
   // 读不到后端配置 / 令牌：显示明确原因，不再弹「需要访问令牌」
@@ -1283,7 +1261,7 @@ export default function BigScreen() {
             minHeight: 0,
             width: "100%",
             margin: "0 auto",
-            // 6 张卡按 flex 权重分配，卡内内容各自垂直居中
+            // 5 张卡等权平分高度，卡内内容各自垂直居中
             display: "flex",
             flexDirection: "column",
             gap: 6,
@@ -1298,7 +1276,7 @@ export default function BigScreen() {
             title="连接"
             inlineTitle
             accent={C.cyber}
-            style={{ padding: 6, flex: 0.7 }}
+            style={{ padding: 6, flex: 1 }}
           >
             {/* 四分栏两行：一行 4 列读数，一屏全展开 */}
             <div
@@ -1364,235 +1342,12 @@ export default function BigScreen() {
             </div>
           </SectionCard>
 
-          {/* 局域网访问：地址与令牌都从这里拿，别的设备照着填 */}
-          <SectionCard
-            title="局域网访问"
-            inlineTitle
-            accent={C.cyber}
-            style={{ padding: 6, flex: 0.7 }}
-          >
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "minmax(0, 1fr) 190px",
-                columnGap: 10,
-                alignItems: "stretch",
-                minHeight: 0,
-                width: "100%",
-                flex: 1,
-              }}
-            >
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateRows: "1fr 1fr",
-                  gap: 4,
-                  minWidth: 0,
-                  minHeight: 0,
-                }}
-              >
-                <StatRow label="地址" value={s.status?.lan_url || "—"} />
-                <StatRow label="令牌" value={groupToken(s.status?.lan_token || "") || "—"} />
-              </div>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateRows: "1fr 1fr",
-                  gap: 4,
-                  minWidth: 0,
-                  minHeight: 0,
-                }}
-              >
-                <ActionButton
-                  onClick={() => void copyText(s.status?.lan_url || "")}
-                  description="复制局域网地址"
-                  compact
-                >
-                  复制地址
-                </ActionButton>
-                <ActionButton
-                  onClick={() => void copyText(groupToken(s.status?.lan_token || ""))}
-                  description="复制访问令牌"
-                  compact
-                >
-                  复制令牌
-                </ActionButton>
-              </div>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-              <span style={{ fontSize: 11, color: DIM, flexShrink: 0 }}>
-                端口 {s.status?.port ?? "—"}
-              </span>
-              <ImeTextField
-                value={portDraft}
-                onValueChange={setPortDraft}
-                style={{ flex: 1, minWidth: 0 }}
-              />
-              <ActionButton
-                onClick={() => void savePortDraft()}
-                description="保存端口"
-                compact
-                style={{ width: 96, flexShrink: 0 }}
-              >
-                保存端口
-              </ActionButton>
-              <ActionButton
-                onClick={() => void s.coreRestart()}
-                disabled={s.restarting}
-                description="重启后端使端口生效"
-                compact
-                style={{ width: 96, flexShrink: 0 }}
-              >
-                {s.restarting ? "重启中…" : "重启后端"}
-              </ActionButton>
-            </div>
-            {portHint ? (
-              <div style={{ fontSize: 10.5, color: "#e0a33a", lineHeight: 1.3 }}>
-                {portHint}
-              </div>
-            ) : null}
-          </SectionCard>
-
-          {/* 设备配对：PIN 只在掌机显示，允许后才接受浏览器提交的 PIN */}
-          <SectionCard
-            title="设备配对"
-            inlineTitle
-            accent={C.cyber}
-            style={{ padding: 6, flex: 0.75 }}
-          >
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 3,
-                width: "100%",
-                minHeight: 0,
-                overflow: "hidden",
-              }}
-            >
-              {s.status?.security_note ? (
-                <div style={{ fontSize: 11, color: "#e0a33a" }}>{s.status.security_note}</div>
-              ) : null}
-              {!s.status?.lan_enable ? (
-                <div style={{ fontSize: 10.5, color: DIM }}>
-                  局域网访问已关闭（仅本机）；开启并重启后端后才能配对。
-                </div>
-              ) : null}
-              {s.pairSessions.length === 0 ? (
-                <div style={{ fontSize: 11, color: DIM }}>无待配对设备</div>
-              ) : (
-                <>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                    <span
-                      style={{
-                        fontSize: 20,
-                        letterSpacing: 4,
-                        color: TEXT,
-                        fontFamily: "monospace",
-                      }}
-                    >
-                      {s.pairSessions[0].pin}
-                    </span>
-                    <span
-                      style={{
-                        fontSize: 10.5,
-                        color: DIM,
-                        minWidth: 0,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      剩余 {Math.max(0, s.pairSessions[0].expires_in)} 秒 ·{" "}
-                      {s.pairSessions[0].name} · {s.pairSessions[0].ip}
-                    </span>
-                  </div>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    <ActionButton
-                      onClick={() => void s.pairDecide(s.pairSessions[0].pair_id, true)}
-                      description="允许这台设备配对"
-                      compact
-                      style={{ width: "auto", padding: "0 10px" }}
-                    >
-                      允许
-                    </ActionButton>
-                    <ActionButton
-                      onClick={() => void s.pairDecide(s.pairSessions[0].pair_id, false)}
-                      description="拒绝这台设备"
-                      compact
-                      style={{ width: "auto", padding: "0 10px" }}
-                    >
-                      拒绝
-                    </ActionButton>
-                    <ActionButton
-                      onClick={() => void s.pairRefresh(s.pairSessions[0].pair_id)}
-                      description="刷新 PIN"
-                      compact
-                      style={{ width: "auto", padding: "0 10px" }}
-                    >
-                      刷新 PIN
-                    </ActionButton>
-                  </div>
-                </>
-              )}
-              <div style={{ fontSize: 10.5, color: DIM }}>
-                已配对 {s.pairDevices.length} 台
-                {s.pairDevices.length
-                  ? `：${s.pairDevices.slice(0, 3).map((d) => d.name || "未命名").join("、")}${
-                      s.pairDevices.length > 3 ? " 等" : ""
-                    }`
-                  : ""}
-              </div>
-              {s.pairDevices.map((d) => (
-                <div
-                  key={d.device_id}
-                  style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}
-                >
-                  <span
-                    style={{
-                      flex: 1,
-                      fontSize: 10.5,
-                      color: TEXT,
-                      minWidth: 0,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {d.name || "未命名"} · {d.ip || "—"}
-                  </span>
-                  <ActionButton
-                    onClick={() => void s.pairRemove(d.device_id)}
-                    description="移除这台设备"
-                    compact
-                    style={{ width: "auto", padding: "0 8px", minHeight: 22, height: 22 }}
-                  >
-                    移除
-                  </ActionButton>
-                </div>
-              ))}
-              {s.pairDevices.length > 0 ? (
-                <ActionButton
-                  onClick={() => void s.pairRemoveAll()}
-                  description="移除全部已配对设备"
-                  compact
-                  style={{ width: "auto", padding: "0 10px", minHeight: 22, height: 22 }}
-                >
-                  移除全部设备
-                </ActionButton>
-              ) : null}
-              {s.pairError ? (
-                <div style={{ fontSize: 10.5, color: ERR_COLOR }}>{s.pairError}</div>
-              ) : null}
-            </div>
-          </SectionCard>
-
           {/* 模型 */}
           <SectionCard
             title="模型"
             inlineTitle
             accent={C.model}
-            style={{ padding: 6, flex: 0.7 }}
+            style={{ padding: 6, flex: 1 }}
           >
             {/* 左侧模型下拉拉满剩余宽度，右栏固定 190px（与截屏卡按钮列等宽） */}
             <div
@@ -1771,7 +1526,7 @@ export default function BigScreen() {
             title="截屏询问"
             inlineTitle
             accent={C.prompt}
-            style={{ padding: 6, flex: 1.5 }}
+            style={{ padding: 6, flex: 1 }}
           >
             {/* 左 4/5 放提示词框，右 1/5 竖排两个按钮（宽度减半给文本框让路） */}
             <div
@@ -1820,7 +1575,7 @@ export default function BigScreen() {
             title="截图翻译"
             inlineTitle
             accent={C.prompt}
-            style={{ padding: 6, flex: 1.5 }}
+            style={{ padding: 6, flex: 1 }}
           >
             {/* 同上：左 4/5 文本框，右 1/5 按钮 */}
             <div
@@ -1869,7 +1624,7 @@ export default function BigScreen() {
             title="维护"
             inlineTitle
             accent={C.ops}
-            style={{ padding: 6, flex: 0.8 }}
+            style={{ padding: 6, flex: 1 }}
           >
             {/* 左栏拉满剩余宽度；右栏固定 190px 与"保存"按钮等宽 */}
             <div
