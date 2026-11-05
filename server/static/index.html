@@ -8987,12 +8987,14 @@
       if (cfgQqAutoLaunch) cfgQqAutoLaunch.checked = c.auto_launch_after_install !== false;
       if (cfgQqAutoLaunchWait) cfgQqAutoLaunchWait.value =
         c.auto_launch_wait_seconds != null ? c.auto_launch_wait_seconds : 6;
-      // 群友提示词：默认原文原样回填（{name} 不预先替换），空值展示空框
+      // 群友提示词：默认原文原样回填（{name} 不预先替换）。
+      // 配置里存空串表示「用内置默认」，这里直接把后端下发的默认原文摆进
+      // 输入框，首次打开看到的就是实际会生效的内容，而不是一个空框
       qqGuestDefault = String(c.guest_prompt_default || '');
       QQ_GUEST_MAX = Number(c.guest_prompt_max) || 2000;
       if (cfgQqGuestPrompt) {
         cfgQqGuestPrompt.maxLength = QQ_GUEST_MAX;
-        cfgQqGuestPrompt.value = c.guest_prompt || '';
+        cfgQqGuestPrompt.value = c.guest_prompt || qqGuestDefault;
       }
       qqGuestSaved = String(c.guest_prompt || '');
       updateQqGuestCount();
