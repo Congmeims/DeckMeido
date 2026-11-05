@@ -2671,8 +2671,12 @@
           <div class="card">
             <div class="card-title">设备配对</div>
             <div class="field-hint" style="margin-top:0">
-              新设备打开局域网地址后点「配对新设备」，PIN 会显示在这里。
+              新设备打开局域网地址后点「配对新设备」，PIN 就会出现在下面。
               点「允许」后把 4 位 PIN 告诉对方；PIN 60 秒有效，最多试 3 次。
+            </div>
+            <div class="mem-foot" style="margin-top:10px">
+              <span id="pairAuditSummary" class="field-hint"></span>
+              <button id="pairHostStart" class="mini-btn" type="button">配对新设备</button>
             </div>
             <div id="pairPendingList" class="pair-list"></div>
             <div id="pairHostHint" class="field-hint"></div>
@@ -2685,14 +2689,7 @@
               <button id="pairRemoveAll" class="mini-btn" type="button">移除全部设备</button>
             </div>
           </div>
-          <div class="card">
-            <div class="card-title">登录与配对审计</div>
-            <div class="field-hint" style="margin-top:0">
-              只读记录最近 50 条鉴权失败与配对尝试（时间 / 来源 IP / 原因 / 结果），
-              不含 PIN 或设备令牌。
-            </div>
-            <div id="auditList" class="pair-list"></div>
-          </div>
+
           <div class="card">
             <div class="card-title">桌面控件自检</div>
             <div class="ctrl-list" id="ctrlList"></div>
@@ -7796,7 +7793,8 @@
   var pairDevCount = document.getElementById('pairDevCount');
   var pairRemoveAll = document.getElementById('pairRemoveAll');
   var pairHostHint = document.getElementById('pairHostHint');
-  var auditList = document.getElementById('auditList');
+  var pairAuditSummary = document.getElementById('pairAuditSummary');
+  var pairHostStart = document.getElementById('pairHostStart');
   var pairPollTimer = 0;
   var saveCfg = document.getElementById('saveCfg');
   var cfgHint = document.getElementById('cfgHint');
@@ -8039,7 +8037,7 @@
         if (!sessions.length) {
           var empty = document.createElement('div');
           empty.className = 'pair-empty';
-          empty.textContent = '暂无待配对设备。';
+          empty.textContent = '还没有待配对请求。在新设备上打开局域网地址并点「配对新设备」，PIN 会显示在这里。';
           pairPendingList.appendChild(empty);
         }
         sessions.forEach(function (p) {
@@ -8111,39 +8109,29 @@
           row.appendChild(actions);
           pairDevList.appendChild(row);
         });
-        auditList.textContent = '';
-        if (!events.length) {
-          var noEv = document.createElement('div');
-          noEv.className = 'pair-empty';
-          noEv.textContent = '暂无记录。';
-          auditList.appendChild(noEv);
+        // 审计记录不再铺开：50 条历史在设置页里纯属刷屏，只留一行摘要
+        if (pairAuditSummary) {
+          var fails = events.filter(function (ev) { return ev.result !== 'ok'; });
+          if (!fails.length) {
+            pairAuditSummary.textContent = '最近没有鉴权失败记录';
+          } else {
+            pairAuditSummary.textContent = '最近鉴权失败 ' + fails.length + ' 次 · 最新 '
+              + devTime(fails[0].ts);
+          }
         }
-        events.forEach(function (ev) {
-          var row = document.createElement('div');
-          row.className = 'pair-row';
-          var head = document.createElement('div');
-          head.className = 'pair-row-head';
-          var result = document.createElement('span');
-          result.textContent = ev.result === 'ok' ? '成功' : (ev.result === 'blocked' ? '已限速' : '失败');
-          result.style.color = ev.result === 'ok' ? '#8bc34a' : '#e06c75';
-          var label = document.createElement('span');
-          label.textContent = devTime(ev.ts) + ' · ' + (ev.kind || '') + '/' + (ev.action || '');
-          head.appendChild(result);
-          head.appendChild(label);
-          row.appendChild(head);
-          var meta = document.createElement('div');
-          meta.className = 'pair-row-meta';
-          meta.textContent = (ev.ip || '—') +
-            (ev.reason ? (' · ' + ev.reason) : '') +
-            (ev.detail ? (' · ' + ev.detail) : '');
-          row.appendChild(meta);
-          auditList.appendChild(row);
-        });
         pairDevCount.textContent = '共 ' + devices.length + ' 台设备';
         pairRemoveAll.disabled = !devices.length;
         pairHostHint.textContent = (all[0] && all[0].detail) || (all[1] && all[1].detail) || '';
       })
       .catch(function () { pairHostHint.textContent = '读取配对信息失败'; });
+  }
+
+  // 单一配对入口：点一下刷新并提示「等浏览器发起」，PIN 到了就出现在下面
+  if (pairHostStart) {
+    pairHostStart.addEventListener('click', function () {
+      pairHostHint.textContent = '等待浏览器发起配对…（在新设备上点「配对新设备」）';
+      loadPairInfo();
+    });
   }
 
   function startPairPoll() {
