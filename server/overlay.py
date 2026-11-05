@@ -27,7 +27,7 @@ from PySide6.QtCore import Qt, QTimer, QPointF, QEvent, QCoreApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QGraphicsDropShadowEffect, QLabel, QVBoxLayout, QWidget,
+    QApplication, QFrame, QLabel, QVBoxLayout, QWidget,
 )
 
 

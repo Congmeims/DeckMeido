@@ -27,7 +27,6 @@ from pydantic import BaseModel
 
 from .llm import LLMClient
 from . import authguard, audiomute, depcheck, i18n, memory, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
-from .session_store import set_title as _set_title
 from .session_store import store
 from . import session_store
 from .tts import TTS

@@ -24,13 +24,11 @@ import errno
 import io
 import os
 import shutil
-import subprocess
 import tarfile
 import threading
 import time
 import urllib.request
 import wave
-import zipfile
 from pathlib import Path
 
 # 模型署名：Apache-2.0 要求保留，界面上展示「语音识别」的地方一并显示
