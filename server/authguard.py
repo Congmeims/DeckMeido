@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import secrets
 import time
+from urllib.parse import urlsplit
 
 # 默认长度：12 位 Crockford Base32，约 60 bit（32^12 ≈ 2^60），
 # 足够挡住在线猜测，手抄与口述也不至于太长。
@@ -48,6 +49,31 @@ def token_eq(expected: str | None, provided: str | None) -> bool:
     a = hashlib.sha256(norm(expected).encode()).digest()
     b = hashlib.sha256(norm(provided).encode()).digest()
     return hmac.compare_digest(a, b)
+
+
+def same_origin(origin: str | None, host: str | None) -> bool:
+    """Cookie 认证的写操作要求同源，挡住跨站表单/脚本。
+
+    浏览器发跨站请求一定会带 Origin；命令行/旧客户端通常没有 Origin，
+    这时交给 Sec-Fetch-Site 判断（见 same_site）。
+    """
+    value = (origin or "").strip()
+    if not value:
+        return True
+    target = (host or "").strip()
+    if not target:
+        return False
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and parts.netloc.lower() == target.lower()
+
+
+def same_site(value: str | None) -> bool:
+    """Sec-Fetch-Site 只允许 same-origin / none（直接输入地址）。"""
+    site = (value or "").strip().lower()
+    return not site or site in ("same-origin", "none")
 
 
 # 失败尝试限速：只统计「令牌不对」，正常请求不占额度。
