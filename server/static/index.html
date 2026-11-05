@@ -8381,8 +8381,8 @@
   cfgRiEnabled.addEventListener('change', function () {
     if (!cfgRiEnabled.checked) return;
     var ok = window.confirm(
-      '开启后，局域网内任何拿到访问令牌的设备都能接管这台 Deck。\n' +
-      '请只在可信网络里使用，用完及时关闭。确定要开启吗？'
+      '开启后，局域网内任何持有访问令牌的设备都能接管这台 Deck，请只在可信网络使用。\n' +
+      '进入方式：在电脑上打开网页，点左侧 DeckMeido logo 开始接管。确定开启吗？'
     );
     if (!ok) cfgRiEnabled.checked = false;
   });
