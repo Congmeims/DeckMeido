@@ -425,7 +425,20 @@ function PromptEditModal({
 }) {
   const [draft, setDraft] = useState(initial);
   return (
-    <div style={{ width: 720, padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+    <div
+      style={{
+        // 模态在 Deck 1280 宽屏上原来固定 720，两侧留白明显、看着没拉满；
+        // 改成按视口算宽，同时留 64px 安全边（Steam 的模态外框不吃满整屏），
+        // 窄屏也不会溢出
+        width: "min(880px, calc(100vw - 64px))",
+        maxWidth: "100%",
+        boxSizing: "border-box",
+        padding: 16,
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+      }}
+    >
       <div style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>编辑提示词</div>
       <ImeTextArea
         value={draft}
@@ -455,19 +468,36 @@ function PromptEditModal({
           outline: "none",
         }}
       />
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-        <div style={{ width: 96 }}>
-          <DialogButton onClick={onCancel}>取消</DialogButton>
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          width: "100%",
+          boxSizing: "border-box",
+          // 两个按钮同宽同高、右对齐，和上面的文本框共用同一条右边线；
+          // 原来一个 96 一个 96 套原生 DialogButton，Steam 自带 min-width
+          // 会把窄盒子撑开，视觉上就错位了
+          justifyContent: "flex-end",
+          alignItems: "stretch",
+        }}
+      >
+        <div style={{ flex: "0 0 132px", maxWidth: 132 }}>
+          <ActionButton onClick={onCancel} description="取消" style={{ height: 40, minHeight: 40 }}>
+            取消
+          </ActionButton>
         </div>
-        <div style={{ width: 96 }}>
-          <DialogButton
+        <div style={{ flex: "0 0 132px", maxWidth: 132 }}>
+          <ActionButton
+            primary
+            description="保存"
+            style={{ height: 40, minHeight: 40 }}
             onClick={() => {
               onChange(draft);
               onDone();
             }}
           >
             保存
-          </DialogButton>
+          </ActionButton>
         </div>
       </div>
     </div>
