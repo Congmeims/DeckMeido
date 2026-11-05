@@ -1,7 +1,8 @@
 """访问令牌：生成、定长比较与强度约定。
 
-令牌在安装时随机生成，不再写死出厂口令。字母表去掉容易看错的
-0/o/1/l/i；校验时不分大小写，全大写输入也能连上。
+令牌在安装时随机生成，不再写死出厂口令。采用 Crockford Base32 字母表
+（0-9 与 A-Z 去掉 I/L/O/U），生成与校验都按这套规则归一化；校验时不分
+大小写，带连字符或空格的粘贴内容也能直接通过。
 """
 from __future__ import annotations
 
@@ -10,25 +11,39 @@ import hmac
 import secrets
 import time
 
-# 默认长度：16 位小写字母 + 数字，约有 2^79 种组合，足够挡住在线猜测
-TOKEN_LEN = 16
-ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"
+# 默认长度：12 位 Crockford Base32，约 60 bit（32^12 ≈ 2^60），
+# 足够挡住在线猜测，手抄与口述也不至于太长。
+TOKEN_LEN = 12
+ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 
 def gen_token(length: int = TOKEN_LEN) -> str:
-    """生成访问令牌，如 k7m2p9x4qw3n8r5t。"""
-    return "".join(secrets.choice(ALPHABET) for _ in range(length))
+    """生成访问令牌（存储为小写），如 7k3m9x4q2n8r。"""
+    return "".join(secrets.choice(ALPHABET) for _ in range(length)).lower()
 
 
 def norm(value: str | None) -> str:
-    """令牌统一按小写比较，输入不分大小写，容忍首尾空白。"""
-    return (value or "").strip().lower()
+    """令牌归一化：去空格/连字符、转大写、I/L→1、O→0，最后统一小写。
+
+    生成端与校验端都用这一套规则，所以粘贴 ``XXXX-XXXX-XXXX`` 或手抄时
+    把 0 写成 O、1 写成 I/L 都能通过。
+    """
+    s = "".join(ch for ch in (value or "").upper() if not ch.isspace() and ch != "-")
+    s = s.replace("I", "1").replace("L", "1").replace("O", "0")
+    return s.lower()
+
+
+def grouped(value: str | None, size: int = 4) -> str:
+    """展示用分组（大写）：每 ``size`` 位一组用连字符分开，如 ABCD-EFGH-JKMN。"""
+    t = norm(value).upper()
+    return "-".join(t[i:i + size] for i in range(0, len(t), size))
 
 
 def token_eq(expected: str | None, provided: str | None) -> bool:
     """定长比较两个令牌，避免按字符或长度差异猜出接近的令牌。
 
     先各自取 sha256 再比较，这样无论输入多长，比较耗时都基本一致。
+    归一化对两端同样生效，旧令牌（meido / 16 位 / 自定义）照旧可用。
     """
     a = hashlib.sha256(norm(expected).encode()).digest()
     b = hashlib.sha256(norm(provided).encode()).digest()
