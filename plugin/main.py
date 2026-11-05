@@ -3,7 +3,7 @@
 插件以 root 身份加载（见 plugin.json 的 flags），只做三件事：
 1. 从 gamescope 的 PipeWire 节点抓一帧当前游戏画面
 2. 转发 QAM 和本机 :18765 之间的对话（包括流式增量）
-3. 告诉 QAM 自己能不能用（后端在不在、token 读不读得到、画面能不能抓）
+3. 告诉 QAM 自己能不能用（后端在不在、配置文件读不读得到、画面能不能抓）
 
 推理逻辑一行都不在这里：全部复用 DeckMeido 已有的后端，
 插件只是"截图 + 转发 + 显示"。
@@ -132,11 +132,9 @@ def _resolve_port(server: dict) -> dict:
 
 
 def _load_server_cfg() -> dict:
-    """读后端的 [server] 段，拿 port 和 token
+    """读后端的 [server] 段（端口 / 局域网开关）
 
-    读不到 / 解析失败 / 没有 token 是三种不同的问题，不能一律报成「没有
-    token」：配置被写坏时（例如多行模板造成的 TOMLDecodeError）用户会去
-    找一个其实存在的 token。错误原文（带行号）留在 _SERVER_CFG_ERROR，
+    读不到或解析失败时把错误原文（带行号）留在 _SERVER_CFG_ERROR，
     由 get_status 的错误文案和日志原样带出。
     """
     global _SERVER_CFG_ERROR, _SERVER_CFG_LOGGED
@@ -165,8 +163,8 @@ def _load_server_cfg() -> dict:
 
 
 def _cfg_error_text() -> str:
-    """「为什么没有 token」：配置错误优先，否则才是真的缺 token"""
-    return _SERVER_CFG_ERROR or "配置里没有 token"
+    """配置文件读不到 / 写坏时的说明"""
+    return _SERVER_CFG_ERROR or "配置里没有 [server] 段"
 
 
 def _gamepad_from_core(core: dict) -> dict:
@@ -184,7 +182,7 @@ def _gamepad_from_core(core: dict) -> dict:
 # ---------- 插件状态目录 ----------
 #
 # 插件以 root 加载，但本机（QAM / 大屏）不再单独设解锁门：能加载插件就视为
-# 已解锁，访问后端所需的令牌由插件自己从后端配置读取，并通过 X-Token 发送。
+# 已解锁，插件与后端同机，走回环连接免鉴权（不再需要令牌）。
 # 这里只保留设备标识的落盘目录（decky.DECKY_PLUGIN_SETTINGS_DIR），
 # 老版本 Decky 没有该属性时退回 ~/.deckmeido。
 
@@ -826,9 +824,8 @@ async def _start_backend(port: int) -> tuple[bool, str]:
         return False, f"启动失败：{exc}"
     # 后端要加载模型、连设备，给足 40 秒
     cfg = _load_server_cfg()
-    token = str(cfg.get("token", "") or "")
     for _ in range(80):
-        core = await _core_http(port, token, "GET", "/api/status", timeout=2.0)
+        core = await _core_http(port, "GET", "/api/status", timeout=2.0)
         if core.get("ok"):
             if proc.returncode is not None:
                 pass    # 守卫让它自己退了、端口上是既有那份，属正常
@@ -1125,13 +1122,13 @@ async def grab_screenshot(node: str | None = None,
     return True, payload, False
 
 
-async def _desktop_screenshot(port: int, token: str) -> tuple[bool, str]:
+async def _desktop_screenshot(port: int) -> tuple[bool, str]:
     """桌面模式：插件自己没有抓帧能力，交给后端（spectacle/mss）那条路
 
     返回 (成功, base64 或错误说明)。后端给的是压缩过的 1280 宽 JPEG，
     和 gamescope 那条的产物一样，先落盘再交给 start_turn。
     """
-    r = await _core_http(port, token, "POST", "/api/screenshot",
+    r = await _core_http(port, "POST", "/api/screenshot",
                          timeout=25.0, body={})
     if not r["ok"]:
         return False, str(r.get("error") or "后端没有应答")
@@ -1421,16 +1418,15 @@ def _shot_url(path: str) -> str:
 
     后端给的 /shots/xxx 走回环；插件自己截的那张在 /tmp 下，交给后端落盘以后
     才会有 /shots/ 的地址。所以这里两种都认：以 / 开头的当后端静态路径，
-    其余的当本机文件路径。token 必须带上，静态图也走鉴权。
+    其余的当本机文件路径。回环访问免鉴权，不再携带令牌。
     """
     if not path:
         return ""
     cfg = _load_server_cfg()
     port = int(cfg.get("port", 18765))
-    token = str(cfg.get("token", "") or "")
     if path.startswith("/"):
-        return f"http://127.0.0.1:{port}{path}?token={token}"
-    return f"http://127.0.0.1:{port}/shots/local?path={quote(path)}&token={token}"
+        return f"http://127.0.0.1:{port}{path}"
+    return f"http://127.0.0.1:{port}/shots/local?path={quote(path)}"
 
 
 def _sync_thread(hist: list):
@@ -1463,14 +1459,15 @@ def _sync_thread(hist: list):
     _emit({"kind": "thread", "items": _THREAD})
 
 
-def _backend_url(port: int, token: str) -> str:
-    return f"ws://127.0.0.1:{port}/ws?token={token}"
+def _backend_url(port: int) -> str:
+    # 插件与后端同机，回环连接免鉴权，不需要令牌
+    return f"ws://127.0.0.1:{port}/ws"
 
 
-def _backend_addr() -> tuple[int, str]:
-    """从配置读 (port, token)：重连循环自己重建连接时要用"""
+def _backend_addr() -> int:
+    """从配置读端口：重连循环自己重建连接时要用"""
     cfg = _load_server_cfg()
-    return int(cfg.get("port", 18765)), str(cfg.get("token", "") or "").strip().lower()
+    return int(cfg.get("port", 18765))
 
 
 def _emit(msg: dict):
@@ -1692,8 +1689,8 @@ async def _reconnect(delay: float) -> _Backend | None:
     global _BACKEND
     await asyncio.sleep(delay)
     # 每次尝试都用新建的连接：上一条已经被 close 了，复用它只会立刻抛错
-    port, token = _backend_addr()
-    bk = _Backend(_backend_url(port, token))
+    port = _backend_addr()
+    bk = _Backend(_backend_url(port))
     try:
         await bk.open()
     except Exception as exc:
@@ -1716,13 +1713,10 @@ async def _ensure_backend() -> tuple[_Backend | None, str]:
     if not _config_path().exists():
         return None, f"找不到配置：{_config_path()}"
     port = int(cfg.get("port", 18765))
-    token = str(cfg.get("token", "") or "").strip().lower()
-    if not token:
-        return None, "后端配置里的 token 是空的，先在网页设置页生成一个"
     if _BACKEND and _READER and not _READER.done():
         return _BACKEND, ""
     await _drop_backend()
-    bk = _Backend(_backend_url(port, token))
+    bk = _Backend(_backend_url(port))
     try:
         await bk.open()
     except Exception as exc:
@@ -1774,15 +1768,13 @@ def _lan_ip() -> str:
     return private[0]
 
 
-async def _core_http(port: int, token: str, method: str, path: str,
+async def _core_http(port: int, method: str, path: str,
                      timeout: float = 5.0, body: dict | None = None) -> dict:
     """向后端的本机接口发一个请求，返回 {"ok": bool, "data": {...} | "error": str}
 
-    不走 ws：这类请求都只要一个结论，HTTP 一步拿到，也顺带验证了 token 是
-    后端认的（ws 握手失败时前端只会看到连不上）。
+    不走 ws：这类请求都只要一个结论，HTTP 一步拿到。插件与后端同机，
+    回环请求免鉴权，因此不再附带令牌头。
     """
-    if not token:
-        return {"ok": False, "error": _cfg_error_text()}
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
     except Exception as exc:
@@ -1797,7 +1789,6 @@ async def _core_http(port: int, token: str, method: str, path: str,
         req = (
             f"{method} {path} HTTP/1.1\r\n"
             f"Host: 127.0.0.1:{port}\r\n"
-            f"X-Token: {token}\r\n"
             f"{extra}"
             "Connection: close\r\n\r\n"
         ).encode() + payload
@@ -1829,18 +1820,18 @@ async def _core_http(port: int, token: str, method: str, path: str,
         return {"ok": False, "error": "返回内容不是 JSON"}
 
 
-async def _core_status(port: int, token: str) -> dict:
+async def _core_status(port: int) -> dict:
     """问一次后端自己的 /api/status，确认女仆核心活着（在不在、什么模式）
 
     get_status 是面板打开时第一个调用，Decky 会一直等着它返回，
     超时太长时后端没起来的话整个 QAM 都像卡死，所以只给 2 秒。
     """
-    return await _core_http(port, token, "GET", "/api/status", timeout=2.0)
+    return await _core_http(port, "GET", "/api/status", timeout=2.0)
 
 
-async def _core_prefs(port: int, token: str) -> dict:
+async def _core_prefs(port: int) -> dict:
     """读后端的偏好项（语音播报、带画面、版本号、当前模型），面板设置区要显示/切换这些"""
-    r = await _core_http(port, token, "GET", "/api/config", timeout=2.0)
+    r = await _core_http(port, "GET", "/api/config", timeout=2.0)
     if not r["ok"]:
         return {"ok": False, "error": r.get("error", ""), "tts": False,
                 "with_shot": True, "version": "", "model": ""}
@@ -1863,10 +1854,7 @@ async def _session_post(what: str, path: str) -> dict:
     """会话类操作共用的 POST：拿配置、确认后端活着、发请求"""
     cfg = _load_server_cfg()
     port = int(cfg.get("port", 18765))
-    token = str(cfg.get("token", "") or "").strip()
-    if not token:
-        return {"ok": False, "error": "后端配置里的 token 是空的"}
-    r = await _core_http(port, token, "POST", path, timeout=8.0, body={})
+    r = await _core_http(port, "POST", path, timeout=8.0, body={})
     if not r["ok"]:
         # 后端在跑但 reject 了，和根本没跑是两回事，错误里带上原始原因
         decky.logger.error(f"{what} 失败：{r.get('error')}")
@@ -1885,24 +1873,23 @@ class Plugin:
         """QAM 打开时先问一次：后端连得上吗、截图能不能用
 
         本机面板不再需要解锁；这里只报能力，不含画面或对话内容。
-        读不到后端配置 / 令牌时通过 config_error 给出明确原因。
+        读不到后端配置时通过 config_error 给出明确原因。
         """
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "").strip()
         node, why = await _gamescope_pw_node()
-        core = await _core_status(port, token)
+        core = await _core_status(port)
         gamepad = _gamepad_from_core(core)
         # 后端在、但插件这边没连着（比如后端重启过）就顺手补一条：
         # 换序这类全局广播全靠这条长连接，断了就静默丢消息
         if core.get("ok") and _BACKEND is None:
             await self._stay_connected()
-        prefs = await _core_prefs(port, token) if core.get("ok") else {}
+        prefs = await _core_prefs(port) if core.get("ok") else {}
         # 更新检测走 /api/version 里的缓存结果（后端启动时查过一次，之后每天刷新），
         # 设置页只是展示，不在这条路径上现发网络请求
         ver = {}
         if core.get("ok"):
-            vr = await _core_http(port, token, "GET", "/api/version", timeout=3.0)
+            vr = await _core_http(port, "GET", "/api/version", timeout=3.0)
             if vr.get("ok"):
                 ver = vr.get("data") or {}
         upd = ver.get("update") or {}
@@ -1939,9 +1926,6 @@ class Plugin:
             "install_dir": str(INSTALL_DIR),
             "config_ok": _config_path().exists(),
             "port": port,
-            # token 只在本机面板 / 大屏设置里展示给用户抄到别的设备，
-            # 不在任何画面或对话内容里出现
-            "token_ok": bool(str(cfg.get("token", "") or "").strip()),
             "gamescope": node is not None,
             # 画面可用性：游戏模式看 gamescope 节点 + gst；桌面模式插件自己不
             # 抓帧，改由后端 spectacle/mss 抓，所以看「后端在不在 + spectacle
@@ -1953,11 +1937,10 @@ class Plugin:
             "proxy": "websockets" if _ws_connect else "raw",
             # 面板第二行显示成「192.168.x.x:18765」，别的设备照这个地址连
             "ip": lan_ip,
-            # 「局域网访问」区块：地址与令牌，前端分组展示并提供复制
+            # 「局域网访问」区块：地址，前端展示并提供复制
             # lan_enable=false 时只监听回环，前端把地址标成「仅本机」并给出开关提示
             "lan_enable": bool(cfg.get("lan_enable", False)),
             "lan_url": f"http://{lan_ip or '127.0.0.1'}:{port}",
-            "lan_token": token,
             # 掌机状态行：有人尝试配对 / 连续鉴权失败时显示一句提示
             "security_note": str((core.get("data") or {}).get("security_note") or ""),
             "pending_pair": int((core.get("data") or {}).get("pending_pair") or 0),
@@ -1998,8 +1981,8 @@ class Plugin:
             # 后端没连上）时保持 None，前端显示「未知」而不是假设可用。
             "gamepad_ok": gamepad.get("ok"),
             "gamepad_reason": gamepad.get("reason", ""),
-            # 读不到后端配置 / 令牌：前端据此显示明确原因，不再让用户猜口令
-            "config_error": "" if token else _cfg_error_text(),
+            # 读不到后端配置：前端据此显示明确原因
+            "config_error": "" if cfg else _cfg_error_text(),
         }
 
     async def pair_info(self) -> dict:
@@ -2010,11 +1993,8 @@ class Plugin:
         """
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = _load_token()
-        if not token:
-            return {"ok": False, "error": _cfg_error_text()}
-        pending = await _core_http(port, token, "GET", "/api/pair/pending")
-        devices = await _core_http(port, token, "GET", "/api/devices")
+        pending = await _core_http(port, "GET", "/api/pair/pending")
+        devices = await _core_http(port, "GET", "/api/devices")
         return {
             "ok": bool(pending.get("ok")),
             "sessions": (pending.get("data") or {}).get("sessions") or [],
@@ -2025,30 +2005,30 @@ class Plugin:
 
     async def pair_refresh(self, pair_id: str) -> dict:
         cfg = _load_server_cfg()
-        return await _core_http(int(cfg.get("port", 18765)), _load_token(),
+        return await _core_http(int(cfg.get("port", 18765)),
                                 "POST", "/api/pair/refresh", body={"pair_id": pair_id})
 
     async def pair_decide(self, pair_id: str, allow: bool) -> dict:
         cfg = _load_server_cfg()
-        return await _core_http(int(cfg.get("port", 18765)), _load_token(),
+        return await _core_http(int(cfg.get("port", 18765)),
                                 "POST", "/api/pair/decision",
                                 body={"pair_id": pair_id, "allow": bool(allow)})
 
     async def pair_remove(self, device_id: str) -> dict:
         cfg = _load_server_cfg()
-        return await _core_http(int(cfg.get("port", 18765)), _load_token(),
+        return await _core_http(int(cfg.get("port", 18765)),
                                 "POST", "/api/devices/remove",
                                 body={"device_id": device_id})
 
     async def pair_rename(self, device_id: str, name: str) -> dict:
         cfg = _load_server_cfg()
-        return await _core_http(int(cfg.get("port", 18765)), _load_token(),
+        return await _core_http(int(cfg.get("port", 18765)),
                                 "POST", "/api/devices/rename",
                                 body={"device_id": device_id, "name": name})
 
     async def pair_remove_all(self) -> dict:
         cfg = _load_server_cfg()
-        return await _core_http(int(cfg.get("port", 18765)), _load_token(),
+        return await _core_http(int(cfg.get("port", 18765)),
                                 "POST", "/api/devices/remove_all")
 
     async def session_open(self) -> dict:
@@ -2084,12 +2064,9 @@ class Plugin:
         """
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "").strip()
-        if not token:
-            return {"ok": False, "error": "后端配置里的 token 是空的，先在网页设置页生成一个"}
         # 用户显式点「启动」：清掉停止标记，之后的自动拉起才恢复
         _mark_core_stopped(False)
-        core = await _core_http(port, token, "GET", "/api/status", timeout=2.0)
+        core = await _core_http(port, "GET", "/api/status", timeout=2.0)
         if core.get("ok"):
             return {"ok": True, "already": True}
         decky.logger.info("QAM 拉起后端 :%s", port)
@@ -2114,8 +2091,7 @@ class Plugin:
         """切语音播报：交给后端写入 [tts] enable，热更新、不用重启"""
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "").strip()
-        r = await _core_http(port, token, "POST",
+        r = await _core_http(port, "POST",
                              f"/api/tts?enabled={'true' if enabled else 'false'}")
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
@@ -2125,8 +2101,7 @@ class Plugin:
         """切「带画面询问」：写进后端 [agent] with_shot，面板重开后仍是这个值"""
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "").strip()
-        r = await _core_http(port, token, "POST", "/api/config",
+        r = await _core_http(port, "POST", "/api/config",
                              body={"with_shot": bool(enabled)})
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
@@ -2146,8 +2121,7 @@ class Plugin:
             return {"ok": False, "error": "端口需为 1024-65535 之间的整数"}
         cfg = _load_server_cfg()
         cur_port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "").strip()
-        r = await _core_http(cur_port, token, "POST", "/api/config",
+        r = await _core_http(cur_port, "POST", "/api/config",
                              body={"port": value})
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
@@ -2159,8 +2133,7 @@ class Plugin:
         """切语音输入：写后端 [stt] enable，关掉时后端顺手释放识别模型"""
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "").strip()
-        r = await _core_http(port, token, "POST",
+        r = await _core_http(port, "POST",
                              f"/api/stt/toggle?enabled={'true' if enabled else 'false'}")
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
@@ -2170,8 +2143,7 @@ class Plugin:
         """切「录音时静音外放」：写后端 [stt] duck_output，热更新"""
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "").strip()
-        r = await _core_http(port, token, "POST", "/api/config",
+        r = await _core_http(port, "POST", "/api/config",
                              body={"stt_duck_output": bool(enabled)})
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
@@ -2187,7 +2159,6 @@ class Plugin:
         try:
             cfg = _load_server_cfg()
             r = await _core_http(int(cfg.get("port", 18765)),
-                                 str(cfg.get("token", "") or "").strip(),
                                  "POST", f"/api/stt/duck?on={'true' if on else 'false'}",
                                  timeout=3.0)
             return {"ok": True, **(r.get("data") or {})}
@@ -2198,7 +2169,6 @@ class Plugin:
         """读「截屏询问」的提示词模板（存在后端配置里，网页设置页改的也是这份）"""
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
-                             str(cfg.get("token", "") or "").strip(),
                              "GET", "/api/ask-template")
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "读取失败"}
@@ -2215,8 +2185,7 @@ class Plugin:
         """
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "").strip()
-        cur = await _core_http(port, token, "GET", "/api/config", timeout=3.0)
+        cur = await _core_http(port, "GET", "/api/config", timeout=3.0)
         if not cur["ok"]:
             return {"ok": False, "error": cur.get("error") or "读不到后端配置", "model": ""}
         return {"ok": True, "model": str((cur.get("data") or {}).get("model") or "")}
@@ -2225,10 +2194,9 @@ class Plugin:
         """问服务商要模型列表：慢就放弃，让下拉菜单保持「只有当前模型」"""
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "").strip()
-        cur = await _core_http(port, token, "GET", "/api/config", timeout=3.0)
+        cur = await _core_http(port, "GET", "/api/config", timeout=3.0)
         model = str((cur.get("data") or {}).get("model") or "") if cur["ok"] else ""
-        r = await _core_http(port, token, "GET", "/api/models", timeout=8.0)
+        r = await _core_http(port, "GET", "/api/models", timeout=8.0)
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "拉取模型列表失败", "model": model}
         models = [str(m) for m in ((r.get("data") or {}).get("models") or []) if str(m).strip()]
@@ -2244,7 +2212,6 @@ class Plugin:
             return {"ok": False, "error": "模型名不能为空"}
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
-                             str(cfg.get("token", "") or "").strip(),
                              "POST", "/api/config", timeout=15.0, body={"model": name})
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
@@ -2254,7 +2221,6 @@ class Plugin:
         """改「截屏询问」的提示词模板：传空串表示恢复默认"""
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
-                             str(cfg.get("token", "") or "").strip(),
                              "POST", "/api/ask-template", body={"text": text})
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
@@ -2264,7 +2230,6 @@ class Plugin:
         """读「截图翻译」的提示词模板（存在后端配置里，真正用于翻译请求）"""
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
-                             str(cfg.get("token", "") or "").strip(),
                              "GET", "/api/translate-template")
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "读取失败"}
@@ -2276,7 +2241,6 @@ class Plugin:
         """改「截图翻译」的提示词模板：传空串表示恢复默认"""
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
-                             str(cfg.get("token", "") or "").strip(),
                              "POST", "/api/translate-template", body={"text": text})
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "后端没有接受这次修改"}
@@ -2286,7 +2250,6 @@ class Plugin:
         """语音输入可用性：依赖、模型、录音设备三者都齐了按钮才亮"""
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
-                             str(cfg.get("token", "") or "").strip(),
                              "GET", "/api/stt", timeout=3.0)
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "读不到语音状态"}
@@ -2299,7 +2262,6 @@ class Plugin:
         """
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
-                             str(cfg.get("token", "") or "").strip(),
                              "POST", "/api/stt/download", timeout=15.0)
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "模型下载启动失败"}
@@ -2309,7 +2271,6 @@ class Plugin:
         """取消模型下载：清掉半包，状态回到 cancelled"""
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
-                             str(cfg.get("token", "") or "").strip(),
                              "POST", "/api/stt/download/cancel", timeout=15.0)
         if not r["ok"]:
             return {"ok": False, "error": r.get("error") or "取消失败"}
@@ -2329,9 +2290,6 @@ class Plugin:
             return {"ok": False, "error": "没有录到声音"}
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "").strip()
-        if not token:
-            return {"ok": False, "error": _cfg_error_text()}
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
         except Exception as exc:
@@ -2340,7 +2298,6 @@ class Plugin:
             head = (
                 f"POST /api/stt/transcribe HTTP/1.1\r\n"
                 f"Host: 127.0.0.1:{port}\r\n"
-                f"X-Token: {token}\r\n"
                 f"Content-Type: audio/wav\r\n"
                 f"Content-Length: {len(wav)}\r\n"
                 "Connection: close\r\n\r\n"
@@ -2383,14 +2340,11 @@ class Plugin:
         """
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "").strip()
-        if not token:
-            return {"ok": False, "error": "后端配置里的 token 是空的，先在网页设置页生成一个"}
         _mark_core_stopped(False)
-        core = await _core_http(port, token, "GET", "/api/status", timeout=2.0)
+        core = await _core_http(port, "GET", "/api/status", timeout=2.0)
         if core.get("ok"):
             await self._stay_connected()
-            ver = await _core_http(port, token, "GET", "/api/version", timeout=3.0)
+            ver = await _core_http(port, "GET", "/api/version", timeout=3.0)
             return {"ok": True, "already": True,
                     "version": str((ver.get("data") or {}).get("version") or "")}
         decky.logger.info("大屏页启动核心 :%s", port)
@@ -2400,7 +2354,7 @@ class Plugin:
             return {"ok": False, "error": why}
         await _drop_backend()
         await self._stay_connected()
-        ver = await _core_http(port, token, "GET", "/api/version", timeout=3.0)
+        ver = await _core_http(port, "GET", "/api/version", timeout=3.0)
         return {"ok": True, "already": False,
                 "version": str((ver.get("data") or {}).get("version") or "")}
 
@@ -2419,14 +2373,13 @@ class Plugin:
             return {"ok": False, "error": "核心已停止，先点「启动」"}
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "").strip()
 
         # 收掉旧进程（含外层 runuser 包装），再按启动时那套命令重放
         await _stop_backend(port)
         ok, why = await _start_backend(port)
         if not ok:
             return {"ok": False, "error": f"重启失败：{why}"}
-        back = await _core_http(port, token, "GET", "/api/version", timeout=3.0)
+        back = await _core_http(port, "GET", "/api/version", timeout=3.0)
         ver = str((back.get("data") or {}).get("version") or "") if back["ok"] else ""
         return {"ok": True, "version": ver}
 
@@ -2461,14 +2414,13 @@ class Plugin:
             await asyncio.sleep(1.2)
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "").strip()
         # 先按模式分流：有 gamescope 节点才是游戏模式，插件自己从 PipeWire 抓；
         # 桌面模式（含从桌面进 Big Picture）没有节点，交给后端的 spectacle/mss
         node, node_why = await _gamescope_pw_node()
         if node:
             ok, payload, need_poke = await grab_screenshot(node, node_why)
         else:
-            ok, payload = await _desktop_screenshot(port, token)
+            ok, payload = await _desktop_screenshot(port)
             need_poke = False
         if not ok:
             if need_poke:
@@ -2608,7 +2560,6 @@ class Plugin:
         """
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "")
         err = ""
         writer = None
         try:
@@ -2616,7 +2567,6 @@ class Plugin:
             req = (
                 "POST /api/cancel?client=qam&device=deck HTTP/1.1\r\n"
                 f"Host: 127.0.0.1:{port}\r\n"
-                f"X-Token: {token}\r\n"
                 "Content-Length: 0\r\n"
                 "Connection: close\r\n\r\n"
             )
@@ -2671,8 +2621,7 @@ class Plugin:
             return
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
-        token = str(cfg.get("token", "") or "").strip()
-        if not token:
+        if not cfg:
             decky.logger.warning(f"自动启动后端跳过：{_cfg_error_text()}")
             return
         for attempt in range(1, retries + 1):
@@ -2681,7 +2630,7 @@ class Plugin:
             if _core_stopped():
                 decky.logger.info("自动启动后端中止：用户已点过「关闭核心」")
                 return
-            core = await _core_http(port, token, "GET", "/api/status", timeout=2.0)
+            core = await _core_http(port, "GET", "/api/status", timeout=2.0)
             if core.get("ok"):
                 decky.logger.info(f"后端已在运行 :{port}，无需自动启动")
                 await self._stay_connected()

@@ -10,7 +10,7 @@ import {
   TextField,
   ToggleField,
 } from "@decky/ui";
-import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, TEXT, copyText, groupToken } from "./ui";
+import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, TEXT, copyText } from "./ui";
 import { statusLineFor } from "./statusLine";
 import { bumpOnce, stepTab } from "./tabNav";
 import { applyPadOrder, steamClient } from "./padOrder";
@@ -625,7 +625,6 @@ function useQamSession() {
       const st = await refreshStatus();
       if (!st) throw new Error("插件后端未就绪");
       if (!st.config_ok) throw new Error(`找不到配置：${st.install_dir}/server/config.toml`);
-      if (!st.token_ok) throw new Error("后端配置里的 token 是空的，先在网页设置页生成一个");
 
       let shotPath: string | null = null;
       let game: {
@@ -1255,11 +1254,49 @@ export default function QamScreen() {
     </PanelSection>
   );
 
+  // 页签两端的 L1/R1 小提示：只做视觉指引，不参与焦点，也不挤压页签文字。
+  // 视觉语言与大屏页头的 KeyCap 一致（白底黑字小键帽），QAM 里缩到 8.5px，
+  // 在 300px 宽的面板里也不换行、不盖住页签。
+  const padHint = (arrow: string, label: string) => (
+    <span
+      aria-hidden
+      style={{
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        gap: 2,
+        height: TAB_H,
+        whiteSpace: "nowrap",
+        userSelect: "none",
+        color: "rgba(139,146,154,.9)",
+        fontSize: 9.5,
+        lineHeight: 1,
+      }}
+    >
+      {arrow}
+      <span
+        style={{
+          flexShrink: 0,
+          background: "#fff",
+          color: "#000",
+          fontWeight: 700,
+          fontSize: 8.5,
+          lineHeight: 1.3,
+          borderRadius: 3,
+          padding: "0 3px",
+        }}
+      >
+        {label}
+      </span>
+    </span>
+  );
+
   const tabRow = (
     <Focusable
       style={{ display: "flex", gap: 6, width: "100%", height: TAB_H, flexShrink: 0 }}
       onCancelActionDescription="返回"
     >
+      {padHint("‹", "L1")}
       {TABS.map((name, i) => (
         <Focusable
           key={name}
@@ -1285,6 +1322,7 @@ export default function QamScreen() {
           {name}
         </Focusable>
       ))}
+      {padHint("R1", "›")}
     </Focusable>
   );
 
@@ -1310,7 +1348,7 @@ export default function QamScreen() {
     );
   }
 
-  // 读不到后端配置 / 令牌：只留明确的错误卡片，不再让用户猜口令
+  // 读不到后端配置：只留明确的错误卡片，不再让用户猜口令
   if (configError) {
     return shell(
       <>
@@ -1666,10 +1704,10 @@ export default function QamScreen() {
             paddingRight: 2,
           }}
         >
-          {/* 局域网访问：地址与令牌都从这里拿，别的设备照着填 */}
+          {/* 局域网访问：只展示地址；鉴权走设备配对 PIN，不再有令牌 */}
           <Card title="局域网访问">
             <div style={{ fontSize: 11, color: DIM, lineHeight: 1.5 }}>
-              手机 / 平板 / 电脑浏览器连这个地址；令牌每 4 位一组，输入时可带可不带连字符。
+              手机 / 平板 / 电脑浏览器打开这个地址，按掌机上的 PIN 配对一次即可。
             </div>
             <div style={{ fontSize: 12, color: TEXT, wordBreak: "break-all" }}>
               {s.status?.lan_url || "—"}
@@ -1681,25 +1719,6 @@ export default function QamScreen() {
               description="复制局域网地址"
             >
               复制地址
-            </Btn>
-            <div
-              style={{
-                fontSize: 14,
-                color: TEXT,
-                fontFamily: "monospace",
-                letterSpacing: 1,
-                wordBreak: "break-all",
-              }}
-            >
-              {groupToken(s.status?.lan_token || "") || "—"}
-            </div>
-            <Btn
-              height={26}
-              size={11}
-              onClick={() => void copyText(groupToken(s.status?.lan_token || ""))}
-              description="复制访问令牌"
-            >
-              复制令牌
             </Btn>
             <div style={{ fontSize: 11, color: DIM }}>
               当前端口 {s.status?.port ?? "—"}（改后需重启后端）

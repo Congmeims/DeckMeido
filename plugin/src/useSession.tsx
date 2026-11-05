@@ -20,7 +20,6 @@ export type Status = {
   install_dir: string;
   config_ok: boolean;
   port: number;
-  token_ok: boolean;
   gamescope: boolean;
   capture_ok: boolean;
   capture_reason: string;
@@ -58,11 +57,10 @@ export type Status = {
   game_confidence: string;
   game_ts: number;
   version: string;
-  // 读不到后端配置 / 令牌时的明确原因（空串表示正常）
+  // 读不到后端配置时的明确原因（空串表示正常）
   config_error: string;
-  // 局域网访问：地址与访问令牌（设置页展示、复制用）
+  // 局域网访问：地址（设置页展示、复制用）
   lan_url: string;
-  lan_token: string;
   // lan_enable=false 时只监听 127.0.0.1，设置页据此显示「仅本机」
   lan_enable?: boolean;
   // 掌机状态行：有人尝试配对 / 连续鉴权失败时的提示，空串表示正常
@@ -388,7 +386,6 @@ export function useSession() {
       const st = await refreshStatus();
       if (!st) throw new Error("插件后端未就绪");
       if (!st.config_ok) throw new Error(`找不到配置：${st.install_dir}/server/config.toml`);
-      if (!st.token_ok) throw new Error("后端配置里的 token 是空的，先在网页设置页生成一个");
 
       let shotPath: string | null = null;
       let game: {

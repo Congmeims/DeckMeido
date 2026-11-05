@@ -600,7 +600,7 @@ export default function BigScreen() {
     void s.loadModels();
   }, [tab]);
 
-  // 读不到后端配置 / 令牌：显示明确原因，不再弹「需要访问令牌」
+  // 读不到后端配置：显示明确原因
   const configError = s.status?.config_error || "";
   const ready = !!s.status && !configError;
   const coreRunning = !!s.status?.core_ok;
