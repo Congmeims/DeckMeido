@@ -170,8 +170,25 @@ class _Worker(QThread):
             self.result.emit(exc)
 
 
+# 活跃的后台线程：退出前必须等它们结束。
+# QThread 在 QApplication 析构时仍在运行，Qt 会直接 fatal abort（SIGABRT），
+# Python 层 try/except 拦不住。实测崩溃路径就是「点重启核心 → 立刻点退出」：
+# 重启线程还在等后端应答，进程已经在拆 QApplication 了。
+_workers: list[_Worker] = []
+_quitting = False
+
+
 def run_worker(fn, on_result, parent) -> None:
     worker = _Worker(fn, parent)
+    _workers.append(worker)
+
+    def _finished() -> None:
+        try:
+            _workers.remove(worker)
+        except ValueError:
+            pass
+
+    worker.finished.connect(_finished)
     worker.result.connect(on_result)
     worker.finished.connect(worker.deleteLater)
     worker.start()
@@ -582,7 +599,7 @@ def main() -> int:
         # cancel() 只负责发取消信号，阻塞在子进程管道上的轮次未必立刻收尾；
         # 给 6 秒观察窗口，仍未结束就如实提示用户去点「重启」
         deadline = time.monotonic() + 6
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and not _quitting:
             try:
                 if not api_json("/api/status", timeout=2.0).get("running"):
                     return ("ok", "已终止当前操作。")
@@ -620,7 +637,7 @@ def main() -> int:
             print(f"[DeckMeido] 停止旧核心失败：{exc}", file=sys.stderr)
             return False
         for _ in range(80):
-            if _listener_on_port(PORT) is None:
+            if _quitting or _listener_on_port(PORT) is None:
                 return True
             time.sleep(0.1)
         try:
@@ -632,14 +649,21 @@ def main() -> int:
     def _restart_work():
         restart_state["running"] = True
         try:
+            if _quitting:
+                return RuntimeError("客户端正在退出，已取消重启。")
             if not _stop_for_restart():
                 return RuntimeError("旧核心没有退出，重启已中止。")
+            if _quitting:
+                return RuntimeError("客户端正在退出，已取消重启。")
             proc = _start_backend()
             if proc is None:
                 return RuntimeError(f"拉起新核心失败，详见 {BACKEND_LOG}。")
             for _ in range(20):
                 if backend_alive(timeout=1.0):
                     return proc
+                if _quitting:
+                    # 退出时不要再等新核心，否则线程会活过 QApplication 的析构
+                    return RuntimeError("客户端正在退出，已取消等待新核心。")
                 time.sleep(0.5)
             return RuntimeError(f"新核心 10 秒内没有应答，详见 {BACKEND_LOG}。")
         finally:
@@ -753,6 +777,13 @@ def main() -> int:
     view.installEventFilter(watcher)
 
     def on_quit() -> None:
+        global _quitting
+        # 先让后台线程收尾，再拆 Qt 对象：活跃的 QThread 被析构会 abort
+        _quitting = True
+        deadline = time.monotonic() + 3.0
+        for w in list(_workers):
+            left = max(1, int((deadline - time.monotonic()) * 1000))
+            w.wait(left)
         tray.hide()
         # 客户端是唯一入口，退出时把自己拉起的后端一并收走（后端会再收掉遮罩），
         # 否则下次启动就成了「旧后端还在跑、新客户端连过去」的混乱状态
