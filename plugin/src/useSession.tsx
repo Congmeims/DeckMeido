@@ -65,7 +65,7 @@ export type Delta =
   | { kind: "delta"; text: string }
   | { kind: "final"; text: string; cancelled?: boolean }
   | { kind: "tool"; text: string }
-  | { kind: "status"; running: boolean }
+  | { kind: "status"; running: boolean; since?: number }
   | { kind: "pad_order"; action: "to1p" | "revert" }
   | { kind: "thread"; items: Item[] };
 
@@ -136,6 +136,8 @@ export function useSession() {
 
   const curRef = useRef("");
   const busyRef = useRef(false);
+  // 最近一次「用户主动终止」的时间（秒）。用来过滤后端迟到的旧 running=true
+  const cancelAtRef = useRef(0);
 
   const setRunningAction = (a: ActionKind) => {
     activeAction = a;
@@ -437,6 +439,7 @@ export function useSession() {
   };
 
   const cancel = async () => {
+    cancelAtRef.current = Date.now() / 1000;
     setBusyBoth(false);
     setRunningAction("");
     setActivity("");
@@ -669,13 +672,20 @@ export function useSession() {
         return;
       }
       if (msg.kind === "status") {
+        // since 是后端记的「这一轮什么时候开始的」时间戳（秒）。
+        // 用户刚点了终止时，后端可能还排着一条旧的 running=true 广播；
+        // 只要它的开始时间不晚于我们终止的时间，就属于已经掐掉的那一轮，
+        // 不能把思考指示重新点亮。
+        const since = Number(msg.since || 0);
         if (msg.running && !busyRef.current) {
+          if (since > 0 && since <= cancelAtRef.current) return;
           // 可能是别的端已经发起了一轮；大屏页打开后要接着显示这轮的状态
           setBusyBoth(true);
         } else if (!msg.running && busyRef.current) {
+          // 后端明确说停了：不管是不是我们点的终止，指示都必须灭
           setBusyBoth(false);
           setRunningAction("");
-          fail("BACKEND_DOWN", "这一轮没有收到答复，可能是后端断开了");
+          if (!cancelAtRef.current) fail("BACKEND_DOWN", "这一轮没有收到答复，可能是后端断开了");
         }
         return;
       }

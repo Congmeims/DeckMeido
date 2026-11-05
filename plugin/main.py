@@ -1696,6 +1696,8 @@ _LAST_REPLY = ""     # 本轮确定下来的完整正文
 _FINAL_EVENT = asyncio.Event()
 # 本端这一轮是否正在跑
 _STREAM_RUNNING = False
+# 这一轮在后端开始的时刻（秒），前端用来过滤「终止后才迟到的旧状态」
+_STREAM_SINCE = 0.0
 # 本端这一轮从发起到收尾的锁：连着点两次「发送」会各发一条 chat，
 # 两条流共用 _ACC 和 _FINAL_EVENT，正文会串成一团
 _TURN_LOCK = asyncio.Lock()
@@ -1858,13 +1860,14 @@ def _finalize(cancelled: bool = False):
     status.running 不能当收尾依据：current_task 在回复广播之前就被置空，
     那一刻正文还没到。
     """
-    global _LAST_REPLY, _STREAM_RUNNING, _TURN_SHOT_PATH
+    global _LAST_REPLY, _STREAM_RUNNING, _STREAM_SINCE, _TURN_SHOT_PATH
     # 同一轮可能被两条路径冻结（正常收尾一条，连接断开兜底一条）：
     # 已经冻结过就别重复发 final，也别再动锁
     if _FINAL_EVENT.is_set():
         return
     _LAST_REPLY = _ACC
     _STREAM_RUNNING = False
+    _STREAM_SINCE = 0.0
     # 这一轮结束了，本地那张图不再回落给别的端的提问
     _TURN_SHOT_PATH = ""
     _emit({"kind": "final", "text": _ACC, "cancelled": cancelled})
@@ -1884,7 +1887,7 @@ async def _read_loop(bk: _Backend):
     的消息都静默丢失。现在断线后原地退避重连，重连上立刻重新拉一次 history
     对齐，并把本端没等到收尾的那一轮标成中断（它的 final 永远等不到了）。
     """
-    global _ACC, _BACKEND, _STREAM_RUNNING
+    global _ACC, _BACKEND, _STREAM_RUNNING, _STREAM_SINCE
     delay = 1.0
     while True:
         try:
@@ -1929,10 +1932,17 @@ async def _read_loop(bk: _Backend):
             continue
         if typ == "status":
             # 状态广播不带 sid（它在改配置时也会发），所以放在 sid 过滤之前
-            run = bool((msg.get("data") or {}).get("running"))
+            data = msg.get("data") or {}
+            run = bool(data.get("running"))
             # 记下来：重连/换到别的端开会话时，前端靠它决定要不要弹「正在思考」
             _STREAM_RUNNING = run
-            _emit({"kind": "status", "running": run})
+            if run:
+                _STREAM_SINCE = float(data.get("running_since") or 0)
+            else:
+                _STREAM_SINCE = 0.0
+            # 开始时间也一起带上：前端刚点过终止时，靠它识别「这是旧那轮的迟到状态」，
+            # 避免思考指示灭掉又被一条陈旧 running=true 点亮
+            _emit({"kind": "status", "running": run, "since": _STREAM_SINCE})
             continue
         if typ == "pad_order":
             # 虚拟手柄的换序请求：全局广播、不属于某一轮，所以也要放在 sid 过滤前。
@@ -2319,7 +2329,7 @@ class Plugin:
             _emit({"kind": "thread", "items": _THREAD})
         # 面板重开时后端可能正在跑一轮（别端发起的）：状态得补一次，
         # 否则界面上什么提示都没有，用户会以为卡住了
-        _emit({"kind": "status", "running": _STREAM_RUNNING})
+        _emit({"kind": "status", "running": _STREAM_RUNNING, "since": _STREAM_SINCE})
         return {"ok": True}
 
     async def start_backend(self, ticket: str = "") -> dict:
@@ -2769,7 +2779,7 @@ class Plugin:
         """
         decky.logger.info(f"start_turn 被调用：{len(text or '')} 字，图 {shot or '(无)'}")
         _require(ticket, "start_turn")
-        global _ACC, _LAST_REPLY, _STREAM_RUNNING, _TURN_SHOT_PATH
+        global _ACC, _LAST_REPLY, _STREAM_RUNNING, _STREAM_SINCE, _TURN_SHOT_PATH
         text = str(text or "").strip()
         if not text:
             return {"ok": False, "error": "问题是空的"}
@@ -2897,6 +2907,11 @@ class Plugin:
             # 就地冻结，别让面板一直转圈
             decky.logger.warning(f"/api/cancel 失败：{err}")
             _finalize(cancelled=True)
+        else:
+            # 终止请求已受理：先把本端状态熄掉，重挂面板/读缓存时不会再点亮
+            global _STREAM_RUNNING, _STREAM_SINCE
+            _STREAM_RUNNING = False
+            _STREAM_SINCE = 0.0
         return {"ok": not err, "error": err}
 
     async def _probe_log(self, text: str) -> bool:
