@@ -57,7 +57,22 @@ IDLE_UNLOAD_SEC = 600
 
 
 class STTError(RuntimeError):
-    """语音识别相关的可预期错误（没装依赖、模型没下载、音频坏了）"""
+    """语音识别相关的可预期错误（没装依赖、模型没下载、音频坏了）
+
+    kind 用来把下载失败分个类，前端按类别给「网络 / 磁盘 / 权限 / 解压」提示，
+    而不是把所有失败都笼统说成「模型下载失败」。
+    """
+
+    def __init__(self, message: str, kind: str = "general"):
+        super().__init__(message)
+        self.kind = kind
+
+
+class STTCancelled(STTError):
+    """用户主动取消下载（不是错误，前端只把状态收回去）"""
+
+    def __init__(self, message: str = "已取消下载"):
+        super().__init__(message, kind="cancelled")
 
 
 def _resolve_model_root(base: Path) -> Path:
@@ -85,6 +100,23 @@ class STT:
         self._lock = threading.Lock()
         self._last_used = 0.0
         self._ready_path: Path | None = None
+        # 模型下载任务：后台线程 + 可查询进度。前端不再被一次 600 秒的
+        # 同步请求挂住，也能在下载中途取消。
+        self._dl_lock = threading.Lock()
+        self._dl_thread: threading.Thread | None = None
+        self._dl_cancel = False
+        self._dl = {
+            "state": "idle",  # idle / downloading / extracting / done / error / cancelled
+            "done": 0,
+            "total": -1,
+            "percent": 0.0,
+            "file": "",
+            "phase": "",
+            "error": "",
+            "error_kind": "",
+            "started_at": 0.0,
+            "updated_at": 0.0,
+        }
 
     # ---------- 状态 ----------
 
@@ -110,14 +142,113 @@ class STT:
             "model": self.model_ready(),
             "model_root": str(self.model_root),
             "attribution": ATTRIBUTION,
+            "download": self.download_status(),
         }
+
+    # ---------- 下载任务 ----------
+
+    def download_status(self) -> dict:
+        with self._dl_lock:
+            data = dict(self._dl)
+            data["running"] = bool(self._dl_thread and self._dl_thread.is_alive())
+            data["cancellable"] = data["state"] in ("downloading", "extracting")
+        return data
+
+    def _dl_update(self, **kw):
+        with self._dl_lock:
+            self._dl.update(kw)
+            self._dl["updated_at"] = time.time()
+
+    def _dl_should_cancel(self) -> bool:
+        with self._dl_lock:
+            return self._dl_cancel
+
+    def _on_progress(self, done, total, phase):
+        """下载/解压进度回调：done 为字节数或文件数，total 未知时 -1"""
+        percent = 0.0
+        if total and total > 0 and done is not None:
+            percent = min(100.0, round(done * 100.0 / total, 1))
+        self._dl_update(
+            state=phase,
+            done=int(done or 0),
+            total=int(total if total is not None else -1),
+            percent=percent,
+            phase=phase,
+        )
+
+    def start_download(self) -> dict:
+        """启动后台下载；已经在跑就直接复用，已完成则秒回
+
+        返回的是下载状态快照，前端据此显示进度条，不再苦等一个长请求。
+        """
+        if self.model_ready():
+            self._dl_update(
+                state="done", percent=100.0, done=self._dl.get("total", -1),
+                total=self._dl.get("total", -1), error="", error_kind="",
+                phase="done",
+            )
+            return self.download_status()
+
+        with self._dl_lock:
+            if self._dl_thread and self._dl_thread.is_alive():
+                return self.download_status_locked()
+            self._dl_cancel = False
+            self._dl.update(
+                state="downloading", done=0, total=-1, percent=0.0,
+                error="", error_kind="", phase="downloading",
+                file=MODEL_ARCHIVE, started_at=time.time(), updated_at=time.time(),
+            )
+            self._dl_thread = threading.Thread(
+                target=self._download_worker, name="stt-model-download", daemon=True
+            )
+            self._dl_thread.start()
+        return self.download_status()
+
+    def download_status_locked(self) -> dict:
+        """调用方已持有 _dl_lock 时用，避免重复加锁"""
+        data = dict(self._dl)
+        data["running"] = bool(self._dl_thread and self._dl_thread.is_alive())
+        data["cancellable"] = data["state"] in ("downloading", "extracting")
+        return data
+
+    def request_cancel(self) -> dict:
+        with self._dl_lock:
+            if self._dl_thread and self._dl_thread.is_alive():
+                self._dl_cancel = True
+                self._dl["phase"] = "cancelling"
+        return self.download_status()
+
+    def _download_worker(self):
+        try:
+            path = self.download_model(
+                progress=self._on_progress, cancelled=self._dl_should_cancel
+            )
+            # 模型换了/刚下完：把旧的 recognizer 丢掉，下一次识别按新路径重建，
+            # 这样下载完成不用重启后端就能直接说话
+            self.unload()
+            self._dl_update(
+                state="done", percent=100.0, phase="done", file="",
+                error="", error_kind="", done=self._dl.get("total", -1),
+            )
+            print(f"[DeckMeido] 语音模型就绪：{path}")
+        except STTCancelled:
+            self._dl_update(state="cancelled", phase="cancelled", error="", error_kind="")
+        except STTError as exc:
+            self._dl_update(
+                state="error", phase="error", error=str(exc),
+                error_kind=getattr(exc, "kind", "general"),
+            )
+        except Exception as exc:  # 兜底：线程里抛出去会静默消失
+            self._dl_update(state="error", phase="error", error=str(exc), error_kind="general")
 
     # ---------- 模型下载 ----------
 
-    def download_model(self, progress=None) -> Path:
+    def download_model(self, progress=None, cancelled=None) -> Path:
         """下载并解压模型（压缩包约 1GB，解出约 250MB），已存在则直接返回
 
-        progress(done, total) 用来给前端报进度；total 未知时传 -1。
+        progress(done, total, phase) 用来报进度：phase 是 downloading / extracting，
+        done 是已下载字节数或已解压文件数，total 未知时传 -1。
+        cancelled() 返回 True 时中止并抛 STTCancelled，由后台任务把状态收回去。
         """
         if self.model_ready():
             return self._ready_path
@@ -128,7 +259,8 @@ class STT:
         except OSError as exc:
             raise STTError(
                 f"模型目录不可写：{self.model_root}（{exc}）；"
-                "请检查数据根权限或 DECKMEIDO_DATA_DIR"
+                "请检查数据根权限或 DECKMEIDO_DATA_DIR",
+                kind="permission",
             ) from exc
 
         try:
@@ -138,7 +270,8 @@ class STT:
         if free is not None and free < MIN_FREE_BYTES:
             raise STTError(
                 f"磁盘空间不足：{self.model_root.parent} 仅剩 {free / 1024**3:.1f} GB，"
-                f"下载并解压语音模型至少需要 {MIN_FREE_BYTES / 1024**3:.1f} GB"
+                f"下载并解压语音模型至少需要 {MIN_FREE_BYTES / 1024**3:.1f} GB",
+                kind="disk",
             )
 
         archive = self.model_root / MODEL_ARCHIVE
@@ -146,18 +279,28 @@ class STT:
         try:
             if not archive.is_file():
                 req = urllib.request.Request(MODEL_URL, headers={"User-Agent": "DeckMeido"})
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    total = int(resp.headers.get("Content-Length") or -1)
-                    done = 0
-                    with open(tmp, "wb") as fh:
-                        while True:
-                            chunk = resp.read(1 << 16)
-                            if not chunk:
-                                break
-                            fh.write(chunk)
-                            done += len(chunk)
-                            if progress:
-                                progress(done, total)
+                try:
+                    with urllib.request.urlopen(req, timeout=60) as resp:
+                        total = int(resp.headers.get("Content-Length") or -1)
+                        done = 0
+                        with open(tmp, "wb") as fh:
+                            while True:
+                                if cancelled and cancelled():
+                                    raise STTCancelled()
+                                chunk = resp.read(1 << 16)
+                                if not chunk:
+                                    break
+                                fh.write(chunk)
+                                done += len(chunk)
+                                if progress:
+                                    progress(done, total, "downloading")
+                except (STTCancelled, STTError):
+                    raise
+                except Exception as exc:
+                    tmp.unlink(missing_ok=True)
+                    raise STTError(f"语音模型下载失败（网络）：{exc}", kind="network") from exc
+                if cancelled and cancelled():
+                    raise STTCancelled()
                 tmp.replace(archive)
 
             # 只解出要用的三个文件：包里还有一个 fp32 的 model.onnx（937MB），
@@ -166,7 +309,11 @@ class STT:
             root = self.model_root / MODEL_INNER
             root.mkdir(parents=True, exist_ok=True)
             with tarfile.open(archive, "r:bz2") as tf:
-                for m in tf.getmembers():
+                members = tf.getmembers()
+                total_members = max(1, len(members))
+                for idx, m in enumerate(members):
+                    if cancelled and cancelled():
+                        raise STTCancelled()
                     if not m.isfile() or Path(m.name).name not in want:
                         continue
                     src = tf.extractfile(m)
@@ -174,12 +321,17 @@ class STT:
                         continue
                     with src, open(root / Path(m.name).name, "wb") as fh:
                         shutil.copyfileobj(src, fh)
+                    if progress:
+                        progress(idx + 1, total_members, "extracting")
             # 压缩包 1GB，解完就没用了
             archive.unlink(missing_ok=True)
             # 老版本解过整包的，把 fp32 那份和残留目录顺手清掉
             for stale in (root / "model.onnx", root / "export-onnx.py", root / "README.md"):
                 stale.unlink(missing_ok=True)
             shutil.rmtree(root / "test_wavs", ignore_errors=True)
+        except STTCancelled:
+            tmp.unlink(missing_ok=True)
+            raise
         except STTError:
             raise
         except OSError as exc:

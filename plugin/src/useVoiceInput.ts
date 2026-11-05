@@ -22,6 +22,18 @@ const CALL_TIMEOUT_MS = 120000;
 
 type Phase = "idle" | "recording" | "working";
 
+type Download = {
+  state: "idle" | "downloading" | "extracting" | "done" | "error" | "cancelled";
+  running?: boolean;
+  cancellable?: boolean;
+  done?: number;
+  total?: number;
+  percent?: number;
+  phase?: string;
+  error?: string;
+  error_kind?: string;
+};
+
 type Status = {
   ok: boolean;
   error?: string;
@@ -31,7 +43,22 @@ type Status = {
   record?: boolean;
   record_reason?: string;
   attribution?: string;
+  download?: Download;
 };
+
+/** 下载失败按类别给一句人话；后端只回原始错误，措辞在前端统一 */
+function downloadErrorText(d?: Download | null): string {
+  if (!d || d.state !== "error") return "";
+  const kind = d.error_kind || "general";
+  const map: Record<string, string> = {
+    network: "下载失败：网络断了或 GitHub 访问不了，检查网络后重试",
+    disk: "下载失败：磁盘空间不够，至少需要 1.5GB 空闲",
+    permission: "下载失败：数据目录不可写，检查 userdata/ 权限",
+    extract: "下载失败：安装包解压出错，重新下载即可",
+    general: "下载失败，稍后重试",
+  };
+  return `${map[kind] || map.general}${d.error ? `（${d.error}）` : ""}`;
+}
 
 /** Float32 [-1,1] → 16bit PCM 的 WAV 容器 */
 function encodeWav(samples: Float32Array, rate: number): Uint8Array {
@@ -94,6 +121,11 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState("");
   const [downloading, setDownloading] = useState(false);
+  // 下载轮询：取消时置 true，让循环在下一拍退出（不依赖 status 的异步更新）
+  const downloadCancelRef = useRef(false);
+  const downloadBusyRef = useRef(false);
+  // 最近一次状态快照：refresh 并发时直接复用它，避免轮询读到旧闭包
+  const statusRef = useRef<Status | null>(null);
 
   const ctxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -117,14 +149,20 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
     setPhase(p);
   }, []);
 
-  const refresh = useCallback(async () => {
-    if (!ticket || refreshingRef.current) return;
+  const refresh = useCallback(async (): Promise<Status | null> => {
+    if (!ticket) return statusRef.current;
+    if (refreshingRef.current) return statusRef.current;
     refreshingRef.current = true;
     try {
       const r = (await call<[string], Status>("stt_status", ticket)) as Status;
+      statusRef.current = r;
       setStatus(r);
+      return r;
     } catch (e: any) {
-      setStatus({ ok: false, error: String(e?.message ?? e) });
+      const bad = { ok: false, error: String(e?.message ?? e) } as Status;
+      statusRef.current = bad;
+      setStatus(bad);
+      return bad;
     } finally {
       refreshingRef.current = false;
     }
@@ -332,7 +370,9 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
   }, [applyPhase, cleanup, status, stop]);
 
   const downloadModel = useCallback(async () => {
-    if (downloading) return;
+    if (downloadBusyRef.current) return;
+    downloadBusyRef.current = true;
+    downloadCancelRef.current = false;
     setDownloading(true);
     setError("");
     try {
@@ -340,20 +380,52 @@ export function useVoiceInput(ticket: string, onText: (t: string) => void) {
         "stt_download_model",
         ticket
       )) as { ok: boolean; error?: string };
-      if (!r.ok) setError(r.error || "模型下载失败");
+      if (!r.ok) {
+        setError(r.error || "模型下载启动失败");
+        return;
+      }
+      // 后端是后台任务：这里 1 秒一拍拉状态，直到 done / error / cancelled。
+      // 最多盯 30 分钟，超时就放手（后台仍会继续下，下次进来能接着看到状态）
+      const deadline = Date.now() + 30 * 60 * 1000;
+      while (!downloadCancelRef.current && Date.now() < deadline) {
+        await new Promise((res) => setTimeout(res, 1000));
+        const st = await refresh();
+        const d = st?.download;
+        if (!d) continue;
+        if (d.state === "done" || d.state === "error" || d.state === "cancelled") break;
+      }
+      // 结束时再拉一次，确保 model 字段是最终值：下载完不用重启就能直接说话
       await refresh();
     } catch (e: any) {
       setError(String(e?.message ?? e));
     } finally {
+      downloadBusyRef.current = false;
       setDownloading(false);
     }
-  }, [downloading, refresh, ticket]);
+  }, [refresh, ticket]);
 
+  const cancelDownload = useCallback(async () => {
+    downloadCancelRef.current = true;
+    try {
+      await call<[string], { ok: boolean; error?: string }>("stt_download_cancel", ticket);
+    } catch {
+      /* 取消失败就让后台自然结束，界面不额外报错 */
+    } finally {
+      await refresh();
+    }
+  }, [refresh, ticket]);
+
+  const dl = status?.download;
   return {
     phase,
     status,
     error,
-    downloading,
+    /** 下载进度（后端后台任务的状态快照），未下载过时为 null */
+    download: dl ?? null,
+    /** 下载失败的人话提示（按错误类别区分网络/磁盘/权限/解压） */
+    downloadError: downloadErrorText(dl),
+    downloading: downloading || !!dl?.running,
+    cancelDownload,
     /** 能不能按：状态查到了、且各项都齐 */
     ready: !!status?.ok && status.enable !== false && status.runtime === true && status.model === true,
     start,

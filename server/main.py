@@ -3103,17 +3103,19 @@ async def api_stt_status():
 
 @app.post("/api/stt/download", dependencies=[Depends(check_token_any)])
 async def api_stt_download():
-    """下载语音模型（压缩包约 1GB，解出约 250MB）。已经在就秒回，不会重复下
+    """启动语音模型下载（压缩包约 1GB，解出约 250MB）
 
-    下载是阻塞 IO，扔到线程里跑，别卡住事件循环 —— 后端还要同时喂 WebSocket。
+    改成「后台任务 + 轮询进度」：原先这个接口要同步等几分钟，Decky 桥接请求
+    超时后前端只能看到失败，模型其实还在下；下完了也得等下一次重启才认。
+    现在秒回状态快照，进度由 /api/stt 里的 download 字段给出。
     """
-    try:
-        root = await asyncio.to_thread(stt.download_model)
-    except STTError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"模型下载失败：{exc}")
-    return {"ok": True, "model_root": str(root)}
+    return {"ok": True, **stt.start_download()}
+
+
+@app.post("/api/stt/download/cancel", dependencies=[Depends(check_token_any)])
+async def api_stt_download_cancel():
+    """取消正在下载的模型（已下载的 .part 会被清掉，不会留下半个包）"""
+    return {"ok": True, **stt.request_cancel()}
 
 
 @app.post("/api/stt/toggle", dependencies=[Depends(check_token_any)])

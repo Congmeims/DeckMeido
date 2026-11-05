@@ -602,6 +602,10 @@ export default function BigScreen() {
   // 语音提示只在不就绪时出现：报错优先，其次按原因给一句短提示 + 下载入口
   const voiceTip = (() => {
     if (voice.ready) return null;
+    // 下载中由下面的进度行负责，不再叠一条文字
+    if (voice.downloading) return null;
+    // 下载失败：按类别给具体原因，并允许直接重试
+    if (voice.downloadError) return { text: voice.downloadError, color: ERR_COLOR, canDownload: true };
     if (voice.error) return { text: voice.error, color: ERR_COLOR, canDownload: false };
     const st = voice.status;
     // ticket 还没到、或者插件桥报错时 status 就是空的：这也要说出来，
@@ -613,6 +617,17 @@ export default function BigScreen() {
     if (!st.model) return { text: "语音模型未下载（约 1GB，只需一次）", color: DIM, canDownload: true };
     if (st.record === false) return { text: st.record_reason || "录音设备不可用", color: DIM, canDownload: false };
     return null;
+  })();
+
+  const dl = voice.download;
+  const dlActive = !!voice.downloading;
+  const dlPercent = Math.max(0, Math.min(100, dl?.percent ?? 0));
+  const dlPhaseText = dl?.state === "extracting" ? "解压中" : "下载中";
+  const dlSizeText = (() => {
+    const done = dl?.done ?? 0;
+    const total = dl?.total ?? -1;
+    const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)}MB`;
+    return total > 0 ? `${mb(done)} / ${mb(total)}` : mb(done);
   })();
 
   // 询问页两个动作按钮的忙碌态：被点的那个留在原位显示「思考中」，
@@ -1119,41 +1134,76 @@ export default function BigScreen() {
                 </ActionButton>
               )}
             </div>
-            {/* 语音提示：绝对定位浮在输入行下方，不占版式高度 */}
-            {voiceTip && (
-              <div
-                style={{
-                  position: "absolute",
-                  top: ACTION_H + 4,
-                  left: 0,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  height: 26,
-                  // 只有下载按钮要接焦点，整条浮层不挡消息区
-                  pointerEvents: voiceTip.canDownload ? "auto" : "none",
-                }}
-              >
-                <span style={{ fontSize: 12, color: voiceTip.color }}>{voiceTip.text}</span>
-                {voiceTip.canDownload && (
-                  <ActionButton
-                    disabled={voice.downloading}
-                    onClick={voice.downloadModel}
-                    description="下载语音模型"
+            {/* 语音提示/下载进度：作为独立一行放在输入行下面，不再绝对定位压住消息区 */}
+          </div>
+          {(voiceTip || dlActive) && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                width: "100%",
+                minHeight: 26,
+                flexShrink: 0,
+              }}
+            >
+              {dlActive ? (
+                <>
+                  <span style={{ fontSize: 12, color: DIM, whiteSpace: "nowrap" }}>
+                    {dlPhaseText} {dlPercent}%
+                  </span>
+                  <div
                     style={{
-                      width: "auto",
-                      height: 26,
-                      minHeight: 26,
-                      padding: "0 10px",
-                      fontSize: 12,
+                      flex: 1,
+                      minWidth: 60,
+                      height: 8,
+                      borderRadius: 4,
+                      background: "rgba(255,255,255,.10)",
+                      overflow: "hidden",
                     }}
                   >
-                    {voice.downloading ? "下载中…" : "下载模型"}
+                    <div
+                      style={{
+                        width: `${dlPercent}%`,
+                        height: "100%",
+                        borderRadius: 4,
+                        background: ACCENT,
+                        transition: "width .4s ease",
+                      }}
+                    />
+                  </div>
+                  <span style={{ fontSize: 11, color: DIM, whiteSpace: "nowrap" }}>{dlSizeText}</span>
+                  <ActionButton
+                    onClick={voice.cancelDownload}
+                    description="取消下载"
+                    style={{ width: "auto", height: 26, minHeight: 26, padding: "0 10px", fontSize: 12 }}
+                  >
+                    取消
                   </ActionButton>
-                )}
-              </div>
-            )}
-          </div>
+                </>
+              ) : voiceTip ? (
+                <>
+                  <span style={{ fontSize: 12, color: voiceTip.color }}>{voiceTip.text}</span>
+                  {voiceTip.canDownload && (
+                    <ActionButton
+                      disabled={voice.downloading}
+                      onClick={voice.downloadModel}
+                      description="下载语音模型"
+                      style={{
+                        width: "auto",
+                        height: 26,
+                        minHeight: 26,
+                        padding: "0 10px",
+                        fontSize: 12,
+                      }}
+                    >
+                      {voice.downloading ? "下载中…" : "下载模型"}
+                    </ActionButton>
+                  )}
+                </>
+              ) : null}
+            </div>
+          )}
           {/* 输入区与消息区之间：与询问页共用同一条分隔线 */}
           <div style={dividerStyle} />
 

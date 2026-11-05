@@ -2527,15 +2527,29 @@ class Plugin:
         return {"ok": True, **(r.get("data") or {})}
 
     async def stt_download_model(self, ticket: str = "") -> dict:
-        """下语音模型（约 1GB）：走线程，别卡住 Decky 的事件循环"""
+        """启动语音模型下载（约 1GB）：后端已改成后台任务，这里秒回状态
+
+        进度走 stt_status 里的 download 字段轮询，不再让桥接请求挂 10 分钟。
+        """
         _require(ticket, "stt_download_model")
         cfg = _load_server_cfg()
         r = await _core_http(int(cfg.get("port", 18765)),
                              str(cfg.get("token", "") or "").strip(),
-                             "POST", "/api/stt/download", timeout=600.0)
+                             "POST", "/api/stt/download", timeout=15.0)
         if not r["ok"]:
-            return {"ok": False, "error": r.get("error") or "模型下载失败"}
-        return {"ok": True, "model_root": str((r.get("data") or {}).get("model_root") or "")}
+            return {"ok": False, "error": r.get("error") or "模型下载启动失败"}
+        return {"ok": True, **(r.get("data") or {})}
+
+    async def stt_download_cancel(self, ticket: str = "") -> dict:
+        """取消模型下载：清掉半包，状态回到 cancelled"""
+        _require(ticket, "stt_download_cancel")
+        cfg = _load_server_cfg()
+        r = await _core_http(int(cfg.get("port", 18765)),
+                             str(cfg.get("token", "") or "").strip(),
+                             "POST", "/api/stt/download/cancel", timeout=15.0)
+        if not r["ok"]:
+            return {"ok": False, "error": r.get("error") or "取消失败"}
+        return {"ok": True, **(r.get("data") or {})}
 
     async def stt_transcribe(self, wav_b64: str, ticket: str = "") -> dict:
         """WAV(base64) → 文字

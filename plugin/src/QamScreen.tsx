@@ -1028,6 +1028,24 @@ export default function QamScreen() {
     setInput((prev) => (prev.trim() ? prev.replace(/\s*$/, " ") + t : t))
   );
 
+  // 语音状态提示 + 下载进度：窄屏单独占一行，避免压住输入框和消息区
+  const qdl = voice.download;
+  const qdlActive = !!voice.downloading;
+  const qdlPercent = Math.max(0, Math.min(100, qdl?.percent ?? 0));
+  const qVoiceTip = (() => {
+    if (voice.ready || qdlActive) return null;
+    if (voice.downloadError) return { text: voice.downloadError, color: ERR_COLOR, canDownload: true };
+    if (voice.error) return { text: voice.error, color: ERR_COLOR, canDownload: false };
+    const st = voice.status;
+    if (!st) return { text: "语音状态读取中…", color: DIM, canDownload: false };
+    if (!st.ok) return { text: "语音后端未连上", color: DIM, canDownload: false };
+    if (st.enable === false) return { text: "语音已在设置里关闭", color: DIM, canDownload: false };
+    if (!st.runtime) return { text: "后端没装 sherpa-onnx", color: DIM, canDownload: false };
+    if (!st.model) return { text: "语音模型未下载（约 1GB）", color: DIM, canDownload: true };
+    if (st.record === false) return { text: st.record_reason || "录音设备不可用", color: DIM, canDownload: false };
+    return null;
+  })();
+
   // 窄屏按时间顺序排列，最新一条贴底
   useEffect(() => {
     const el = scrollRef.current;
@@ -1442,6 +1460,60 @@ export default function QamScreen() {
               )}
             </div>
           </div>
+
+          {(qVoiceTip || qdlActive) && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", minHeight: 22, flexShrink: 0 }}>
+              {qdlActive ? (
+                <>
+                  <span style={{ fontSize: 10, color: DIM, whiteSpace: "nowrap" }}>
+                    {qdl?.state === "extracting" ? "解压" : "下载"} {qdlPercent}%
+                  </span>
+                  <div
+                    style={{
+                      flex: 1,
+                      minWidth: 40,
+                      height: 6,
+                      borderRadius: 3,
+                      background: "rgba(255,255,255,.10)",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${qdlPercent}%`,
+                        height: "100%",
+                        borderRadius: 3,
+                        background: ACCENT,
+                        transition: "width .4s ease",
+                      }}
+                    />
+                  </div>
+                  <div style={{ flex: "0 0 44px", width: 44 }}>
+                    <Btn height={22} size={10} onClick={voice.cancelDownload} description="取消下载">
+                      取消
+                    </Btn>
+                  </div>
+                </>
+              ) : qVoiceTip ? (
+                <>
+                  <span style={{ fontSize: 10, color: qVoiceTip.color, flex: 1, minWidth: 0 }}>{qVoiceTip.text}</span>
+                  {qVoiceTip.canDownload && (
+                    <div style={{ flex: "0 0 56px", width: 56 }}>
+                      <Btn
+                        height={22}
+                        size={10}
+                        disabled={voice.downloading}
+                        onClick={voice.downloadModel}
+                        description="下载语音模型"
+                      >
+                        下载
+                      </Btn>
+                    </div>
+                  )}
+                </>
+              ) : null}
+            </div>
+          )}
 
           <div style={dividerStyle} />
 
