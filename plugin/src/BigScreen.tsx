@@ -1192,7 +1192,7 @@ export default function BigScreen() {
                 alignItems: "center",
                 gap: 8,
                 width: "100%",
-                minHeight: 26,
+                height: 34,
                 flexShrink: 0,
               }}
             >
@@ -1232,7 +1232,23 @@ export default function BigScreen() {
                 </>
               ) : voiceTip ? (
                 <>
-                  <span style={{ fontSize: 12, color: voiceTip.color }}>{voiceTip.text}</span>
+                  {/* 文案最多两行后省略；按钮单独占右侧固定宽度，始终贴右不换行 */}
+                  <span
+                    style={{
+                      flex: "1 1 auto",
+                      minWidth: 0,
+                      fontSize: 12,
+                      color: voiceTip.color,
+                      lineHeight: "16px",
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden",
+                      overflowWrap: "anywhere",
+                    }}
+                  >
+                    {voiceTip.text}
+                  </span>
                   {voiceTip.canDownload && (
                     <ActionButton
                       disabled={voice.downloading}
@@ -1244,6 +1260,7 @@ export default function BigScreen() {
                         minHeight: 26,
                         padding: "0 10px",
                         fontSize: 12,
+                        flexShrink: 0,
                       }}
                     >
                       {voice.downloading ? "下载中…" : "下载模型"}
