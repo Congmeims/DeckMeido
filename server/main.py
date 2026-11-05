@@ -45,11 +45,6 @@ VERSION = updater.current_version()
 
 # ---------- 配置 ----------
 
-def gen_token(length: int = authguard.TOKEN_LEN) -> str:
-    """生成访问令牌（默认 12 位 Crockford Base32），见 server/authguard.py。"""
-    return authguard.gen_token(length)
-
-
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -71,13 +66,7 @@ def load_config() -> dict:
         print(f"[DeckMeido] 配置文件语法错误：{detail}（{exc}）",
               file=sys.stderr, flush=True)
         raise SystemExit(2) from exc
-    # token 留空（用户手动清空）时补一个，并写回配置文件方便查看
-    if not cfg["server"].get("token"):
-        token = gen_token()
-        text = CONFIG_PATH.read_text(encoding="utf-8")
-        text = re.sub(r'^token\s*=\s*""', f'token = "{token}"', text, count=1, flags=re.M)
-        CONFIG_PATH.write_text(text, encoding="utf-8")
-        cfg["server"]["token"] = token
+    # 旧配置里的 token 键会被忽略：令牌已下线，局域网改用设备配对 Cookie。
     return cfg
 
 
@@ -97,12 +86,6 @@ def save_config(updates: dict):
 
 
 CFG = load_config()
-TOKEN = CFG["server"]["token"].strip().lower()
-# 老配置沿用原令牌不强制轮换（换掉会让现有客户端与手机书签全部失效），
-# 但出厂口令和过短的令牌必须留一条明确告警，提醒用户去设置页重新生成。
-if TOKEN == "meido" or len(TOKEN) < 8:
-    print("[DeckMeido] 警告：访问令牌过弱（出厂默认或少于 8 位），"
-          "请在设置页重新生成 12 位随机令牌", file=sys.stderr)
 
 # 单实例守卫：必须在 init_sessions() 之前跑。init_sessions 在导入期就会
 # 读/写会话文件，如果本进程注定绑定端口失败却先把内存里的空历史写了盘，
@@ -723,15 +706,14 @@ audiomute.set_enabled(bool(_stt_cfg.get("duck_output", True)))
 
 
 def apply_config(cfg: dict):
-    """热更新运行配置（LLM / TTS / 权限模式 / 访问令牌），无需重启"""
-    global CFG, TOKEN, PERMISSION_MODE, PERSONA, SYSTEM_PROMPT, MAX_TOOL_ROUNDS, ASK_TEMPLATE
+    """热更新运行配置（LLM / TTS / 权限模式 / 界面语言），无需重启"""
+    global CFG, PERMISSION_MODE, PERSONA, SYSTEM_PROMPT, MAX_TOOL_ROUNDS, ASK_TEMPLATE
     global TRANSLATE_TEMPLATE, UI_LANG
     CFG = cfg
     # [ui] language 热更新：先换语言，内置模板默认值才会跟着切
     UI_LANG = ui_language(cfg)
     # 人设不在这里取：它存在 meidosoul.json，改完由 update_config 的调用方
     # 直接 reload_persona()，config.toml 里即使还留着旧的 [persona] 段也不再生效
-    TOKEN = (cfg["server"].get("token") or TOKEN).strip().lower()
     MAX_TOOL_ROUNDS = (int(cfg.get("agent", {}).get("max_tool_rounds", 0))
                        or DEFAULT_MAX_TOOL_ROUNDS)
     ASK_TEMPLATE = (str(cfg.get("agent", {}).get("ask_template") or "").strip()
@@ -1537,7 +1519,7 @@ class ConnectionManager:
                 self.active.discard(ws)
 
     async def close_all(self, code: int = 1000):
-        """按指定原因码断开所有连接（改令牌后用 4401，让前端回到鉴权页）"""
+        """按指定原因码断开所有连接（设备被移除后用 4401，让前端回到鉴权页）"""
         for ws in list(self.active):
             try:
                 await ws.close(code=code)
@@ -1571,15 +1553,7 @@ async def _broadcast_pad_order(action: str):
 
 tools.set_pad_order_hook(_broadcast_pad_order)
 
-# 设置页保存新令牌时的一次性通行证：允许旧令牌再完成这一次保存
-_pending_token: str | None = None
-
-
 # ---------- 认证 ----------
-
-def _norm_token(value: str | None) -> str:
-    """令牌统一按小写比较，输入不分大小写"""
-    return authguard.norm(value)
 
 
 def _client_ip(request: Request) -> str:
@@ -1602,7 +1576,7 @@ def _cookie_device(request: Request) -> dict | None:
 
 
 def _csrf_ok(request: Request) -> bool:
-    """Cookie 认证的写操作必须同源；令牌认证不受此限。"""
+    """Cookie 认证的写操作必须同源，防跨站伪造请求。"""
     return (authguard.same_origin(request.headers.get("origin"),
                                  request.headers.get("host"))
             and authguard.same_site(request.headers.get("sec-fetch-site")))
@@ -1629,62 +1603,42 @@ def _set_device_cookie(response: Response, request: Request, token: str,
     )
 
 
-# 同一 IP 打同一路径的无效凭据，60 秒内只记一条：旧页面缓存会每 3 秒用空
-# 令牌轮询一次，不合并且然把审计缓冲刷成同一件事的 50 条重复
-_bad_token_marks: dict[tuple[str, str], float] = {}
-_BAD_TOKEN_NOTICE_S = 60.0
+# 同一 IP 打同一路径的未授权请求，60 秒内只记一条：未配对的浏览器
+# 会周期轮询，不合并会把审计缓冲刷成同一件事的几十条重复
+_unauth_marks: dict[tuple[str, str], float] = {}
+_UNAUTH_NOTICE_S = 60.0
 
 
-def _reject_bad_token(ip: str, action: str, detail: str = "") -> None:
-    """凭据不对：记一条审计并返回 401。
+def _reject_unauthorized(ip: str, action: str, detail: str = "") -> None:
+    """未配对设备访问受保护接口：记一条审计并返回 401。
 
-    不按 IP 封禁：登录页会周期轮询、刷新页面、旧书签带过期令牌，这些都
-    可能连续 401；按次数封 IP 的结果是「用户什么都没做错却进不来」。
-    暴力猜令牌由 12 位 Crockford Base32（≈60 bit）本身挡住；配对则靠
-    单次会话最多 3 次尝试（见 server/pairing.py）。
+    不按 IP 封禁：配对页会周期轮询，连续 401 是正常流程；暴力猜测由
+    单次配对会话最多 3 次尝试挡住（见 server/pairing.py）。
     """
     now = time.time()
     key = (ip, detail or action)
-    if now - _bad_token_marks.get(key, 0.0) >= _BAD_TOKEN_NOTICE_S:
-        _bad_token_marks[key] = now
-        if len(_bad_token_marks) > 200:
-            for stale in [k for k, t in _bad_token_marks.items()
-                          if now - t >= _BAD_TOKEN_NOTICE_S]:
-                _bad_token_marks.pop(stale, None)
-        audit.record("auth", action, "fail", ip=ip, reason="bad_token", detail=detail)
-    raise HTTPException(status_code=401, detail="invalid token")
+    if now - _unauth_marks.get(key, 0.0) >= _UNAUTH_NOTICE_S:
+        _unauth_marks[key] = now
+        if len(_unauth_marks) > 200:
+            for stale in [k for k, t in _unauth_marks.items()
+                          if now - t >= _UNAUTH_NOTICE_S]:
+                _unauth_marks.pop(stale, None)
+        audit.record("auth", action, "fail", ip=ip, reason="unpaired", detail=detail)
+    raise HTTPException(status_code=401, detail="未配对设备：请先在设置页配对")
 
 
-def check_token(request: Request, token: str | None = Query(default=None),
-                x_token: str | None = Header(default=None)):
-    ip = _client_ip(request)
-    # 本机回环免验证：客户端 / 插件 / 掌机自己的请求不再需要令牌。
-    # 只认 127.0.0.1 与 ::1；局域网来源照旧走令牌或设备 Cookie。
-    if netcfg.is_local(ip):
-        return
-    if TOKEN and (authguard.token_eq(TOKEN, token) or authguard.token_eq(TOKEN, x_token)):
-        return
-    if _auth_device(request):
-        return
-    _reject_bad_token(ip, "api", request.url.path)
+def require_auth(request: Request):
+    """接口总闸：本机回环免验证，局域网必须已配对（HttpOnly 设备 Cookie）。
 
-
-def check_token_any(request: Request, token: str | None = Query(default=None),
-                    x_token: str | None = Header(default=None)):
-    """改令牌专用：旧令牌或新令牌任一都能通过。
-
-    设置页保存新令牌时，前端还带着旧令牌，而校验已经换成新的了，
-    不放开这一条会导致「改完自己把自己锁在外面」。
+    令牌已下线。静态页面本身不设防，未配对时前端会弹 PIN 配对，
+    受保护接口统一 401，不存在「页面能进但接口通不了」的中间态。
     """
     ip = _client_ip(request)
     if netcfg.is_local(ip):
         return
-    for expected in {_norm_token(TOKEN), _norm_token(_pending_token)} - {""}:
-        if authguard.token_eq(expected, token) or authguard.token_eq(expected, x_token):
-            return
     if _auth_device(request):
         return
-    _reject_bad_token(ip, "token_change")
+    _reject_unauthorized(ip, "api", request.url.path)
 
 
 def _ws_cookie_auth(ws: WebSocket) -> bool:
@@ -1700,13 +1654,12 @@ def _ws_cookie_auth(ws: WebSocket) -> bool:
     return bool(pairing.manager.devices.authenticate(raw))
 
 
-def _ws_authorized(ws: WebSocket, token: str | None) -> bool:
-    # 回环来源（掌机自带客户端 / 本地调试）直接放行，局域网仍要令牌或设备 Cookie
+def _ws_authorized(ws: WebSocket) -> bool:
+    # 回环来源（掌机自带客户端 / 插件 / 本地调试）直接放行；局域网必须已配对
     if netcfg.is_local(ws.client.host if ws.client else ""):
         return True
-    if TOKEN and authguard.token_eq(TOKEN, token):
-        return True
     return _ws_cookie_auth(ws)
+
 
 
 def _security_note() -> str:
@@ -2057,7 +2010,7 @@ async def _extract_text(raw: bytes, ext: str):
     return None
 
 
-@app.post("/api/upload", dependencies=[Depends(check_token)])
+@app.post("/api/upload", dependencies=[Depends(require_auth)])
 async def api_upload(file: UploadFile):
     """上传附件。
 
@@ -2100,7 +2053,7 @@ async def api_upload(file: UploadFile):
     return {"url": f"/uploads/{keep.name}", "path": rel, "kind": kind, "name": fn.name}
 
 
-@app.post("/api/upload-to", dependencies=[Depends(check_token)])
+@app.post("/api/upload-to", dependencies=[Depends(require_auth)])
 async def api_upload_to(file: UploadFile, dir: str = ""):
     """文件管理器里的拖放上传：把文件原样写到指定目录（不是工作区附件）。
 
@@ -2146,7 +2099,7 @@ async def api_upload_to(file: UploadFile, dir: str = ""):
     return {"ok": True, "name": fn, "dir": str(target_dir)}
 
 
-@app.get("/api/files", dependencies=[Depends(check_token)])
+@app.get("/api/files", dependencies=[Depends(require_auth)])
 async def api_files():
     """列出工作区文件（@ 引用候选）"""
     out = []
@@ -2182,7 +2135,7 @@ def _file_kind(name: str) -> str:
     return "other"
 
 
-@app.get("/api/preview", dependencies=[Depends(check_token)])
+@app.get("/api/preview", dependencies=[Depends(require_auth)])
 async def api_preview(path: str, raw: int = 0):
     """给文件浏览器预览用：吐任意路径的文件
 
@@ -2216,7 +2169,7 @@ async def api_preview(path: str, raw: int = 0):
     return info
 
 
-@app.get("/api/browse", dependencies=[Depends(check_token)])
+@app.get("/api/browse", dependencies=[Depends(require_auth)])
 async def api_browse(path: str = ""):
     """列单层目录内容（右侧文件浏览器用）
 
@@ -2278,7 +2231,7 @@ class _FsReq(BaseModel):
     path2: str = ""
 
 
-@app.post("/api/fs", dependencies=[Depends(check_token)])
+@app.post("/api/fs", dependencies=[Depends(require_auth)])
 async def api_fs(req: _FsReq):
     """文件面板的右键操作：rename / delete / copy / move / mkdir。
 
@@ -2337,7 +2290,7 @@ async def api_fs(req: _FsReq):
     return {"ok": True}
 
 
-@app.get("/api/terminal", dependencies=[Depends(check_token)])
+@app.get("/api/terminal", dependencies=[Depends(require_auth)])
 async def api_terminal():
     """当前正在跑（或刚跑完）的那条命令，给右侧终端面板轮询
 
@@ -2346,7 +2299,7 @@ async def api_terminal():
     return {"state": tools.CURRENT_CMD}
 
 
-@app.post("/api/terminal/stop", dependencies=[Depends(check_token)])
+@app.post("/api/terminal/stop", dependencies=[Depends(require_auth)])
 async def api_terminal_stop():
     """终止面板里正在跑的那条命令（小窗上的终止按钮）
 
@@ -2374,7 +2327,7 @@ def _term_lock_get() -> asyncio.Lock:
     return _term_lock
 
 
-@app.post("/api/terminal/run", dependencies=[Depends(check_token)])
+@app.post("/api/terminal/run", dependencies=[Depends(require_auth)])
 async def api_terminal_run(payload: dict):
     """面板里手动执行一条命令（终端 tab 的输入框）
 
@@ -2419,7 +2372,7 @@ async def api_terminal_run(payload: dict):
 
 
 @app.websocket("/ws/terminal")
-async def ws_terminal(ws: WebSocket, token: str = Query(default="")):
+async def ws_terminal(ws: WebSocket):
     """终端专用 WebSocket：PTY ↔ xterm.js 双向字节流透传
 
     协议（JSON 帧）：
@@ -2435,8 +2388,8 @@ async def ws_terminal(ws: WebSocket, token: str = Query(default="")):
     用 base64 传字节：WebSocket 文本帧不能塞任意字节，二进制帧又不好混 JSON 头。
     """
     client_ip = ws.client.host if ws.client else ""
-    if not _ws_authorized(ws, token):
-        audit.record("auth", "ws_terminal", "fail", ip=client_ip, reason="bad_token")
+    if not _ws_authorized(ws):
+        audit.record("auth", "ws_terminal", "fail", ip=client_ip, reason="unpaired")
         await ws.accept()
         await ws.close(code=4401)
         return
@@ -2489,7 +2442,7 @@ async def ws_terminal(ws: WebSocket, token: str = Query(default="")):
 
 
 @app.websocket("/ws/input")
-async def ws_input(ws: WebSocket, token: str = Query(default="")):
+async def ws_input(ws: WebSocket):
     """跨屏键鼠接管 WebSocket（PC 浏览器 ↔ Deck 输入注入）
 
     协议（JSON 帧，前后端共同约定）：
@@ -2508,10 +2461,9 @@ async def ws_input(ws: WebSocket, token: str = Query(default="")):
     """
     client_ip = ws.client.host if ws.client else ""
     cfg = CFG.get("remote_input") or {}
-    # 已配对的浏览器没有 12 位令牌，用 Cookie 认证时把当前令牌当作「已通过」传给校验器；
-    # 本机回环同样免令牌
-    offered = TOKEN if (_ws_cookie_auth(ws) or netcfg.is_local(client_ip)) else token
-    code = remote_input.access_error(cfg, client_ip, TOKEN, offered)
+    # 已配对浏览器走设备 Cookie，本机回环免验证；两者都算已授权
+    authed = _ws_cookie_auth(ws) or netcfg.is_local(client_ip)
+    code = remote_input.access_error(cfg, client_ip, authed)
     if code == remote_input.RI_UNAUTHORIZED:
         await ws.accept()
         await ws.close(code=4401)
@@ -2618,7 +2570,7 @@ async def ws_input(ws: WebSocket, token: str = Query(default="")):
                 pass
 
 
-@app.get("/api/remote-input/status", dependencies=[Depends(check_token)])
+@app.get("/api/remote-input/status", dependencies=[Depends(require_auth)])
 async def api_remote_input_status():
     """接管开关 + 当前会话状态：页面加载/重连后据此恢复横幅与 logo 状态"""
     cfg = CFG.get("remote_input") or {}
@@ -2631,14 +2583,14 @@ async def api_remote_input_status():
     }
 
 
-@app.post("/api/remote-input/release", dependencies=[Depends(check_token)])
+@app.post("/api/remote-input/release", dependencies=[Depends(require_auth)])
 async def api_remote_input_release():
     """任何已鉴权页面都能释放接管（Deck 客户端点 logo 走这条）"""
     released = await remote_input.manager.finish(remote_input.RI_RELEASED)
     return {"ok": True, "released": released}
 
 
-@app.get("/files/{path:path}", dependencies=[Depends(check_token)])
+@app.get("/files/{path:path}", dependencies=[Depends(require_auth)])
 async def api_workspace_file(path: str):
     """下载工作区里的文件（网页端附件卡片用）
 
@@ -2674,7 +2626,7 @@ def _workspace_file(rel: str) -> Path:
     return target
 
 
-@app.post("/api/file_stat_batch", dependencies=[Depends(check_token)])
+@app.post("/api/file_stat_batch", dependencies=[Depends(require_auth)])
 async def api_file_stat_batch(payload: dict):
     """附件卡片补大小（批量）：{paths: [...]} → {sizes: {path: 字节数}}
 
@@ -2693,7 +2645,7 @@ async def api_file_stat_batch(payload: dict):
     return {"sizes": sizes}
 
 
-@app.get("/api/zip", dependencies=[Depends(check_token)])
+@app.get("/api/zip", dependencies=[Depends(require_auth)])
 async def api_zip(path: list[str] | None = Query(default=None), name: str = Query(default="files.zip")):
     """把多个工作区文件打成一个 zip 下载（网页端「打包下载」用）
 
@@ -2732,7 +2684,7 @@ async def api_zip(path: list[str] | None = Query(default=None), name: str = Quer
                     headers={"Content-Disposition": f'attachment; filename="{safe}"'})
 
 
-@app.post("/api/file_stat", dependencies=[Depends(check_token)])
+@app.post("/api/file_stat", dependencies=[Depends(require_auth)])
 async def api_file_stat(payload: dict):
     """附件卡片补大小：{path: 相对工作区的路径} → {size, name}"""
     rel = str(payload.get("path", "")).strip()
@@ -2745,13 +2697,13 @@ async def api_file_stat(payload: dict):
         raise HTTPException(status_code=404, detail="file not found")
 
 
-@app.get("/api/status", dependencies=[Depends(check_token)])
+@app.get("/api/status", dependencies=[Depends(require_auth)])
 async def api_status():
     # 模式探针要起 pw-dump，放线程里跑，别阻塞事件循环（WS 也在同一个 loop 上）
     return get_status(await asyncio.to_thread(tools.mode_is_gaming))
 
 
-@app.get("/api/status/line", dependencies=[Depends(check_token)])
+@app.get("/api/status/line", dependencies=[Depends(require_auth)])
 async def api_status_line(state: str = Query(default=""),
                           game: str = Query(default=""),
                           game_confidence: str = Query(default=""),
@@ -2782,7 +2734,7 @@ async def start_chat(text: str, announce: bool = True, **kwargs):
         current_task = None
 
 
-@app.post("/api/cancel", dependencies=[Depends(check_token)])
+@app.post("/api/cancel", dependencies=[Depends(require_auth)])
 async def api_cancel(request: Request, client: str = "", device: str = ""):
     """终止当前这一轮，并把「谁点的」记进日志。
 
@@ -2830,7 +2782,6 @@ class ConfigUpdate(BaseModel):
     # 深度思考档位：空串 / low / medium / high（前端滑条的「无 / 低 / 中 / 高」）
     reasoning_effort: str | None = None
     workspace: str | None = None
-    token: str | None = None
     # 人设：整体写回 meidosoul.json，空字符串表示「恢复默认」
     persona_name: str | None = None
     # 身份定位：拼在 system prompt 第一句「你是 X，<traits>」，决定她是谁
@@ -2933,8 +2884,8 @@ class SoulImport(BaseModel):
 def _mask_key(key: str) -> str:
     """把 Key 打码成 sk-7sw…56D5 这种样子：够认出是哪把，又不可用。
 
-    为什么不直接把明文发给前端：只要拿到访问令牌（默认还是 meido），
-    任何一台设备打开设置页就能把 Key 抄走。打码后前端只用于「展示已配置」，
+    为什么不直接把明文发给前端：任何一台已配对设备打开设置页就能把 Key 抄走。
+    打码后前端只用于「展示已配置」，
     真正用 Key 的请求都在服务端完成。
     """
     key = (key or "").strip()
@@ -2945,7 +2896,7 @@ def _mask_key(key: str) -> str:
     return f"{key[:6]}…{key[-4:]}"
 
 
-@app.get("/api/config", dependencies=[Depends(check_token)])
+@app.get("/api/config", dependencies=[Depends(require_auth)])
 async def api_get_config():
     return {
         "base_url": llm.base_url,
@@ -2968,7 +2919,6 @@ async def api_get_config():
         "ui_language": UI_LANG,
         "permission_mode": PERMISSION_MODE,
         "workspace": str(tools.WORKSPACE),
-        "token": TOKEN,
         "port": CFG["server"].get("port", 18765),
         # 局域网访问开关：默认 false 只监听 127.0.0.1；开启后设置页显示地址与配对入口
         "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
@@ -3011,7 +2961,7 @@ async def api_get_config():
     }
 
 
-@app.get("/api/memory", dependencies=[Depends(check_token)])
+@app.get("/api/memory", dependencies=[Depends(require_auth)])
 async def api_get_memory():
     """全部长期记忆，按「类别 + 创建时间」排好，和注入顺序一致"""
     items = memory.load()["items"]
@@ -3020,7 +2970,7 @@ async def api_get_memory():
     return {"items": items, "kinds": [{"id": k, "name": v} for k, v in memory.KINDS.items()]}
 
 
-@app.post("/api/memory", dependencies=[Depends(check_token)])
+@app.post("/api/memory", dependencies=[Depends(require_auth)])
 async def api_save_memory(req: MemoryItem):
     """新增 / 修改 / 删除一条记忆
 
@@ -3036,14 +2986,14 @@ async def api_save_memory(req: MemoryItem):
     return {"ok": True}
 
 
-@app.delete("/api/memory/{mid}", dependencies=[Depends(check_token)])
+@app.delete("/api/memory/{mid}", dependencies=[Depends(require_auth)])
 async def api_delete_memory(mid: str):
     if not memory.remove(mid):
         raise HTTPException(status_code=404, detail="这条记忆已不存在")
     return {"ok": True}
 
 
-@app.delete("/api/memory", dependencies=[Depends(check_token)])
+@app.delete("/api/memory", dependencies=[Depends(require_auth)])
 async def api_clear_memory():
     memory.clear()
     return {"ok": True}
@@ -3053,7 +3003,7 @@ async def api_clear_memory():
 # 这两样就是「她这个人」的全部：人设在 meidosoul.json，记忆在 memory.json，
 # 换机器、重装系统、想备份一份，都应该一次拷走。
 
-@app.get("/api/soul/export", dependencies=[Depends(check_token)])
+@app.get("/api/soul/export", dependencies=[Depends(require_auth)])
 async def api_export_soul():
     """导出人设与全部记忆，返回一个可以直接存盘的 JSON"""
     items = memory.load()["items"]
@@ -3068,7 +3018,7 @@ async def api_export_soul():
     }
 
 
-@app.post("/api/soul/import", dependencies=[Depends(check_token)])
+@app.post("/api/soul/import", dependencies=[Depends(require_auth)])
 async def api_import_soul(req: SoulImport):
     """导入备份。replace=True 覆盖，False 则只补缺（人设仍整体覆盖）"""
     if req.persona is not None:
@@ -3085,12 +3035,6 @@ async def api_import_soul(req: SoulImport):
                                                    str(it.get("text") or "")):
                 added += 1
     return {"ok": True, "added": added, "memory": memory.stats()}
-
-
-@app.get("/api/token/gen", dependencies=[Depends(check_token)])
-async def api_token_gen():
-    """给设置页的「随机生成」按钮用，只返回不保存"""
-    return {"token": gen_token()}
 
 
 def _norm_base_url(url: str) -> str:
@@ -3128,9 +3072,8 @@ async def _pick_model(base_url: str, api_key: str) -> str:
     return names[0]
 
 
-@app.post("/api/config", dependencies=[Depends(check_token_any)])
+@app.post("/api/config", dependencies=[Depends(require_auth)])
 async def api_set_config(req: ConfigUpdate, request: Request):
-    global _pending_token
     llm_updates = {}
     if req.base_url is not None:
         llm_updates["base_url"] = _norm_base_url(req.base_url)
@@ -3139,7 +3082,7 @@ async def api_set_config(req: ConfigUpdate, request: Request):
     #   2) 传了空字符串               → 前端没拿到值，按「不改」处理
     #   3) 传的是打码串（含 …）        → 前端回传了展示用的脱敏值，不能当真
     # 想真清空，用 clear_api_key=true 显式声明。
-    # 旧逻辑是「传了空就写成空」，于是在新设备上打开设置页、只是改了个令牌
+    # 旧逻辑是「传了空就写成空」，于是在新设备上打开设置页、只是改了个端口
     # 或权限，就会把 Key 一并抹成空串 —— 对话当场失效，且无处可恢复。
     if req.clear_api_key:
         llm_updates["api_key"] = ""
@@ -3227,28 +3170,12 @@ async def api_set_config(req: ConfigUpdate, request: Request):
             raise HTTPException(status_code=400, detail="端口需为 1024-65535 之间的整数")
         updates.setdefault("server", {})["port"] = port
         audit.record("config", "port", "ok", ip=_client_ip(request), detail=str(port))
-    if req.token is not None:
-        # 统一存成小写，避免 config 里大小写混着看花眼（校验本来就不分大小写）
-        new_token = req.token.strip().lower()
-        # 令牌只允许 4-32 位数字/字母，太短容易被猜，太长在掌机上不好敲
-        if not re.fullmatch(r"[a-z0-9]{4,32}", new_token):
-            raise HTTPException(status_code=400, detail="令牌需为 4-32 位数字或字母")
-        updates.setdefault("server", {})["token"] = new_token
     if updates:
-        # 改令牌期间临时放行旧令牌，改完清掉；令牌换掉后旧连接一并踢下线
-        _pending_token = updates.get("server", {}).get("token")
-        try:
-            old_token = TOKEN
-            save_config(updates)
-        finally:
-            _pending_token = None
-        if TOKEN != old_token:
-            await manager.close_all(4401)
+        save_config(updates)
     if ri.get("enabled") is False:
         # 关掉总开关时立刻结束正在进行的接管，不等下一次心跳
         await remote_input.manager.finish(remote_input.RI_DISABLED)
     return {"ok": True, "llm_configured": llm.configured, "workspace": str(tools.WORKSPACE),
-            "token": TOKEN,
             # 回传归一之后的实值：前端滑条按它落位（比如 DeepSeek 上的「中」实际是 high）
             "reasoning_effort": llm.reasoning_effort,
             "with_shot": bool((CFG.get("agent") or {}).get("with_shot", True)),
@@ -3261,26 +3188,21 @@ async def api_set_config(req: ConfigUpdate, request: Request):
 
 # ---------- 设备配对 ----------
 # 浏览器侧：start → 等掌机允许 → confirm（PIN）→ 下发设备 Cookie。
-# 掌机侧：pending / refresh / decision 三个接口都要求令牌或已配对 Cookie。
+# 掌机侧：pending / refresh / decision 三个接口都要求本机回环或已配对 Cookie。
 
 def _pair_http(exc: pairing.PairError) -> HTTPException:
     return HTTPException(status_code=exc.status, detail=exc.message)
 
 
 @app.get("/api/auth/session")
-async def api_auth_session(request: Request, token: str | None = Query(default=None),
-                           x_token: str | None = Header(default=None)):
-    """未登录也能查：当前是不是已经凭令牌/设备 Cookie 登录。
+async def api_auth_session(request: Request):
+    """未登录也能查：当前是不是已经凭设备 Cookie 或本机回环登录。
 
-    网页打开时先问一次，已配对就直接进主界面，不再要求输入 12 位令牌。
+    网页打开时先问一次，已配对就直接进主界面；未配对则弹 PIN 配对。
     """
-    device = None
     local = netcfg.is_local(_client_ip(request))
-    authenticated = bool(local or (TOKEN and (authguard.token_eq(TOKEN, token)
-                                             or authguard.token_eq(TOKEN, x_token))))
-    if not authenticated:
-        device = _cookie_device(request)
-        authenticated = bool(device)
+    device = None if local else _cookie_device(request)
+    authenticated = bool(local or device)
     return {
         "authenticated": authenticated,
         "local": local,
@@ -3327,14 +3249,14 @@ async def api_pair_confirm(req: PairConfirmRequest, request: Request,
             "device_days": _device_days()}
 
 
-@app.get("/api/pair/pending", dependencies=[Depends(check_token)])
+@app.get("/api/pair/pending", dependencies=[Depends(require_auth)])
 async def api_pair_pending():
     """掌机设置页：待配对设备 + PIN + 倒计时。"""
     sessions = pairing.manager.pending()
     return {"ok": True, "sessions": sessions, "device_days": _device_days()}
 
 
-@app.post("/api/pair/refresh", dependencies=[Depends(check_token)])
+@app.post("/api/pair/refresh", dependencies=[Depends(require_auth)])
 async def api_pair_refresh(req: PairIdRequest):
     try:
         return {"ok": True, **pairing.manager.refresh(req.pair_id)}
@@ -3342,7 +3264,7 @@ async def api_pair_refresh(req: PairIdRequest):
         raise _pair_http(exc) from exc
 
 
-@app.post("/api/pair/decision", dependencies=[Depends(check_token)])
+@app.post("/api/pair/decision", dependencies=[Depends(require_auth)])
 async def api_pair_decision(req: PairDecisionRequest, request: Request):
     try:
         return {"ok": True, **pairing.manager.decide(
@@ -3353,13 +3275,13 @@ async def api_pair_decision(req: PairDecisionRequest, request: Request):
 
 # ---------- 已配对设备 ----------
 
-@app.get("/api/devices", dependencies=[Depends(check_token)])
+@app.get("/api/devices", dependencies=[Depends(require_auth)])
 async def api_devices():
     return {"ok": True, "devices": pairing.manager.devices.list(),
             "device_days": _device_days()}
 
 
-@app.post("/api/devices/rename", dependencies=[Depends(check_token)])
+@app.post("/api/devices/rename", dependencies=[Depends(require_auth)])
 async def api_device_rename(req: DeviceRenameRequest, request: Request):
     try:
         device = pairing.manager.devices.rename(req.device_id, req.name)
@@ -3370,7 +3292,7 @@ async def api_device_rename(req: DeviceRenameRequest, request: Request):
     return {"ok": True, "device": device}
 
 
-@app.post("/api/devices/remove", dependencies=[Depends(check_token)])
+@app.post("/api/devices/remove", dependencies=[Depends(require_auth)])
 async def api_device_remove(req: DeviceIdRequest, request: Request):
     if not pairing.manager.devices.remove(req.device_id):
         raise HTTPException(status_code=404, detail="设备不存在或已被移除")
@@ -3379,7 +3301,7 @@ async def api_device_remove(req: DeviceIdRequest, request: Request):
     return {"ok": True, "devices": pairing.manager.devices.list()}
 
 
-@app.post("/api/devices/remove_all", dependencies=[Depends(check_token)])
+@app.post("/api/devices/remove_all", dependencies=[Depends(require_auth)])
 async def api_device_remove_all(request: Request):
     n = pairing.manager.devices.remove_all()
     audit.record("device", "remove_all", "ok", ip=_client_ip(request), detail=str(n))
@@ -3388,13 +3310,13 @@ async def api_device_remove_all(request: Request):
 
 # ---------- 登录与配对审计 ----------
 
-@app.get("/api/audit", dependencies=[Depends(check_token)])
+@app.get("/api/audit", dependencies=[Depends(require_auth)])
 async def api_audit(limit: int = Query(default=50, ge=1, le=audit.MAX_EVENTS)):
     """只读审计：最近若干条鉴权失败 / 配对尝试，不包含 PIN 或设备令牌。"""
     return {"ok": True, "events": audit.recent(limit)}
 
 
-@app.post("/api/tts", dependencies=[Depends(check_token_any)])
+@app.post("/api/tts", dependencies=[Depends(require_auth)])
 async def api_set_tts(enabled: bool = Query(...)):
     """只切语音播报开关：给 Decky 插件面板用
 
@@ -3405,13 +3327,13 @@ async def api_set_tts(enabled: bool = Query(...)):
     return {"ok": True, "tts_enable": tts.enable}
 
 
-@app.get("/api/ask-template", dependencies=[Depends(check_token)])
+@app.get("/api/ask-template", dependencies=[Depends(require_auth)])
 async def api_get_ask_template():
     """「截屏询问」提示词模板：插件面板展开设置区时读一次"""
     return {"ok": True, "text": ASK_TEMPLATE, "default": DEFAULT_ASK_TEMPLATE}
 
 
-@app.post("/api/ask-template", dependencies=[Depends(check_token_any)])
+@app.post("/api/ask-template", dependencies=[Depends(require_auth)])
 async def api_set_ask_template(req: AskTemplateUpdate):
     """改「截屏询问」提示词模板：空 / 全空白表示恢复默认
 
@@ -3422,7 +3344,7 @@ async def api_set_ask_template(req: AskTemplateUpdate):
     return {"ok": True, "text": ASK_TEMPLATE}
 
 
-@app.get("/api/translate-template", dependencies=[Depends(check_token)])
+@app.get("/api/translate-template", dependencies=[Depends(require_auth)])
 async def api_get_translate_template():
     """「截图翻译」提示词模板：和大屏模型页那一栏是同一份配置"""
     return {
@@ -3432,7 +3354,7 @@ async def api_get_translate_template():
     }
 
 
-@app.post("/api/translate-template", dependencies=[Depends(check_token_any)])
+@app.post("/api/translate-template", dependencies=[Depends(require_auth)])
 async def api_set_translate_template(req: TranslateTemplateUpdate):
     """改「截图翻译」提示词模板：空 / 全空白表示恢复默认
 
@@ -3446,7 +3368,7 @@ async def api_set_translate_template(req: TranslateTemplateUpdate):
 
 # ---------- 语音输入 ----------
 
-@app.get("/api/stt", dependencies=[Depends(check_token)])
+@app.get("/api/stt", dependencies=[Depends(require_auth)])
 async def api_stt_status():
     """语音输入状态：前端据此决定按钮能不能按、要不要提示下模型
 
@@ -3465,7 +3387,7 @@ async def api_stt_status():
     }
 
 
-@app.post("/api/stt/download", dependencies=[Depends(check_token_any)])
+@app.post("/api/stt/download", dependencies=[Depends(require_auth)])
 async def api_stt_download():
     """启动语音模型下载（镜像直取约 250MB，GitHub 回退为 1GB 压缩包）
 
@@ -3476,13 +3398,13 @@ async def api_stt_download():
     return {"ok": True, **stt.start_download()}
 
 
-@app.post("/api/stt/download/cancel", dependencies=[Depends(check_token_any)])
+@app.post("/api/stt/download/cancel", dependencies=[Depends(require_auth)])
 async def api_stt_download_cancel():
     """取消正在下载的模型（已下载的 .part 会被清掉，不会留下半个包）"""
     return {"ok": True, **stt.request_cancel()}
 
 
-@app.post("/api/stt/toggle", dependencies=[Depends(check_token_any)])
+@app.post("/api/stt/toggle", dependencies=[Depends(require_auth)])
 async def api_set_stt(enabled: bool = Query(...)):
     """只切语音输入开关：给 Decky 面板用
 
@@ -3493,7 +3415,7 @@ async def api_set_stt(enabled: bool = Query(...)):
     return {"ok": True, "stt_enable": stt.enable}
 
 
-@app.post("/api/stt/duck", dependencies=[Depends(check_token_any)])
+@app.post("/api/stt/duck", dependencies=[Depends(require_auth)])
 async def api_stt_duck(on: bool = Query(...)):
     """录音开始/结束时静音、恢复系统输出
 
@@ -3505,7 +3427,7 @@ async def api_stt_duck(on: bool = Query(...)):
     return audiomute.restore()
 
 
-@app.post("/api/stt/transcribe", dependencies=[Depends(check_token_any)])
+@app.post("/api/stt/transcribe", dependencies=[Depends(require_auth)])
 async def api_stt_transcribe(req: Request):
     """整段 WAV 转文字。请求体直接是音频字节，不做 multipart
 
@@ -3527,7 +3449,7 @@ async def api_stt_transcribe(req: Request):
 
 # ---------- 版本与升级 ----------
 
-# 不校验令牌：鉴权页在登录前就要显示版本号
+# 不校验配对：鉴权页在登录前就要显示版本号
 @app.get("/api/version")
 async def api_version():
     return {
@@ -3542,7 +3464,7 @@ async def api_version():
 
 @app.get("/api/i18n")
 async def api_i18n():
-    """界面语言与英文替换表（纯静态文案，不需要令牌）
+    """界面语言与英文替换表（纯静态文案，无需鉴权）
 
     [ui] language = "en" 时网页/客户端启动后替换静态文案；中文模式返回空表，
     前端保持原样。插件端暂未接入，可后续直接读这个接口。
@@ -3553,7 +3475,7 @@ async def api_i18n():
     }
 
 
-@app.get("/api/update/check", dependencies=[Depends(check_token)])
+@app.get("/api/update/check", dependencies=[Depends(require_auth)])
 async def api_update_check():
     try:
         info = await updater.check()
@@ -3562,7 +3484,7 @@ async def api_update_check():
     return info
 
 
-@app.post("/api/update/apply", dependencies=[Depends(check_token)])
+@app.post("/api/update/apply", dependencies=[Depends(require_auth)])
 async def api_update_apply():
     """从网页一键升级：拉取代码后交给 install.sh upgrade 重启服务
 
@@ -3576,7 +3498,7 @@ async def api_update_apply():
         raise HTTPException(status_code=400 if "不是 git" in msg else 502, detail=msg)
 
 
-@app.post("/api/restart", dependencies=[Depends(check_token)])
+@app.post("/api/restart", dependencies=[Depends(require_auth)])
 async def api_restart():
     """重启核心（后端服务自身）
 
@@ -3675,7 +3597,7 @@ async def _start_update_watch():
     asyncio.create_task(update_watch_loop())
 
 
-@app.get("/api/models", dependencies=[Depends(check_token)])
+@app.get("/api/models", dependencies=[Depends(require_auth)])
 async def api_models(base_url: str = "", api_key: str = ""):
     """向服务商拉取可用模型列表，供前端下拉框自动填充
 
@@ -3702,7 +3624,7 @@ async def api_models(base_url: str = "", api_key: str = ""):
     return {"models": names}
 
 
-@app.post("/api/retry", dependencies=[Depends(check_token)])
+@app.post("/api/retry", dependencies=[Depends(require_auth)])
 async def api_retry():
     global pending_action
     # 只有本会话挂起的操作才挡重试；别的会话挂着的与本端无关
@@ -4187,7 +4109,7 @@ async def compact_history(auto: bool = False, hist: list[dict] | None = None,
     return summary
 
 
-@app.post("/api/compact", dependencies=[Depends(check_token)])
+@app.post("/api/compact", dependencies=[Depends(require_auth)])
 async def api_compact(preview: bool = False):
     """压缩上下文。preview=true 时只报「会压掉多少」，不真正执行
 
@@ -4282,7 +4204,7 @@ def _sd_card_info() -> dict:
     return {}
 
 
-@app.get("/api/sysinfo", dependencies=[Depends(check_token)])
+@app.get("/api/sysinfo", dependencies=[Depends(require_auth)])
 async def api_sysinfo():
     """侧栏状态卡：CPU / 内存 / SSD / 内存卡占用 / 电量 / 运行时长 / 局域网 IP
 
@@ -4364,7 +4286,7 @@ class OpenFileReq(BaseModel):
     path: str
 
 
-@app.post("/api/open_file", dependencies=[Depends(check_token)])
+@app.post("/api/open_file", dependencies=[Depends(require_auth)])
 async def api_open_file(req: OpenFileReq):
     """原生客户端里点开图片/文件 → 用系统默认工具打开（仅限 static 目录内）"""
     rel = req.path.split("?")[0].lstrip("/")
@@ -4380,7 +4302,7 @@ async def api_open_file(req: OpenFileReq):
 
 # ---------- 会话管理 ----------
 
-@app.get("/api/sessions", dependencies=[Depends(check_token)])
+@app.get("/api/sessions", dependencies=[Depends(require_auth)])
 async def api_sessions():
     """侧栏列表：只读索引，不再把每个会话文件整份解析一遍
 
@@ -4402,7 +4324,7 @@ def _current_session_untouched() -> bool:
     return not any(m.get("role") in ("user", "assistant") for m in store.history)
 
 
-@app.post("/api/sessions/create", dependencies=[Depends(check_token)])
+@app.post("/api/sessions/create", dependencies=[Depends(require_auth)])
 async def api_session_create():
     global _ctx_used
     save_current_session()
@@ -4431,7 +4353,7 @@ class SwitchReq(BaseModel):
     id: str
 
 
-@app.post("/api/sessions/switch", dependencies=[Depends(check_token)])
+@app.post("/api/sessions/switch", dependencies=[Depends(require_auth)])
 async def api_session_switch(req: SwitchReq):
     global _ctx_used
     p = _sess_path(req.id)
@@ -4480,7 +4402,7 @@ class MsgDeleteReq(BaseModel):
     with_reply: bool = False         # 删用户消息时，连它下面那条回答一起删
 
 
-@app.post("/api/messages/delete", dependencies=[Depends(check_token)])
+@app.post("/api/messages/delete", dependencies=[Depends(require_auth)])
 async def api_message_delete(req: MsgDeleteReq):
     """删除会话里的单条消息。
 
@@ -4541,7 +4463,7 @@ async def api_message_delete(req: MsgDeleteReq):
     return {"ok": True, "removed": removed, "left": len(store.history)}
 
 
-@app.delete("/api/sessions/{sid}", dependencies=[Depends(check_token)])
+@app.delete("/api/sessions/{sid}", dependencies=[Depends(require_auth)])
 async def api_session_delete(sid: str):
     # pending_action 在本函数里既读又写（下面要清掉指向被删会话的挂起操作），
     # 没有 global 声明时 Python 会把它当局部变量，读到第 4570 行就 UnboundLocalError
@@ -4630,7 +4552,7 @@ async def api_session_delete(sid: str):
     return {"ok": True, "current": store.current_sid}
 
 
-@app.post("/api/checkpoint", dependencies=[Depends(check_token)])
+@app.post("/api/checkpoint", dependencies=[Depends(require_auth)])
 async def api_checkpoint():
     """客户端退出前先来这儿「打个招呼」：把还没落盘的东西全部刷下去。
 
@@ -4701,12 +4623,12 @@ def _lan_ip() -> str:
 
 
 def phone_url() -> str:
-    """手机扫码/直连用的完整地址（带 token 免输入）"""
+    """手机扫码/直连用的地址（扫码后走 PIN 配对，不再携带令牌）"""
     port = int(CFG["server"].get("port", 18765))
-    return f"http://{_lan_ip()}:{port}/?token={TOKEN}"
+    return f"http://{_lan_ip()}:{port}/"
 
 
-@app.get("/api/qrcode", dependencies=[Depends(check_token)])
+@app.get("/api/qrcode", dependencies=[Depends(require_auth)])
 async def api_qrcode():
     """局域网访问地址 + 二维码 PNG（base64）"""
     url = phone_url()
@@ -4765,7 +4687,6 @@ def _overlay_env() -> dict:
     else:
         env.pop("XAUTHORITY", None)
     env["DECKMEIDO_API"] = f"http://127.0.0.1:{CFG['server'].get('port', 18765)}"
-    env["DECKMEIDO_TOKEN"] = str(CFG["server"].get("token", ""))
     # 走 Xwayland（xcb）：Wayland 原生窗口没有「不进任务栏」的协议，遮罩必须走 X11 才能隐藏
     env["QT_QPA_PLATFORM"] = "xcb"
     return env
@@ -5039,7 +4960,7 @@ async def set_overlay_lift(on: bool) -> None:
 tools.ON_OVERLAY_LIFT = set_overlay_lift
 
 
-@app.get("/api/controls", dependencies=[Depends(check_token)])
+@app.get("/api/controls", dependencies=[Depends(require_auth)])
 async def api_controls(force: int = Query(default=0)):
     """控件自检：force=1 时跳过缓存重新实测（网页上点徽章刷新用）
 
@@ -5048,7 +4969,7 @@ async def api_controls(force: int = Query(default=0)):
     return await asyncio.to_thread(depcheck.summary, bool(force))
 
 
-@app.post("/api/controls/fix", dependencies=[Depends(check_token)])
+@app.post("/api/controls/fix", dependencies=[Depends(require_auth)])
 async def api_controls_fix():
     """修复控件：只做不需要 root 的那半——把 ydotoold 交给 systemd 用户单元托管。
 
@@ -5069,7 +4990,7 @@ async def api_controls_fix():
     return out
 
 
-@app.get("/api/overlay_state", dependencies=[Depends(check_token)])
+@app.get("/api/overlay_state", dependencies=[Depends(require_auth)])
 async def api_overlay_state(ack: int = 0, hidden: int = 1):
     # 遮罩进程带 ack=1 轮询时，表示它已经按本次返回的状态生效过了。
     # hidden 是它自报的「当前窗口是否已隐藏」：要求让开时只有真的藏了才算确认，
@@ -5908,7 +5829,7 @@ async def ws_endpoint(ws: WebSocket, token: str = Query(default="")):
         await manager.disconnect(ws)
 
 
-@app.get("/shots/local", dependencies=[Depends(check_token)])
+@app.get("/shots/local", dependencies=[Depends(require_auth)])
 async def shots_local(path: str = Query(default="")):
     """把插件截图落在本机 /tmp 下的那份读出来给各端显示
 
@@ -5928,7 +5849,7 @@ async def shots_local(path: str = Query(default="")):
     return FileResponse(real, media_type="image/jpeg")
 
 
-@app.post("/api/screenshot", dependencies=[Depends(check_token)])
+@app.post("/api/screenshot", dependencies=[Depends(require_auth)])
 async def api_screenshot():
     """插件端专用：抓一张当前画面，返回压缩 JPEG 的 base64
 
@@ -6117,6 +6038,7 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
         data = await asyncio.to_thread(store.read_session, sid)
         hist = data.get("history") if isinstance(data.get("history"), list) else []
     image_part = _qq_image_data_url(image)
+    turn_started = time.time()
     qq_cfg = CFG.get("qq") or {}
     guest_text = (qqbot.guest_prompt(qq_cfg.get("guest_prompt"), _qq_nickname())
                   if readonly else "")
@@ -6143,7 +6065,31 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
         extra = await _qq_maybe_launch_after_install(result.get("events") or [])
         if extra:
             out.update(extra)
+    # 模型这一轮自己截了屏（比如「打开设置看看」）：画面留在 /shots/ 下，
+    # 网页端能看到，QQ 侧却只有一句文字。把这张新图随回复发回去，
+    # 否则用户会觉得「截图截到了但没发上来」。只认本轮新生成的 vision 文件，
+    # 避免把上一轮的旧图重发一遍。
+    if not out.get("image"):
+        blob = await asyncio.to_thread(_turn_screenshot_blob, turn_started)
+        if blob:
+            out["image"] = blob
+            out["caption"] = out.get("caption") or out["reply"] or "截图已奉上"
+            _qq_log("info", "回合附图", f"{len(blob)} 字节")
     return out
+
+
+def _turn_screenshot_blob(since: float) -> bytes | None:
+    """取本轮截图工具产出的压缩画面；不是本轮生成的就返回 None"""
+    try:
+        path = tools.SHOT_STATE.get("vision")
+        if not path:
+            return None
+        p = Path(str(path))
+        if not p.is_file() or p.stat().st_mtime < since:
+            return None
+        return p.read_bytes()
+    except OSError:
+        return None
 
 
 def _qq_image_data_url(blob: bytes | None) -> str | None:
@@ -6189,13 +6135,13 @@ async def _stop_qqbot():
     await qq_bot.stop()
 
 
-@app.get("/api/qq/status", dependencies=[Depends(check_token)])
+@app.get("/api/qq/status", dependencies=[Depends(require_auth)])
 async def api_qq_status():
     """QQ 通道的连接状态与统计（令牌不回显），供远程连接页用"""
     return qq_bot.state()
 
 
-@app.get("/api/qq/logs", dependencies=[Depends(check_token)])
+@app.get("/api/qq/logs", dependencies=[Depends(require_auth)])
 async def api_qq_logs(limit: int = Query(default=100, ge=1, le=300)):
     """QQ 事件日志：只含事件与计数，不含令牌/消息正文；新的在前"""
     return {"logs": qq_bot.logs(limit), "state": qq_bot.state()}
@@ -6226,7 +6172,7 @@ def _qq_public_config() -> dict:
     return {
         "enable": cfg.enable,
         "ws_url": cfg.ws_url,
-        # 这个页面本身就要令牌才能打开，回明文才能「点编辑才可见」；
+        # 这个页面本身要已配对或本机回环才能打开，回明文才能「点编辑才可见」；
         # 状态接口始终不回显
         "access_token": cfg.access_token,
         "admin_qq": list(cfg.admin_qq),
@@ -6250,12 +6196,12 @@ def _qq_public_config() -> dict:
     }
 
 
-@app.get("/api/qq/config", dependencies=[Depends(check_token)])
+@app.get("/api/qq/config", dependencies=[Depends(require_auth)])
 async def api_qq_config():
     return _qq_public_config()
 
 
-@app.post("/api/qq/config", dependencies=[Depends(check_token_any)])
+@app.post("/api/qq/config", dependencies=[Depends(require_auth)])
 async def api_save_qq_config(req: QQConfigUpdate):
     """保存 QQ 配置并立即按新值重连；写盘统一走 write_config（先校验后原子写）"""
     updates: dict = {}

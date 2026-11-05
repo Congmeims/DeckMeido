@@ -64,23 +64,17 @@ class AccessTest(unittest.TestCase):
         return base
 
     def test_unauthorized_rejected(self):
-        """令牌错误或为空都必须被拒，且先于开关判断"""
+        """未授权来源先于开关判断被拒"""
         self.assertEqual(
-            ri.access_error(self.cfg(), "192.168.1.9", "abcd", "efgh"),
-            ri.RI_UNAUTHORIZED)
-        self.assertEqual(
-            ri.access_error(self.cfg(), "192.168.1.9", "abcd", ""),
-            ri.RI_UNAUTHORIZED)
-        self.assertEqual(
-            ri.access_error(self.cfg(), "192.168.1.9", "", "x"),
+            ri.access_error(self.cfg(), "192.168.1.9", False),
             ri.RI_UNAUTHORIZED)
 
     def test_enabled_gate(self):
         self.assertEqual(
-            ri.access_error(self.cfg(enabled=False), "127.0.0.1", "abcd", "abcd"),
+            ri.access_error(self.cfg(enabled=False), "127.0.0.1", True),
             ri.RI_DISABLED)
         self.assertIsNone(
-            ri.access_error(self.cfg(), "192.168.1.9", "abcd", "ABCD"))
+            ri.access_error(self.cfg(), "192.168.1.9", True))
         self.assertFalse(ri.enabled({"enabled": False}))
         self.assertTrue(ri.enabled({"enabled": True}))
         self.assertFalse(ri.enabled({}))

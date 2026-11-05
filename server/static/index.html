@@ -1145,7 +1145,7 @@
   .pair-row-meta { font-size: 12px; color: var(--muted); word-break: break-all; }
   .pair-row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .pair-empty { font-size: 12.5px; color: var(--muted); }
-  /* 令牌一行：输入框 + 随机生成按钮 */
+  /* 输入框 + 按钮一行（API Key / 端口 / 局域网地址都用它） */
   .token-row { display: flex; gap: 8px; align-items: stretch; }
   .token-row input { flex: 1; font-family: ui-monospace, monospace; letter-spacing: 1px; }
   .mini-btn {
@@ -2642,30 +2642,7 @@
                 <input id="lanUrl" type="text" readonly autocomplete="off">
                 <button id="lanUrlCopy" class="mini-btn" type="button">复制</button>
               </div>
-            </div>
-            <div class="field">
-              <label>访问令牌（每 4 位一组，输入时可带可不带连字符）</label>
-              <div class="token-row">
-                <input id="lanToken" type="text" readonly autocomplete="off">
-                <button id="lanTokenCopy" class="mini-btn" type="button">复制</button>
-              </div>
-              <div class="field-hint">令牌也可在掌机 QAM / 大屏 / 客户端设置的「局域网访问」里查看。</div>
-            </div>
-            <div class="field">
-              <label>修改访问令牌（4-32 位数字或字母；新安装默认 12 位）</label>
-              <div class="token-row">
-                <input id="cfgToken" type="text" placeholder="例如 ABCD-EFGH-JKMN" autocomplete="off" maxlength="32" spellcheck="false">
-                <button id="genToken" class="mini-btn" type="button">随机生成</button>
-              </div>
-              <div id="tokenHint" class="field-hint"></div>
-            </div>
-            <div class="field">
-              <label>带令牌的完整链接（手机扫码）</label>
-              <div class="token-row">
-                <input id="cfgUrl" type="text" readonly autocomplete="off">
-                <button id="qrBtn" class="mini-btn" type="button">二维码</button>
-              </div>
-              <div id="qrBox" class="qr-box"></div>
+              <div class="field-hint">打开后点「配对新设备」，按掌机上的 PIN 配对一次；之后浏览器会记住这台设备。</div>
             </div>
           </div>
           <div class="card">
@@ -2734,7 +2711,7 @@
               <input id="cfgRiMax" type="number" min="1" max="120" step="1" value="30">
             </div>
             <div class="field-hint" style="color:#e0a33a">
-              安全提示：这个开关同时就是「允许局域网设备接管」。开启后，局域网内任何拿到访问令牌的人
+              安全提示：这个开关同时就是「允许局域网设备接管」。开启后，局域网内任何已配对设备
               都能控制这台机器。只在可信网络里用，用完及时关闭。
             </div>
             <div class="field-hint" id="riCfgState">当前状态：未接管</div>
@@ -3148,40 +3125,13 @@
   var pairConfirm = document.getElementById('pairConfirm');
   var pairCancel = document.getElementById('pairCancel');
 
-  // 令牌归一化：大小写不敏感，去掉空格/连字符，I/L→1、O→0。
-  // 掌机 / 大屏 / 客户端展示的是 XXXX-XXXX-XXXX，粘贴过来也能直接通过。
-  function normToken(v) {
-    return String(v || '')
-      .toUpperCase()
-      .replace(/[\s-]/g, '')
-      .replace(/I/g, '1')
-      .replace(/L/g, '1')
-      .replace(/O/g, '0')
-      .toLowerCase();
-  }
-  function groupToken(v) {
-    var t = String(v || '').toUpperCase().replace(/[\s-]/g, '')
-      .replace(/I/g, '1').replace(/L/g, '1').replace(/O/g, '0');
-    return t.replace(/(.{4})/g, '$1-').replace(/-+$/g, '');
-  }
-
-  // token：URL > localStorage
-  // 浏览器端只走 PIN 配对，这里保留老链接的 ?token= 兼容（不展示、不提示）
-  var token = normToken(new URLSearchParams(location.search).get('token') || localStorage.getItem('deckmeido_token') || '');
-  if (token) {
-    localStorage.setItem('deckmeido_token', token);
-    // 令牌已存到本地，把 URL 里的抹掉，避免截图/分享时泄露
-    if (new URLSearchParams(location.search).has('token')) {
-      history.replaceState(null, '', location.pathname);
-    }
-  }
+  // 设备配对登录：Cookie 已经生效时即可连接（回环访问由后端直接放行）
+  var deviceSession = false;
 
   var ws = null;
   var typingEl = null;
   var reconnectTimer = null;
   var backoff = 1000;
-  // 设备配对登录：Cookie 已经生效时不用 12 位令牌也能连（旧 ?token= 路径照旧可用）
-  var deviceSession = false;
   var pairingId = '';
   var pairTimer = null;
 
@@ -3293,21 +3243,14 @@
     if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
     return (n / 1073741824).toFixed(1) + ' GB';
   }
-  // 静态资源的 <img src> 也走 GET，只能靠查询参数带令牌。
-  // 有的图片来源（live 事件里回传的 ev.image）本身已经带 token 了，
-  // 再拼一次就成了 ?token=x?token=x，后端取到的值不匹配直接 401，
-  // 表现就是「PC 网页端一张图都没有」。所以统一从这里过一道
-  function withToken(url) {
-    if (!url) return url;
-    if (/[?&]token=/.test(url)) return url;
-    return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(token);
-  }
+  // 静态资源的 <img src> 与下载链接都走 GET；鉴权靠同源 Cookie（已配对设备），
+  // 地址本身不再需要拼令牌。
   function fileCardHtml(label, path) {
     var name = label || path.split('/').pop() || path;
     var ext = (name.split('.').pop() || '').toLowerCase();
     var url = '/files/' + path.split('/').map(encodeURIComponent).join('/');
-    // 下载走 GET，只能靠查询参数带上令牌（浏览器不会给 <a> 加自定义头）
-    var href = withToken(url);
+    // 下载走 GET，鉴权由同源 Cookie 完成（浏览器不会给 <a> 加自定义头）
+    var href = url;
     // 卡片带文件路径属性，挂载后再去问大小（列表渲染是同步的，不能在里面 await）
     return '<div class="file-card" data-path="' + escapeHtml(path) + '">'
          + '<span class="fc-icon">' + (FILE_ICONS[ext] || '📄') + '</span>'
@@ -3329,7 +3272,7 @@
     });
     addZipBtn(root, cards);
     if (!paths.length) return;
-    fetch('/api/file_stat_batch?token=' + encodeURIComponent(token), {
+    fetch('/api/file_stat_batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ paths: paths })
@@ -3361,7 +3304,7 @@
     a.className = 'fc-zip';
     a.textContent = '打包下载（' + n + ' 个文件）';
     // 下载走 GET，只能把路径放进查询参数（浏览器不会给 <a> 加自定义头）
-    a.href = '/api/zip?token=' + encodeURIComponent(token) + '&name=files.zip'
+    a.href = '/api/zip?name=files.zip'
            + cards.filter(function (c) { return c.dataset.path; })
                   .map(function (c) { return '&path=' + encodeURIComponent(c.dataset.path); }).join('');
     a.setAttribute('download', 'files.zip');
@@ -3389,8 +3332,8 @@
       return fileCardHtml(label, href.slice('/files/'.length).split('?')[0]);
     });
     s = s.replace(/!\[([^\]]*)\]\((\/uploads\/[^)\s]+)\)/g, function (m, alt, href) {
-      // 上传的图在 /uploads/ 下，同样需要令牌，否则浏览器拿到 401 只显示破图
-      return '<img class="chat-img" alt="' + alt + '" src="' + withToken(href) + '">';
+      // 上传的图在 /uploads/ 下，鉴权由同源 Cookie（已配对设备）完成
+      return '<img class="chat-img" alt="' + alt + '" src="' + href + '">';
     });
     s = s.replace(/\n{2,}/g, '<br><br>').replace(/\n/g, '<br>');
     // 行首缩进用不换行空格占位，避免连续半角空格被浏览器折叠/当作换行
@@ -3716,7 +3659,7 @@
       if (!(ev && ev.type === 'screenshot' && ev.image)) return;
       var shot = document.createElement('img');
       shot.className = 'msg-shot';
-      shot.src = withToken(ev.image);
+      shot.src = ev.image;
       shot.alt = ev.summary || '附带的画面';
       shot.title = '点开看原图';
       // 先按 16:9 占位，图解码完再交回自适应，避免气泡先瘦后胖
@@ -3877,7 +3820,7 @@
     body.className = 'tl-body pic';
     var img = document.createElement('img');
     img.className = 'shot thumb';
-    img.src = withToken(ev.image);
+    img.src = ev.image;
     img.alt = '附带的画面';
     // 解码前先按 16:9 占好位置，别让气泡先瘦后胖（同下方截图行的处理）
     img.width = 280; img.height = 158;
@@ -4004,7 +3947,7 @@
       } else if (ev.image) {
         var img = document.createElement('img');
         img.className = 'shot';
-        img.src = withToken(ev.image);
+        img.src = ev.image;
         img.alt = '屏幕截图';
         // 图解码出来之前，按 16:9 的固有尺寸先占住位置。
         // 不占的话气泡先按 0 宽画一遍，图片一落地再把气泡撑开——
@@ -4400,13 +4343,12 @@
   }
 
   // 下载到本机：走 /api/preview 的 raw=1 把文件本体取回来，再用 Blob 存到
-  // 浏览器自己的下载目录。加 download 属性不行——预览地址是带 token 的同源 URL，
+  // 浏览器自己的下载目录。加 download 属性不行——预览地址是同源 URL，
   // 但直接跳过去会被浏览器当「打开」处理，视频/图片只会在页内播放而不是落盘。
   // 文件在 Deck 上、浏览器可能在另一台电脑，所以只能是「这台电脑的下载目录」。
   function fbDownload(path, name) {
     fbToast('正在下载：' + name, 'file');
-    var url = '/api/preview?token=' + encodeURIComponent(token) +
-              '&path=' + encodeURIComponent(path) + '&raw=1';
+    var url = '/api/preview?path=' + encodeURIComponent(path) + '&raw=1';
     fetch(url).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.blob();
@@ -4431,8 +4373,7 @@
     rbEl('fvMeta').textContent = '读取中…';
     var body = rbEl('fvBody');
     body.innerHTML = '';
-    var src = '/api/preview?token=' + encodeURIComponent(token) +
-              '&path=' + encodeURIComponent(path);
+    var src = '/api/preview?path=' + encodeURIComponent(path);
     fetch(src).then(function (r) { return r.json(); }).then(function (d) {
       if (!d || d.error || !d.kind) {
         body.innerHTML = '<div class="fv-note">' + (d && d.error ? d.error : '预览失败') + '</div>';
@@ -4545,7 +4486,7 @@
   var fbClip = null;   // {op: 'cut'|'copy', path: string}
 
   function fbFs(op, path, path2) {
-    return fetch('/api/fs?token=' + encodeURIComponent(token), {
+    return fetch('/api/fs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ op: op, path: path, path2: path2 || '' })
@@ -4737,7 +4678,7 @@
       fbToast('已添加到输入框', 'chat');
     });
     fbCtxItem('新会话提问', function () {
-      fetch('/api/sessions/create?token=' + encodeURIComponent(token), { method: 'POST' })
+      fetch('/api/sessions/create', { method: 'POST' })
         .then(function (r) { return r.json(); })
         .then(function (d) {
           if (d && d.ok) { doSend(text); }
@@ -4952,7 +4893,7 @@
   // quiet=true：静默刷新（重连后自动补拉），不弹「AI 正在定位」也不播淡入。
   // 那条提示是给用户看的「AI 把面板拽走了」，断线重连 / 刷新页面时弹一次纯属打扰。
   function fbLoad(path, sel, quiet) {
-    var url = '/api/browse?token=' + encodeURIComponent(token);
+    var url = '/api/browse';
     if (path) url += '&path=' + encodeURIComponent(path);
     rbEl('fbList').innerHTML = '<div class="fb-note">加载中…</div>';
     return fetch(url).then(function (r) { return r.json(); }).then(function (data) {
@@ -5077,8 +5018,7 @@
     var fd = new FormData();
     fd.append('file', next.file, next.name);
     var xhr = new XMLHttpRequest();
-    var url = '/api/upload-to?token=' + encodeURIComponent(token) +
-              '&dir=' + encodeURIComponent(next.dir);
+    var url = '/api/upload-to?dir=' + encodeURIComponent(next.dir);
     xhr.open('POST', url);
     xhr.upload.onprogress = function (e) {
       if (e.lengthComputable && e.total > 0) {
@@ -5370,10 +5310,10 @@
     var mounted = !!host;
     if (host) { try { term.open(host); fit.fit(); } catch (e) {} }
 
-    // 连 WebSocket：拿当前页面 token（全局变量 token）
+    // 连 WebSocket：同源连接，终端鉴权由设备 Cookie / 回环来源决定
     function wsUrl() {
       var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      return proto + '://' + location.host + '/ws/terminal?token=' + encodeURIComponent(token || '');
+      return proto + '://' + location.host + '/ws/terminal';
     }
     function connect() {
       try { ws = new WebSocket(wsUrl()); } catch (e) { return; }
@@ -5820,7 +5760,7 @@
 
   // 终止当前这条：后端砍进程树 + 取消正在等它的对话轮次
   function termStopCmd(it, btn) {
-    if (!token) return;
+    if (!deviceSession) return;
     if (btn) btn.disabled = true;
     // 手动命令（it.xt）：走 WS stop 帧；AI 命令：走 /api/terminal/stop
     if (it.xt) {
@@ -5839,7 +5779,7 @@
       return;
     }
     // AI 命令走旧路径
-    fetch('/api/terminal/stop?token=' + encodeURIComponent(token), { method: 'POST' })
+    fetch('/api/terminal/stop', { method: 'POST' })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         it.running = false;
@@ -5991,8 +5931,8 @@
   }
 
   function termPoll() {
-    if (!token) return;
-    fetch('/api/terminal?token=' + encodeURIComponent(token))
+    if (!deviceSession) return;
+    fetch('/api/terminal')
       .then(function (r) { return r.json(); })
       .then(function (d) { termApplyState(d.state); })
       .catch(function () {});
@@ -6020,11 +5960,11 @@
   function termRunCmd() {
     var inp = rbEl('termCmd');
     var cmd = inp.value.trim();
-    if (!cmd || !token) return;
+    if (!cmd || !deviceSession) return;
     inp.value = '';
     var it = termAdd('me', cmd, '');
     rbEl('termRun').disabled = true;
-    fetch('/api/terminal/run?token=' + encodeURIComponent(token), {
+    fetch('/api/terminal/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command: cmd, cols: 120, rows: 30 })
@@ -6099,7 +6039,7 @@
   rbShowTab(RB.tab || 'file');
 
   // 工作区路径：点文件时判断能不能用 @{...} 引用，先取一次
-  fetch('/api/files?token=' + encodeURIComponent(token))
+  fetch('/api/files')
     .then(function (r) { return r.json(); })
     .then(function (res) { window.__wsPath = res.workspace || ''; })
     .catch(function () {});
@@ -6186,13 +6126,13 @@
   }
 
   function connect() {
-    // 已配对设备靠 HttpOnly Cookie 认证，token 为空也能连；两者都没有才回鉴权页
-    if (!token && !deviceSession) { showAuth(''); return; }
+    // 已配对设备靠 HttpOnly Cookie 认证；本机回环访问后端直接放行
+    if (!deviceSession) { showAuth(''); return; }
     // 防重入：已有连接正在建/已建立时不要再开一条，
     // 否则两条 ws 同时收消息、onclose 互相打架，重连风暴会打乱忙碌态
     if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
     var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(proto + '://' + location.host + '/ws?token=' + encodeURIComponent(token || ''));
+    ws = new WebSocket(proto + '://' + location.host + '/ws');
 
     ws.onopen = function () {
       setConnected(true);
@@ -6633,10 +6573,8 @@
       // 只清内存不动 localStorage：后端真被杀时，盘上那份缓存才是补回的依据
       turnCache.segs = []; turnCache.cur = '';
       if (ev.code === 4401) {
-        // 令牌/设备凭据被拒：清掉本地状态并停在鉴权页，不要继续重连
-        token = '';
+        // 设备凭据被拒：清掉本地状态并停在鉴权页，不要继续重连
         deviceSession = false;
-        localStorage.removeItem('deckmeido_token');
         clearTimeout(reconnectTimer);
         showAuth('登录已失效，请重新配对');
         return;
@@ -6782,10 +6720,8 @@
           }
           return;
         }
-        // 服务端已下发 HttpOnly Cookie；进入主界面，不再要求令牌
+        // 服务端已下发 HttpOnly Cookie；进入主界面
         deviceSession = true;
-        token = '';
-        localStorage.removeItem('deckmeido_token');
         pairReset();
         authOverlay.classList.remove('show');
         reconnectNow();
@@ -6805,28 +6741,25 @@
     setTimeout(function () { pairBtn.focus(); }, 50);
   }
 
-  // 启动时先问后端：Cookie 已配对就直接进主界面，不再要求 12 位令牌
+  // 启动时先问后端：Cookie 已配对或本机回环就直接进主界面
   function bootAuth() {
-    var q = token ? ('?token=' + encodeURIComponent(token)) : '';
-    fetch('/api/auth/session' + q)
+    fetch('/api/auth/session')
       .then(function (r) { return r.json(); })
       .then(function (d) {
-        if (d && d.authenticated) {
-          deviceSession = !token;
-          if (!token && d.version) authVer.textContent = 'v' + d.version;
+        deviceSession = !!(d && d.authenticated);
+        if (deviceSession) {
+          if (d.version) authVer.textContent = 'v' + d.version;
           connect();
           return;
         }
-        deviceSession = false;
         showAuth('');
       })
       .catch(function () {
-        // 老后端没有这个接口时保持原来的令牌直连行为
-        if (token) connect(); else showAuth('');
+        showAuth('连不上服务，请稍后重试');
       });
   }
 
-  // 鉴权页显示版本号：这个接口不校验令牌，未登录也能查
+  // 鉴权页显示版本号：这个接口不校验配对，未登录也能查
   var authVerLoaded = false;
   function loadAuthVersion() {
     if (authVerLoaded) return;
@@ -6837,7 +6770,7 @@
       .catch(function () { authVer.textContent = '未知'; });
   }
 
-  // 令牌变更后立即用新令牌重连（不等退避）
+  // 配对成功后立即重连（不等退避）
   function reconnectNow() {
     clearTimeout(reconnectTimer);
     stopHeartbeat();
@@ -6958,7 +6891,7 @@
   }
 
   function fetchCtrl(force) {
-    return fetch('/api/controls?force=' + (force ? 1 : 0) + '&token=' + encodeURIComponent(token))
+    return fetch('/api/controls?force=' + (force ? 1 : 0))
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (c) {
         if (!c) { ctrlHint.textContent = '读取失败'; return null; }
@@ -6973,7 +6906,7 @@
     ctrlFixBtn.disabled = true;
     ctrlHint.textContent = '处理中…';
     ctrlLog.textContent = '';
-    fetch('/api/controls/fix?token=' + encodeURIComponent(token), { method: 'POST' })
+    fetch('/api/controls/fix', { method: 'POST' })
       .then(function (r) { return r.json(); })
       .then(function (res) {
         var lines = (res.results || []).map(function (x) {
@@ -7252,7 +7185,7 @@
     if (!item) return;
     if (!busy) { doSend(item.text); return; }
     forceSendAfterCancel = item.text;
-    fetch('/api/cancel?client=' + encodeURIComponent(myClient()) + '&device=' + encodeURIComponent(DEVICE_ID) + '&token=' + encodeURIComponent(token), { method: 'POST' })
+    fetch('/api/cancel?client=' + encodeURIComponent(myClient()) + '&device=' + encodeURIComponent(DEVICE_ID), { method: 'POST' })
       .catch(function () {});
   }
 
@@ -7323,10 +7256,10 @@
 
   function refreshStatus() {
     if (document.hidden) return;
-    // 未连上（登录遮罩阶段）不发请求：空令牌每 3 秒一次毫无意义，
+    // 未连上（登录遮罩阶段）不发请求：未配对时每 3 秒一次毫无意义，
     // 只会刷一屏 401 审计，旧版限流还会因此把本机 IP 封掉
     if (!ws || ws.readyState !== 1) return;
-    fetch('/api/status?token=' + encodeURIComponent(token))
+    fetch('/api/status')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (s) { if (s) renderStatus(s); })
       .catch(function () {});
@@ -7382,7 +7315,7 @@
         extra = sib;
       }
     }
-    return fetch('/api/messages/delete?token=' + encodeURIComponent(token), {
+    return fetch('/api/messages/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ts: ts, role: isUser ? 'user' : 'assistant', with_reply: isUser })
@@ -7434,7 +7367,7 @@
     }
     setBusy(true);
     showTyping();
-    fetch('/api/retry?token=' + encodeURIComponent(token), { method: 'POST' })
+    fetch('/api/retry', { method: 'POST' })
       .then(function (r) { if (!r.ok) { hideTyping(); setBusy(false); addSystem('没有可重试的消息'); } })
       .catch(function () { hideTyping(); setBusy(false); });
   }
@@ -7506,7 +7439,7 @@
     cancelGuardUntil = Date.now() + 5000;
     // 带上调用方：后端日志里会写成「终止请求：client=… device=… ip=…」，
     // 自动终止的来源（遮罩、别的端、插件）一查就知道，不用再靠猜
-    fetch('/api/cancel?client=' + encodeURIComponent(myClient()) + '&device=' + encodeURIComponent(DEVICE_ID) + '&token=' + encodeURIComponent(token), { method: 'POST' })
+    fetch('/api/cancel?client=' + encodeURIComponent(myClient()) + '&device=' + encodeURIComponent(DEVICE_ID), { method: 'POST' })
       .catch(function () {});
     setBusy(false);
     hideTyping();
@@ -7561,8 +7494,8 @@
   function duckOutput(on) {
     // 后端静默降级：工具缺失/命令失败都不影响录音，这里忽略一切错误
     try {
-      fetch('/api/stt/duck?on=' + (on ? 'true' : 'false') +
-            '&token=' + encodeURIComponent(token), { method: 'POST' }).catch(function () {});
+      fetch('/api/stt/duck?on=' + (on ? 'true' : 'false'), { method: 'POST' })
+        .catch(function () {});
     } catch (e) {}
   }
 
@@ -7614,7 +7547,7 @@
     if (!IS_NATIVE || micState !== 'idle') return;
     micBtn.classList.add('busy');
     try {
-      var st = await (await fetch('/api/stt?token=' + encodeURIComponent(token))).json();
+      var st = await (await fetch('/api/stt')).json();
       if (!st.enable || !st.runtime || !st.model) {
         fbToast('语音输入未启用或模型未下载：到设置 → 对话与语音里开启并下载模型', 'chat', true);
         micBtn.classList.remove('busy');
@@ -7669,7 +7602,7 @@
     duckOutput(false);
     try {
       var wav = encodeWav(chunks, rate);
-      var res = await fetch('/api/stt/transcribe?token=' + encodeURIComponent(token), {
+      var res = await fetch('/api/stt/transcribe', {
         method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav
       });
       var d = {};
@@ -7753,7 +7686,7 @@
     el.addEventListener('focus', function () { el.select(); });
   });
 
-  // 连接中临时关闭自动重连（改令牌时会被服务端踢下线，不能让旧逻辑又弹回鉴权页）
+  // 连接中临时关闭自动重连（设备被移除时服务端会踢下线，不能让旧逻辑又弹回鉴权页）
   var suppressReconnect = false;
   // 首次引导的状态机：'' 未检查 → 'pending' 等 status 报出配置情况 → 'done'
   // 不能用布尔值：ws.onopen 会按重连次数反复触发，而 status 消息总是晚于
@@ -7777,11 +7710,7 @@
   var cfgTts = document.getElementById('cfgTts');
   var cfgPerm = document.getElementById('cfgPerm');
   var cfgWorkspace = document.getElementById('cfgWorkspace');
-  var cfgToken = document.getElementById('cfgToken');
-  var genToken = document.getElementById('genToken');
-  var tokenHint = document.getElementById('tokenHint');
   var lanUrl = document.getElementById('lanUrl');
-  var lanToken = document.getElementById('lanToken');
   var cfgLanEnable = document.getElementById('cfgLanEnable');
   var lanWarn = document.getElementById('lanWarn');
   var cfgPort = document.getElementById('cfgPort');
@@ -7798,9 +7727,6 @@
   var pairPollTimer = 0;
   var saveCfg = document.getElementById('saveCfg');
   var cfgHint = document.getElementById('cfgHint');
-  var cfgUrl = document.getElementById('cfgUrl');
-  var qrBtn = document.getElementById('qrBtn');
-  var qrBox = document.getElementById('qrBox');
   var verTag = document.getElementById('verTag');
   var updCheck = document.getElementById('updCheck');
   var updNote = document.getElementById('updNote');
@@ -7888,7 +7814,7 @@
   function loadVersion() {
     if (verLoaded) return;
     verLoaded = true;
-    fetch('/api/version?token=' + encodeURIComponent(token))
+    fetch('/api/version')
       .then(function (r) { return r.json(); })
       .then(function (v) {
         verTag.textContent = '版本 v' + (v.version || '?');
@@ -7908,7 +7834,7 @@
       });
   }
 
-  // 侧栏字标后的版本徽章：/api/version 不校验令牌，登录前也能拿到，
+  // 侧栏字标后的版本徽章：/api/version 不校验配对，登录前也能拿到，
   // 所以页面一加载就填，不必等设置页打开
   var brandVer = document.getElementById('brandVer');
   function loadBrandVersion() {
@@ -7932,7 +7858,7 @@
     updNote.textContent = '正在同时查询镜像与 GitHub…';
     updApply.style.display = 'none';
     updCheck.disabled = true;
-    fetch('/api/update/check?token=' + encodeURIComponent(token))
+    fetch('/api/update/check')
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
       .then(function (res) {
         updCheck.disabled = false;
@@ -7974,7 +7900,7 @@
   updApply.addEventListener('click', function () {
     updApply.disabled = true;
     updNote.textContent = '正在开始升级…';
-    fetch('/api/update/apply?token=' + encodeURIComponent(token), { method: 'POST' })
+    fetch('/api/update/apply', { method: 'POST' })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
       .then(function (res) {
         if (!res.ok) {
@@ -8008,7 +7934,7 @@
   }
 
   function pairPost(path, body) {
-    fetch(path + '?token=' + encodeURIComponent(token), {
+    fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {}),
@@ -8022,11 +7948,11 @@
   }
 
   function loadPairInfo() {
-    var q = '?token=' + encodeURIComponent(token);
+    var q = '';
     Promise.all([
       fetch('/api/pair/pending' + q).then(function (r) { return r.json(); }),
       fetch('/api/devices' + q).then(function (r) { return r.json(); }),
-      fetch('/api/audit?limit=50&token=' + encodeURIComponent(token))
+      fetch('/api/audit?limit=50')
         .then(function (r) { return r.json(); }),
     ])
       .then(function (all) {
@@ -8161,9 +8087,6 @@
     // 每次打开都从第一页开始；上次停在哪页容易让人以为设置不见了
     showSetPane('model');
     cfgHint.textContent = '';
-    tokenHint.textContent = '';
-    qrBox.classList.remove('show');
-    qrBox.innerHTML = '';
     loadMemory();
     loadVersion();
     loadCfgForm();
@@ -8179,9 +8102,9 @@
   // 读一次配置填进设置页表单。导入备份改了人设之后也要再填一遍，
   // 所以单独拆出来
   function loadCfgForm() {
-    fetch('/api/config?token=' + encodeURIComponent(token))
+    fetch('/api/config')
       .then(function (r) {
-        if (!r.ok) throw new Error(r.status === 401 ? '旧令牌已失效，请重新登录' : '读取失败');
+        if (!r.ok) throw new Error(r.status === 401 ? '登录已失效，请重新配对' : '读取失败');
         return r.json();
       })
       .then(function (c) {
@@ -8190,7 +8113,7 @@
         cfgBaseUrl.value = c.base_url || DEFAULT_BASE_URL;
         // 服务端不再下发明文 Key，只给「已配置」+ 打码值。
         // 输入框留空，占位符显示打码值 —— 让主人一眼看到「有 Key」，
-        // 但即使拿到访问令牌也抄不走。不填就等于不改（见后端注释）。
+        // 但即使拿到已配对设备的 Cookie 也抄不走。不填就等于不改（见后端注释）。
         apiKeyClear = false;
         cfgApiKey.value = '';
         var masked = c.api_key_masked || c.api_key || '';
@@ -8227,10 +8150,8 @@
         document.getElementById('cfgPersonaEnding').value = c.persona_ending || '';
         document.getElementById('cfgPersonaSuffix').value = c.persona_suffix || '';
         document.getElementById('cfgPersonaForbid').value = c.persona_forbid || '';
-        cfgToken.value = groupToken(c.token || '');
         // 服务端给出真实局域网 IP：桌面客户端本机访问时 location.origin 是 127.0.0.1
         lanUrl.value = c.lan_url || location.origin;
-        lanToken.value = groupToken(c.token || '');
         // 局域网开关：关闭时只监听 127.0.0.1；开启后要重启后端才生效
         cfgLanEnable.value = c.lan_enable ? 'on' : 'off';
         if (c.lan_enable) {
@@ -8242,7 +8163,6 @@
         }
         cfgPort.value = c.port || 18765;
         portHint.textContent = '';
-        cfgUrl.value = (c.lan_url || location.origin) + '/?token=' + encodeURIComponent(c.token || '');
         // 更新源：双源探测，这里只控制是否同时查 GitHub
         cfgUpdGithub.checked = c.update_github_enable !== false;
         ddRefreshAll();
@@ -8254,7 +8174,7 @@
       })
       .catch(function (e) {
         var msg = (e && e.message) || '';
-        if (/401/.test(msg)) { showAuth('旧令牌已失效，请重新配对'); }
+        if (/401/.test(msg)) { showAuth('登录已失效，请重新配对'); }
         // 同「保存」：fetch 层失败只给一句人话，别把 Failed to fetch 摆到界面上
         else if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
           cfgHint.textContent = '连不上服务，请稍等几秒重试';
@@ -8272,8 +8192,7 @@
   var memKinds = [];      // [{id,name}]，顺序由后端给，列表分组也按它排
 
   function memFetch(path, opt) {
-    return fetch(path + (path.indexOf('?') >= 0 ? '&' : '?')
-                 + 'token=' + encodeURIComponent(token), opt)
+    return fetch(path, opt)
       .then(function (r) {
         // 不查状态码的话，401/500 返回的 {"detail": ...} 会被当成成功结果
         // 往下走，界面上表现为「点了没反应」或列表空白但没报错
@@ -8527,32 +8446,9 @@
     else openSettings();
   });
 
-  // 扫码连接：展示局域网地址对应的二维码，手机一扫即带上令牌
-  // 后端回的是 data:image/png;base64 的固定前缀 + 纯 base64，只认这个形状；
-  // 别的内容一律不往 innerHTML 里放（地址可被改，拼进去就是一段可控 HTML）
-  var PNG_RE = /^data:image\/png;base64,[A-Za-z0-9+/=]+$/;
-  qrBtn.addEventListener('click', function () {
-    if (qrBox.classList.contains('show')) { qrBox.classList.remove('show'); return; }
-    qrBox.innerHTML = '<p>生成中…</p>';
-    qrBox.classList.add('show');
-    fetch('/api/qrcode?token=' + encodeURIComponent(token))
-      .then(function (r) { return r.json(); })
-      .then(function (res) {
-        cfgUrl.value = res.url || cfgUrl.value;
-        var qr = String(res.qr || '');
-        qrBox.innerHTML = PNG_RE.test(qr)
-          ? '<img src="' + qr + '" alt="扫码连接"><p>手机扫码即可连接（同一局域网）</p>'
-          : '<p>二维码生成失败，可直接复制上面的地址</p>';
-      })
-      .catch(function () { qrBox.innerHTML = '<p>二维码生成失败，可直接复制上面的地址</p>'; });
-  });
-
-  // 局域网访问区块的「复制」按钮：地址与分组令牌
+  // 局域网访问区块的「复制」按钮：复制局域网地址
   document.getElementById('lanUrlCopy').addEventListener('click', function () {
     fbCopyText(lanUrl.value);
-  });
-  document.getElementById('lanTokenCopy').addEventListener('click', function () {
-    fbCopyText(lanToken.value);
   });
 
   // 端口单独保存：只提交 port，避免顺带改动别的表单项
@@ -8565,7 +8461,7 @@
       return;
     }
     portHint.textContent = '保存中…';
-    fetch('/api/config?token=' + encodeURIComponent(token), {
+    fetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ port: port }),
@@ -8584,7 +8480,7 @@
   restartPort.addEventListener('click', function () {
     portHint.style.color = 'var(--muted)';
     portHint.textContent = '正在请求重启…';
-    fetch('/api/restart?token=' + encodeURIComponent(token), { method: 'POST' })
+    fetch('/api/restart', { method: 'POST' })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
         if (!res.ok) { portHint.textContent = res.d.detail || '重启请求失败'; return; }
@@ -8610,14 +8506,6 @@
     pairPost('/api/devices/remove_all', {});
   });
 
-  // 随机生成一个新的 12 位令牌（只填入输入框，点保存才生效）
-  genToken.addEventListener('click', function () {
-    fetch('/api/token/gen?token=' + encodeURIComponent(token))
-      .then(function (r) { return r.json(); })
-      .then(function (res) { cfgToken.value = groupToken(res.token); tokenHint.textContent = '已生成，点保存后生效'; })
-      .catch(function () { tokenHint.textContent = '生成失败'; });
-  });
-
   // 「保存」按钮（原 clearApiKey）：直接触发底部的保存逻辑，保存后拉取模型列表
   clearApiKey.addEventListener('click', function () {
     saveCfg.click();
@@ -8640,17 +8528,10 @@
   }
 
   saveCfg.addEventListener('click', function () {
-    var newToken = normToken(cfgToken.value);
-    if (!/^[a-z0-9]{4,32}$/.test(newToken)) {
-      tokenHint.textContent = '令牌需为 4-32 位数字或字母';
-      return;
-    }
-    cfgToken.value = groupToken(newToken);
-    var tokenChanged = newToken !== token;
     cfgHint.textContent = '保存中…';
     // 只有输入框里真有内容才提交 api_key：留空表示「保持原样」。
     // 旧逻辑无条件回传输入框的值，而新设备打开设置页时输入框是空的，
-    // 于是任何一次保存（哪怕只改了令牌）都会把 Key 抹掉。
+    // 于是任何一次保存（哪怕只改了端口）都会把 Key 抹掉。
     var port = parseInt(cfgPort.value, 10);
     if (!(port >= 1024 && port <= 65535)) {
       portHint.textContent = '端口需为 1024-65535 之间的整数';
@@ -8668,7 +8549,6 @@
       ui_language: cfgLang ? cfgLang.value : 'zh',
       permission_mode: cfgPerm.value,
       workspace: cfgWorkspace.value,
-      token: newToken,
       persona_name: document.getElementById('cfgPersonaName').value,
       persona_traits: document.getElementById('cfgPersonaTraits').value,
       persona_extra: document.getElementById('cfgPersonaExtra').value,
@@ -8687,7 +8567,7 @@
     };
     if (keyInput) { payload.api_key = keyInput; }
     if (apiKeyClear) { payload.clear_api_key = true; }
-    fetch('/api/config?token=' + encodeURIComponent(token), {
+    fetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -8703,14 +8583,6 @@
         return r.json();
       })
       .then(function (res) {
-        if (tokenChanged) {
-          // 令牌已换：本地存的还是旧的，直接续上会 401，这里先换成新令牌再重连
-          token = newToken;
-          localStorage.setItem('deckmeido_token', newToken);
-          lanToken.value = groupToken(newToken);
-          tokenHint.textContent = '令牌已更新，其他设备需用新令牌重新连接';
-          reconnectNow();
-        }
         // 界面语言刚改过：文案由后端下发的替换表处理，重载一次最干净
         if (cfgLang && cfgLang.value !== UI_LANG) {
           cfgHint.textContent = '语言已切换，正在重载界面…';
@@ -8752,7 +8624,7 @@
   // 语音输入可用性：/api/stt 会把「运行时没装」和「模型没下」分开报，
   // 开关本身照样能保存，这里只负责把不可用的原因说清楚
   function loadSttStatus() {
-    fetch('/api/stt?token=' + encodeURIComponent(token))
+    fetch('/api/stt')
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.runtime && d.model) {
@@ -8773,7 +8645,7 @@
   // 核心状态：只读展示。/api/status 是网页实时状态，和「启动/重启/关闭核心」
   // 这类由插件端/客户端执行的维护操作分开，不在网页里重复做一份会误导人的按钮
   function loadCoreState() {
-    fetch('/api/status?token=' + encodeURIComponent(token))
+    fetch('/api/status')
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -9244,8 +9116,8 @@
   }
 
   function loadRemoteStatus() {
-    if (!token) return;
-    fetch('/api/remote-input/status?token=' + encodeURIComponent(token))
+    if (!deviceSession) return;
+    fetch('/api/remote-input/status')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (st) {
         if (!st) return;
@@ -9263,8 +9135,8 @@
   }
 
   function riPostRelease() {
-    if (!token) return;
-    fetch('/api/remote-input/release?token=' + encodeURIComponent(token), {
+    if (!deviceSession) return;
+    fetch('/api/remote-input/release', {
       method: 'POST'
     }).catch(function () { /* 释放失败也无所谓：WS 断开后服务端还会兜底 */ });
   }
@@ -9335,10 +9207,10 @@
   }
 
   function riOpenSocket() {
-    if (!token || riWs) return;
+    if (riWs) return;
     var proto = location.protocol === 'https:' ? 'wss' : 'ws';
     riWs = new WebSocket(proto + '://' + location.host
-      + '/ws/input?token=' + encodeURIComponent(token));
+      + '/ws/input');
     riWs.onopen = function () {
       if (!document.pointerLockElement) { riTeardown(false); return; }
       riSend({ t: 'ping' });
@@ -9669,7 +9541,7 @@
     // 串行化：快速连点（拖滑条、连切模型）会并发 POST，后发先至时后端的
     // 最终值就成了先点的那一个，界面显示和实际配置对不上
     var job = function () {
-      return fetch('/api/config?token=' + encodeURIComponent(token), {
+      return fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch)
@@ -9690,7 +9562,7 @@
   }
 
   function loadToolbar() {
-    fetch('/api/config?token=' + encodeURIComponent(token))
+    fetch('/api/config')
       .then(function (r) { return r.json(); })
       .then(function (c) {
         if (c.permission_mode) permSelect.value = c.permission_mode;
@@ -9736,7 +9608,7 @@
   var modelsPromise = null;
   function fetchModels() {
     if (!modelsPromise) {
-      modelsPromise = fetch('/api/models?token=' + encodeURIComponent(token))
+      modelsPromise = fetch('/api/models')
         .then(function (r) { return r.json(); })
         .then(function (d) { return d.models || []; })
         .catch(function () { modelsPromise = null; return []; });
@@ -9857,7 +9729,7 @@
   function uploadOne(file) {
     var fd = new FormData();
     fd.append('file', file);
-    return fetch('/api/upload?token=' + encodeURIComponent(token), { method: 'POST', body: fd })
+    return fetch('/api/upload', { method: 'POST', body: fd })
       .then(function (r) { return r.json(); })
       .then(function (res) {
         if (!res || (!res.url && !res.path)) throw new Error('bad response');
@@ -10034,7 +9906,7 @@
   document.getElementById('pmFile').addEventListener('click', function (e) {
     e.stopPropagation();
     plusMenu.classList.remove('show');
-    fetch('/api/files?token=' + encodeURIComponent(token))
+    fetch('/api/files')
       .then(function (r) { return r.json(); })
       .then(function (res) {
         fileList.innerHTML = '';
@@ -10220,10 +10092,10 @@
     document.getElementById('ctxVal').textContent = text;
   }
   function pollSys() {
-    if (!token) return;
+    if (!deviceSession) return;
     // 页面在后台时别刷：手机切走/锁屏后每 5 秒一次请求只是白烧电和后端 CPU
     if (document.hidden) return;
-    fetch('/api/sysinfo?token=' + encodeURIComponent(token))
+    fetch('/api/sysinfo')
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d.error) return;
@@ -10291,8 +10163,8 @@
   // 所以得记着原来叫什么
   var curSessTitle = '';
   function loadSessions() {
-    if (!token) return;
-    fetch('/api/sessions?token=' + encodeURIComponent(token))
+    if (!deviceSession) return;
+    fetch('/api/sessions')
       .then(function (r) { return r.json(); })
       .then(function (d) {
         currentSid = d.current;
@@ -10320,7 +10192,7 @@
               setTimeout(function () { del.classList.remove('confirm'); del.textContent = '删除'; }, 2500);
               return;
             }
-            fetch('/api/sessions/' + s.id + '?token=' + encodeURIComponent(token), { method: 'DELETE' })
+            fetch('/api/sessions/' + s.id + '', { method: 'DELETE' })
               .then(function (r) {
                 // 失败也要有反馈：以前不管成没成都刷新列表，删除被服务端拒绝时
                 // 界面上什么都没变，看起来像「点了没反应」
@@ -10332,7 +10204,7 @@
           row.appendChild(del);
           row.addEventListener('click', function () {
             if (s.id === currentSid || busy) return;
-            fetch('/api/sessions/switch?token=' + encodeURIComponent(token), {
+            fetch('/api/sessions/switch', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ id: s.id })
@@ -10355,7 +10227,7 @@
     // 失败时这里补一句提示，别让按钮看起来彻底没反应。
     // 后端在「当前会话本来就一句没说」时不会新建（防止刷出一排空会话），
     // 这时也不会广播，得自己说一声，否则按钮看起来毫无反应
-    fetch('/api/sessions/create?token=' + encodeURIComponent(token), { method: 'POST' })
+    fetch('/api/sessions/create', { method: 'POST' })
       .then(function (r) {
         if (!r.ok) { addSystem('新建会话失败（HTTP ' + r.status + '）'); return null; }
         return r.json();
@@ -10369,7 +10241,7 @@
   function openImage(url) {
     if (IS_NATIVE) {
       // 原生客户端：用系统默认工具打开（xdg-open → Gwenview 等）
-      fetch('/api/open_file?token=' + encodeURIComponent(token), {
+      fetch('/api/open_file', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: url })
@@ -10422,7 +10294,7 @@
   // 压缩上下文：先问后端「会压掉多少」，用户看到条数和 token 再决定
   function compactContext() {
     if (busy) { addSystem('正在执行任务，等这一轮结束再压缩'); return; }
-    var u = '/api/compact?token=' + encodeURIComponent(token);
+    var u = '/api/compact';
     fetch(u + '&preview=true', { method: 'POST' })
       .then(function (r) { return r.json(); })
       .then(function (p) {

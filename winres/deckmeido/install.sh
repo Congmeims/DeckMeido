@@ -1657,15 +1657,9 @@ prepare_config() {
     fi
   else
     cp "$INSTALL_DIR/server/config.example.toml" "$cfg"
-    # 出厂不再写死口令：安装时生成 12 位随机令牌并写进新配置
-    local tok
-    tok="$(gen_access_token)"
-    if [ -n "$tok" ]; then
-      sed -i -E "s/^token *= *\"[^\"]*\"/token = \"$tok\"/" "$cfg"
-    fi
-    info "生成配置 $cfg（访问令牌已随机生成）"
+    info "生成配置 $cfg"
   fi
-  # 不论新旧，配置里都可能有令牌，统一收紧到 0600
+  # 配置里有 API Key 等敏感项，统一收紧到 0600
   chmod 600 "$cfg" 2>/dev/null || true
 }
 
@@ -2114,8 +2108,7 @@ fi
 # 先取消正在跑的任务，再关进程
 CFG="$DATA_CONFIG"
 if command -v curl >/dev/null 2>&1 && [ -f "$CFG" ]; then
-  TOK="$(grep -oP '^token\s*=\s*"\K[^"]*' "$CFG" 2>/dev/null | head -n1 || true)"
-  curl -fsS -m 2 -X POST -H "X-Token: $TOK" "http://127.0.0.1:$PORT/api/cancel" >/dev/null 2>&1 || true
+  curl -fsS -m 2 -X POST "http://127.0.0.1:$PORT/api/cancel" >/dev/null 2>&1 || true
 fi
 pkill -f "$HERE/client/launch.sh" 2>/dev/null || true
 pkill -f "$HERE/client/main.py" 2>/dev/null || true
@@ -2234,27 +2227,6 @@ write_version_file() {
   dim "版本：$(cat "$INSTALL_DIR/VERSION")"
 }
 
-# 随机访问令牌：12 位 Crockford Base32（0-9 与 A-Z 去掉 I/L/O/U），
-# 字母表与后端 server/authguard.py 的 gen_token 一致，存储为小写。
-# 每两位十六进制组成一个字节（0..255），对 32 取模后均匀落在一个字母上；
-# 先取整段随机字节再截取，避免 `head` 提前关管道在 pipefail 下报 SIGPIPE。
-gen_access_token() {
-  local hex alphabet out="" i idx
-  alphabet="0123456789abcdefghjkmnpqrstvwxyz"
-  hex="$(head -c 64 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n')"
-  for i in $(seq 0 2 22); do
-    idx=$(( 16#${hex:$i:2} % 32 ))
-    out="$out${alphabet:$idx:1}"
-  done
-  printf '%s' "$out"
-}
-
-read_token() {
-  local cfg="$DATA_CONFIG"
-  [ -f "$cfg" ] || return 0
-  grep -oP '^token\s*=\s*"\K[^"]*' "$cfg" 2>/dev/null | head -n1
-}
-
 wait_ready() {
   # 客户端冷启动要依次：起 Qt、拉起后端、uvicorn 加载、第一次渲染页面。
   # 以前只等 3×0.3 秒，新装/大版本升级（venv 冷启动、PySide6 首次解压缓存）
@@ -2327,18 +2299,16 @@ PY
 }
 
 print_done() {
-  local ip token ve
+  local ip ve
   ip=$(lan_ip)
   [ -n "$ip" ] || ip=$(hostname -I 2>/dev/null | awk '{print $1}')
   [ -n "$ip" ] || ip="<deck-ip>"
-  token=$(read_token)
   ve=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '未知')
   card
   card_title "DeckMeido 已就绪  ·  v$ve"
   card_line ""
-  card_line "本机控制台   http://127.0.0.1:$PORT/?token=$token"
-  card_line "局域网访问   http://$ip:$PORT/?token=$token"
-  card_line "访问令牌     $token（12 位，可在掌机 / 大屏 / 客户端设置页查看）"
+  card_line "本机控制台   http://127.0.0.1:$PORT/"
+  card_line "局域网访问   http://$ip:$PORT/（新设备点「配对新设备」，按掌机上的 PIN 配对一次）"
   card_line "配置文件     $DATA_CONFIG"
   card_line "用户数据     $DATA_DIR（卸载保留）"
   card_line ""
@@ -2701,11 +2671,8 @@ do_from_piped() {
 
 # 正在跑的任务要先取消：卸载时把后端直接杀掉，正在执行的命令会变成孤儿进程
 cancel_running_turn() {
-  local token
-  token=$(read_token)
   need_cmd curl || return 0
-  curl -fsS -m 2 -X POST -H "X-Token: $token" \
-    "http://127.0.0.1:$PORT/api/cancel" >/dev/null 2>&1 || true
+  curl -fsS -m 2 -X POST "http://127.0.0.1:$PORT/api/cancel" >/dev/null 2>&1 || true
 }
 
 # 工作区真实路径：优先读配置里的 workspace，删不到才退回默认目录。
@@ -2775,7 +2742,7 @@ write_keep_note() {
 DeckMeido 已经卸载，这个目录是特意保留的用户数据。
 
 里面保存的是：
-  · config.toml            设置与访问令牌
+  · config.toml            设置（含 API Key）
   · persona/               人设（meidosoul.json）
   · memory.json            长期记忆
   · sessions/              对话历史

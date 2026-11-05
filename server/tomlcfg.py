@@ -188,7 +188,7 @@ def _write_atomic(path: Path, text: str) -> None:
     tmp.write_text(text, encoding="utf-8", newline="\n")
     os.replace(tmp, path)
     if os.name != "nt":
-        # 配置里有访问令牌，Linux 下只给属主读写（Windows 忽略权限位）
+        # 配置里有 API Key 等敏感项，Linux 下只给属主读写（Windows 忽略权限位）
         try:
             os.chmod(path, 0o600)
         except OSError:

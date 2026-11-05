@@ -44,12 +44,12 @@
 
 | 入口 | 说明 |
 | --- | --- |
-| QAM 面板 | 三个页签「询问 / 聊天 / 设置」，窄屏纵向布局，LB/RB 翻页 |
+| QAM 面板 | 三个页签「询问 / 聊天 / 设置」，窄屏纵向布局，L1/R1 翻页（页签两侧有 `‹ L1` / `R1 ›` 提示） |
 | 大屏页 | 注册到 GamepadUI 路由，三个页签「询问 / 聊天 / 设置」；L1/R1 翻页，X 翻译、Y 截图询问，聊天页按住 R2 说话 |
 | 桌面客户端 | PySide6 + QWebEngineView，加载与网页版同一个界面；最小化进托盘，双击桌面图标启动 |
-| 网页控制台 | 浏览器打开 `http://<deck-ip>:18765/?token=<token>`，单文件前端，功能与客户端一致 |
+| 网页控制台 | 浏览器打开 `http://<deck-ip>:18765/`，单文件前端，功能与客户端一致；首次打开点「配对新设备」，按掌机上的 PIN 配对一次 |
 
-QAM 面板由 Decky 插件提供；插件以 root 运行，首次使用要在面板里解锁访问令牌。大屏页从 QAM 直接跳转。
+QAM 面板由 Decky 插件提供；插件以 root 运行，走本机回环免鉴权，不再需要令牌。大屏页从 QAM 直接跳转。
 
 ### 对话与画面
 
@@ -144,7 +144,7 @@ bash install.sh speedtest            # 只测 pip 源速率
 
 | 配置段 | 关键项 | 说明 |
 | --- | --- | --- |
-| `[server]` | `host` / `port` / `token` | 默认 `0.0.0.0:18765`；令牌在安装时随机生成 12 位（旧配置保留原值，启动日志会提示弱令牌）；改令牌后所有入口都要用新的 |
+| `[server]` | `lan_enable` / `port` | 默认 `false` / `18765`；局域网鉴权用设备配对（PIN + HttpOnly Cookie），本机回环免验证；旧配置里的 `token` 键会被忽略 |
 | `[llm]` | `base_url` / `api_key` / `model` | OpenAI 兼容地址与密钥；换服务商时模型名要一起改 |
 | `[llm]` | `reasoning_effort` / `timeout` / `max_continuations` | 思维链强度、请求超时、撞上限自动续写轮数 |
 | `[agent]` | `ask_template` / `translate_template` / `status_prompt` | 截图询问、截图翻译、状态栏短句的提示词 |
@@ -257,7 +257,7 @@ bash ~/deckmeido/uninstall.sh --purge    # 额外删安装器创建的配置备�
 2. 在电脑浏览器点网页左下角 logo 进入接管；指针锁定后移动与按键都发往 Deck。
 3. 再点 logo、按 Esc（浏览器会强制释放 Pointer Lock）或到达 `max_minutes` 自动释放。
 
-注入优先 `ydotool`（由 `ydotoold` 用户服务托管），不可用时直写 `/dev/uinput`——这要求后端有 root 或 `input` 组权限。只有拿到访问令牌的人能接管，且建议只在可信局域网开启。
+注入优先 `ydotool`（由 `ydotoold` 用户服务托管），不可用时直写 `/dev/uinput`——这要求后端有 root 或 `input` 组权限。只有已配对设备能接管，且建议只在可信局域网开启。
 
 ## 故障排查
 

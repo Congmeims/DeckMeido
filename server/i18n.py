@@ -74,7 +74,6 @@ EN: dict[str, str] = {
     "智能审批": "Smart approval",
     "完全访问": "Full access",
     # 远程
-    "访问令牌": "Access token",
     "连接": "Connect",
     "断开": "Disconnect",
     "局域网可访问": "Accessible on your LAN",

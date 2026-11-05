@@ -55,5 +55,5 @@ LOCAL_ADDRS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 
 def is_local(ip: str | None) -> bool:
-    """鉴权用的严格回环判断：只有 127.0.0.1 / ::1 免令牌。"""
+    """鉴权用的严格回环判断：只有 127.0.0.1 / ::1 免验证。"""
     return (ip or "").strip().lower() in LOCAL_ADDRS

@@ -231,20 +231,11 @@
       <li>AI 回复按 markdown 渲染：标题加粗、有序列表缩进 18px、行内码浅底。</li>
     </ul>
 
-    <h2>未解锁态</h2>
-    <div class="qam locked" style="position:static;width:300px;border-radius:6px;padding:10px 10px 12px;border-left:none">
-      <div class="sec" style="margin-bottom:0">
-        <div class="title">DeckMeido</div>
-        <div class="row"><div class="status">插件以 root 运行，需要先输入访问令牌解锁</div></div>
-        <div class="row">
-          <div class="field">
-            <div class="lbl">访问令牌</div>
-            <div class="val">••••••</div>
-          </div>
-        </div>
-        <div class="row"><div class="btn">解锁</div></div>
-      </div>
-    </div>
+    <h2>鉴权说明（已无令牌解锁）</h2>
+    <ul>
+      <li>插件与后端同机，走本机回环免鉴权，不再有「输入访问令牌解锁」这一步。</li>
+      <li>局域网设备（手机 / 平板 / 电脑）首次访问走「配对新设备」：掌机显示 4 位 PIN，输入后下发 HttpOnly Cookie，之后免登录进入。</li>
+    </ul>
   </div>
 </div>
 

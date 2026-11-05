@@ -16,7 +16,7 @@ EXAMPLE = ROOT / "server" / "config.example.toml"
 # 各段必需的键：与 server/main.py、plugin/main.py、client/main.py
 # 以及 install.sh 读取的键名保持一致，少一个都算回归。
 REQUIRED = {
-    "server": {"lan_enable", "port", "token"},
+    "server": {"lan_enable", "port"},
     "security": {"device_days", "permission_mode"},
     "remote_input": {"enabled", "sensitivity", "max_minutes"},
     "llm": {

@@ -21,7 +21,7 @@ import struct
 import sys
 import time
 
-from . import authguard
+from . import netcfg
 
 # fcntl 只在 Linux 上有；Windows 开发机跑单元测试时也要能 import 本模块
 try:
@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - 仅 Windows 开发机
 
 # ---------- 错误码 ----------
 RI_DISABLED = "RI_DISABLED"          # 配置里没开启
-RI_UNAUTHORIZED = "RI_UNAUTHORIZED"  # 令牌不对
+RI_UNAUTHORIZED = "RI_UNAUTHORIZED"  # 未配对 / 未认证
 RI_BUSY = "RI_BUSY"                  # 已有人在接管
 RI_NO_YDOTOOL = "RI_NO_YDOTOOL"      # ydotool/ydotoold 不可用
 RI_NO_UINPUT = "RI_NO_UINPUT"        # /dev/uinput 打不开
@@ -124,12 +124,12 @@ def enabled(cfg: dict) -> bool:
     return bool(cfg.get("enabled", False))
 
 
-def access_error(cfg: dict, client_ip: str, token: str, provided: str) -> str | None:
-    """连接前的总校验：令牌 → 开关。
+def access_error(cfg: dict, client_ip: str, authed: bool) -> str | None:
+    """连接前的总校验：是否已授权 → 开关。
 
-    cfg 是 [remote_input] 段；token 是当前有效令牌（空令牌一律拒绝）。
+    cfg 是 [remote_input] 段；authed 由调用方判定（本机回环或已配对 Cookie）。
     """
-    if not (token or "").strip() or not authguard.token_eq(token, provided):
+    if not authed:
         return RI_UNAUTHORIZED
     if not enabled(cfg):
         return RI_DISABLED

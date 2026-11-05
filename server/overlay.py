@@ -53,7 +53,6 @@ SWAY_RISE = 4.0   # 摆动同时上下浮动的像素幅度
 LOGO_BOX = int(LOGO_PX * math.sqrt(2)) + 8
 
 API = os.environ.get("DECKMEIDO_API", "http://127.0.0.1:18765")
-TOKEN = os.environ.get("DECKMEIDO_TOKEN", "")
 
 POLL_MS = 100          # 向后端询问「是否在操作」的常规间隔
 URGENT_MS = 25         # 快速轮询间隔：遮罩显示中 / 要让开 / 要抬高 / agent 马上要按键
@@ -420,7 +419,7 @@ class Mask(QWidget):
         # hidden 自报当前是否真的已经藏好：后端要求让开时只认这个，不看它自己的意图
         q = f"ack=1&hidden={0 if self.isVisible() else 1}&" if ack else ""
         req = urllib.request.Request(
-            f"{API}/api/overlay_state?{q}token={TOKEN}")
+            f"{API}/api/overlay_state?{q}")
         try:
             with urllib.request.urlopen(req, timeout=3) as r:
                 return json.loads(r.read())
@@ -438,7 +437,7 @@ class Mask(QWidget):
             try:
                 req = urllib.request.Request(
                     f"{API}/api/overlay_state?ack=1&hidden="
-                    f"{0 if self.isVisible() else 1}&token={TOKEN}")
+                    f"{0 if self.isVisible() else 1}")
                 urllib.request.urlopen(req, timeout=2).read()
             except Exception:
                 pass
@@ -580,7 +579,7 @@ class Mask(QWidget):
         def post():
             try:
                 req = urllib.request.Request(
-                    f"{API}/api/cancel?client=overlay&device=deck&token={TOKEN}", method="POST")
+                    f"{API}/api/cancel?client=overlay&device=deck", method="POST")
                 urllib.request.urlopen(req, timeout=3).read()
             except Exception:
                 pass

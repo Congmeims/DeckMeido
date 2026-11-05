@@ -120,35 +120,30 @@ _config_missing_warned = False
 _config_error = ""
 
 
-def load_token() -> str:
-    """读后端令牌；读不到时记录明确原因，交给界面提示并回落到手动输入"""
+def check_config() -> None:
+    """确认后端配置文件可读；读不到时记录明确原因，交给界面提示
+
+    客户端与本机后端同机，走回环免鉴权，不再需要从配置里读令牌。
+    """
     global _config_missing_warned, _config_error
     try:
         cfg = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        token = str((cfg.get("server") or {}).get("token", "") or "").strip()
     except FileNotFoundError:
         _config_error = f"未找到 {CONFIG_PATH}"
     except Exception as exc:
         _config_error = f"读取 {CONFIG_PATH} 失败：{exc}"
     else:
-        if token:
-            _config_error = ""
-            return token
-        _config_error = f"{CONFIG_PATH} 里没有 token"
+        _config_error = "" if isinstance(cfg.get("server"), dict) else f"{CONFIG_PATH} 里没有 [server] 段"
+        if not _config_error:
+            return
     if not _config_missing_warned:
         _config_missing_warned = True
-        print(
-            f"[DeckMeido] 读不到配置：{_config_error}（请检查数据目录），"
-            "可在界面里手动输入访问令牌",
-            file=sys.stderr,
-        )
-    return ""
+        print(f"[DeckMeido] 读不到配置：{_config_error}（请检查数据目录）", file=sys.stderr)
 
 
 def api_json(path: str, timeout: float = 5.0, post: bool = False) -> dict:
-    """带 token 调后端接口，返回解析后的 JSON（空响应按空对象处理）"""
+    """调后端接口，返回解析后的 JSON（空响应按空对象处理）"""
     url = f"{API}{path}"
-    url += ("&" if "?" in url else "?") + f"token={load_token()}"
     data = b"" if post else None
     with urllib.request.urlopen(url, data=data, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "replace") or "{}")
@@ -226,15 +221,12 @@ def _backend_log_fd():
 
 
 def backend_alive(timeout: float = 10.0) -> bool:
-    """后端是否在应答（带 token 问 /api/status，确认是「我们的」后端）
+    """后端是否在应答（问 /api/status，确认是「我们的」后端）
 
     超时从 2 秒放宽到 10 秒：后端忙着流式生成、跑 to_thread 里的命令时，
     2 秒内没回话是常态，旧值会把「忙」误判成「死」，于是又拉起一份。
     """
-    token = load_token()
     url = f"{API}/api/status"
-    if token:
-        url += f"?token={token}"
     try:
         urllib.request.urlopen(url, timeout=timeout)
         return True
@@ -327,10 +319,7 @@ def checkpoint_backend() -> str:
     返回状态字符串，仅用于日志：ok / skipped / failed:xxx。
     这一步失败不能挡住退出流程，所以异常一律吞掉。
     """
-    token = load_token()
     url = f"{API}/api/checkpoint"
-    if token:
-        url += f"?token={token}"
     try:
         with urllib.request.urlopen(url, data=b"", timeout=4) as r:
             body = r.read().decode("utf-8", "replace")
@@ -528,16 +517,15 @@ def main() -> int:
     icon_path = DECKMEIDO_DIR / "assets" / "logo.png"
     icon = QIcon(str(icon_path)) if icon_path.exists() else QIcon()
     view.setWindowIcon(icon)
-    token = load_token()
+    check_config()
     if _config_error:
         QMessageBox.warning(
             None,
             "DeckMeido",
             "读不到配置，请检查数据目录：\n"
-            f"{CONFIG_PATH}\n\n原因：{_config_error}\n\n"
-            "接下来的页面可以手动输入访问令牌。",
+            f"{CONFIG_PATH}\n\n原因：{_config_error}",
         )
-    view.load(QUrl(f"{API}/?token={token}&native=1"))
+    view.load(QUrl(f"{API}/?native=1"))
     view.show()
     # 缩放只作用于这个网页，不影响系统里其他 Qt 程序；网页端（浏览器打开）保持原样。
     # 取 1.1 而非 1.2：右终端栏的隐藏断点是 max-width:1080px，1.2 时 CSS 视口

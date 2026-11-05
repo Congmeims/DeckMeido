@@ -1176,6 +1176,11 @@ class QQBot:
             return False
         seg_image = {"type": "image", "data": {"file": f"base64://{b64}"}}
         seg_text = {"type": "text", "data": {"text": caption}}
+        # 出站消息到底带没带图段，必须能在日志里一眼看到：
+        # 以前只在成功后记一句「图片发送成功」，链路上没带图时无从分辨
+        self._log("info", "出站图文",
+                  f"{'群' if ev.group_id is not None else '私聊'} "
+                  f"段=text+image 图 {len(blob)} 字节 base64 {len(b64)} 字节")
         try:
             if ev.group_id is None:
                 await self._call_api("send_private_msg",
