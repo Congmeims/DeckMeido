@@ -1298,7 +1298,7 @@
     color: var(--text); font-weight: 500; text-align: right;
     word-break: break-all;
   }
-  /* QQ 通道状态卡：底色/描边/文字全部走 --ri-* 变量，浅色主题下是浅底深字。
+  /* Onebot 通道状态卡：底色/描边/文字全部走 --ri-* 变量，浅色主题下是浅底深字。
      状态点单独给一组颜色，避免在浅色主题里变成看不清的灰点 */
   .qq-status {
     display: flex; flex-direction: column; gap: 6px;
@@ -2709,12 +2709,42 @@
         <section class="set-pane" data-pane="remote">
           <h3>远程连接</h3>
           <p class="pane-desc">
-            从别的设备远程使用这台 Deck：QQ 通道让指定的 QQ 发消息下达指令；
-            跨屏鼠标把电脑上的鼠标键盘接管到这台机器。两项都只在你明确打开后才生效。
+            从别的设备远程使用这台 Deck：跨屏鼠标把电脑上的鼠标键盘接管到这台机器；
+            Onebot 通道让指定的 QQ 发消息下达指令。两项都只在你明确打开后才生效。
           </p>
 
+          <div class="card" id="riEnableCard">
+            <div class="card-title">跨屏鼠标（远程接管）</div>
+            <p class="pane-desc" style="margin-top:0">
+              在电脑浏览器里点左下角 DeckMeido logo 就进入接管：鼠标从电脑上消失，出现在这台 Deck 上，
+              能操作 Steam UI、游戏和这个页面。按 Esc、再点一次 logo，或在 Deck 客户端里点 logo 释放。
+              开关没开时点 logo，会先把你带到这里的开关上。
+            </p>
+            <div class="field field-row">
+              <label style="margin:0">允许局域网设备接管（总开关）</label>
+              <label class="switch">
+                <input id="cfgRiEnabled" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field">
+              <label>指针灵敏度 <span id="cfgRiSensVal" class="field-hint">1.5×</span></label>
+              <input id="cfgRiSens" type="range" min="0.5" max="3" step="0.1" value="1.5"
+                     style="width:100%">
+            </div>
+            <div class="field">
+              <label>单次接管上限（分钟）</label>
+              <input id="cfgRiMax" type="number" min="1" max="120" step="1" value="30">
+            </div>
+            <div class="field-hint" style="color:#e0a33a">
+              安全提示：这个开关同时就是「允许局域网设备接管」。开启后，局域网内任何拿到访问令牌的人
+              都能控制这台机器。只在可信网络里用，用完及时关闭。
+            </div>
+            <div class="field-hint" id="riCfgState">当前状态：未接管</div>
+          </div>
+
           <div class="card">
-            <div class="card-title">QQ 通道</div>
+            <div class="card-title">Onebot 通道</div>
             <div id="qqStatus" class="qq-status">
               <div class="qq-status-head">
                 <span class="qq-dot off"></span>
@@ -2722,7 +2752,7 @@
               </div>
             </div>
             <div class="field field-row">
-              <label style="margin:0">启用 QQ 通道</label>
+              <label style="margin:0">启用 Onebot 通道</label>
               <label class="switch">
                 <input id="cfgQqEnable" type="checkbox">
                 <span class="slider"></span>
@@ -2834,7 +2864,7 @@
             <div id="qqHint" class="field-hint"></div>
             <div class="qq-logs">
               <div class="qq-logs-head">
-                <span class="qq-logs-title">QQ 事件日志</span>
+                <span class="qq-logs-title">Onebot 事件日志</span>
                 <button id="qqLogsRefresh" class="mini-btn" type="button">刷新</button>
               </div>
               <div id="qqLogsBody" class="qq-logs-body">
@@ -2843,35 +2873,6 @@
             </div>
           </div>
 
-          <div class="card" id="riEnableCard">
-            <div class="card-title">跨屏鼠标（远程接管）</div>
-            <p class="pane-desc" style="margin-top:0">
-              在电脑浏览器里点左下角 DeckMeido logo 就进入接管：鼠标从电脑上消失，出现在这台 Deck 上，
-              能操作 Steam UI、游戏和这个页面。按 Esc、再点一次 logo，或在 Deck 客户端里点 logo 释放。
-              开关没开时点 logo，会先把你带到这里的开关上。
-            </p>
-            <div class="field field-row">
-              <label style="margin:0">允许局域网设备接管（总开关）</label>
-              <label class="switch">
-                <input id="cfgRiEnabled" type="checkbox">
-                <span class="slider"></span>
-              </label>
-            </div>
-            <div class="field">
-              <label>指针灵敏度 <span id="cfgRiSensVal" class="field-hint">1.5×</span></label>
-              <input id="cfgRiSens" type="range" min="0.5" max="3" step="0.1" value="1.5"
-                     style="width:100%">
-            </div>
-            <div class="field">
-              <label>单次接管上限（分钟）</label>
-              <input id="cfgRiMax" type="number" min="1" max="120" step="1" value="30">
-            </div>
-            <div class="field-hint" style="color:#e0a33a">
-              安全提示：这个开关同时就是「允许局域网设备接管」。开启后，局域网内任何拿到访问令牌的人
-              都能控制这台机器。只在可信网络里用，用完及时关闭。
-            </div>
-            <div class="field-hint" id="riCfgState">当前状态：未接管</div>
-          </div>
         </section>
 
         <section class="set-pane" data-pane="plugin">
@@ -7815,7 +7816,7 @@
   var cfgRiMax = document.getElementById('cfgRiMax');
   var riEnableCard = document.getElementById('riEnableCard');
   var riCfgState = document.getElementById('riCfgState');
-  // QQ 通道（远程连接页）：状态轮询 + 配置回填
+  // Onebot 通道（远程连接页）：状态轮询 + 配置回填
   var cfgQqEnable = document.getElementById('cfgQqEnable');
   var cfgQqUrl = document.getElementById('cfgQqUrl');
   var cfgQqToken = document.getElementById('cfgQqToken');
@@ -8804,7 +8805,7 @@
       });
   }
 
-  // ---------- 远程连接页：QQ 通道 ----------
+  // ---------- 远程连接页：Onebot 通道 ----------
   var QQ_STATE_TEXT = {
     disabled: '已关闭',
     misconfigured: '配置不完整，未连接',
@@ -9373,7 +9374,7 @@
   function riGuideEnable() {
     riToast('跨屏接管还没开启：已打开设置页，把总开关打开并保存，再点 logo 即可接管');
     if (!document.body.classList.contains('settings-mode')) openSettings();
-    // openSettings 默认落在「模型接入」，这里再切到「远程连接」（接管开关和 QQ 通道在这组）
+    // openSettings 默认落在「模型接入」，这里再切到「远程连接」（接管开关和 Onebot 通道在这组）
     showSetPane('remote');
     // 等这一帧的切页真正落定再滚动：showSetPane 会把 .set-body 的滚动位置归零
     setTimeout(function () {
