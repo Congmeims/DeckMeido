@@ -1672,11 +1672,40 @@ ensure_data_layout() {
   chmod 700 "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" "$DATA_LOGS" "$DATA_MODELS" 2>/dev/null || true
 }
 
+# 解析校验：坏配置绝不能留给用户（后端启动时会直接退出）。
+# 没有 python3 时跳过，让后端自己报语法错。
+validate_config() {
+  local cfg="$1" out=""
+  command -v python3 >/dev/null 2>&1 || return 0
+  if ! out="$(python3 - "$cfg" <<'PY' 2>&1
+import sys
+import tomllib
+
+try:
+    with open(sys.argv[1], "rb") as fh:
+        tomllib.load(fh)
+except Exception as exc:
+    print(exc)
+    sys.exit(1)
+PY
+)"; then
+    warn "配置解析失败：$out"
+    return 1
+  fi
+  return 0
+}
+
 # 首次安装生成 config.toml；已有则原样保留
 prepare_config() {
   ensure_data_layout
-  local cfg="$DATA_CONFIG"
+  local cfg="$DATA_CONFIG" backup="" existed=0
   if [ -f "$cfg" ]; then
+    existed=1
+    if ! validate_config "$cfg"; then
+      die "已有配置无法解析：$cfg（本次未改动任何文件，请先修好再安装）"
+    fi
+    backup="$cfg.installbak"
+    cp -p "$cfg" "$backup"
     info "保留已有配置 $cfg"
     # 老配置没有 [update] 段：补上，并写入当前脚本用的镜像地址，
     # 免得以后换域名时新旧两批机器指向不同地方
@@ -1702,6 +1731,18 @@ prepare_config() {
     # 避免出现「安装脚本用 DECKMEIDO_PORT=18766，配置里还写着 18765」
     sed -i -E "s/^port *= *[0-9]+/port = $PORT/" "$cfg"
     info "生成配置 $cfg（访问令牌已随机生成，端口 $PORT）"
+  fi
+  # 写令牌/端口后再解析一次；失败就回滚到改动前，不把坏配置留给用户
+  if ! validate_config "$cfg"; then
+    if [ "$existed" -eq 1 ]; then
+      mv -f "$backup" "$cfg"
+    else
+      rm -f "$cfg"
+    fi
+    die "生成的配置无法解析，已回滚：$cfg"
+  fi
+  if [ -n "$backup" ]; then
+    rm -f "$backup"
   fi
   # 不论新旧，配置里都可能有令牌，统一收紧到 0600
   chmod 600 "$cfg" 2>/dev/null || true

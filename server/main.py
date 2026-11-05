@@ -54,7 +54,23 @@ def load_config() -> dict:
     if not CONFIG_PATH.exists():
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(BASE_DIR / "config.example.toml", CONFIG_PATH)
-    cfg = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    text = CONFIG_PATH.read_text(encoding="utf-8")
+    try:
+        cfg = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        # 配置是手改的文件，语法错必须一眼看出是哪一行：
+        # 打印「路径 + 行号 + 该行原文 + 解析器原因」，然后非零退出。
+        match = re.search(r"line (\d+)", str(exc))
+        lineno = getattr(exc, "lineno", None) or (int(match.group(1)) if match else 0)
+        detail = str(CONFIG_PATH)
+        if lineno:
+            detail += f" 第 {lineno} 行"
+            src_lines = text.splitlines()
+            if 0 < lineno <= len(src_lines):
+                detail += f"：{src_lines[lineno - 1].strip()}"
+        print(f"[DeckMeido] 配置文件语法错误：{detail}（{exc}）",
+              file=sys.stderr, flush=True)
+        raise SystemExit(2) from exc
     # token 留空（用户手动清空）时补一个，并写回配置文件方便查看
     if not cfg["server"].get("token"):
         token = gen_token()
