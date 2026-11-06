@@ -196,7 +196,8 @@ die()  {
   if [ -n "${INSTALL_LOG:-}" ] && [ -s "$INSTALL_LOG" ]; then
     # 输出是经 tee 转发的，tail 可能赶在 tee 落盘之前，停一下再读
     sleep 0.2
-    printf '%s    最近日志（%s）：%s\n' "$C_DIM" "$INSTALL_LOG" "$C_END" >&2
+    printf '%s    完整日志：%s%s\n' "$C_DIM" "$INSTALL_LOG" "$C_END" >&2
+    printf '%s    最后 8 行：%s\n' "$C_DIM" "$C_END" >&2
     tail -n 8 "$INSTALL_LOG" >&2 || true
   fi
   exit 1
@@ -225,10 +226,35 @@ INSTALL_LOG=""
 start_install_log() {
   [ -n "${DECKMEIDO_LOG_STARTED:-}" ] && return 0
   DECKMEIDO_LOG_STARTED=1
-  mkdir -p "$DATA_LOGS" 2>/dev/null || return 0
-  INSTALL_LOG="$DATA_LOGS/install-$(date -u +%Y%m%d-%H%M%S).log"
-  : > "$INSTALL_LOG" 2>/dev/null || { INSTALL_LOG=""; return 0; }
+  local log_dir="$DATA_LOGS" fallback=0
+  # 安装目录一建好就先建 userdata/logs（mkdir -p 会一并建出安装目录）。
+  # 只有连这个目录都建不出来时，才回退到家目录；日志不能因为目录问题丢掉。
+  if ! mkdir -p "$log_dir" 2>/dev/null; then
+    fallback=1
+    log_dir="$HOME"
+    if ! mkdir -p "$log_dir" 2>/dev/null; then
+      warn "无法创建日志目录（$DATA_LOGS 与 $HOME 都不可写），本次不写安装日志"
+      return 0
+    fi
+  fi
+  INSTALL_LOG="$log_dir/install-$(date -u +%Y%m%d-%H%M%S).log"
+  if ! : > "$INSTALL_LOG" 2>/dev/null; then
+    warn "无法写入日志文件：$INSTALL_LOG，本次不写安装日志"
+    INSTALL_LOG=""
+    return 0
+  fi
+  # 开头用自然语言写清楚这是什么、能不能删；用户以后翻到文件也知道能直接清掉
+  {
+    printf '%s\n' '这是 DeckMeido 的安装日志。'
+    printf '%s\n' '它记录了安装的每一步做了什么；安装完成后可以随时删除，不影响程序运行。'
+    printf '%s\n' "时间：$(date '+%Y-%m-%d %H:%M:%S')"
+    printf '%s\n' "安装目录：$INSTALL_DIR"
+    printf '\n'
+  } >> "$INSTALL_LOG" 2>/dev/null || true
   exec > >(tee -a "$INSTALL_LOG") 2>&1
+  if [ "$fallback" = 1 ]; then
+    warn "无法在 $DATA_LOGS 创建日志目录，本次安装日志改写到 $HOME"
+  fi
   dim "安装日志：$INSTALL_LOG"
 }
 
@@ -709,24 +735,18 @@ preflight() {
     dim "磁盘空间：剩余 ${avail_mb:-未知}MB"
   fi
 
-  # 2. 端口占用：只看是不是别人占着。已经被 DeckMeido 自己占着是正常情况
-  #    （升级时后端就在跑），不能因此拦住安装
-  if need_cmd ss; then
-    local holder
-    # 按冒号切开取最后一段精确比对，避免 :18765 顺带匹配到 187650 这类别的端口
-    holder=$(ss -ltnp 2>/dev/null | awk -v p="$PORT" '
-      { n = split($4, a, ":"); if (n > 1 && a[n] == p) { print $6; exit } }')
-    if [ -n "$holder" ]; then
-      if printf '%s' "$holder" | grep -qi "$APP\|python"; then
-        dim "端口 $PORT 由 DeckMeido 自己在用（升级时正常）"
-      else
-        warn "端口 $PORT 被别的进程占用：$holder"
-        dim "先关掉它，或换端口：DECKMEIDO_PORT=18766 bash install.sh"
-        problems=1
-      fi
-    else
-      dim "端口 $PORT 空闲"
-    fi
+  # 2. 端口占用：与 stop_backend 共用 _port_owned_by_us / _pid_is_ours 这一套
+  #    判据。以前预检用 grep 猜「holder 里有没有 python」，停机却要求路径匹配，
+  #    结果一边说「自己人在用」、一边停不掉（0.7.3 首次安装就栽在这）。
+  if ! _port_has_listener "$PORT"; then
+    dim "端口 $PORT 空闲"
+  elif _port_owned_by_us "$PORT"; then
+    dim "端口 $PORT 由 DeckMeido 自己在用（升级时正常）"
+  else
+    warn "端口 $PORT 被占用，且不是本程序的后端"
+    _port_holder_report "$PORT"
+    dim "先关掉它，或换端口：DECKMEIDO_PORT=18766 bash install.sh"
+    problems=1
   fi
 
   # 3. 图形会话：客户端要靠它把窗口开出来，缺了就只能从桌面手动启动
@@ -2184,27 +2204,40 @@ _port_pids() {
   fi
 }
 
-# 这个 pid 是不是本安装目录的 DeckMeido 进程
-# 判据：命令行含 server.main:app（或 client/main.py），并且 cwd 是本安装目录、
-# 或命令行里出现本安装目录。两层都满足才算，避免误杀同机别的 uvicorn。
+# 进程判据只有两条，故意不要求路径匹配：
+#   1. 同一个 UID（不是 root、也不是别的用户的进程）；
+#   2. 命令行含 server.main:app 或 client/main.py。
+# 为什么不再要求 cwd == $INSTALL_DIR：用户可能用 nohup 从旧目录拉起过一份，
+# 安装目录改名/删除后，那个进程的 cwd 会显示成 "/path (deleted)"，命令行里
+# 也可能只有相对模块名 —— 旧判据认不出它，于是第 2 步静默跳过，新后端又被
+# singleton 挡在端口外，安装器只看到「v未知」（0.7.3 首次安装起不来的根因）。
+_proc_uid() {
+  local pid="$1" uid=""
+  uid="$(awk '/^Uid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null || true)"
+  [ -n "$uid" ] || uid="$(stat -c %u "/proc/$pid" 2>/dev/null || true)"
+  printf '%s' "$uid"
+}
+
+_proc_cmdline() {
+  local pid="$1"
+  { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null || true
+}
+
 _pid_is_ours() {
-  local pid="$1" dir cmd cwd
+  local pid="$1" cmd uid me
   [ -r "/proc/$pid/cmdline" ] || return 1
-  dir="$(cd "$INSTALL_DIR" 2>/dev/null && pwd -P)" || return 1
-  cmd="$( { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null )" || return 1
-  cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+  uid="$(_proc_uid "$pid")"
+  me="$(id -u)"
+  [ -n "$uid" ] && [ "$uid" = "$me" ] || return 1
+  cmd="$(_proc_cmdline "$pid")"
+  [ -n "$cmd" ] || return 1
   case "$cmd" in
-    *server.main:app*|*client/main.py*) ;;
-    *) return 1 ;;
-  esac
-  [ "$cwd" = "$dir" ] && return 0
-  case "$cmd" in
-    *"$dir"*) return 0 ;;
+    *server.main:app*|*client/main.py*) return 0 ;;
   esac
   return 1
 }
 
-# 本安装目录下所有后端进程：命令行特征 + 端口占用双通道。
+# 本程序的后端进程：命令行特征 + 端口占用双通道，全部复用 _pid_is_ours。
 # 用户可能用 `nohup .venv/bin/python -m uvicorn server.main:app ...` 手动起过，
 # 它不是安装器拉起的 pid，只按 pid 记录根本停不掉。
 _backend_pids() {
@@ -2227,32 +2260,119 @@ _backend_pids() {
   printf '%s' "$seen"
 }
 
+# 本程序的客户端进程：与后端同一判据，也兼容旧目录 / 已删除 cwd。
+_client_pids() {
+  local d pid cmd
+  for d in /proc/[0-9]*; do
+    pid="${d#/proc/}"
+    [ "$pid" = "$$" ] && continue
+    cmd="$( { tr '\0' ' ' < "$d/cmdline"; } 2>/dev/null )" || continue
+    case "$cmd" in *client/main.py*) ;; *) continue ;; esac
+    _pid_is_ours "$pid" || continue
+    printf '%s\n' "$pid"
+  done
+}
+
+# 端口是否被任何进程监听（ss/lsof 都查不到时退回 TCP 握手）
+_port_answers() {
+  local port="$1"
+  ( exec 3<>"/dev/tcp/127.0.0.1/$port" ) 2>/dev/null && return 0
+  return 1
+}
+
+_port_has_listener() {
+  local port="$1" out=""
+  if need_cmd ss; then
+    out="$(ss -ltn 2>/dev/null | awk -v p="$port" '
+      { n = split($4, a, ":"); if (n > 1 && a[n] == p) { print "yes"; exit } }')"
+    [ -n "$out" ] && return 0
+  elif need_cmd lsof; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 && return 0
+  fi
+  _port_answers "$port"
+}
+
+# 预检与停机共用的判据：端口上的监听者是不是「全是本程序自己的进程」。
+# 返回 0 = 空闲或全是自己人；1 = 有无法识别的占用者。
+_port_owned_by_us() {
+  local port="$1" pids pid
+  _port_has_listener "$port" || return 0
+  pids="$(_port_pids "$port")"
+  [ -n "$pids" ] || return 1
+  for pid in $pids; do
+    _pid_is_ours "$pid" || return 1
+  done
+  return 0
+}
+
+# 端口占用者明细：pid / 命令行 / cwd / exe。
+# cwd 可能带 " (deleted)"（目录已被删），exe 指向当时的 venv 解释器；
+# 这两行是这次事故里唯一能直接看出「旧进程从哪个目录起来的」的证据。
+_port_holder_report() {
+  local port="$1" pids pid cmd cwd exe
+  pids="$(_port_pids "$port")"
+  if [ -z "$pids" ]; then
+    dim "端口 $port 有监听，但查不到持有者 pid（可能属于其他用户）"
+    return 0
+  fi
+  for pid in $pids; do
+    cmd="$(_proc_cmdline "$pid")"
+    cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+    dim "端口 $port 持有者：PID $pid"
+    dim "  命令行：${cmd:-（读不到）}"
+    dim "  工作目录：${cwd:-（读不到）}"
+    dim "  可执行文件：${exe:-（读不到）}"
+  done
+}
+
+_wait_port_free() {
+  local i
+  for i in $(seq 1 20); do
+    _port_has_listener "$PORT" || return 0
+    sleep 0.15
+  done
+  return 1
+}
+
 # 停掉后端进程本身（不是客户端）。停不掉返回 1，由调用方明确报错，
 # 绝不在「旧进程还占着端口」的情况下继续换文件。
 stop_backend() {
   local pids pid i alive
   pids="$(_backend_pids)"
-  [ -n "$pids" ] || return 0
-  dim "关闭旧后端（PID:$pids）"
-  # shellcheck disable=SC2086  # 这里就是要按空格拆成多个 pid
-  kill -TERM $pids 2>/dev/null || true
-  for i in $(seq 1 25); do
-    alive=0
-    for pid in $pids; do
-      kill -0 "$pid" 2>/dev/null && alive=1
+  if [ -n "$pids" ]; then
+    dim "关闭旧后端（PID:$pids）"
+    # shellcheck disable=SC2086  # 这里就是要按空格拆成多个 pid
+    kill -TERM $pids 2>/dev/null || true
+    for i in $(seq 1 25); do
+      alive=0
+      for pid in $pids; do
+        kill -0 "$pid" 2>/dev/null && alive=1
+      done
+      [ "$alive" = "0" ] && break
+      sleep 0.2
     done
-    [ "$alive" = "0" ] && return 0
-    sleep 0.2
-  done
-  # shellcheck disable=SC2086
-  kill -KILL $pids 2>/dev/null || true
-  sleep 0.5
-  for pid in $pids; do
-    if kill -0 "$pid" 2>/dev/null; then
-      warn "后端进程 $pid 停不掉（可能属于其他用户）"
-      return 1
+    if [ "$alive" != "0" ]; then
+      # shellcheck disable=SC2086
+      kill -KILL $pids 2>/dev/null || true
+      sleep 0.5
+      for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+          warn "后端进程 $pid 停不掉（可能属于其他用户）"
+          return 1
+        fi
+      done
     fi
-  done
+  fi
+  # 最后一道闸：不管刚才有没有找到 pid，都复核端口是否真的释放。
+  # 端口仍被占时不静默继续 —— 继续换文件只会让新后端被 singleton 挡住，
+  # 表现成「安装成功但服务起不来」。
+  if ! _wait_port_free; then
+    step_fail "端口 $PORT 仍被占用，新后端会被单实例检查挡住"
+    _port_holder_report "$PORT"
+    next_hint "先手动结束上面的进程（sudo kill <PID>），再重跑安装；不要只替换文件"
+    return 1
+  fi
   return 0
 }
 
@@ -3004,7 +3124,7 @@ do_install() {
   # 它不是安装器拉起的 pid，只按 pid 记录停不掉（0.7.1 装完仍是 0.7.0 的根因）。
   step "停止旧进程"
   [ -n "$(_backend_pids)" ] && had_old=1
-  pgrep -f "$INSTALL_DIR/client/main.py" >/dev/null 2>&1 && had_old=1
+  [ -n "$(_client_pids)" ] && had_old=1
   if ! stop_runtime; then
     step_fail "旧进程没停掉，为安全起见没有替换任何文件"
     die "请先按上面的提示手动停掉旧进程，再重跑安装"
@@ -3072,17 +3192,26 @@ do_install() {
 # 升级过程中它要是还活着，会一边同步代码一边被重新拉起旧后端，
 # 端口和内存里的历史都对不上。升级完成后由 launch_client 重新开。
 stop_client() {
-  pgrep -f "$INSTALL_DIR/client/main.py" >/dev/null 2>&1 || return 0
+  local pids pid i
+  # 与后端同一判据：同一 UID + 命令行含 client/main.py，不要求路径匹配，
+  # 这样从旧目录（甚至已被删除的目录）拉起的客户端也能收掉。
+  pids="$(_client_pids)"
+  [ -n "$pids" ] || return 0
   dim "关闭客户端（升级后自动重开）"
   # 先收掉 launch.sh 的自动重启，否则它看到客户端被杀会立刻再拉起一个
   pkill -f "$INSTALL_DIR/client/launch.sh" 2>/dev/null || true
-  pkill -f "$INSTALL_DIR/client/main.py" 2>/dev/null || true
-  local i
+  # shellcheck disable=SC2086
+  kill -TERM $pids 2>/dev/null || true
   for i in $(seq 1 20); do
-    pgrep -f "$INSTALL_DIR/client/main.py" >/dev/null 2>&1 || return 0
+    local alive=0
+    for pid in $pids; do
+      kill -0 "$pid" 2>/dev/null && alive=1
+    done
+    [ "$alive" = "0" ] && return 0
     sleep 0.2
   done
-  pkill -9 -f "$INSTALL_DIR/client/main.py" 2>/dev/null || true
+  # shellcheck disable=SC2086
+  kill -KILL $pids 2>/dev/null || true
 }
 
 do_upgrade() {
@@ -3111,7 +3240,7 @@ do_upgrade() {
   # 再把可能已经「脱管」的后端进程也收掉，保证换文件时没有旧进程占着端口
   step "停止旧进程"
   [ -n "$(_backend_pids)" ] && had_old=1
-  pgrep -f "$INSTALL_DIR/client/main.py" >/dev/null 2>&1 && had_old=1
+  [ -n "$(_client_pids)" ] && had_old=1
   if ! stop_runtime; then
     step_fail "旧进程没停掉，为安全起见没有替换任何文件"
     die "请先按上面的提示手动停掉旧进程，再重跑升级"
