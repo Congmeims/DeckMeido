@@ -2494,9 +2494,10 @@ async def api_browse(path: str = ""):
                         item["link_target"] = os.path.realpath(e.path)
                     except OSError:
                         item["link_target"] = ""
-                    # 断链：exists 会跟随链接，False 说明目标没了
+                    # 断链：exists 会跟随链接，False 说明目标没了。
+                    # 注意 DirEntry 没有 exists() 方法（用了会 AttributeError → 整目录 500）
                     try:
-                        item["broken"] = not e.exists()
+                        item["broken"] = not os.path.exists(e.path)
                     except OSError:
                         item["broken"] = False
                 if not is_dir:
