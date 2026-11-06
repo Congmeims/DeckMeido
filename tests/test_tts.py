@@ -164,6 +164,15 @@ class ReadifyRouteTest(unittest.TestCase):
         self.assertNotIn("http", out)
         self.assertNotIn("`", out)
 
+    def test_评分星号映射成可读词而不是被删掉(self):
+        raw = "这是日服 v2.1.7 的立绘，角色 3★ 版本，CV 是 石川由依。"
+        cleaned = ttsmod.readify(raw)
+        # 只做 ★→星 的映射，其它字符一个都不能少
+        self.assertEqual(cleaned, raw.replace("★", "星"))
+        segs = ttsmod.route_segments(cleaned, "auto")
+        self.assertIn("3星", "".join(part for _, part in segs))
+        self.assertEqual(ttsmod.readify("★☆"), "星星")
+
     def test_分语种(self):
         self.assertEqual(ttsmod.detect_language("こんにちは"), "ja")
         self.assertEqual(ttsmod.detect_language("你好世界"), "zh")
@@ -220,10 +229,19 @@ class ScriptRouteTest(unittest.TestCase):
             [("zh", "你好 123 "), ("en", "world")])
 
     def test_引号里的日语与后面的中文(self):
-        # 按规则：句中有假名且汉字段紧贴假名（只隔标点）→ 判 ja，合并后整句一个 ja 段
+        # 引号内单独按日语读，引号外的中文说明不再被拖成日语
         self.assertRoute(
             "「こんにちは」是你好的意思",
-            [("ja", "「こんにちは」是你好的意思")])
+            [("ja", "「こんにちは」"), ("zh", "是你好的意思")])
+
+    def test_拉丁占绝对多数整句按英文读(self):
+        self.assertRoute(
+            "Elegant Elegy is a skill.", [("en", "Elegant Elegy is a skill.")])
+
+    def test_括号未闭合与嵌套不丢字符(self):
+        for text in ("「ミカは学生です", "（「Elegant」）", "」多余的右括号"):
+            segs = ttsmod.route_segments(text, "auto")
+            self.assertEqual("".join(part for _, part in segs), text)
 
     def test_英文缩写与版本号整体保留(self):
         self.assertRoute("GPU", [("en", "GPU")])
@@ -242,6 +260,64 @@ class ScriptRouteTest(unittest.TestCase):
         segs = ttsmod.route_segments(text, "auto")
         self.assertEqual([lang for lang, _ in segs], ["zh", "en", "ja"])
         self.assertEqual("".join(part for _, part in segs), text)
+
+
+class PersonaRouteTest(unittest.TestCase):
+    """蔚蓝档案日服角色资料：中文说明为主体，夹日文专名/台词/英文术语"""
+
+    def assertRoute(self, text, expected, cleaned=None):
+        if cleaned is not None:
+            text = ttsmod.readify(text)
+            self.assertEqual(text, cleaned)
+        segs = ttsmod.route_segments(text, "auto")
+        self.assertEqual(segs, expected)
+        self.assertEqual("".join(part for _, part in segs), text.strip())
+
+    def test_中文句里有片假名专名(self):
+        # 句首ミカ是片假名，整句仍判中文；假名段读 ja，其余中文读 zh
+        self.assertRoute(
+            "ミカ是崔尼蒂综合学园的学生会长，喜欢甜点，武器是MG。",
+            [("ja", "ミカ"),
+             ("zh", "是崔尼蒂综合学园的学生会长，喜欢甜点，武器是"),
+             ("en", "MG。")])
+
+    def test_引号台词单独按日语读(self):
+        self.assertRoute(
+            "她的口头禅是「甘いものは正義です」，意思是甜食就是正义。",
+            [("zh", "她的口头禅是"),
+             ("ja", "「甘いものは正義です」"),
+             ("zh", "，意思是甜食就是正义。")])
+
+    def test_英文技能名与缩写(self):
+        self.assertRoute(
+            "技能「Elegant Elegy」会对范围内敌人造成伤害，简称EX。",
+            [("zh", "技能"),
+             ("en", "「Elegant Elegy」"),
+             ("zh", "会对范围内敌人造成伤害，简称"),
+             ("en", "EX。")])
+
+    def test_中文里的片假名学校名(self):
+        self.assertRoute(
+            "她住在トリニティ的宿舍，喜欢红茶和蛋糕。",
+            [("zh", "她住在"),
+             ("ja", "トリニティ"),
+             ("zh", "的宿舍，喜欢红茶和蛋糕。")])
+
+    def test_纯日文整句按日语读(self):
+        self.assertRoute(
+            "ミカはトリニティ総合学園の生徒会長で、甘いものが大好きです。",
+            [("ja", "ミカはトリニティ総合学園の生徒会長で、甘いものが大好きです。")])
+
+    def test_版本号星级与日文汉字人名(self):
+        # 石川由依是纯汉字日文人名，没有假名也没有词典 → 仍读中文（已知限制）
+        self.assertRoute(
+            "这是日服 v2.1.7 的立绘，角色 3★ 版本，CV 是 石川由依。",
+            [("zh", "这是日服 "),
+             ("en", "v2.1.7 "),
+             ("zh", "的立绘，角色 3星 版本，"),
+             ("en", "CV "),
+             ("zh", "是 石川由依。")],
+            cleaned="这是日服 v2.1.7 的立绘，角色 3星 版本，CV 是 石川由依。")
 
 
 class _FakeProc:
