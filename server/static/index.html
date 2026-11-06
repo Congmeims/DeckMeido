@@ -2071,6 +2071,14 @@
     overflow-x: auto; white-space: nowrap; scrollbar-width: none;
   }
   #fbPath::-webkit-scrollbar { display: none; }
+  /* 路径离开工作区时的提醒胶囊：和状态徽章同一套圆角/字号，不换行、不挤路径 */
+  #fbWarn {
+    flex: 0 0 auto; font-size: 11px; line-height: 1.4;
+    padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+    color: #e0a33a; border: 1px solid rgba(224,163,58,.55);
+    background: rgba(224,163,58,.12);
+  }
+  #fbWarn[hidden] { display: none; }
   #fbPath .seg { cursor: pointer; }
   #fbPath .seg:hover { color: var(--brand); }
   /* 文件面板底部的上传条：与终端输入条（#termBar）同构——
@@ -3471,6 +3479,7 @@
       <button id="fbUp" title="上一级"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
       <button id="fbHome" title="回到工作区"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg></button>
       <div id="fbPath"></div>
+      <span id="fbWarn" title="当前目录不在 DeckMeido 工作区内" hidden>谨慎操作</span>
     </div>
     <div id="fbQueue"></div>
     <div id="fbList"><div class="fb-note">加载中…</div></div>
@@ -5232,11 +5241,27 @@
                       '删除文件「' + (path.split('/').pop()) + '」？';
     fbConfirmDelete(msg, function () {
       fbFs('delete', path).then(function (r) {
-        if (!r.ok) fbToast('删除失败：' + r.error, 'file', true);
-        else fbToast('已删除', 'file');
-        fbLoad(fb.path || '');
+        if (!r.ok) {
+          // 失败（权限/占用）不刷新列表，避免整表跳到顶部
+          fbToast('删除失败：' + r.error, 'file', true);
+          return;
+        }
+        fbToast('已删除', 'file');
+        // 刷新数据但记住滚动位置：长列表里删完还停在原处
+        fbKeepScroll(function () { return fbLoad(fb.path || ''); });
       });
     });
+  }
+
+  // 重新拉列表时保住滚动位置（数据回来、列表重渲染后恢复）
+  function fbKeepScroll(fn) {
+    var box = rbEl('fbList');
+    var top = box ? box.scrollTop : 0;
+    function restore() { if (box) box.scrollTop = top; }
+    var p = fn();
+    if (p && p.then) p.then(restore, restore);
+    else restore();
+    return p;
   }
 
   function fbCtxPaste() {
@@ -5431,10 +5456,35 @@
     // 其他位置：屏蔽浏览器菜单，什么都不弹
   });
 
+  // 规范化路径：去掉多余斜杠、解析 . 与 ..；不做大小写折叠（Deck 的 Linux 路径区分大小写）
+  function fbNormPath(p) {
+    var raw = String(p || '');
+    try { raw = decodeURIComponent(raw); } catch (e) { /* 保留原样 */ }
+    var parts = raw.split('/'), out = [];
+    for (var i = 0; i < parts.length; i++) {
+      var s = parts[i];
+      if (!s || s === '.') continue;
+      if (s === '..') { out.pop(); continue; }
+      out.push(s);
+    }
+    return '/' + out.join('/');
+  }
+
+  function fbOutsideWorkspace(p) {
+    var ws = fbNormPath(window.__wsPath || '');
+    var cur = fbNormPath(p);
+    // 工作区没取到或就是根目录时，任何路径都还在范围内
+    if (!ws || ws === '/') return false;
+    return !(cur === ws || cur.indexOf(ws + '/') === 0);
+  }
+
   function fbRenderPath() {
     var box = rbEl('fbPath');
     box.innerHTML = '';
     var p = fb.path || '';
+    // 每次渲染都重算：切目录、手输路径、前进后退、刷新都会走到这里
+    var warn = rbEl('fbWarn');
+    if (warn) warn.hidden = !fbOutsideWorkspace(p);
     if (!p) return;
     // 按 / 拆成可点的段，点哪段跳哪层
     var parts = p.split('/').filter(function (s) { return s !== ''; });
@@ -6698,9 +6748,12 @@
   // 工作区路径：点文件时判断能不能用 @{...} 引用，先取一次
   fetch('/api/files')
     .then(function (r) { return r.json(); })
-    .then(function (res) { window.__wsPath = res.workspace || ''; })
+    .then(function (res) {
+      window.__wsPath = res.workspace || '';
+      // 工作区取回来晚于首次打开面板时要补判一次，否则胶囊可能一直不出现
+      if (fb.path) fbRenderPath();
+    })
     .catch(function () {});
-
 
   // 本地缓存的落盘节流。以前是 600ms，而流式输出每来一批都会调一次 schedule，
   // 等于每 0.6 秒就把整段正文 join 一遍、JSON.stringify 一遍、再同步写进
