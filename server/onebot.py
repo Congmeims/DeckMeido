@@ -202,6 +202,8 @@ class OneBotConfig:
     group_memo_max_chars: int = DEFAULT_GROUP_MEMO_MAX_CHARS
     # 伪造语音条（NapCat record 段）：默认关闭，只对 admin_qq 生效
     voice_reply: bool = False
+    # 语音发送成功时跳过文字分段；任何失败都回退为照常发文字
+    voice_only: bool = False
     voice_max_seconds: float = DEFAULT_VOICE_MAX_SECONDS
     voice_max_kb: int = DEFAULT_VOICE_MAX_KB
     confirm_timeout: float = DEFAULT_CONFIRM_TIMEOUT
@@ -317,6 +319,7 @@ def parse_config(raw: dict | None) -> OneBotConfig:
             raw.get("group_memo_max_chars", DEFAULT_GROUP_MEMO_MAX_CHARS),
             DEFAULT_GROUP_MEMO_MAX_CHARS) or DEFAULT_GROUP_MEMO_MAX_CHARS,
         voice_reply=_as_bool(raw.get("voice_reply"), False),
+        voice_only=_as_bool(raw.get("voice_only"), False),
         voice_max_seconds=_as_float(
             raw.get("voice_max_seconds", DEFAULT_VOICE_MAX_SECONDS),
             DEFAULT_VOICE_MAX_SECONDS),
@@ -340,7 +343,7 @@ ADVANCED_FIELDS = (
     "group_memo", "group_memo_size", "group_memo_ttl", "group_memo_max_chars",
     "rate_per_minute", "group_rate_per_minute", "reply_chunk_chars",
     "max_reply_chunks", "redact_words", "redact_mask",
-    "voice_reply", "voice_max_seconds", "voice_max_kb",
+    "voice_reply", "voice_only", "voice_max_seconds", "voice_max_kb",
 )
 RATE_LIMIT_MAX = 600                    # 条/分钟上限
 GROUP_MEMO_SIZE_MAX = 100               # 每群保留条数上限
@@ -382,6 +385,8 @@ def normalize_advanced(raw: dict) -> tuple[dict, str | None]:
         out["group_memo"] = bool(raw["group_memo"])
     if "voice_reply" in raw:
         out["voice_reply"] = bool(raw["voice_reply"])
+    if "voice_only" in raw:
+        out["voice_only"] = bool(raw["voice_only"])
     for key, lo, hi, label in (
             ("group_memo_size", 0, GROUP_MEMO_SIZE_MAX, "每群保留条数"),
             ("group_memo_max_chars", GROUP_MEMO_CHARS_MIN, GROUP_MEMO_CHARS_MAX,
@@ -1323,19 +1328,30 @@ class OneBotClient:
         self._stats["replies"] += 1
 
     async def _send_chunks(self, ev: MessageEvent, text: str) -> None:
-        chunks = split_reply(text, self._cfg.reply_chunk_chars,
-                             self._cfg.max_reply_chunks)
+        cfg = self._cfg
+        # 只发语音：先尝试语音，成功才跳过文字；任何失败都必须把文字发出去
+        if cfg.voice_reply and cfg.voice_only:
+            if await self._maybe_send_voice(ev, text):
+                return
+            if is_admin_user(cfg, ev) and self._voice_synth is not None:
+                self._log("info", "voice.send",
+                          "voice_only：语音未发出，原因见上一条 voice.*，改发文字")
+        chunks = split_reply(text, cfg.reply_chunk_chars,
+                             cfg.max_reply_chunks)
         if not chunks:
             chunks = ["（这一轮没有回复）"]
         for i, chunk in enumerate(chunks):
             await self._send_text(ev, chunk, at=(i == 0), chunk=chunk)
         # 语音只发一条，且放在全部分段之后：文字先落地，语音失败也吞不掉回复
-        await self._maybe_send_voice(ev, text)
+        if not (cfg.voice_reply and cfg.voice_only):
+            await self._maybe_send_voice(ev, text)
 
     # -- 伪造语音条（NapCat record 段）--
 
     async def _maybe_send_voice(self, ev: MessageEvent, text: str) -> bool:
-        """主人 QQ 的回复额外发一条语音；任何失败只记日志，不影响已发的文字"""
+        """主人 QQ 的回复发一条语音；成功返回 True（voice_only 时调用方据此跳过文字），
+        失败只记日志并返回 False，由调用方保证文字照常发出
+        """
         cfg = self._cfg
         if not cfg.voice_reply or self._voice_synth is None:
             return False
@@ -1417,7 +1433,9 @@ class OneBotClient:
                       f"NapCat 拒绝或超时：{type(e).__name__}")
             return False
         self._log("info", "voice.send",
-                  f"已发送 {seconds:.1f}s {len(payload)} 字节 base64 {len(b64)} 字节")
+                  f"已发送 {seconds:.1f}s {len(payload)} 字节 base64 {len(b64)} 字节"
+                  + ("，voice_only=true，已跳过文字" if cfg.voice_only
+                     else "，voice_only=false"))
         return True
 
     @staticmethod

@@ -3044,6 +3044,13 @@
                   <span class="slider"></span>
                 </label>
               </div>
+              <div class="field field-row">
+                <label style="margin:0">只发语音（voice_only）</label>
+                <label class="switch">
+                  <input id="cfgQqVoiceOnly" type="checkbox">
+                  <span class="slider"></span>
+                </label>
+              </div>
               <div class="qq-num-grid">
                 <div class="field">
                   <label>时长上限（秒，voice_max_seconds）</label>
@@ -3057,8 +3064,9 @@
                 </div>
               </div>
               <div class="field-hint">
-                只在文字回复之外额外发一条语音，仅对主人 QQ 生效，群友不触发。
-                超过时长或大小上限、合成不可用、或 NapCat 拒绝时只发文字，不会吞回复。
+                默认在文字回复之外额外发一条语音，仅对主人 QQ 生效，群友不触发。
+                打开「只发语音」后，语音发送成功才跳过文字；合成不可用、超过时长或大小上限、
+                转码失败、NapCat 拒收时一律自动改发文字，不会既没语音也没文字。
               </div>
             </div>
             <div class="field field-row">
@@ -8354,6 +8362,7 @@
   var cfgQqChunks = document.getElementById('cfgQqChunks');
   var cfgQqRedactMask = document.getElementById('cfgQqRedactMask');
   var cfgQqVoice = document.getElementById('cfgQqVoice');
+  var cfgQqVoiceOnly = document.getElementById('cfgQqVoiceOnly');
   var cfgQqVoiceSeconds = document.getElementById('cfgQqVoiceSeconds');
   var cfgQqVoiceKb = document.getElementById('cfgQqVoiceKb');
   // 被保留但不在界面上的其余管理员号（老配置可能有多个）
@@ -9813,6 +9822,7 @@
       if (qqRedactWords) qqRedactWords.set(c.redact_words || []);
       if (cfgQqRedactMask) cfgQqRedactMask.value = c.redact_mask || '***';
       if (cfgQqVoice) cfgQqVoice.checked = !!c.voice_reply;
+      if (cfgQqVoiceOnly) cfgQqVoiceOnly.checked = !!c.voice_only;
       if (cfgQqVoiceSeconds) cfgQqVoiceSeconds.value =
         c.voice_max_seconds != null ? c.voice_max_seconds : 60;
       if (cfgQqVoiceKb) cfgQqVoiceKb.value =
@@ -9902,6 +9912,7 @@
       redact_words: qqRedactWords ? qqRedactWords.get() : [],
       redact_mask: cfgQqRedactMask ? cfgQqRedactMask.value.trim() : '***',
       voice_reply: cfgQqVoice ? !!cfgQqVoice.checked : false,
+      voice_only: cfgQqVoiceOnly ? !!cfgQqVoiceOnly.checked : false,
       voice_max_seconds: qqNum(cfgQqVoiceSeconds, 60),
       voice_max_kb: qqNum(cfgQqVoiceKb, 4096)
     };
@@ -9926,6 +9937,7 @@
         if (qqGroups) qqGroups.set(res.config.allow_groups || []);
         if (qqRedactWords) qqRedactWords.set(res.config.redact_words || []);
         if (cfgQqVoice) cfgQqVoice.checked = !!res.config.voice_reply;
+        if (cfgQqVoiceOnly) cfgQqVoiceOnly.checked = !!res.config.voice_only;
         if (cfgQqVoiceSeconds) cfgQqVoiceSeconds.value =
           res.config.voice_max_seconds != null ? res.config.voice_max_seconds : 60;
         if (cfgQqVoiceKb) cfgQqVoiceKb.value =

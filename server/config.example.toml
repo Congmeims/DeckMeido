@@ -299,6 +299,9 @@ group_memo_max_chars = 400
 # 合成复用 [tts] 的 piper-plus 模型：运行时/模型缺失、超过下面的时长/大小上限、
 # 或 NapCat 拒绝发送时，只记日志并把文字照常发完，不会吞掉整条回复。
 voice_reply = false
+# 只发语音：仅当 voice_reply 为真、且语音确实发送成功时，跳过文字分段。
+# 合成失败、超过时长/大小上限、转码失败、NapCat 拒收或超时，都会自动改发文字。
+voice_only = false
 # 单条语音的时长上限（秒），超过就只发文字。
 voice_max_seconds = 60
 # 单条语音的文件大小上限（KB），超过就只发文字。

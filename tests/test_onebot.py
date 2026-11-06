@@ -243,7 +243,8 @@ class AdvancedConfigTest(unittest.TestCase):
             "group_rate_per_minute": 10, "reply_chunk_chars": 300,
             "max_reply_chunks": 3,
             "redact_words": ["密钥", "口令", "密"], "redact_mask": "***",
-            "voice_reply": True, "voice_max_seconds": 30, "voice_max_kb": 2048,
+            "voice_reply": True, "voice_only": True,
+            "voice_max_seconds": 30, "voice_max_kb": 2048,
         })
         self.assertIsNone(err)
         cfg = onebot.parse_config(updates)
@@ -259,6 +260,7 @@ class AdvancedConfigTest(unittest.TestCase):
         self.assertEqual(cfg.redact_words, ("密钥", "口令"))
         self.assertEqual(cfg.redact_mask, "***")
         self.assertTrue(cfg.voice_reply)
+        self.assertTrue(cfg.voice_only)
         self.assertEqual(cfg.voice_max_seconds, 30.0)
         self.assertEqual(cfg.voice_max_kb, 2048)
 
@@ -1470,6 +1472,7 @@ class ConfigTestExtra(unittest.TestCase):
         self.assertEqual(cfg.image_recent_minutes, 2.0)
         # 伪造语音条默认关闭；上限 60 秒 / 4MB
         self.assertFalse(cfg.voice_reply)
+        self.assertFalse(cfg.voice_only)
         self.assertEqual(cfg.voice_max_seconds, 60.0)
         self.assertEqual(cfg.voice_max_kb, 4096)
 
@@ -1586,8 +1589,10 @@ class VoiceReplyTest(unittest.IsolatedAsyncioTestCase):
             if isinstance(message, str):
                 out.append(message)
             elif isinstance(message, list):
-                out.append("".join(s.get("data", {}).get("text", "")
-                                   for s in message if s.get("type") == "text"))
+                text = "".join(s.get("data", {}).get("text", "")
+                               for s in message if s.get("type") == "text")
+                if text:
+                    out.append(text)
         return out
 
     async def test_disabled_sends_text_only(self):
@@ -1707,6 +1712,95 @@ class VoiceReplyTest(unittest.IsolatedAsyncioTestCase):
         await bot.wait_idle()
         self.assertEqual(self.records(ws), [])
         self.assertTrue(any("好的" in t for t in self.texts(ws)))
+        await bot.stop()
+
+    # -- voice_only：只有语音真的发出去才跳过文字 --
+
+    async def test_voice_only_off_sends_text_and_voice(self):
+        async def synth(text):
+            return self.wav()
+
+        bot, ws = self.make(voice_synth=synth, config={"voice_only": False})
+        await self.start(bot)
+        ws.feed(private_msg("10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertTrue(any("好的" in t for t in self.texts(ws)))
+        self.assertEqual(len(self.records(ws)), 1)
+        await bot.stop()
+
+    async def test_voice_only_success_sends_only_voice(self):
+        async def synth(text):
+            return self.wav()
+
+        bot, ws = self.make(voice_synth=synth, config={"voice_only": True})
+        await self.start(bot)
+        ws.feed(private_msg("10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(self.texts(ws), [])
+        self.assertEqual(len(self.records(ws)), 1)
+        await bot.stop()
+
+    async def test_voice_only_synth_failure_falls_back_to_text(self):
+        async def synth(text):
+            raise RuntimeError("piper 未安装")
+
+        bot, ws = self.make(voice_synth=synth, config={"voice_only": True})
+        await self.start(bot)
+        ws.feed(private_msg("10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(self.records(ws), [])
+        self.assertTrue(any("好的" in t for t in self.texts(ws)))
+        await bot.stop()
+
+    async def test_voice_only_over_limit_falls_back_to_text(self):
+        async def synth(text):
+            return self.wav(seconds=2.0)
+
+        bot, ws = self.make(voice_synth=synth,
+                            config={"voice_only": True, "voice_max_seconds": 1})
+        await self.start(bot)
+        ws.feed(private_msg("10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(self.records(ws), [])
+        self.assertTrue(any("好的" in t for t in self.texts(ws)))
+        await bot.stop()
+
+    async def test_voice_only_rejected_falls_back_to_text(self):
+        async def synth(text):
+            return self.wav()
+
+        bot, ws = self.make(voice_synth=synth, config={"voice_only": True})
+        original = bot._call_api
+
+        async def reject_record(action, params, timeout=15.0):
+            message = params.get("message")
+            if isinstance(message, list) and any(
+                    s.get("type") == "record" for s in message):
+                raise RuntimeError("NapCat 拒收 record")
+            return await original(action, params, timeout=timeout)
+
+        bot._call_api = reject_record
+        await self.start(bot)
+        ws.feed(private_msg("10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(self.records(ws), [])
+        self.assertTrue(any("好的" in t for t in self.texts(ws)))
+        await bot.stop()
+
+    async def test_voice_only_group_guest_still_gets_text(self):
+        called = []
+
+        async def synth(text):
+            called.append(text)
+            return self.wav()
+
+        bot, ws = self.make(voice_synth=synth, config={"voice_only": True})
+        await self.start(bot)
+        ws.feed(group_msg("20001", "30003", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(called, [])
+        self.assertEqual(self.records(ws), [])
+        self.assertTrue(self.texts(ws))
         await bot.stop()
 
 
