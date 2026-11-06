@@ -1,10 +1,10 @@
 {
   "tag": "0.7.0",
   "name": "DeckMeido 0.7.0",
-  "notes": "# DeckMeido 0.7.0\n\n- build(release): 同步 0.7.0 产物到 winres/deckmeido\n- build(release): 发布包纳入 requirements-tts.txt\n- chore(release): 版本号升至 0.7.0\n- test(tts): 配置归一化、降级判定与打断行为单测\n- feat(web): 女仆人格下新增语音回复设置卡\n- feat(config): [tts] 增加引擎/音色/语言/语速等键并接入保存接口\n- feat(tts): 语音合成接入 piper-plus + つくよみちゃん 6 语模型\n- refactor(auth): 下线访问令牌，改为回环免验证 + 配对设备 HttpOnly Cookie\n- feat(plugin): QAM 页签加 L1/R1 键帽提示，移除令牌卡片与令牌状态字段\n- fix(plugin): QAM 支持 L1/R1 翻页，设置页文案与卡片高度按需求调整\n- tools: 新增一键部署脚本，插件 dist 变化时自动重载 Decky\n- feat(stt): 新增 [stt] model_source 配置与状态里的下载源字段\n- feat(stt): 模型下载改为国内镜像优先、多源切换与断点续传\n- 修复删除会话 500：补 pending_action 的 global 声明\n- 大屏设置页移除局域网访问与设备配对卡片\n- fix(plugin): 语音提示行固定高度，长报错不再挤走下载按钮\n- fix(audit): 同 IP 同路径的无效凭据 60 秒内只记一条\n- feat(web): 配对与审计长列表收敛为单一配对入口\n- feat(web): 远程连接页跨屏鼠标置顶，QQ 通道改名 Onebot 通道\n- fix(web): 群友提示词首次打开显示后端默认值\n",
-  "published_at": "2026-11-06T10:43:04+08:00",
+  "notes": "# DeckMeido 0.7.0\n\n- build(release): 0.7.0 重新打包并清理 0.6.x 旧产物\n- build(release): winres 只保留最新版本产物\n- feat(install): 新增 --tts 可选安装语音合成依赖\n- build(release): 同步 0.7.0 产物到 winres/deckmeido\n- build(release): 发布包纳入 requirements-tts.txt\n- chore(release): 版本号升至 0.7.0\n- test(tts): 配置归一化、降级判定与打断行为单测\n- feat(web): 女仆人格下新增语音回复设置卡\n- feat(config): [tts] 增加引擎/音色/语言/语速等键并接入保存接口\n- feat(tts): 语音合成接入 piper-plus + つくよみちゃん 6 语模型\n- refactor(auth): 下线访问令牌，改为回环免验证 + 配对设备 HttpOnly Cookie\n- feat(plugin): QAM 页签加 L1/R1 键帽提示，移除令牌卡片与令牌状态字段\n- fix(plugin): QAM 支持 L1/R1 翻页，设置页文案与卡片高度按需求调整\n- tools: 新增一键部署脚本，插件 dist 变化时自动重载 Decky\n- feat(stt): 新增 [stt] model_source 配置与状态里的下载源字段\n- feat(stt): 模型下载改为国内镜像优先、多源切换与断点续传\n- 修复删除会话 500：补 pending_action 的 global 声明\n- 大屏设置页移除局域网访问与设备配对卡片\n- fix(plugin): 语音提示行固定高度，长报错不再挤走下载按钮\n- fix(audit): 同 IP 同路径的无效凭据 60 秒内只记一条\n",
+  "published_at": "2026-11-06T10:55:06+08:00",
   "files": {
     "tarball": "deckmeido-0.7.0.tar.gz",
-    "sha256": "09dd12a3e8fc246864f6533b41570ea0a15155ae4b8bf03b0986956c58033672"
+    "sha256": "cda74c79c2141a4b9591cbd7249333a82aab6040e207fa7700cb62a4098bb1b5"
   }
 }
