@@ -29,7 +29,8 @@ from .llm import LLMClient
 from . import audit, authguard, audiomute, depcheck, devlog, i18n, memory, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, singleton, status_line, tools, updater
 from .session_store import store
 from . import session_store
-from .tts import LANGUAGES, TTS, detect_language, normalize_engine, readify
+from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, normalize_speaker,
+                  speaker_from_legacy)
 from .stt import STT, STTError, record_supported
 from .tomlcfg import ConfigWriteError, write_config
 
@@ -719,8 +720,10 @@ SYSTEM_PROMPT = build_system_prompt()
 _tts_cfg = CFG.get("tts", {})
 tts = TTS(
     enable=bool(_tts_cfg.get("enable", False)),
-    engine=_tts_cfg.get("engine", "piper-plus"),
-    voice=_tts_cfg.get("voice", "tsukuyomi"),
+    # 发音人：新键 speaker 优先；老配置的 engine/voice 由 TTS 内部映射
+    speaker=_tts_cfg.get("speaker"),
+    engine=_tts_cfg.get("engine"),
+    voice=_tts_cfg.get("voice"),
     speed=int(_tts_cfg.get("speed", 170)),
     max_chars=int(_tts_cfg.get("max_chars", 300)),
     speed_scale=float(_tts_cfg.get("speed_scale", 1.0)),
@@ -2927,6 +2930,9 @@ class ConfigUpdate(BaseModel):
     clear_api_key: bool = False
     model: str | None = None
     tts_enable: bool | None = None
+    # [tts] 发音人：robot（机器人，espeak-ng）/ maid（女仆，piper-plus）。
+    # 仍是唯一来源，写回 config.toml 后热更新；下面的旧字段只为老客户端兼容
+    tts_speaker: str | None = None
     # [tts] 引擎/音色/语言/语速：写回 config.toml，apply_config 热更新
     # 值非法时归一化或夹到合法区间，不让一次手滑把播报弄哑
     tts_engine: str | None = None
@@ -3131,7 +3137,9 @@ async def api_get_config():
         "model": llm.model,
         "reasoning_effort": llm.reasoning_effort,
         "tts_enable": tts.enable,
-        # 语音合成的引擎/音色/语速：设置页「女仆人格」下面的语音回复卡片读这些
+        # 语音合成的发音人/音色/语速：设置页「女仆人格」下面的语音回复卡片读这些
+        "tts_speaker": tts.speaker,
+        "tts_speaker_label": SPEAKER_LABELS.get(tts.speaker, ""),
         "tts_engine": tts.engine,
         "tts_voice": tts.voice,
         "tts_language": tts.language,
@@ -3343,8 +3351,11 @@ async def api_set_config(req: ConfigUpdate, request: Request):
     tts_updates = {}
     if req.tts_enable is not None:
         tts_updates["enable"] = bool(req.tts_enable)
-    if req.tts_engine is not None:
-        tts_updates["engine"] = normalize_engine(req.tts_engine)
+    # 发音人只有一个配置项：新字段优先，旧 engine/voice 映射到同一项
+    if req.tts_speaker is not None:
+        tts_updates["speaker"] = normalize_speaker(req.tts_speaker)
+    elif req.tts_engine is not None or req.tts_voice is not None:
+        tts_updates["speaker"] = speaker_from_legacy(req.tts_engine, req.tts_voice)
     if req.tts_voice is not None:
         voice = req.tts_voice.strip()
         if not voice or len(voice) > 40 or any(ch.isspace() for ch in voice):
@@ -3660,11 +3671,14 @@ async def api_tts_download_cancel():
 
 @app.post("/api/tts/preview", dependencies=[Depends(require_auth)])
 async def api_tts_preview(req: TTSPreviewRequest):
-    """就地试听：用当前引擎/语速念一句短的，返回实际用到的引擎与失败原因。"""
+    """就地试听：用当前发音人念一句短的，返回实际用到的引擎与失败原因。"""
     result = await tts.preview(req.text)
     return {
         "ok": bool(result.get("engine")),
+        # 引擎名只用于日志/诊断；界面按 speaker 展示
         "engine": result.get("engine", ""),
+        "speaker": tts.speaker,
+        "speaker_label": SPEAKER_LABELS.get(tts.speaker, ""),
         "error": result.get("error", ""),
     }
 
@@ -6599,15 +6613,12 @@ def _qq_apply_config(raw: dict) -> None:
 
 
 def _qq_voice_wav(text: str) -> Path:
-    """QQ 语音条合成（线程内跑）：复用 piper-plus，产出临时 wav，调用方负责删
+    """QQ 语音条合成（线程内跑）：按 tts.speaker 选发音人，产出临时 wav，调用方负责删
 
-    piper 未装/模型缺失会抛 TTSError，由 onebot 记 voice.synth 后只发文字。
+    robot 走 espeak-ng，maid 走 piper-plus；两者失败都抛 TTSError，
+    由 onebot 记 voice.synth 后只发文字（现有回退逻辑不变）。
     """
-    cleaned = readify(text, tts.max_chars)
-    if not cleaned:
-        raise ValueError("没有可朗读的文本")
-    language = tts.language if tts.language != "auto" else detect_language(cleaned)
-    return tts._synth_wav(cleaned, language)
+    return tts.synth_wav(text)
 
 
 async def _qq_synth_voice(text: str) -> Path:

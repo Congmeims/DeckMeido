@@ -660,5 +660,104 @@ class ReportRegressionTest(unittest.TestCase):
             self.assertIn(word, joined)
 
 
+class SpeakerTest(unittest.TestCase):
+    """发音人收敛为 robot / maid：配置映射、路由选择、QQ 语音条分支"""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name)
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def test_两个取值与中文别名(self):
+        self.assertEqual(ttsmod.normalize_speaker("robot"), "robot")
+        self.assertEqual(ttsmod.normalize_speaker("maid"), "maid")
+        self.assertEqual(ttsmod.normalize_speaker("机器人"), "robot")
+        self.assertEqual(ttsmod.normalize_speaker("女仆"), "maid")
+        self.assertEqual(ttsmod.normalize_speaker(" ROBOT "), "robot")
+
+    def test_旧引擎与音色名映射到发音人(self):
+        self.assertEqual(ttsmod.normalize_speaker("piper-plus"), "maid")
+        self.assertEqual(ttsmod.normalize_speaker("tsukuyomi"), "maid")
+        self.assertEqual(ttsmod.normalize_speaker("espeak-ng"), "robot")
+        self.assertEqual(ttsmod.normalize_speaker("cmn"), "robot")
+        self.assertEqual(ttsmod.normalize_speaker("en-us"), "robot")
+        self.assertEqual(ttsmod.speaker_from_legacy("piper-plus", "tsukuyomi"), "maid")
+        self.assertEqual(ttsmod.speaker_from_legacy("espeak-ng", "cmn"), "robot")
+        self.assertEqual(ttsmod.speaker_from_legacy(None, "tsukuyomi"), "maid")
+        self.assertEqual(ttsmod.speaker_from_legacy(None, "cmn"), "robot")
+
+    def test_非法值回退默认(self):
+        self.assertEqual(ttsmod.normalize_speaker("bogus"), ttsmod.DEFAULT_SPEAKER)
+        self.assertEqual(ttsmod.normalize_speaker(""), ttsmod.DEFAULT_SPEAKER)
+        self.assertEqual(ttsmod.normalize_speaker(None), ttsmod.DEFAULT_SPEAKER)
+        t = ttsmod.TTS(speaker="bogus", model_root=self.root)
+        self.assertEqual(t.speaker, ttsmod.DEFAULT_SPEAKER)
+
+    def test_发音人派生内部引擎(self):
+        maid = ttsmod.TTS(speaker="maid", model_root=self.root)
+        robot = ttsmod.TTS(speaker="robot", model_root=self.root)
+        self.assertEqual(maid.engine, "piper-plus")
+        self.assertEqual(robot.engine, "espeak-ng")
+
+    def test_切换发音人释放已加载模型(self):
+        t = ttsmod.TTS(speaker="maid", model_root=self.root)
+        t._voice = object()
+        t.apply({"speaker": "robot"})
+        self.assertEqual(t.speaker, "robot")
+        self.assertIsNone(t._voice)
+
+    def test_状态只暴露两个发音人(self):
+        t = ttsmod.TTS(speaker="maid", model_root=self.root)
+        state = t.status()
+        self.assertEqual(state["speaker"], "maid")
+        self.assertEqual([s["id"] for s in state["speakers"]], ["robot", "maid"])
+
+    def test_机器人走_espeak_女仆走_piper(self):
+        calls = []
+
+        def make(speaker):
+            t = ttsmod.TTS(enable=True, speaker=speaker, language="zh",
+                           model_root=self.root)
+            t._piper_ready = lambda: True
+            t._espeak_binary = lambda: "/usr/bin/espeak-ng"
+
+            async def fake_piper(segments, event):
+                calls.append(("piper", segments))
+                return 0, 0, ""
+
+            async def fake_espeak(text, event, voice=None, language=""):
+                calls.append(("espeak", voice))
+                return True
+
+            t._speak_piper = fake_piper
+            t._speak_espeak = fake_espeak
+            return t
+
+        _run(make("robot").speak("你好。"))
+        self.assertEqual(calls, [("espeak", "cmn")])
+
+        calls.clear()
+        _run(make("maid").speak("你好。"))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "piper")
+
+    def test_QQ语音条按发音人分支(self):
+        t = ttsmod.TTS(enable=True, speaker="maid", language="zh",
+                       model_root=self.root)
+        t._synth_wav = lambda text, language: ("piper", text)
+        t._synth_wav_espeak = lambda text, language: ("espeak", text)
+        self.assertEqual(t.synth_wav("你好"), ("piper", "你好"))
+
+        t.speaker = "robot"
+        self.assertEqual(t.synth_wav("你好"), ("espeak", "你好"))
+
+    def test_QQ语音条空文本拒绝(self):
+        t = ttsmod.TTS(enable=True, speaker="robot", model_root=self.root)
+        with self.assertRaises(ValueError):
+            t.synth_wav("   ")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1190,6 +1190,13 @@
   /* 修复守护进程这类要等后台的按钮，置灰表示正在处理，避免重复点 */
   .mini-btn:disabled { opacity: .5; cursor: default; }
   .mini-btn:disabled:hover { border-color: var(--line); color: var(--text); }
+  /* 发音人二选一：两个等宽按钮并排，选中项蓝底，窄屏也不换行 */
+  .speaker-row { display: flex; gap: 8px; }
+  .speaker-row .speaker-btn { flex: 1 1 0; min-width: 0; white-space: nowrap; }
+  .speaker-btn.active {
+    background: var(--brand); border-color: var(--brand); color: #fff;
+  }
+  .speaker-btn.active:hover { color: #fff; }
   /* 「语气」这类多行输入：和单行输入框同一套外观，可拖高 */
   .field textarea {
     width: 100%;
@@ -2645,43 +2652,12 @@
               </label>
             </div>
             <div class="field">
-              <label>引擎</label>
-              <select id="cfgTtsEngine" class="cfg-select">
-                <option value="piper-plus">piper-plus（つくよみちゃん，本地模型）</option>
-                <option value="espeak-ng">espeak-ng（系统兜底）</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>音色</label>
-              <select id="cfgTtsVoice" class="cfg-select"></select>
-              <div class="field-hint">piper-plus 用模型自带的 つくよみちゃん；退回 espeak-ng 时用系统音色。</div>
-            </div>
-            <div class="field">
-              <label>语言</label>
-              <select id="cfgTtsLanguage" class="cfg-select">
-                <option value="auto">自动判定（推荐）</option>
-                <option value="ja">日语</option>
-                <option value="zh">中文</option>
-                <option value="en">英语</option>
-                <option value="es">西班牙语</option>
-                <option value="fr">法语</option>
-                <option value="pt">葡萄牙语</option>
-              </select>
-              <div class="field-hint">auto：有假名读日语，只有汉字读中文，拉丁字母读英语。</div>
-            </div>
-            <div class="field" id="ttsSpeedRow">
-              <label>语速 <span id="ttsSpeedVal" class="field-hint"></span></label>
-              <input id="cfgTtsSpeedScale" type="range" min="0.5" max="2" step="0.05">
-              <div class="field-hint">1.0 = 模型默认；调整后保存，下一句按新参数播报，可直接点「试听」。</div>
-            </div>
-            <div class="field" id="ttsNoiseRow">
-              <label>韵律噪声 <span id="ttsNoiseVal" class="field-hint"></span></label>
-              <input id="cfgTtsNoise" type="range" min="0" max="1" step="0.01">
-              <div class="field-hint">越大停顿和语调起伏越明显，0.667 与模型示例一致。</div>
-            </div>
-            <div class="field" id="ttsEspeakRow" hidden>
-              <label>espeak-ng 语速（词/分钟）</label>
-              <input id="cfgTtsSpeed" type="number" min="80" max="320" step="5">
+              <label>发音人</label>
+              <div class="speaker-row" id="ttsSpeakerRow">
+                <button class="mini-btn speaker-btn" type="button" data-speaker="robot">机器人</button>
+                <button class="mini-btn speaker-btn" type="button" data-speaker="maid">女仆</button>
+              </div>
+              <div class="field-hint">机器人：Deck 自带语音；女仆：つくよみちゃん（本地模型）。</div>
             </div>
             <div class="field-hint" id="ttsEngineHint"></div>
             <div class="field-hint" id="ttsModelHint"></div>
@@ -3045,6 +3021,13 @@
                 </label>
               </div>
               <div class="field field-row">
+                <label style="margin:0">群友也发语音（voice_group_members）</label>
+                <label class="switch">
+                  <input id="cfgQqVoiceMembers" type="checkbox">
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="field field-row">
                 <label style="margin:0">只发语音（voice_only）</label>
                 <label class="switch">
                   <input id="cfgQqVoiceOnly" type="checkbox">
@@ -3064,7 +3047,8 @@
                 </div>
               </div>
               <div class="field-hint">
-                默认在文字回复之外额外发一条语音，仅对主人 QQ 生效，群友不触发。
+                默认在文字回复之外额外发一条语音。私聊只对主人 QQ 生效；
+                群聊默认连群友一起发，关闭「群友也发语音」后只有主人 QQ 的回复带语音。
                 打开「只发语音」后，语音发送成功才跳过文字；合成不可用、超过时长或大小上限、
                 转码失败、NapCat 拒收时一律自动改发文字，不会既没语音也没文字。
               </div>
@@ -8212,18 +8196,10 @@
   // 覆盖写时要不要显式清空 Key：点「清除」才置 true，其余情况一律按「不改」提交
   var apiKeyClear = false;
   var cfgTts = document.getElementById('cfgTts');
-  // 语音回复卡（「女仆人格」下面）：引擎/音色/语速/试听/模型下载
-  var cfgTtsEngine = document.getElementById('cfgTtsEngine');
-  var cfgTtsVoice = document.getElementById('cfgTtsVoice');
-  var cfgTtsLanguage = document.getElementById('cfgTtsLanguage');
-  var cfgTtsSpeedScale = document.getElementById('cfgTtsSpeedScale');
-  var cfgTtsNoise = document.getElementById('cfgTtsNoise');
-  var cfgTtsSpeed = document.getElementById('cfgTtsSpeed');
-  var ttsSpeedRow = document.getElementById('ttsSpeedRow');
-  var ttsNoiseRow = document.getElementById('ttsNoiseRow');
-  var ttsEspeakRow = document.getElementById('ttsEspeakRow');
-  var ttsSpeedVal = document.getElementById('ttsSpeedVal');
-  var ttsNoiseVal = document.getElementById('ttsNoiseVal');
+  // 语音回复卡（「女仆人格」下面）：两个发音人 + 试听 + 模型下载
+  var ttsSpeakerRow = document.getElementById('ttsSpeakerRow');
+  var ttsSpeakerBtns = ttsSpeakerRow ? Array.prototype.slice.call(
+    ttsSpeakerRow.querySelectorAll('.speaker-btn')) : [];
   var ttsEngineHint = document.getElementById('ttsEngineHint');
   var ttsModelHint = document.getElementById('ttsModelHint');
   var ttsDownloadHint = document.getElementById('ttsDownloadHint');
@@ -8232,6 +8208,7 @@
   var ttsAttribution = document.getElementById('ttsAttribution');
   var ttsPollTimer = 0;
   var ttsState = null;
+  var ttsSpeaker = 'maid';
   var cfgPerm = document.getElementById('cfgPerm');
   var cfgWorkspace = document.getElementById('cfgWorkspace');
   var lanUrl = document.getElementById('lanUrl');
@@ -8362,6 +8339,7 @@
   var cfgQqChunks = document.getElementById('cfgQqChunks');
   var cfgQqRedactMask = document.getElementById('cfgQqRedactMask');
   var cfgQqVoice = document.getElementById('cfgQqVoice');
+  var cfgQqVoiceMembers = document.getElementById('cfgQqVoiceMembers');
   var cfgQqVoiceOnly = document.getElementById('cfgQqVoiceOnly');
   var cfgQqVoiceSeconds = document.getElementById('cfgQqVoiceSeconds');
   var cfgQqVoiceKb = document.getElementById('cfgQqVoiceKb');
@@ -8748,13 +8726,9 @@
           ? '已配置：' + masked + '　要更换请直接填新的，留空保存不会改动它'
           : '还没有配置 Key';
         cfgTts.checked = c.tts_enable;
-        // 语音回复：引擎/音色/语言/语速/噪声。老配置没有这些键时按后端默认值回填
-        cfgTtsEngine.value = c.tts_engine === 'espeak-ng' ? 'espeak-ng' : 'piper-plus';
-        cfgTtsLanguage.value = c.tts_language || 'auto';
-        cfgTtsSpeedScale.value = (c.tts_speed_scale != null) ? c.tts_speed_scale : 1;
-        cfgTtsNoise.value = (c.tts_noise_scale != null) ? c.tts_noise_scale : 0.667;
-        cfgTtsSpeed.value = (c.tts_speed != null) ? c.tts_speed : 170;
-        fillTtsVoices(c.tts_voice || 'tsukuyomi');
+        // 发音人只有两个选项：新键优先，老配置没有 speaker 时按引擎映射
+        setTtsSpeaker(c.tts_speaker
+          || (c.tts_engine === 'espeak-ng' ? 'robot' : 'maid'));
         syncTtsFields();
         loadTtsStatus();
         // 插件设置：与插件端同一个 GET /api/config 来源，开关和模板都按后端值回填
@@ -9183,12 +9157,7 @@
     var payload = {
       base_url: cfgBaseUrl.value,
       tts_enable: cfgTts.checked,
-      tts_engine: cfgTtsEngine.value,
-      tts_voice: cfgTtsVoice.value,
-      tts_language: cfgTtsLanguage.value,
-      tts_speed: parseInt(cfgTtsSpeed.value, 10) || 170,
-      tts_speed_scale: parseFloat(cfgTtsSpeedScale.value) || 1,
-      tts_noise_scale: parseFloat(cfgTtsNoise.value) || 0,
+      tts_speaker: ttsSpeaker,
       with_shot: !!cfgWithShot.checked,
       stt_enable: !!cfgStt.checked,
       stt_duck_output: !!cfgSttDuck.checked,
@@ -9296,41 +9265,27 @@
   }
 
   // ---------- 语音回复（「女仆人格」下面的语音回复卡） ----------
-  // 引擎决定可选音色：piper-plus 只有模型自带的 つくよみちゃん，espeak-ng 用系统音色
-  var TTS_VOICES = {
-    'piper-plus': [{ id: 'tsukuyomi', label: 'つくよみちゃん（多语模型）' }],
-    'espeak-ng': [
-      { id: 'cmn', label: '普通话' },
-      { id: 'en-us', label: '英语' },
-      { id: 'ja', label: '日语' }
-    ]
-  };
+  // 只有两个发音人：robot = 机器人（Deck 自带），maid = 女仆（本地模型）
+  var TTS_SPEAKER_LABELS = { robot: '机器人', maid: '女仆' };
 
-  function ttsSelectedEngine() {
-    return cfgTtsEngine.value === 'espeak-ng' ? 'espeak-ng' : 'piper-plus';
+  function setTtsSpeaker(value) {
+    ttsSpeaker = value === 'robot' ? 'robot' : 'maid';
+    ttsSpeakerBtns.forEach(function (btn) {
+      var on = btn.getAttribute('data-speaker') === ttsSpeaker;
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
   }
 
-  function fillTtsVoices(preferred) {
-    var engine = ttsSelectedEngine();
-    var list = TTS_VOICES[engine];
-    var pick = preferred || (engine === 'piper-plus' ? 'tsukuyomi' : 'cmn');
-    cfgTtsVoice.innerHTML = list.map(function (v) {
-      return '<option value="' + escapeHtml(v.id) + '">' + escapeHtml(v.label) + '</option>';
-    }).join('');
-    var hit = list.some(function (v) { return v.id === pick; });
-    cfgTtsVoice.value = hit ? pick : list[0].id;
-  }
-
-  // 滑块读数与「引擎不可用时实际会用兜底」的提示
+  // 选中女仆但本机模型不可用时，提示会先用机器人的声音兜底
   function syncTtsFields() {
-    var espeak = ttsSelectedEngine() === 'espeak-ng';
-    ttsSpeedRow.hidden = espeak;
-    ttsNoiseRow.hidden = espeak;
-    ttsEspeakRow.hidden = !espeak;
-    ttsSpeedVal.textContent = '×' + parseFloat(cfgTtsSpeedScale.value).toFixed(2);
-    ttsNoiseVal.textContent = parseFloat(cfgTtsNoise.value).toFixed(3);
-    if (!espeak && ttsState && ttsState.active_engine !== 'piper-plus') {
-      ttsEngineHint.textContent = 'piper-plus 当前不可用，实际会用 espeak-ng 兜底：'
+    if (ttsSpeaker !== 'maid') {
+      ttsEngineHint.textContent = '';
+      ttsEngineHint.style.color = '';
+      return;
+    }
+    if (ttsState && ttsState.active_engine !== 'piper-plus') {
+      ttsEngineHint.textContent = '女仆语音暂时不可用，会先用机器人的声音朗读：'
         + (ttsState.reason || '原因未知');
       ttsEngineHint.style.color = '#e06c75';
     } else {
@@ -9347,19 +9302,18 @@
     }
     var dl = ttsState.download || {};
     if (ttsState.model) {
-      ttsModelHint.textContent = '语音模型已就绪（当前引擎 ' + (ttsState.active_engine || ttsState.engine)
-        + '）：' + (ttsState.model_root || '');
+      ttsModelHint.textContent = '女仆语音模型已就绪：' + (ttsState.model_root || '');
       ttsDownload.textContent = '已下载';
       ttsDownload.disabled = true;
       ttsDownloadHint.textContent = ttsState.loaded
         ? '模型已加载到内存' : '首次播报时加载，空闲后自动释放';
     } else if (!ttsState.runtime) {
-      ttsModelHint.textContent = '未安装 piper-plus 运行时（pip install -r requirements-tts.txt），可先用 espeak-ng 兜底。';
+      ttsModelHint.textContent = '女仆语音暂不可用（本机没装模型运行时），可先选「机器人」。';
       ttsDownload.textContent = '下载模型';
       ttsDownload.disabled = true;
       ttsDownloadHint.textContent = '';
     } else if (dl.state === 'downloading' || dl.phase === 'cancelling') {
-      ttsModelHint.textContent = '正在下载语音模型：' + (dl.percent || 0).toFixed(1) + '%'
+      ttsModelHint.textContent = '正在下载女仆语音模型：' + (dl.percent || 0).toFixed(1) + '%'
         + (dl.file ? '（' + escapeHtml(dl.file) + '）' : '')
         + (dl.source_name ? '　来源：' + escapeHtml(dl.source_name) : '');
       ttsDownload.textContent = '取消下载';
@@ -9369,7 +9323,7 @@
           + (dl.total > 0 ? ' / ' + (dl.total / 1048576).toFixed(1) + ' MB' : '')
         : '';
     } else {
-      ttsModelHint.textContent = ttsState.reason || '语音模型还没下载（约 38MB，默认走国内镜像）。';
+      ttsModelHint.textContent = ttsState.reason || '女仆语音模型还没下载（约 38MB，默认走国内镜像）。';
       ttsDownload.textContent = '下载模型';
       ttsDownload.disabled = false;
       ttsDownloadHint.textContent = dl.state === 'error'
@@ -9416,19 +9370,12 @@
     }, 1000);
   }
 
-  // 只提交 [tts] 这几项：试听前先把滑块值存下来，不用等整页保存
+  // 只提交发音人：切换/试听前先存下来，不用等整页保存
   function saveTtsQuick() {
     return fetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        tts_engine: cfgTtsEngine.value,
-        tts_voice: cfgTtsVoice.value,
-        tts_language: cfgTtsLanguage.value,
-        tts_speed: parseInt(cfgTtsSpeed.value, 10) || 170,
-        tts_speed_scale: parseFloat(cfgTtsSpeedScale.value) || 1,
-        tts_noise_scale: parseFloat(cfgTtsNoise.value) || 0
-      })
+      body: JSON.stringify({ tts_speaker: ttsSpeaker })
     }).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
@@ -9468,23 +9415,21 @@
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.ok) {
-          done('已按新参数用 ' + (d.engine || '当前引擎') + ' 试听；语速/噪声即时生效。');
+          done('已用「' + (d.speaker_label || TTS_SPEAKER_LABELS[ttsSpeaker]) + '」试听。');
         } else {
-          done('试听失败：' + ((d && d.error) || '没有可用的语音引擎'));
+          done('试听失败：' + ((d && d.error) || '没有可用的语音'));
         }
         loadTtsStatus();
       })
       .catch(function () { done('试听失败：请求没有成功'); });
   });
 
-  cfgTtsEngine.addEventListener('change', function () {
-    fillTtsVoices();
-    syncTtsFields();
-  });
-  cfgTtsSpeedScale.addEventListener('input', syncTtsFields);
-  cfgTtsNoise.addEventListener('input', syncTtsFields);
-  [cfgTtsLanguage, cfgTtsSpeed].forEach(function (el) {
-    el.addEventListener('change', syncTtsFields);
+  ttsSpeakerBtns.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      setTtsSpeaker(btn.getAttribute('data-speaker'));
+      syncTtsFields();
+      saveTtsQuick().catch(function () {});
+    });
   });
 
   // 核心状态：只读展示。/api/status 是网页实时状态，和「启动/重启/关闭核心」

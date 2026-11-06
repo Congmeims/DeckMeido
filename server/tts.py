@@ -1,7 +1,12 @@
-"""TTS 语音播报：piper-plus（つくよみちゃん 6 语模型）为主，espeak-ng 兜底。
+"""TTS 语音播报：两个发音人（机器人 = espeak-ng，女仆 = piper-plus つくよみちゃん）。
 
 对外契约保持不变：`speak(text)` 在后台念、`stop()` 立刻掐断，新句子打断旧句子。
-区别在于主引擎换成了本地神经网络模型：
+发音人由 `[tts] speaker` 单一决定，本机播报、试听、QQ 语音条都读同一个值：
+
+- `robot`：Deck 自带的 espeak-ng；
+- `maid`：piper-plus 本地神经网络模型。
+
+女仆模型相关的实现说明：
 
 - 模型不随发布包分发，首次使用时从 hf-mirror.com / huggingface.co 下载到
   `<数据根>/models/tts/tsukuyomi/`；
@@ -23,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -33,7 +39,17 @@ from pathlib import Path
 
 from . import devlog, paths
 
-# ---------- 模型与音色 ----------
+# ---------- 发音人 ----------
+# 只保留两个发音人，界面与配置都以这两个 id 为准：
+#   robot = Deck 自带的 espeak-ng；maid = piper-plus つくよみちゃん 本地模型
+SPEAKER_ROBOT = "robot"
+SPEAKER_MAID = "maid"
+DEFAULT_SPEAKER = SPEAKER_MAID
+SPEAKERS = (
+    {"id": SPEAKER_ROBOT, "label": "机器人"},
+    {"id": SPEAKER_MAID, "label": "女仆"},
+)
+SPEAKER_LABELS = {item["id"]: item["label"] for item in SPEAKERS}
 
 VOICE_ID = "tsukuyomi"
 VOICE_LABEL = "つくよみちゃん（ja/zh/en/es/fr/pt）"
@@ -180,17 +196,44 @@ class TTSError(RuntimeError):
 
 
 def normalize_engine(raw: str | None) -> str:
-    """把配置里的引擎写成两种之一。
-
-    旧配置可能写的是命令名（espeak-ng / espeak / spd-say），一律按 espeak 兜底；
-    认不出来的值也走 espeak，避免一次笔误让播报彻底没声。
-    """
+    """内部兼容：把旧配置里的引擎值归一成 piper-plus / espeak-ng。"""
     value = str(raw or "").strip().lower()
     if value in ("piper-plus", "piper_plus", "piper", "auto"):
         return "piper-plus"
     if value.startswith(("espeak", "spd-say", "spd_say")):
         return "espeak-ng"
     return "espeak-ng"
+
+
+def normalize_speaker(raw: str | None) -> str:
+    """把配置里的发音人写成 robot / maid 两种之一。
+
+    认不出来的值退回默认（女仆），避免一次笔误让播报彻底没声；
+    同时接受中文别名与旧版引擎/音色名，老配置不用改也能继续用。
+    """
+    value = str(raw or "").strip().lower()
+    if value in (SPEAKER_ROBOT, "机器人", "espeak-ng", "espeak", "spd-say", "spd_say"):
+        return SPEAKER_ROBOT
+    if value in (SPEAKER_MAID, "女仆", "piper-plus", "piper_plus", "piper",
+                 VOICE_ID, "auto"):
+        return SPEAKER_MAID
+    # 旧 espeak 音色名（cmn / en-us / ja）视为机器人
+    if value in ("cmn", "en-us", "zh", "ja", "en", "es", "fr", "pt"):
+        return SPEAKER_ROBOT
+    return DEFAULT_SPEAKER
+
+
+def speaker_from_legacy(engine: str | None = None, voice: str | None = None) -> str:
+    """旧 [tts] engine/voice 映射到新 speaker：piper 系 → 女仆，其余 → 机器人。"""
+    raw_engine = str(engine or "").strip().lower()
+    if raw_engine:
+        return SPEAKER_MAID if normalize_engine(raw_engine) == "piper-plus" else SPEAKER_ROBOT
+    raw_voice = str(voice or "").strip().lower()
+    if raw_voice in (VOICE_ID, "piper-plus", "piper_plus", "piper"):
+        return SPEAKER_MAID
+    if raw_voice:
+        return SPEAKER_ROBOT
+    return DEFAULT_SPEAKER
 
 
 def _clamp(value, low, high, default):
@@ -446,8 +489,9 @@ class TTS:
     def __init__(
         self,
         enable: bool = False,
-        engine: str = "piper-plus",
-        voice: str = VOICE_ID,
+        speaker: str | None = None,
+        engine: str | None = None,
+        voice: str | None = None,
         speed: int = ESPEAK_SPEED,
         max_chars: int = MAX_CHARS,
         speed_scale: float = 1.0,
@@ -460,7 +504,11 @@ class TTS:
         ja_terms: str | list[str] | None = None,
     ):
         self.enable = bool(enable)
-        self.engine = normalize_engine(engine)
+        # 发音人是唯一来源：显式 speaker 优先，老配置的 engine/voice 映射过来
+        if str(speaker or "").strip():
+            self.speaker = normalize_speaker(speaker)
+        else:
+            self.speaker = speaker_from_legacy(engine, voice)
         self.voice = str(voice or VOICE_ID).strip() or VOICE_ID
         self.speed = int(_clamp(speed, 80, 320, ESPEAK_SPEED))
         self.max_chars = int(_clamp(max_chars, 20, 2000, MAX_CHARS))
@@ -517,6 +565,11 @@ class TTS:
             "started_at": 0.0,
             "updated_at": 0.0,
         }
+
+    @property
+    def engine(self) -> str:
+        """内部路由用的引擎名，由 speaker 派生（不再是可独立修改的配置项）。"""
+        return "piper-plus" if self.speaker == SPEAKER_MAID else "espeak-ng"
 
     # ---------- 路径与能力 ----------
 
@@ -597,6 +650,11 @@ class TTS:
             reason = "" if self._espeak_binary() else "找不到 espeak-ng / espeak / spd-say"
         return {
             "enable": self.enable,
+            # 用户选择的发音人（唯一配置项）：robot / maid
+            "speaker": self.speaker,
+            "speaker_label": SPEAKER_LABELS.get(self.speaker, ""),
+            "speakers": [dict(item) for item in SPEAKERS],
+            # 内部引擎名，保留给旧客户端/状态页做诊断
             "engine": self.engine,
             # 当前真正会用的引擎：piper-plus 不可用时这里显示 espeak-ng
             "active_engine": effective,
@@ -632,7 +690,7 @@ class TTS:
         }
 
     def summary(self) -> dict:
-        """给 /api/status 的精简版：只带引擎可用性与原因，字段名前缀 tts_。"""
+        """给 /api/status 的精简版：只带发音人/引擎可用性与原因，字段名前缀 tts_。"""
         state = self.status()
         error = state["reason"] or state["last_error"]
         if not error and state["active_engine"] == "piper-plus" and not state["english_data"]:
@@ -641,6 +699,7 @@ class TTS:
             error = ("英文语音数据缺失（nltk cmudict），英文段会用 espeak-ng 兜底；"
                      "补装：bash install.sh install --tts")
         return {
+            "tts_speaker": state["speaker"],
             "tts_engine": state["active_engine"],
             "tts_runtime": state["runtime"],
             "tts_model": state["model"],
@@ -653,18 +712,24 @@ class TTS:
     # ---------- 配置热更新 ----------
 
     def apply(self, cfg: dict | None):
-        """从 [tts] 段热更新；引擎/音色/模型源变化时释放已加载的模型。"""
+        """从 [tts] 段热更新；发音人/模型源变化时释放已加载的模型。"""
         cfg = cfg or {}
-        engine = normalize_engine(cfg.get("engine", self.engine))
+        # 新键 speaker 优先；没有时用旧 engine/voice 映射，再没有就保持当前值
+        if str(cfg.get("speaker") or "").strip():
+            speaker = normalize_speaker(cfg.get("speaker"))
+        elif cfg.get("engine") is not None or cfg.get("voice") is not None:
+            speaker = speaker_from_legacy(cfg.get("engine"), cfg.get("voice"))
+        else:
+            speaker = self.speaker
         voice = str(cfg.get("voice", self.voice) or VOICE_ID).strip() or VOICE_ID
         source = str(cfg.get("model_source", self.model_source) or "auto").strip() or "auto"
         if (
-            engine != self.engine
+            speaker != self.speaker
             or voice != self.voice
             or source != self.model_source
         ):
             self.unload()
-        self.engine = engine
+        self.speaker = speaker
         self.voice = voice
         self.model_source = source
         self.enable = bool(cfg.get("enable", self.enable))
@@ -756,9 +821,8 @@ class TTS:
                        engine=self.engine, language=self.language,
                        max_chars=self.max_chars,
                        piper_ready=self._piper_ready())
-            if self.engine == "espeak-ng":
-                # 引擎下拉选了 espeak-ng 就必须真的用它：之前只要 piper 模型
-                # 可用就一律走 piper，网页上改引擎/音色听不出任何变化。
+            if self.speaker == SPEAKER_ROBOT:
+                # 机器人发音固定走 Deck 自带的 espeak-ng
                 voice = self.voice
                 if voice == VOICE_ID:
                     # 从 piper 继承下来的音色名 espeak-ng 不认识，按语言映射
@@ -849,6 +913,47 @@ class TTS:
                 path.unlink(missing_ok=True)
                 raise
             return path
+
+    def synth_wav(self, text: str, language: str = "") -> Path:
+        """按当前发音人生成 wav（QQ 语音条用）；返回临时文件，调用方负责删。
+
+        robot 直接调用 espeak-ng 导出 wav，maid 走 piper-plus；失败抛 TTSError，
+        由调用方按现有逻辑降级为只发文字。
+        """
+        cleaned = readify(text, self.max_chars)
+        if not cleaned:
+            raise ValueError("没有可朗读的文本")
+        lang = language or (self.language if self.language != "auto"
+                            else detect_language(cleaned))
+        devlog.log("tts.synth", speaker=self.speaker, engine=self.engine,
+                   language=lang, chars=len(cleaned))
+        if self.speaker == SPEAKER_ROBOT:
+            return self._synth_wav_espeak(cleaned, lang)
+        return self._synth_wav(cleaned, lang)
+
+    def _synth_wav_espeak(self, text: str, language: str = "") -> Path:
+        """espeak-ng 直接写 wav（机器人发音的语音条）。"""
+        binary = self._espeak_binary()
+        name = os.path.basename(binary) if binary else ""
+        if not binary or not name.startswith("espeak"):
+            raise TTSError("找不到 espeak-ng，无法生成语音条", kind="runtime")
+        spoken = ESPEAK_LANG_VOICES.get(language or detect_language(text), "cmn")
+        fd, tmp = tempfile.mkstemp(prefix="deckmeido-tts-", suffix=".wav")
+        os.close(fd)
+        path = Path(tmp)
+        try:
+            proc = subprocess.run(
+                [binary, "-v", spoken, "-s", str(self.speed), "-w", str(path), text],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=60, check=False)
+        except Exception as exc:
+            path.unlink(missing_ok=True)
+            raise TTSError(f"espeak-ng 合成失败：{_short_error(exc)}", kind="synth") from exc
+        if proc.returncode != 0 or not path.is_file() or path.stat().st_size <= 0:
+            path.unlink(missing_ok=True)
+            raise TTSError(f"espeak-ng 退出码 {proc.returncode}，未生成语音",
+                           kind="synth")
+        return path
 
     @staticmethod
     def _language_id(voice, language: str) -> int | None:
