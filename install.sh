@@ -7,6 +7,7 @@
 #   bash install.sh install --deps      顺带用 sudo 安装控制类插件（不再询问）
 #   bash install.sh install --gui       只补装桌面客户端（PySide6），不动别的
 #   bash install.sh install --stt       只补装语音输入依赖（sherpa-onnx，可选）
+#   bash install.sh install --tts       只补装语音合成依赖（piper-plus，可选）
 #   bash install.sh upgrade        升级代码与依赖，保留配置
 #   bash install.sh upgrade --deps      升级后顺带检查并安装控制类插件
 #   bash install.sh check          自检：逐个实测控制类控件是否真的能用
@@ -440,7 +441,7 @@ write_install_records() {
     done < <(cd "$INSTALL_DIR/server" && find . -type f \
       ! -path './userdata/*' -printf '%P\n' 2>/dev/null)
   fi
-  for it in requirements.txt requirements-gui.txt requirements-stt.txt README.md install.sh RELEASE-NOTES.md VERSION uninstall.sh pip-install.log; do
+  for it in requirements.txt requirements-gui.txt requirements-stt.txt requirements-tts.txt README.md install.sh RELEASE-NOTES.md VERSION uninstall.sh pip-install.log; do
     [ -f "$INSTALL_DIR/$it" ] && printf '%s\n' "$it" >> "$tmp"
   done
   [ -f "$DESKTOP_DIR/DeckMeido.desktop" ] && printf 'ext:%s\n' "$DESKTOP_DIR/DeckMeido.desktop" >> "$tmp"
@@ -1303,7 +1304,7 @@ sync_files() {
     info "安装到 $INSTALL_DIR"
   fi
   mkdir -p "$INSTALL_DIR"
-  local items=(server client assets deploy tools plugin requirements.txt requirements-gui.txt requirements-stt.txt README.md install.sh)
+  local items=(server client assets deploy tools plugin requirements.txt requirements-gui.txt requirements-stt.txt requirements-tts.txt README.md install.sh)
   # RELEASE-NOTES.md 只在发布包里存在，有就一起带上，方便用户在安装目录里查更新内容
   [ -f "$HERE/RELEASE-NOTES.md" ] && items+=(RELEASE-NOTES.md)
   for it in "${items[@]}"; do
@@ -1471,7 +1472,59 @@ install_stt_deps() {
   return 0
 }
 
-# 建 venv + 装依赖。$1 = gui 时只装桌面客户端（PySide6），stt 时只补语音依赖。
+# 语音合成依赖（可选安装项）。$1 python，$2 起始源下标
+#
+# 策略说明（与语音输入一致，避免「装到一半卡住」）：
+#   DECKMEIDO_INSTALL_TTS=1  强制安装
+#   DECKMEIDO_INSTALL_TTS=0  强制跳过
+#   未设置时：交互安装会问一句（默认不装）；非交互（无 tty 或
+#   DECKMEIDO_NONINTERACTIVE=1）默认跳过，绝不阻塞。
+# piper-plus 2.x 要求 Python 3.11+，版本不够就直接跳过并说明原因。
+# 装不上只警告，不影响后端、网页和桌面客户端 —— /api/tts 会如实报 runtime=false。
+install_tts_deps() {
+  local py="$1" start="${2:-0}"
+  [ -x "$py" ] || return 0
+  if "$py" -c "import piper_plus" >/dev/null 2>&1; then
+    dim "语音合成依赖已就绪（piper-plus）"
+    return 0
+  fi
+  # 版本不够时硬装只会得到「找不到匹配版本」的报错，先判断再决定
+  if ! "$py" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+    local pv
+    pv=$("$py" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo "未知")
+    dim "跳过语音合成依赖：piper-plus 需要 Python 3.11+，当前虚拟环境是 $pv"
+    dim "升级系统 Python 后重跑：bash $INSTALL_DIR/install.sh install --tts"
+    return 0
+  fi
+  local mode="${DECKMEIDO_INSTALL_TTS:-ask}"
+  case "$mode" in
+    1|yes|on|true) ;;
+    0|no|off|false)
+      dim "已跳过语音合成依赖（DECKMEIDO_INSTALL_TTS=$mode）"
+      return 0 ;;
+    *)
+      if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
+        dim "非交互安装：默认跳过语音合成依赖"
+        dim "需要时运行：bash $INSTALL_DIR/install.sh install --tts"
+        return 0
+      fi
+      if ! ask_yes "现在安装语音合成依赖（piper-plus + onnxruntime）？不装也能正常聊天，之后随时可补"; then
+        dim "已跳过语音合成依赖；补装：bash $INSTALL_DIR/install.sh install --tts"
+        return 0
+      fi
+      ;;
+  esac
+  section "语音合成依赖（可选）"
+  if pip_install_with_switch "$py" requirements-tts.txt "$start"; then
+    dim "语音合成依赖已就绪（首次播报会按需下载约 38MB 模型）"
+    return 0
+  fi
+  warn "语音合成依赖没装上：不影响其他功能，稍后重跑 install --tts 即可"
+  dim "手动重试：$py -m pip install -r $INSTALL_DIR/requirements-tts.txt"
+  return 0
+}
+
+# 建 venv + 装依赖。$1 = gui 时只装桌面客户端（PySide6），stt / tts 时只补对应可选依赖。
 #
 # 依赖分成两份：requirements.txt（服务端，必装）和 requirements-gui.txt
 # （PySide6 + WebEngine，解包后 700MB 上下）。以前合成一份，PySide6 一超时
@@ -1506,6 +1559,12 @@ venv_install() {
     return 0
   fi
 
+  if [ "$only_gui" = "tts" ]; then
+    # 只补语音合成依赖，同样不碰服务端/桌面客户端
+    install_tts_deps "$py" "$start"
+    return 0
+  fi
+
   if [ "$only_gui" != "gui" ]; then
     section "Python 依赖（服务端）"
     if ! pip_install_with_switch "$py" requirements.txt "$start"; then
@@ -1515,6 +1574,8 @@ venv_install() {
     fi
     # 语音输入是可选能力：单独询问，失败不影响主流程
     install_stt_deps "$py" "$start"
+    # 语音合成同理，且会先检查 Python 3.11+ 再决定是否安装
+    install_tts_deps "$py" "$start"
   fi
 
   if [ -n "${DECKMEIDO_SKIP_GUI:-}" ]; then
@@ -2385,14 +2446,23 @@ print_done() {
 
 # ---------- 子命令 ----------
 do_install() {
-  local deps="" gui_only=0 stt_only=0
+  local deps="" gui_only=0 stt_only=0 tts_only=0
   for a in "$@"; do
     case "$a" in
       --deps) deps="--deps" ;;
       --gui)  gui_only=1 ;;   # 只补装桌面客户端（PySide6），不动别的
       --stt)  stt_only=1 ;;   # 只补装语音输入依赖（sherpa-onnx）
+      --tts)  tts_only=1 ;;   # 只补装语音合成依赖（piper-plus）
     esac
   done
+  if [ "$tts_only" = 1 ]; then
+    check_user
+    sync_files
+    ensure_data_layout
+    DECKMEIDO_INSTALL_TTS=1 venv_install tts
+    write_install_records
+    return 0
+  fi
   if [ "$stt_only" = 1 ]; then
     check_user
     sync_files
