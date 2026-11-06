@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import audit, authguard, audiomute, depcheck, devlog, i18n, memory, netcfg, onebot, pairing, paths, persona, policy, power, prompts, remote_input, singleton, status_line, tools, updater
+from . import audit, authguard, audiomute, depcheck, devlog, i18n, memory, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, singleton, status_line, tools, updater
 from .session_store import store
 from . import session_store
 from .tts import LANGUAGES, TTS, normalize_engine
@@ -1774,6 +1774,8 @@ def get_status(gaming: bool | None = None) -> dict:
     pct = round(min(used / win, 1.0) * 100, 1) if win else 0
     # 虚拟手柄的可用性由后端自己判断（插件是 root，权限和这里不一样）
     gamepad_ok, gamepad_reason = tools.pad_available()
+    # 按游戏提示词预设：游戏是哪款由插件探测后上报，后端不再重复实现一套探测
+    preset_state = presets.active_view()
     return {
         "battery": int(battery) if battery.isdigit() else None,
         "charging": charging or None,
@@ -1825,6 +1827,10 @@ def get_status(gaming: bool | None = None) -> dict:
         "gamepad_reason": gamepad_reason,
         # 语音合成实际用哪个引擎、为什么降级：tts_engine / tts_ready / tts_error
         **tts.summary(),
+        # 当前游戏 / 当前提示词预设（状态区显示「当前预设：xxx」用）
+        "game_appid": preset_state["game_appid"],
+        "game_name": preset_state["game_name"],
+        "preset": preset_state,
     }
 
 
@@ -1834,8 +1840,13 @@ DEFAULT_STATUS_PROMPT = status_line.DEFAULT_STATUS_PROMPT
 
 
 def status_prompt_text() -> str:
-    """当前生效的状态栏隐藏提示词（配置为空时用默认值）"""
-    return status_line.prompt_text(CFG.get("agent") or {})
+    """当前生效的状态栏隐藏提示词（配置为空时用默认值）
+
+    正在玩且有对应预设的游戏时，这里返回预设内容；全局配置本身不动，
+    游戏退出后 presets 会自动把生效值换回配置里的那份。
+    """
+    base = status_line.prompt_text(CFG.get("agent") or {})
+    return presets.effective_prompt(base)
 
 
 async def build_status_line(state: str = "", game: str = "",
@@ -3043,6 +3054,28 @@ class TranslateTemplateUpdate(BaseModel):
     text: str = ""
 
 
+class PresetSaveBody(BaseModel):
+    """插件「保存为预设」：按当前正在跑的游戏存一条提示词"""
+    appid: str = ""
+    game_name: str = ""
+    prompt: str = ""
+    title: str | None = None
+    # 插件保存时明确知道这就是当前游戏，可立刻套用；网页端编辑走 PATCH 不碰这里
+    activate: bool = False
+
+
+class PresetUpdateBody(BaseModel):
+    """设置页编辑：只改内容/显示名，不改变绑定的游戏"""
+    prompt: str | None = None
+    title: str | None = None
+
+
+class ActiveGameBody(BaseModel):
+    """插件上报当前游戏（退出游戏时两项都为空）"""
+    appid: str = ""
+    name: str = ""
+
+
 class MemoryItem(BaseModel):
     """设置页手工教学用的记忆条目（text 为空 = 删除这条）"""
     id: str | None = None
@@ -3125,8 +3158,13 @@ async def api_get_config():
         "persona_suffix": (PERSONA.get("style") or {}).get("suffix", ""),
         # 禁用词列表在界面上是一行、用逗号隔开
         "persona_forbid": "，".join((PERSONA.get("style") or {}).get("forbid") or []),
-        # 状态栏隐藏提示词：插件/网页只读它做展示，改走 POST /api/config
-        "status_prompt": status_prompt_text(),
+        # 状态栏隐藏提示词：这里是用户配置的全局值；插件/网页只读它做展示，
+        # 改走 POST /api/config。当前游戏有预设时生效值见 status_prompt_effective
+        "status_prompt": status_line.prompt_text(CFG.get("agent") or {}),
+        "status_prompt_effective": status_prompt_text(),
+        # 按游戏提示词预设：当前游戏/当前预设状态 + 预设条数
+        "preset": presets.active_view(),
+        "presets_count": len(presets.list_presets()),
         # 数据根（配置/会话/记忆/上传/QQ 归档都在这里），排障用
         "data_dir": str(paths.data_dir()),
         "data_root": paths.data_root_label(),
@@ -3678,6 +3716,68 @@ async def api_set_translate_template(req: TranslateTemplateUpdate):
     tpl = req.text.strip() or DEFAULT_TRANSLATE_TEMPLATE
     save_config({"agent": {"translate_template": tpl}})
     return {"ok": True, "text": TRANSLATE_TEMPLATE}
+
+
+# ---------- 按游戏提示词预设 ----------
+
+def _presets_view() -> dict:
+    """预设列表 + 当前生效状态；设置页和插件都读这一份"""
+    return {
+        "ok": True,
+        "presets": presets.list_presets(),
+        "current": presets.active_view(),
+        # 用户配置里的全局值：改预设不会写回它，界面要能分清两份数据
+        "base_prompt": status_line.prompt_text(CFG.get("agent") or {}),
+        "effective_prompt": status_prompt_text(),
+        "default_prompt": DEFAULT_STATUS_PROMPT,
+    }
+
+
+@app.get("/api/presets", dependencies=[Depends(require_auth)])
+async def api_get_presets():
+    return _presets_view()
+
+
+@app.post("/api/presets", dependencies=[Depends(require_auth)])
+async def api_save_preset(req: PresetSaveBody):
+    """插件「保存为预设」：按当前游戏存一份提示词（同一游戏重复保存即更新）"""
+    try:
+        item = presets.upsert(req.appid, req.game_name, req.prompt, req.title)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    current = presets.active_view()
+    if req.activate:
+        current = presets.set_active_game(req.appid, req.game_name)
+    return {"ok": True, "preset": item, "current": current}
+
+
+@app.post("/api/presets/active", dependencies=[Depends(require_auth)])
+async def api_set_active_game(req: ActiveGameBody):
+    """插件检测到游戏开始/退出时上报，命中预设就套用，退出就回默认
+
+    游戏探测只在插件里做（那里本来就有 Steam appid/游戏名的唯一实现），
+    后端不重复写第二套；这个接口只负责切换运行时提示词。
+    """
+    return {"ok": True, "current": presets.set_active_game(req.appid, req.name)}
+
+
+@app.patch("/api/presets/{preset_id}", dependencies=[Depends(require_auth)])
+async def api_update_preset(preset_id: str, req: PresetUpdateBody):
+    """设置页编辑内容 / 改名；改名不影响绑定的游戏"""
+    try:
+        item = presets.update(preset_id, prompt=req.prompt, title=req.title)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="预设不存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "preset": item, "current": presets.active_view()}
+
+
+@app.delete("/api/presets/{preset_id}", dependencies=[Depends(require_auth)])
+async def api_delete_preset(preset_id: str):
+    if not presets.delete(preset_id):
+        raise HTTPException(status_code=404, detail="预设不存在")
+    return {"ok": True, "current": presets.active_view()}
 
 
 # ---------- 语音输入 ----------
