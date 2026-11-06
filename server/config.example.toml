@@ -295,10 +295,14 @@ group_memo_ttl = 300
 group_memo_max_chars = 400
 # 伪造语音条（默认关闭）：开启后，主人 QQ 的回复在文字之外再额外发一条语音，
 # 走 NapCat 的 record 段（wav 交 NapCat 内置 silk/ffmpeg 转码）。
-# 仅对 admin_qq 生效，群友一律不触发；每条回复最多一条语音，不会每段都发。
+# 私聊只对 admin_qq 生效；群聊默认也允许群成员触发，可用 voice_group_members 收窄。
+# 每条回复最多一条语音，不会每段都发；群友语音同样走现有每人/每群两级限频。
 # 合成复用 [tts] 的 piper-plus 模型：运行时/模型缺失、超过下面的时长/大小上限、
 # 或 NapCat 拒绝发送时，只记日志并把文字照常发完，不会吞掉整条回复。
 voice_reply = false
+# 群成员（不止主人 QQ）的回复是否也带语音条。默认 true；
+# 关闭后只有主人 QQ 的回复带语音，群友只收文字。
+voice_group_members = true
 # 只发语音：仅当 voice_reply 为真、且语音确实发送成功时，跳过文字分段。
 # 合成失败、超过时长/大小上限、转码失败、NapCat 拒收或超时，都会自动改发文字。
 voice_only = false

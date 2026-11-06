@@ -200,8 +200,10 @@ class OneBotConfig:
     group_memo_size: int = DEFAULT_GROUP_MEMO_SIZE
     group_memo_ttl: float = DEFAULT_GROUP_MEMO_TTL
     group_memo_max_chars: int = DEFAULT_GROUP_MEMO_MAX_CHARS
-    # 伪造语音条（NapCat record 段）：默认关闭，只对 admin_qq 生效
+    # 伪造语音条（NapCat record 段）：默认关闭，私聊只对 admin_qq 生效
     voice_reply: bool = False
+    # 群聊里是否允许群成员（不止主人 QQ）也触发语音条
+    voice_group_members: bool = True
     # 语音发送成功时跳过文字分段；任何失败都回退为照常发文字
     voice_only: bool = False
     voice_max_seconds: float = DEFAULT_VOICE_MAX_SECONDS
@@ -319,6 +321,7 @@ def parse_config(raw: dict | None) -> OneBotConfig:
             raw.get("group_memo_max_chars", DEFAULT_GROUP_MEMO_MAX_CHARS),
             DEFAULT_GROUP_MEMO_MAX_CHARS) or DEFAULT_GROUP_MEMO_MAX_CHARS,
         voice_reply=_as_bool(raw.get("voice_reply"), False),
+        voice_group_members=_as_bool(raw.get("voice_group_members"), True),
         voice_only=_as_bool(raw.get("voice_only"), False),
         voice_max_seconds=_as_float(
             raw.get("voice_max_seconds", DEFAULT_VOICE_MAX_SECONDS),
@@ -343,7 +346,8 @@ ADVANCED_FIELDS = (
     "group_memo", "group_memo_size", "group_memo_ttl", "group_memo_max_chars",
     "rate_per_minute", "group_rate_per_minute", "reply_chunk_chars",
     "max_reply_chunks", "redact_words", "redact_mask",
-    "voice_reply", "voice_only", "voice_max_seconds", "voice_max_kb",
+    "voice_reply", "voice_group_members", "voice_only",
+    "voice_max_seconds", "voice_max_kb",
 )
 RATE_LIMIT_MAX = 600                    # 条/分钟上限
 GROUP_MEMO_SIZE_MAX = 100               # 每群保留条数上限
@@ -385,6 +389,8 @@ def normalize_advanced(raw: dict) -> tuple[dict, str | None]:
         out["group_memo"] = bool(raw["group_memo"])
     if "voice_reply" in raw:
         out["voice_reply"] = bool(raw["voice_reply"])
+    if "voice_group_members" in raw:
+        out["voice_group_members"] = bool(raw["voice_group_members"])
     if "voice_only" in raw:
         out["voice_only"] = bool(raw["voice_only"])
     for key, lo, hi, label in (
@@ -721,6 +727,18 @@ def _admin_route(text: str, nickname: str, readonly: bool) -> Route:
 def is_admin_user(cfg: OneBotConfig, ev: MessageEvent) -> bool:
     """主人 QQ 判定：私聊、群聊、危险确认、语音条都只认 admin_qq 这一份名单"""
     return ev.uin in cfg.admin_qq
+
+
+def voice_allowed(cfg: OneBotConfig, ev: MessageEvent) -> bool:
+    """语音条触发者：私聊仍只认主人 QQ；群聊可放开给群成员"""
+    if is_admin_user(cfg, ev):
+        return True
+    return ev.group_id is not None and cfg.voice_group_members
+
+
+def voice_identity(cfg: OneBotConfig, ev: MessageEvent) -> str:
+    """日志里的触发者身份，便于排查是谁的语音"""
+    return "管理员" if is_admin_user(cfg, ev) else "群友"
 
 
 def route_message(cfg: OneBotConfig, ev: MessageEvent, nickname: str) -> Route:
@@ -1333,9 +1351,10 @@ class OneBotClient:
         if cfg.voice_reply and cfg.voice_only:
             if await self._maybe_send_voice(ev, text):
                 return
-            if is_admin_user(cfg, ev) and self._voice_synth is not None:
+            if voice_allowed(cfg, ev) and self._voice_synth is not None:
                 self._log("info", "voice.send",
-                          "voice_only：语音未发出，原因见上一条 voice.*，改发文字")
+                          f"voice_only：{voice_identity(cfg, ev)}的语音未发出，"
+                          "原因见上一条 voice.*，改发文字")
         chunks = split_reply(text, cfg.reply_chunk_chars,
                              cfg.max_reply_chunks)
         if not chunks:
@@ -1355,8 +1374,7 @@ class OneBotClient:
         cfg = self._cfg
         if not cfg.voice_reply or self._voice_synth is None:
             return False
-        # 群友一律不触发：与私聊/指令权限共用同一份 admin_qq 判定
-        if not is_admin_user(cfg, ev):
+        if not voice_allowed(cfg, ev):
             return False
         body = (text or "").strip()
         if not body:
@@ -1430,10 +1448,12 @@ class OneBotClient:
                                       "message": [seg]}, timeout=30)
         except Exception as e:
             self._log("warn", "voice.send",
-                      f"NapCat 拒绝或超时：{type(e).__name__}")
+                      f"{voice_identity(cfg, ev)}的语音被 NapCat 拒绝或超时："
+                      f"{type(e).__name__}")
             return False
         self._log("info", "voice.send",
-                  f"已发送 {seconds:.1f}s {len(payload)} 字节 base64 {len(b64)} 字节"
+                  f"已发送 {voice_identity(cfg, ev)} "
+                  f"{seconds:.1f}s {len(payload)} 字节 base64 {len(b64)} 字节"
                   + ("，voice_only=true，已跳过文字" if cfg.voice_only
                      else "，voice_only=false"))
         return True

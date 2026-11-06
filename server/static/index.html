@@ -9767,6 +9767,8 @@
       if (qqRedactWords) qqRedactWords.set(c.redact_words || []);
       if (cfgQqRedactMask) cfgQqRedactMask.value = c.redact_mask || '***';
       if (cfgQqVoice) cfgQqVoice.checked = !!c.voice_reply;
+      if (cfgQqVoiceMembers) cfgQqVoiceMembers.checked =
+        c.voice_group_members !== false;
       if (cfgQqVoiceOnly) cfgQqVoiceOnly.checked = !!c.voice_only;
       if (cfgQqVoiceSeconds) cfgQqVoiceSeconds.value =
         c.voice_max_seconds != null ? c.voice_max_seconds : 60;
@@ -9857,6 +9859,7 @@
       redact_words: qqRedactWords ? qqRedactWords.get() : [],
       redact_mask: cfgQqRedactMask ? cfgQqRedactMask.value.trim() : '***',
       voice_reply: cfgQqVoice ? !!cfgQqVoice.checked : false,
+      voice_group_members: cfgQqVoiceMembers ? !!cfgQqVoiceMembers.checked : true,
       voice_only: cfgQqVoiceOnly ? !!cfgQqVoiceOnly.checked : false,
       voice_max_seconds: qqNum(cfgQqVoiceSeconds, 60),
       voice_max_kb: qqNum(cfgQqVoiceKb, 4096)
@@ -9882,6 +9885,8 @@
         if (qqGroups) qqGroups.set(res.config.allow_groups || []);
         if (qqRedactWords) qqRedactWords.set(res.config.redact_words || []);
         if (cfgQqVoice) cfgQqVoice.checked = !!res.config.voice_reply;
+        if (cfgQqVoiceMembers) cfgQqVoiceMembers.checked =
+          res.config.voice_group_members !== false;
         if (cfgQqVoiceOnly) cfgQqVoiceOnly.checked = !!res.config.voice_only;
         if (cfgQqVoiceSeconds) cfgQqVoiceSeconds.value =
           res.config.voice_max_seconds != null ? res.config.voice_max_seconds : 60;

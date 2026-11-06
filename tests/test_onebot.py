@@ -243,7 +243,8 @@ class AdvancedConfigTest(unittest.TestCase):
             "group_rate_per_minute": 10, "reply_chunk_chars": 300,
             "max_reply_chunks": 3,
             "redact_words": ["密钥", "口令", "密"], "redact_mask": "***",
-            "voice_reply": True, "voice_only": True,
+            "voice_reply": True, "voice_group_members": False,
+            "voice_only": True,
             "voice_max_seconds": 30, "voice_max_kb": 2048,
         })
         self.assertIsNone(err)
@@ -260,6 +261,7 @@ class AdvancedConfigTest(unittest.TestCase):
         self.assertEqual(cfg.redact_words, ("密钥", "口令"))
         self.assertEqual(cfg.redact_mask, "***")
         self.assertTrue(cfg.voice_reply)
+        self.assertFalse(cfg.voice_group_members)
         self.assertTrue(cfg.voice_only)
         self.assertEqual(cfg.voice_max_seconds, 30.0)
         self.assertEqual(cfg.voice_max_kb, 2048)
@@ -1470,8 +1472,9 @@ class ConfigTestExtra(unittest.TestCase):
         self.assertTrue(cfg.auto_launch_after_install)
         self.assertEqual(cfg.auto_launch_wait_seconds, 6.0)
         self.assertEqual(cfg.image_recent_minutes, 2.0)
-        # 伪造语音条默认关闭；上限 60 秒 / 4MB
+        # 伪造语音条默认关闭；上限 60 秒 / 4MB；群友默认也允许
         self.assertFalse(cfg.voice_reply)
+        self.assertTrue(cfg.voice_group_members)
         self.assertFalse(cfg.voice_only)
         self.assertEqual(cfg.voice_max_seconds, 60.0)
         self.assertEqual(cfg.voice_max_kb, 4096)
@@ -1671,7 +1674,36 @@ class VoiceReplyTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("好的" in t for t in self.texts(ws)))
         await bot.stop()
 
-    async def test_group_guest_never_triggers_voice(self):
+    async def test_group_member_voice_disabled_sends_text_only(self):
+        called = []
+
+        async def synth(text):
+            called.append(text)
+            return self.wav()
+
+        bot, ws = self.make(voice_synth=synth,
+                            config={"voice_group_members": False})
+        await self.start(bot)
+        ws.feed(group_msg("20001", "30003", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(called, [])
+        self.assertEqual(self.records(ws), [])
+        self.assertTrue(any("好的" in t for t in self.texts(ws)))
+        await bot.stop()
+
+    async def test_group_member_gets_voice_by_default(self):
+        async def synth(text):
+            return self.wav()
+
+        bot, ws = self.make(voice_synth=synth)
+        await self.start(bot)
+        ws.feed(group_msg("20001", "30003", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(len(self.records(ws)), 1)
+        self.assertTrue(any("好的" in t for t in self.texts(ws)))
+        await bot.stop()
+
+    async def test_private_guest_never_triggers_voice(self):
         called = []
 
         async def synth(text):
@@ -1680,10 +1712,29 @@ class VoiceReplyTest(unittest.IsolatedAsyncioTestCase):
 
         bot, ws = self.make(voice_synth=synth)
         await self.start(bot)
-        ws.feed(group_msg("20001", "30003", "meido 你好"))
+        ws.feed(private_msg("30003", "meido 你好"))
         await bot.wait_idle()
         self.assertEqual(called, [])
         self.assertEqual(self.records(ws), [])
+        await bot.stop()
+
+    async def test_rate_limited_group_member_gets_text_not_voice(self):
+        calls = []
+
+        async def synth(text):
+            calls.append(text)
+            return self.wav()
+
+        bot, ws = self.make(voice_synth=synth, config={"rate_per_minute": 1})
+        await self.start(bot)
+        ws.feed(group_msg("20001", "30003", "meido 第一条"))
+        await bot.wait_idle()
+        ws.feed(group_msg("20001", "30003", "meido 第二条"))
+        await bot.wait_idle()
+        # 只有第一条触发语音；第二条被每人限频拦住，只收到文字提示
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(self.records(ws)), 1)
+        self.assertTrue(any("发得太快" in t for t in self.texts(ws)))
         await bot.stop()
 
     async def test_group_admin_voice_uses_group_api(self):
@@ -1787,14 +1838,40 @@ class VoiceReplyTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("好的" in t for t in self.texts(ws)))
         await bot.stop()
 
-    async def test_voice_only_group_guest_still_gets_text(self):
+    async def test_voice_only_group_member_success_sends_only_voice(self):
+        async def synth(text):
+            return self.wav()
+
+        bot, ws = self.make(voice_synth=synth, config={"voice_only": True})
+        await self.start(bot)
+        ws.feed(group_msg("20001", "30003", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(self.texts(ws), [])
+        self.assertEqual(len(self.records(ws)), 1)
+        await bot.stop()
+
+    async def test_voice_only_group_member_failure_falls_back_to_text(self):
+        async def synth(text):
+            raise RuntimeError("piper 未安装")
+
+        bot, ws = self.make(voice_synth=synth, config={"voice_only": True})
+        await self.start(bot)
+        ws.feed(group_msg("20001", "30003", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(self.records(ws), [])
+        self.assertTrue(self.texts(ws))
+        await bot.stop()
+
+    async def test_voice_only_group_members_off_still_gets_text(self):
         called = []
 
         async def synth(text):
             called.append(text)
             return self.wav()
 
-        bot, ws = self.make(voice_synth=synth, config={"voice_only": True})
+        bot, ws = self.make(voice_synth=synth,
+                            config={"voice_only": True,
+                                    "voice_group_members": False})
         await self.start(bot)
         ws.feed(group_msg("20001", "30003", "meido 你好"))
         await bot.wait_idle()

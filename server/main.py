@@ -3058,8 +3058,9 @@ class OneBotConfigUpdate(BaseModel):
     max_reply_chunks: int | None = None
     redact_words: list[str] | str | None = None
     redact_mask: str | None = None
-    # 语音条（NapCat record 段）：只对主人 QQ 生效，超限/转码失败自动改发文字
+    # 语音条（NapCat record 段）：私聊只对主人 QQ，群聊由 voice_group_members 决定
     voice_reply: bool | None = None
+    voice_group_members: bool | None = None
     voice_only: bool | None = None
     voice_max_seconds: float | None = None
     voice_max_kb: int | None = None
@@ -6699,6 +6700,7 @@ def _qq_public_config() -> dict:
         "redact_words": list(cfg.redact_words),
         "redact_mask": cfg.redact_mask,
         "voice_reply": cfg.voice_reply,
+        "voice_group_members": cfg.voice_group_members,
         "voice_only": cfg.voice_only,
         "voice_max_seconds": cfg.voice_max_seconds,
         "voice_max_kb": cfg.voice_max_kb,
