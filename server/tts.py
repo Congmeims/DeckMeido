@@ -634,17 +634,19 @@ class TTS:
         runtime = self._has_runtime()
         model = self.model_ready()
         load_error = self._load_error
+        # 女仆能不能用与当前选中哪个发音人无关：选「机器人」时 engine 就是
+        # espeak-ng，此时 active_engine 也必然是 espeak-ng，不能拿它判断女仆
+        # 是否就绪（设置页曾因此把已装好的女仆误报成不可用）。
+        if not runtime:
+            maid_reason = "未安装 piper-plus 运行时（pip install -r requirements-tts.txt）"
+        elif not model:
+            maid_reason = "语音模型未下载（约 38 MB）"
+        else:
+            maid_reason = load_error or ""
+        maid_ready = bool(runtime and model and not load_error)
         if self.engine == "piper-plus":
-            if not runtime:
-                reason = "未安装 piper-plus 运行时（pip install -r requirements-tts.txt）"
-            elif not model:
-                reason = "语音模型未下载（约 38 MB）"
-            elif load_error:
-                reason = load_error
-            else:
-                reason = ""
-            reason = reason or self._root_error
-            effective = "piper-plus" if (runtime and model and not load_error) else "espeak-ng"
+            reason = maid_reason or self._root_error
+            effective = "piper-plus" if maid_ready else "espeak-ng"
         else:
             effective = "espeak-ng"
             reason = "" if self._espeak_binary() else "找不到 espeak-ng / espeak / spd-say"
@@ -660,6 +662,10 @@ class TTS:
             "active_engine": effective,
             "runtime": runtime,
             "model": model,
+            # 女仆是否就绪：只取决于运行时 + 模型 + 加载错误，与当前选中的
+            # 发音人无关，界面的「女仆不可用」提示只该看这一组字段
+            "maid_ready": maid_ready,
+            "maid_reason": "" if maid_ready else maid_reason,
             # 英文 G2P 的 nltk 数据是否就绪（缺了英文段合成失败）
             "english_data": english_data_ready(),
             "model_root": str(self._safe_root() or ""),

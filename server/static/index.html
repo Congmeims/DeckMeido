@@ -9284,9 +9284,11 @@
       ttsEngineHint.style.color = '';
       return;
     }
-    if (ttsState && ttsState.active_engine !== 'piper-plus') {
+    // 只看「女仆是否就绪」：active_engine 是当前选中发音人实际用的引擎
+    // （选机器人时它本来就是 espeak-ng），拿它判断会把装好的女仆误报成不可用
+    if (ttsState && !ttsState.maid_ready) {
       ttsEngineHint.textContent = '女仆语音暂时不可用，会先用机器人的声音朗读：'
-        + (ttsState.reason || '原因未知');
+        + (ttsState.maid_reason || ttsState.reason || '原因未知');
       ttsEngineHint.style.color = '#e06c75';
     } else {
       ttsEngineHint.textContent = '';

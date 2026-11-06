@@ -128,6 +128,23 @@ class FallbackTest(unittest.TestCase):
         self.assertFalse(t.model_ready())
         self.assertEqual(t.status()["active_engine"], "espeak-ng")
 
+    def test_选机器人时也能看出女仆已就绪(self):
+        self._make_model()
+        t = ttsmod.TTS(speaker="robot", model_root=self.root)
+        t._runtime = True
+        state = t.status()
+        # 当前发音人用 espeak-ng，但这不代表女仆不可用
+        self.assertEqual(state["active_engine"], "espeak-ng")
+        self.assertTrue(state["maid_ready"])
+        self.assertEqual(state["maid_reason"], "")
+
+    def test_选机器人但模型缺失时女仆仍如实报不可用(self):
+        t = ttsmod.TTS(speaker="robot", model_root=self.root)
+        t._runtime = True
+        state = t.status()
+        self.assertFalse(state["maid_ready"])
+        self.assertIn("模型未下载", state["maid_reason"])
+
     def test_配置非法时校验抛出可读错误(self):
         (self.root / ttsmod.ONNX_NAME).write_bytes(b"\0" * 32)
         (self.root / ttsmod.CONFIG_NAME).write_text("not json", encoding="utf-8")
