@@ -35,7 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from . import paths
+from . import menu, memory, paths
 
 # ---------- 图片链接安全校验 ----------
 # NapCat 传来的图片地址是外部输入：必须挡住 file:// 等本地协议、
@@ -110,47 +110,14 @@ DEFAULT_AUTO_LAUNCH_WAIT = 6.0
 IMAGE_SEND_MAX_BASE64 = 3 * 1024 * 1024   # 单条图文里 base64 的上限
 LOG_MAXLEN = 400
 
-# 和 policy._CONFIRM_RE 保持一致：QQ 侧回「确认」才放行挂起的危险操作
-_CONFIRM_RE = re.compile(
-    r"^(好|好的|行|可以|确认|确定|是|是的|继续|执行|重启|关机|ok|okay|yes|y|sure|go)"
-    r"[。！!.]?$",
-    re.IGNORECASE,
-)
-
-# 远程高危操作只认这一句，普通「确认/好」不放行
-_CONFIRM_HARD_RE = re.compile(
-    r"^确认执行[。！!.]?$", re.IGNORECASE)
-
-_CMD_RE = re.compile(r"^/([A-Za-z]+)(?:\s+([\s\S]+))?$")
 _CQ_AT_RE = re.compile(r"\[CQ:at,qq=([0-9]+)[^\]]*\]")
 _CQ_IMAGE_RE = re.compile(r"\[CQ:image,([^\]]*)\]")
 _CQ_REPLY_RE = re.compile(r"\[CQ:reply,([^\]]*)\]")
 
-# 指令只认这几个斜杠子命令
-COMMANDS = ("status", "shot", "cancel", "save_image", "save_text")
-
-# 口语别名：去掉昵称前缀后整句匹配（不做关键词包含）。
-# 同一张表同时供 route 判定与日志「命中别名」使用，顺序不影响语义。
-ALIASES: dict[str, str] = {}
-for _name in ("截个屏", "截个图", "截屏", "截图", "来张图", "给张图", "拍张照",
-              "拍张图", "看看屏幕", "看看画面", "现在什么画面",
-              "现在屏幕上是什么", "发个图", "发张图"):
-    ALIASES[_name] = "shot"
-for _name in ("状态", "什么状态", "在吗", "在不在", "还好吗", "怎么样了",
-              "什么情况", "进度", "连上了吗", "活着吗"):
-    ALIASES[_name] = "status"
-for _name in ("停", "停下", "停止", "停一下", "别做了", "取消", "中断",
-              "算了", "不用了"):
-    ALIASES[_name] = "cancel"
-for _name in ("存图", "存起来", "保存这张"):
-    ALIASES[_name] = "save_image"
-for _name in ("保存文本", "存文本", "保存这段", "存这段", "保存这句话", "存这段文字"):
-    ALIASES[_name] = "save_text"
-
-# 去掉这些句末/句首客套，再比对别名
-_ALIAS_LEAD_RE = re.compile(r"^(麻烦|帮我|给我|请)+")
-_ALIAS_TAIL_RE = re.compile(r"(一下)?[吧啊呀呢哦了。！？!?.,，、…~\s]+$")
-_ALIAS_PUNCT_RE = re.compile(r"[。！？!?.,，、…~：:；;\"'“”‘’\s]+")
+# 固定命令表、解析与权限都在 menu.py（纯函数、便于单测）；
+# 这里保留同名入口，路由与日志沿用原来的写法。
+COMMANDS = menu.COMMANDS
+ALIASES = menu.ALIASES
 
 # 群友专用提示词（琴音口吻受限版）。{name} 在运行时替换成软件昵称
 DEFAULT_GUEST_PROMPT = """你是{name}，DeckMeido 在 QQ 群里的闲聊搭子，这一轮只陪群友轻松聊几句。
@@ -408,70 +375,31 @@ def prefix_for(nickname: str) -> str:
     return (nickname or "").strip() or DEFAULT_PREFIX
 
 
-@dataclass
-class ParsedCommand:
-    kind: str          # status / shot / cancel / chat
-    text: str = ""     # chat 时的正文
+ParsedCommand = menu.Parsed
 
 
 def parse_command(text: str, nickname: str) -> ParsedCommand | None:
-    """解析「昵称 + 子命令或正文」。不匹配前缀返回 None
-
-    规则：忽略首尾空白、ASCII 不区分大小写，前缀后可以直接跟子命令，
-    也可以空格再接正文。
-    """
-    body = (text or "").strip()
-    prefix = prefix_for(nickname)
-    if len(body) < len(prefix):
-        return None
-    if body[:len(prefix)].casefold() != prefix.casefold():
-        return None
-    rest = body[len(prefix):].strip()
-    if not rest:
-        return ParsedCommand("chat", "")
-    m = _CMD_RE.match(rest)
-    if m and m.group(1).lower() in COMMANDS:
-        return ParsedCommand(m.group(1).lower(), (m.group(2) or "").strip())
-    return ParsedCommand("chat", rest)
+    """解析「昵称 + 子命令或正文」；实现与命令表都在 menu.py"""
+    return menu.parse(text, nickname)
 
 
 def strip_prefix(text: str, nickname: str) -> str:
     """群聊里已经靠 @ 触发，再额外剥掉一层前缀，免得聊天正文里带着它"""
-    body = (text or "").strip()
-    prefix = prefix_for(nickname)
-    if len(body) >= len(prefix) and body[:len(prefix)].casefold() == prefix.casefold():
-        return body[len(prefix):].strip()
-    return body
+    return menu.strip_prefix(text, nickname)
 
 
 def is_confirm_text(text: str) -> bool:
-    return bool(_CONFIRM_RE.match((text or "").strip()))
+    return menu.is_confirm_text(text)
 
 
 def is_hard_confirm(text: str) -> bool:
     """远程高危操作的确认口令：只认「确认执行」"""
-    return bool(_CONFIRM_HARD_RE.match((text or "").strip()))
+    return menu.is_hard_confirm(text)
 
 
 def match_alias(text: str) -> tuple[str, str] | None:
-    """整句匹配口语别名，返回 (别名, 动作)；不做关键词包含
-
-    先去掉首尾标点做一次精确匹配（避免把「算了」「别做了」的尾字误删），
-    再容忍「麻烦/帮我/给我/请」开头与「吧/啊/…」「一下」结尾。
-    """
-    body = (text or "").strip()
-    if not body:
-        return None
-    bare = _ALIAS_PUNCT_RE.sub("", body)
-    if bare and bare in ALIASES:
-        return bare, ALIASES[bare]
-    cleaned = _ALIAS_LEAD_RE.sub("", bare)
-    cleaned = _ALIAS_TAIL_RE.sub("", cleaned)
-    if not cleaned or len(cleaned) > MAX_ALIAS_CHARS:
-        return None
-    if cleaned in ALIASES:
-        return cleaned, ALIASES[cleaned]
-    return None
+    """整句匹配口语别名，返回 (别名, 动作)；不做关键词包含"""
+    return menu.match_alias(text)
 
 
 # ---------- 事件归一化与门控 ----------
@@ -486,6 +414,8 @@ class MessageEvent:
     self_id: str = ""
     images: list[dict] = field(default_factory=list)
     reply_id: str = ""
+    # 发送者昵称（群名片优先）：写记忆前要去掉「昵称：」这类前缀
+    sender_name: str = ""
 
 
 def _cq_image_payload(params: str) -> dict:
@@ -555,6 +485,8 @@ def normalize_event(data: dict) -> MessageEvent | None:
     group_id = None
     if mtype == "group":
         group_id = str(data.get("group_id") or "").strip() or None
+    sender = data.get("sender") if isinstance(data.get("sender"), dict) else {}
+    sender_name = str(sender.get("card") or sender.get("nickname") or "").strip()
     return MessageEvent(
         uin=uin,
         text=text,
@@ -564,6 +496,7 @@ def normalize_event(data: dict) -> MessageEvent | None:
         self_id=self_id,
         images=images,
         reply_id=reply_id,
+        sender_name=sender_name,
     )
 
 
@@ -579,10 +512,7 @@ class Route:
 
 
 def _match_slash(text: str) -> ParsedCommand | None:
-    m = _CMD_RE.match((text or "").strip())
-    if m and m.group(1).lower() in COMMANDS:
-        return ParsedCommand(m.group(1).lower(), (m.group(2) or "").strip())
-    return None
+    return menu.match_slash(text)
 
 
 def _admin_route(text: str, nickname: str, readonly: bool) -> Route:
@@ -599,7 +529,7 @@ def _admin_route(text: str, nickname: str, readonly: bool) -> Route:
     if hit:
         return Route("command", kind=hit[1], text="", readonly=readonly, alias=hit[0])
     # 短句才记「未命中别名」，长句明显是聊天，不刷日志
-    cleaned = _ALIAS_PUNCT_RE.sub("", rest)
+    cleaned = menu.punctuation_stripped(rest)
     return Route("chat", text=rest, readonly=readonly,
                  alias_miss=0 < len(cleaned) <= MAX_ALIAS_CHARS)
 
@@ -761,6 +691,8 @@ class OneBotClient:
         self._seq = 0
         self._turn_task: asyncio.Task | None = None
         self._pending_conf: dict[str, dict] = {}
+        # 固定命令的确认：device -> {kind, expires_at}（与 AI 挂起操作分开存）
+        self._menu_conf: dict[str, dict] = {}
         self._dispatch_tasks: set[asyncio.Task] = set()
         # QQ 事件日志（只存事件，不存令牌与消息正文）
         self._logs: deque = deque(maxlen=LOG_MAXLEN)
@@ -1236,6 +1168,13 @@ class OneBotClient:
             return
         ev.text = truncate_text(ev.text, cfg.max_message_chars)
         nickname = self._nickname()
+        # @机器人 与「昵称：」这类标签只出现在 QQ 侧：先洗掉，
+        # 免得它们跟着聊天正文进长期记忆，长成「@meido 帮我记住…」这种条目
+        ev.text = memory.clean_text(ev.text, names=(nickname, ev.sender_name))
+        device = device_tag(ev)
+        # 危险固定命令的二次确认：上一条挂起的命令先在这里消化掉
+        if await self._consume_menu_confirm(ev, device):
+            return
         route = route_message(cfg, ev, nickname)
         if route.action == "ignore":
             self._stats["ignored"] += 1
@@ -1255,22 +1194,75 @@ class OneBotClient:
                 await self._cache_message_image(ev)
         if route.action == "command":
             self._stats["commands"] += 1
-            if route.kind == "status":
-                await self._do_status(ev)
+            if not menu.authorize(route.kind,
+                                  is_admin=ev.uin in cfg.admin_qq,
+                                  in_group=ev.group_id is not None,
+                                  group_admin_commands=cfg.group_admin_commands):
+                self._stats["ignored"] += 1
+                self._log("info", "权限拒绝", f"命令 {route.kind}")
                 return
-            if route.kind == "shot":
-                await self._do_shot(ev)
+            spec = menu.spec_for(route.kind)
+            if menu.needs_confirm(spec):
+                self._menu_conf[device] = {
+                    "kind": route.kind,
+                    "expires_at": self._clock() + max(0.0, cfg.confirm_timeout),
+                }
+                self._log("warn", "危险命令待确认", route.kind)
+                phrase = "确认执行" if spec.hard else "确认"
+                await self._send_text(
+                    ev, f"这是危险操作，需要回复「{phrase}」才会执行；说别的就取消。")
                 return
-            if route.kind == "cancel":
-                await self._do_cancel(ev)
-                return
-            if route.kind == "save_image":
-                await self._do_save_image(ev)
-                return
-            if route.kind == "save_text":
-                await self._do_save_text(ev)
+            handler = self._command_handler(route.kind)
+            if handler is not None:
+                await handler(ev)
                 return
         await self._do_chat(ev, route)
+
+    def _command_handler(self, kind: str):
+        """固定命令 → 处理函数；没登记的一律当聊天（不会走到这里）"""
+        return {
+            "help": self._do_help,
+            "status": self._do_status,
+            "shot": self._do_shot,
+            "cancel": self._do_cancel,
+            "save_image": self._do_save_image,
+            "save_text": self._do_save_text,
+            "deps": self._do_deps,
+        }.get(kind)
+
+    async def _consume_menu_confirm(self, ev: MessageEvent, device: str) -> bool:
+        """消化挂起的危险命令；返回 True 表示这条消息已经处理完
+
+        确认超时或说了别的：丢掉挂起的命令，这条消息照常往下走（当聊天处理），
+        和 AI 挂起操作的既有行为一致。
+        """
+        pending = self._menu_conf.get(device)
+        if not pending:
+            return False
+        # 群友不能替管理员确认：不是管理员就照常走后面的权限路由
+        if ev.uin not in self._cfg.admin_qq:
+            return False
+        kind = str(pending.get("kind") or "")
+        if self._clock() >= pending.get("expires_at", 0):
+            self._menu_conf.pop(device, None)
+            self._log("warn", "危险命令确认超时", kind)
+            await self._send_text(ev, "确认已超时，这次操作已作废。")
+            return False
+        spec = menu.spec_for(kind)
+        verdict = menu.confirm_decision(spec, ev.text)
+        if verdict == "ask_hard":
+            await self._send_text(
+                ev, "这项操作风险较高，需要回复「确认执行」才会执行；说别的就取消。")
+            return True
+        self._menu_conf.pop(device, None)
+        handler = self._command_handler(kind)
+        if verdict != "execute" or handler is None:
+            self._log("info", "危险命令已取消", kind)
+            await self._send_text(ev, "已取消，这次操作没有执行。")
+            return True
+        self._log("info", "危险命令执行", kind)
+        await handler(ev)
+        return True
 
     def _busy(self) -> bool:
         return self._turn_task is not None and not self._turn_task.done()
@@ -1411,6 +1403,37 @@ class OneBotClient:
             lines.append(f"版本：{info['version']}")
         if self._pending_conf:
             lines.append("有一项操作在等确认（发「确认」执行，说别的取消）。")
+        await self._send_text(ev, "\n".join(lines))
+
+    async def _do_help(self, ev: MessageEvent) -> None:
+        await self._send_text(ev, menu.help_text(self._nickname()))
+
+    async def _do_deps(self, ev: MessageEvent) -> None:
+        """检查依赖：只回报状态，不安装、不改环境"""
+        from . import depcheck
+        try:
+            report = await asyncio.to_thread(depcheck.summary, True)
+        except Exception as e:
+            self._log("warn", "依赖检查失败", repr(e))
+            await self._send_text(ev, f"依赖检查失败：{e}")
+            return
+        items = report.get("items") or []
+        ok = int(report.get("ok") or 0)
+        total = int(report.get("total") or 0)
+        na = int(report.get("na") or 0)
+        lines = [
+            f"依赖检查：{ok}/{total} 项可用" + (f"，{na} 项不适用" if na else ""),
+            "（只检测，不会安装任何东西）",
+        ]
+        for it in items:
+            label = str(it.get("label") or it.get("key") or "?")
+            state = "不适用" if it.get("na") else ("正常" if it.get("ok") else "缺少")
+            detail = str(it.get("detail") or "").strip()
+            lines.append(f"- {label}：{state}" + (f"（{detail}）" if detail else ""))
+        yd = report.get("ydotoold") or {}
+        if yd and not yd.get("enabled"):
+            lines.append("- 注意：ydotoold 未设为开机自启，重启后会失效。")
+        self._log("info", "依赖检查", f"{ok}/{total} 可用")
         await self._send_text(ev, "\n".join(lines))
 
     async def _do_shot(self, ev: MessageEvent) -> None:

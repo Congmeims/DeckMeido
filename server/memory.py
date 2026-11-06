@@ -121,10 +121,35 @@ def _new_id() -> str:
     return f"m{int(time.time() * 1000):x}{os.getpid() % 1000:03d}"
 
 
-def add(kind: str, text: str) -> dict:
+_CQ_AT_RE = re.compile(r"\[CQ:at,[^\]]*\]")
+_LEAD_PUNCT_RE = re.compile(r"^[，,、：:；; \t]+")
+
+
+def clean_text(text: str, names=()) -> str:
+    """写入记忆前清洗：去掉 @提及、发送者昵称标签与多余空白
+
+    names 传机器人昵称和发送者昵称：只删这两个人的提及，不碰「@别人」
+    这类正文内容，也避开邮箱里的 @。群聊里 @ 机器人是触发方式、转发消息
+    常带「昵称：」前缀，这些原样存进记忆就会变成「@meido 帮我记住…」
+    这种没人看得懂的条目。
+    """
+    out = _CQ_AT_RE.sub("", str(text or ""))
+    for name in sorted({str(n).strip() for n in names if str(n).strip()},
+                       key=len, reverse=True):
+        esc = re.escape(name)
+        # @昵称：@ 前面必须是行首/空白/标点，避免把 a@b.com 或 xx@yy 拆坏
+        out = re.sub(rf"(?<![\w.@-])@\s*{esc}", "", out)
+        # 行首的「昵称：」「昵称:」「昵称说：」是转发/合并消息带进来的标签
+        out = re.sub(rf"(?m)^\s*{esc}\s*(?:[：:]\s*|说[：:]?\s*)", "", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = _LEAD_PUNCT_RE.sub("", out)
+    return out.strip()
+
+
+def add(kind: str, text: str, names=()) -> dict:
     """新增一条记忆；内容重复时直接返回已有的那条（不重复存）"""
     kind = kind if kind in KINDS else "note"
-    text = str(text or "").strip()[:MAX_ITEM_CHARS]
+    text = clean_text(text, names)[:MAX_ITEM_CHARS]
     if not text:
         return {}
     with _lock:
