@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -38,7 +39,8 @@ DEFAULTS = {
         "tone": "礼貌、简洁、干练，偶尔一点俏皮，但不撒娇卖萌",
         "ending": "",
         "suffix": "",
-        "forbid": ["喵", "呢~", "人家"],
+        # 默认不禁用任何词句（首次打开是空列表，不预置示例）
+        "forbid": [],
     },
 }
 
@@ -63,6 +65,9 @@ def _clean(data: dict) -> dict:
         else:
             out[key] = DEFAULTS[key]
     forbid = style.get("forbid")
+    if isinstance(forbid, str):
+        # 旧数据可能存成逗号串：按中英文逗号/顿号切分，与前端 chip 兼容
+        forbid = re.split(r"[,，、]", forbid)
     if not isinstance(forbid, list):
         forbid = DEFAULTS["style"]["forbid"]
     forbid = [str(w).strip()[:MAX_FORBID] for w in forbid if str(w).strip()][:MAX_FORBID]

@@ -3416,7 +3416,8 @@ async def api_set_config(req: ConfigUpdate, request: Request):
     if req.persona_name is not None:
         # 人设存 meidosoul.json（和记忆放在一起，方便导出备份），不写 config.toml。
         # 留空就写回默认值，避免空串把人设搞没。
-        forbid = [w.strip() for w in re.split(r"[,，、\s]+", req.persona_forbid or "") if w.strip()]
+        # 只按中英文逗号/顿号切分：chip 里允许带空格的短语，不能被空白再拆开
+        forbid = [w.strip() for w in re.split(r"[,，、]", req.persona_forbid or "") if w.strip()]
         persona.save({
             "name": req.persona_name.strip() or "DeckMeido",
             # traits / extra 没传（旧客户端）就保持原样，别把身份定位洗成默认

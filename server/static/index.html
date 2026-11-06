@@ -2785,8 +2785,15 @@
               <input id="cfgPersonaSuffix" type="text" placeholder="例如：——女仆长" autocomplete="off">
             </div>
             <div class="field">
-              <label>禁用的词句（逗号隔开，一次都不许出现）</label>
-              <input id="cfgPersonaForbid" type="text" placeholder="喵，呢~，人家" autocomplete="off">
+              <label>禁用的词句（一条都不许出现）</label>
+              <div class="chip-add">
+                <input id="cfgPersonaForbidInput" type="text" maxlength="30"
+                       placeholder="输入词句后回车或点添加" autocomplete="off" spellcheck="false">
+                <button id="cfgPersonaForbidAdd" class="mini-btn" type="button">添加</button>
+              </div>
+              <div id="personaForbidChips" class="chip-list"></div>
+              <div class="field-hint" id="personaForbidHint"></div>
+              <div class="field-hint">命中即禁止输出；最多 40 条、单条 30 字，长词优先匹配。</div>
             </div>
           </div>
           <div class="card">
@@ -8612,6 +8619,10 @@
   var cfgQqChunkChars = document.getElementById('cfgQqChunkChars');
   var cfgQqChunks = document.getElementById('cfgQqChunks');
   var cfgQqRedactMask = document.getElementById('cfgQqRedactMask');
+  var cfgPersonaForbidInput = document.getElementById('cfgPersonaForbidInput');
+  var cfgPersonaForbidAdd = document.getElementById('cfgPersonaForbidAdd');
+  var personaForbidChipsBox = document.getElementById('personaForbidChips');
+  var personaForbidHint = document.getElementById('personaForbidHint');
   var cfgQqVoice = document.getElementById('cfgQqVoice');
   var cfgQqVoiceMembers = document.getElementById('cfgQqVoiceMembers');
   var cfgQqVoiceOnly = document.getElementById('cfgQqVoiceOnly');
@@ -9226,7 +9237,7 @@
         document.getElementById('cfgPersonaTone').value = c.persona_tone || '';
         document.getElementById('cfgPersonaEnding').value = c.persona_ending || '';
         document.getElementById('cfgPersonaSuffix').value = c.persona_suffix || '';
-        document.getElementById('cfgPersonaForbid').value = c.persona_forbid || '';
+        personaForbid.set(splitForbidWords(c.persona_forbid));
         // 服务端给出真实局域网 IP：桌面客户端本机访问时 location.origin 是 127.0.0.1
         lanUrl.value = c.lan_url || location.origin;
         // 局域网开关：关闭时只监听 127.0.0.1；开启后要重启后端才生效
@@ -9643,7 +9654,7 @@
       persona_tone: document.getElementById('cfgPersonaTone').value,
       persona_ending: document.getElementById('cfgPersonaEnding').value,
       persona_suffix: document.getElementById('cfgPersonaSuffix').value,
-      persona_forbid: document.getElementById('cfgPersonaForbid').value,
+      persona_forbid: personaForbid.get().join('，'),
       update_github_enable: !!cfgUpdGithub.checked,
       remote_input_enabled: !!cfgRiEnabled.checked,
       remote_input_sensitivity: Number(cfgRiSens.value) || 1.5,
@@ -9996,6 +10007,25 @@
   qqRedactWords = makeChipList({
     input: cfgQqRedactInput, addBtn: cfgQqRedactAdd, box: qqRedactChipsBox,
     hint: qqRedactHint, empty: '未添加敏感词，输出不做替换', check: qqRedactWordError
+  });
+
+  // 禁用词句：一条 = 一个 chip；旧配置里的逗号串读进来时按中英文逗号/顿号/空白切分
+  function splitForbidWords(value) {
+    if (Array.isArray(value)) return value.map(function (v) { return String(v || '').trim(); })
+      .filter(function (v) { return v; });
+    return String(value || '').split(/[,，、\s]+/)
+      .filter(function (v) { return v; });
+  }
+  function forbidWordError(value, items) {
+    if (!value) return '不能为空';
+    if (value.length > 30) return '单条最多 30 字';
+    if (items.indexOf(value) >= 0) return '这条已经在列表里了';
+    return '';
+  }
+  var personaForbid = makeChipList({
+    input: cfgPersonaForbidInput, addBtn: cfgPersonaForbidAdd,
+    box: personaForbidChipsBox, hint: personaForbidHint,
+    empty: '未添加禁用词句', check: forbidWordError
   });
 
   // 主人 QQ：只允许一个号；老配置里多出来的号存在 qqAdminExtras，保存时原样带回
