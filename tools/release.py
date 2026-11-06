@@ -28,6 +28,7 @@ DIST = ROOT / "dist"
 ITEMS = [
     "server", "client", "assets", "deploy", "plugin",
     "requirements.txt", "requirements-gui.txt", "requirements-stt.txt",
+    "requirements-tts.txt",
     "README.md", "LICENSE", "install.sh",
 ]
 # tools/ 是仓库自用的运维脚本（连服务器的、打包的），不进发布包。
