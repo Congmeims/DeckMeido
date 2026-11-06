@@ -1505,6 +1505,21 @@ export default function QamScreen() {
             >
               {coreRunning ? statusLineFor(s.status, s.busy) : coreLine}
             </span>
+            {s.status?.preset_applied && (
+              <span
+                style={{
+                  color: ACCENT,
+                  flexShrink: 0,
+                  maxWidth: 120,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+                title={`当前预设：${s.status.preset_title || "已套用"}`}
+              >
+                预设：{s.status.preset_title || "已套用"}
+              </span>
+            )}
             <span style={{ color: DIM, flexShrink: 0 }}>
               {s.status ? `${s.status.ip}:${s.status.port}` : "—"}
             </span>

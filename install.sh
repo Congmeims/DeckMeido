@@ -1806,12 +1806,21 @@ install_tts_deps() {
 
 # 英文 G2P（piper-plus 自带的 g2p_en）需要 nltk 数据：cmudict + 词性标注器。
 # 安装阶段一次性下到 <数据根>/models/nltk_data；运行时联网会被 SSRF 拦截，
-# 所以这一步不能留到首次播报再做。失败只警告，不影响中文播报。
+# 所以这一步不能留到首次播报再做。
+#
+# 实测（Steam Deck，DNS 走代理返回 198.18.x）：nltk.download 会被 nltk 自身的
+# SSRF 保护拒绝（pathsec.urlopen: SSRF attempt to restricted IP），目录建了但
+# 一个文件都没下到，随后英文段整段合成失败。因此先试官方下载器，失败后再用
+# curl 直接取官方 zip 解压（不经过 nltk 的网络层），最后按目录校验。
 install_tts_nltk_data() {
   local py="$1" dir="$DATA_MODELS/nltk_data"
   [ -x "$py" ] || return 0
-  mkdir -p "$dir" 2>/dev/null || {
-    warn "无法创建 $dir，英文语音可能不可用"
+  if nltk_data_ok "$dir"; then
+    dim "英文语音数据已就绪（$dir）"
+    return 0
+  fi
+  mkdir -p "$dir/corpora" "$dir/taggers" 2>/dev/null || {
+    warn "无法创建 $dir，英文段只能用 espeak-ng 兜底"
     return 0
   }
   local out
@@ -1833,12 +1842,60 @@ for pkg in ("cmudict", "averaged_perceptron_tagger", "averaged_perceptron_tagger
         print(f"FAIL {pkg}: {type(exc).__name__}: {exc}")
 raise SystemExit(0 if ok_all else 1)
 PY
-  ) || {
-    warn "英文语音数据（nltk）没下全：中文播报不受影响，英文段可能不出声"
-    dim "可重试：$py -m nltk.downloader -d $dir cmudict averaged_perceptron_tagger_eng"
+  ) || true
+  if nltk_data_ok "$dir"; then
+    printf '%s\n' "$out" | sed 's/^/    /'
+    dim "英文语音数据已就绪（$dir）"
     return 0
-  }
-  dim "英文语音数据已就绪（$dir）"
+  fi
+  printf '%s\n' "$out" | sed 's/^/    /'
+  dim "官方下载器没下成功（代理/镜像网络下常见），改用 curl 直取数据包"
+  local item sub pkg
+  for item in "corpora cmudict" "taggers averaged_perceptron_tagger" "taggers averaged_perceptron_tagger_eng"; do
+    sub="${item%% *}"
+    pkg="${item#* }"
+    [ -d "$dir/$sub/$pkg" ] && continue
+    if fetch_nltk_package "$py" "$dir/$sub" "$sub" "$pkg"; then
+      dim "已下载 $pkg"
+    else
+      warn "英文语音数据没下到：$pkg（中文/日文播报不受影响）"
+      dim "手动补：curl -L https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages/$sub/$pkg.zip -o /tmp/$pkg.zip && unzip -o /tmp/$pkg.zip -d $dir/$sub"
+    fi
+  done
+  if nltk_data_ok "$dir"; then
+    dim "英文语音数据已就绪（$dir）"
+  else
+    warn "英文语音数据仍缺失：英文段会用 espeak-ng 兜底（不再整段没声），重跑 install --tts 可再试"
+  fi
+}
+
+# 英文数据是否齐（只看目录，与 server/tts.py 的 english_data_ready 同一判据）
+nltk_data_ok() {
+  local dir="$1"
+  [ -d "$dir/corpora/cmudict" ] && [ -d "$dir/taggers/averaged_perceptron_tagger_eng" ]
+}
+
+# 下载并解压一个官方 nltk_data 包；nltk 自带下载器被 SSRF 挡住时走这条路。
+# 源按顺序试：GitHub raw → jsDelivr → ghfast 代理。$2 = 目标分类目录，$3 = corpora/taggers
+fetch_nltk_package() {
+  local py="$1" dest="$2" sub="$3" pkg="$4" tmp="/tmp/deckmeido-nltk-$pkg.zip" base url
+  for base in \
+    "https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages" \
+    "https://cdn.jsdelivr.net/gh/nltk/nltk_data@gh-pages/packages" \
+    "https://ghfast.top/https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages"; do
+    url="$base/$sub/$pkg.zip"
+    if curl -fsSL --max-time 120 -o "$tmp" "$url" 2>/dev/null &&
+       "$py" - "$tmp" "$dest" <<'PY' >/dev/null 2>&1
+import sys, zipfile
+zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
+PY
+    then
+      rm -f "$tmp"
+      return 0
+    fi
+  done
+  rm -f "$tmp"
+  return 1
 }
 
 # 真正合成一小段中文 + 一小段英文来判定「已就绪」，不再只看包在不在。

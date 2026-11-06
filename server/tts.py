@@ -59,6 +59,12 @@ ESPEAK_VOICES = (
     ("en-us", "英语（espeak-ng）"),
     ("ja", "日语（espeak-ng）"),
 )
+# piper-plus 某一段合成失败时，用相应语种的 espeak 音色把这一段念出来，
+# 而不是静默跳过（英文 G2P 数据缺失时以前就是整段没声）。
+ESPEAK_LANG_VOICES = {
+    "zh": "cmn", "ja": "ja", "en": "en-us",
+    "es": "es", "fr": "fr", "pt": "pt",
+}
 
 # 模型下载与探测
 UA = "DeckMeido-TTS/1.0"
@@ -488,6 +494,8 @@ class TTS:
         self._last_engine = ""
         self._last_error = ""
         self._last_failed_segments = 0
+        # 最近一次播报里「piper 合成失败、改用 espeak-ng 念出来」的片段数
+        self._last_degraded_segments = 0
 
         # 下载任务
         self._dl_lock = threading.Lock()
@@ -616,6 +624,8 @@ class TTS:
             "last_error": self._last_error,
             # 最近一次播报里合成失败的片段数（0 = 全部念完）
             "failed_segments": self._last_failed_segments,
+            # 合成失败后改用 espeak-ng 念出来的片段数（>0 表示这段被降级朗读）
+            "degraded_segments": self._last_degraded_segments,
             "attribution": ATTRIBUTION,
             "attribution_url": ATTRIBUTION_URL,
             "download": self.download_status(),
@@ -624,12 +634,19 @@ class TTS:
     def summary(self) -> dict:
         """给 /api/status 的精简版：只带引擎可用性与原因，字段名前缀 tts_。"""
         state = self.status()
+        error = state["reason"] or state["last_error"]
+        if not error and state["active_engine"] == "piper-plus" and not state["english_data"]:
+            # 英文 G2P 数据缺失时英文段会逐段退回 espeak-ng：不算致命，但要让
+            # 状态接口和设置页看得见，而不是等用户发现「英文没声」。
+            error = ("英文语音数据缺失（nltk cmudict），英文段会用 espeak-ng 兜底；"
+                     "补装：bash install.sh install --tts")
         return {
             "tts_engine": state["active_engine"],
             "tts_runtime": state["runtime"],
             "tts_model": state["model"],
             "tts_ready": state["ready"],
-            "tts_error": state["reason"] or state["last_error"],
+            "tts_english_data": state["english_data"],
+            "tts_error": error,
             "tts_attribution": ATTRIBUTION,
         }
 
@@ -729,6 +746,7 @@ class TTS:
         self._cancel = event
         self._last_error = ""
         self._last_failed_segments = 0
+        self._last_degraded_segments = 0
         try:
             segments = route_segments(cleaned, self.language, self.max_chars,
                                       self.ja_terms)
@@ -739,7 +757,8 @@ class TTS:
                        piper_ready=self._piper_ready())
             if self._piper_ready():
                 try:
-                    failures, first_error = await self._speak_piper(segments, event)
+                    failures, degraded, first_error = await self._speak_piper(
+                        segments, event)
                 except Exception as exc:
                     # 整体不可用（模型加载失败、没有播放器）：整段退回 espeak
                     self._last_error = f"piper-plus 不可用：{_short_error(exc)}"
@@ -747,17 +766,23 @@ class TTS:
                         self.unload()
                 else:
                     self._last_failed_segments = failures
+                    self._last_degraded_segments = degraded
                     if failures >= len(segments):
                         # 一段都没成功：当整体不可用处理，允许整段重念一遍
                         self._last_error = (
                             f"piper-plus 全部 {len(segments)} 段合成失败：{first_error}")
-                        await self._speak_espeak(cleaned, event)
+                        await self._speak_espeak(cleaned, event, language=self.language)
                     elif failures:
-                        # 只有个别片段失败：其余已经正常念完，不再整段重来
+                        # 个别片段连 espeak 兜底都失败：如实报出失败的段数
                         self._last_error = (
                             f"piper-plus {failures}/{len(segments)} 段合成失败：{first_error}")
+                    elif degraded:
+                        # 这些片段已经用 espeak-ng 念了，不算丢段，但要让状态可见
+                        self._last_error = (
+                            f"piper-plus {degraded}/{len(segments)} 段改用 espeak-ng 兜底："
+                            f"{first_error}")
                     return
-            await self._speak_espeak(cleaned, event)
+            await self._speak_espeak(cleaned, event, language=self.language)
         finally:
             if self._cancel is event:
                 self._cancel = None
@@ -826,14 +851,17 @@ class TTS:
 
     async def _speak_piper(
         self, segments: list[tuple[str, str]], event: threading.Event
-    ) -> tuple[int, str]:
-        """逐段合成播放，返回 (失败段数, 首个错误)。
+    ) -> tuple[int, int, str]:
+        """逐段合成播放，返回 (失败段数, 降级段数, 首个错误)。
 
-        单段失败只跳过该段、继续后面的句子，避免整段重来 espeak 造成重复；
-        模型加载失败 / 没有播放器这类整体性错误仍然抛出，由 speak() 整段兜底。
+        单段合成失败时不再直接跳过：先用该语种的 espeak-ng 把这一段念出来
+        （降级段数 +1），只有连 espeak 都不行才算失败段，避免「英文整段静默
+        消失」。模型加载失败 / 没有播放器这类整体性错误仍然抛出，由 speak()
+        整段兜底。
         """
         self._last_engine = "piper-plus"
         failures = 0
+        degraded = 0
         first_error = ""
         try:
             for language, segment in segments:
@@ -842,15 +870,14 @@ class TTS:
                 seg_start = time.perf_counter()
                 try:
                     wav = await asyncio.to_thread(self._synth_wav, segment, language)
-                except TTSError as exc:
-                    if exc.kind in ("model", "runtime"):
-                        raise
-                    failures += 1
-                    first_error = first_error or _short_error(exc)
-                    continue
                 except Exception as exc:
-                    failures += 1
+                    if isinstance(exc, TTSError) and exc.kind in ("model", "runtime"):
+                        raise
                     first_error = first_error or _short_error(exc)
+                    if await self._speak_segment_fallback(segment, language, event, exc):
+                        degraded += 1
+                    else:
+                        failures += 1
                     continue
                 devlog.log("tts.segment", engine="piper-plus", language=language,
                            chars=len(segment),
@@ -873,7 +900,26 @@ class TTS:
                     wav.unlink(missing_ok=True)
         finally:
             self._maybe_unload()
-        return failures, first_error
+        return failures, degraded, first_error
+
+    async def _speak_segment_fallback(self, text: str, language: str,
+                                      event: threading.Event, exc: Exception) -> bool:
+        """piper 某段合成失败时，用该语种的 espeak-ng 把这一段念出来。
+
+        以前这里只 `continue`，英文 G2P 数据缺失时英文段就整段没声、日志里
+        也看不出少了什么。现在至少保证原文被念出来，并且把失败原因写进日志
+        （tts.segment.error / tts.segment.fallback），状态接口里也能看到降级段数。
+        """
+        if event.is_set():
+            return True
+        voice = ESPEAK_LANG_VOICES.get(language) or self.voice
+        devlog.log("tts.segment.error", engine="piper-plus", language=language,
+                   chars=len(text), voice=voice, error=_short_error(exc))
+        ok = await self._speak_espeak(text, event, voice=voice, language=language)
+        if ok:
+            devlog.log("tts.segment.fallback", engine="espeak-ng", language=language,
+                       voice=voice, chars=len(text), error=_short_error(exc))
+        return ok
 
     async def _play(self, wav: Path, event: threading.Event):
         player = self._player()
@@ -893,21 +939,31 @@ class TTS:
         if code not in (0, -15) and not event.is_set():
             raise TTSError(f"播放器退出码 {code}", kind="player")
 
-    async def _speak_espeak(self, text: str, event: threading.Event):
+    async def _speak_espeak(self, text: str, event: threading.Event,
+                            voice: str | None = None,
+                            language: str = "") -> bool:
+        """用 espeak-ng 念一段文本；返回是否真的念了（失败原因写进 _last_error）。
+
+        voice/language 用于逐段兜底：英文段用 en-us，日文段用 ja，中文段用 cmn。
+        整句兜底（voice 为 None）时沿用配置里的音色。
+        """
         binary = self._espeak_binary()
         if not binary:
             self._last_error = "找不到 espeak-ng / espeak / spd-say"
-            return
+            return False
+        spoken = voice or self.voice
+        if not voice and language not in ("", "auto"):
+            spoken = ESPEAK_LANG_VOICES.get(language, self.voice)
         args = [binary]
         name = os.path.basename(binary)
         if name.startswith("espeak"):
-            args += ["-v", self.voice, "-s", str(self.speed)]
+            args += ["-v", spoken, "-s", str(self.speed)]
         elif name.startswith("spd-say"):
-            args += ["-l", self.voice, "-r", str(self.speed - 170)]
+            args += ["-l", spoken, "-r", str(self.speed - 170)]
         args.append(text)
         self._last_engine = "espeak-ng"
         devlog.log("tts.segment", engine="espeak-ng", binary=name, chars=len(text),
-                   language=self.voice)
+                   language=language or spoken)
         started = time.perf_counter()
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -917,7 +973,7 @@ class TTS:
             )
         except FileNotFoundError:
             self._last_error = f"找不到语音引擎：{binary}"
-            return
+            return False
         self._proc = proc
         try:
             await proc.wait()
@@ -929,6 +985,8 @@ class TTS:
             devlog.log("tts.segment.error", engine="espeak-ng",
                        code=proc.returncode,
                        ms=round((time.perf_counter() - started) * 1000, 1))
+            return False
+        return True
 
     # ---------- 模型下载 ----------
 

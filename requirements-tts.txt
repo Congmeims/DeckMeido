@@ -3,5 +3,8 @@
 # 注意：piper-plus 2.x 要求 Python 3.11+；缺了不影响后端启动，会自动退回 espeak-ng
 # 英文段依赖 nltk 数据（cmudict / averaged_perceptron_tagger_eng），
 # 由 install.sh 的 install_tts_nltk_data 下到 <数据根>/models/nltk_data
+# 注意：nltk.download 在走代理/DNS 劫持的网络里会被 nltk 自身的 SSRF 保护
+# 拒绝（Steam Deck 实测），install.sh 会自动改用 curl 直取官方 zip 解压。
+# 数据缺失时英文段会逐段用 espeak-ng 兜底，不会整段没声。
 piper-plus[cpu]==2.0.2
 nltk>=3.9

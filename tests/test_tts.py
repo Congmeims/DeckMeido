@@ -438,7 +438,7 @@ class InterruptTest(unittest.TestCase):
         started = asyncio.Event()
         calls = []
 
-        async def fake_espeak(text, event):
+        async def fake_espeak(text, event, **kw):
             calls.append(text)
             started.set()
             if len(calls) == 1:
@@ -468,7 +468,7 @@ class InterruptTest(unittest.TestCase):
         t = ttsmod.TTS(enable=False, engine="espeak-ng", model_root=self.root)
         calls = []
 
-        async def fake_espeak(text, event):
+        async def fake_espeak(text, event, **kw):
             calls.append(text)
 
         t._speak_espeak = fake_espeak
@@ -479,7 +479,7 @@ class InterruptTest(unittest.TestCase):
 
 
 class SegmentFallbackTest(unittest.TestCase):
-    """个别片段失败只跳过该段；只有全部失败才整段退回 espeak"""
+    """个别片段合成失败时逐段用 espeak-ng 念出来，绝不静默丢段"""
 
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
@@ -494,14 +494,16 @@ class SegmentFallbackTest(unittest.TestCase):
         t._espeak_binary = lambda: "/usr/bin/espeak-ng"
         return t
 
-    def test_单段失败不重念整句(self):
+    def test_英文段合成失败时用_espeak_念出这一段(self):
         t = self._tts()
         played = []
         espeak_calls = []
 
         def synth(text, language):
-            if "bad" in text:
-                raise ttsmod.TTSError("合成炸了", kind="synth")
+            if language == "en":
+                # 与 Deck 上真实的失败一致：英文 G2P 数据缺失
+                raise ttsmod.TTSError("The bundled English backend is unavailable",
+                                      kind="synth")
             p = self.root / f"{len(played)}.wav"
             p.write_bytes(b"RIFF")
             return p
@@ -509,35 +511,86 @@ class SegmentFallbackTest(unittest.TestCase):
         async def play(wav, event):
             played.append(wav)
 
-        async def espeak(text, event):
-            espeak_calls.append(text)
+        async def espeak(text, event, voice=None, language=""):
+            espeak_calls.append((text, voice))
+            return True
 
         t._synth_wav = synth
         t._play = play
         t._speak_espeak = espeak
-        _run(t.speak("好 bad 坏翻译。"))
-        self.assertEqual(espeak_calls, [])
-        self.assertEqual(len(played), 2)  # 其余两段照常念完
-        self.assertEqual(t.status()["failed_segments"], 1)
-        self.assertIn("1/3", t._last_error)
-        self.assertIn("合成炸了", t._last_error)
+        _run(t.speak("根据 Agreement 第 3 条的规定。"))
+        # 中文段照常用 piper，英文段用 en-us 的 espeak 念出来，一段都不少
+        self.assertEqual(len(played), 2)
+        self.assertEqual(espeak_calls, [("Agreement ", "en-us")])
+        self.assertEqual(t.status()["failed_segments"], 0)
+        self.assertEqual(t.status()["degraded_segments"], 1)
+        self.assertIn("1/3 段改用 espeak-ng 兜底", t._last_error)
+        self.assertIn("English backend", t._last_error)
 
-    def test_全部失败才整段退回_espeak(self):
+    def test_全部失败时逐段兜底而不是整段重念(self):
         t = self._tts()
         espeak_calls = []
 
         def synth(text, language):
             raise ttsmod.TTSError("合成炸了", kind="synth")
 
-        async def espeak(text, event):
+        async def espeak(text, event, voice=None, language=""):
             espeak_calls.append(text)
+            return True
 
         t._synth_wav = synth
         t._speak_espeak = espeak
         _run(t.speak("好 bad 坏翻译。"))
-        self.assertEqual(len(espeak_calls), 1)
+        self.assertEqual(len(espeak_calls), 3)  # 三段分别兜底，没有整段再来一遍
+        self.assertEqual(t.status()["failed_segments"], 0)
+        self.assertEqual(t.status()["degraded_segments"], 3)
+        self.assertIn("3/3 段改用 espeak-ng 兜底", t._last_error)
+
+    def test_连_espeak_都不可用时失败可见(self):
+        """没有 espeak-ng 时确实无法出声，但必须留下失败段数和原因"""
+        t = self._tts()
+        calls = []
+
+        def synth(text, language):
+            raise ttsmod.TTSError("合成炸了", kind="synth")
+
+        async def espeak(text, event, voice=None, language=""):
+            calls.append(text)
+            return False
+
+        t._synth_wav = synth
+        t._speak_espeak = espeak
+        t._espeak_binary = lambda: ""
+        _run(t.speak("好 bad 坏翻译。"))
         self.assertEqual(t.status()["failed_segments"], 3)
+        self.assertEqual(t.status()["degraded_segments"], 0)
         self.assertIn("全部 3 段", t._last_error)
+
+
+class ReportRegressionTest(unittest.TestCase):
+    """用户实测反馈：英文段整段没声的那句，分段必须完整、无损"""
+
+    TEXT = ("根据 Agreement 第 3 条，双方应遵守 Local Law（現地法），"
+            "特别是关于 Data Privacy（データプライバシー）的规定。")
+
+    def test_中英日混排句子三段英文都被切出来(self):
+        segs = ttsmod.route_segments(self.TEXT, "auto")
+        self.assertEqual(
+            [lang for lang, _ in segs],
+            ["zh", "en", "zh", "en", "zh", "en", "ja", "zh"])
+        self.assertEqual(
+            [text for _, text in segs],
+            ["根据 ", "Agreement ", "第 3 条，双方应遵守 ", "Local Law",
+             "（現地法），特别是关于 ", "Data Privacy",
+             "（データプライバシー）", "的规定。"])
+        self.assertEqual("".join(text for _, text in segs), self.TEXT)
+
+    def test_清洗后英文段仍然保留(self):
+        cleaned = ttsmod.readify(self.TEXT)
+        segs = ttsmod.route_segments(cleaned, "auto")
+        joined = "".join(text for lang, text in segs if lang == "en")
+        for word in ("Agreement", "Local Law", "Data Privacy"):
+            self.assertIn(word, joined)
 
 
 if __name__ == "__main__":
