@@ -183,6 +183,9 @@
     flex: 1 1 auto;
     overflow-y: auto;
     padding: 14px;
+    /* 末条消息的操作行用负 bottom 悬在气泡下方，滚动到底时要留出它的高度，
+       否则贴近输入框时那排「重试 分享 删除」会被容器下沿裁掉半截 */
+    padding-bottom: 40px;
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -1186,6 +1189,24 @@
     margin-bottom: 12px; letter-spacing: .02em;
   }
   .card > .field:last-child { margin-bottom: 0; }
+  /* ---------- 用量与余额（设置 → 模型接入） ----------
+     纯文本表格：不引入图表库，窄屏也能看；数字列右对齐，首列左对齐 */
+  .usage-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .usage-balance { font-size: 22px; font-weight: 600; line-height: 1.25; }
+  .usage-tables { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 4px; }
+  .usage-tables > div { flex: 1 1 300px; min-width: 0; }
+  .usage-caption { font-size: 12px; font-weight: 600; color: var(--text); margin: 10px 0 2px; }
+  .usage-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .usage-table th, .usage-table td {
+    padding: 4px 6px; text-align: right; white-space: nowrap;
+    border-bottom: 1px solid var(--line);
+  }
+  .usage-table th { color: var(--muted); font-weight: 500; }
+  .usage-table th:first-child, .usage-table td:first-child {
+    text-align: left; white-space: normal; word-break: break-all;
+  }
+  .usage-table tr:last-child td { border-bottom: none; }
+  .usage-empty { color: var(--muted); font-size: 12px; padding: 6px 0; }
   /* 底栏的垂直尺寸要和侧栏那条 .sb-foot 完全一样（上 8 / 下 10 / 按钮 34），
      两个分隔线才会落在同一条水平线上，不然左右各画一条、高低差一截 */
   .set-foot {
@@ -2498,8 +2519,8 @@
 
 <div id="riBanner" hidden>
   <span class="ri-dot"></span>
-  <span id="riBannerText">正在接管 Deck · Esc 退出</span>
-  <button id="riStop" type="button">停止接管</button>
+  <span id="riBannerText">正在接管 Deck · 按 Esc 停止接管</span>
+  <button id="riStop" type="button" title="停止接管（Esc）">停止接管</button>
 </div>
 <div id="riToast"></div>
 
@@ -2542,7 +2563,7 @@
     <div id="setNav"></div>
   </div>
   <div class="sb-brand" id="brandLogo" role="button" tabindex="-1"
-       title="点击接管 Deck（远程浏览器）／释放接管（本机客户端）">
+       title="点击接管 Deck（远程浏览器）／按 Esc 停止接管（本机客户端）">
     <img class="brand-mark" src="logo-mark.png" alt="DeckMeido">
     <span class="brand-name">
       <span class="bn-text">DeckMeido</span>
@@ -2694,6 +2715,32 @@
                 <button id="clearApiKey" class="mini-btn" type="button">保存</button>
               </div>
               <div id="apiKeyHint" class="field-hint"></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">用量与余额</div>
+            <div class="usage-head">
+              <div>
+                <div class="usage-balance" id="usageBalance">未配置</div>
+                <div class="field-hint" id="usageBalanceHint">填好上面的 API Key 并保存后可查询余额</div>
+              </div>
+              <button id="usageRefresh" class="mini-btn" type="button">刷新</button>
+            </div>
+            <div class="field-hint" id="usageTier"></div>
+            <div class="usage-tables">
+              <div>
+                <div class="usage-caption">按日（近 14 天）</div>
+                <div id="usageDays" class="usage-empty">暂无记录——先发起一次对话</div>
+              </div>
+              <div>
+                <div class="usage-caption">按模型（近 14 天）</div>
+                <div id="usageModels" class="usage-empty">暂无记录</div>
+              </div>
+            </div>
+            <div class="mem-foot" style="margin-top:10px;flex-wrap:wrap">
+              <span class="field-hint" id="usageNote">费用按官方单价估算，以官方账单为准。</span>
+              <button id="usageExport" class="mini-btn" type="button">导出 JSON</button>
+              <button id="usageClear" class="mini-btn" type="button">清空统计</button>
             </div>
           </div>
           <div class="field-hint">
@@ -2871,30 +2918,6 @@
                 <button id="lanUrlCopy" class="mini-btn" type="button">复制</button>
               </div>
               <div class="field-hint">打开后点「配对新设备」，按掌机上的 PIN 配对一次；之后浏览器会记住这台设备。</div>
-            </div>
-          </div>
-          <div class="card">
-            <div class="card-title">开发者模式</div>
-            <div class="field">
-              <label>详细调试日志（保存后立即生效，不用重启后端）</label>
-              <select id="cfgDevMode" class="cfg-select">
-                <option value="off">关闭：保持现在的日志量</option>
-                <option value="on">开启：记录请求 / 模型 / 工具 / 语音细节</option>
-              </select>
-              <div id="devModeHint" class="field-hint">
-                开启后写入 userdata/logs/debug-&lt;时间&gt;.log，单文件 10 MB、保留 2 个旧文件（合计约 30 MB）。
-                凭据、Cookie、URL 查询值、非回环 IP、QQ 号始终打码。
-              </div>
-            </div>
-            <div class="field">
-              <label>日志占用</label>
-              <div id="devLogUsage" class="field-hint">统计中…</div>
-              <div class="mem-foot" style="margin-top:8px;flex-wrap:wrap">
-                <button id="logClearDebug" class="mini-btn" type="button">清空调试日志</button>
-                <button id="logClearRun" class="mini-btn" type="button">清空运行日志</button>
-                <button id="logClearInstall" class="mini-btn" type="button">清空安装日志</button>
-              </div>
-              <div id="logClearNote" class="field-hint"></div>
             </div>
           </div>
           <div class="card">
@@ -3345,6 +3368,31 @@
             </div>
             <div class="field">
               <div class="field-hint" id="updSourceHint"></div>
+            </div>
+          </div>
+          <!-- 排查/维护区放页尾：卡片内容与绑定都在全局，不依赖所在页 -->
+          <div class="card">
+            <div class="card-title">开发者模式</div>
+            <div class="field">
+              <label>详细调试日志（保存后立即生效，不用重启后端）</label>
+              <select id="cfgDevMode" class="cfg-select">
+                <option value="off">关闭：保持现在的日志量</option>
+                <option value="on">开启：记录请求 / 模型 / 工具 / 语音细节</option>
+              </select>
+              <div id="devModeHint" class="field-hint">
+                开启后写入 userdata/logs/debug-&lt;时间&gt;.log，单文件 10 MB、保留 2 个旧文件（合计约 30 MB）。
+                凭据、Cookie、URL 查询值、非回环 IP、QQ 号始终打码。
+              </div>
+            </div>
+            <div class="field">
+              <label>日志占用</label>
+              <div id="devLogUsage" class="field-hint">统计中…</div>
+              <div class="mem-foot" style="margin-top:8px;flex-wrap:wrap">
+                <button id="logClearDebug" class="mini-btn" type="button">清空调试日志</button>
+                <button id="logClearRun" class="mini-btn" type="button">清空运行日志</button>
+                <button id="logClearInstall" class="mini-btn" type="button">清空安装日志</button>
+              </div>
+              <div id="logClearNote" class="field-hint"></div>
             </div>
           </div>
         </section>
@@ -7543,13 +7591,29 @@
       + '要补装控件请在终端执行：bash install.sh check --fix（会提示输入 sudo 密码）';
   }
 
+  var ctrlScrollSeq = 0;
+  function scrollSetBodyBottom() {
+    // 按实际内容高度滚到底，不依赖固定偏移或条目数量；快速连点时只认最后一次，
+    // 自检结果是异步渲染的，fetch 完成后再滚一次才能停在真正的底部
+    var seq = ++ctrlScrollSeq;
+    requestAnimationFrame(function () {
+      if (seq !== ctrlScrollSeq) return;
+      if (setBody.scrollTo) {
+        setBody.scrollTo({ top: setBody.scrollHeight, behavior: 'smooth' });
+      } else {
+        setBody.scrollTop = setBody.scrollHeight;
+      }
+    });
+  }
+
   function openCtrlPanel() {
     // 跳转到「设置 → 本地连接」里的自检子模块，而不是弹独立窗口
     if (!document.body.classList.contains('settings-mode')) openSettings();
     showSetPane('device');
     ctrlLog.textContent = '';
     ctrlHint.textContent = '正在实测…';
-    fetchCtrl(true);
+    scrollSetBodyBottom();
+    return fetchCtrl(true).then(scrollSetBodyBottom);
   }
 
   function fetchCtrl(force) {
@@ -8891,6 +8955,194 @@
     pairPollTimer = 0;
   }
 
+  // ---------- 用量与余额（设置 → 模型接入） ----------
+  // 后端 /api/usage 只读本地聚合（userdata/usage/*.json），/api/usage/balance
+  // 才发起一次官方余额查询；两者分开，打开设置页不依赖网络。
+  var usageDaysEl = document.getElementById('usageDays');
+  var usageModelsEl = document.getElementById('usageModels');
+  var usageBalanceEl = document.getElementById('usageBalance');
+  var usageBalanceHint = document.getElementById('usageBalanceHint');
+  var usageTierEl = document.getElementById('usageTier');
+  var usageNoteEl = document.getElementById('usageNote');
+  var usageRefreshBtn = document.getElementById('usageRefresh');
+
+  function usageTokens(n) {
+    n = Number(n) || 0;
+    if (n >= 1000000) return (n / 1000000).toFixed(2) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+    return String(n);
+  }
+
+  function usageMoney(v) {
+    if (v === null || typeof v === 'undefined') return '—';
+    v = Number(v) || 0;
+    return '¥' + (v >= 1 ? v.toFixed(2) : v.toFixed(4));
+  }
+
+  function usageTable(headers, rows) {
+    var html = '<table class="usage-table"><thead><tr>';
+    headers.forEach(function (h) { html += '<th>' + escapeHtml(h) + '</th>'; });
+    html += '</tr></thead><tbody>';
+    rows.forEach(function (row) {
+      html += '<tr>';
+      row.forEach(function (cell) { html += '<td>' + escapeHtml(String(cell)) + '</td>'; });
+      html += '</tr>';
+    });
+    return html + '</tbody></table>';
+  }
+
+  function renderUsageStats(d) {
+    if (!d) return;
+    usageTierEl.textContent = '当前：' + d.tier_label
+      + '　高峰：' + d.peak_windows
+      + '　官方单价生效：' + d.pricing_effective
+      + (d.official_endpoint ? '' : '　当前接口不是 DeepSeek 官方端点，估算仅供参考');
+    var days = d.days || [];
+    if (!days.length) {
+      usageDaysEl.className = 'usage-empty';
+      usageDaysEl.textContent = '暂无记录——先发起一次对话';
+    } else {
+      usageDaysEl.className = '';
+      var rows = days.map(function (x) {
+        return [String(x.date).slice(5), x.requests, usageTokens(x.prompt_tokens),
+                (Number(x.cache_hit_rate) || 0).toFixed(1) + '%',
+                usageTokens(x.completion_tokens), usageMoney(x.cost_cny)];
+      });
+      var t = d.totals || {};
+      rows.push(['合计', t.requests || 0, usageTokens(t.prompt_tokens),
+                (Number(t.cache_hit_rate) || 0).toFixed(1) + '%',
+                usageTokens(t.completion_tokens), usageMoney(t.cost_cny)]);
+      usageDaysEl.innerHTML = usageTable(['日期', '请求', '输入', '命中率', '输出', '估算'], rows);
+    }
+    var models = d.models || [];
+    if (!models.length) {
+      usageModelsEl.className = 'usage-empty';
+      usageModelsEl.textContent = '暂无记录';
+    } else {
+      usageModelsEl.className = '';
+      usageModelsEl.innerHTML = usageTable(
+        ['模型', '请求', '输入', '命中率', '输出', '估算'],
+        models.map(function (m) {
+          return [m.model, m.requests, usageTokens(m.prompt_tokens),
+                  (Number(m.cache_hit_rate) || 0).toFixed(1) + '%',
+                  usageTokens(m.completion_tokens), usageMoney(m.cost_cny)];
+        }));
+    }
+    var note = d.note || '费用按官方单价估算，以官方账单为准。';
+    if ((d.unpriced_models || []).length) {
+      note += '　未收录单价、只统计 token：' + d.unpriced_models.join('、');
+    }
+    if ((d.corrupted_files || []).length) {
+      note += '　有 ' + d.corrupted_files.length + ' 个统计文件读取失败';
+    }
+    usageNoteEl.textContent = note;
+  }
+
+  function loadUsageStats() {
+    return fetch('/api/usage?days=14')
+      .then(function (r) {
+        if (!r.ok) {
+          throw new Error(r.status === 401 ? '登录已失效，请重新配对'
+            : '读取失败（HTTP ' + r.status + '）');
+        }
+        return r.json();
+      })
+      .then(renderUsageStats)
+      .catch(function (e) {
+        usageDaysEl.className = 'usage-empty';
+        usageDaysEl.textContent = '用量读取失败：' + ((e && e.message) || e);
+        usageModelsEl.className = 'usage-empty';
+        usageModelsEl.textContent = '';
+      });
+  }
+
+  function loadUsageBalance() {
+    usageBalanceHint.textContent = '正在查询官方余额…';
+    return fetch('/api/usage/balance')
+      .then(function (r) { return r.json(); })
+      .then(function (b) {
+        if (!b || !b.ok) {
+          if (b && b.reason === 'unconfigured') {
+            usageBalanceEl.textContent = '未配置';
+            usageBalanceEl.style.color = 'var(--muted)';
+            usageBalanceHint.textContent = '填好上面的 API Key 并保存后可查询余额';
+          } else {
+            usageBalanceEl.textContent = '查询失败';
+            usageBalanceEl.style.color = '#e06c75';
+            usageBalanceHint.textContent = (b && b.error) || '未知原因';
+          }
+          return;
+        }
+        var symbol = b.currency === 'CNY' ? '¥'
+          : (b.currency === 'USD' ? '$' : (b.currency + ' '));
+        usageBalanceEl.textContent = symbol + b.total_balance;
+        usageBalanceEl.style.color = b.is_available ? '' : '#e06c75';
+        var parts = ['更新于 ' + String(b.fetched_at || '').replace('T', ' ').slice(0, 16),
+                     '赠金 ' + symbol + b.granted_balance,
+                     '充值 ' + symbol + b.topped_up_balance];
+        if (!b.is_available) parts.push('余额不足，API 可能不可用');
+        usageBalanceHint.textContent = parts.join('　');
+      })
+      .catch(function () {
+        usageBalanceEl.textContent = '查询失败';
+        usageBalanceEl.style.color = '#e06c75';
+        usageBalanceHint.textContent = '连不上服务，请稍后重试';
+      });
+  }
+
+  function loadUsage(manual) {
+    if (manual) {
+      usageRefreshBtn.disabled = true;
+      usageRefreshBtn.textContent = '刷新中…';
+    }
+    return Promise.all([loadUsageStats(), loadUsageBalance()]).then(function () {
+      if (manual) {
+        usageRefreshBtn.disabled = false;
+        usageRefreshBtn.textContent = '刷新';
+      }
+    });
+  }
+
+  usageRefreshBtn.addEventListener('click', function () { loadUsage(true); });
+
+  document.getElementById('usageExport').addEventListener('click', function () {
+    fetch('/api/usage/export')
+      .then(function (r) {
+        if (!r.ok) throw new Error('导出失败（HTTP ' + r.status + '）');
+        return r.blob();
+      })
+      .then(function (blob) {
+        var a = document.createElement('a');
+        var url = URL.createObjectURL(blob);
+        a.href = url;
+        a.download = 'deckmeido-usage-' + new Date().toISOString().slice(0, 10) + '.json';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+        cfgHint.textContent = '已导出本地用量统计';
+      })
+      .catch(function (e) {
+        cfgHint.textContent = '导出失败：' + ((e && e.message) || e);
+      });
+  });
+
+  document.getElementById('usageClear').addEventListener('click', function () {
+    if (!confirm('清空本地用量统计？余额与配置不受影响。')) return;
+    fetch('/api/usage/clear', { method: 'POST' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('清空失败（HTTP ' + r.status + '）');
+        return r.json();
+      })
+      .then(function (d) {
+        cfgHint.textContent = '已清空本地用量统计（删除 ' + (d.removed || 0) + ' 个文件）';
+        loadUsage();
+      })
+      .catch(function (e) {
+        cfgHint.textContent = '清空失败：' + ((e && e.message) || e);
+      });
+  });
+
   function openSettings() {
     // 设置顶替主界面：主区域换成设置页，侧栏会话列表换成分区导航。
     // 窄屏不自动拉开抽屉——一拉开就盖住整块设置，还得再点一下才看得见内容；
@@ -8915,6 +9167,7 @@
     loadQqLogs();
     startQqStatusPolling();
     loadSttStatus();
+    loadUsage();
     startPairPoll();
   }
 
@@ -9433,6 +9686,7 @@
           cfgDevMode.value = res.dev_mode ? 'on' : 'off';
         }
         refreshLogUsage();
+        loadUsage();  // Key / 接口地址可能刚改过，余额与估算随之刷新
         var restartNote = res.restart_required ? '（局域网开关/端口需重启后端生效）' : '';
         cfgHint.textContent = res.llm_configured
           ? ('已保存，正在拉取模型列表…' + restartNote)
@@ -10549,10 +10803,10 @@
     riBanner.hidden = !riActive;
     if (riActive) {
       riBannerText.textContent = IS_NATIVE
-        ? '远端正在接管 Deck · 点 logo 或「停止接管」释放'
+        ? '远端正在接管 Deck · 按 Esc 停止接管（或点 logo 释放）'
         : (riState.by
-            ? ('正在接管 Deck · 来源 ' + riState.by + ' · Esc 退出')
-            : '正在接管 Deck · Esc 退出');
+            ? ('正在接管 Deck · 来源 ' + riState.by + ' · 按 Esc 停止接管')
+            : '正在接管 Deck · 按 Esc 停止接管');
     }
     if (riCfgState) {
       riCfgState.textContent = riActive
@@ -10645,7 +10899,7 @@
       if (msg.backend) riState.backend = msg.backend;
       if (msg.max_minutes) riState.max_minutes = msg.max_minutes;
       riPaint();
-      riToast('已接管 Deck，按 Esc 退出');
+      riToast('已接管 Deck，按 Esc 停止接管');
       return;
     }
     if (!msg.ok) { riFail(msg.code, msg.detail); return; }
