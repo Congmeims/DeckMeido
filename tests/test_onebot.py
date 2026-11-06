@@ -540,6 +540,92 @@ class BotTest(unittest.IsolatedAsyncioTestCase):
         await bot.stop()
 
 
+class GroupMemoFlowTest(unittest.IsolatedAsyncioTestCase):
+    """群常识缓存：只进群友只读轮次的提示词，按群隔离，可被管理员清除"""
+
+    def make(self):
+        prompts: list[dict] = []
+
+        async def runner(text, *, sid, device, readonly, turn_id="", image=None):
+            # 和 main.py 的 QQ 轮次一样：在子任务里现算 guest prompt
+            prompts.append({"text": text, "readonly": readonly,
+                             "prompt": onebot.guest_prompt("", "meido")})
+            return {"reply": "好的"}
+
+        async def factory(cfg):
+            return FakeWS()
+
+        async def shot():
+            return None, ""
+
+        async def status():
+            return {}
+
+        bot = onebot.OneBotClient(
+            runner=runner, screenshot=shot, status_provider=status,
+            nickname=lambda: "meido", connect_factory=factory)
+        bot.configure({
+            "enable": True, "ws_url": "ws://127.0.0.1:3001",
+            "access_token": "tok", "admin_qq": ["10001"],
+            "allow_groups": ["20001"], "group_memo": True,
+        })
+        return bot, prompts
+
+    async def test_group_memo_injected_and_isolated(self):
+        bot, prompts = self.make()
+        await bot.start()
+        self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
+        ws = await self._ws_of(bot)
+        # 非白名单群的消息不进缓存
+        ws.feed(group_msg("20002", "30003", "不该被记录", at=False))
+        # 白名单群里的普通闲聊（没 @ 也记）
+        ws.feed(group_msg("20001", "30003", "大家在聊新游戏", at=False))
+        ws.feed(group_msg("20001", "30004", "最近在玩什么", at=False))
+        await bot.wait_idle()
+        # 群友 @ 机器人：只读轮次，提示词里带本群片段
+        ws.feed(group_msg("20001", "30005", "meido 刚才聊了什么", at=True))
+        await bot.wait_idle()
+        self.assertEqual(len(prompts), 1)
+        self.assertTrue(prompts[0]["readonly"])
+        prompt = prompts[0]["prompt"]
+        self.assertIn("群聊最近消息", prompt)
+        self.assertIn("大家在聊新游戏", prompt)
+        self.assertIn("最近在玩什么", prompt)
+        self.assertNotIn("不该被记录", prompt)
+        # 管理员在群里的对话（带工具）不注入这段引用
+        ws.feed(group_msg("20001", "10001", "meido 群里聊啥了", at=True))
+        await bot.wait_idle()
+        self.assertFalse(prompts[1]["readonly"])
+        self.assertNotIn("群聊最近消息", prompts[1]["prompt"])
+        await bot.stop()
+
+    async def test_admin_clear_command(self):
+        bot, prompts = self.make()
+        await bot.start()
+        self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
+        ws = await self._ws_of(bot)
+        ws.feed(group_msg("20001", "30003", "A 群内容", at=False))
+        await bot.wait_idle()
+        ws.feed(group_msg("20001", "10001", "meido /memo", at=True))
+        await bot.wait_idle()
+        texts = [str(s["params"]["message"]) for s in ws.sent
+                 if s.get("action") == "send_group_msg"]
+        self.assertTrue(any("已清除本群缓存" in t for t in texts))
+        ws.feed(group_msg("20001", "30005", "meido 刚才聊了什么", at=True))
+        await bot.wait_idle()
+        self.assertNotIn("A 群内容", prompts[0]["prompt"])
+        await bot.stop()
+
+    async def _ws_of(self, bot):
+        # 连接工厂在启动时才建 FakeWS，这里按 bot 的引用取回来
+        for _ in range(40):
+            ws = getattr(bot, "_ws", None)
+            if ws is not None:
+                return ws
+            await asyncio.sleep(0.05)
+        raise AssertionError("没有建立假 WS")
+
+
 class ReconnectTest(unittest.IsolatedAsyncioTestCase):
     async def test_backoff_then_connected(self):
         sleeps: list[float] = []

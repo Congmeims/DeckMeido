@@ -80,6 +80,9 @@ SPECS: tuple[Spec, ...] = (
     Spec("deps", ("deps", "dependencies", "dep"),
          ("检查依赖", "查依赖", "依赖检查", "依赖状态", "检查环境", "环境检查"),
          "检查依赖状态（只检测，不安装）"),
+    Spec("memo_clear", ("memo", "memoclear"),
+         ("清除本群缓存", "清空本群缓存", "忘掉群聊", "忘掉群聊内容"),
+         "清除本群常识缓存（仅管理员）"),
 )
 
 SPEC_BY_KEY: dict[str, Spec] = {s.key: s for s in SPECS}

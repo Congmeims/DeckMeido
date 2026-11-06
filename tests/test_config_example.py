@@ -43,6 +43,7 @@ REQUIRED = {
         "rate_per_minute", "group_rate_per_minute", "max_message_chars",
         "reply_chunk_chars", "max_reply_chunks",
         "redact_words", "redact_mask",
+        "group_memo", "group_memo_size", "group_memo_ttl", "group_memo_max_chars",
         "confirm_timeout", "reconnect_min", "reconnect_max",
         "ping_interval", "ping_timeout",
     },

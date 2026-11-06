@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
 import ipaddress
 import json
 import random
@@ -35,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from . import menu, memory, paths, redact
+from . import groupmemo, menu, memory, paths, redact
 
 # ---------- 图片链接安全校验 ----------
 # NapCat 传来的图片地址是外部输入：必须挡住 file:// 等本地协议、
@@ -95,6 +96,10 @@ _SAFE_OPENER = urllib.request.build_opener(_SafeRedirectHandler())
 DEFAULT_PREFIX = "meido"
 DEFAULT_RATE_PER_MINUTE = 6            # 每人每分钟条数（<=0 不限）
 DEFAULT_GROUP_RATE_PER_MINUTE = 10     # 每个群每分钟条数（<=0 不限）
+# 群常识只读缓存：每群最近多少条、每条活多久、整段注入最多多少字
+DEFAULT_GROUP_MEMO_SIZE = 20
+DEFAULT_GROUP_MEMO_TTL = 300.0
+DEFAULT_GROUP_MEMO_MAX_CHARS = 400
 DEFAULT_MAX_MESSAGE_CHARS = 2000
 DEFAULT_REPLY_CHUNK_CHARS = 300
 DEFAULT_MAX_REPLY_CHUNKS = 3
@@ -186,6 +191,11 @@ class OneBotConfig:
     # 输出侧敏感词：命中就换成 redact_mask；空表 = 不启用
     redact_words: tuple[str, ...] = ()
     redact_mask: str = redact.DEFAULT_MASK
+    # 群常识只读缓存：默认关闭，且要求群在白名单里
+    group_memo: bool = False
+    group_memo_size: int = DEFAULT_GROUP_MEMO_SIZE
+    group_memo_ttl: float = DEFAULT_GROUP_MEMO_TTL
+    group_memo_max_chars: int = DEFAULT_GROUP_MEMO_MAX_CHARS
     confirm_timeout: float = DEFAULT_CONFIRM_TIMEOUT
     reconnect_min: float = DEFAULT_RECONNECT_MIN
     reconnect_max: float = DEFAULT_RECONNECT_MAX
@@ -268,6 +278,14 @@ def parse_config(raw: dict | None) -> OneBotConfig:
                                  DEFAULT_MAX_REPLY_CHUNKS) or DEFAULT_MAX_REPLY_CHUNKS,
         redact_words=redact.normalize_words(raw.get("redact_words")),
         redact_mask=str(raw.get("redact_mask") or "").strip() or redact.DEFAULT_MASK,
+        group_memo=_as_bool(raw.get("group_memo"), False),
+        group_memo_size=_as_int(raw.get("group_memo_size", DEFAULT_GROUP_MEMO_SIZE),
+                                DEFAULT_GROUP_MEMO_SIZE),
+        group_memo_ttl=_as_float(raw.get("group_memo_ttl", DEFAULT_GROUP_MEMO_TTL),
+                                 DEFAULT_GROUP_MEMO_TTL),
+        group_memo_max_chars=_as_int(
+            raw.get("group_memo_max_chars", DEFAULT_GROUP_MEMO_MAX_CHARS),
+            DEFAULT_GROUP_MEMO_MAX_CHARS) or DEFAULT_GROUP_MEMO_MAX_CHARS,
         confirm_timeout=_as_float(raw.get("confirm_timeout", DEFAULT_CONFIRM_TIMEOUT),
                                   DEFAULT_CONFIRM_TIMEOUT),
         reconnect_min=_as_float(raw.get("reconnect_min", DEFAULT_RECONNECT_MIN),
@@ -312,11 +330,23 @@ def _mask_url(url: str) -> str:
 
 # ---------- 群友提示词 / 脱敏 ----------
 
+# 本轮群聊片段：只在处理「群友只读轮次」的任务上下文里生效。
+# 真正调用 guest_prompt 的是 main.py 里的 QQ 轮次（跑在 _do_chat 创建的子任务里），
+# 用 ContextVar 把片段带进去，既不落进会话历史，也不会串到别的群/别的轮次。
+_TURN_GROUP_CONTEXT: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "deckmeido_group_context", default="")
+
+
 def guest_prompt(configured: str | None, name: str = "") -> str:
     """群友提示词的最终文案：空则用内置默认，{name} 换成软件昵称"""
     text = (configured or "").strip() or DEFAULT_GUEST_PROMPT
     nick = (name or "").strip() or DEFAULT_PREFIX
-    return text.replace("{name}", nick)
+    text = text.replace("{name}", nick)
+    # 本轮若有群聊片段，作为带标签的引用附在提示词末尾（只读、零工具轮次）
+    context = _TURN_GROUP_CONTEXT.get()
+    if context:
+        text = f"{text}\n\n{context}"
+    return text
 
 
 def normalize_guest_prompt(value: str | None) -> str:
@@ -743,6 +773,9 @@ class OneBotClient:
                               self._cfg.group_rate_per_minute)
         self._redactor = redact.Redactor(self._cfg.redact_words,
                                          self._cfg.redact_mask)
+        self._memo = groupmemo.GroupMemo(
+            self._cfg.group_memo_size, self._cfg.group_memo_ttl,
+            self._cfg.group_memo_max_chars)
         self._backoff = Backoff(self._cfg.reconnect_min, self._cfg.reconnect_max)
         self._pending_calls: dict[str, asyncio.Future] = {}
         self._seq = 0
@@ -819,6 +852,9 @@ class OneBotClient:
         # 配置热更新：限流配额、分组配额、分段上限与敏感词表都在这里重建
         self._gate = RateGate(cfg.rate_per_minute, cfg.group_rate_per_minute)
         self._redactor = redact.Redactor(cfg.redact_words, cfg.redact_mask)
+        # 群缓存跟着配置重建：白名单/容量/TTL 一改，旧缓存一律作废
+        self._memo = groupmemo.GroupMemo(
+            cfg.group_memo_size, cfg.group_memo_ttl, cfg.group_memo_max_chars)
         self._backoff = Backoff(cfg.reconnect_min, cfg.reconnect_max)
         self._drop_pending()
         err = validate_config(cfg)
@@ -1237,6 +1273,12 @@ class OneBotClient:
         # @机器人 与「昵称：」这类标签只出现在 QQ 侧：先洗掉，
         # 免得它们跟着聊天正文进长期记忆，长成「@meido 帮我记住…」这种条目
         ev.text = memory.clean_text(ev.text, names=(nickname, ev.sender_name))
+        # 群常识缓存：只记白名单群里的闲聊（含没 @ 的），供群友轮次做只读参考
+        if ev.group_id and cfg.group_memo and ev.group_id in cfg.allow_groups:
+            try:
+                self._memo.remember(ev.group_id, ev.sender_name, ev.text)
+            except Exception as e:
+                self._log("warn", "群缓存写入失败", repr(e))
         device = device_tag(ev)
         # 危险固定命令的二次确认：上一条挂起的命令先在这里消化掉
         if await self._consume_menu_confirm(ev, device):
@@ -1294,6 +1336,7 @@ class OneBotClient:
             "save_image": self._do_save_image,
             "save_text": self._do_save_text,
             "deps": self._do_deps,
+            "memo_clear": self._do_memo_clear,
         }.get(kind)
 
     async def _consume_menu_confirm(self, ev: MessageEvent, device: str) -> bool:
@@ -1393,12 +1436,30 @@ class OneBotClient:
             # 每条消息带一个独立的轮次标识：确认时复用它，其它时候避免和上一轮混淆
             turn_id = "qq-" + secrets.token_hex(6)
 
+        # 群友只读轮次：把本群最近的消息片段带进本轮提示词（内存 TTL、按群隔离）。
+        # 没有可用片段或摘要出错都按空串处理，绝不因此中断正常对话。
+        context = ""
+        if ev.group_id and route.readonly:
+            try:
+                context = self._memo.prefix(ev.group_id)
+            except Exception as e:
+                self._log("warn", "群缓存摘要失败", repr(e))
         image = None
         if not route.readonly:
             image = await self._resolve_turn_image(ev)
-        task = asyncio.create_task(
-            self._runner(text, sid=sid, device=device,
-                         readonly=route.readonly, turn_id=turn_id, image=image))
+        # 用 ContextVar 把片段交给本轮子任务：main.py 里的 QQ 轮次会在子任务里
+        # 调用 guest_prompt()，这样片段只在本轮生效，不写进会话历史、不跨群串味
+        token = _TURN_GROUP_CONTEXT.set(context) if context else None
+        try:
+            task = asyncio.create_task(
+                self._runner(text, sid=sid, device=device,
+                             readonly=route.readonly, turn_id=turn_id, image=image))
+        finally:
+            if token is not None:
+                _TURN_GROUP_CONTEXT.reset(token)
+        if context:
+            self._log("info", "群缓存注入",
+                      f"group={ev.group_id} 字数={len(context)}")
         self._turn_task = task
         self._stats["turns"] += 1
         try:
@@ -1473,6 +1534,15 @@ class OneBotClient:
 
     async def _do_help(self, ev: MessageEvent) -> None:
         await self._send_text(ev, menu.help_text(self._nickname()))
+
+    async def _do_memo_clear(self, ev: MessageEvent) -> None:
+        """管理员清除本群常识缓存（只清当前群，不碰别的群）"""
+        if not ev.group_id:
+            await self._send_text(ev, "这个指令在本群里发才有效；私聊没有群缓存。")
+            return
+        n = self._memo.clear(ev.group_id)
+        self._log("info", "群缓存清除", f"group={ev.group_id} 条数={n}")
+        await self._send_text(ev, f"已清除本群缓存（{n} 条）。" if n else "本群没有缓存。")
 
     async def _do_deps(self, ev: MessageEvent) -> None:
         """检查依赖：只回报状态，不安装、不改环境"""
