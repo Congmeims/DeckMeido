@@ -30,6 +30,15 @@ DECKMEIDO_DIR = Path(
     os.environ.get("DECKMEIDO_DIR") or Path(__file__).resolve().parent.parent
 )
 
+# 客户端写开发者日志时复用后端同一条脱敏函数，避免各写一套正则
+try:
+    if str(DECKMEIDO_DIR) not in sys.path:
+        sys.path.insert(0, str(DECKMEIDO_DIR))
+    from server.devlog import redact as _dev_redact
+except Exception:
+    def _dev_redact(value) -> str:
+        return str(value)
+
 
 def _resolve_data_dir() -> Path:
     """数据根：DECKMEIDO_DATA_DIR 优先，其次 <安装目录>/userdata/（与后端一致）。"""
@@ -93,9 +102,30 @@ RESTART_REQUEST = _DATA_DIR / "restart.request"
 # 能在进程死前把栈写下来。没有它就只能看到一句 "Wayland connection broke"。
 CRASH_LOG = _DATA_DIR / "logs" / "client-crash.log"
 
+# 开发者模式：客户端只在启动时记一条「自己是谁、怎么起来的」。
+# 文件名带 client 前缀，避免和后端的 debug-<时间>.log 混在一起。
+_CLIENT_DEBUG_LOG: Path | None = None
+
+
+def _dev_log(event: str, **fields) -> None:
+    if _CLIENT_DEBUG_LOG is None:
+        return
+    try:
+        parts = [f"event={event}"]
+        for key, value in fields.items():
+            text = _dev_redact(value)
+            if len(text) > 1000:
+                text = text[:1000] + "…"
+            parts.append(f"{key}={text}")
+        with open(_CLIENT_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " " + " ".join(parts) + "\n")
+    except Exception:
+        pass
+
 
 def _enable_crash_log() -> None:
     """把 C 层致命信号（SIGSEGV / SIGABRT 等）的栈写到文件里"""
+    global _CLIENT_DEBUG_LOG
     try:
         import faulthandler
 
@@ -113,6 +143,13 @@ def _enable_crash_log() -> None:
         f.write(f"\n===== client start {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
         f.flush()
         globals()["_crash_handle"] = f  # 保持引用，别让 GC 把文件关掉
+        try:
+            cfg = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            if bool((cfg.get("runtime") or {}).get("dev_mode", False)):
+                _CLIENT_DEBUG_LOG = CRASH_LOG.parent / (
+                    f"debug-client-{time.strftime('%Y%m%d-%H%M%S')}.log")
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -280,6 +317,10 @@ def _start_backend():
     try:
         # 每次拉起都重新读配置：设置页切换 lan_enable 后重启后端即可生效
         host = "0.0.0.0" if bool(_server_cfg().get("lan_enable", False)) else "127.0.0.1"
+        _dev_log("backend.spawn",
+                 argv=[str(python), "-m", "uvicorn", "server.main:app",
+                       "--host", host, "--port", PORT],
+                 cwd=str(DECKMEIDO_DIR))
         return subprocess.Popen(
             [str(python), "-m", "uvicorn",
              "server.main:app", "--host", host, "--port", PORT],
@@ -458,6 +499,11 @@ def apply_app_font(app: QApplication) -> None:
 
 def main() -> int:
     _enable_crash_log()
+    _dev_log("client.start", argv=sys.argv, cwd=os.getcwd(), pid=os.getpid(),
+             env={k: os.environ[k] for k in (
+                 "DECKMEIDO_DATA_DIR", "DECKMEIDO_PORT", "DISPLAY",
+                 "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE")
+                 if os.environ.get(k)})
     QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
     app.setApplicationName("DeckMeido")

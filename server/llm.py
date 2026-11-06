@@ -8,6 +8,8 @@ import time
 
 import httpx
 
+from . import devlog
+
 # 图片按 base64 内联进请求体，一张图就能到千万字符级。这里在发车前量一次
 # 请求体大小并记下来：出问题时能分清「体积大」和「真的花掉这么多 token」，
 # 只看字符数会误以为是模型在按字符计费
@@ -243,6 +245,7 @@ class LLMClient:
                 if started or not _retryable(exc) or delay is None:
                     raise
                 print(f"[DeckMeido] LLM 调用失败（{exc}），{delay:g}s 后重试", flush=True)
+                devlog.log("llm.retry", delay=delay, error=repr(exc))
                 if on_retry:
                     try:
                         on_retry()
@@ -287,11 +290,25 @@ class LLMClient:
             # 传定值则「这台 Deck 的历史」始终落在同一个桶里
             payload["user_id"] = "deckmeido"
         _body_size(payload)
+        devlog.log(
+            "llm.request",
+            base_url=self.base_url,
+            model=self.model,
+            messages=len(messages),
+            roles=[m.get("role") for m in messages],
+            tools=[(t.get("function") or {}).get("name") for t in tools],
+            max_tokens=budget,
+            temperature=temperature,
+            reasoning_effort=self.reasoning_effort,
+            body_chars=_LAST_BODY,
+        )
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_acc: dict[int, dict] = {}
         finish_reason = None
         usage = None
+        stream_seq = 0
+        stream_t0 = time.monotonic()
         async with self._client.stream(
             "POST", f"{self.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}"},
@@ -322,6 +339,21 @@ class LLMClient:
                 fr = choice.get("finish_reason")
                 if fr:
                     finish_reason = fr
+                # 流式分片时序：每条带内容的增量记一行，能看出首字延迟、
+                # 中途卡顿和思维链/正文的交错顺序
+                if devlog.enabled() and (delta.get("content") or delta.get("reasoning_content")
+                                         or delta.get("reasoning") or delta.get("tool_calls")):
+                    stream_seq += 1
+                    devlog.log(
+                        "llm.chunk",
+                        seq=stream_seq,
+                        ms=round((time.monotonic() - stream_t0) * 1000, 1),
+                        content=delta.get("content"),
+                        reasoning=delta.get("reasoning_content") or delta.get("reasoning"),
+                        tool_calls=[{"index": tc.get("index"),
+                                     "name": (tc.get("function") or {}).get("name")}
+                                    for tc in (delta.get("tool_calls") or [])],
+                    )
                 if delta.get("content"):
                     content_parts.append(delta["content"])
                     if on_delta:
@@ -356,6 +388,16 @@ class LLMClient:
         if usage:
             msg["usage"] = usage
         _log_usage(usage)
+        devlog.log(
+            "llm.response",
+            chars=len(msg.get("content") or ""),
+            reasoning_chars=len(msg.get("reasoning_content") or ""),
+            tool_calls=len(tool_acc),
+            finish=finish_reason,
+            usage=usage,
+            ms=round((time.monotonic() - stream_t0) * 1000, 1),
+            content=msg.get("content"),
+        )
         return msg
 
     async def close(self):

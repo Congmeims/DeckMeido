@@ -32,6 +32,8 @@ import urllib.request
 import wave
 from pathlib import Path
 
+from . import devlog
+
 # 模型署名：Apache-2.0 要求保留，界面上展示「语音识别」的地方一并显示
 ATTRIBUTION = "SenseVoice-Small (FunAudioLLM) · sherpa-onnx · Apache-2.0"
 
@@ -732,6 +734,8 @@ class STT:
                 )
             except Exception as exc:
                 raise STTError(f"识别器加载失败：{exc}") from exc
+            devlog.log("stt.model.load", model=str(root / "model.int8.onnx"),
+                       threads=NUM_THREADS, language="auto")
             return self._rec
 
     def _maybe_unload(self):
@@ -779,6 +783,7 @@ class STT:
             raise STTError("没有录到声音")
 
         rec = self._ensure_recognizer()
+        started = time.perf_counter()
         # sherpa-onnx 的 recognizer 不是线程安全的，并发请求在这里排队
         try:
             with self._lock:
@@ -793,6 +798,9 @@ class STT:
             with self._lock:
                 self._rec = None
             raise STTError(f"识别失败：{exc}") from exc
+        devlog.log("stt.transcribe", rate=rate, samples=len(samples),
+                   ms=round((time.perf_counter() - started) * 1000, 1),
+                   chars=len(text), text=text[:300])
         return text
 
     def unload(self):

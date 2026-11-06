@@ -2639,8 +2639,15 @@
               <button id="ttsDownload" class="mini-btn" type="button">下载模型</button>
               <button id="ttsPreview" class="mini-btn" type="button">试听</button>
             </div>
-            <div class="field-hint">
-              音声：<a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener" style="color:inherit">つくよみちゃんコーパス（夢前黎）</a>。
+            <!-- つくよみちゃんコーパス利用規約第③类（音声つき会話AIソフト）要求在使用者
+                 能看到的位置署名。下面两行照抄官方模板与模型卡，不要改写：
+                 模型卡「クレジット表記について（必須）」= ■Piper Plus:つくよみちゃん；
+                 语料署名 = ■つくよみちゃんコーパス（CV.夢前黎）。 -->
+            <div class="field-hint" id="ttsCredit">
+              本ソフトウェアの音声合成には、フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）が無料公開している音声データを使用しています。<br>
+              <a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener" style="color:inherit">■つくよみちゃんコーパス（CV.夢前黎）</a><br>
+              <a href="https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan" target="_blank" rel="noopener" style="color:inherit">■Piper Plus:つくよみちゃん</a><br>
+              禁止用于人身攻击、政治/宗教/思想站队、无分级公开刺激性内容，以及允许他人二次利用的素材化发布（<a href="https://tyc.rei-yumesaki.net/material/corpus/#terms3" target="_blank" rel="noopener" style="color:inherit">利用規約</a>）。
               合成只在本机播放，不再分发音频文件。
             </div>
           </div>
@@ -2732,6 +2739,20 @@
                 <button id="lanUrlCopy" class="mini-btn" type="button">复制</button>
               </div>
               <div class="field-hint">打开后点「配对新设备」，按掌机上的 PIN 配对一次；之后浏览器会记住这台设备。</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">开发者模式</div>
+            <div class="field">
+              <label>详细调试日志（保存后立即生效，不用重启后端）</label>
+              <select id="cfgDevMode" class="cfg-select">
+                <option value="off">关闭：保持现在的日志量</option>
+                <option value="on">开启：记录请求 / 模型 / 工具 / 语音细节</option>
+              </select>
+              <div id="devModeHint" class="field-hint">
+                开启后写入 userdata/logs/debug-&lt;时间&gt;.log，单文件 10 MB、保留 2 个旧文件（合计约 30 MB）。
+                凭据、Cookie、URL 查询值、非回环 IP、QQ 号始终打码。
+              </div>
             </div>
           </div>
           <div class="card">
@@ -7993,6 +8014,8 @@
   var pairPollTimer = 0;
   var saveCfg = document.getElementById('saveCfg');
   var cfgHint = document.getElementById('cfgHint');
+  var cfgDevMode = document.getElementById('cfgDevMode');
+  var devModeHint = document.getElementById('devModeHint');
   var verTag = document.getElementById('verTag');
   var updCheck = document.getElementById('updCheck');
   var updNote = document.getElementById('updNote');
@@ -8584,6 +8607,13 @@
         }
         cfgPort.value = c.port || 18765;
         portHint.textContent = '';
+        // [runtime].dev_mode：保存即生效，不要求重启；日志细节见设置页说明
+        if (cfgDevMode) {
+          cfgDevMode.value = c.dev_mode ? 'on' : 'off';
+          devModeHint.textContent = c.dev_mode
+            ? '已开启：正在写 debug-<时间>.log。凭据与身份信息始终打码。'
+            : '已关闭：保持现在的日志量。开启后立即生效，不用重启后端。';
+        }
         // 更新源：双源探测，这里只控制是否同时查 GitHub
         cfgUpdGithub.checked = c.update_github_enable !== false;
         ddRefreshAll();
@@ -8992,7 +9022,9 @@
       remote_input_max_minutes: parseInt(cfgRiMax.value, 10) || 30,
       // 局域网开关与端口：写入 [server]，绑定地址/端口需重启后端生效
       lan_enable: cfgLanEnable.value === 'on',
-      port: port
+      port: port,
+      // 开发者模式：写入 [runtime]，保存即生效（日志级别与细节记录不用重启）
+      dev_mode: cfgDevMode ? (cfgDevMode.value === 'on') : false
     };
     if (keyInput) { payload.api_key = keyInput; }
     if (apiKeyClear) { payload.clear_api_key = true; }
@@ -9022,6 +9054,12 @@
         riState.enabled = !!cfgRiEnabled.checked;
         loadRemoteStatus();
         loadSttStatus();
+        if (cfgDevMode) {
+          cfgDevMode.value = res.dev_mode ? 'on' : 'off';
+          devModeHint.textContent = res.dev_mode
+            ? '已开启：正在写 debug-<时间>.log。凭据与身份信息始终打码。'
+            : '已关闭：保持现在的日志量。开启后立即生效，不用重启后端。';
+        }
         var restartNote = res.restart_required ? '（局域网开关/端口需重启后端生效）' : '';
         cfgHint.textContent = res.llm_configured
           ? ('已保存，正在拉取模型列表…' + restartNote)

@@ -776,6 +776,9 @@ class QQBot:
 
     def _log(self, level: str, event: str, detail: str = "") -> None:
         """只记事件与计数，绝不写令牌、消息正文"""
+        from . import devlog
+
+        devlog.log(f"qqbot.{event}", level=level, detail=detail)
         try:
             self._logs.append({
                 "ts": time.time(),

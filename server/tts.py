@@ -11,7 +11,9 @@
 - 运行时未装、模型缺失或加载失败时自动退回 espeak-ng，`status()` 里
   能看出当前实际用哪个引擎、为什么降级。
 
-音声：つくよみちゃんコーパス（夢前黎）。合成产物只在本机播放，不再分发。
+音声：つくよみちゃんコーパス（CV.夢前黎）。合成产物只在本机播放，不再分发。
+署名与使用条件见设置页「语音回复」卡片下方，条款：
+https://tyc.rei-yumesaki.net/material/corpus/#terms3
 """
 from __future__ import annotations
 
@@ -29,7 +31,7 @@ import urllib.request
 import wave
 from pathlib import Path
 
-from . import paths
+from . import devlog, paths
 
 # ---------- 模型与音色 ----------
 
@@ -45,7 +47,10 @@ MODEL_REPO = "ayousanz/piper-plus-tsukuyomi-chan"
 MIRROR_BASE = f"https://hf-mirror.com/{MODEL_REPO}/resolve/main"
 HF_BASE = f"https://huggingface.co/{MODEL_REPO}/resolve/main"
 
-ATTRIBUTION = "音声：つくよみちゃんコーパス（夢前黎） / Tsukuyomi-chan Corpus"
+# 署名照抄官方模板与模型卡，不要翻译/改写：
+#   模型卡「クレジット表記について（必須）」= ■Piper Plus:つくよみちゃん
+#   つくよみちゃんコーパス利用規約第③类 = ■つくよみちゃんコーパス（CV.夢前黎）
+ATTRIBUTION = "■つくよみちゃんコーパス（CV.夢前黎）"
 ATTRIBUTION_URL = "https://tyc.rei-yumesaki.net/material/corpus/"
 
 LANGUAGES = ("auto", "ja", "zh", "en", "es", "fr", "pt")
@@ -637,6 +642,7 @@ class TTS:
         self._voice = voice
         self._load_error = ""
         self._last_used = time.time()
+        devlog.log("tts.model.load", model=onnx.name, chars_limit=self.max_chars)
         return voice
 
     # ---------- 播报 ----------
@@ -657,6 +663,9 @@ class TTS:
             segments = route_segments(cleaned, self.language, self.max_chars)
             if not segments:
                 return
+            devlog.log("tts.speak", chars=len(cleaned), segments=len(segments),
+                       language=self.language, max_chars=self.max_chars,
+                       piper_ready=self._piper_ready())
             if self._piper_ready():
                 try:
                     failures, first_error = await self._speak_piper(segments, event)
@@ -758,6 +767,7 @@ class TTS:
             for language, segment in segments:
                 if event.is_set():
                     break
+                seg_start = time.perf_counter()
                 try:
                     wav = await asyncio.to_thread(self._synth_wav, segment, language)
                 except TTSError as exc:
@@ -770,6 +780,10 @@ class TTS:
                     failures += 1
                     first_error = first_error or _short_error(exc)
                     continue
+                devlog.log("tts.segment", engine="piper-plus", language=language,
+                           chars=len(segment),
+                           synth_ms=round((time.perf_counter() - seg_start) * 1000, 1),
+                           wav_bytes=(wav.stat().st_size if wav.exists() else 0))
                 if event.is_set():
                     wav.unlink(missing_ok=True)
                     break
@@ -820,6 +834,9 @@ class TTS:
             args += ["-l", self.voice, "-r", str(self.speed - 170)]
         args.append(text)
         self._last_engine = "espeak-ng"
+        devlog.log("tts.segment", engine="espeak-ng", binary=name, chars=len(text),
+                   language=self.voice)
+        started = time.perf_counter()
         try:
             proc = await asyncio.create_subprocess_exec(
                 *args,
@@ -837,6 +854,9 @@ class TTS:
                 self._proc = None
         if proc.returncode not in (0, -15) and not event.is_set():
             self._last_error = f"{name} 退出码 {proc.returncode}"
+            devlog.log("tts.segment.error", engine="espeak-ng",
+                       code=proc.returncode,
+                       ms=round((time.perf_counter() - started) * 1000, 1))
 
     # ---------- 模型下载 ----------
 

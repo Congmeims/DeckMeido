@@ -44,6 +44,16 @@ port = 18765
 # 用 PIN 配对一次，之后凭 HttpOnly Cookie 免登录进入。旧配置里的 token 键
 # 会被忽略，可放心删除。
 
+[runtime]
+# 开发者模式：默认关闭，日志保持现在的量。
+# 打开后在网页「设置」里立即生效，不用重启后端；会额外记录 HTTP 请求、
+# WebSocket 收发、工具调用、LLM 请求/响应与流式分片、STT/TTS 加载与合成、
+# 进程启动命令与环境变量摘要、更新检查与 QQ 重连过程。
+# 日志写到 userdata/logs/debug-<时间>.log；单文件 10 MB，保留 2 个旧文件，
+# 总计约 30 MB。凭据、Cookie、URL 查询值、非回环 IP、QQ 号始终会打码，
+# 与开关无关。
+dev_mode = false
+
 [security]
 # 已配对设备凭据的有效期（天）。Cookie 勾选「保持登录」时按这个时长下发。
 device_days = 30

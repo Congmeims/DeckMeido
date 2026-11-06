@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import audit, authguard, audiomute, depcheck, i18n, local_update, memory, netcfg, pairing, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
+from . import audit, authguard, audiomute, depcheck, devlog, i18n, local_update, memory, netcfg, pairing, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
 from .session_store import store
 from . import session_store
 from .tts import LANGUAGES, TTS, normalize_engine
@@ -117,6 +117,11 @@ def save_config(updates: dict):
 
 
 CFG = load_config()
+
+# 开发者模式与统一脱敏：尽早装好，后面的启动日志、traceback、uvicorn 访问日志
+# 都会经过同一层脱敏；开关本身按 [runtime].dev_mode 决定是否记录细节。
+devlog.install_redacting_streams()
+devlog.configure(CFG)
 
 # 单实例守卫：必须在 init_sessions() 之前跑。init_sessions 在导入期就会
 # 读/写会话文件，如果本进程注定绑定端口失败却先把内存里的空历史写了盘，
@@ -747,6 +752,9 @@ def apply_config(cfg: dict):
     global CFG, PERMISSION_MODE, PERSONA, SYSTEM_PROMPT, MAX_TOOL_ROUNDS, ASK_TEMPLATE
     global TRANSLATE_TEMPLATE, UI_LANG
     CFG = cfg
+    # [runtime].dev_mode 热更新：改完保存即生效，不用重启后端
+    devlog.configure(cfg)
+    devlog.log("config.reload", sections=sorted(cfg.keys()))
     # [ui] language 热更新：先换语言，内置模板默认值才会跟着切
     UI_LANG = ui_language(cfg)
     # 人设不在这里取：它存在 meidosoul.json，改完由 update_config 的调用方
@@ -1563,6 +1571,7 @@ class ConnectionManager:
         targets = list(self.active)
         if not targets:
             return
+        devlog.log("ws.broadcast", type=msg.get("type"), clients=len(targets), payload=msg)
         results = await asyncio.gather(*(ws.send_json(msg) for ws in targets),
                                        return_exceptions=True)
         for ws, res in zip(targets, results):
@@ -1874,7 +1883,65 @@ async def _lan_guard(request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def _dev_http_log(request, call_next):
+    """开发者模式：记录每个 HTTP 请求的方法 / 路径 / 耗时 / 状态码。
+
+    只记这几项，不记请求体：设置页会提交 API Key，日志里不该出现原文；
+    查询参数由 devlog.redact 统一打码。
+    """
+    if not devlog.enabled():
+        return await call_next(request)
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        devlog.log(
+            "http.error",
+            method=request.method,
+            path=request.url.path,
+            query=request.url.query,
+            client=(request.client.host if request.client else ""),
+            ms=round((time.perf_counter() - start) * 1000, 1),
+            error=repr(exc),
+        )
+        raise
+    devlog.log(
+        "http",
+        method=request.method,
+        path=request.url.path,
+        query=request.url.query,
+        status=response.status_code,
+        ms=round((time.perf_counter() - start) * 1000, 1),
+        client=(request.client.host if request.client else ""),
+    )
+    return response
+
+
 _CTX_RE = re.compile(r"@\{([^}]+)\}")
+
+
+async def _run_tool(name: str, args: dict):
+    """所有工具调用的统一入口：开发者模式记录参数 / 结果 / 耗时。
+
+    只在这一处落日志，避免每个调用点手写。参数与结果都会过长截断、
+    凭据字段打码（devlog 内部负责）。
+    """
+    if not devlog.enabled():
+        return await tools.execute(name, args)
+    start = time.perf_counter()
+    devlog.log("tool.call", name=name, args=args)
+    try:
+        result = await tools.execute(name, args)
+    except Exception as exc:
+        devlog.log("tool.error", name=name,
+                   ms=round((time.perf_counter() - start) * 1000, 1),
+                   error=repr(exc))
+        raise
+    devlog.log("tool.result", name=name,
+               ms=round((time.perf_counter() - start) * 1000, 1),
+               result=result)
+    return result
 
 
 def _pack_image(data: str, prompt: str = "") -> tuple[dict | None, bytes | None]:
@@ -2885,6 +2952,8 @@ class ConfigUpdate(BaseModel):
     # 局域网访问开关与监听端口：写入 [server]，绑定地址要重启后端才生效
     lan_enable: bool | None = None
     port: int | None = None
+    # 开发者模式：写入 [runtime]，保存即生效（日志级别与细节记录不需要重启）
+    dev_mode: bool | None = None
 
 
 class TTSPreviewRequest(BaseModel):
@@ -3013,6 +3082,8 @@ async def api_get_config():
         "port": CFG["server"].get("port", 18765),
         # 局域网访问开关：默认 false 只监听 127.0.0.1；开启后设置页显示地址与配对入口
         "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
+        # [runtime].dev_mode：网页设置页的开发者模式开关；保存后立即生效
+        "dev_mode": devlog.enabled(),
         # 局域网访问地址：掌机 / 大屏 / 客户端设置页直接展示，别的设备照这个连
         "lan_url": f"http://{_lan_ip()}:{CFG['server'].get('port', 18765)}",
         "device_days": _device_days(),
@@ -3288,6 +3359,11 @@ async def api_set_config(req: ConfigUpdate, request: Request):
             raise HTTPException(status_code=400, detail="端口需为 1024-65535 之间的整数")
         updates.setdefault("server", {})["port"] = port
         audit.record("config", "port", "ok", ip=_client_ip(request), detail=str(port))
+    if req.dev_mode is not None:
+        # 写 [runtime]，apply_config 里 devlog.configure 会立刻切换级别与文件
+        updates.setdefault("runtime", {})["dev_mode"] = bool(req.dev_mode)
+        audit.record("config", "dev_mode", "ok", ip=_client_ip(request),
+                     detail="on" if req.dev_mode else "off")
     if updates:
         save_config(updates)
     if ri.get("enabled") is False:
@@ -3304,6 +3380,8 @@ async def api_set_config(req: ConfigUpdate, request: Request):
             # 绑定地址与端口都只在后端启动时读取，改完必须重启核心
             "port": CFG["server"].get("port", 18765),
             "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
+            # dev_mode 保存即生效，不需要重启；重启项只算绑定地址与端口
+            "dev_mode": devlog.enabled(),
             "restart_required": bool(req.lan_enable is not None or req.port is not None)}
 
 
@@ -3772,10 +3850,14 @@ async def update_watch_loop():
                 update_cache = {"has_update": False, "current": info["current"],
                                 "notes_summary": updater.notes_summary(info.get("notes")),
                                 **base}
+            devlog.log("updater.check", has_update=bool(info.get("has_update")),
+                       current=info.get("current"), latest=info.get("tag"),
+                       source=used, fallback=info.get("fallback_from") or [])
         except Exception as exc:
             # 两个源都连不上（断网、被墙）属正常情况，记下原因下次再试
             update_cache = {"has_update": False, "current": updater.current_version(),
                             "error": str(exc)[:300]}
+            devlog.log("updater.error", error=repr(exc))
         await asyncio.sleep(UPDATE_INTERVAL)
 
 
@@ -3808,6 +3890,18 @@ async def _check_binding():
     端口可能被 DECKMEIDO_PORT 或启动命令覆盖，这是允许的；但配置里写的是
     另一个值时，设置页显示、局域网地址和用户预期都会对不上，必须说出来。
     """
+    # uvicorn 启动时可能重设日志级别；这里再拉一次，保证 dev_mode 保存前
+    # 就已经生效的配置不会因为初始化顺序被盖回去
+    devlog.apply_levels()
+    devlog.log(
+        "backend.start",
+        version=VERSION,
+        argv=sys.argv,
+        cwd=os.getcwd(),
+        pid=os.getpid(),
+        env=devlog.env_summary(),
+        bind=_uvicorn_binding(),
+    )
     host, actual_port = _uvicorn_binding()
     cfg_port = int((CFG.get("server") or {}).get("port", 18765))
     if actual_port is not None and actual_port != cfg_port:
@@ -4067,7 +4161,7 @@ async def handle_chat(text: str, announce: bool = True,
                              if action["name"] == "run_command" else None)
                 if power_act:
                     _arm_power_intent(turn_ctx, power_act, hist)
-                result = await tools.execute(action["name"], action["args"])
+                result = await _run_tool(action["name"], action["args"])
                 _record_power_intent(turn_ctx, action["name"], action["args"], result)
             else:
                 print(f"[DeckMeido][policy] 策略拒绝已确认操作 {action['name']}："
@@ -5895,7 +5989,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 if power_act:
                     _arm_power_intent(ctx, power_act, hist)
                 try:
-                    result = await tools.execute(name, args)
+                    result = await _run_tool(name, args)
                 finally:
                     if on_screen:
                         set_overlay(False)
@@ -5998,10 +6092,18 @@ async def ws_endpoint(ws: WebSocket):
                             "sid": store.current_sid, "my_client": ua_client,
                             "inflight": inflight, "boot": boot_id,
                             "partial": _inflight_snapshot(store.current_sid)})
+        devlog.log("ws.send", type="history", messages=len(store.history),
+                   sid=store.current_sid, inflight=inflight, boot=boot_id)
         await ws.send_json({"type": "status",
                             "data": {**get_status(), "mode": ws_mode}})
         while True:
             data = await ws.receive_json()
+            # 不记录图片 base64（可能有几十 MB），只记类型、文本摘要和是否带图
+            devlog.log("ws.recv", type=data.get("type"),
+                       text=str(data.get("text") or "")[:300],
+                       has_image=bool(data.get("image")),
+                       workspace=data.get("workspace"),
+                       client=data.get("client"))
             if data.get("type") == "ping":
                 # 前端心跳：回一条 pong 让它知道链路还活着
                 await ws.send_json({"type": "pong"})
@@ -6111,7 +6213,7 @@ async def _qq_screenshot() -> tuple[bytes | None, str]:
     spectacle/mss），优先回传压缩过的 vision JPEG，避免 base64 太大。
     """
     try:
-        note = await tools.execute("screenshot", {})
+        note = await _run_tool("screenshot", {})
     except Exception as e:
         return None, f"截图失败（{type(e).__name__}）"
     holder = tools.SHOT_STATE

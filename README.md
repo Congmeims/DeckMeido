@@ -63,7 +63,7 @@ QAM 面板由 Decky 插件提供；插件以 root 运行，走本机回环免鉴
 ### 语音
 
 - **语音输入**：sherpa-onnx + SenseVoice-Small int8，纯 CPU 离线识别，中英混说带标点；模型压缩包约 1GB（只解出约 250MB），首次按键时按需下载到 `userdata/models/sensevoice/`，闲置一段时间自动释放。
-- **语音播报**：调用 `espeak-ng`（可选 `espeak` / `spd-say`），默认关闭，可设语言、语速与单次字数上限。
+- **语音播报**：默认关闭；主引擎是纯 CPU 离线的 piper-plus + つくよみちゃん 6 语模型（ja/en/zh/es/fr/pt，约 38 MB，首次使用时下载到 `userdata/models/tts/tsukuyomi/`，不进发布包），运行时装不上或模型加载失败时自动回落 `espeak-ng`；可设语言、语速与单次字数上限。
 
 ### 设备操作
 
@@ -297,6 +297,24 @@ python tools/release.py 0.7.1           # 构建 dist/：tar.gz + 插件 zip + l
 ## 许可
 
 本项目采用 [CC BY-NC 4.0](LICENSE)（署名—非商业性使用 4.0 国际）协议发布：可自由复制、修改、分发，但须署名，且不得用于商业用途。
+
+### 第三方组件与语音署名
+
+- **语音合成模型**：[Piper Plus つくよみちゃん](https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan)（`tsukuyomi-chan-6lang-fp16.onnx`，ja/en/zh/es/fr/pt 六语）。模型不随发布包分发，首次使用时下载到 `userdata/models/tts/tsukuyomi/`；旧 root 版基座模型许可为 CC BY 4.0。
+- **推理程序**：[ayutaz/piper-plus](https://github.com/ayutaz/piper-plus)，MIT License。
+- **语音库署名（必须保留，原文照抄）**：
+  - 本ソフトウェアの音声合成には、フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）が無料公開している音声データを使用しています。
+  - ■つくよみちゃんコーパス（CV.夢前黎） <https://tyc.rei-yumesaki.net/material/corpus/>
+  - ■Piper Plus:つくよみちゃん <https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan>
+- **生成语音的使用条件**（[つくよみちゃんコーパス利用規約 ③](https://tyc.rei-yumesaki.net/material/corpus/#terms3)）：
+  - 商用限制：个人/法人、营利/非营利均可，**模型与语音本身无商用限制**；这与本项目自身的 CC BY-NC 4.0 是两件事，发布包仍按非商用授权。
+  - 公开生成语音（视频/直播/演讲等）时，须标注「Piper Plus:つくよみちゃん」。
+  - 禁止事项（原文）：
+    - 人を批判・攻撃すること。
+    - 特定の政治的立場・宗教・思想への賛同または反対を呼びかけること。
+    - 刺激の強い表現をゾーニングなしで公開すること。
+    - 他者に対して二次利用（素材としての利用）を許可する形で公開すること。
+  - 语料本体与模型权重不得再分发；本项目只在运行时下载，不内置进插件 zip / release 资产；派生分发须继承同一条款。
 
 ---
 

@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import errno
 import os
+import re
+import shutil
 import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -92,6 +95,97 @@ def already_serving(port: int, host: str = "127.0.0.1", timeout: float = 0.6) ->
     return False
 
 
+# ---------- 失败路径上的占用者取证 ----------
+# 只在「端口已被占、本进程即将退出」这条分支调用，正常启动完全不执行，
+# 所以允许跑一两次外部命令；总预算 1 秒，超时直接放弃。
+# 输出走 stderr：客户端/插件拉起后端时 stderr 会落进 userdata/logs/backend.log，
+# 这样即使没人看安装输出，也能事后定位是谁占着端口。信息只留本机，不外发。
+_PID_RE = re.compile(r"pid=(\d+)")
+_HOLDER_BUDGET = 1.0
+
+
+def _run(cmd: list[str], timeout: float) -> str:
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return ""
+    return done.stdout or ""
+
+
+def _pids_from_ss(port: int, timeout: float) -> list[int]:
+    exe = shutil.which("ss")
+    if not exe:
+        return []
+    pids: list[int] = []
+    for line in _run([exe, "-ltnp"], timeout).splitlines():
+        if f":{port}" not in line:
+            continue
+        pids.extend(int(m) for m in _PID_RE.findall(line))
+    return pids
+
+
+def _pids_from_lsof(port: int, timeout: float) -> list[int]:
+    exe = shutil.which("lsof")
+    if not exe:
+        return []
+    pids: list[int] = []
+    for line in _run([exe, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"], timeout).splitlines():
+        parts = line.split()
+        if len(parts) > 1 and parts[1].isdigit():
+            pids.append(int(parts[1]))
+    return pids
+
+
+def _proc_cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()
+
+
+def _proc_link(pid: int, name: str) -> str:
+    """读 /proc/<pid>/cwd 或 exe；目录已被删时 readlink 会带 ' (deleted)'。"""
+    try:
+        return os.readlink(f"/proc/{pid}/{name}")
+    except OSError:
+        return ""
+
+
+def _holder_lines(port: int, budget: float = _HOLDER_BUDGET) -> list[str]:
+    """尽力而为地取占用者信息；任何失败都降级成一句提示，绝不抛异常。"""
+    try:
+        deadline = time.monotonic() + budget
+        pids: list[int] = []
+        for finder in (_pids_from_ss, _pids_from_lsof):
+            remain = deadline - time.monotonic()
+            if remain <= 0.1:
+                break
+            try:
+                pids = finder(port, remain)
+            except Exception:
+                pids = []
+            if pids:
+                break
+        if not pids:
+            return [
+                "            占用者信息读取失败（没有 ss/lsof 或权限不足），"
+                f"手动排查：ss -ltnp | grep :{port}",
+            ]
+        lines: list[str] = []
+        for pid in sorted(set(pids))[:3]:
+            cmdline = _proc_cmdline(pid)
+            if len(cmdline) > 300:
+                cmdline = cmdline[:300] + "…"
+            lines.append(f"            占用者 PID {pid}")
+            lines.append(f"              命令行：{cmdline or '(读取不到，可能属于其他用户)'}")
+            lines.append(f"              工作目录：{_proc_link(pid, 'cwd') or '(读取不到或权限不足)'}")
+            lines.append(f"              可执行文件：{_proc_link(pid, 'exe') or '(读取不到或权限不足)'}")
+        return lines
+    except Exception:
+        return [f"            占用者信息读取失败，手动排查：ss -ltnp | grep :{port}"]
+
+
 def guard(port: int, allow_second: bool = False) -> None:
     """启动前调用：端口已被占就直接结束本进程。
 
@@ -112,4 +206,11 @@ def guard(port: int, allow_second: bool = False) -> None:
         f"            要重启后端请先关掉正在运行的那一份（托盘菜单 → 退出）。",
         file=sys.stderr,
     )
+    # 补一条占用者取证：安装器只看得到「v未知」，日志里没有 pid 就只能猜。
+    # 拿不到也不影响下面的退出码，探测总耗时不超过 1 秒。
+    try:
+        for line in _holder_lines(port):
+            print(line, file=sys.stderr)
+    except Exception:
+        pass
     raise SystemExit(3)
