@@ -2107,12 +2107,17 @@
     overflow-x: auto; white-space: nowrap; scrollbar-width: none;
   }
   #fbPath::-webkit-scrollbar { display: none; }
-  /* 路径离开工作区时的提醒胶囊：和状态徽章同一套圆角/字号，不换行、不挤路径 */
+  /* 路径分区胶囊：工作区不显示；谨慎区黄色；危险区/禁浏览红色。
+     和状态徽章同一套圆角/字号，不换行、不挤路径 */
   #fbWarn {
     flex: 0 0 auto; font-size: 11px; line-height: 1.4;
     padding: 2px 8px; border-radius: 999px; white-space: nowrap;
     color: #e0a33a; border: 1px solid rgba(224,163,58,.55);
     background: rgba(224,163,58,.12);
+  }
+  #fbWarn.danger {
+    color: #ff7a7a; border-color: rgba(228,80,80,.6);
+    background: rgba(228,80,80,.14);
   }
   #fbWarn[hidden] { display: none; }
   #fbPath .seg { cursor: pointer; }
@@ -2145,6 +2150,20 @@
   }
   #fbUploadBtn:hover { opacity: .88; }
   #fbUploadBtn:active { transform: scale(.95); }
+  /* 危险区/只读挂载：上传按钮和拖放区都锁死，hover 也不召唤点击 */
+  #fbUploadBtn:disabled {
+    opacity: .38; cursor: not-allowed; transform: none;
+    background: var(--surface-3, var(--surface-2)); color: var(--muted);
+  }
+  #fbDrop.ro {
+    border-color: var(--line); color: var(--muted); cursor: not-allowed;
+    background: var(--surface-2); opacity: .6;
+  }
+  /* 软链接：名字后面挂一个小箭头，和真实目录区分开 */
+  .fb-item .lnk {
+    flex: 0 0 auto; font-size: 10px; color: var(--muted); opacity: .8;
+  }
+  .fb-item.broken .nm { color: var(--danger); text-decoration: line-through; }
   /* 上传队列：每个文件一行，文件名 + 进度条 + 状态 + 关闭按钮。
      传完后进度条收起、整行变矮淡出，几秒后自动清掉；失败的留着等人点 × */
   #fbQueue { flex: 0 0 auto; margin: 0 6px; display: flex; flex-direction: column; gap: 5px; }
@@ -2210,6 +2229,9 @@
   .ctx-item:hover { background: var(--hover); }
   .ctx-item:disabled { opacity: .35; cursor: default; }
   .ctx-item:disabled:hover { background: transparent; }
+  /* disabled 属性挂在 div 上时 :disabled 不生效，补一条真正的灰显 */
+  .ctx-item[disabled] { opacity: .38; cursor: not-allowed; }
+  .ctx-item[disabled]:hover { background: transparent; }
   .ctx-item.danger { color: var(--danger); }
   .ctx-item.danger:hover { background: rgba(232,70,58,.14); }
   .ctx-sep { height: 1px; background: var(--line); margin: 4px 6px; }
@@ -4926,8 +4948,10 @@
   // term_start 事件让终端面板挂一条「执行中」并开始轮询实时输出。
   var RB = { tab: 'file', collapsed: false, open: false };
   var SB = { collapsed: false };
+  // zone / readonly 全部来自 /api/browse 的返回，前端不自己写分区正则
   var fb = { path: '', parent: null, select: '', follow: true, aiPath: '', token_at: 0,
-             aiDebounce: null };
+             aiDebounce: null, zone: 'workspace', readonly: false, zoneLabel: '',
+             zoneReason: '' };
   var term = {
     items: [],       // {id, who, cmd, reason, out, running, exit, background, collapsed}
     seq: 0,
@@ -5185,11 +5209,22 @@
   var fbClip = null;   // {op: 'cut'|'copy', path: string}
 
   function fbFs(op, path, path2) {
+    // 只读分区直接本地拒绝，不发请求；后端按同一套分区还会再拦一次（403）
+    if (fbWriteBlocked()) {
+      return Promise.resolve({
+        ok: false, reason: fb.zoneReason || 'read_only_zone',
+        error: fbWriteBlockedText()
+      });
+    }
     return fetch('/api/fs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ op: op, path: path, path2: path2 || '' })
-    }).then(function (r) { return r.json(); });
+    }).then(function (r) {
+      return r.json().catch(function () {
+        return { ok: false, error: '操作失败（HTTP ' + r.status + '）' };
+      });
+    });
   }
 
   function fbCtxClose() {
@@ -5219,6 +5254,7 @@
     it.className = 'ctx-item' + (opts.danger ? ' danger' : '');
     it.textContent = label;
     if (opts.disabled) it.setAttribute('disabled', '');
+    if (opts.title) it.title = opts.title;
     it.addEventListener('click', function () {
       if (opts.disabled) return;
       fbCtxClose();
@@ -5328,6 +5364,10 @@
     e.stopPropagation();
     var m = rbEl('ctxMenu');
     m.innerHTML = '';
+    // 只读分区：写操作整条置灰 + tooltip，点了不发请求；
+    // 「复制」「预览」「下载」「引用」这类只读操作保留
+    var ro = fbWriteBlocked();
+    var roTip = fbWriteBlockedText();
     if (isDir) {
       fbCtxItem('打开', function () { fbLoad(path); });
       fbCtxItem('女仆分析', function () {
@@ -5344,11 +5384,14 @@
       fbCtxItem('引用到对话', function () { fbQuote(path); });
       fbCtxSep();
     }
-    fbCtxItem('重命名', function () { fbCtxRename(path, name); });
+    fbCtxItem('重命名', function () { fbCtxRename(path, name); },
+              { disabled: ro, title: ro ? roTip : '' });
     fbCtxItem('复制', function () { fbClip = { op: 'copy', path: path }; fbToast('已复制：' + name, 'file'); });
-    fbCtxItem('剪切', function () { fbClip = { op: 'cut', path: path }; fbToast('已剪切：' + name, 'file'); });
+    fbCtxItem('剪切', function () { fbClip = { op: 'cut', path: path }; fbToast('已剪切：' + name, 'file'); },
+              { disabled: ro, title: ro ? roTip : '' });
     fbCtxSep();
-    fbCtxItem('删除', function () { fbCtxDelete(path, isDir); }, { danger: true });
+    fbCtxItem('删除', function () { fbCtxDelete(path, isDir); },
+              { danger: true, disabled: ro, title: ro ? roTip : '' });
     fbCtxOpen(e.clientX, e.clientY);
   }
 
@@ -5358,8 +5401,12 @@
     e.stopPropagation();
     var m = rbEl('ctxMenu');
     m.innerHTML = '';
-    fbCtxItem('粘贴', function () { fbCtxPaste(); }, { disabled: !fbClip });
-    fbCtxItem('新建文件夹', function () { fbCtxMkdir(); });
+    var ro = fbWriteBlocked();
+    var roTip = fbWriteBlockedText();
+    fbCtxItem('粘贴', function () { fbCtxPaste(); },
+              { disabled: !fbClip || ro, title: ro ? roTip : '' });
+    fbCtxItem('新建文件夹', function () { fbCtxMkdir(); },
+              { disabled: ro, title: ro ? roTip : '' });
     fbCtxOpen(e.clientX, e.clientY);
   }
 
@@ -5489,26 +5536,60 @@
     // 其他位置：屏蔽浏览器菜单，什么都不弹
   });
 
-  // 规范化路径：去掉多余斜杠、解析 . 与 ..；不做大小写折叠（Deck 的 Linux 路径区分大小写）
-  function fbNormPath(p) {
-    var raw = String(p || '');
-    try { raw = decodeURIComponent(raw); } catch (e) { /* 保留原样 */ }
-    var parts = raw.split('/'), out = [];
-    for (var i = 0; i < parts.length; i++) {
-      var s = parts[i];
-      if (!s || s === '.') continue;
-      if (s === '..') { out.pop(); continue; }
-      out.push(s);
-    }
-    return '/' + out.join('/');
+  // 写操作是否被当前分区挡住；文案只用于 tooltip/提示，判定本身来自后端 zone
+  function fbWriteBlocked() {
+    return !!fb.readonly;
   }
 
-  function fbOutsideWorkspace(p) {
-    var ws = fbNormPath(window.__wsPath || '');
-    var cur = fbNormPath(p);
-    // 工作区没取到或就是根目录时，任何路径都还在范围内
-    if (!ws || ws === '/') return false;
-    return !(cur === ws || cur.indexOf(ws + '/') === 0);
+  function fbWriteBlockedText() {
+    if (fb.zone === 'danger') return '危险区域（系统目录）只读，不能修改';
+    if (fb.zone === 'forbidden') return '该目录禁止浏览与操作';
+    if (fb.readonly) return '该挂载点当前为只读（写保护），不能修改';
+    return '';
+  }
+
+  // 路径栏胶囊：工作区无标识；谨慎区黄色；危险区/禁浏览红色。
+  // 只读挂载的谨慎区在文案后面补「· 只读」，让用户提前知道写不了
+  function fbRenderZone() {
+    var warn = rbEl('fbWarn');
+    if (!warn) return;
+    var z = fb.zone || 'workspace';
+    var upBtn = rbEl('fbUploadBtn');
+    var drop = rbEl('fbDrop');
+    if (z === 'workspace') {
+      warn.hidden = true;
+      warn.textContent = '';
+      warn.className = '';
+    } else if (z === 'danger' || z === 'forbidden') {
+      warn.hidden = false;
+      warn.className = 'danger';
+      warn.textContent = z === 'forbidden' ? '禁止浏览' : '危险区域 · 只读';
+      warn.title = fbZoneTitle(z);
+    } else {
+      warn.hidden = false;
+      warn.className = '';
+      warn.textContent = fb.readonly ? '谨慎操作 · 只读' : '谨慎操作';
+      warn.title = fb.readonly ? '该挂载点当前为只读（写保护），删除/重命名/新建/上传均已禁用'
+                               : '工作区外：可读写，但请谨慎操作';
+    }
+    // 工具栏写入口跟着分区走：只读时置灰 + tooltip，点下去也不发请求
+    if (upBtn) {
+      upBtn.disabled = fbWriteBlocked();
+      upBtn.title = fbWriteBlocked() ? fbWriteBlockedText() : '上传到当前目录';
+    }
+    if (drop) {
+      drop.classList.toggle('ro', fbWriteBlocked());
+      drop.title = fbWriteBlocked() ? fbWriteBlockedText()
+                                    : '把本地文件拖到这里，或点右侧按钮选择文件，直接上传到当前目录';
+      if (fbWriteBlocked() && !drop.classList.contains('hot')) drop.textContent = '当前目录只读，不能上传';
+      else if (!fbWriteBlocked() && drop.textContent === '当前目录只读，不能上传') drop.textContent = '拖入文件上传';
+    }
+  }
+
+  function fbZoneTitle(z) {
+    return z === 'forbidden'
+      ? '禁止浏览的系统目录（/proc、/sys、/dev）'
+      : '危险区域只读：删除/重命名/新建/上传/保存均已禁用';
   }
 
   function fbRenderPath() {
@@ -5516,8 +5597,7 @@
     box.innerHTML = '';
     var p = fb.path || '';
     // 每次渲染都重算：切目录、手输路径、前进后退、刷新都会走到这里
-    var warn = rbEl('fbWarn');
-    if (warn) warn.hidden = !fbOutsideWorkspace(p);
+    fbRenderZone();
     if (!p) return;
     // 按 / 拆成可点的段，点哪段跳哪层
     var parts = p.split('/').filter(function (s) { return s !== ''; });
@@ -5583,9 +5663,14 @@
       var full = data.path + (data.path.endsWith('/') ? '' : '/') + e.name;
       var kind = e.dir ? 'dir' : (e.kind || fbKindOf(e.name));
       var row = document.createElement('div');
-      row.className = 'fb-item' + (e.dir ? ' dir' : '');
-      // 悬停就告诉用户两种手势：单击看内容，拖到对话里等于引用
-      row.title = e.name + (e.dir ? '' : '\n单击预览 · 拖到聊天框引用');
+      row.className = 'fb-item' + (e.dir ? ' dir' : '') + (e.link ? ' link' : '')
+                    + (e.broken ? ' broken' : '');
+      // 悬停就告诉用户两种手势：单击看内容，拖到对话里等于引用。
+      // 软链接额外说明目标；断链直接说目标不存在，别让用户点进空白页
+      row.title = e.broken
+        ? '链接目标不存在：' + (e.link_target || '')
+        : e.name + (e.link ? '\n软链接 → ' + (e.link_target || '') : '')
+          + (e.dir ? '' : '\n单击预览 · 拖到聊天框引用');
       var ico = document.createElement('span');
       ico.className = 'ico';
       ico.innerHTML = FB_ICON[kind] || FB_ICON.other;
@@ -5595,6 +5680,13 @@
       nm.textContent = e.name;
       row.appendChild(ico);
       row.appendChild(nm);
+      if (e.link) {
+        // 软链接挂个小箭头：和真实目录/文件区分，一眼看出「点进去是别处」
+        var lnk = document.createElement('span');
+        lnk.className = 'lnk';
+        lnk.textContent = e.broken ? '⤫' : '↗';
+        row.appendChild(lnk);
+      }
       if (!e.dir && typeof e.size === 'number') {
         var sz = document.createElement('span');
         sz.className = 'sz';
@@ -5607,7 +5699,13 @@
         setTimeout(function () { row.classList.remove('flash'); }, 2500);
       }
       row.addEventListener('click', function () {
+        if (e.broken) {
+          // 断链：目标不存在，就地提示；不发请求、不跳空白页
+          fbToast('链接目标不存在：' + (e.link_target || e.name), 'file', true);
+          return;
+        }
         if (e.dir) {
+          // 目录软链接：fbLoad 会按 realpath 进入目标目录，分区随之切换
           fb.select = '';
           fbStopFollow();
           fbLoad(full);
@@ -5636,7 +5734,31 @@
     var url = '/api/browse';
     if (path) url += (url.indexOf('?') === -1 ? '?' : '&') + 'path=' + encodeURIComponent(path);
     rbEl('fbList').innerHTML = '<div class="fb-note">加载中…</div>';
-    return fetch(url).then(function (r) { return r.json(); }).then(function (data) {
+    return fetch(url).then(function (r) {
+      // 非 JSON（500 的纯文本、网关错误页）不能直接 r.json()，先兜住
+      return r.json().catch(function () {
+        return { error: '读取失败（HTTP ' + r.status + '）' };
+      }).then(function (data) {
+        return { ok: r.ok, status: r.status, data: data || {} };
+      });
+    }).then(function (res) {
+      var data = res.data;
+      if (!res.ok) {
+        if (data.zone === 'forbidden') {
+          // /proc、/sys、/dev 是拒绝进入（不是只读）：路径栏保留这次尝试的路径，
+          // 列表里给出原因，面包屑仍可点回上一级
+          fb.path = data.path || path || '';
+          fb.parent = null;
+          fb.select = '';
+          fb.zone = 'forbidden';
+          fb.readonly = true;
+          fbRenderPath();
+          fbRenderList({ error: data.error || '该目录禁止浏览（/proc、/sys、/dev）' });
+          return data;
+        }
+        fbRenderList({ error: data.error || ('读取失败（HTTP ' + res.status + '）') });
+        return data;
+      }
       if (!data || !data.path) {
         // 后端只回 {"error": ...} 时不能继续往下走：fbRenderPath 里 p 为空直接
         // return，列表那边也拿不到 entries，面板就永远停在「加载中…」
@@ -5646,6 +5768,11 @@
       fb.path = data.path || '';
       fb.parent = data.parent || null;
       fb.select = sel || data.select || '';
+      // 分区/只读由后端下发，前端只负责渲染
+      fb.zone = data.zone || 'workspace';
+      fb.readonly = !!data.readonly;
+      fb.zoneLabel = data.zone_label || '';
+      fb.zoneReason = data.zone_reason || '';
       fbRenderPath();
       fbRenderList(data);
       // 数据到位才提示「AI 定位到…」，并给列表一次淡入过渡（AI 跟随跳转时才提示，
@@ -5791,6 +5918,11 @@
   }
 
   function fbUploadTo(files) {
+    // 只读分区（危险区/只读挂载）：不发请求，就地说明原因
+    if (fbWriteBlocked()) {
+      fbToast(fbWriteBlockedText(), 'file', true);
+      return;
+    }
     var dir = fb.path || '';
     var list = Array.prototype.slice.call(files);
     list.forEach(function (f) {
@@ -6783,7 +6915,7 @@
     .then(function (r) { return r.json(); })
     .then(function (res) {
       window.__wsPath = res.workspace || '';
-      // 工作区取回来晚于首次打开面板时要补判一次，否则胶囊可能一直不出现
+      // 胶囊/只读状态由 /api/browse 的 zone 字段决定，这里只补 @{...} 引用用
       if (fb.path) fbRenderPath();
     })
     .catch(function () {});
@@ -10008,7 +10140,6 @@
       // 开发者模式：写入 [runtime]，保存即生效（日志级别与细节记录不用重启）
       dev_mode: cfgDevMode ? (cfgDevMode.value === 'on') : false
     };
-
     fetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

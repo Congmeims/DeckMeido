@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import apicfg, audit, authguard, audiomute, depcheck, devlog, i18n, memory, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, singleton, status_line, tools, updater, usage
+from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, memory, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, singleton, status_line, tools, updater, usage
 from .session_store import store
 from . import session_store
 from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, normalize_speaker,
@@ -2262,6 +2262,9 @@ async def api_upload_to(file: UploadFile, dir: str = ""):
         raise HTTPException(status_code=400, detail="目标目录无效")
     if not target_dir.is_dir():
         raise HTTPException(status_code=400, detail="目标目录不存在")
+    denied = _fs_denied_response(target_dir)
+    if denied:
+        return denied
     fn = Path(file.filename or "file").name
     dest = target_dir / fn
     if dest.exists():
@@ -2327,6 +2330,42 @@ def _file_kind(name: str) -> str:
     return "other"
 
 
+def _fs_workspace_roots() -> list[str]:
+    """分区判定的工作区：配置的工作区 + 安装目录（Deck 上是 /home/deck/DeckMeido）。"""
+    roots: list[str] = []
+    for root in (tools.WORKSPACE, INSTALL_DIR):
+        if root:
+            roots.append(str(root))
+    return roots
+
+
+_FS_DENY_MSG = {
+    fszones.REASON_READ_ONLY_ZONE: "危险区域（系统目录）只读，不能执行写操作",
+    fszones.REASON_READ_ONLY_MOUNT: "该挂载点当前是只读的（写保护），不能写入",
+    fszones.REASON_FORBIDDEN_ZONE: "该目录禁止访问",
+}
+
+
+def _fs_denied_response(path) -> JSONResponse | None:
+    """写操作统一拦截：危险区 / 只读挂载返回 403 + 机器可读原因。
+
+    前端也按同一套 zone 置灰按钮，但这里是唯一事实来源——绕过前端直接
+    打接口同样会被拦住。
+    """
+    roots = _fs_workspace_roots()
+    info = fszones.zone_info(path, roots)
+    reason = fszones.write_block(path, roots)
+    if not reason:
+        return None
+    return JSONResponse(status_code=403, content={
+        "ok": False,
+        "reason": reason,
+        "zone": info["zone"],
+        "path": info["path"],
+        "error": _FS_DENY_MSG.get(reason, "该位置不可写"),
+    })
+
+
 @app.get("/api/preview", dependencies=[Depends(require_auth)])
 async def api_preview(path: str, raw: int = 0):
     """给文件浏览器预览用：吐任意路径的文件
@@ -2341,6 +2380,15 @@ async def api_preview(path: str, raw: int = 0):
         target = Path(path).expanduser().resolve()
     except OSError:
         raise HTTPException(status_code=404, detail="file not found")
+    if fszones.browse_denied(target, _fs_workspace_roots()):
+        # /proc、/sys、/dev 连读都不给：这类"文件"多数是设备/内核视图，
+        # 预览它们既没意义也容易把进程拖住
+        return JSONResponse(status_code=403, content={
+            "ok": False, "zone": fszones.ZONE_FORBIDDEN,
+            "reason": fszones.REASON_FORBIDDEN_ZONE,
+            "path": str(target),
+            "error": "该目录禁止浏览（/proc、/sys、/dev）",
+        })
     if not target.is_file():
         raise HTTPException(status_code=404, detail="file not found")
     if raw:
@@ -2379,12 +2427,33 @@ async def api_browse(path: str = ""):
     # 联动事件里不带 is_dir 也能靠这个兜住
     select = ""
     try:
+        requested = target
         target = target.resolve()
+        # 断链：链接还在、目标没了。明确说清楚，别让用户点进去看到空白页
+        if requested.is_symlink() and not requested.exists():
+            z = fszones.zone_info(target, _fs_workspace_roots())
+            return {"path": str(requested), "parent": None, "entries": [],
+                    "link_broken": True, "link_target": str(target),
+                    "zone": z["zone"], "readonly": z["readonly"],
+                    "zone_label": z["label"], "zone_reason": z["reason"],
+                    "error": f"链接目标不存在：{requested} -> {target}"}
         if target.is_file():
             select = target.name
             target = target.parent
     except OSError:
         return {"path": raw, "parent": None, "entries": [], "error": "路径无效"}
+
+    zone = fszones.zone_info(target, _fs_workspace_roots())
+    zone_fields = {"zone": zone["zone"], "readonly": zone["readonly"],
+                   "zone_label": zone["label"], "zone_reason": zone["reason"]}
+    if zone["zone"] == fszones.ZONE_FORBIDDEN:
+        # /proc、/sys、/dev 不是只读，是根本不给进；前端按 reason 显示提示
+        return JSONResponse(status_code=403, content={
+            "ok": False, "path": str(target), "parent": None, "entries": [],
+            "reason": fszones.REASON_FORBIDDEN_ZONE, **zone_fields,
+            "error": f"{target} 属于禁止浏览的系统目录（/proc、/sys、/dev），已拒绝进入",
+        })
+
     if not target.is_dir():
         # 工作区目录可能被用户/清理脚本删掉：打开文件管理器前先按工作区重建一次，
         # 仍失败就把具体原因说清楚，别只回一句「目录不存在或不是文件夹」
@@ -2392,21 +2461,44 @@ async def api_browse(path: str = ""):
             if ensure_workspace(str(tools.WORKSPACE)):
                 target = Path(tools.WORKSPACE)
             else:
-                return {"path": str(target), "parent": None, "entries": [],
+                return {"path": str(target), "parent": None, "entries": [], **zone_fields,
                         "error": f"工作区目录 {target} 建不出来（{WORKSPACE_ERROR}）。"
                                  "请检查该路径是否有写权限，或在设置里换一个目录"}
         else:
-            return {"path": str(target), "parent": None, "entries": [],
+            return {"path": str(target), "parent": None, "entries": [], **zone_fields,
                     "error": f"目录 {target} 不存在"}
     entries = []
     try:
         with os.scandir(target) as it:
             for e in it:
+                # 软链接要跟随判断：/run/media/ 下的 SDCARD 是"指向 SD 卡的目录链接"，
+                # 用 follow_symlinks=False 会把它当成普通文件，点不进去
                 try:
-                    is_dir = e.is_dir(follow_symlinks=False)
+                    is_link = e.is_symlink()
                 except OSError:
-                    is_dir = False
+                    is_link = False
+                if is_link:
+                    try:
+                        is_dir = e.is_dir(follow_symlinks=True)
+                    except OSError:
+                        is_dir = False
+                else:
+                    try:
+                        is_dir = e.is_dir(follow_symlinks=False)
+                    except OSError:
+                        is_dir = False
                 item = {"name": e.name, "dir": is_dir}
+                if is_link:
+                    item["link"] = True
+                    try:
+                        item["link_target"] = os.path.realpath(e.path)
+                    except OSError:
+                        item["link_target"] = ""
+                    # 断链：exists 会跟随链接，False 说明目标没了
+                    try:
+                        item["broken"] = not e.exists()
+                    except OSError:
+                        item["broken"] = False
                 if not is_dir:
                     # kind 给前端挑图标和预览方式用（image/video/audio/pdf/text/other）
                     item["kind"] = _file_kind(e.name)
@@ -2416,15 +2508,16 @@ async def api_browse(path: str = ""):
                         pass
                 entries.append(item)
     except PermissionError:
-        return {"path": str(target), "parent": None, "entries": [],
+        return {"path": str(target), "parent": None, "entries": [], **zone_fields,
                 "error": "没有权限读取这个目录"}
     except OSError as e:
-        return {"path": str(target), "parent": None, "entries": [],
+        return {"path": str(target), "parent": None, "entries": [], **zone_fields,
                 "error": f"读取失败：{e}"}
     # 文件夹在前、同类按名字排，隐藏文件照样列出（用户可能就是要看 .config）
     entries.sort(key=lambda x: (not x["dir"], x["name"].lower()))
     parent = str(target.parent) if str(target.parent) != str(target) else None
-    return {"path": str(target), "parent": parent, "entries": entries, "select": select}
+    return {"path": str(target), "parent": parent, "entries": entries,
+            "select": select, **zone_fields}
 
 
 class _FsReq(BaseModel):
@@ -2439,13 +2532,33 @@ async def api_fs(req: _FsReq):
 
     面板本来就能浏览任意目录（/api/browse、/api/preview 都认绝对路径），
     所以这里同样不做工作区限制——这些是用户在面板上手动点的操作，
-    不是 AI 越权读文件。仅做基础防护：目标不能是根目录、不能覆盖自身。
+    不是 AI 越权读文件。
+    写操作按 fszones 的三级分区统一拦截：危险区只读，谨慎区可写（挂载 ro 时只读），
+    返回 403 + reason（read_only_zone / read_only_mount / forbidden_zone）。
     """
     op = req.op
     try:
         p = Path(req.path).expanduser().resolve()
     except OSError:
         return {"ok": False, "error": "路径无效"}
+
+    # 分区写保护：危险区和只读挂载一律 403。改名/移动/复制要连目标一起判，
+    # 防止「从谨慎区搬到 /etc」或者经软链接父目录落到危险区。
+    check_paths = []
+    if op in ("delete", "mkdir", "rename", "move"):
+        check_paths.append(p)
+    p2 = None
+    if op in ("rename", "move", "copy"):
+        try:
+            p2 = Path(req.path2).expanduser().resolve()
+        except OSError:
+            return {"ok": False, "error": "路径无效"}
+        check_paths.append(p2)
+    for cand in check_paths:
+        denied = _fs_denied_response(cand)
+        if denied:
+            return denied
+
     # 根目录和家目录本身不给动，防止手滑把整个盘删了
     if op in ("delete", "rename", "move") and (p == Path(p.anchor) or p == Path.home()):
         return {"ok": False, "error": "不允许对根目录/家目录执行此操作"}
@@ -2466,7 +2579,8 @@ async def api_fs(req: _FsReq):
                 return {"ok": False, "error": "目录名不合法"}
             (p / name).mkdir(parents=False, exist_ok=False)
         elif op in ("rename", "move", "copy"):
-            p2 = Path(req.path2).expanduser().resolve()
+            if p2 is None:
+                return {"ok": False, "error": "目标路径无效"}
             if p2 == p:
                 return {"ok": False, "error": "源和目标相同"}
             if p2.exists():
