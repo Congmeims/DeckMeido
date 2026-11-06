@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import io
 import json
@@ -85,10 +86,53 @@ def _is_fake_ip(host: str) -> bool:
     return any(a.startswith(("198.18.", "198.19.")) for a in addrs)
 
 
-def _mirror_ssl_context(host: str) -> ssl.SSLContext | None:
-    """镜像站用的 SSL 上下文：返回 None 表示走系统默认（严格校验）
+# 回退用的系统 CA 包（Arch/SteamOS、Debian/Ubuntu、RHEL 各要一份）
+_CA_FILES = (
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/ssl/cert.pem",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+)
 
-    默认一律严格校验；只有显式设置 DECKMEIDO_TLS_INSECURE=1 才放宽。
+
+def _first_existing(paths) -> str:
+    """按顺序取第一个存在的文件路径；都不存在时返回空串"""
+    for p in paths:
+        if not p:
+            continue
+        try:
+            if os.path.isfile(p):
+                return str(p)
+        except OSError:
+            continue
+    return ""
+
+
+def _certifi_bundle() -> str:
+    try:
+        import certifi
+        return certifi.where()
+    except (ImportError, OSError):
+        return ""
+
+
+@functools.lru_cache(maxsize=1)
+def _ca_bundle() -> str:
+    """更新源使用的 CA 包：优先 certifi，回退系统自带的证书束
+
+    Decky 插件由 PyInstaller 打包，它拉起的后端会继承插件解包目录的
+    LD_LIBRARY_PATH，_ssl 因此加载了插件自带的 OpenSSL——那套库的默认
+    证书路径是 /usr/lib/ssl，SteamOS 上并不存在，于是所有 HTTPS 都报
+    `unable to get local issuer certificate`。显式指定 CA 包可以绕开
+    「OpenSSL 编译期默认路径不可用」这一类环境问题，而不是靠跳过校验。
+    """
+    return _first_existing((_certifi_bundle(), *_CA_FILES))
+
+
+def _source_ssl_context(host: str) -> ssl.SSLContext | None:
+    """更新源用的 SSL 上下文：返回 None 表示走系统默认（严格校验）
+
+    默认一律严格校验，只是 CA 包由我们自己指定（见 _ca_bundle）；
+    只有显式设置 DECKMEIDO_TLS_INSECURE=1 才放宽。
     这样代理链路出问题时不会悄悄退化成「不验证书」。
     """
     if _insecure_tls_allowed():
@@ -96,7 +140,13 @@ def _mirror_ssl_context(host: str) -> ssl.SSLContext | None:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         return ctx
-    return None
+    cafile = _ca_bundle()
+    if not cafile:
+        return None
+    try:
+        return ssl.create_default_context(cafile=cafile)
+    except (OSError, ssl.SSLError):
+        return None
 
 
 def _brief(exc: Exception) -> str:
@@ -230,7 +280,7 @@ def mirror_release(mirror: str | None = None) -> dict:
     """
     base = (mirror or update_cfg()["mirror"]).rstrip("/")
     host = urllib.parse.urlsplit(base).hostname or ""
-    ctx = _mirror_ssl_context(host)
+    ctx = _source_ssl_context(host)
     try:
         data = _http_json(f"{base}/latest.json", context=ctx)
     except urllib.error.HTTPError as exc:
@@ -271,8 +321,10 @@ def github_release(repo: str | None = None) -> dict:
     拿不到时留空，由下载环节改验包内 SHA256SUMS。
     """
     repo = repo or update_cfg()["github_repo"]
+    host = urllib.parse.urlsplit(GITHUB_API).hostname or ""
+    ctx = _source_ssl_context(host)
     try:
-        data = _http_json(f"{GITHUB_API}/repos/{repo}/releases/latest")
+        data = _http_json(f"{GITHUB_API}/repos/{repo}/releases/latest", context=ctx)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             # 还没有发布过 release，就不算有更新
@@ -292,7 +344,7 @@ def github_release(repo: str | None = None) -> dict:
     latest_url = assets.get("latest.json") or ""
     if latest_url:
         try:
-            payload = _http_json(latest_url)
+            payload = _http_json(latest_url, context=ctx)
         except Exception:
             payload = {}
     files = (payload.get("files") or {}) if isinstance(payload, dict) else {}
@@ -304,7 +356,7 @@ def github_release(repo: str | None = None) -> dict:
         sha_url = assets.get(f"{tarball}.sha256") or assets.get("SHA256SUMS")
         if sha_url:
             try:
-                sha256 = _sha_from_text(_http_text(sha_url))
+                sha256 = _sha_from_text(_http_text(sha_url, context=ctx))
             except Exception:
                 sha256 = ""
     return {
@@ -453,7 +505,7 @@ def _apply_mirror(info: dict, log_path: Path) -> str:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "DeckMeido"})
         with urllib.request.urlopen(
-            req, timeout=180, context=_mirror_ssl_context(host)
+            req, timeout=180, context=_source_ssl_context(host)
         ) as resp:
             blob = resp.read()
     except urllib.error.HTTPError as exc:

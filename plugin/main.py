@@ -801,6 +801,31 @@ def _backend_log_fd() -> int:
         return -3  # subprocess.DEVNULL
 
 
+def _clean_ld_library_path(value: str) -> str:
+    """去掉指向 PyInstaller 解包目录（/tmp/_MEI*）的库路径"""
+    return ":".join(p for p in (value or "").split(":")
+                    if p and "/_MEI" not in p)
+
+
+def _backend_env() -> dict:
+    """启动后端时继承的环境变量。
+
+    Decky 本体是 PyInstaller 单文件程序，会把解包目录写进 LD_LIBRARY_PATH；
+    那里面带着插件自己的 libssl/libcrypto（默认证书目录是 /usr/lib/ssl，
+    SteamOS 上不存在）。后端子进程继承了这条路径后，Python 的 _ssl 会优先
+    加载插件自带的 OpenSSL，所有 HTTPS 请求都报
+    `unable to get local issuer certificate`（更新检查、语音模型下载都中招）。
+    这里只剔除 PyInstaller 的条目，其余库路径原样保留。
+    """
+    env = dict(os.environ)
+    lib = _clean_ld_library_path(env.get("LD_LIBRARY_PATH", ""))
+    if lib:
+        env["LD_LIBRARY_PATH"] = lib
+    else:
+        env.pop("LD_LIBRARY_PATH", None)
+    return env
+
+
 async def _start_backend(port: int) -> tuple[bool, str, bool]:
     """拉起后端，轮询到它应答为止
 
@@ -823,7 +848,7 @@ async def _start_backend(port: int) -> tuple[bool, str, bool]:
         kwargs: dict = {
             "stdout": fd,
             "stderr": fd,
-            "env": {**os.environ,
+            "env": {**_backend_env(),
                     "HOME": _target_home(),
                     "USER": "deck" if _run_as() else os.environ.get("USER", ""),
                     "XDG_RUNTIME_DIR": _runtime_dir()},
@@ -1913,6 +1938,10 @@ class Plugin:
         # 换序这类全局广播全靠这条长连接，断了就静默丢消息
         if core.get("ok") and _BACKEND is None:
             await self._stay_connected()
+        # 游戏探测只在这里做（_current_game 是唯一实现）。面板每次刷新顺手把
+        # 当前游戏报给后端：命中预设就套用，退出就恢复默认提示词
+        game = await asyncio.to_thread(_current_game)
+        preset_state = await self._report_game(port, game) if core.get("ok") else {}
         prefs = await _core_prefs(port) if core.get("ok") else {}
         # 更新检测走 /api/version 里的缓存结果（后端启动时查过一次，之后每天刷新），
         # 设置页只是展示，不在这条路径上现发网络请求
@@ -1922,9 +1951,6 @@ class Plugin:
             if vr.get("ok"):
                 ver = vr.get("data") or {}
         upd = ver.get("update") or {}
-        # 查游戏名要扫进程表、读 Steam 日志，放线程里做：面板一刷新就调这个接口，
-        # 同步跑会把 Decky 的事件循环卡住
-        game = await asyncio.to_thread(_current_game)
         if node:
             cap_ok = _find_gst() is not None
             cap_reason = "" if cap_ok else (
@@ -2020,6 +2046,11 @@ class Plugin:
             "game_source": (game.get("source") or ""),
             "game_confidence": (game.get("confidence") or ""),
             "game_ts": (game.get("ts") or 0),
+            # 按游戏提示词预设：当前是否套用、套的是哪条（状态区显示「当前预设：xxx」）
+            "preset": preset_state,
+            "preset_applied": bool(preset_state.get("applied")),
+            "preset_id": str(preset_state.get("preset_id") or ""),
+            "preset_title": str(preset_state.get("title") or ""),
             # 虚拟手柄能不能用：只透传后端 /api/status 的判断（插件是 root，
             # 它自己的权限不等于后端进程的权限）。后端没给这个字段（旧版本或
             # 后端没连上）时保持 None，前端显示「未知」而不是假设可用。
@@ -2028,6 +2059,72 @@ class Plugin:
             # 读不到后端配置：前端据此显示明确原因
             "config_error": "" if cfg else _cfg_error_text(),
         }
+
+    async def _report_game(self, port: int, game: dict) -> dict:
+        """把当前游戏报给后端，返回后端当前预设状态
+
+        游戏探测只有 _current_game 一套实现；插件在这里只做上报，
+        业务数据（预设内容、绑定关系）全部由后端保存。
+        """
+        r = await _core_http(
+            port, "POST", "/api/presets/active", timeout=2.0,
+            body={"appid": str(game.get("appid") or ""),
+                  "name": str(game.get("name") or "")})
+        if not r.get("ok"):
+            return {}
+        return (r.get("data") or {}).get("current") or {}
+
+    async def save_preset(self) -> dict:
+        """把当前生效的提示词保存成当前游戏的预设
+
+        内容读后端 /api/config 的 status_prompt_effective（有预设时就是预设
+        本身，没有时是全局配置），成功后立即套用并返回游戏名做反馈。
+        """
+        cfg = _load_server_cfg()
+        if not cfg:
+            return {"ok": False, "error": _cfg_error_text()}
+        port = int(cfg.get("port", 18765))
+        game = await asyncio.to_thread(_current_game)
+        appid = str(game.get("appid") or "")
+        name = str(game.get("name") or "")
+        if not (appid or name):
+            return {"ok": False, "error": "当前没有检测到正在运行的游戏"}
+        prefs = await _core_http(port, "GET", "/api/config", timeout=2.0)
+        if not prefs.get("ok"):
+            return {"ok": False, "error": f"读不到当前提示词：{prefs.get('error', '')}"}
+        prompt = str((prefs.get("data") or {}).get("status_prompt_effective") or "").strip()
+        if not prompt:
+            return {"ok": False, "error": "当前提示词为空，无法保存"}
+        r = await _core_http(
+            port, "POST", "/api/presets", timeout=4.0,
+            body={"appid": appid, "game_name": name, "prompt": prompt,
+                  "activate": True})
+        if not r.get("ok"):
+            return {"ok": False, "error": str(r.get("error") or "保存失败")}
+        data = r.get("data") or {}
+        preset = data.get("preset") or {}
+        title = str(preset.get("title") or name or appid)
+        decky.logger.info(f"提示词预设已保存：{name or appid} → {title}")
+        return {"ok": True, "game_name": name or appid, "title": title,
+                "preset_id": str(preset.get("id") or ""),
+                "current": data.get("current") or {}}
+
+    async def _preset_watch(self) -> None:
+        """后台盯游戏切换：开始运行时自动套用预设，退出后恢复默认
+
+        间隔 20 秒，面板没开也能生效；探测仍然只调 _current_game，
+        插件不保存任何预设数据，只负责把当前游戏上报给后端。
+        """
+        while True:
+            try:
+                cfg = _load_server_cfg()
+                if cfg:
+                    port = int(cfg.get("port", 18765))
+                    game = await asyncio.to_thread(_current_game)
+                    await self._report_game(port, game)
+            except Exception as exc:
+                decky.logger.warning(f"提示词预设同步失败：{exc}")
+            await asyncio.sleep(20)
 
     async def pair_info(self) -> dict:
         """设备配对：待配对会话（带 PIN/倒计时）与已配对设备。
@@ -2649,6 +2746,8 @@ class Plugin:
         # 开机默认进游戏模式，这时后端通常没在跑，用户不点「启动后端」就等于插件不可用。
         # 后台自动拉一次：成功与否都不打扰用户，面板上本来就有状态和执行按钮。
         asyncio.get_running_loop().create_task(self._autostart_backend())
+        # 游戏开始/退出的探测放后台：面板没开时也要能自动切换预设
+        asyncio.get_running_loop().create_task(self._preset_watch())
 
     async def _autostart_backend(self, retries: int = 3) -> None:
         """插件加载时自动拉起后端（失败不提示，面板上的按钮仍可手动重试）

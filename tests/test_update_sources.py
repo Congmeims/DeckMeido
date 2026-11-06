@@ -224,18 +224,66 @@ class SafeExtractTest(unittest.TestCase):
             self.assertTrue((Path(td) / "deckmeido-0.6.10/README.md").exists())
 
 
-class MirrorTlsTest(unittest.TestCase):
+class UpdateTlsTest(unittest.TestCase):
     def test_default_is_strict(self):
-        with mock.patch.dict(os.environ, {updater.INSECURE_ENV: ""}):
-            self.assertIsNone(updater._mirror_ssl_context("mirror.test"))
-            self.assertFalse(updater._insecure_tls_allowed())
+        fake = object()
+        with mock.patch.dict(os.environ, {updater.INSECURE_ENV: ""}), \
+                mock.patch.object(updater, "_ca_bundle",
+                                  return_value="/etc/ssl/certs/ca-certificates.crt"), \
+                mock.patch.object(ssl, "create_default_context",
+                                  return_value=fake) as cdc:
+            ctx = updater._source_ssl_context("mirror.test")
+        self.assertIs(ctx, fake)
+        self.assertEqual(cdc.call_args.kwargs.get("cafile"),
+                         "/etc/ssl/certs/ca-certificates.crt")
+        self.assertFalse(updater._insecure_tls_allowed())
+
+    def test_no_ca_bundle_falls_back_to_openssl_defaults(self):
+        with mock.patch.dict(os.environ, {updater.INSECURE_ENV: ""}), \
+                mock.patch.object(updater, "_ca_bundle", return_value=""):
+            self.assertIsNone(updater._source_ssl_context("mirror.test"))
 
     def test_env_relaxes_only_when_set(self):
         with mock.patch.dict(os.environ, {updater.INSECURE_ENV: "1"}):
-            ctx = updater._mirror_ssl_context("mirror.test")
+            ctx = updater._source_ssl_context("mirror.test")
         self.assertIsNotNone(ctx)
         self.assertEqual(ctx.verify_mode, ssl.CERT_NONE)
         self.assertFalse(ctx.check_hostname)
+
+
+class CaBundleTest(unittest.TestCase):
+    """CA 选择/回退逻辑：certifi 不存在时必须落到系统证书束"""
+
+    def test_first_existing_prefers_order(self):
+        with tempfile.TemporaryDirectory() as td:
+            first = Path(td) / "first.pem"
+            second = Path(td) / "second.pem"
+            first.write_text("# ca\n", encoding="utf-8")
+            second.write_text("# ca\n", encoding="utf-8")
+            self.assertEqual(
+                updater._first_existing([str(first), str(second)]), str(first))
+            self.assertEqual(
+                updater._first_existing([str(Path(td) / "missing.pem"), str(second)]),
+                str(second))
+
+    def test_first_existing_returns_empty_when_all_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(updater._first_existing(
+                ["", str(Path(td) / "a.pem"), str(Path(td) / "b.pem")]), "")
+
+    def test_ca_bundle_falls_back_to_system_bundle(self):
+        with tempfile.TemporaryDirectory() as td:
+            system = Path(td) / "ca-certificates.crt"
+            system.write_text("# ca\n", encoding="utf-8")
+            updater._ca_bundle.cache_clear()
+            try:
+                with mock.patch.object(
+                        updater, "_certifi_bundle",
+                        return_value=str(Path(td) / "missing-certifi.pem")), \
+                        mock.patch.object(updater, "_CA_FILES", (str(system),)):
+                    self.assertEqual(updater._ca_bundle(), str(system))
+            finally:
+                updater._ca_bundle.cache_clear()
 
 
 class ApplyFallbackTest(unittest.TestCase):
@@ -375,6 +423,7 @@ class InstallTreeRollbackTest(unittest.TestCase):
         self.assertEqual((self.install / "VERSION").read_text().strip(), "0.7.0")
         self.assertFalse(list(self.install.glob(".update-old-*")))
         self.assertFalse(list(self.install.glob(".update-stage-*")))
+
 
 if __name__ == "__main__":
     unittest.main()
