@@ -908,9 +908,16 @@ class AliasTest(unittest.TestCase):
         route = alias_route("截个屏", group="20001", at=True)
         self.assertEqual(route.kind, "shot")
         self.assertFalse(route.readonly)
+        # 主人豁免：不在白名单、没 @ 也能执行
         route = alias_route("截个屏", group="29999", at=True)
-        self.assertEqual(route.action, "ignore")
+        self.assertEqual(route.kind, "shot")
         route = alias_route("截个屏", group="20001", at=False)
+        self.assertEqual(route.kind, "shot")
+
+    def test_non_admin_still_ignored_in_nonwhite_group(self):
+        route = alias_route("截个屏", group="29999", at=True, uin="30003")
+        self.assertEqual(route.action, "ignore")
+        route = alias_route("截个屏", group="20001", at=False, uin="30003")
         self.assertEqual(route.action, "ignore")
 
     def test_confirm_keeps_group_isolation(self):
