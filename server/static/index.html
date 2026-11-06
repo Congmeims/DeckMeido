@@ -1207,6 +1207,27 @@
   }
   .usage-table tr:last-child td { border-bottom: none; }
   .usage-empty { color: var(--muted); font-size: 12px; padding: 6px 0; }
+  /* ---------- 接口（多组 API 配置） ----------
+     每条一张小卡：标题行放「使用中」单选 + 名称 + 删除；地址与 Key 各占一行。
+     不用多列网格：窄屏（掌机竖屏）也能整行显示，不会被挤出卡片 */
+  .api-profile {
+    border: 1px solid var(--line); border-radius: 12px;
+    padding: 10px 12px; margin-bottom: 10px; min-width: 0;
+  }
+  .api-profile-head {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .api-profile-head .api-current {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 12px; color: var(--muted); cursor: pointer; flex: none;
+  }
+  .api-profile-head .api-current input { margin: 0; }
+  .api-profile-head .api-name { flex: 1 1 140px; min-width: 0; }
+  .api-profile-head .api-remove { flex: none; margin-left: auto; }
+  .api-profile .field { margin: 8px 0 0; }
+  .api-profile .field input { width: 100%; min-width: 0; }
+  .api-profile .field-hint { word-break: break-all; }
+  .api-empty { color: var(--muted); font-size: 12px; padding: 4px 0 8px; }
   /* 底栏的垂直尺寸要和侧栏那条 .sb-foot 完全一样（上 8 / 下 10 / 按钮 34），
      两个分隔线才会落在同一条水平线上，不然左右各画一条、高低差一截 */
   .set-foot {
@@ -2727,17 +2748,10 @@
           <p class="pane-desc">填写服务商的接口地址与 Key，保存后立即生效。</p>
           <div class="card">
             <div class="card-title">接口</div>
-            <div class="field">
-              <label>API 接口地址（base_url）</label>
-              <input id="cfgBaseUrl" type="text" placeholder="https://api.deepseek.com" autocomplete="off">
-            </div>
-            <div class="field">
-              <label>API Key</label>
-              <div class="token-row">
-                <input id="cfgApiKey" type="password" placeholder="sk-…" autocomplete="off">
-                <button id="clearApiKey" class="mini-btn" type="button">保存</button>
-              </div>
-              <div id="apiKeyHint" class="field-hint"></div>
+            <div id="apiProfileList"></div>
+            <div id="apiProfileHint" class="field-hint">同一时间只有一条生效；切换后立即使用新的那组。</div>
+            <div class="mem-foot" style="margin-top:10px">
+              <button id="apiProfileAdd" class="mini-btn" type="button">新增一组</button>
             </div>
           </div>
           <div class="card">
@@ -2748,6 +2762,10 @@
                 <div class="field-hint" id="usageBalanceHint">填好上面的 API Key 并保存后可查询余额</div>
               </div>
               <button id="usageRefresh" class="mini-btn" type="button">刷新</button>
+            </div>
+            <div class="field">
+              <label>统计范围（按 API）</label>
+              <select id="usageApiSelect"></select>
             </div>
             <div class="field-hint" id="usageTier"></div>
             <div class="usage-tables">
@@ -8551,14 +8569,19 @@
   // ---------- 设置面板 ----------
   var settingsBtn = document.getElementById('settingsBtn');
   var settingsPanel = document.getElementById('settingsPanel');
-  var cfgBaseUrl = document.getElementById('cfgBaseUrl');
-  // 没配置过地址时的默认值：点开设置就能直接补 Key 开聊
+  // ---------- 多组 API 配置 ----------
+  // 每组：{id, name, base_url, key_set, masked, temp}。id 是后端给的稳定标识，
+  // 改名只改 name；新增行用临时 id，保存后由后端发正式 id 并回填。
+  var apiProfileList = document.getElementById('apiProfileList');
+  var apiProfileHint = document.getElementById('apiProfileHint');
+  var apiProfileAdd = document.getElementById('apiProfileAdd');
+  var apiProfilesState = { profiles: [], current: '' };
+  // 设置页还没成功拉到配置时不允许整表提交，避免网络闪断把已有 Key 冲掉
+  var apiProfilesLoaded = false;
   var DEFAULT_BASE_URL = 'https://api.deepseek.com';
-  var cfgApiKey = document.getElementById('cfgApiKey');
-  var clearApiKey = document.getElementById('clearApiKey');
-  var apiKeyHint = document.getElementById('apiKeyHint');
-  // 覆盖写时要不要显式清空 Key：点「清除」才置 true，其余情况一律按「不改」提交
-  var apiKeyClear = false;
+  var usageApiSelect = document.getElementById('usageApiSelect');
+  // '' = 还没选（用后端默认的当前使用）；'all' = 全部汇总
+  var usageApi = '';
   var cfgTts = document.getElementById('cfgTts');
   // 语音回复卡（「女仆人格」下面）：两个发音人 + 试听 + 模型下载
   var ttsSpeakerRow = document.getElementById('ttsSpeakerRow');
@@ -9121,6 +9144,154 @@
     pairPollTimer = 0;
   }
 
+  // ---------- 接口（多组 API 配置） ----------
+  // 交互与「允许的群号」那类列表一致：新增 / 删除行，点保存整体提交。
+  // 「使用中」单选立即调后端 current_api，LLMClient 当场改用它，不用重启。
+  function apiTempId() {
+    return '__new-' + Math.random().toString(36).slice(2, 8);
+  }
+
+  function currentApiName() {
+    var cur = apiProfilesState.current;
+    for (var i = 0; i < apiProfilesState.profiles.length; i++) {
+      if (apiProfilesState.profiles[i].id === cur) {
+        return apiProfilesState.profiles[i].name || '未命名';
+      }
+    }
+    return '未配置';
+  }
+
+  function renderApiProfiles(c) {
+    var rows = (c && c.api_profiles) || [];
+    apiProfilesState.profiles = rows.map(function (p) {
+      return {
+        id: p.id,
+        name: p.name || '',
+        base_url: p.base_url || '',
+        key_set: !!p.api_key_set,
+        masked: p.api_key_masked || p.api_key || '',
+        temp: false
+      };
+    });
+    apiProfilesState.current = (c && c.current_api) || '';
+    if (!apiProfilesState.current && apiProfilesState.profiles.length) {
+      apiProfilesState.current = apiProfilesState.profiles[0].id;
+    }
+    paintApiProfiles();
+    syncUsageApiOptions(apiProfilesState.profiles, apiProfilesState.current);
+    // 首次打开时 loadUsage 可能先于配置到达、按「全部」拉了一次；
+    // 配置到位后按默认的「当前使用」再取一次，避免下拉与表格对不上
+    loadUsageStats();
+  }
+
+  function paintApiProfiles() {
+    var items = apiProfilesState.profiles;
+    apiProfileList.innerHTML = '';
+    if (!items.length) {
+      apiProfileList.innerHTML = '<div class="api-empty">未配置接口。点下面「新增一组」，填好地址和 Key 再保存。</div>';
+      apiProfileHint.textContent = '未配置时无法对话；至少添加一组地址与 Key。';
+      return;
+    }
+    var hasCurrent = items.some(function (p) { return p.id === apiProfilesState.current; });
+    if (!hasCurrent) apiProfilesState.current = items[0].id;
+    items.forEach(function (p) {
+      var row = document.createElement('div');
+      row.className = 'api-profile';
+      row.innerHTML =
+        '<div class="api-profile-head">'
+        + '<label class="api-current"><input type="radio" name="apiProfileCurrent"'
+        + (p.id === apiProfilesState.current ? ' checked' : '') + '> 使用中</label>'
+        + '<input class="api-name" type="text" maxlength="40" aria-label="名称/备注"'
+        + ' placeholder="名称/备注" value="' + escapeHtml(p.name) + '">'
+        + '<button class="mini-btn api-remove" type="button">删除</button>'
+        + '</div>'
+        + '<div class="field"><label>接口地址（base_url）</label>'
+        + '<input class="api-base" type="text" autocomplete="off" placeholder="https://api.deepseek.com"'
+        + ' value="' + escapeHtml(p.base_url) + '"></div>'
+        + '<div class="field"><label>API Key</label>'
+        + '<input class="api-key" type="password" autocomplete="off" placeholder="'
+        + escapeHtml(p.key_set ? (p.masked + '（已配置，留空不改）') : 'sk-…') + '"></div>'
+        + '<div class="field-hint">'
+        + (p.key_set ? '已配置：' + escapeHtml(p.masked) : '还没有配置 Key')
+        + '</div>';
+      row.querySelector('.api-current input').addEventListener('change', function (ev) {
+        if (!ev.target.checked) return;
+        apiProfilesState.current = p.id;
+        if (p.temp) {
+          apiProfileHint.textContent = '这条还没保存，点「保存」后才会成为当前使用';
+          return;
+        }
+        switchApiProfile(p.id, p.name);
+      });
+      row.querySelector('.api-remove').addEventListener('click', function () {
+        var at = apiProfilesState.profiles.indexOf(p);
+        if (at < 0) return;
+        apiProfilesState.profiles.splice(at, 1);
+        if (apiProfilesState.current === p.id) {
+          apiProfilesState.current = apiProfilesState.profiles.length
+            ? apiProfilesState.profiles[0].id : '';
+        }
+        paintApiProfiles();
+        syncUsageApiOptions(apiProfilesState.profiles, apiProfilesState.current);
+        apiProfileHint.textContent = '已删除，点「保存」生效（当前使用会自动回退到剩余第一条）';
+      });
+      apiProfileList.appendChild(row);
+    });
+  }
+
+  function collectApiProfiles() {
+    var rows = apiProfileList.querySelectorAll('.api-profile');
+    return Array.prototype.map.call(rows, function (row, i) {
+      var p = apiProfilesState.profiles[i] || {};
+      return {
+        // 新增行不给 id，由后端生成稳定 id；之后改名也不会拆散历史统计
+        id: p.temp ? '' : (p.id || ''),
+        name: row.querySelector('.api-name').value.trim(),
+        base_url: row.querySelector('.api-base').value.trim(),
+        api_key: row.querySelector('.api-key').value.trim()
+      };
+    });
+  }
+
+  // 只切当前使用：不动其它字段，后端保存后 apply_config 立刻更新 LLMClient
+  function switchApiProfile(id, name) {
+    apiProfileHint.textContent = '正在切换到「' + (name || '未命名') + '」…';
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_api: id })
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error('切换失败（HTTP ' + r.status + '）');
+        return r.json();
+      })
+      .then(function (res) {
+        if (res.api_profiles) renderApiProfiles(res);
+        apiProfileHint.textContent = '已切换到「' + currentApiName() + '」，下一轮对话立即使用它';
+        loadUsage();
+      })
+      .catch(function (e) {
+        apiProfileHint.textContent = '切换失败：' + ((e && e.message) || e);
+        loadCfgForm();
+      });
+  }
+
+  apiProfileAdd.addEventListener('click', function () {
+    if (apiProfilesState.profiles.length >= 20) {
+      apiProfileHint.textContent = '最多 20 组接口配置';
+      return;
+    }
+    var wasEmpty = !apiProfilesState.profiles.length;
+    apiProfilesState.profiles.push({
+      id: apiTempId(), name: '', base_url: DEFAULT_BASE_URL,
+      key_set: false, masked: '', temp: true
+    });
+    if (wasEmpty) apiProfilesState.current = apiProfilesState.profiles[0].id;
+    paintApiProfiles();
+    syncUsageApiOptions(apiProfilesState.profiles, apiProfilesState.current);
+    apiProfileHint.textContent = '填好后点页面底部「保存」；新增的这条保存后才能切换为当前使用';
+  });
+
   // ---------- 用量与余额（设置 → 模型接入） ----------
   // 后端 /api/usage 只读本地聚合（userdata/usage/*.json），/api/usage/balance
   // 才发起一次官方余额查询；两者分开，打开设置页不依赖网络。
@@ -9131,6 +9302,36 @@
   var usageTierEl = document.getElementById('usageTier');
   var usageNoteEl = document.getElementById('usageNote');
   var usageRefreshBtn = document.getElementById('usageRefresh');
+
+  // 下拉框：全部 + 每组接口；默认落在「当前使用」那条。选中值在刷新后保持不变，
+  // 只有它被删掉（不在列表里）才回退到当前使用 / 全部。
+  function syncUsageApiOptions(list, preferred) {
+    list = list || [];
+    var keep = usageApi;
+    var html = '<option value="all">全部（汇总）</option>';
+    list.forEach(function (p) {
+      html += '<option value="' + escapeHtml(p.id) + '">'
+        + escapeHtml((p.name || '未命名') + (p.current ? '（当前使用）' : ''))
+        + '</option>';
+    });
+    usageApiSelect.innerHTML = html;
+    var valid = keep === 'all' || list.some(function (p) { return p.id === keep; });
+    if (!valid) {
+      usageApi = (preferred && preferred !== 'all') ? preferred
+        : (list.length ? list[0].id : 'all');
+    }
+    usageApiSelect.value = usageApi || 'all';
+  }
+
+  function usageScopeLabel() {
+    if (usageApi === 'all' || !usageApi) return '全部（汇总）';
+    for (var i = 0; i < apiProfilesState.profiles.length; i++) {
+      if (apiProfilesState.profiles[i].id === usageApi) {
+        return apiProfilesState.profiles[i].name || '未命名';
+      }
+    }
+    return '全部（汇总）';
+  }
 
   function usageTokens(n) {
     n = Number(n) || 0;
@@ -9159,7 +9360,9 @@
 
   function renderUsageStats(d) {
     if (!d) return;
-    usageTierEl.textContent = '当前：' + d.tier_label
+    if (d.api_profiles) syncUsageApiOptions(d.api_profiles, d.api);
+    usageTierEl.textContent = '统计范围：' + usageScopeLabel()
+      + '　当前：' + d.tier_label
       + '　高峰：' + d.peak_windows
       + '　官方单价生效：' + d.pricing_effective
       + (d.official_endpoint ? '' : '　当前接口不是 DeepSeek 官方端点，估算仅供参考');
@@ -9205,7 +9408,8 @@
   }
 
   function loadUsageStats() {
-    return fetch('/api/usage?days=14')
+    var target = usageApi || (apiProfilesState.current || 'all');
+    return fetch('/api/usage?days=14&api=' + encodeURIComponent(target))
       .then(function (r) {
         if (!r.ok) {
           throw new Error(r.status === 401 ? '登录已失效，请重新配对'
@@ -9224,7 +9428,10 @@
 
   function loadUsageBalance() {
     usageBalanceHint.textContent = '正在查询官方余额…';
-    return fetch('/api/usage/balance')
+    // 看单组统计时查那一组的余额；「全部」时查当前使用的（余额本身不能跨组相加）
+    var q = (usageApi && usageApi !== 'all')
+      ? '?api=' + encodeURIComponent(usageApi) : '';
+    return fetch('/api/usage/balance' + q)
       .then(function (r) { return r.json(); })
       .then(function (b) {
         if (!b || !b.ok) {
@@ -9270,6 +9477,11 @@
   }
 
   usageRefreshBtn.addEventListener('click', function () { loadUsage(true); });
+  usageApiSelect.addEventListener('change', function () {
+    usageApi = usageApiSelect.value || 'all';
+    loadUsageStats();
+    loadUsageBalance();
+  });
 
   document.getElementById('usageExport').addEventListener('click', function () {
     fetch('/api/usage/export')
@@ -9346,22 +9558,9 @@
         return r.json();
       })
       .then(function (c) {
-        // 还没填过地址（首次打开）就先把默认的 DeepSeek 地址摆进去，
-        // 主人只要补个 Key 就能聊。注意带 /v1：网关那边两种写法都认
-        cfgBaseUrl.value = c.base_url || DEFAULT_BASE_URL;
-        // 服务端不再下发明文 Key，只给「已配置」+ 打码值。
-        // 输入框留空，占位符显示打码值 —— 让主人一眼看到「有 Key」，
-        // 但即使拿到已配对设备的 Cookie 也抄不走。不填就等于不改（见后端注释）。
-        apiKeyClear = false;
-        cfgApiKey.value = '';
-        var masked = c.api_key_masked || c.api_key || '';
-        // 兼容旧后端：还没重启升级时它没有 api_key_set 字段，
-        // 那就按「有 api_key 就是已配置」来判断，免得误显示成「还没配置」
-        var keySet = (typeof c.api_key_set === 'boolean') ? c.api_key_set : !!masked;
-        cfgApiKey.placeholder = keySet ? masked + '（已配置，留空则不修改）' : 'sk-…';
-        apiKeyHint.textContent = keySet
-          ? '已配置：' + masked + '　要更换请直接填新的，留空保存不会改动它'
-          : '还没有配置 Key';
+        // 每组只回显打码 Key，输入框留空 = 保存时保持原 Key
+        renderApiProfiles(c);
+        apiProfilesLoaded = true;
         cfgTts.checked = c.tts_enable;
         // 发音人只有两个选项：新键优先，老配置没有 speaker 时按引擎映射
         setTtsSpeaker(c.tts_speaker
@@ -9758,18 +9957,6 @@
     pairPost('/api/devices/remove_all', {});
   });
 
-  // 「保存」按钮（原 clearApiKey）：直接触发底部的保存逻辑，保存后拉取模型列表
-  clearApiKey.addEventListener('click', function () {
-    saveCfg.click();
-  });
-  // 一旦重新输入内容，就撤销「清除」意图
-  cfgApiKey.addEventListener('input', function () {
-    if (cfgApiKey.value.trim()) {
-      apiKeyClear = false;
-      apiKeyHint.textContent = '将替换为新的 Key，点「保存」后生效';
-    }
-  });
-
   // 拉取当前配置（已保存的地址和 Key）的模型列表，同步到底部下拉框
   function reloadModels() {
     modelsPromise = null;
@@ -9790,9 +9977,10 @@
       portHint.style.color = '#e06c75';
       return;
     }
-    var keyInput = cfgApiKey.value.trim();
     var payload = {
-      base_url: cfgBaseUrl.value,
+      // 整表提交：新增/改名/删除/切换都在这里；每行的 Key 留空或打码 = 保持原值
+      api_profiles: apiProfilesLoaded ? collectApiProfiles() : null,
+      current_api: apiProfilesState.current || '',
       tts_enable: cfgTts.checked,
       tts_speaker: ttsSpeaker,
       with_shot: !!cfgWithShot.checked,
@@ -9820,8 +10008,7 @@
       // 开发者模式：写入 [runtime]，保存即生效（日志级别与细节记录不用重启）
       dev_mode: cfgDevMode ? (cfgDevMode.value === 'on') : false
     };
-    if (keyInput) { payload.api_key = keyInput; }
-    if (apiKeyClear) { payload.clear_api_key = true; }
+
     fetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -9845,6 +10032,13 @@
           return null;
         }
         // 开关可能刚改过：先按表单值立刻更新本地判断，再拉一次服务端状态校准
+        // 新增行会拿到后端发的正式 id，名字/地址按后端归一后的值回填
+        if (res.api_profiles) {
+          renderApiProfiles(res);
+          apiProfileHint.textContent = res.api_profiles.length
+            ? '已保存，当前使用：' + currentApiName()
+            : '未配置接口 —— 对话暂不可用';
+        }
         riState.enabled = !!cfgRiEnabled.checked;
         loadRemoteStatus();
         loadSttStatus();

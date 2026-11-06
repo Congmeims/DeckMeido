@@ -100,9 +100,14 @@ def strip_tool_markup(text: str) -> str:
 class LLMClient:
     def __init__(self, base_url: str, api_key: str, model: str,
                  max_tokens: int | None, timeout: float = 60.0,
-                 reasoning_effort: str = "high"):
+                 reasoning_effort: str = "high",
+                 api_id: str = "", api_name: str = ""):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        # 多组 API 配置里「当前使用」那一条的稳定 id / 标签：用量统计按 id 归属，
+        # 改名不拆历史；探活等临时客户端留空即可
+        self.api_id = api_id
+        self.api_name = api_name
         self.model = model
         # 只有真正发对话请求时才需要这个值；探活 / 拉模型列表的临时客户端
         # 传 None 即可，不再给一个会被误当成「实际额度」的默认值。
@@ -392,7 +397,8 @@ class LLMClient:
         # 本地用量统计（按日/按模型/按峰谷时段累计）；写盘失败绝不能打断对话
         if usage:
             try:
-                usage_stats.record(usage, model=self.model, base_url=self.base_url)
+                usage_stats.record(usage, model=self.model, base_url=self.base_url,
+                                   api_id=self.api_id, api_name=self.api_name)
             except Exception as exc:
                 print(f"[DeckMeido] 记录用量失败：{exc}", file=sys.stderr, flush=True)
         devlog.log(

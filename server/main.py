@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import audit, authguard, audiomute, depcheck, devlog, i18n, memory, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, singleton, status_line, tools, updater, usage
+from . import apicfg, audit, authguard, audiomute, depcheck, devlog, i18n, memory, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, singleton, status_line, tools, updater, usage
 from .session_store import store
 from . import session_store
 from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, normalize_speaker,
@@ -153,9 +153,16 @@ def _system_boot_id() -> str:
     except Exception:
         return singleton.BOOT_ID
 
+# 多组 API 配置：旧版单个 base_url / api_key 会在读取时折成一条「默认」并写回，
+# 之后 Key 只存在 apis 里。没有任何配置时 active 为 None，LLMClient 得到空地址/空 Key，
+# 对话入口据此显示「还没有配置模型」，而不是拿空 Key 去请求再变成 500。
+API_STATE = apicfg.load(CFG, CONFIG_PATH)
+_active_api = apicfg.active(API_STATE) or {}
 llm = LLMClient(
-    base_url=CFG["llm"]["base_url"],
-    api_key=CFG["llm"]["api_key"],
+    base_url=_active_api.get("base_url", ""),
+    api_key=_active_api.get("api_key", ""),
+    api_id=_active_api.get("id", ""),
+    api_name=_active_api.get("name", ""),
     model=CFG["llm"]["model"],
     # 每次对话都由 run_agent 按上下文剩余空间显式传入 output 额度，
     # 这里不再从配置读一个全局默认值
@@ -760,7 +767,7 @@ audiomute.set_enabled(bool(_stt_cfg.get("duck_output", True)))
 def apply_config(cfg: dict):
     """热更新运行配置（LLM / TTS / 权限模式 / 界面语言），无需重启"""
     global CFG, PERMISSION_MODE, PERSONA, SYSTEM_PROMPT, MAX_TOOL_ROUNDS, ASK_TEMPLATE
-    global TRANSLATE_TEMPLATE, UI_LANG
+    global TRANSLATE_TEMPLATE, UI_LANG, API_STATE
     CFG = cfg
     # [runtime].dev_mode 热更新：改完保存即生效，不用重启后端
     devlog.configure(cfg)
@@ -778,8 +785,13 @@ def apply_config(cfg: dict):
         or default_translate_template()
     )
     c = cfg["llm"]
-    llm.base_url = c["base_url"].rstrip("/")
-    llm.api_key = c["api_key"]
+    # 多组配置热切换：保存「当前使用」后立刻换到那一组，不用重启后端
+    API_STATE = apicfg.from_config(cfg)
+    active = apicfg.active(API_STATE) or {}
+    llm.base_url = str(active.get("base_url") or "").rstrip("/")
+    llm.api_key = str(active.get("api_key") or "")
+    llm.api_id = str(active.get("id") or "")
+    llm.api_name = str(active.get("name") or "")
     llm.model = c["model"]
     llm.reasoning_effort = str(c.get("reasoning_effort", "high"))
     llm.normalize()
@@ -2953,7 +2965,20 @@ async def api_cancel(request: Request, client: str = "", device: str = ""):
     return {"ok": False, "detail": "no active task", "killed": killed}
 
 
+class ApiProfileIn(BaseModel):
+    """一组 API 配置的提交值；api_key 留空或回传打码串 = 保持原 Key"""
+    id: str = ""
+    name: str = ""
+    base_url: str = ""
+    api_key: str = ""
+
+
 class ConfigUpdate(BaseModel):
+    # 多组接口配置：提交完整列表（新增/改名/删除/切换都在这里），后端负责合并 Key
+    api_profiles: list[ApiProfileIn] | None = None
+    # 只切换「当前使用」，不要求前端把整张列表都发回来
+    current_api: str | None = None
+    # 旧版单组字段：仍接受，改动会作用到「当前使用」那一条（老客户端兼容）
     base_url: str | None = None
     api_key: str | None = None
     # 显式要求清空 Key；不传则空字符串一律按「不改」处理
@@ -3159,11 +3184,15 @@ def _mask_key(key: str) -> str:
 @app.get("/api/config", dependencies=[Depends(require_auth)])
 async def api_get_config():
     return {
+        # 旧字段 = 当前使用那一组，老客户端照旧能读；多组列表见 api_profiles
         "base_url": llm.base_url,
         # 明文 Key 不再下发，只给打码值和「有没有配」的布尔量
         "api_key": _mask_key(llm.api_key),
         "api_key_set": bool(llm.api_key.strip()),
         "api_key_masked": _mask_key(llm.api_key),
+        "current_api": API_STATE.get("current") or "",
+        # 每一组都只给掩码；接口响应里不会出现明文 Key
+        "api_profiles": apicfg.public(API_STATE),
         "model": llm.model,
         "reasoning_effort": llm.reasoning_effort,
         "tts_enable": tts.enable,
@@ -3351,28 +3380,53 @@ async def _pick_model(base_url: str, api_key: str) -> str:
 @app.post("/api/config", dependencies=[Depends(require_auth)])
 async def api_set_config(req: ConfigUpdate, request: Request):
     llm_updates = {}
-    if req.base_url is not None:
-        llm_updates["base_url"] = _norm_base_url(req.base_url)
-    # Key 的三条「不覆盖」规则，都是为了避免把已配置的 Key 冲掉：
-    #   1) 字段没传（None）           → 本次不改 Key
-    #   2) 传了空字符串               → 前端没拿到值，按「不改」处理
-    #   3) 传的是打码串（含 …）        → 前端回传了展示用的脱敏值，不能当真
-    # 想真清空，用 clear_api_key=true 显式声明。
-    # 旧逻辑是「传了空就写成空」，于是在新设备上打开设置页、只是改了个端口
-    # 或权限，就会把 Key 一并抹成空串 —— 对话当场失效，且无处可恢复。
+    profile_state = None
+    if req.api_profiles is not None:
+        # 列表是全量提交：新增 / 改名 / 改地址 / 删除都在这一步合并 Key
+        profile_state = apicfg.merge_update(
+            API_STATE, [p.model_dump() for p in req.api_profiles], req.current_api)
+    elif req.current_api is not None:
+        profile_state = apicfg.select(API_STATE, req.current_api)
+
+    # 旧版单组字段仍接受：作用到「当前使用」那一条，避免老客户端保存时报 400。
+    # Key 的三条「不覆盖」规则不变：没传 / 空串 / 打码串都按不改处理；
+    # 想真清空用 clear_api_key=true。
+    legacy_url = _norm_base_url(req.base_url) if req.base_url is not None else None
+    legacy_key = None
     if req.clear_api_key:
-        llm_updates["api_key"] = ""
+        legacy_key = ""
     elif req.api_key is not None:
         incoming = req.api_key.strip()
         if incoming and "…" not in incoming and "..." not in incoming:
-            llm_updates["api_key"] = incoming
+            legacy_key = incoming
+    key_changed = False
+    if legacy_url is not None or legacy_key is not None:
+        state = profile_state or API_STATE
+        active = apicfg.active(state)
+        if active:
+            profiles = [dict(p) for p in state["profiles"]]
+            item = next(p for p in profiles if p["id"] == active["id"])
+            if legacy_url is not None:
+                item["base_url"] = legacy_url
+            if legacy_key is not None:
+                key_changed = legacy_key != item["api_key"]
+                item["api_key"] = legacy_key
+            profile_state = {"profiles": profiles, "current": state["current"]}
+        elif legacy_url or legacy_key:
+            profile_state = apicfg.merge_update(state, [{
+                "id": "", "name": apicfg.DEFAULT_NAME,
+                "base_url": legacy_url or "", "api_key": legacy_key or "",
+            }], None)
+            key_changed = bool(legacy_key)
+    if profile_state is not None:
+        llm_updates.update(apicfg.to_updates(profile_state))
     if req.model is not None:
         llm_updates["model"] = req.model.strip()
-    elif llm_updates.get("api_key") and llm_updates["api_key"] != llm.api_key:
-        # 换了 Key 而没指定模型：保持原模型若它仍可用，否则挑列表里第一个正规模型名
-        # 注意用 llm_updates 里的值：直接读 req.api_key 的话，打码串也会进这里，
-        # 拿 "sk-7sw…56D5" 去问服务商只会 401
-        llm_updates["model"] = await _pick_model(req.base_url or llm.base_url, llm_updates["api_key"])
+    elif key_changed and profile_state is not None:
+        # 换了 Key 而没指定模型：按新 Key 探一次模型名；探不到就保持原值
+        target = apicfg.active(profile_state) or {}
+        llm_updates["model"] = await _pick_model(
+            str(target.get("base_url") or ""), str(target.get("api_key") or ""))
     updates = {}
     if llm_updates:
         updates["llm"] = llm_updates
@@ -3489,7 +3543,10 @@ async def api_set_config(req: ConfigUpdate, request: Request):
     if ri.get("enabled") is False:
         # 关掉总开关时立刻结束正在进行的接管，不等下一次心跳
         await remote_input.manager.finish(remote_input.RI_DISABLED)
-    return {"ok": True, "llm_configured": llm.configured, "workspace": str(tools.WORKSPACE),
+    return {"ok": True, "llm_configured": llm.configured,
+            "current_api": API_STATE.get("current") or "",
+            "api_profiles": apicfg.public(API_STATE),
+            "workspace": str(tools.WORKSPACE),
             # 工作区目录建不出来时把原因原样带回去（前端显示成人话，不再只报「不存在」）
             "workspace_ok": WORKSPACE_OK,
             "workspace_error": WORKSPACE_ERROR,
@@ -3572,15 +3629,41 @@ async def api_logs_clear(req: LogClearRequest):
 
 
 @app.get("/api/usage", dependencies=[Depends(require_auth)])
-async def api_usage(days: int = 14):
-    """本地用量统计（按日 / 按模型 / 按峰谷时段），不做网络请求"""
-    return await asyncio.to_thread(usage.snapshot, days, None, llm.base_url)
+async def api_usage(days: int = 14, api: str = ""):
+    """本地用量统计（按日 / 按模型 / 按峰谷时段），不做网络请求
+
+    api 为空 = 当前使用的那组；api=all = 全部汇总（含升级前未标记的历史）。
+    返回里的 api_profiles 带每组的名称与是否有 Key（只有掩码），给下拉框用。
+    """
+    selected = api or (API_STATE.get("current") or "")
+    data = await asyncio.to_thread(usage.snapshot, days, None, llm.base_url,
+                                   None if selected == "all" else selected)
+    data["api"] = selected or "all"
+    data["api_profiles"] = [{**row, "current": row["id"] == API_STATE.get("current")}
+                            for row in apicfg.public(API_STATE)]
+    return data
 
 
 @app.get("/api/usage/balance", dependencies=[Depends(require_auth)])
-async def api_usage_balance():
-    """查询官方余额；失败原因原样带回，前端不做静默处理"""
-    return await usage.fetch_balance(llm.base_url, llm.api_key)
+async def api_usage_balance(api: str = ""):
+    """查询官方余额；失败原因原样带回，前端不做静默处理
+
+    api 指定用哪一组配置查（空 = 当前使用）；不同 base_url 支持余额的走官方接口，
+    不支持的按现有 reason/error 显示（404 = 该地址不支持余额查询）。
+    """
+    target = None
+    if api and api != "all":
+        for p in API_STATE.get("profiles") or []:
+            if p["id"] == api:
+                target = p
+                break
+    if target is None:
+        target = apicfg.active(API_STATE) or {}
+    result = await usage.fetch_balance(str(target.get("base_url") or ""),
+                                       str(target.get("api_key") or ""))
+    result["api"] = target.get("id") or ""
+    result["api_name"] = target.get("name") or ""
+    return result
 
 
 @app.get("/api/usage/export", dependencies=[Depends(require_auth)])

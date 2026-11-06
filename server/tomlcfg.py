@@ -44,12 +44,25 @@ def _toml_string(value: str) -> str:
     return '"' + "".join(out) + '"'
 
 
+def _toml_key(key: str) -> str:
+    """内联表的键：普通标识符直接写，其余加引号，避免生成非法 TOML"""
+    key = str(key)
+    if re.fullmatch(r"[A-Za-z0-9_-]+", key):
+        return key
+    return _toml_string(key)
+
+
 def _toml_value(value) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return str(value)
-    if isinstance(value, list):
+    if isinstance(value, dict):
+        # 多组 API 配置用内联表数组保存（apis = [ { id = ... }, ... ]）：
+        # 比 [[llm.apis]] 多表更好替换，也不会在改写时破坏其它段
+        return "{" + ", ".join(
+            f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items()) + "}"
+    if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_toml_value(v) for v in value) + "]"
     return _toml_string(value)
 

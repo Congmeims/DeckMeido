@@ -94,7 +94,7 @@ _FLASH_KEYS = ("flash", "deepseek-chat", "deepseek-reasoner",
 _PRO_KEYS = ("pro",)
 
 _LOCK = threading.Lock()
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 # ---------- 时间与时段 ----------
@@ -202,8 +202,10 @@ def _empty_bucket() -> dict:
 
 
 def _new_day(day: date) -> dict:
+    # models 是 v1（单接口时代）的全局聚合，保留读取兼容；新记录只写 apis，
+    # 每个 api id 一份独立桶，改名不会打散历史（id 不变）
     return {"version": _SCHEMA_VERSION, "date": day.isoformat(),
-            "updated_at": "", "models": {}}
+            "updated_at": "", "models": {}, "apis": {}}
 
 
 def _read_day(day: date) -> dict:
@@ -217,6 +219,8 @@ def _read_day(day: date) -> dict:
         return _new_day(day)
     if not isinstance(data, dict) or not isinstance(data.get("models"), dict):
         return _new_day(day)
+    if not isinstance(data.get("apis"), dict):
+        data["apis"] = {}
     return data
 
 
@@ -236,8 +240,13 @@ def _add(bucket: dict, hit: int, miss: int, out: int) -> None:
 
 
 def record(usage: dict | None, model: str, base_url: str = "",
+           api_id: str = "", api_name: str = "",
            now: datetime | None = None) -> bool:
-    """把一次成功请求的 usage 记到当天（北京时间）聚合文件；失败不抛给调用方"""
+    """把一次成功请求的 usage 记到当天（北京时间）聚合文件；失败不抛给调用方
+
+    api_id 是多组 API 配置的稳定 id（不是名称）；改名只更新标签，旧记录仍归在同一个
+    桶里。api_id 为空表示调用方没有传（升级前的调用 / 单测），记在全局空桶。
+    """
     if not isinstance(usage, dict):
         return False
     parsed = parse_usage(usage)
@@ -246,10 +255,16 @@ def record(usage: dict | None, model: str, base_url: str = "",
     local = _cn(now)
     peak = is_peak(local)
     day = local.date()
+    key = model or "unknown"
+    bucket_id = str(api_id or "")
     with _LOCK:
         data = _read_day(day)
-        key = model or "unknown"
-        m = data["models"].setdefault(key, {
+        bucket = data["apis"].setdefault(bucket_id,
+                                         {"name": "", "models": {}})
+        if api_name:
+            # 名称只是展示标签：改名后新记录覆盖旧标签，历史数值留在同一桶
+            bucket["name"] = str(api_name)[:40]
+        m = bucket["models"].setdefault(key, {
             "requests": 0, "prompt_tokens": 0, "completion_tokens": 0,
             "total_tokens": 0, "cache_hit_tokens": 0, "cache_miss_tokens": 0,
             "peak": _empty_bucket(), "offpeak": _empty_bucket(),
@@ -266,7 +281,7 @@ def record(usage: dict | None, model: str, base_url: str = "",
     devlog.log("usage.record", model=key, peak=peak,
                prompt=parsed["prompt_tokens"], completion=parsed["completion_tokens"],
                cache_hit=parsed["cache_hit_tokens"],
-               base_url=base_url)
+               api=api_id, base_url=base_url)
     return True
 
 
@@ -304,16 +319,38 @@ def _merge(summary: dict, totals: dict) -> None:
         totals["cost_cny"] += float(summary["cost_cny"])
 
 
+def _day_buckets(data: dict):
+    """一天文件 → [(api_id, api_name, models)]
+
+    v2 起每个 API 一份桶；v1（升级前）只有全局 models，归到空 id 的「未标记」桶，
+    在「全部」里照常计入，按具体 API 过滤时不会误算到某一条配置。
+    apis 存在时全局 models 只可能是升级前的旧数据（新记录不再写），两份相加不重复。
+    """
+    apis = data.get("apis")
+    if isinstance(apis, dict):
+        for aid, raw in apis.items():
+            if isinstance(raw, dict) and isinstance(raw.get("models"), dict):
+                yield str(aid), str(raw.get("name") or ""), raw["models"]
+    models = data.get("models")
+    if isinstance(models, dict) and models:
+        yield "", "", models
+
+
 def snapshot(days: int = 14, now: datetime | None = None,
-             base_url: str = "") -> dict:
-    """近 N 天（含今天）的聚合结果 + 当前时段信息；不做网络请求"""
+             base_url: str = "", api_id: str | None = None) -> dict:
+    """近 N 天的聚合结果 + 当前时段信息；不做网络请求
+
+    api_id 为空或 "all" 时返回全部配置的汇总；给定 id 时只统计那一组。
+    """
     local = _cn(now)
     days = max(1, min(int(days or 14), 400))
+    selected = None if api_id in (None, "", "all") else str(api_id)
     start = local.date() - timedelta(days=days - 1)
     totals = {k: 0 for k in ("requests", "prompt_tokens", "completion_tokens",
                              "total_tokens", "cache_hit_tokens", "cache_miss_tokens")}
     totals["cost_cny"] = 0.0
     by_model: dict[str, dict] = {}
+    by_api: dict[str, dict] = {}
     out_days = []
     unpriced = set()
     corrupted = []
@@ -328,36 +365,63 @@ def snapshot(days: int = 14, now: datetime | None = None,
             if day < start or day > local.date():
                 continue
             data = _read_day(day)
-            if not data.get("models") and path.exists() and path.stat().st_size == 0:
+            if not data.get("models") and not data.get("apis") \
+                    and path.exists() and path.stat().st_size == 0:
                 corrupted.append(path.name)
-            models = []
+            day_models: dict[str, dict] = {}
             day_totals = {k: 0 for k in totals}
-            for name, raw in data["models"].items():
-                if not isinstance(raw, dict):
+            for aid, label, raw_models in _day_buckets(data):
+                if selected is not None and aid != selected:
                     continue
-                s = _model_summary(name, raw)
-                models.append(s)
-                _merge(s, day_totals)
-                acc = by_model.setdefault(name, {
-                    "model": name, "requests": 0, "prompt_tokens": 0,
-                    "completion_tokens": 0, "total_tokens": 0,
-                    "cache_hit_tokens": 0, "cache_miss_tokens": 0,
-                    "cost_cny": 0.0, "priced": s["priced"],
-                })
-                _merge(s, acc)
-                if not s["priced"]:
-                    unpriced.add(name)
+                for name, raw in raw_models.items():
+                    if not isinstance(raw, dict):
+                        continue
+                    s = _model_summary(name, raw)
+                    dm = day_models.setdefault(name, {
+                        "model": name, "requests": 0, "prompt_tokens": 0,
+                        "completion_tokens": 0, "total_tokens": 0,
+                        "cache_hit_tokens": 0, "cache_miss_tokens": 0,
+                        "cost_cny": 0.0, "priced": s["priced"],
+                    })
+                    _merge(s, dm)
+                    _merge(s, day_totals)
+                    acc = by_model.setdefault(name, {
+                        "model": name, "requests": 0, "prompt_tokens": 0,
+                        "completion_tokens": 0, "total_tokens": 0,
+                        "cache_hit_tokens": 0, "cache_miss_tokens": 0,
+                        "cost_cny": 0.0, "priced": s["priced"],
+                    })
+                    _merge(s, acc)
+                    if not s["priced"]:
+                        unpriced.add(name)
+                    api = by_api.setdefault(aid, {
+                        "id": aid, "name": label, "legacy": not aid,
+                        "requests": 0, "prompt_tokens": 0, "completion_tokens": 0,
+                        "total_tokens": 0, "cache_hit_tokens": 0,
+                        "cache_miss_tokens": 0, "cost_cny": 0.0,
+                        "priced": s["priced"],
+                    })
+                    if label:
+                        # 改名后标签取最近一次记录的名称；id 不变，历史不会被拆散
+                        api["name"] = label
+                    _merge(s, api)
             day_totals["cache_hit_rate"] = (
                 round(day_totals["cache_hit_tokens"] / day_totals["prompt_tokens"] * 100, 1)
                 if day_totals["prompt_tokens"] else 0.0)
+            for dm in day_models.values():
+                prompt = dm["prompt_tokens"]
+                dm["cache_hit_rate"] = (round(dm["cache_hit_tokens"] / prompt * 100, 1)
+                                        if prompt else 0.0)
+                dm["cost_cny"] = round(dm["cost_cny"], 6)
             day_totals["date"] = day.isoformat()
-            day_totals["models"] = models
+            day_totals["models"] = sorted(day_models.values(),
+                                          key=lambda x: -x["total_tokens"])
             out_days.append(day_totals)
             for k, v in day_totals.items():
                 if k in totals and isinstance(v, (int, float)):
                     totals[k] += v
 
-    for acc in by_model.values():
+    for acc in list(by_model.values()) + list(by_api.values()):
         prompt = acc["prompt_tokens"]
         acc["cache_hit_rate"] = round(acc["cache_hit_tokens"] / prompt * 100, 1) if prompt else 0.0
         acc["cost_cny"] = round(acc["cost_cny"], 6)
@@ -371,6 +435,8 @@ def snapshot(days: int = 14, now: datetime | None = None,
         "days": out_days,
         "totals": totals,
         "models": sorted(by_model.values(), key=lambda x: -x["total_tokens"]),
+        "apis": sorted(by_api.values(), key=lambda x: -x["total_tokens"]),
+        "api": selected or "all",
         "today": local.date().isoformat(),
         "now": local.isoformat(timespec="seconds"),
         "peak": peak,

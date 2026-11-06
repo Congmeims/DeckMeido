@@ -20,8 +20,10 @@ REQUIRED = {
     "runtime": {"dev_mode"},
     "security": {"device_days", "permission_mode"},
     "remote_input": {"enabled", "sensitivity", "max_minutes"},
+    # 多组接口：current_api 指向 apis 里的某一条 id；旧版 base_url/api_key
+    # 仍会被 main.py 读取迁移，但模板只保留新写法，避免同一把 Key 两个来源
     "llm": {
-        "base_url", "api_key", "model", "timeout", "reasoning_effort",
+        "apis", "current_api", "model", "timeout", "reasoning_effort",
         "max_output_tokens", "max_continuations",
     },
     "agent": {
@@ -65,6 +67,18 @@ class ConfigExampleTest(unittest.TestCase):
             self.assertIn(section, cfg, f"缺少 [{section}] 段")
             missing = keys - set(cfg[section])
             self.assertFalse(missing, f"[{section}] 缺少键：{sorted(missing)}")
+
+    def test_llm_apis_shape(self):
+        """模板里的接口列表必须能被 apicfg 解析，且 current_api 指向其中一条"""
+        cfg = tomllib.loads(EXAMPLE.read_text(encoding="utf-8"))
+        apis = cfg["llm"]["apis"]
+        self.assertIsInstance(apis, list)
+        self.assertTrue(apis, "模板至少给一条占位配置")
+        ids = [item["id"] for item in apis]
+        self.assertIn(cfg["llm"]["current_api"], ids)
+        for item in apis:
+            self.assertEqual({"id", "name", "base_url", "api_key"},
+                             set(item.keys()))
 
     def test_security_declared_once(self):
         """模板里 [security] 只能出现一次。"""

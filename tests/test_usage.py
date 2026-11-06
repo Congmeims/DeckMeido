@@ -156,7 +156,8 @@ class RecordTest(UsageTestBase):
                                       "prompt_cache_miss_tokens": 500},
                                      "deepseek-chat", now=now))
         data = json.loads(self.usage_file("2026-11-06").read_text(encoding="utf-8"))
-        m = data["models"]["deepseek-chat"]
+        # v2：记录按 API 分桶；没传 api_id 的单测落在空桶（「全部」里照常汇总）
+        m = data["apis"][""]["models"]["deepseek-chat"]
         self.assertEqual(m["requests"], 2)
         self.assertEqual(m["prompt_tokens"], 1500)
         self.assertEqual(m["completion_tokens"], 300)
@@ -200,6 +201,64 @@ class RecordTest(UsageTestBase):
         # 高峰 2 元 + 闲时 1 元
         self.assertAlmostEqual(snap["totals"]["cost_cny"], 3.0)
         self.assertEqual(snap["tier"], "offpeak")
+
+    def test_按_api_过滤与全部汇总(self):
+        now = datetime.fromisoformat("2026-11-06T20:00:00+08:00")  # 周五闲时
+        payload = {"prompt_tokens": 100, "completion_tokens": 10}
+        usage.record(payload, "deepseek-chat", api_id="api-a", api_name="主接口", now=now)
+        usage.record(payload, "deepseek-chat", api_id="api-b", api_name="备用", now=now)
+        usage.record(payload, "deepseek-chat", api_id="api-a", api_name="主接口", now=now)
+
+        all_snap = usage.snapshot(7, now=now)
+        self.assertEqual(all_snap["api"], "all")
+        self.assertEqual(all_snap["totals"]["requests"], 3)
+        self.assertEqual(len(all_snap["models"]), 1)
+        self.assertEqual(all_snap["models"][0]["requests"], 3)
+        self.assertEqual({x["id"] for x in all_snap["apis"]}, {"api-a", "api-b"})
+        a_row = next(x for x in all_snap["apis"] if x["id"] == "api-a")
+        self.assertEqual(a_row["name"], "主接口")
+        self.assertEqual(a_row["requests"], 2)
+
+        only_a = usage.snapshot(7, now=now, api_id="api-a")
+        self.assertEqual(only_a["api"], "api-a")
+        self.assertEqual(only_a["totals"]["requests"], 2)
+        self.assertEqual(only_a["totals"]["prompt_tokens"], 200)
+        self.assertEqual(len(only_a["apis"]), 1)
+        self.assertEqual(only_a["apis"][0]["id"], "api-a")
+
+    def test_改名不拆历史统计(self):
+        now = datetime.fromisoformat("2026-11-06T20:00:00+08:00")
+        usage.record({"prompt_tokens": 10, "completion_tokens": 1}, "deepseek-chat",
+                     api_id="api-x", api_name="旧名称", now=now)
+        usage.record({"prompt_tokens": 20, "completion_tokens": 2}, "deepseek-chat",
+                     api_id="api-x", api_name="新名称", now=now)
+        snap = usage.snapshot(7, now=now)
+        # 同一 id 仍然只有一条，名称展示最近一次的标签
+        self.assertEqual(len(snap["apis"]), 1)
+        self.assertEqual(snap["apis"][0]["id"], "api-x")
+        self.assertEqual(snap["apis"][0]["name"], "新名称")
+        self.assertEqual(snap["apis"][0]["requests"], 2)
+
+    def test_升级前的旧数据计入全部但不归属具体_api(self):
+        now = datetime.fromisoformat("2026-11-06T20:00:00+08:00")
+        usage_dir = usage.usage_dir()
+        (usage_dir / "2026-11-06.json").write_text(json.dumps({
+            "version": 1,
+            "date": "2026-11-06",
+            "models": {"deepseek-chat": {
+                "requests": 1, "prompt_tokens": 10, "completion_tokens": 1,
+                "total_tokens": 11, "cache_hit_tokens": 0, "cache_miss_tokens": 10,
+                "peak": {"requests": 0, "hit": 0, "miss": 0, "out": 0},
+                "offpeak": {"requests": 1, "hit": 0, "miss": 10, "out": 1},
+            }},
+        }), encoding="utf-8")
+        all_snap = usage.snapshot(7, now=now)
+        self.assertEqual(all_snap["totals"]["requests"], 1)
+        self.assertEqual(all_snap["apis"][0]["id"], "")
+        self.assertTrue(all_snap["apis"][0]["legacy"])
+        only_api = usage.snapshot(7, now=now, api_id="api-a")
+        self.assertEqual(only_api["totals"]["requests"], 0)
+        self.assertEqual(only_api["apis"], [])
 
     def test_空_usage_不记录(self):
         self.assertFalse(usage.record({}, "deepseek-chat"))

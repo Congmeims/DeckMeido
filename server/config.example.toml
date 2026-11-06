@@ -82,13 +82,21 @@ sensitivity = 1.5
 max_minutes = 30
 
 [llm]
-# OpenAI 兼容接口。默认填 DeepSeek：地址不带 /v1 也认，模型 deepseek-chat（非思考）。
-# 想换成 GPT / Claude(代理) / Qwen / LM Studio 时，把地址和模型一起改掉即可。
-#   - 填了 /v1 也会被自动归一（去重、补全），不用纠结结尾斜杠。
+# OpenAI 兼容接口，可以存多组（名称/备注 + 地址 + Key），同一时间只有
+# current_api 指定的那一条生效。网页「设置 → 模型接入 → 接口」里可以新增、
+# 删除、重命名和切换，保存后立即生效，不用重启。
+#   - 地址不带 /v1 也认；填了 /v1 也会被自动归一，不用纠结结尾斜杠。
 #   - 本地模型（LM Studio / Ollama）填 http://127.0.0.1:1234/v1 这类地址。
-base_url = "https://api.deepseek.com"
-# API 密钥。留空则每次对话前会在网页设置页要求填写。
-api_key = ""
+current_api = "default"
+apis = [
+  # id 是稳定标识：用量统计按它归属，改名不会拆散历史；不要手改。
+  # api_key 留空 = 还没配 Key（对话会提示去设置页填写）。
+  { id = "default", name = "默认", base_url = "https://api.deepseek.com", api_key = "" },
+  # 需要多组时照上面格式继续追加，例如：
+  # { id = "api-backup", name = "备用中转", base_url = "https://your-proxy.example/v1", api_key = "sk-..." },
+]
+# 旧版单组写法（base_url / api_key）仍会被读取：首次启动自动折成一条「默认」
+# 并写回 apis，旧键清空；新配置只需要 apis + current_api，不必再写这两项。
 # 模型名。换成别的服务商时务必一起改，否则会用 DeepSeek 的模型名去请求别家。
 model = "deepseek-chat"
 # 单次请求超时（秒）。慢模型/长回复可调大。
