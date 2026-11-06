@@ -48,6 +48,20 @@ const GAP = 8;
 const TABS = ["询问", "聊天", "设置"] as const;
 
 const TITLE = "#eaf2fb";
+/** 配对结果色：允许走绿、拒绝/失败走琥珀，与卡片现有配色同一套 */
+const PAIR_OK = "#7ee0a8";
+const PAIR_WARN = "#e0a33a";
+/** 允许/拒绝按钮的完成态：沿用 Btn 的 tint 风格，不新增组件 */
+const PAIR_ALLOW_DONE: React.CSSProperties = {
+  background: "rgba(72,199,142,.22)",
+  border: "1px solid rgba(94,214,160,.55)",
+  color: "#a7edcb",
+};
+const PAIR_DENY_DONE: React.CSSProperties = {
+  background: "rgba(224,108,117,.18)",
+  border: "1px solid rgba(224,108,117,.42)",
+  color: "#f0c3c7",
+};
 
 /** QAM 提示词多行框：固定 84px（11.5px 字号约 5 行），内部滚动 */
 const qamTplStyle: React.CSSProperties = {
@@ -375,6 +389,13 @@ function useQamSession() {
   const [pairSessions, setPairSessions] = useState<PairSession[]>([]);
   const [pairDevices, setPairDevices] = useState<PairedDevice[]>([]);
   const [pairError, setPairError] = useState("");
+  // 点「允许/拒绝」后的即时结果：后端在浏览器确认前仍会返回 approved 会话，
+  // 只靠 2 秒轮询看不出变化，所以本地先记一份并渲染成完成态
+  const [pairDecisions, setPairDecisions] = useState<Record<string, boolean>>({});
+  const [pairBusy, setPairBusy] = useState<Record<string, "allow" | "deny">>({});
+  const [pairFlash, setPairFlash] = useState<{ text: string; ok: boolean } | null>(null);
+  const pairBusyRef = useRef<Record<string, boolean>>({});
+  const pairFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const curRef = useRef("");
   const busyRef = useRef(false);
@@ -473,14 +494,56 @@ function useQamSession() {
     await loadPairInfo();
   };
 
+  /** 面板顶部的单行提示：停留 3 秒后自动消失，不打断焦点 */
+  const showPairFlash = (text: string, ok: boolean) => {
+    if (pairFlashTimer.current !== null) clearTimeout(pairFlashTimer.current);
+    setPairFlash({ text, ok });
+    pairFlashTimer.current = setTimeout(() => {
+      pairFlashTimer.current = null;
+      setPairFlash(null);
+    }, 3000);
+  };
+
+  // 面板卸载时清掉定时器，避免回到已销毁的组件里 setState
+  useEffect(
+    () => () => {
+      if (pairFlashTimer.current !== null) clearTimeout(pairFlashTimer.current);
+    },
+    []
+  );
+
   const pairDecide = async (pairId: string, allow: boolean) => {
+    // 同一会话的按钮只认第一次点击，防止连点重复提交
+    if (pairBusyRef.current[pairId]) return;
+    pairBusyRef.current[pairId] = true;
+    const sess = pairSessions.find((p) => p.pair_id === pairId);
+    const deviceName = sess?.name || "未知设备";
+    setPairBusy((prev) => ({ ...prev, [pairId]: allow ? "allow" : "deny" }));
+    setPairError("");
+    let ok = false;
+    let err = "";
     try {
       const r = (await call<[string, boolean], { ok: boolean; error?: string }>(
         "pair_decide", pairId, allow
       )) as { ok: boolean; error?: string };
-      if (!r.ok) setPairError(r.error || "操作失败");
+      ok = !!r.ok;
+      if (!ok) err = r.error || "操作失败";
     } catch (e: any) {
-      setPairError(String(e?.message ?? e));
+      err = String(e?.message ?? e);
+    }
+    delete pairBusyRef.current[pairId];
+    setPairBusy((prev) => {
+      const next = { ...prev };
+      delete next[pairId];
+      return next;
+    });
+    if (ok) {
+      setPairDecisions((prev) => ({ ...prev, [pairId]: allow }));
+      showPairFlash(allow ? `已允许 ${deviceName} 配对` : `已拒绝 ${deviceName} 的配对`, allow);
+    } else {
+      // 失败时不改会话状态，按钮回到可点，同时把原因留在卡片内
+      setPairError(err);
+      showPairFlash(`${allow ? "允许" : "拒绝"}失败：${err}`, false);
     }
     await loadPairInfo();
   };
@@ -1075,6 +1138,9 @@ function useQamSession() {
     pairSessions,
     pairDevices,
     pairError,
+    pairDecisions,
+    pairBusy,
+    pairFlash,
     loadPairInfo,
     pairRefresh,
     pairDecide,
@@ -1765,46 +1831,174 @@ export default function QamScreen() {
                 局域网访问当前关闭（仅本机）。在网页设置里开启并重启后端后，新设备才能配对。
               </div>
             ) : null}
+            {/* 结果提示占固定高度：出现/消失都不推挤下方 PIN 与按钮，窄屏不跳动 */}
+            <div
+              style={{
+                height: 14,
+                flexShrink: 0,
+                display: "flex",
+                alignItems: "center",
+                minWidth: 0,
+              }}
+            >
+              {s.pairFlash ? (
+                <div
+                  role="status"
+                  style={{
+                    width: "100%",
+                    fontSize: 10.5,
+                    lineHeight: "14px",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    color: s.pairFlash.ok ? PAIR_OK : PAIR_WARN,
+                  }}
+                >
+                  {s.pairFlash.ok ? "✓ " : "! "}
+                  {s.pairFlash.text}
+                </div>
+              ) : null}
+            </div>
             {s.pairSessions.length === 0 ? (
               <div style={{ fontSize: 11, color: DIM }}>
                 暂无待配对设备。对方点「配对新设备」后会出现在这里。
               </div>
             ) : (
-              s.pairSessions.map((p) => (
-                <div
-                  key={p.pair_id}
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 4,
-                    padding: "8px 9px",
-                    borderRadius: 4,
-                    background: "rgba(255,255,255,.05)",
-                    border: "1px solid rgba(90,169,230,.16)",
-                  }}
-                >
-                  <div style={{ fontSize: 11, color: TEXT }}>
-                    {p.name || "未知设备"} · {p.ip || "未知来源"}
+              s.pairSessions.map((p) => {
+                const busy = s.pairBusy[p.pair_id];
+                const local = s.pairDecisions[p.pair_id];
+                // 本地点击结果优先：后端在浏览器确认前仍会返回 approved，
+                // 靠轮询要等 2 秒，先把完成态画出来
+                const approved = local === true || p.state === "approved";
+                const denied = approved ? false : local === false || p.state === "denied";
+                const decided = approved || denied;
+                const stateText = busy
+                  ? `正在${busy === "allow" ? "允许" : "拒绝"}…`
+                  : approved
+                    ? "已允许 · 等待对方输入 PIN 完成配对"
+                    : denied
+                      ? "已拒绝 · 本次配对已作废"
+                      : `剩余 ${Math.max(0, p.expires_in)} 秒 · 已试 ${p.attempts}/3 次`;
+                const stateColor = busy
+                  ? ACCENT
+                  : approved
+                    ? PAIR_OK
+                    : denied
+                      ? PAIR_WARN
+                      : DIM;
+                return (
+                  <div
+                    key={p.pair_id}
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 4,
+                      padding: "8px 9px",
+                      borderRadius: 4,
+                      background: approved
+                        ? "rgba(72,199,142,.10)"
+                        : denied
+                          ? "rgba(224,108,117,.08)"
+                          : "rgba(255,255,255,.05)",
+                      border: `1px solid ${
+                        approved
+                          ? "rgba(94,214,160,.40)"
+                          : denied
+                            ? "rgba(224,108,117,.35)"
+                            : "rgba(90,169,230,.16)"
+                      }`,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: TEXT,
+                          minWidth: 0,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {p.name || "未知设备"} · {p.ip || "未知来源"}
+                      </span>
+                      {approved || denied ? (
+                        <span
+                          style={{
+                            flexShrink: 0,
+                            fontSize: 10,
+                            lineHeight: 1.2,
+                            padding: "1px 5px",
+                            borderRadius: 3,
+                            whiteSpace: "nowrap",
+                            color: approved ? PAIR_OK : PAIR_WARN,
+                            border: `1px solid ${
+                              approved ? "rgba(94,214,160,.45)" : "rgba(224,108,117,.40)"
+                            }`,
+                          }}
+                        >
+                          {approved ? "已允许" : "已拒绝"}
+                        </span>
+                      ) : null}
+                    </div>
+                    {denied ? (
+                      <div style={{ fontSize: 11, lineHeight: "26px", color: DIM }}>PIN 已失效</div>
+                    ) : (
+                      <div
+                        style={{
+                          fontSize: 22,
+                          letterSpacing: 6,
+                          color: TITLE,
+                          fontFamily: "monospace",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                        }}
+                      >
+                        {p.pin}
+                      </div>
+                    )}
+                    <div
+                      style={{
+                        fontSize: 10.5,
+                        color: stateColor,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {stateText}
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <Btn
+                        height={26}
+                        size={10.5}
+                        disabled={!!busy || decided}
+                        style={approved ? PAIR_ALLOW_DONE : undefined}
+                        onClick={() => void s.pairDecide(p.pair_id, true)}
+                      >
+                        {approved ? "✓ 已允许" : busy === "allow" ? "允许中…" : "允许"}
+                      </Btn>
+                      <Btn
+                        height={26}
+                        size={10.5}
+                        disabled={!!busy || decided}
+                        style={denied ? PAIR_DENY_DONE : undefined}
+                        onClick={() => void s.pairDecide(p.pair_id, false)}
+                      >
+                        {denied ? "✓ 已拒绝" : busy === "deny" ? "拒绝中…" : "拒绝"}
+                      </Btn>
+                      <Btn
+                        height={26}
+                        size={10.5}
+                        disabled={!!busy}
+                        onClick={() => void s.pairRefresh(p.pair_id)}
+                      >
+                        刷新 PIN
+                      </Btn>
+                    </div>
                   </div>
-                  <div style={{ fontSize: 22, letterSpacing: 6, color: TITLE, fontFamily: "monospace" }}>
-                    {p.pin}
-                  </div>
-                  <div style={{ fontSize: 10.5, color: DIM }}>
-                    剩余 {Math.max(0, p.expires_in)} 秒 · 已试 {p.attempts}/3 次
-                  </div>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <Btn height={26} size={10.5} onClick={() => void s.pairDecide(p.pair_id, true)}>
-                      允许
-                    </Btn>
-                    <Btn height={26} size={10.5} onClick={() => void s.pairDecide(p.pair_id, false)}>
-                      拒绝
-                    </Btn>
-                    <Btn height={26} size={10.5} onClick={() => void s.pairRefresh(p.pair_id)}>
-                      刷新 PIN
-                    </Btn>
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
             {s.pairDevices.length === 0 ? (
               <div style={{ fontSize: 11, color: DIM }}>还没有已配对设备。</div>
