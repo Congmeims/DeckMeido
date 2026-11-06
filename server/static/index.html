@@ -2168,13 +2168,17 @@
     overflow-x: auto; white-space: nowrap; scrollbar-width: none;
   }
   #fbPath::-webkit-scrollbar { display: none; }
-  /* 路径分区胶囊：工作区不显示；谨慎区黄色；危险区/禁浏览红色。
+  /* 路径分区胶囊：工作区绿色；谨慎区黄色；危险区/禁浏览红色。
      和状态徽章同一套圆角/字号，不换行、不挤路径 */
   #fbWarn {
     flex: 0 0 auto; font-size: 11px; line-height: 1.4;
     padding: 2px 8px; border-radius: 999px; white-space: nowrap;
     color: #e0a33a; border: 1px solid rgba(224,163,58,.55);
     background: rgba(224,163,58,.12);
+  }
+  #fbWarn.workspace {
+    color: #5fd08a; border-color: rgba(95,208,138,.5);
+    background: rgba(95,208,138,.12);
   }
   #fbWarn.danger {
     color: #ff7a7a; border-color: rgba(228,80,80,.6);
@@ -5609,7 +5613,7 @@
     return '';
   }
 
-  // 路径栏胶囊：工作区无标识；谨慎区黄色；危险区/禁浏览红色。
+  // 路径栏胶囊：工作区绿色「工作区域」；谨慎区黄色；危险区/禁浏览红色。
   // 只读挂载的谨慎区在文案后面补「· 只读」，让用户提前知道写不了
   function fbRenderZone() {
     var warn = rbEl('fbWarn');
@@ -5618,9 +5622,10 @@
     var upBtn = rbEl('fbUploadBtn');
     var drop = rbEl('fbDrop');
     if (z === 'workspace') {
-      warn.hidden = true;
-      warn.textContent = '';
-      warn.className = '';
+      warn.hidden = false;
+      warn.className = 'workspace';
+      warn.textContent = '工作区域';
+      warn.title = '工作区：可正常读写';
     } else if (z === 'danger' || z === 'forbidden') {
       warn.hidden = false;
       warn.className = 'danger';
@@ -5809,7 +5814,7 @@
           // /proc、/sys、/dev 是拒绝进入（不是只读）：路径栏保留这次尝试的路径，
           // 列表里给出原因，面包屑仍可点回上一级
           fb.path = data.path || path || '';
-          fb.parent = null;
+          fb.parent = data.parent || null;
           fb.select = '';
           fb.zone = 'forbidden';
           fb.readonly = true;

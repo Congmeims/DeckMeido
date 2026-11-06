@@ -2426,13 +2426,19 @@ async def api_browse(path: str = ""):
     # AI 给的是文件路径时列它所在的目录并把它标出来，面板据此高亮；
     # 联动事件里不带 is_dir 也能靠这个兜住
     select = ""
+    parent = None
     try:
         requested = target
         target = target.resolve()
+        # 先算父级：无权限/不可读/不是目录时也要能靠「上一级」退回去，
+        # 不能因为列表失败就把导航一起判死
+        parent = str(target.parent) if str(target.parent) != str(target) else None
         # 断链：链接还在、目标没了。明确说清楚，别让用户点进去看到空白页
         if requested.is_symlink() and not requested.exists():
             z = fszones.zone_info(target, _fs_workspace_roots())
-            return {"path": str(requested), "parent": None, "entries": [],
+            link_parent = (str(requested.parent)
+                           if str(requested.parent) != str(requested) else None)
+            return {"path": str(requested), "parent": link_parent, "entries": [],
                     "link_broken": True, "link_target": str(target),
                     "zone": z["zone"], "readonly": z["readonly"],
                     "zone_label": z["label"], "zone_reason": z["reason"],
@@ -2440,6 +2446,7 @@ async def api_browse(path: str = ""):
         if target.is_file():
             select = target.name
             target = target.parent
+            parent = str(target.parent) if str(target.parent) != str(target) else None
     except OSError:
         return {"path": raw, "parent": None, "entries": [], "error": "路径无效"}
 
@@ -2449,7 +2456,7 @@ async def api_browse(path: str = ""):
     if zone["zone"] == fszones.ZONE_FORBIDDEN:
         # /proc、/sys、/dev 不是只读，是根本不给进；前端按 reason 显示提示
         return JSONResponse(status_code=403, content={
-            "ok": False, "path": str(target), "parent": None, "entries": [],
+            "ok": False, "path": str(target), "parent": parent, "entries": [],
             "reason": fszones.REASON_FORBIDDEN_ZONE, **zone_fields,
             "error": f"{target} 属于禁止浏览的系统目录（/proc、/sys、/dev），已拒绝进入",
         })
@@ -2461,11 +2468,11 @@ async def api_browse(path: str = ""):
             if ensure_workspace(str(tools.WORKSPACE)):
                 target = Path(tools.WORKSPACE)
             else:
-                return {"path": str(target), "parent": None, "entries": [], **zone_fields,
+                return {"path": str(target), "parent": parent, "entries": [], **zone_fields,
                         "error": f"工作区目录 {target} 建不出来（{WORKSPACE_ERROR}）。"
                                  "请检查该路径是否有写权限，或在设置里换一个目录"}
         else:
-            return {"path": str(target), "parent": None, "entries": [], **zone_fields,
+            return {"path": str(target), "parent": parent, "entries": [], **zone_fields,
                     "error": f"目录 {target} 不存在"}
     entries = []
     try:
@@ -2509,10 +2516,10 @@ async def api_browse(path: str = ""):
                         pass
                 entries.append(item)
     except PermissionError:
-        return {"path": str(target), "parent": None, "entries": [], **zone_fields,
+        return {"path": str(target), "parent": parent, "entries": [], **zone_fields,
                 "error": "没有权限读取这个目录"}
     except OSError as e:
-        return {"path": str(target), "parent": None, "entries": [], **zone_fields,
+        return {"path": str(target), "parent": parent, "entries": [], **zone_fields,
                 "error": f"读取失败：{e}"}
     # 文件夹在前、同类按名字排，隐藏文件照样列出（用户可能就是要看 .config）
     entries.sort(key=lambda x: (not x["dir"], x["name"].lower()))

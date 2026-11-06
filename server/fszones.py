@@ -4,9 +4,10 @@
 也走这里的同一套判定，避免「前端禁了按钮、后端还能写」的割裂。
 
 分区规则：
-  工作区  : 配置的工作区 + 安装目录（Deck 上默认 /home/deck/DeckMeido）
-            → 无标识，正常读写
-  谨慎区  : /home/deck/**（工作区除外）、/run/media/deck/**（SD/U 盘）
+  工作区  : 配置的工作区 + 安装目录（Deck 上默认 /home/deck/DeckMeido、
+            用户空间 /home/deck/MeidoSpace）
+            → 绿色「工作区域」，正常读写
+  谨慎区  : /home/deck/**（工作区除外）、/run/media/**（SD/U 盘与各挂载点）
             → 黄色「谨慎操作」，默认可读写；挂载点本身是 ro（写保护卡）时按只读
   危险区  : 其余全部路径（/、/etc、/usr、/var、/boot、/opt、/srv、/lib*、
             /home 下其他用户目录…）→ 红色「危险区域 · 只读」，写操作一律 403
@@ -28,7 +29,7 @@ ZONE_DANGER = "danger"
 ZONE_FORBIDDEN = "forbidden"
 
 ZONE_LABELS = {
-    ZONE_WORKSPACE: "",
+    ZONE_WORKSPACE: "工作区域",
     ZONE_CAUTION: "谨慎操作",
     ZONE_DANGER: "危险区域 · 只读",
     ZONE_FORBIDDEN: "禁止浏览",
@@ -39,8 +40,8 @@ REASON_READ_ONLY_ZONE = "read_only_zone"     # 危险区
 REASON_READ_ONLY_MOUNT = "read_only_mount"   # 谨慎区但挂载点 ro
 REASON_FORBIDDEN_ZONE = "forbidden_zone"     # /proc、/sys、/dev
 
-DEFAULT_WORKSPACE_ROOTS = ("/home/deck/DeckMeido",)
-CAUTION_ROOTS = ("/home/deck", "/run/media/deck")
+DEFAULT_WORKSPACE_ROOTS = ("/home/deck/DeckMeido", "/home/deck/MeidoSpace")
+CAUTION_ROOTS = ("/home/deck", "/run/media")
 FORBIDDEN_ROOTS = ("/proc", "/sys", "/dev")
 
 # 测试/特殊平台可以替换掉：canonical 只经这一个入口读 realpath
@@ -140,10 +141,12 @@ def _linux_mount_readonly(path: str) -> bool:
 def zone_info(path, workspace_roots=None) -> dict:
     """返回该路径的分区信息（前端胶囊、写接口拦截都用这一份）。
 
-    workspace_roots 传配置的工作区（可多个）；不传用 Deck 默认安装目录。
+    workspace_roots 传配置的工作区（可多个）；默认工作区根（安装目录、
+    MeidoSpace）始终生效，避免用户改了工作区配置后把安装目录误判成谨慎区。
     """
     canon = canonical(path)
-    ws_roots = [canonical(p) for p in (workspace_roots or DEFAULT_WORKSPACE_ROOTS)]
+    candidates = list(workspace_roots or ()) + list(DEFAULT_WORKSPACE_ROOTS)
+    ws_roots = list(dict.fromkeys(canonical(p) for p in candidates))
 
     for root in FORBIDDEN_ROOTS:
         if _under(canon, canonical(root)):

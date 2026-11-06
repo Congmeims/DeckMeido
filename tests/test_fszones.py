@@ -59,17 +59,49 @@ class ZoneClassifyTest(unittest.TestCase):
     def test_默认工作区就是DeckMeido(self):
         info = fszones.zone_info("/home/deck/DeckMeido/notes/x.md")
         self.assertEqual(info["zone"], fszones.ZONE_WORKSPACE)
+        self.assertEqual(info["label"], "工作区域")
+
+    def test_用户空间也是工作区(self):
+        roots = ["/home/deck/DeckMeido"]
+        for p in ("/home/deck/MeidoSpace", "/home/deck/MeidoSpace/a/b.txt"):
+            info = fszones.zone_info(p, roots)
+            self.assertEqual(info["zone"], fszones.ZONE_WORKSPACE, p)
+            self.assertFalse(info["readonly"], p)
+            self.assertEqual(info["label"], "工作区域", p)
+            self.assertEqual(fszones.write_block(p, roots), "", p)
+        # 前缀相同但不是同一个目录：不能被顺手升级成工作区
+        info = fszones.zone_info("/home/deck/MeidoSpaceX/a", roots)
+        self.assertEqual(info["zone"], fszones.ZONE_CAUTION)
+        # 整个家目录仍是谨慎区，不能因为工作区而放开
+        info = fszones.zone_info("/home/deck", roots)
+        self.assertEqual(info["zone"], fszones.ZONE_CAUTION)
 
     def test_家目录与SD卡是谨慎区可写(self):
-        for p in ("/home/deck/Downloads/a.zip", "/home/deck", "/run/media/deck/USB/x"):
+        for p in ("/home/deck/Downloads/a.zip", "/home/deck",
+                  "/run/media", "/run/media/foo", "/run/media/deck",
+                  "/run/media/deck/USB/x"):
             info = fszones.zone_info(p, ["/home/deck/DeckMeido"])
             self.assertEqual(info["zone"], fszones.ZONE_CAUTION, p)
             self.assertFalse(info["readonly"], p)
             self.assertEqual(fszones.write_block(p, ["/home/deck/DeckMeido"]), "", p)
 
+    def test_run_media软链接目录按目标判区(self):
+        def fake_realpath(p):
+            p = os.fspath(p)
+            if p == "/run/media/SDCARD":
+                # 走真实 realpath 归一，Windows 上才会带上和其它根一致的盘符
+                return os.path.realpath("/run/media/deck/ABCD-1234")
+            return os.path.realpath(p)
+
+        with mock.patch.object(fszones, "_realpath", fake_realpath):
+            info = fszones.zone_info("/run/media/SDCARD", ["/home/deck/DeckMeido"])
+            self.assertEqual(info["zone"], fszones.ZONE_CAUTION)
+            self.assertFalse(info["readonly"])
+
     def test_危险区只读(self):
         for p in ("/", "/etc/passwd", "/usr/bin", "/var/log", "/boot", "/opt/a",
-                  "/srv", "/lib/modules", "/home/alice/doc", "/run/media"):
+                  "/srv", "/lib/modules", "/home/alice/doc",
+                  "/run", "/run/user", "/run/user/1000"):
             info = fszones.zone_info(p, ["/home/deck/DeckMeido"])
             self.assertEqual(info["zone"], fszones.ZONE_DANGER, p)
             self.assertTrue(info["readonly"], p)
@@ -178,6 +210,27 @@ class FsEndpointTest(unittest.TestCase):
         body = self._body(resp)
         self.assertEqual(body["zone"], fszones.ZONE_FORBIDDEN)
         self.assertEqual(body["reason"], fszones.REASON_FORBIDDEN_ZONE)
+        # 导航不能被禁止浏览判死：父级仍要回给前端，面包屑/上一级能退回
+        target = Path("/proc").resolve()
+        self.assertEqual(body["parent"], str(target.parent))
+
+    def test_无权限目录仍能回上一级(self):
+        # 开发机没有 /root 的权限语义，用真实存在的临时目录模拟 scandir 被拒
+        target = Path(self.danger).resolve()
+        with mock.patch.object(main.os, "scandir", side_effect=PermissionError):
+            data = asyncio.run(main.api_browse(path=self.danger))
+        self.assertEqual(data["path"], str(target))
+        self.assertEqual(data["parent"], str(target.parent))
+        self.assertIn("没有权限", data["error"])
+        self.assertEqual(data["zone"], fszones.ZONE_DANGER)
+        self.assertTrue(data["readonly"])
+
+    def test_根目录没有上一级(self):
+        target = Path("/").resolve()
+        with mock.patch.object(main.os, "scandir", side_effect=PermissionError):
+            data = asyncio.run(main.api_browse(path="/"))
+        self.assertEqual(data["path"], str(target))
+        self.assertIsNone(data["parent"])
 
     def test_工作区浏览带zone字段(self):
         (Path(self.ws) / "a.txt").write_text("x", encoding="utf-8")
