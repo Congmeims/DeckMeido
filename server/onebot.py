@@ -2156,9 +2156,13 @@ def _digits(value: str) -> str:
 
 
 def session_sid(ev: MessageEvent) -> str:
-    """QQ 的会话独立于本地会话；私聊/群聊再各分一份，避免把两种来源混在一起"""
+    """QQ 的会话独立于本地会话；群聊按群分一份，私聊按 QQ 号各一份
+
+    群聊 sid 只带群号：同一群里主人和群友共享同一段对话上下文，
+    不跨群、不与私聊混合；权限仍由各自身份（admin_qq）单独判定。
+    """
     if ev.group_id:
-        return f"qq-g-{_digits(ev.group_id)}-{_digits(ev.uin)}"
+        return f"qq-g-{_digits(ev.group_id)}"
     return f"qq-p-{_digits(ev.uin)}"
 
 

@@ -4583,6 +4583,10 @@ async def _summarize_title(sid: str, first_user_text: str) -> None:
     """
     if not llm.configured or sid in store.deleted_sids:
         return
+    # QQ 会话的标题由会话标识（群号 / QQ 号后 5 位）固定，不交给模型总结，
+    # 否则第一轮结束后侧栏里的 QQxxxxx 会被一句话标题顶掉
+    if session_store.qq_session_title(sid):
+        return
     if not first_user_text.strip():
         return
     try:

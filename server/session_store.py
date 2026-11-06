@@ -532,13 +532,38 @@ class SessionStore:
 store = SessionStore()
 
 
+def qq_session_title(sid: str) -> str:
+    """QQ 会话的固定标题：QQ + 触发方标识后 5 位
+
+    群聊取群号（qq-g-<群号>），私聊取对方 QQ 号（qq-p-<QQ号>）。
+    老数据 qq-g-<群号>-<QQ号> 同样只认群号：标题以会话标识为准，
+    不参与任何判定，所以群内换了发言人也不会改名。
+    不足 5 位按实际位数，不补零；取不到数字返回空串，由调用方回退。
+    """
+    parts = str(sid or "").split("-")
+    if len(parts) < 3 or parts[0] != "qq" or parts[1] not in ("g", "p"):
+        return ""
+    digits = "".join(ch for ch in parts[2] if ch.isdigit())
+    if not digits:
+        return ""
+    return "QQ" + digits[-5:]
+
+
 def set_title(data: dict, hist: list[dict]) -> None:
     """给没有标题的空会话补一个标题，避免侧栏出现两个一模一样的「新会话」
 
     优先用 brief：截屏询问那轮真正的 content 是整段提示词（一百多字），
     拿它当标题，侧栏里就出现「看我卡在哪一步，说说现在这个画面里我该做什么。需…」，
     跟用户自己说的话毫无关系，还容易和别的同类会话撞成一样的名字
+
+    QQ 会话例外：标题完全由会话标识（群号 / QQ 号）算出，与首条消息无关。
+    write_session 每轮都会重建 data 再调这里，算出来的值始终相同，
+    因此相当于只在首次创建时写了一次，后续消息不会把它改成别的名字。
     """
+    fixed = qq_session_title(str(data.get("id") or ""))
+    if fixed:
+        data["title"] = fixed
+        return
     if data.get("title") and data["title"] != "新会话":
         return
     first_user = next((m for m in hist if m.get("role") == "user"),

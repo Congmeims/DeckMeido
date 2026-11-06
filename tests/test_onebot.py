@@ -459,7 +459,7 @@ class BotTest(unittest.IsolatedAsyncioTestCase):
         await bot.wait_idle()
         self.assertEqual(len(self.calls), 1)
         self.assertTrue(self.calls[0]["readonly"])
-        self.assertEqual(self.calls[0]["sid"], "qq-g-20001-30003")
+        self.assertEqual(self.calls[0]["sid"], "qq-g-20001")
         self.assertEqual(self.calls[0]["device"], "qq:group:20001:30003")
         self.assertEqual(self.calls[0]["text"], "你好")
         sent = [s for s in ws.sent if s.get("action") == "send_group_msg"]
