@@ -1323,15 +1323,20 @@ export default function QamScreen() {
   // 页签两端的 L1/R1 小提示：只做视觉指引，不参与焦点，也不挤压页签文字。
   // 视觉语言与大屏页头的 KeyCap 一致（白底黑字小键帽），QAM 里缩到 8.5px，
   // 在 300px 宽的面板里也不换行、不盖住页签。
-  const padHint = (arrow: string, label: string) => (
+  // reverse 只换排列方向，键帽与箭头的样式完全相同：左端「‹ L1」、右端「R1 ›」，
+  // 箭头始终朝外，两端镜像对称。
+  const padHint = (arrow: string, label: string, reverse = false) => (
     <span
       aria-hidden
       style={{
         flexShrink: 0,
         display: "flex",
+        flexDirection: reverse ? "row-reverse" : "row",
         alignItems: "center",
         gap: 2,
         height: TAB_H,
+        padding: "0 2px",
+        boxSizing: "border-box",
         whiteSpace: "nowrap",
         userSelect: "none",
         color: "rgba(139,146,154,.9)",
@@ -1388,7 +1393,7 @@ export default function QamScreen() {
           {name}
         </Focusable>
       ))}
-      {padHint("R1", "›")}
+      {padHint("›", "R1", true)}
     </Focusable>
   );
 
