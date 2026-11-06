@@ -526,6 +526,54 @@ class BotTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.state()["stats"]["rate_limited"], 2)
         await bot.stop()
 
+    async def test_nonwhite_group_member_gets_no_output_even_when_rate_limited(self):
+        """非白名单群的群友：即便刷到限流阈值，也不能收到任何提示"""
+        bot, ws = self.make(config={
+            "enable": True, "ws_url": "ws://127.0.0.1:3001",
+            "access_token": "tok", "admin_qq": ["10001"],
+            "allow_groups": ["20001"],
+            "rate_per_minute": 1, "group_rate_per_minute": 1,
+        })
+        await bot.start()
+        self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
+        for i in range(4):
+            ws.feed(group_msg("29999", "30003", f"meido 第{i}条", mid=f"m{i}"))
+        await bot.wait_idle()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(reply_payloads(ws), [])
+        self.assertEqual(bot.state()["stats"]["ignored"], 4)
+        # 被忽略的消息连限流配额都不该消耗
+        self.assertEqual(bot.state()["stats"]["rate_limited"], 0)
+        await bot.stop()
+
+    async def test_nonwhite_group_member_error_stays_silent(self):
+        """处理链路抛异常时的兜底提示也不能漏进非白名单群"""
+        bot, ws = self.make()
+        await bot.start()
+        self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
+
+        async def boom(ev):
+            raise RuntimeError("boom")
+
+        bot._dispatch_inner = boom
+        ev = onebot.normalize_event(group_msg("29999", "30003", "meido 你好"))
+        await bot._dispatch(ev)
+        self.assertEqual(reply_payloads(ws), [])
+        self.assertEqual(bot.state()["stats"]["errors"], 1)
+        await bot.stop()
+
+    async def test_nonwhite_group_admin_still_replies(self):
+        """主人豁免：非白名单群里主人发指令仍要正常回复（既有语义）"""
+        bot, ws = self.make()
+        await bot.start()
+        self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
+        ws.feed(group_msg("29999", "10001", "meido /status"))
+        await bot.wait_idle()
+        sent = [p for p in ws.sent if p.get("action") == "send_group_msg"]
+        self.assertTrue(sent)
+        self.assertIn("设备状态", json.dumps(sent, ensure_ascii=False))
+        await bot.stop()
+
     async def test_incoming_truncated(self):
         bot, ws = self.make(config={
             "enable": True, "ws_url": "ws://127.0.0.1:3001",
@@ -904,11 +952,11 @@ class AliasTest(unittest.TestCase):
         self.assertEqual(route.action, "chat")
         self.assertTrue(route.readonly)
 
-    def test_group_admin_can_command_and_nonwhite_group_ignored(self):
+    def test_group_admin_exempt_from_whitelist_and_at(self):
+        """主人豁免：不在白名单、没有 @ 也能按管理员指令路由（预期语义）"""
         route = alias_route("截个屏", group="20001", at=True)
         self.assertEqual(route.kind, "shot")
         self.assertFalse(route.readonly)
-        # 主人豁免：不在白名单、没 @ 也能执行
         route = alias_route("截个屏", group="29999", at=True)
         self.assertEqual(route.kind, "shot")
         route = alias_route("截个屏", group="20001", at=False)

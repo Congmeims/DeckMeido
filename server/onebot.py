@@ -763,6 +763,18 @@ def route_message(cfg: OneBotConfig, ev: MessageEvent, nickname: str) -> Route:
     return Route("chat", text=body, readonly=True)
 
 
+def reply_eligible(cfg: OneBotConfig, ev: MessageEvent) -> bool:
+    """这个事件是否有资格收到回复：主人任意位置；群友只限白名单群里 @ 的情况
+
+    与 route_message 的放行条件保持同一份语义。所有出站函数都用它兜底，
+    防止某个分支在 A 处判定忽略、却在 B 处把消息发出去。
+    """
+    if is_admin_user(cfg, ev):
+        return True
+    if ev.group_id is None:
+        return False
+    return bool(ev.at_bot) and ev.group_id in cfg.allow_groups
+
 
 # ---------- 限流 / 截断 / 退避 ----------
 
@@ -1328,9 +1340,18 @@ class OneBotClient:
     def _at_segment(self, uin: str) -> dict:
         return {"type": "at", "data": {"qq": uin}}
 
+    def _log_blocked(self, ev: MessageEvent, kind: str) -> None:
+        """出站兜底拦截的日志：能看出是哪类消息被哪个来源触发"""
+        self._log("warn", "出站拦截",
+                  f"{'群' if ev.group_id else '私聊'} {kind} uin={ev.uin}"
+                  + (f" group={ev.group_id}" if ev.group_id else ""))
+
     async def _send_text(self, ev: MessageEvent, text: str, at: bool = True,
                          chunk: str | None = None) -> None:
         # 所有出站文字都从这里走：AI 回复、固定命令输出、限流提示都会过敏感词表
+        if not reply_eligible(self._cfg, ev):
+            self._log_blocked(ev, "文字")
+            return
         body = self._redactor.apply(text if chunk is None else chunk)
         if ev.group_id is None:
             await self._call_api("send_private_msg",
@@ -1413,6 +1434,9 @@ class OneBotClient:
         记录 voice 元数据；任何一步失败返回 None，由调用方保证文字照常发出。
         """
         cfg = self._cfg
+        if not reply_eligible(cfg, ev):
+            self._log_blocked(ev, "语音")
+            return None
         info = self._inspect_wav(path)
         if info is None:
             self._log("warn", "voice.convert", "wav 无法解析，只发文字")
@@ -1486,6 +1510,9 @@ class OneBotClient:
 
     async def _send_image(self, ev: MessageEvent, blob: bytes, caption: str) -> bool:
         """单条 [text, image] 发送；base64 超限先压图，仍超限就明确回失败"""
+        if not reply_eligible(self._cfg, ev):
+            self._log_blocked(ev, "图片")
+            return False
         if not blob:
             await self._send_text(ev, "图片是空的，这次没发出去。")
             return False
@@ -1557,16 +1584,6 @@ class OneBotClient:
         self._log("info", "收到消息",
                   f"{'群' if ev.group_id else '私聊'} uin={ev.uin}"
                   + (f" group={ev.group_id}" if ev.group_id else ""))
-        # 限流超限：不静默丢弃，回一句短提示；提示按人/群各节流一分钟，
-        # 不会每一条都回一遍把人刷屏
-        allowed, notice = self._gate.check(ev.uin, ev.group_id)
-        if not allowed:
-            self._stats["rate_limited"] += 1
-            self._log("warn", "限流丢弃",
-                      f"uin={ev.uin}" + (f" group={ev.group_id}" if ev.group_id else ""))
-            if notice:
-                await self._send_text(ev, notice, at=False)
-            return
         ev.text = truncate_text(ev.text, cfg.max_message_chars)
         nickname = self._nickname()
         # @机器人 与「昵称：」这类标签只出现在 QQ 侧：先洗掉，
@@ -1579,13 +1596,26 @@ class OneBotClient:
             except Exception as e:
                 self._log("warn", "群缓存写入失败", repr(e))
         device = device_tag(ev)
-        # 危险固定命令的二次确认：上一条挂起的命令先在这里消化掉
-        if await self._consume_menu_confirm(ev, device):
-            return
+        # 先做权限路由，再限流：非白名单群里的消息根本不该得到任何回执，
+        # 也就不能在这里消耗配额、更不能发「太快了」这类提示（以前提示在
+        # 路由之前发，会把限流提示直接发进没有授权的群）
         route = route_message(cfg, ev, nickname)
         if route.action == "ignore":
             self._stats["ignored"] += 1
             self._log("info", "权限忽略", route.reason)
+            return
+        # 限流超限：不静默丢弃，回一句短提示；提示按人/群各节流一分钟，
+        # 不会每一条都回一遍把人刷屏
+        allowed, notice = self._gate.check(ev.uin, ev.group_id)
+        if not allowed:
+            self._stats["rate_limited"] += 1
+            self._log("warn", "限流丢弃",
+                      f"uin={ev.uin}" + (f" group={ev.group_id}" if ev.group_id else ""))
+            if notice:
+                await self._send_text(ev, notice, at=False)
+            return
+        # 危险固定命令的二次确认：上一条挂起的命令先在这里消化掉
+        if await self._consume_menu_confirm(ev, device):
             return
         if route.alias:
             self._log("info", "指令解析", f"命中别名 {route.alias} → {route.kind}")
