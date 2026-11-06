@@ -145,6 +145,11 @@ github_enable = true
 mirror = "https://meido.meagames.cn/deckmeido"
 # GitHub 仓库（公开 API，不带认证头），改动前确认是 fork 的自己的仓库
 github_repo = "Congmeims/deckmeido"
+# 本地离线更新包：扫描这个目录里形如 deckmeido-update-<版本>.zip 的文件，
+# 同名的 .sha256 必须存在（包级校验，缺了直接拒绝）。目录不存在时安静跳过。
+# 想关掉本地包检测就改成 local_enable = false。
+local_enable = true
+local_dir = "/home/deck/deckmeido_workspace"
 
 [tts]
 # 回复语音播报（在 Deck 扬声器上播放）。默认关闭，需要时在网页设置页

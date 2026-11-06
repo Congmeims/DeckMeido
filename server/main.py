@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import glob
+import hashlib
 import io
 import json
 import os
@@ -14,19 +15,20 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import zipfile
 from pathlib import Path
 
 import tomllib
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Header, HTTPException, Depends, UploadFile, Response, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Header, HTTPException, Depends, UploadFile, File, Response, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import audit, authguard, audiomute, depcheck, i18n, memory, netcfg, pairing, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
+from . import audit, authguard, audiomute, depcheck, i18n, local_update, memory, netcfg, pairing, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
 from .session_store import store
 from . import session_store
 from .tts import LANGUAGES, TTS, normalize_engine
@@ -1752,6 +1754,8 @@ def get_status(gaming: bool | None = None) -> dict:
         # 虚拟手柄能不能用（后端视角）：给插件/大屏透传，避免靠 root 权限误判
         "gamepad_ok": gamepad_ok,
         "gamepad_reason": gamepad_reason,
+        # 本地离线更新包：工作区里有没有比当前版本新的合法包
+        "local_update": local_update.status(),
         # 语音合成实际用哪个引擎、为什么降级：tts_engine / tts_ready / tts_error
         **tts.summary(),
     }
@@ -3579,6 +3583,74 @@ async def api_update_apply():
     except RuntimeError as exc:
         msg = str(exc)
         raise HTTPException(status_code=400 if "不是 git" in msg else 502, detail=msg)
+
+
+class LocalApplyBody(BaseModel):
+    name: str
+    allow_downgrade: bool = False
+    sha256: str = ""
+
+
+@app.get("/api/update/local", dependencies=[Depends(require_auth)])
+async def api_update_local():
+    """扫描工作区里的本地更新包（目录不存在时安静返回空）"""
+    return await asyncio.to_thread(local_update.status)
+
+
+@app.post("/api/update/local/apply", dependencies=[Depends(require_auth)])
+async def api_update_local_apply(body: LocalApplyBody):
+    """应用工作区里已经校验过的本地包；装完走 install.sh upgrade 重启"""
+    try:
+        return await asyncio.to_thread(
+            local_update.apply_package, body.name,
+            allow_downgrade=body.allow_downgrade,
+            expected_sha=body.sha256,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/update/local/upload", dependencies=[Depends(require_auth)])
+async def api_update_local_upload(file: UploadFile = File(...),
+                                  x_package_sha256: str = Header(default="")):
+    """网页手选本地包：边收边算 sha256，体积超限立刻拒绝。
+
+    校验值必须由前端提供（浏览器用 SubtleCrypto 先算一遍），服务端重算后比对；
+    没有校验值的上传一律拒绝，和「缺校验值直接拒绝」的应用链路保持一致。
+    """
+    want = (x_package_sha256 or "").strip().lower()
+    if not want:
+        raise HTTPException(status_code=400, detail="缺少包级 sha256 校验值")
+    fd, tmp_name = tempfile.mkstemp(prefix="deckmeido-upload-", suffix=".zip")
+    total = 0
+    h = hashlib.sha256()
+    try:
+        with os.fdopen(fd, "wb") as f:
+            while True:
+                chunk = await file.read(1 << 20)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > local_update.MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"更新包超过上限（{local_update.MAX_UPLOAD_BYTES // (1024 * 1024)}MB）",
+                    )
+                h.update(chunk)
+                f.write(chunk)
+        got = h.hexdigest()
+        if got != want:
+            raise HTTPException(status_code=400,
+                                detail=f"上传的包 sha256 不匹配（客户端 {want[:12]}…）")
+        return await asyncio.to_thread(local_update.apply_archive,
+                                       Path(tmp_name), restart=True)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
 
 
 @app.post("/api/restart", dependencies=[Depends(require_auth)])
@@ -5822,11 +5894,11 @@ async def run_agent(events: list[dict], extra_system: str = "",
 
 
 @app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket, token: str = Query(default="")):
+async def ws_endpoint(ws: WebSocket):
     client_ip = ws.client.host if ws.client else ""
-    if not _ws_authorized(ws, token):
+    if not _ws_authorized(ws):
         # 先 accept 再 close，浏览器才能拿到 4401 这个原因码，否则只会看到 1006 而无限重连
-        audit.record("auth", "ws", "fail", ip=client_ip, reason="bad_token")
+        audit.record("auth", "ws", "fail", ip=client_ip, reason="unpaired")
         await ws.accept()
         await ws.close(code=4401)
         return

@@ -834,6 +834,163 @@ ask_yes() {
   case "$ans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
+# 掌机友好的确认：$1=问题，$2=默认值（y / n）
+# Deck 在游戏模式下用屏幕键盘，A 键等价于回车。提示里把两种操作都写清楚，
+# 不再出现「按任意键」这种没人能按的句子；非交互时直接取默认值并说明。
+ask_yn() {
+  local q="$1" def="${2:-n}" ans="" tag="[y/N]"
+  [ "$def" = "y" ] && tag="[Y/n]"
+  if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
+    if [ "$def" = "y" ]; then
+      dim "非交互，默认安装"
+      return 0
+    fi
+    dim "非交互，默认跳过"
+    return 1
+  fi
+  if [ -t 0 ]; then
+    printf '%s[?]%s %s %s（掌机：A 键=回车，默认 %s）' \
+      "$C_WARN" "$C_END" "$q" "$tag" "$def"
+    read -r ans || ans=""
+  else
+    printf '%s[?]%s %s %s（掌机：A 键=回车，默认 %s）' \
+      "$C_WARN" "$C_END" "$q" "$tag" "$def" > /dev/tty
+    read -r ans < /dev/tty || ans=""
+  fi
+  ans=${ans:-$def}
+  case "$ans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+# 「按 A（回车）继续」：所有需要停一下看结果的地方都走这里。
+# 非交互（管道/日志）不能停住等人，直接说明「自动继续」。
+press_continue() {
+  local hint="${1:-按 A（回车）继续}"
+  if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
+    dim "非交互，自动继续"
+    return 0
+  fi
+  if [ -t 0 ]; then
+    printf '%s[·]%s %s ' "$C_DIM" "$C_END" "$hint"
+    read -r _ || true
+  else
+    printf '%s[·]%s %s ' "$C_DIM" "$C_END" "$hint" > /dev/tty
+    read -r _ < /dev/tty || true
+  fi
+}
+
+# ---------- 可选下载 ----------
+# 所有要联网拉取的项集中在这里，逐条确认；已存在的直接跳过并说明。
+# 默认值保持原有语义：服务端依赖/桌面客户端装，STT/TTS/系统控件默认跳过。
+
+# 已装好的判定：$1 = venv python，$2 = 模块名
+have_py_module() {
+  [ -x "$1" ] && "$1" -c "import $2" >/dev/null 2>&1
+}
+
+# 打印一条可选项：$1 名称，$2 用途，$3 体积，$4 已存在说明（空=不存在），
+# $5 默认值 y/n。返回 0 = 要装，1 = 跳过。
+opt_download() {
+  local name="$1" purpose="$2" size="$3" present="$4" def="${5:-n}"
+  if [ -n "$present" ]; then
+    dim "$name：已存在（$present），跳过"
+    return 1
+  fi
+  if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
+    if [ "$def" = "y" ]; then
+      dim "$name：非交互，默认安装（$purpose，$size）"
+      return 0
+    fi
+    dim "$name：非交互，默认跳过（需要时再单独装）"
+    return 1
+  fi
+  if ask_yn "$name（$purpose，$size）现在下载安装？" "$def"; then
+    return 0
+  fi
+  dim "已跳过 $name"
+  return 1
+}
+
+optional_downloads() {
+  local py="$INSTALL_DIR/.venv/bin/python" nonint=0
+  if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
+    nonint=1
+  fi
+  section "可选下载"
+  dim "下面每一项都会单独确认；已有内容会跳过，不会重复下载。"
+  [ "$nonint" = 1 ] && dim "当前是非交互模式：按默认值自动继续/跳过。"
+
+  # 1. 服务端运行依赖（必装，但允许用户明确取消）
+  if have_py_module "$py" "fastapi"; then
+    dim "Python 运行依赖（服务端）：已存在，跳过"
+    export DECKMEIDO_SKIP_SERVER=0
+  elif opt_download "Python 运行依赖（服务端）" "FastAPI/uvicorn 等，缺了后端跑不起来" "约 30MB" "" y; then
+    export DECKMEIDO_SKIP_SERVER=0
+  else
+    export DECKMEIDO_SKIP_SERVER=1
+    warn "跳过后端依赖，程序可能无法启动；可随时重跑 bash install.sh upgrade"
+  fi
+
+  # 2. 桌面客户端（PySide6 + WebEngine）
+  if have_py_module "$py" "PySide6"; then
+    dim "桌面客户端 PySide6：已存在，跳过"
+    export DECKMEIDO_SKIP_GUI=1
+  elif opt_download "桌面客户端（PySide6）" "桌面窗口与内置浏览器，不要也能用网页版" "约 700MB" "" y; then
+    unset DECKMEIDO_SKIP_GUI
+  else
+    export DECKMEIDO_SKIP_GUI=1
+  fi
+
+  # 3. 语音输入（sherpa-onnx + 首次使用自动下载 SenseVoice 模型）
+  local stt_model="$DATA_MODELS/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx"
+  if have_py_module "$py" "sherpa_onnx" && [ -f "$stt_model" ]; then
+    dim "语音输入（sherpa-onnx + 模型）：已存在，跳过"
+    export DECKMEIDO_INSTALL_STT=0
+  elif opt_download "语音输入 STT" "sherpa-onnx 运行库；首次录音再自动下模型（约 240MB）" "约 30MB" "" n; then
+    export DECKMEIDO_INSTALL_STT=1
+  else
+    export DECKMEIDO_INSTALL_STT=0
+  fi
+
+  # 4. 语音合成（piper-plus + つくよみちゃん模型）
+  local tts_model="$DATA_MODELS/tts/tsukuyomi/tsukuyomi-chan-6lang-fp16.onnx"
+  if have_py_module "$py" "piper_plus" && [ -f "$tts_model" ]; then
+    dim "语音合成（piper-plus + 模型）：已存在，跳过"
+    export DECKMEIDO_INSTALL_TTS=0
+  elif opt_download "语音合成 TTS" "piper-plus + onnxruntime；首次播报再自动下模型（约 38MB）" "约 60MB" "" n; then
+    export DECKMEIDO_INSTALL_TTS=1
+  else
+    export DECKMEIDO_INSTALL_TTS=0
+  fi
+
+  # 5. 系统控件依赖（代替用户动手的 ydotool / wtype / grim 等）
+  local deps_present=""
+  if need_cmd ydotool && need_cmd wtype && need_cmd grim; then
+    deps_present="ydotool/wtype/grim 已在 PATH"
+  fi
+  if opt_download "系统控件依赖（--deps）" "模拟点击/输入、截图等系统能力，需 sudo 走 pacman/AUR" "约 100MB" "$deps_present" n; then
+    export DECKMEIDO_INSTALL_DEPS=1
+  else
+    export DECKMEIDO_INSTALL_DEPS=0
+  fi
+
+  # 6. Decky 插件包（已安装时由 install_plugin 自动替换，不再问）
+  if decky_ready 2>/dev/null; then
+    local pver=""
+    pver="$(plugin_installed_version 2>/dev/null)" || pver=""
+    if [ -n "$pver" ]; then
+      dim "Decky 插件：已安装 v$pver，升级时会自动替换为新版本"
+      export DECKMEIDO_INSTALL_PLUGIN=1
+    elif opt_download "Decky 插件包" "游戏模式 QAM 面板，需先装 Decky Loader" "约 2MB" "" n; then
+      export DECKMEIDO_INSTALL_PLUGIN=1
+    else
+      export DECKMEIDO_INSTALL_PLUGIN=0
+    fi
+  else
+    dim "Decky 插件：没有检测到 Decky Loader，跳过"
+    export DECKMEIDO_INSTALL_PLUGIN=0
+  fi
+}
+
 # 读一行输入并回显提示，返回用户敲的内容。
 #
 # 和 ask_yes 不一样，这里**没有默认值**：管道执行（curl | bash）时 stdin 是脚本本身，
@@ -1423,9 +1580,9 @@ human_size() {
   if [ "$b" -ge 1073741824 ]; then
     printf '%.1fGB' "$(awk "BEGIN{print $b/1073741824}")"
   elif [ "$b" -ge 1048576 ]; then
-    printf '%.0fMB' "$(awk "BEGIN{print $b/1048576}")"
+    printf '%.1fMB' "$(awk "BEGIN{print $b/1048576}")"
   elif [ "$b" -ge 1024 ]; then
-    printf '%.0fkB' "$(awk "BEGIN{print $b/1024}")"
+    printf '%.1fkB' "$(awk "BEGIN{print $b/1024}")"
   else
     printf '%dB' "$b"
   fi
@@ -1566,11 +1723,15 @@ venv_install() {
   fi
 
   if [ "$only_gui" != "gui" ]; then
-    section "Python 依赖（服务端）"
-    if ! pip_install_with_switch "$py" requirements.txt "$start"; then
-      warn "服务端依赖没装全，可稍后重跑：bash $INSTALL_DIR/install.sh upgrade"
-      dim "手动指定源：DECKMEIDO_PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple bash install.sh upgrade"
-      return 1
+    if [ "${DECKMEIDO_SKIP_SERVER:-0}" = "1" ]; then
+      dim "已跳过服务端依赖（可选下载里选择了不装）"
+    else
+      section "Python 依赖（服务端）"
+      if ! pip_install_with_switch "$py" requirements.txt "$start"; then
+        warn "服务端依赖没装全，可稍后重跑：bash $INSTALL_DIR/install.sh upgrade"
+        dim "手动指定源：DECKMEIDO_PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple bash install.sh upgrade"
+        return 1
+      fi
     fi
     # 语音输入是可选能力：单独询问，失败不影响主流程
     install_stt_deps "$py" "$start"
@@ -1689,18 +1850,22 @@ progress_clear() {
 # progress_bar <已下载字节> <总字节> <速度(字节/秒)> <当前包名>
 progress_bar() {
   local got="${1:-0}" total="${2:-0}" rate="${3:-0}" cur="${4:-}" spin_c
-  local eta_text spd_text pct=0 size_text
+  local eta_text spd_text pct=0 pct_text="--" size_text
   if [ "$total" -gt 0 ] && [ "$got" -gt 0 ]; then
     pct=$((got * 100 / total))
     [ "$pct" -gt 100 ] && pct=100
   fi
   if [ "$total" -gt 0 ]; then
     size_text="$(human_size "$got")/$(human_size "$total")"
+    pct_text="${pct}%"
   else
-    size_text="$(human_size "$got")/未知"
+    # 拿不到总大小时不能显示 0%：给已下载量 + 速度，剩余写「未知」
+    size_text="$(human_size "$got")（总大小未知）"
   fi
   if [ "$rate" -gt 0 ] && [ "$total" -gt 0 ] && [ "$got" -lt "$total" ]; then
     eta_text="剩余 $(human_dur $(((total - got) / rate)))"
+  elif [ "$total" -le 0 ]; then
+    eta_text="剩余时间未知"
   else
     eta_text="剩余 --"
   fi
@@ -1714,15 +1879,15 @@ progress_bar() {
   if [ ! -t 1 ]; then
     # 非终端：当前包变了才打一行，重定向到日志时也能看出进度
     if [ -n "$cur" ] && [ "$cur" != "$_progress_last" ]; then
-      printf '    [%s%%] %s  %s  %s\n' "$pct" "$size_text" "$eta_text" "$cur"
+      printf '    [%s] %s  %s  %s  %s\n' "$pct_text" "$size_text" "$spd_text" "$eta_text" "$cur"
       _progress_last="$cur"
     fi
     return 0
   fi
   spin_c="${_spin:$((got % ${#_spin})):1}"
   # 文件名 / 已下载 / 总大小 / 百分比 / 速度 / 剩余时间：六项都在，避免「看着像卡住」
-  printf '\r\033[K%s%s%s  %s  %s  %s%%  %s  %s' \
-    "$C_C" "$spin_c" "$C_END" "$cur" "$size_text" "$pct" "$spd_text" "$eta_text"
+  printf '\r\033[K%s%s%s  %s  %s  %s  %s  %s' \
+    "$C_C" "$spin_c" "$C_END" "$cur" "$size_text" "$pct_text" "$spd_text" "$eta_text"
   _progress_on=1
 }
 
@@ -1874,6 +2039,28 @@ install_plugin() {
     [ -n "$PLUGIN_SKIP_REASON" ] || dim "想用游戏模式面板，先装 Decky Loader，再跑：bash $INSTALL_DIR/plugin/deploy.sh"
     return 0
   fi
+  # 已经装过插件就是升级：直接替换，不再问。以前这里走 ask_yes（默认 N），
+  # 用户在终端按回车就把插件跳过了，升级后插件一直停在旧版本（0.6.11 就是这么来的）。
+  local installed=""
+  installed="$(plugin_installed_version 2>/dev/null)" || installed=""
+  if [ -n "$installed" ]; then
+    info "检测到已安装 Decky 插件 v${installed}，升级自动替换"
+    if plugin_install_zip; then
+      local ver=""
+      ver="$(plugin_installed_version)" || ver=""
+      if [ -n "$ver" ]; then
+        if [ "$ver" = "$installed" ]; then
+          dim "插件版本仍是 v${ver}（zip 与已装版本相同）"
+        else
+          info "插件已更新：v${installed} → v${ver}"
+        fi
+      fi
+      plugin_reload || true
+    else
+      warn "插件自动更新失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
+    fi
+    return 0
+  fi
   # 内联升级（updater.py 用 start_new_session + stdin=/dev/null 拉起本脚本）
   # 拿不到终端，ask_yes 永远回答「不」，插件就被静默跳过、版本停在旧的。
   # 这类无人值守的升级必须自动装：用户既然装过插件，升级时就该跟着换。
@@ -1888,8 +2075,25 @@ install_plugin() {
     fi
     return 0
   fi
+  # 可选下载里已经确认过（=0 跳过 / =1 装）；没确认过才在这里问
+  case "${DECKMEIDO_INSTALL_PLUGIN:-ask}" in
+    0|no|off|false)
+      dim "已跳过 Decky 插件（可选下载里选择了不装）"
+      plugin_handoff_zip
+      return 0 ;;
+    1|yes|on|true)
+      info "安装 QAM 插件（zip 解包，不使用软链接）"
+      if plugin_install_zip; then
+        local ver
+        ver="$(plugin_installed_version)" && info "插件已安装 v${ver}"
+        plugin_reload || true
+      else
+        warn "插件安装失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
+      fi
+      return 0 ;;
+  esac
   # 检测到 Decky，但装不装让用户定：插件要写进 ~/homebrew/plugins，属于系统级改动
-  if ask_yes "检测到 Decky Loader，现在就在游戏模式里装上 QAM 面板吗？"; then
+  if ask_yes "检测到 Decky Loader，现在就在游戏模式里装上 QAM 面板吗？（输入 y 后按回车；直接按 A/回车=不装）"; then
     info "安装 QAM 插件（zip 解包，不使用软链接）"
     # 直接解 zip 到 ~/homebrew/plugins/DeckMeido：和 Decky 自己的安装器同一套产物，
     # 插件目录自洽，删掉安装目录也不影响它加载。
@@ -2442,6 +2646,7 @@ print_done() {
   card_line "             （只删安装器文件；userdata/ 永远保留）"
   card_end
   echo
+  press_continue "按 A（回车）结束"
 }
 
 # ---------- 子命令 ----------
@@ -2488,6 +2693,8 @@ do_install() {
   sync_files
   section "用户数据目录"
   ensure_data_layout
+  # 所有联网下载集中到这一步、逐条确认，之后各安装函数只按决定执行
+  optional_downloads
   section "Python 运行环境"
   # 依赖没装全不该让整个安装中断：代码已经同步好了，联网问题用户之后能自行重试
   venv_install || true
@@ -2502,17 +2709,13 @@ do_install() {
   install_plugin
   # 所有安装动作结束后再落标记/清单，确保 venv、桌面项、插件都记录在内
   write_install_records
-  if [ "$deps" = "--deps" ]; then
+  if [ "$deps" = "--deps" ] || [ "${DECKMEIDO_INSTALL_DEPS:-0}" = "1" ]; then
     deps_intro
     maybe_autorepair_after_image_update
     install_deps
   else
     deps_intro
-    if need_cmd sudo && ask_yes "这些控件属于「代替你动手操作」的核心能力，推荐安装。现在就用 sudo 安装吗？"; then
-      install_deps
-    else
-      dim "已跳过。之后想装：bash install.sh install --deps"
-    fi
+    dim "已跳过系统控件依赖。之后想装：bash install.sh install --deps"
   fi
   section "启动"
   # 后端由客户端拉起：装完顺手开一次客户端，后端就一并起来了
@@ -2547,7 +2750,7 @@ do_upgrade() {
   print_banner
   # 升级只换代码和依赖，下面这些一律保留，用户不用担心升级丢数据
   dim "升级会保留：userdata/ 下的配置、人设、长期记忆、会话与上传文件，"
-  dim "以及工作区、Decky 插件（不重复部署）。"
+  dim "以及工作区；Decky 插件已装过会自动替换为新版本。"
   echo
   section "环境预检"
   check_prereq
@@ -2559,6 +2762,7 @@ do_upgrade() {
   sync_files
   section "用户数据目录"
   ensure_data_layout
+  optional_downloads
   section "Python 运行环境"
   if [ "$gui_only" = 1 ]; then
     venv_install gui || true
@@ -2610,30 +2814,89 @@ mirror_latest_tag() { json_tag "$MIRROR/latest.json"; }
 # 非终端（重定向/日志）时只在百分比跨过 10% 时打一行，避免刷屏。
 curl_progress() {
   local url="$1" dest="$2" label="${3:-$(basename "$2")}"
-  local total pid rc got pct=0 rate prev=0 t0 last_pct=-10
+  local total pid rc got pct=-1 rate=0 eta=0 t0 now dt last_t last_got=0
+  local stall=0 stall_warned=0 last_report=-15 reported=0
   total=$(curl -fsSIL -m 20 "$url" 2>/dev/null | tr -d '\r' \
     | awk 'tolower($1)=="content-length:"{v=$2} END{print v+0}')
   total=${total:-0}
   : > "$dest" 2>/dev/null || true
-  curl -fL --retry 2 -m 600 -o "$dest" "$url" &
+  # 大包（PySide6 等）用更长上限，避免 600 秒被硬截断
+  # -sS：关掉 curl 自带的进度条，进度统一由下面的循环输出；出错仍会打印原因
+  curl -fL -sS --retry 2 -m 3600 -o "$dest" "$url" &
   pid=$!
   t0=$SECONDS
+  last_t=$t0
   while kill -0 "$pid" 2>/dev/null; do
     got=$(stat -c %s "$dest" 2>/dev/null || echo 0)
     got=${got:-0}
-    rate=$((got - prev))
-    prev=$got
-    if [ "$total" -gt 0 ] && [ "$got" -gt 0 ]; then
-      pct=$((got * 100 / total)); [ "$pct" -gt 100 ] && pct=100
+    now=$SECONDS
+    dt=$((now - last_t))
+    # 速度按真实秒数算：以前用的 0.5 秒增量被当成字节/秒，显示速度只有实际的一半
+    if [ "$dt" -ge 1 ]; then
+      rate=$(((got - last_got) / dt))
+      [ "$rate" -lt 0 ] && rate=0
+      last_got=$got
+      last_t=$now
+      if [ "$rate" -eq 0 ] && [ "$got" -gt 0 ]; then
+        stall=$((stall + dt))
+      else
+        stall=0
+        stall_warned=0
+      fi
+      # 15 秒没有任何新数据：明确说一次卡住，数据恢复后重置，避免逐秒刷屏
+      if [ "$stall" -ge 15 ] && [ "$stall_warned" = 0 ]; then
+        warn "下载似乎卡住了：${stall} 秒没有新数据（$label）"
+        stall_warned=1
+      fi
     fi
+    if [ "$total" -gt 0 ]; then
+      pct=$((got * 100 / total)); [ "$pct" -gt 100 ] && pct=100
+      if [ "$rate" -gt 0 ] && [ "$got" -lt "$total" ]; then
+        eta=$(((total - got) / rate))
+      else
+        eta=0
+      fi
+    else
+      pct=-1
+      eta=0
+    fi
+    local size_text eta_text spd_text pct_text stall_text=""
+    size_text="$(human_size "$got")"
+    if [ "$total" -gt 0 ]; then
+      size_text="$(human_size "$got")/$(human_size "$total")"
+      pct_text="${pct}%"
+    else
+      size_text="$(human_size "$got")（总大小未知）"
+      pct_text="--"
+    fi
+    if [ "$rate" -gt 0 ]; then
+      spd_text="$(human_rate "$rate")"
+    else
+      spd_text="0MB/s"
+    fi
+    if [ "$eta" -gt 0 ]; then
+      eta_text="剩余 $(human_dur "$eta")"
+    elif [ "$total" -gt 0 ]; then
+      eta_text="剩余 --"
+    else
+      eta_text="剩余时间未知"
+    fi
+    # 15 秒没有任何新数据：明确提示卡住，而不是继续假装在跑
+    [ "$stall" -ge 15 ] && stall_text="  [下载似乎卡住了：${stall} 秒没有新数据]"
     if [ -t 1 ]; then
-      printf '\r\033[K%s%s%s  %s  %s/%s  %s%%  %s' \
-        "$C_C" '.' "$C_END" "$label" "$(human_size "$got")" \
-        "$([ "$total" -gt 0 ] && human_size "$total" || echo 未知)" \
-        "$pct" "$([ "$rate" -gt 0 ] && human_rate "$rate" || echo 测速中)"
-    elif [ "$((pct / 10))" != "$((last_pct / 10))" ]; then
-      printf '    [%s%%] %s  %s\n' "$pct" "$(human_size "$got")" "$label"
-      last_pct=$pct
+      printf '\r\033[K%s%s%s  %s  %s  %s  %s%s  %s%s' \
+        "$C_C" '.' "$C_END" "$label" "$size_text" "$pct_text" \
+        "$spd_text" "" "$eta_text" "$stall_text"
+    elif [ "$((pct / 10))" != "$((reported / 10))" ] && [ "$pct" -ge 0 ]; then
+      printf '    [%s%%] %s  %s  %s  %s%s\n' "$pct" "$size_text" "$spd_text" \
+        "$eta_text" "$label" "$stall_text"
+      reported=$pct
+      last_report=$now
+    elif [ "$pct" -lt 0 ] && [ "$got" -gt 0 ] && [ $((now - last_report)) -ge 5 ]; then
+      # 总大小未知时没有百分比可跨：每 5 秒报一次已下载量与速度，避免看起来没动；
+      # 还没拿到数据（0B）那一瞬间不刷屏
+      printf '    已下载 %s  %s  %s  %s%s\n' "$size_text" "$spd_text" "$eta_text" "$label" "$stall_text"
+      last_report=$now
     fi
     sleep 0.5
   done
@@ -2697,7 +2960,7 @@ remote_pick_action() {
   echo
   local choice
   # 不写默认值：拿不到终端或读失败一律退出，绝不替用户选升级
-  choice=$(ask_choice "请输入序号（1 升级 / 2 卸载 / 0 退出）：") || {
+  choice=$(ask_choice "请输入序号（1 升级 / 2 卸载 / 0 退出；掌机用屏幕键盘输入后按 A（回车）确认）：") || {
     echo >&2
     warn "没有可用的终端，无法确认要升级还是卸载"
     dim "带子命令直接指定：bash install.sh upgrade / bash install.sh uninstall"
@@ -3146,16 +3409,17 @@ show_menu() {
     info "检测到已安装：$APP${ver:+ v$ver}（$INSTALL_DIR）"
     echo
     echo "  请选择要执行的操作："
-    echo "  ${C_B}1${C_END}  升级到最新版  ${C_DIM}（默认，回车即可）${C_END}"
+    echo "  ${C_B}1${C_END}  升级到最新版  ${C_DIM}（默认，按 A（回车）即可）${C_END}"
     echo "  ${C_B}2${C_END}  重新安装      ${C_DIM}（覆盖重装，保留配置）${C_END}"
     echo "  ${C_B}3${C_END}  卸载          ${C_DIM}（删代码，保留人设与记忆）${C_END}"
     echo "  ${C_B}0${C_END}  退出"
     echo
     local choice=""
     if [ -t 0 ]; then
-      printf '%s[?]%s 请输入序号 [1] ' "$C_WARN" "$C_END"
+      printf '%s[?]%s 请输入序号 [1]（掌机：A 键=回车，直接回车=升级）' "$C_WARN" "$C_END"
       read -r choice || choice="0"
     else
+      dim "非交互，自动继续：升级"
       choice="1"
     fi
     case "${choice:-1}" in

@@ -127,6 +127,9 @@ def update_cfg() -> dict:
         "mirror": DEFAULT_MIRROR,
         "github_repo": REPO,
         "github_enable": True,       # 双源模式下是否探测 GitHub
+        # 本地离线更新包：扫描这个目录里的 deckmeido-update-<ver>.zip
+        "local_enable": True,
+        "local_dir": "/home/deck/deckmeido_workspace",
     }
     try:
         import tomllib
@@ -144,6 +147,10 @@ def update_cfg() -> dict:
         out["github_repo"] = str(u["github_repo"]).strip()
     if isinstance(u.get("github_enable"), bool):
         out["github_enable"] = u["github_enable"]
+    if isinstance(u.get("local_enable"), bool):
+        out["local_enable"] = u["local_enable"]
+    if str(u.get("local_dir") or "").strip():
+        out["local_dir"] = str(u["local_dir"]).strip()
     return out
 
 
@@ -488,7 +495,7 @@ def _apply_mirror(info: dict, log_path: Path) -> str:
         roots = [p for p in Path(tmp).iterdir() if p.is_dir()]
         if not roots:
             raise RuntimeError("安装包结构不对：里面没有目录")
-        _overlay_tree(roots[0], INSTALL_DIR)
+        _install_tree(roots[0], log_path)
     # 发布包里的 VERSION 会被 overlay 带过来；万一包里没有（老包/手工打的包），
     # 就用 latest.json 的 tag 补上，否则升级完了版本号还是旧的
     ver_file = INSTALL_DIR / "VERSION"
@@ -534,6 +541,121 @@ def _merge(src: Path, dst: Path) -> None:
         target = dst / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(item, target)
+
+
+def _install_tree(src: Path, log_path: Path) -> None:
+    """把解压好的新版本装进安装目录：先在本机临时目录建完整副本，再逐个原子替换。
+
+    和旧实现（直接往安装目录里覆盖）相比，失败时不会留下「一半新一半旧」的目录：
+    每一项都是 os.replace 完成的，中途出错按逆序把旧目录搬回来。
+    server/ 下的配置、会话、上传、截图属于用户数据，替换前先复制进新副本。
+    """
+    stamp = f"{os.getpid()}-{int(time.time())}"
+    stage_root = INSTALL_DIR / f".update-stage-{stamp}"
+    if stage_root.exists():
+        shutil.rmtree(stage_root, ignore_errors=True)
+    stage_root.mkdir(parents=True, exist_ok=False)
+    moved: list[tuple[str, Path | None]] = []
+    try:
+        staged: list[str] = []
+        for item in src.iterdir():
+            name = item.name
+            if name in (".git", ".venv", "userdata", "update.log"):
+                continue
+            dst = stage_root / name
+            if item.is_dir():
+                shutil.copytree(item, dst, symlinks=True)
+            else:
+                shutil.copy2(item, dst)
+            staged.append(name)
+
+        # server/ 里混着运行期数据：整棵换掉之前先把它们搬进新副本
+        server_src = INSTALL_DIR / "server"
+        server_dst = stage_root / "server"
+        if server_dst.is_dir():
+            for rel in ("config.toml", "memory.json", "meidosoul.json"):
+                p = server_src / rel
+                if p.is_file():
+                    shutil.copy2(p, server_dst / rel)
+            for rel in ("sessions", "uploads", "static/shots"):
+                p = server_src / rel
+                if p.is_dir():
+                    shutil.copytree(p, server_dst / rel, symlinks=True, dirs_exist_ok=True)
+
+        try:
+            for name in staged:
+                target = INSTALL_DIR / name
+                old = INSTALL_DIR / f".update-old-{name}-{stamp}"
+                if os.path.lexists(target):
+                    os.replace(target, old)
+                    moved.append((name, old))
+                else:
+                    moved.append((name, None))
+                os.replace(stage_root / name, target)
+        except Exception:
+            # 逆序回滚：先删掉已经换上去的新项，再把旧项搬回原位
+            for name, old in reversed(moved):
+                target = INSTALL_DIR / name
+                if os.path.lexists(target):
+                    if target.is_dir() and not target.is_symlink():
+                        shutil.rmtree(target, ignore_errors=True)
+                    else:
+                        try:
+                            target.unlink()
+                        except OSError:
+                            pass
+                if old is not None and os.path.lexists(old):
+                    os.replace(old, target)
+            raise
+
+        for _name, old in moved:
+            if old is None or not os.path.lexists(old):
+                continue
+            try:
+                if old.is_dir() and not old.is_symlink():
+                    shutil.rmtree(old, ignore_errors=True)
+                else:
+                    old.unlink()
+            except OSError:
+                pass
+        _append_log(log_path, "新版本已原子替换到安装目录\n")
+    finally:
+        shutil.rmtree(stage_root, ignore_errors=True)
+
+
+def apply_tarball_bytes(blob: bytes, ver: str, *, expected_sha: str,
+                        log_path: Path | None = None) -> str:
+    """把已下载/已上传的发布包字节装进安装目录（本地更新与远端升级共用）。
+
+    校验值必须由调用方提供：没有校验值的包一律拒绝，避免被篡改的包直接覆盖代码。
+    """
+    log_path = log_path or (INSTALL_DIR / "update.log")
+    got = hashlib.sha256(blob).hexdigest()
+    expect = (expected_sha or "").strip().lower()
+    if not expect:
+        raise RuntimeError("缺少安装包校验值，已拒绝安装")
+    if got != expect:
+        raise RuntimeError(f"安装包校验不通过（期望 {expect[:12]}…，实际 {got[:12]}…）")
+    _append_log(log_path, f"安装包 sha256 校验通过：{got}\n")
+    with tempfile.TemporaryDirectory(prefix="deckmeido-upd-") as tmp:
+        try:
+            with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+                _safe_extract(tf, tmp)
+        except (tarfile.TarError, OSError) as exc:
+            raise RuntimeError(f"安装包解压失败：{exc}")
+        roots = [p for p in Path(tmp).iterdir() if p.is_dir()]
+        if not roots:
+            raise RuntimeError("安装包结构不对：里面没有目录")
+        _install_tree(roots[0], log_path)
+    ver_file = INSTALL_DIR / "VERSION"
+    try:
+        now_ver = ver_file.read_text(encoding="utf-8").strip().lstrip("v")
+    except OSError:
+        now_ver = ""
+    if ver and now_ver != ver:
+        ver_file.write_text(ver + "\n", encoding="utf-8")
+        _append_log(log_path, f"写入 VERSION={ver}\n")
+    return ver
 
 
 def _unsafe_member(root: Path, m: tarfile.TarInfo) -> str:
@@ -793,11 +915,24 @@ def apply(restart_service: bool = True, tag: str = "") -> dict:
     if not restart_service:
         return {"ok": True, "restarted": False, "version": target,
                 "source": used, "message": f"代码已更新到 {target}，重启程序后生效"}
+    return restart_after_apply(target, used, log_path)
 
-    # 日志已在上面的 _append_log 里落过盘，这里只负责拉起升级流程。
-    # 用 /bin/sh 拉起会踩到 bash 专有语法（数组、进程替换），必须显式指定 bash；
-    # 系统里没有 bash 时退回 /bin/sh 只会得到一堆语法错误，所以找不到就不重启，
-    # 直接把「代码已更新，重启生效」告诉用户。
+
+_SOURCE_NOTE = {
+    "mirror": "（镜像站）",
+    "github": "（GitHub）",
+    "local": "（本地更新包）",
+}
+
+
+def restart_after_apply(target: str, used: str, log_path: Path) -> dict:
+    """装完代码后的统一重启：本地包、镜像、GitHub 都走这里。
+
+    日志已由调用方落盘，这里只负责拉起 install.sh upgrade。
+    用 /bin/sh 拉起会踩到 bash 专有语法（数组、进程替换），必须显式指定 bash；
+    系统里没有 bash 时退回 /bin/sh 只会得到一堆语法错误，所以找不到就不重启，
+    直接把「代码已更新，重启生效」告诉用户。
+    """
     bash = shutil.which("bash")
     if not bash:
         return {"ok": True, "restarted": False, "version": target, "source": used,
@@ -811,7 +946,7 @@ def apply(restart_service: bool = True, tag: str = "") -> dict:
             cwd=str(INSTALL_DIR), stdout=log, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL, start_new_session=True, env=env,
         )
-    src_note = "（镜像站）" if used == "mirror" else "（GitHub）"
+    src_note = _SOURCE_NOTE.get(used, "")
     return {"ok": True, "restarted": True, "version": target, "source": used,
             "log": str(log_path),
             "message": f"已更新到 {target}{src_note}，服务重启后生效"}
