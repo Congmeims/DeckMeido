@@ -1014,6 +1014,20 @@ def persist_stream(text: str, force: bool = False, parts: list[dict] | None = No
     _write_streaming(sid, text, buf.get("parts") or [])
 
 
+def refresh_stream_parts(sid: str, text: str, events: list[dict]) -> None:
+    """把「当前屏幕」重新压进流式缓冲 / 副档案（思维链、工具块、过渡正文都算）
+
+    以前只有正文增量时才更新 parts：模型整段只思考、只调工具的那些回合不刷新，
+    缓冲区停在「上一次开口说话」的那一刻。用户中途刷新页面（WS 重连按 parts
+    恢复进行中的一轮），屏幕上已经有的一大段思维链就整段消失（88cad046）。
+    节流交给 persist_stream，这里只负责重建快照。
+    """
+    try:
+        persist_stream(text, parts=_snapshot_parts(events, text), sid=sid)
+    except Exception:
+        pass
+
+
 # 副档案里每块输出 / 每个事件留多少字。一次大输出有 24 万字符（见 tools._OUT_KEEP），
 # 一轮 20 多个工具就能让 parts 涨到几 MB，而它每 200 字就要被序列化写盘一次
 _PART_TEXT_CAP = 4000
@@ -1338,6 +1352,15 @@ def _shot_caption(seq: int) -> str:
     if seq <= 1:
         return prompts.part("shot_caption_first")
     return prompts.part("shot_caption_more").format(seq=seq)
+
+
+def _agent_shot_caption(seq: int) -> str:
+    """给 agent 自己截的那张画面配说明
+
+    这里不是用户带图提问，而是模型为了看清「刚才那步之后」才截的图，
+    所以不能沿用「更早的提问」那套文案（会把它绕回旧图）。
+    """
+    return prompts.part("shot_latest").format(seq=seq)
 
 
 def _shot_ref_content(text: str):
@@ -5687,6 +5710,22 @@ async def run_agent(events: list[dict], extra_system: str = "",
         """
         return _snapshot_parts(events, tail)
 
+    # 屏幕快照的刷新节流：思维链可能一个字一片，每片都重建一遍 parts 没必要
+    _screen_at = 0.0
+
+    def _persist_screen(force: bool = False) -> None:
+        """把当前屏幕（思维链 / 工具块 / 过渡正文）刷进流式缓冲
+
+        只在正文增量时刷新的话，模型整段只思考、只调工具的那些回合缓冲区不更新，
+        用户中途刷新页面拿到的是旧快照，思维链会整段消失（见 refresh_stream_parts）
+        """
+        nonlocal _screen_at
+        now = time.time()
+        if not force and now - _screen_at < 0.8:
+            return
+        _screen_at = now
+        refresh_stream_parts(turn_sid, "".join(stream_text), events)
+
     async def on_delta(text: str):
         """把 LLM 的增量正文转给前端，顺便增量落盘
 
@@ -5760,6 +5799,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
         thought_ev["text"] += text
         _rs["chars"] += len(text)
         _rs["segs"] += 1
+        _persist_screen()
         if _rs["chars"] >= _rs["next"]:
             devlog.log("reasoning.delta", sid=turn_sid, round=round_no,
                        total_chars=_rs["chars"], segments=_rs["segs"])
@@ -5794,8 +5834,11 @@ async def run_agent(events: list[dict], extra_system: str = "",
 
     try:
         round_no = 0
-        # 本轮是否已经往对话里塞过一张截图（塞过就不再塞第二张）
-        turn_shot_seen = False
+        # 本轮已经注入对话的那条画面消息：只保留最新一张（模型反复截图就是想确认
+        # 刚才那步之后的画面，留着早先那张它会对着旧帧下判断）
+        shot_msg = None
+        # 同一工具同参数连续重复的计数（死循环闸门，见 policy.LOOP_*）
+        loop_state: dict = {}
         # 本轮提问自带画面时，模型再自己截一张就是多余的：它拍到的往往是
         # DeckMeido 面板本身，或者和用户发的那张不是同一帧，多一张图只会让
         # 它挑错图回答。这时把截图工具从这一轮的清单里摘掉
@@ -6010,6 +6053,36 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     args = json.loads(call["function"].get("arguments") or "{}")
                 except json.JSONDecodeError:
                     args = {}
+
+                # 死循环闸门：模型拿不到新反馈时会把同一个调用反复发出来。
+                # 第 LOOP_SKIP_AT 次不再执行、明确告诉它结果不会变；
+                # 仍继续重复就按 LOOP_ABORT_AT 收尾，把现状交给用户
+                repeats = policy.repeat_step(loop_state,
+                                             policy.call_signature(name, args))
+                if repeats >= policy.LOOP_SKIP_AT:
+                    label = tools.cn_name(name)
+                    summary = tools.summarize_tool(name, args)
+                    reason = ("重复调用已中断" if repeats >= policy.LOOP_ABORT_AT
+                              else "重复调用已跳过")
+                    loop_event = {"type": "tool", "name": name, "label": label,
+                                  "summary": summary, "files": [], "denied": True,
+                                  "reason": f"{reason}（连续第 {repeats} 次）"}
+                    events.append(loop_event)
+                    _persist_screen(force=True)
+                    await manager.broadcast({"type": "tool_done", "event": loop_event,
+                                             "ts": time.time(), **_turn_tag()})
+                    print(f"[DeckMeido][loop] 重复调用 {name} 连续 {repeats} 次"
+                          f"（会话 {turn_sid}）：{summary}", file=sys.stderr)
+                    if repeats >= policy.LOOP_ABORT_AT:
+                        return (f"同一个操作我连着做了 {repeats} 次（{label}：{summary}），"
+                                f"结果没有变化，就先停在这里。\n\n"
+                                f"要接着做的话换个做法，或者直接告诉我下一步；"
+                                f"确实需要我重试同一个操作也请明说。")
+                    msgs.append({"role": "tool", "tool_call_id": call["id"],
+                                 "content": f"[{name}] 同一操作已经连续做了 {repeats} 次，"
+                                            f"结果不会再变化，这次没有执行。别再重复，"
+                                            f"直接向用户说明现在卡在哪一步。"})
+                    continue
 
                 # ask_user：提问 / 选择题。不执行任何东西，直接把问题抛给界面，
                 # 这一轮就此收工；用户点的那一项作为下一条普通消息发回来，
@@ -6227,6 +6300,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         event["error"] = shot_state.get("error") or "未知原因"
                 events.append(event)
                 await manager.broadcast({"type": "tool_done", "event": event, "ts": time.time(), **_turn_tag()})
+                _persist_screen()
                 # 工具结果前面统一加「[工具名] 」，这类元信息在请求最前面：
                 # 同一次调用无论正文多长，前缀都一样，DeepSeek 的前缀缓存才命中得上。
                 # 反过来，若这里塞「本次命中缓存」之类的可变文案，后面整段历史
@@ -6237,24 +6311,27 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 msgs.append({"role": "tool", "tool_call_id": call["id"],
                              "content": f"[{name}] {_cap_tool_text(result)}"})
                 # 截图后把画面注入对话，多模态模型可直接看图回答。
-                # 同一轮里连着截第二张时复用上一张：模型反复截图通常不是画面变了，
-                # 而是它没「看到」上面那张。再截一张只会让上下文里堆图，
-                # 顺手还把模型推回同样的困惑里绕圈（曾经连截五次停不下来）。
+                # 只保留最新一张：模型反复截图往往是因为拿不到「刚才那步之后」的画面，
+                # 留着早先那张它就只能对着旧帧判断，于是原地连截七八次停不下来。
+                # 每截一张就把旧图从对话里换掉，上下文里始终只有一帧，也不越堆越大
                 if name == "screenshot" and shot_state.get("vision"):
-                    if turn_shot_seen:
-                        msgs.append({"role": "user", "content": prompts.part("shot_again")})
-                    else:
-                        turn_shot_seen = True
-                        turn_shot_no += 1
-                        try:
-                            import base64
-                            b64 = base64.b64encode(Path(shot_state["vision"]).read_bytes()).decode()
-                            msgs.append({"role": "user", "content": [
-                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                                {"type": "text", "text": _shot_caption(max(turn_shot_no, 1))},
-                            ]})
-                        except Exception:
-                            pass
+                    turn_shot_no += 1
+                    try:
+                        import base64
+                        b64 = base64.b64encode(Path(shot_state["vision"]).read_bytes()).decode()
+                        fresh = {"role": "user", "content": [
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                            {"type": "text", "text": _agent_shot_caption(max(turn_shot_no, 1))},
+                        ]}
+                        if shot_msg is not None:
+                            try:
+                                msgs.remove(shot_msg)
+                            except ValueError:
+                                pass
+                        msgs.append(fresh)
+                        shot_msg = fresh
+                    except Exception:
+                        pass
         # 工具轮数用尽：最后再不给工具地问一次，让它基于已有结果收尾回答
         msg = await llm.chat_with_tools_stream(
             msgs, [], on_delta, max_tokens=_output_budget(msgs, _estimate_tokens(msgs)))

@@ -4038,7 +4038,7 @@
       trimMessages();
       fillFileSizes(box);
       scrollBottomSafe();
-      return;
+      return box;
     }
     // 无事件时的兜底：按角色分流画气泡。以前这里无条件画用户气泡，
     // 缓存补回（assistant_message 兜底、崩溃补回）的助手回复就全变成了
@@ -6936,7 +6936,19 @@
               else if (p.type === 'event' && p.event) pEvs.push(p.event);
             });
             var pText = pTexts.join('\n\n') || String(msg.partial.text || '');
-            if (pText || pEvs.length) addMsg('assistant', pText, msg.partial.ts, pEvs);
+            if (pText || pEvs.length) {
+              // 这段就是「这一轮目前的时间线」。接成 liveBox 而不是画完就丢：
+              // 收尾的 assistant_message 会按 liveBox 里的工具/思考数量跳过已画过的部分，
+              // 丢掉了就会把整条流水线再画一遍，屏幕上同一组动作出现两次
+              var pBox = addMsg('assistant', pText, msg.partial.ts, pEvs);
+              if (pBox) {
+                liveBox = pBox;
+                liveToolCount = pEvs.filter(function (e) {
+                  return e && e.type === 'tool';
+                }).length;
+                liveThoughtShown = pBox.querySelectorAll('.tl.thought').length;
+              }
+            }
           }
           // 崩溃补丁：后端被杀时最后一条正文可能只发到浏览器、没来得及写盘。
           // 本地缓存里若有一条服务端历史里没有的回复，补在末尾，避免「我的回复凭空消失」
@@ -6986,7 +6998,12 @@
           streamTextPend = '';
           thoughtTextPend = '';
           streamEl = null; streamBody = null;
-          liveBox = null; liveToolCount = 0; liveThoughtShown = 0; liveThought = null;
+          // 只有「没从 partial 重建时间线」时才把 liveBox 丢掉。
+          // 重建过的那一份就是当前屏幕，收尾时必须继续按它计数，否则会重复渲染
+          if (!liveBox || !liveBox.parentNode) {
+            liveBox = null; liveToolCount = 0; liveThoughtShown = 0;
+          }
+          liveThought = null;
           askShown = 0;
           hideTyping();
           setBusy(false);

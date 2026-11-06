@@ -167,6 +167,33 @@ class SurfacePolicyTest(unittest.TestCase):
             "bigscreen", "chat", "《Stellar Blade》这个 BOSS 弱点是背后核心，破防后一套带走。", 0))
 
 
+class RepeatGuardTest(unittest.TestCase):
+    """死循环闸门：同一工具同参数连续重复必须能自己停下来"""
+
+    def test_signature_is_order_insensitive(self):
+        self.assertEqual(policy.call_signature("desktop", {"a": 1, "b": 2}),
+                         policy.call_signature("desktop", {"b": 2, "a": 1}))
+        self.assertNotEqual(policy.call_signature("desktop", {"x": 1}),
+                            policy.call_signature("desktop", {"x": 2}))
+
+    def test_consecutive_repeat_counts(self):
+        state: dict = {}
+        self.assertEqual(policy.repeat_step(state, "screenshot|{}"), 1)
+        self.assertEqual(policy.repeat_step(state, "screenshot|{}"), 2)
+        self.assertEqual(policy.repeat_step(state, "screenshot|{}"), 3)
+        # 换一个调用就重新计数
+        self.assertEqual(policy.repeat_step(state, "run_command|{\"command\": \"ls\"}"), 1)
+        self.assertEqual(policy.repeat_step(state, "screenshot|{}"), 1)
+
+    def test_skip_then_abort_thresholds(self):
+        """第 3 次不再执行，第 4 次直接收尾（88cad046 连截七次才被手动终止）"""
+        self.assertEqual(policy.LOOP_SKIP_AT, 3)
+        self.assertEqual(policy.LOOP_ABORT_AT, 4)
+        state: dict = {}
+        self.assertEqual([policy.repeat_step(state, "s|{}") for _ in range(4)],
+                         [1, 2, 3, 4])
+
+
 class GameBoundaryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

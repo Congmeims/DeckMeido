@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import shlex
 import time
@@ -494,6 +495,37 @@ def chat_should_continue(client: str | None, surface: str | None,
             and (surface or "") == SURFACE_CHAT
             and used < MAX_CHAT_CONTINUATIONS
             and looks_like_stall(reply))
+
+
+# ---------- 同一工具同参数连续重复 ----------
+
+# 模型拿不到新反馈时会把同一个调用反复发出来：截图只能看到旧的一帧、命令的
+# 真实输出被当成常驻程序丢在后台，都会让它「再做一次同样的事」，一轮就能连
+# 跑二十多步停不下来（88cad046 连截七次，最后靠用户手点终止）。
+# 第 LOOP_SKIP_AT 次起不再执行，明确告诉它「结果不会变」；
+# 仍然继续重复就按 LOOP_ABORT_AT 收尾，把现状交给用户。
+LOOP_SKIP_AT = 3
+LOOP_ABORT_AT = 4
+
+
+def call_signature(name: str, args: dict) -> str:
+    """一次工具调用的「同参数」判据：工具名 + 按键排序后的参数"""
+    try:
+        body = json.dumps(args if isinstance(args, dict) else {},
+                          sort_keys=True, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        body = str(args)
+    return f"{name}|{body}"
+
+
+def repeat_step(state: dict, signature: str) -> int:
+    """连续同一签名的第几次；state 由调用方每轮新建一个空 dict"""
+    if state.get("signature") == signature:
+        state["n"] = int(state.get("n") or 0) + 1
+    else:
+        state["signature"] = signature
+        state["n"] = 1
+    return state["n"]
 
 
 # ---------- 本轮用户消息意图 ----------

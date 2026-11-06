@@ -1474,6 +1474,51 @@ async def _comm_bounded(proc: asyncio.subprocess.Process, feed: bytes | None,
             task.cancel()
 
 
+# 一眼就能看出「自己会退出」的等待类命令。静默 3 秒不代表常驻：`sleep 6; tail log`
+# 这种命令正是静默期被当成常驻程序丢到后台的，真实输出整段丢失，模型于是反复重跑
+_BOUNDED_COMMANDS = {"sleep", "timeout", "curl", "wget", "tail", "head", "ssh",
+                     "rsync", "dd", "ping", "openssl", "ncat"}
+
+
+def _has_bounded_child(pid: int | None) -> bool:
+    """进程树里当前有没有等待类命令在跑（有就说明它在干活，不是常驻 GUI）
+
+    只看 /proc（Linux）；拿不到进程信息时返回 False，保持旧的判定行为。
+    """
+    if not pid:
+        return False
+    try:
+        entries = [n for n in os.listdir("/proc") if n.isdigit()]
+    except OSError:
+        return False
+    parent: dict[int, int] = {}
+    comms: dict[int, str] = {}
+    for n in entries:
+        try:
+            with open(f"/proc/{n}/stat", "rb") as f:
+                raw = f.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        try:
+            # stat: pid (comm) state ppid ...；comm 里可能有空格，按最后一个右括号切
+            head, tail = raw.rsplit(")", 1)
+            comms[int(n)] = head.split("(", 1)[-1].strip()
+            parent[int(n)] = int(tail.split()[1])
+        except (ValueError, IndexError):
+            continue
+    children: dict[int, list[int]] = {}
+    for child, up in parent.items():
+        children.setdefault(up, []).append(child)
+    stack = list(children.get(pid, []))
+    while stack:
+        n = stack.pop()
+        name = os.path.basename(comms.get(n, ""))
+        if name in _BOUNDED_COMMANDS:
+            return True
+        stack.extend(children.get(n, []))
+    return False
+
+
 async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin: str = "",
                        detach: bool = False) -> str:
     global CURRENT_CMD
@@ -1571,17 +1616,25 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
             launcher_done = True
             out, exited, had_output = await _read_probe(proc, launch_wait)
             if not exited and not had_output:
-                log_path = _bg_drain(proc)
-                # 转后台不算结束：面板上标成已转后台，而不是一直转圈
-                if CURRENT_CMD is cur:
-                    cur["running"] = False
-                    cur["background"] = True
-                    cur["exit"] = None
-                    cur["ended"] = time.time()
-                return (f"已在后台启动（进程号 {proc.pid}）。"
-                        f"启动后 {launch_wait:.0f}s 内程序没有输出且未退出，判定为常驻程序，"
-                        f"已转入后台继续运行。如需确认是否正常，用 pgrep / 看窗口检查，不要重复启动。\n"
-                        f"日志：{log_path}")
+                # 静默不等于常驻：`sleep 6; tail log`、`curl --max-time 12` 这几秒
+                # 恰好没有输出，被当成常驻程序丢进后台后真实结果整段丢失，
+                # 模型只能再发一遍同样的命令（88cad046 里就是这么反复重跑的）
+                if _has_bounded_child(proc.pid):
+                    out2 = await _read_rest(proc, max(0.5, timeout - launch_wait))
+                    out = out + out2
+                    exited = True
+                else:
+                    log_path = _bg_drain(proc)
+                    # 转后台不算结束：面板上标成已转后台，而不是一直转圈
+                    if CURRENT_CMD is cur:
+                        cur["running"] = False
+                        cur["background"] = True
+                        cur["exit"] = None
+                        cur["ended"] = time.time()
+                    return (f"已在后台启动（进程号 {proc.pid}）。"
+                            f"启动后 {launch_wait:.0f}s 内程序没有输出且未退出，判定为常驻程序，"
+                            f"已转入后台继续运行。如需确认是否正常，用 pgrep / 看窗口检查，不要重复启动。\n"
+                            f"日志：{log_path}")
             if not exited:
                 # 在干活：把剩余输出读到 EOF；总预算内没读完就交给下面的超时分支
                 out2 = await _read_rest(proc, max(0.5, timeout - launch_wait))
