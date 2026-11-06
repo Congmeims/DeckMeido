@@ -1,10 +1,10 @@
 {
   "tag": "0.7.0",
   "name": "DeckMeido 0.7.0",
-  "notes": "# DeckMeido 0.7.0\n\n- build(release): 0.7.0 重新打包（含逐段混读与 --tts 可选安装）\n- test(tts): 覆盖逐段路由无损与单段失败兜底\n- feat(tts): 逐段混读，假名/汉字/拉丁/数字各自按语言合成\n- build(release): 0.7.0 重新打包并清理 0.6.x 旧产物\n- build(release): winres 只保留最新版本产物\n- feat(install): 新增 --tts 可选安装语音合成依赖\n- build(release): 同步 0.7.0 产物到 winres/deckmeido\n- build(release): 发布包纳入 requirements-tts.txt\n- chore(release): 版本号升至 0.7.0\n- test(tts): 配置归一化、降级判定与打断行为单测\n- feat(web): 女仆人格下新增语音回复设置卡\n- feat(config): [tts] 增加引擎/音色/语言/语速等键并接入保存接口\n- feat(tts): 语音合成接入 piper-plus + つくよみちゃん 6 语模型\n- refactor(auth): 下线访问令牌，改为回环免验证 + 配对设备 HttpOnly Cookie\n- feat(plugin): QAM 页签加 L1/R1 键帽提示，移除令牌卡片与令牌状态字段\n- fix(plugin): QAM 支持 L1/R1 翻页，设置页文案与卡片高度按需求调整\n- tools: 新增一键部署脚本，插件 dist 变化时自动重载 Decky\n- feat(stt): 新增 [stt] model_source 配置与状态里的下载源字段\n- feat(stt): 模型下载改为国内镜像优先、多源切换与断点续传\n- 修复删除会话 500：补 pending_action 的 global 声明\n",
-  "published_at": "2026-11-06T11:20:31+08:00",
+  "notes": "# DeckMeido 0.7.0\n\n- build(release): 0.7.0 重新打包（主语言分段与符号映射）\n- test(tts): 蔚蓝档案资料混排回归 + 星级符号不丢\n- feat(tts): 句子级主语言 + 引号语境 + 符号映射\n- build(release): 0.7.0 重新打包（含逐段混读与 --tts 可选安装）\n- test(tts): 覆盖逐段路由无损与单段失败兜底\n- feat(tts): 逐段混读，假名/汉字/拉丁/数字各自按语言合成\n- build(release): 0.7.0 重新打包并清理 0.6.x 旧产物\n- build(release): winres 只保留最新版本产物\n- feat(install): 新增 --tts 可选安装语音合成依赖\n- build(release): 同步 0.7.0 产物到 winres/deckmeido\n- build(release): 发布包纳入 requirements-tts.txt\n- chore(release): 版本号升至 0.7.0\n- test(tts): 配置归一化、降级判定与打断行为单测\n- feat(web): 女仆人格下新增语音回复设置卡\n- feat(config): [tts] 增加引擎/音色/语言/语速等键并接入保存接口\n- feat(tts): 语音合成接入 piper-plus + つくよみちゃん 6 语模型\n- refactor(auth): 下线访问令牌，改为回环免验证 + 配对设备 HttpOnly Cookie\n- feat(plugin): QAM 页签加 L1/R1 键帽提示，移除令牌卡片与令牌状态字段\n- fix(plugin): QAM 支持 L1/R1 翻页，设置页文案与卡片高度按需求调整\n- tools: 新增一键部署脚本，插件 dist 变化时自动重载 Decky\n",
+  "published_at": "2026-11-06T11:23:16+08:00",
   "files": {
     "tarball": "deckmeido-0.7.0.tar.gz",
-    "sha256": "2d2a623a8afe6074337ac0cb90a6443a539003672ddb51f1a163af66de411ef2"
+    "sha256": "5ca704e37185e2a33ddccc2b3a08db6424579b5b9ff1b4d95add58d9f4427fda"
   }
 }
