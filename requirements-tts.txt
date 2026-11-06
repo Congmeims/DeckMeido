@@ -1,0 +1,4 @@
+# 语音合成（可选）：piper-plus + つくよみちゃん 6 语模型运行时
+# 对应 server/tts.py；装好后首次使用前另下模型（约 38MB，见 /api/tts/download）
+# 注意：piper-plus 2.x 要求 Python 3.11+；缺了不影响后端启动，会自动退回 espeak-ng
+piper-plus[cpu]==2.0.2

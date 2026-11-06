@@ -116,3 +116,8 @@ def logs_dir() -> Path:
 def stt_model_dir() -> Path:
     """语音识别模型目录：<data>/models/sensevoice（首次下载时才创建）"""
     return data_dir() / "models" / "sensevoice"
+
+
+def tts_model_dir() -> Path:
+    """语音合成模型目录：<data>/models/tts/tsukuyomi（首次下载时才创建）"""
+    return data_dir() / "models" / "tts" / "tsukuyomi"
