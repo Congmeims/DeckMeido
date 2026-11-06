@@ -303,6 +303,14 @@ class PersonaRouteTest(unittest.TestCase):
              ("ja", "トリニティ"),
              ("zh", "的宿舍，喜欢红茶和蛋糕。")])
 
+    def test_片假名专名开头的中文句仍按中文读(self):
+        # 两个ミカ让假名占比刚好超过 0.30，但没有平假名，判 zh 才是对的
+        self.assertRoute(
+            "她喜欢ミカ，但ミカ是学生会长。",
+            [("zh", "她喜欢"), ("ja", "ミカ，"),
+             ("zh", "但"), ("ja", "ミカ"), ("zh", "是学生会长。")])
+        self.assertRoute("ミカ的设定：", [("ja", "ミカ"), ("zh", "的设定：")])
+
     def test_纯日文整句按日语读(self):
         self.assertRoute(
             "ミカはトリニティ総合学園の生徒会長で、甘いものが大好きです。",

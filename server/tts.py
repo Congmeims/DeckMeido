@@ -198,6 +198,11 @@ def _sentence_language(text: str) -> str:
         return "en"
     if kana + han == 0:
         return "en"
+    # 只有片假名 + 汉字、完全没有平假名：日语行文几乎一定有助词/送假名，
+    # 这种构成基本是中文句子里的外来专名（「ミカ的设定」「她喜欢ミカ」），
+    # 不能按假名比例判成日语。
+    if han and not _HIRAGANA_RE.search(text):
+        return "zh"
     return "ja" if kana / (kana + han) >= KANA_JA_RATIO else "zh"
 
 
