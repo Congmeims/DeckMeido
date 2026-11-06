@@ -940,6 +940,8 @@
   @keyframes riDotPulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
   /* 「接管中」小字：跟随主题（深色深底亮字 / 浅色浅底深字），不糊在侧栏背景里 */
   .sb-brand .bn-ri {
+    /* 绝对定位在右上角：品牌名/版本已是两行，接管中胶囊不再多占一行撑高 */
+    position: absolute; top: 10px; right: 10px;
     display: none; flex: 0 0 auto; align-self: center;
     font-size: 11px; font-weight: 600; color: var(--ri-fg);
     background: var(--ri-bg);
@@ -994,20 +996,24 @@
     user-select: none; -webkit-user-drag: none;
   }
   [data-theme=light] .sb-brand .brand-mark { filter: none; }
-  /* 字标：与侧栏会话标题同样的字号字形（13px / 400），后面跟版本号 */
+  /* 字标：产品名一行、版本号一行，两行居中；版本用次级色弱化。
+     行距压到 2px，宽度受侧栏约束，窄视口截断而不换行，顶栏高度不变 */
   .sb-brand .brand-name {
-    display: flex; align-items: center; gap: 6px;
-    line-height: 1; user-select: none;
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    line-height: 1.1; user-select: none;
+    max-width: 100%; min-width: 0;
   }
   .sb-brand .bn-text {
+    display: block; max-width: 100%;
     font-size: 13px; font-weight: 400; letter-spacing: 0;
     color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .sb-brand .bn-ver {
-    flex: 0 0 auto; align-self: center;
+    display: block; max-width: 100%;
     font-size: 11px; font-weight: 400;
     color: var(--muted);
-    white-space: nowrap;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   /* 主题与设置放在侧栏「会话」区域底部 */
   .sb-foot {
@@ -7201,7 +7207,9 @@
         connInfo.authMode = d && d.local ? '本机回环（免验证）'
           : (d && d.device ? '设备配对凭据' : '未登录');
         if (deviceSession) {
-          if (d.version) authVer.textContent = 'v' + d.version;
+          if (d.version_display || d.version) {
+            authVer.textContent = 'v' + (d.version_display || d.version);
+          }
           connect();
           return;
         }
@@ -7219,7 +7227,7 @@
     authVerLoaded = true;
     fetch('/api/version')
       .then(function (r) { return r.json(); })
-      .then(function (v) { authVer.textContent = 'v' + (v.version || '?'); })
+      .then(function (v) { authVer.textContent = 'v' + (v.version_display || v.version || '?'); })
       .catch(function () { authVer.textContent = '未知'; });
   }
 
@@ -8303,6 +8311,8 @@
     }, 5000);
   }
   var verTag = document.getElementById('verTag');
+  // 展示用版本（含短提交号）：/api/version 的 version_display，拼好就不再自己拆
+  var curVerDisplay = '';
   var updCheck = document.getElementById('updCheck');
   var updNote = document.getElementById('updNote');
   var updApply = document.getElementById('updApply');
@@ -8402,7 +8412,7 @@
   function markUpdate(latest, current, notes) {
     settingsBtn.classList.add('has-update');
     settingsBtn.title = '有新版本 v' + latest;
-    verTag.textContent = '版本 v' + (current || '?');
+    verTag.textContent = '版本 v' + (curVerDisplay || current || '?');
     // 版本号旁边补一句更新总结：优先用发布说明首行，没有就给一句兜底，
     // 不让这块一直空着
     if (verSummaryEl) {
@@ -8418,7 +8428,9 @@
     fetch('/api/version')
       .then(function (r) { return r.json(); })
       .then(function (v) {
-        verTag.textContent = '版本 v' + (v.version || '?');
+        var disp = v.version_display || v.version || '';
+        if (disp) curVerDisplay = disp;
+        verTag.textContent = '版本 v' + (disp || '?');
         var vu = (v && v.update) || {};
         // 后台已查到新版本：打开设置页就能直接看到并升级
         if (vu.has_update) {
@@ -8443,12 +8455,11 @@
     fetch('/api/version')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (v) {
-        if (!v || !v.version) { brandVer.textContent = 'v?'; return; }
-        var full = String(v.version);
-        // "0.1.0-20-g3d32d2e" 只取前面的发行号，git 描述留给悬停提示
-        var short = full.split('-')[0] || full;
-        brandVer.textContent = 'v' + short;
-        brandVer.title = '版本 ' + full;
+        // version_display 已是「0.7.5-f2931ae」，网页只管前面加 v，不再自己拆/拼
+        var disp = v ? String(v.version_display || v.version || '') : '';
+        if (!disp) { brandVer.textContent = 'v?'; return; }
+        brandVer.textContent = 'v' + disp;
+        brandVer.title = '版本 ' + disp;
       })
       .catch(function () { brandVer.textContent = 'v?'; });
   }
@@ -8465,7 +8476,7 @@
         updCheck.disabled = false;
         if (!res.ok) { updNote.textContent = (res.body && res.body.detail) || '检查失败'; return; }
         var d = res.body;
-        verTag.textContent = '版本 v' + d.current;
+        verTag.textContent = '版本 v' + (curVerDisplay || d.current);
         // 显示实际采用的源；另一源的版本也带上，便于确认「取更高者」生效
         var used = srcName(d.source_used || d.source);
         var tail = used ? '　更新源：' + used : '';

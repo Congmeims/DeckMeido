@@ -45,6 +45,10 @@ INSTALL_DIR = BASE_DIR.parent
 # 这个值仍是旧进程的版本 —— 界面必须把「运行版本」和「磁盘版本」分开显示，
 # 否则会出现「磁盘已是 0.7.2、界面还写 0.7.0」的错觉。
 VERSION = updater.current_version()
+# 部署时的短提交号（安装目录 COMMIT）与展示用版本 0.7.5-f2931ae。
+# 只在显示上使用，更新比较仍然只看 VERSION 的语义版本。
+COMMIT = updater.current_commit()
+VERSION_DISPLAY = updater.version_display(VERSION, COMMIT)
 
 
 def disk_version() -> str:
@@ -67,6 +71,9 @@ def version_state() -> dict:
     return {
         "version": VERSION,
         "running_version": VERSION,
+        # 展示用版本（含部署时的短提交号），更新比较仍只看上面的语义版本
+        "version_display": VERSION_DISPLAY,
+        "commit": COMMIT,
         "disk_version": disk,
         "version_match": bool(disk) and disk == VERSION,
         "pid": os.getpid(),
@@ -3499,6 +3506,7 @@ async def api_auth_session(request: Request):
         "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
         "device_days": _device_days(),
         "version": VERSION,
+        "version_display": VERSION_DISPLAY,
     }
 
 

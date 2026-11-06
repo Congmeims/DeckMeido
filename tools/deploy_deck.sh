@@ -42,6 +42,16 @@ log "1/5 同步 server/ 与 client/ 到 $REMOTE"
 tar --exclude='__pycache__' --exclude='*.pyc' -czf - -C "$ROOT" server client \
   | ssh "$HOST" "tar -xzf - -C $REMOTE" || die "同步后端失败"
 
+# 构建标记：安装目录没有 .git（git archive 部署），把短提交号写进 COMMIT，
+# 后端据此把 /api/version 的 version_display 显示成 0.7.5-xxxxxxx
+COMMIT=$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || true)
+if [ -n "$COMMIT" ]; then
+  printf '%s\n' "$COMMIT" | ssh "$HOST" "cat > $REMOTE/COMMIT" || die "写入 COMMIT 失败"
+  printf '  COMMIT -> %s\n' "$COMMIT"
+else
+  printf '  跳过 COMMIT（当前目录不是 git 仓库）\n'
+fi
+
 # ---------- 2. 重启后端 ----------
 log "2/5 重启 deckmeido-backend"
 ssh "$HOST" "systemctl --user restart deckmeido-backend" || die "重启后端失败"

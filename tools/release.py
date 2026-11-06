@@ -78,6 +78,17 @@ def build_tarball(ver: str) -> Path:
             shutil.copy2(f, stage / "deploy" / "deps" / f.name)
 
     (stage / "VERSION").write_text(ver + "\n", encoding="utf-8", newline="\n")
+    # 构建标记：发布包也带上当时的短提交号，解包安装（没有 .git）时
+    # 后端才能把 version_display 显示成 0.7.5-xxxxxxx
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "--short=7", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        commit = ""
+    if commit:
+        (stage / "COMMIT").write_text(commit + "\n", encoding="utf-8", newline="\n")
     notes = subprocess.run(
         ["git", "log", "-n", "20", "--no-merges", "--pretty=- %s"],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",

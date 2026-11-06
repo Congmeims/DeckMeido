@@ -3156,7 +3156,22 @@ write_version_file() {
   [ -n "$ver" ] || ver=$(sed -nE 's/^  "version": "([^"]*)".*/\1/p' "$INSTALL_DIR/plugin/package.json" 2>/dev/null | head -n1)
   [ -n "$ver" ] || ver="0.0.0"
   printf '%s\n' "${ver#v}" > "$INSTALL_DIR/VERSION"
-  dim "版本：$(cat "$INSTALL_DIR/VERSION")"
+  # 构建标记：短提交号。有 git 就现算；没有 git 则沿用发布包/安装目录里已有的
+  # COMMIT（release.py 或部署脚本写入）；都没有就跳过，界面只显示纯版本号
+  local commit=""
+  if [ -d "$INSTALL_DIR/.git" ]; then
+    commit=$(git -C "$INSTALL_DIR" rev-parse --short=7 HEAD 2>/dev/null || true)
+  fi
+  if [ -z "$commit" ] && [ -d "$HERE/.git" ]; then
+    commit=$(git -C "$HERE" rev-parse --short=7 HEAD 2>/dev/null || true)
+  fi
+  if [ -z "$commit" ] && [ -f "$HERE/COMMIT" ]; then
+    commit=$(head -n1 "$HERE/COMMIT" 2>/dev/null | tr -d '[:space:]' || true)
+  fi
+  if [ -n "$commit" ]; then
+    printf '%s\n' "$commit" > "$INSTALL_DIR/COMMIT"
+  fi
+  dim "版本：$(cat "$INSTALL_DIR/VERSION")　构建：$(cat "$INSTALL_DIR/COMMIT" 2>/dev/null || echo 无)"
 }
 
 wait_ready() {

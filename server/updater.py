@@ -242,6 +242,51 @@ def ver_tuple(ver: str) -> tuple:
     return tuple(int(p) for p in parts[:4]) or (0,)
 
 
+_COMMIT_RE = re.compile(r"[0-9a-fA-F]{4,40}")
+
+
+def _short_commit(raw: str) -> str:
+    """从任意文本里取出第一个十六进制提交号，截到 7 位；没有就空串"""
+    match = _COMMIT_RE.search(str(raw or ""))
+    return match.group(0).lower()[:7] if match else ""
+
+
+def current_commit() -> str:
+    """安装目录对应的短提交号。
+
+    优先读安装目录的 COMMIT（部署脚本 / 发布包写入，git archive 部署没有 .git
+    时只能靠它）；没有就退回本仓库的 git；都拿不到返回空串，界面不显示后缀。
+    """
+    try:
+        raw = (INSTALL_DIR / "COMMIT").read_text(encoding="utf-8").strip()
+        commit = _short_commit(raw)
+        if commit:
+            return commit
+    except OSError:
+        pass
+    if (INSTALL_DIR / ".git").exists():
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(INSTALL_DIR), "rev-parse", "--short=7", "HEAD"],
+                capture_output=True, text=True, timeout=3,
+            ).stdout.strip()
+            return _short_commit(out)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return ""
+
+
+def version_display(version: str | None = None, commit: str | None = None) -> str:
+    """界面展示用的版本：`0.7.5-f2931ae`；没有提交号就只是 `0.7.5`。
+
+    纯显示用途。升级判断只读 VERSION 的语义版本（current_version / ver_tuple），
+    这里的提交后缀不参与 has_update。
+    """
+    ver = (version if version is not None else current_version()).strip().lstrip("v")
+    suffix = _short_commit(commit if commit is not None else current_commit())
+    return f"{ver}-{suffix}" if suffix else ver
+
+
 # ---------- 查最新版本 ----------
 
 def _http_json(url: str, timeout: float = 10.0,
