@@ -210,6 +210,10 @@ class _Worker(QThread):
 # 重启线程还在等后端应答，进程已经在拆 QApplication 了。
 _workers: list[_Worker] = []
 _quitting = False
+# 托盘「重启」：客户端与后端整体重来。launch.sh 见到这个退出码会立刻拉起新实例，
+# 不再按「异常退出」退避；没有 launch.sh 时由本进程派生延迟启动器
+CLIENT_RESTART_EXIT = 75
+_restart_requested = False
 
 
 def run_worker(fn, on_result, parent) -> None:
@@ -722,6 +726,69 @@ def main() -> int:
             return
         run_worker(_restart_work, report_restart, app)
 
+    def _schedule_relaunch() -> None:
+        """安排「当前进程退出后」拉起新客户端
+
+        由 launch.sh 起的实例直接退出码 75 交给外层循环；否则派生一个
+        延迟启动器（新会话、脱离父进程），等单实例套接字随旧进程释放后再起。
+        不在进程内 exec：一半环境半套线程最容易触发 Wayland/Qt 的 abort。
+        """
+        if os.environ.get("DECKMEIDO_CLIENT_WRAPPER") == "1":
+            return
+        main_py = str(Path(__file__).resolve())
+        launch_code = (
+            "import subprocess, sys, time\n"
+            "time.sleep(1.2)\n"
+            "subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL,\n"
+            "                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+            "                 start_new_session=True, close_fds=True)\n"
+        )
+        subprocess.Popen(
+            [sys.executable, "-c", launch_code, sys.executable, main_py, *sys.argv[1:]],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+        )
+
+    def _restart_client_work():
+        restart_state["running"] = True
+        try:
+            if _quitting:
+                return RuntimeError("客户端正在退出，已取消重启。")
+            # 端口上的核心也一并收掉，否则新客户端会直接连回旧核心
+            if not _stop_for_restart():
+                return RuntimeError("旧核心没有退出，重启已中止。")
+            return "ok"
+        finally:
+            restart_state["running"] = False
+
+    def report_restart_client(result) -> None:
+        global _restart_requested
+        act_restart.setText("重启")
+        # 用户在这几秒里又点了「退出」：以退出为准，不再拉起任何新实例
+        if _quitting:
+            return
+        if isinstance(result, Exception):
+            act_restart.setEnabled(True)
+            tray.showMessage("DeckMeido", f"重启失败：{result}", icon, 5000)
+            return
+        try:
+            _schedule_relaunch()
+        except Exception as exc:
+            act_restart.setEnabled(True)
+            tray.showMessage("DeckMeido", f"重启失败：{exc}", icon, 5000)
+            return
+        _restart_requested = True
+        tray.showMessage("DeckMeido", "正在重启客户端与核心…", icon, 2500)
+        # 留一点时间给托盘提示，再走正常退出路径（on_quit 会收尾资源）
+        QTimer.singleShot(400, app.quit)
+
+    def restart_client() -> None:
+        if restart_state["running"] or _quitting:
+            return
+        act_restart.setEnabled(False)
+        act_restart.setText("重启中…")
+        run_worker(_restart_client_work, report_restart_client, app)
+
     # 托盘菜单顺序固定：终止 → 显示 → 重启 → 退出
     menu = QMenu()
     act_terminate = QAction("终止", menu)
@@ -729,7 +796,8 @@ def main() -> int:
     act_show = QAction("显示", menu)
     act_show.triggered.connect(restore)
     act_restart = QAction("重启", menu)
-    act_restart.triggered.connect(restart_core)
+    act_restart.setToolTip("重启客户端与核心")
+    act_restart.triggered.connect(restart_client)
     act_quit = QAction("退出", menu)
     act_quit.triggered.connect(app.quit)
     menu.addAction(act_terminate)
@@ -823,9 +891,12 @@ def main() -> int:
 
     def on_quit() -> None:
         global _quitting
-        # 先让后台线程收尾，再拆 Qt 对象：活跃的 QThread 被析构会 abort
+        # 先让后台线程收尾，再拆 Qt 对象：活跃的 QThread 被析构会 abort。
+        # 「重启」线程要等旧核心按 SIGTERM→SIGKILL 收摊（最多 8 秒），
+        # 这里只给 3 秒会让它活过 QApplication 析构，所以重启期间放宽时限
         _quitting = True
-        deadline = time.monotonic() + 3.0
+        timeout = 9.0 if (_restart_requested or restart_state["running"]) else 3.0
+        deadline = time.monotonic() + timeout
         for w in list(_workers):
             left = max(1, int((deadline - time.monotonic()) * 1000))
             w.wait(left)
@@ -839,7 +910,13 @@ def main() -> int:
     # 信号处理（转 queued 调用再 app.quit）已在 main() 开头统一注册，这里不要再注册一遍：
     # 在事件循环里直接调 app.quit() 有重入风险，且会覆盖掉前面那份正确的处理函数。
 
-    return app.exec()
+    code = app.exec()
+    # 托盘「重启」：由 launch.sh 起的实例用约定退出码 75 交给外层循环，
+    # 它会跳过崩溃退避、立即拉起新实例；直接启动时新实例已由
+    # _schedule_relaunch 派生，这里正常返回 0，免得被别处当成崩溃重拉一份
+    if _restart_requested and os.environ.get("DECKMEIDO_CLIENT_WRAPPER") == "1":
+        return CLIENT_RESTART_EXIT
+    return code
 
 
 def _MinimizeWatcher(callback):

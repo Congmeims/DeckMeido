@@ -6,12 +6,18 @@
 #
 # 用法：client/launch.sh        由桌面快捷方式、install.sh 与系统托盘调用
 #      CLIENT_CRASH_RELAUNCH=0 关掉自动重启（排查问题时用）
+#
+# 托盘「重启」的约定：客户端以退出码 75 退出，表示「客户端与核心整体重来」。
+# 这里不按崩溃处理（不退避、不等 Wayland），直接重新拉起主程序。
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 PY="$ROOT/.venv/bin/python"
 MAIN="$HERE/main.py"
+
+# 告诉客户端「外面有壳」：重启时只交退出码，不必再自己派生延迟启动器
+export DECKMEIDO_CLIENT_WRAPPER=1
 
 [ -x "$PY" ] || { echo "找不到 $PY，请重跑 install.sh" >&2; exit 1; }
 [ -f "$MAIN" ] || { echo "找不到 $MAIN" >&2; exit 1; }
@@ -25,6 +31,13 @@ while :; do
   # 0 = 用户主动退出；130/143 = Ctrl-C / SIGTERM，都属于正常收摊
   if [ "$rc" = "0" ] || [ "$rc" = "130" ] || [ "$rc" = "143" ]; then
     exit "$rc"
+  fi
+  # 75 = 托盘「重启」：旧进程已完整退出（核心也停了），立刻起新实例。
+  # 不走下面的崩溃退避，否则用户点一次重启要干等好几秒
+  if [ "$rc" = "75" ]; then
+    delay=2
+    echo "[launch] 客户端请求重启，立即重新拉起" >&2
+    continue
   fi
   [ "$relaunch" = "1" ] || exit "$rc"
 
