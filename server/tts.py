@@ -79,8 +79,15 @@ _SENT_RE = re.compile(r"[^。！？!?；;：:\n]+[。！？!?；;：:\n]?")
 _KANA_RE = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff]")
 _CJK_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
-_MIXED_SPLIT_RE = re.compile(
-    r"[A-Za-z][A-Za-z0-9'’\-]*|[^\x00-\x7f]+|\s+|[^\sA-Za-z]+")
+# 逐段切分：假名 / 汉字 / 数字 / 拉丁词（GPU、v0.7.0 这类整体保留）/ 其余单个字符。
+# 「其余」包括标点、空白和其它脚本，只用于拼回原文，不单独送语音。
+_SCRIPT_TOKEN_RE = re.compile(
+    r"(?P<kana>[\u3040-\u30ff\u31f0-\u31ff]+)"
+    r"|(?P<han>[\u3400-\u9fff\uf900-\ufaff]+)"
+    r"|(?P<digit>\d+(?:[.,]\d+)*)"
+    r"|(?P<latin>[A-Za-z][A-Za-z0-9'’\-_.:/]*)"
+    r"|(?P<other>.)"
+)
 
 
 class TTSError(RuntimeError):
@@ -139,12 +146,61 @@ def detect_language(text: str) -> str:
     return "en"
 
 
+def _script_kind(kind: str) -> bool:
+    """是否是需要发声的脚本片段（数字也发声，只是语言跟邻居走）"""
+    return kind in ("kana", "han", "latin", "digit")
+
+
+def _neighbor_script(tokens: list[tuple[str, str]], index: int, step: int) -> int:
+    """跳过标点/空白，找前一个或后一个脚本片段的 token 下标（没有则 -1）"""
+    j = index + step
+    while 0 <= j < len(tokens):
+        if _script_kind(tokens[j][0]):
+            return j
+        j += step
+    return -1
+
+
+def _token_language(tokens: list[tuple[str, str]], index: int) -> str:
+    """单个脚本片段的语言：假名 ja、拉丁 en、汉字看是否贴着假名"""
+    kind = tokens[index][0]
+    if kind == "kana":
+        return "ja"
+    if kind == "latin":
+        return "en"
+    if kind == "han":
+        # 日语句子里汉字与假名交替出现：贴着假名（中间只隔标点/空白）的
+        # 汉字段按日语读；其余汉字段（中文说明等）按中文读。
+        for step in (-1, 1):
+            j = _neighbor_script(tokens, index, step)
+            if j >= 0 and tokens[j][0] == "kana":
+                return "ja"
+        return "zh"
+    return ""
+
+
+def _digit_language(tokens: list[tuple[str, str]], index: int) -> str:
+    """数字没有自己的语言：优先跟前一段，其次跟后一段，绝不丢"""
+    for step in (-1, 1):
+        j = _neighbor_script(tokens, index, step)
+        while j >= 0 and tokens[j][0] == "digit":
+            j = _neighbor_script(tokens, j, step)
+        if j >= 0:
+            lang = _token_language(tokens, j)
+            if lang:
+                return lang
+    return "en"
+
+
 def route_segments(text: str, language: str = "auto",
                    limit: int = MAX_CHARS) -> list[tuple[str, str]]:
-    """按句子/语种切段，返回 [(语种, 文本)]。
+    """按句子 + 脚本切段，返回 [(语种, 文本)]。
 
-    多语模型每个字母脚本按字符自动判定，所以中英混排不必逐字切换；
-    这里只在「汉字 + 拉丁字母」同句时按脚本段切开，避免整句被当成一种语言。
+    auto 时每句都按脚本切成连续片段：假名 / 汉字 / 拉丁 / 数字。
+    标点和空白不单独成段，而是并进相邻片段，保证把片段拼回去后与
+    原句逐字等价（纯符号句子没有可读内容，返回空列表）。
+
+    固定语言优先：显式选了 ja/zh/en/... 时整句不拆，直接用该语言。
     """
     forced = language if language in LANGUAGES and language != "auto" else ""
     out: list[tuple[str, str]] = []
@@ -155,19 +211,33 @@ def route_segments(text: str, language: str = "auto",
         if forced:
             out.append((forced, sentence))
             continue
-        has_cjk = bool(_CJK_RE.search(sentence) or _KANA_RE.search(sentence))
-        has_latin = bool(_LATIN_RE.search(sentence))
-        if has_cjk and has_latin:
-            for piece in _MIXED_SPLIT_RE.findall(sentence):
-                if not piece.strip():
-                    continue
-                # 纯标点/空白不成段，避免把「，」当成一句送去合成
-                if not (_LATIN_RE.search(piece) or _CJK_RE.search(piece)
-                        or _KANA_RE.search(piece)):
-                    continue
-                out.append((detect_language(piece), piece.strip()))
-        else:
-            out.append((detect_language(sentence), sentence))
+        tokens = [(m.lastgroup, m.group(0)) for m in _SCRIPT_TOKEN_RE.finditer(sentence)]
+        segs: list[list[str]] = []
+        lead = ""  # 句首标点先攒着，等第一个有声片段一起送
+        for i, (kind, piece) in enumerate(tokens):
+            if kind == "other":
+                if segs:
+                    segs[-1][1] += piece
+                else:
+                    lead += piece
+                continue
+            if kind == "digit":
+                lang = segs[-1][0] if segs else _digit_language(tokens, i)
+            else:
+                lang = _token_language(tokens, i)
+            segs.append([lang, lead + piece])
+            lead = ""
+        if lead and segs:
+            segs[-1][1] += lead
+        # 相邻且同语言的片段合并：日语汉字/假名交替时不必每两个字符就合成一次，
+        # 减少合成调用和段间停顿，同时不改变语言标注
+        merged: list[list[str]] = []
+        for lang, seg in segs:
+            if merged and merged[-1][0] == lang:
+                merged[-1][1] += seg
+            else:
+                merged.append([lang, seg])
+        out.extend((lang, seg) for lang, seg in merged)
     # 超长段落再按长度硬切，保证每次合成不会一口气吃进一大段
     trimmed: list[tuple[str, str]] = []
     for lang, segment in out:
@@ -231,6 +301,7 @@ class TTS:
         self._cancel: threading.Event | None = None
         self._last_engine = ""
         self._last_error = ""
+        self._last_failed_segments = 0
 
         # 下载任务
         self._dl_lock = threading.Lock()
@@ -355,6 +426,8 @@ class TTS:
             "player": self._player(),
             "last_engine": self._last_engine,
             "last_error": self._last_error,
+            # 最近一次播报里合成失败的片段数（0 = 全部念完）
+            "failed_segments": self._last_failed_segments,
             "attribution": ATTRIBUTION,
             "attribution_url": ATTRIBUTION_URL,
             "download": self.download_status(),
@@ -465,20 +538,31 @@ class TTS:
         event = threading.Event()
         self._cancel = event
         self._last_error = ""
+        self._last_failed_segments = 0
         try:
             segments = route_segments(cleaned, self.language, self.max_chars)
             if not segments:
                 return
             if self._piper_ready():
                 try:
-                    await self._speak_piper(segments, event)
-                    return
+                    failures, first_error = await self._speak_piper(segments, event)
                 except Exception as exc:
-                    # 合成/播放失败：整段退回 espeak（已经念过的句子可能重复一遍，
-                    # 但保证不会因为模型问题彻底没声）
-                    self._last_error = f"piper-plus 播报失败：{_short_error(exc)}"
+                    # 整体不可用（模型加载失败、没有播放器）：整段退回 espeak
+                    self._last_error = f"piper-plus 不可用：{_short_error(exc)}"
                     if not self.model_ready():
                         self.unload()
+                else:
+                    self._last_failed_segments = failures
+                    if failures >= len(segments):
+                        # 一段都没成功：当整体不可用处理，允许整段重念一遍
+                        self._last_error = (
+                            f"piper-plus 全部 {len(segments)} 段合成失败：{first_error}")
+                        await self._speak_espeak(cleaned, event)
+                    elif failures:
+                        # 只有个别片段失败：其余已经正常念完，不再整段重来
+                        self._last_error = (
+                            f"piper-plus {failures}/{len(segments)} 段合成失败：{first_error}")
+                    return
             await self._speak_espeak(cleaned, event)
         finally:
             if self._cancel is event:
@@ -545,22 +629,51 @@ class TTS:
             return None
         return value if isinstance(value, int) else None
 
-    async def _speak_piper(self, segments: list[tuple[str, str]], event: threading.Event):
+    async def _speak_piper(
+        self, segments: list[tuple[str, str]], event: threading.Event
+    ) -> tuple[int, str]:
+        """逐段合成播放，返回 (失败段数, 首个错误)。
+
+        单段失败只跳过该段、继续后面的句子，避免整段重来 espeak 造成重复；
+        模型加载失败 / 没有播放器这类整体性错误仍然抛出，由 speak() 整段兜底。
+        """
         self._last_engine = "piper-plus"
+        failures = 0
+        first_error = ""
         try:
             for language, segment in segments:
                 if event.is_set():
-                    return
-                wav = await asyncio.to_thread(self._synth_wav, segment, language)
+                    break
+                try:
+                    wav = await asyncio.to_thread(self._synth_wav, segment, language)
+                except TTSError as exc:
+                    if exc.kind in ("model", "runtime"):
+                        raise
+                    failures += 1
+                    first_error = first_error or _short_error(exc)
+                    continue
+                except Exception as exc:
+                    failures += 1
+                    first_error = first_error or _short_error(exc)
+                    continue
                 if event.is_set():
                     wav.unlink(missing_ok=True)
-                    return
+                    break
                 try:
                     await self._play(wav, event)
+                except TTSError as exc:
+                    if exc.kind == "player":
+                        raise
+                    failures += 1
+                    first_error = first_error or _short_error(exc)
+                except Exception as exc:
+                    failures += 1
+                    first_error = first_error or _short_error(exc)
                 finally:
                     wav.unlink(missing_ok=True)
         finally:
             self._maybe_unload()
+        return failures, first_error
 
     async def _play(self, wav: Path, event: threading.Event):
         player = self._player()
