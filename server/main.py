@@ -3043,7 +3043,6 @@ class OneBotConfigUpdate(BaseModel):
     # 接受数组（新前端）或逗号/换行分隔的字符串（手写/旧调用）
     admin_qq: list[str] | str | None = None
     allow_groups: list[str] | str | None = None
-    group_admin_commands: bool | None = None
     # 传空字符串 = 恢复内置默认；超长由 normalize_guest_prompt 拒绝（400）
     guest_prompt: str | None = None
     allow_image: bool | None = None
@@ -6809,7 +6808,6 @@ def _qq_public_config() -> dict:
         "access_token": cfg.access_token,
         "admin_qq": list(cfg.admin_qq),
         "allow_groups": list(cfg.allow_groups),
-        "group_admin_commands": cfg.group_admin_commands,
         **onebot.guest_prompt_fields(cfg.guest_prompt),
         "guest_prompt_max": onebot.MAX_GUEST_PROMPT,
         "allow_image": cfg.allow_image,
@@ -6860,8 +6858,6 @@ async def api_save_qq_config(req: OneBotConfigUpdate):
         updates["admin_qq"] = _qq_id_list(req.admin_qq)
     if req.allow_groups is not None:
         updates["allow_groups"] = _qq_id_list(req.allow_groups)
-    if req.group_admin_commands is not None:
-        updates["group_admin_commands"] = bool(req.group_admin_commands)
     if req.guest_prompt is not None:
         try:
             updates["guest_prompt"] = onebot.normalize_guest_prompt(req.guest_prompt)

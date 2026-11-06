@@ -177,8 +177,6 @@ class OneBotConfig:
     access_token: str = ""
     admin_qq: tuple[str, ...] = ()
     allow_groups: tuple[str, ...] = ()
-    # 白名单群里的管理员也能下指令（普通群成员始终只读）
-    group_admin_commands: bool = True
     guest_prompt: str = ""
     allow_image: bool = False
     max_image_mb: float = 8.0
@@ -286,7 +284,6 @@ def parse_config(raw: dict | None) -> OneBotConfig:
         access_token=str(raw.get("access_token") or "").strip(),
         admin_qq=_as_str_list(raw.get("admin_qq")),
         allow_groups=_as_str_list(raw.get("allow_groups")),
-        group_admin_commands=_as_bool(raw.get("group_admin_commands"), True),
         guest_prompt=str(raw.get("guest_prompt") or "").strip(),
         allow_image=_as_bool(raw.get("allow_image"), False),
         max_image_mb=_as_float(raw.get("max_image_mb", 8.0), 8.0),
@@ -692,7 +689,7 @@ def normalize_event(data: dict) -> MessageEvent | None:
 
 @dataclass
 class Route:
-    action: str          # ignore / command / chat
+    action: str          # ignore / command / unknown / chat
     kind: str = ""       # command 时是 status / shot / cancel / save_image / save_text
     text: str = ""
     readonly: bool = True
@@ -706,7 +703,7 @@ def _match_slash(text: str) -> ParsedCommand | None:
 
 
 def _admin_route(text: str, nickname: str, readonly: bool) -> Route:
-    """管理员文本 → Route：斜杠指令 > 口语别名 > 聊天"""
+    """管理员文本 → Route：斜杠指令 > 口语别名 > 未登记斜杠提示 > 聊天"""
     body = (text or "").strip()
     slash = _match_slash(body)
     if slash:
@@ -718,6 +715,11 @@ def _admin_route(text: str, nickname: str, readonly: bool) -> Route:
     hit = match_alias(rest)
     if hit:
         return Route("command", kind=hit[1], text="", readonly=readonly, alias=hit[0])
+    # 像斜杠指令但命令表里没有：明确回一句提示就结束，不能继续交给 AI
+    # （否则模型可能先回「没有这条指令」、又自己调工具，一条消息两次回复）
+    miss = menu.unknown_slash(rest) or menu.unknown_slash(body)
+    if miss:
+        return Route("unknown", text=miss, readonly=readonly)
     # 短句才记「未命中别名」，长句明显是聊天，不刷日志
     cleaned = menu.punctuation_stripped(rest)
     return Route("chat", text=rest, readonly=readonly,
@@ -744,23 +746,19 @@ def voice_identity(cfg: OneBotConfig, ev: MessageEvent) -> str:
 def route_message(cfg: OneBotConfig, ev: MessageEvent, nickname: str) -> Route:
     """权限判定与指令路由（纯函数，方便单测）
 
-    管理员私聊：直接发 /shot 等或口语别名都能触发，其余当聊天；
+    主人豁免（唯一规则）：is_admin_user 为真时，私聊 / 任意群 / 是否 @ /
+    群是否在白名单 / 群指令开关，全都不再拦截，直接按管理员的指令路由。
     非管理员私聊：静默忽略；
-    白名单群里：普通成员始终只读聊天；admin_qq 的号在
-    group_admin_commands=true 时可下指令（危险操作仍要确认）。
+    非管理员群聊：不在白名单或没 @ 机器人时静默忽略，其余只读聊天。
     """
-    is_admin = is_admin_user(cfg, ev)
-    if ev.group_id is None:
-        if not is_admin:
-            return Route("ignore", reason="非管理员私聊")
+    if is_admin_user(cfg, ev):
         return _admin_route(ev.text, nickname, readonly=False)
-
+    if ev.group_id is None:
+        return Route("ignore", reason="非管理员私聊")
     if not cfg.allow_groups or ev.group_id not in cfg.allow_groups:
         return Route("ignore", reason="群不在白名单")
     if not ev.at_bot:
         return Route("ignore", reason="群里没有 @ 机器人")
-    if is_admin and cfg.group_admin_commands:
-        return _admin_route(ev.text, nickname, readonly=False)
     body = strip_prefix(ev.text, nickname)
     return Route("chat", text=body, readonly=True)
 
@@ -1140,7 +1138,6 @@ class OneBotClient:
             "url": _mask_url(self._cfg.ws_url),
             "prefix": prefix_for(self._nickname()),
             "guest_prompt_custom": bool(self._cfg.guest_prompt),
-            "group_admin_commands": self._cfg.group_admin_commands,
             "allow_image": self._cfg.allow_image,
             "admins": len(self._cfg.admin_qq),
             "groups": len(self._cfg.allow_groups),
@@ -1602,12 +1599,15 @@ class OneBotClient:
                 self._log("info", "图片忽略", "allow_image=false")
             else:
                 await self._cache_message_image(ev)
+        if route.action == "unknown":
+            self._stats["ignored"] += 1
+            self._log("info", "未知指令", route.text)
+            await self._send_text(
+                ev, f"没有这条指令：{route.text}；发 /help 看可用指令。")
+            return
         if route.action == "command":
             self._stats["commands"] += 1
-            if not menu.authorize(route.kind,
-                                  is_admin=is_admin_user(cfg, ev),
-                                  in_group=ev.group_id is not None,
-                                  group_admin_commands=cfg.group_admin_commands):
+            if not menu.authorize(route.kind, is_admin=is_admin_user(cfg, ev)):
                 self._stats["ignored"] += 1
                 self._log("info", "权限拒绝", f"命令 {route.kind}")
                 return
@@ -1623,9 +1623,14 @@ class OneBotClient:
                     ev, f"这是危险操作，需要回复「{phrase}」才会执行；说别的就取消。")
                 return
             handler = self._command_handler(route.kind)
-            if handler is not None:
-                await handler(ev)
+            if handler is None:
+                # 命令表与分发表不一致属于编程错误：也必须在这里结束，
+                # 绝不能让同一条消息继续掉进 AI 回合再回一次
+                self._log("error", "命令未分发", route.kind)
+                await self._send_text(ev, "这条指令暂时不可用，请稍后再试。")
                 return
+            await handler(ev)
+            return
         await self._do_chat(ev, route)
 
     def _command_handler(self, kind: str):

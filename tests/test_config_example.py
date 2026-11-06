@@ -37,7 +37,7 @@ REQUIRED = {
     "workspace": {"dir"},
     "qq": {
         "enable", "ws_url", "access_token", "admin_qq", "allow_groups",
-        "group_admin_commands", "guest_prompt", "allow_image", "max_image_mb",
+        "guest_prompt", "allow_image", "max_image_mb",
         "image_recent_minutes", "image_save_dir", "text_log_path",
         "auto_launch_after_install", "auto_launch_wait_seconds",
         "rate_per_minute", "group_rate_per_minute", "max_message_chars",

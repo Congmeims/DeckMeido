@@ -181,10 +181,7 @@ class MenuEntryTest(unittest.TestCase):
         self.assertEqual(menu.match_alias("忘掉群聊"), ("忘掉群聊", "memo_clear"))
 
     def test_admin_only(self):
-        self.assertFalse(menu.authorize("memo_clear", is_admin=False, in_group=True))
-        self.assertTrue(menu.authorize("memo_clear", is_admin=True, in_group=True))
-        self.assertFalse(menu.authorize("memo_clear", is_admin=True, in_group=True,
-                                        group_admin_commands=False))
+        self.assertFalse(menu.authorize("memo_clear", is_admin=False))
         self.assertTrue(menu.authorize("memo_clear", is_admin=True))
 
     def test_help_lists_entry(self):

@@ -18,6 +18,8 @@ MAX_ALIAS_CHARS = 12
 
 # 前缀与斜杠指令解析
 _SLASH_RE = re.compile(r"^/([A-Za-z]+)(?:\s+([\s\S]+))?$")
+# 「像斜杠指令」的宽匹配：只用来给未登记的指令一句明确提示，不参与执行
+_SLASH_LIKE_RE = re.compile(r"^/([A-Za-z]+)(?:\s+[\s\S]*)?$")
 _ALIAS_LEAD_RE = re.compile(r"^(麻烦|帮我|给我|请)+")
 _ALIAS_TAIL_RE = re.compile(r"(一下)?[吧啊呀呢哦了。！？!?.,，、…~\s]+$")
 _ALIAS_PUNCT_RE = re.compile(r"[。！？!?.,，、…~：:；;\"'“”‘’\s]+")
@@ -114,6 +116,19 @@ def match_slash(text: str) -> Parsed | None:
     return Parsed(kind, (m.group(2) or "").strip())
 
 
+def unknown_slash(text: str) -> str:
+    """像斜杠指令但没登记：返回「/名字」用于明确提示，否则返回空串
+
+    未登记的斜杠不再当成普通聊天丢给模型：那样模型可能既回一句
+    「没有这条指令」、又自己调截图工具，一条消息变成两次回复。
+    """
+    m = _SLASH_LIKE_RE.match((text or "").strip())
+    if not m:
+        return ""
+    name = m.group(1)
+    return "" if name.lower() in SLASH_MAP else "/" + name
+
+
 def parse(text: str, nickname: str) -> Parsed | None:
     """解析「昵称 + 子命令或正文」。不匹配前缀返回 None
 
@@ -174,17 +189,14 @@ def spec_for(kind: str) -> Spec | None:
     return SPEC_BY_KEY.get(str(kind or ""))
 
 
-def authorize(kind: str, *, is_admin: bool, in_group: bool = False,
-              group_admin_commands: bool = True) -> bool:
-    """固定命令的权限判定
+def authorize(kind: str, *, is_admin: bool) -> bool:
+    """固定命令的权限判定（唯一入口）
 
-    固定命令一律只给管理员：白名单群里的普通成员始终只能只读聊天；
-    管理员在群里下指令还要 `group_admin_commands` 放行。
+    主人 QQ（is_admin）在私聊与任意群、是否需要 @、是否开了群指令开关，
+    都不再额外拦截：这条「主人豁免」是固定命令唯一的口子。
+    群友与陌生人一律不允许执行固定命令，只能走只读聊天。
     """
-    spec = spec_for(kind)
-    if spec is None or not is_admin:
-        return False
-    if in_group and not group_admin_commands:
+    if spec_for(kind) is None or not is_admin:
         return False
     return True
 

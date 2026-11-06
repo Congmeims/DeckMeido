@@ -60,12 +60,19 @@ class PermissionTest(unittest.TestCase):
     def test_guest_rejected(self):
         self.assertFalse(menu.authorize("status", is_admin=False))
 
-    def test_group_command_switch_off(self):
-        self.assertFalse(menu.authorize(
-            "deps", is_admin=True, in_group=True, group_admin_commands=False))
+    def test_admin_allowed_even_in_group(self):
+        # 主人豁免：群里也直接放行，不再有群指令开关
+        self.assertTrue(menu.authorize("deps", is_admin=True))
 
     def test_unknown_kind_rejected(self):
         self.assertFalse(menu.authorize("no_such", is_admin=True))
+
+    def test_unknown_slash_detected(self):
+        self.assertEqual(menu.unknown_slash("/nope"), "/nope")
+        self.assertEqual(menu.unknown_slash("meido /nope a b"), "")
+        self.assertEqual(menu.unknown_slash("/shot"), "")
+        self.assertEqual(menu.unknown_slash("/status 参数"), "")
+        self.assertEqual(menu.unknown_slash("今天吃点啥"), "")
 
 
 class ConfirmTest(unittest.TestCase):

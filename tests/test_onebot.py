@@ -118,11 +118,13 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(route.text, "今天吃点啥")
 
     def test_group_not_in_whitelist(self):
-        route = onebot.route_message(self.cfg(), self.ev("10001", "meido /status", "29999", True), "meido")
+        # 群友仍受白名单约束：不在白名单就静默忽略
+        route = onebot.route_message(self.cfg(), self.ev("30003", "meido /status", "29999", True), "meido")
         self.assertEqual(route.action, "ignore")
 
     def test_group_requires_at(self):
-        route = onebot.route_message(self.cfg(), self.ev("10001", "meido /status", "20001", False), "meido")
+        # 群友仍要 @ 机器人才处理
+        route = onebot.route_message(self.cfg(), self.ev("30003", "meido /status", "20001", False), "meido")
         self.assertEqual(route.action, "ignore")
 
     def test_group_non_admin_only_chat(self):
@@ -137,11 +139,21 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(route.kind, "status")
         self.assertFalse(route.readonly)
 
-    def test_group_admin_commands_can_be_disabled(self):
-        cfg = self.cfg(group_admin_commands=False)
-        route = onebot.route_message(cfg, self.ev("10001", "meido /status", "20001", True), "meido")
-        self.assertEqual(route.action, "chat")
-        self.assertTrue(route.readonly)
+    def test_admin_exempt_from_whitelist_and_at(self):
+        # 主人豁免：不在白名单的群、没 @、没加前缀，固定命令照样执行
+        route = onebot.route_message(self.cfg(), self.ev("10001", "/shot", "29999", False), "meido")
+        self.assertEqual(route.action, "command")
+        self.assertEqual(route.kind, "shot")
+
+    def test_admin_private_exempt(self):
+        route = onebot.route_message(self.cfg(), self.ev("10001", "/shot"), "meido")
+        self.assertEqual(route.action, "command")
+        self.assertEqual(route.kind, "shot")
+
+    def test_unknown_slash_gets_single_hint_route(self):
+        route = onebot.route_message(self.cfg(), self.ev("10001", "/nope"), "meido")
+        self.assertEqual(route.action, "unknown")
+        self.assertEqual(route.text, "/nope")
 
 
 class LimitsTest(unittest.TestCase):
@@ -1013,7 +1025,7 @@ async def start_bot(ws=None, *, config=None, runner=None, screenshot=None,
     base = {
         "enable": True, "ws_url": "ws://127.0.0.1:3001", "access_token": "tok",
         "admin_qq": ["10001"], "allow_groups": ["20001"],
-        "group_admin_commands": True, "allow_image": True,
+        "allow_image": True,
     }
     base.update(config or {})
 
@@ -1328,6 +1340,33 @@ class ShotTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([seg.get("type") for seg in message], ["text", "image"])
         self.assertEqual(message[0]["data"]["text"], "截图已奉上")
 
+    async def test_admin_group_shot_is_single_reply_without_whitelist(self):
+        """主人豁免：不在白名单的群、没 @ 也直接执行；只回一条，不进 AI"""
+        async def shot():
+            return PNG, "ok"
+
+        bot, ws, calls = await start_bot(screenshot=shot)
+        ev = group_event("29999", "10001", "/shot")
+        ev["message"] = [seg_text("/shot")]  # 去掉 @：主人仍然可以
+        ws.feed(ev)
+        self.assertTrue(await wait_until(lambda: reply_payloads(ws)))
+        await bot.wait_idle()
+        sent = [s for s in ws.sent if s.get("action") == "send_group_msg"]
+        self.assertEqual(len(sent), 1, "一条 /shot 只能产生一次回复")
+        segs = [seg.get("type") for seg in sent[0]["params"]["message"]]
+        self.assertEqual([x for x in segs if x != "at"], ["text", "image"])
+        self.assertEqual(calls, [], "固定命令不得继续进入 AI 回合")
+
+    async def test_unknown_slash_gets_one_hint_and_no_ai(self):
+        bot, ws, calls = await start_bot()
+        ws.feed(private_event("10001", "/nope"))
+        self.assertTrue(await wait_until(lambda: reply_payloads(ws)))
+        await bot.wait_idle()
+        sent = reply_payloads(ws)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("没有这条指令：/nope", str(sent[0]["params"]["message"]))
+        self.assertEqual(calls, [])
+
     async def test_shot_compresses_oversized_frame(self):
         big = b"\xff" * 4_000_000
 
@@ -1439,7 +1478,6 @@ class GuestPromptTest(unittest.TestCase):
         self.assertTrue(bot.state()["guest_prompt_custom"])
         bot.configure(onebot.parse_config({}))
         self.assertFalse(bot.state()["guest_prompt_custom"])
-        self.assertTrue(bot.state()["group_admin_commands"])
 
 
 class LogsTest(unittest.IsolatedAsyncioTestCase):
@@ -1463,7 +1501,6 @@ class LogsTest(unittest.IsolatedAsyncioTestCase):
 class ConfigTestExtra(unittest.TestCase):
     def test_new_fields_defaults(self):
         cfg = onebot.parse_config({})
-        self.assertTrue(cfg.group_admin_commands)
         self.assertEqual(cfg.guest_prompt, "")
         self.assertFalse(cfg.allow_image)
         self.assertEqual(cfg.max_image_mb, 8.0)
@@ -1479,15 +1516,21 @@ class ConfigTestExtra(unittest.TestCase):
         self.assertEqual(cfg.voice_max_seconds, 60.0)
         self.assertEqual(cfg.voice_max_kb, 4096)
 
+    def test_legacy_group_admin_commands_key_is_ignored(self):
+        # 旧配置还写着 group_admin_commands：读取时忽略、不报错
+        cfg = onebot.parse_config({"group_admin_commands": "false",
+                                   "admin_qq": ["10001"]})
+        self.assertFalse(hasattr(cfg, "group_admin_commands"))
+        self.assertEqual(cfg.admin_qq, ("10001",))
+
     def test_parse_new_fields(self):
         cfg = onebot.parse_config({
-            "group_admin_commands": "false", "guest_prompt": " hi ",
+            "guest_prompt": " hi ",
             "allow_image": "true", "max_image_mb": "3.5",
             "image_save_dir": "/tmp/x", "text_log_path": "/tmp/y.txt",
             "auto_launch_after_install": "off", "auto_launch_wait_seconds": "2",
             "image_recent_minutes": "1",
         })
-        self.assertFalse(cfg.group_admin_commands)
         self.assertEqual(cfg.guest_prompt, "hi")
         self.assertTrue(cfg.allow_image)
         self.assertEqual(cfg.max_image_mb, 3.5)

@@ -3017,16 +3017,10 @@
               <div id="qqGroupChips" class="chip-list"></div>
               <div class="field-hint" id="qqGroupHint"></div>
               <div class="field-hint">
-                群里必须 @ 机器人才处理。普通群成员只能闲聊；管理员可下指令（危险操作仍要确认）。
+                群里必须 @ 机器人才处理（主人 QQ 不受此限，任意群直接发指令）。
+                普通群成员只能闲聊；主人可下指令（危险操作仍要确认）。
                 直接发 /shot、/status、/cancel 或「截个屏」「在吗」「停一下」都算。
               </div>
-            </div>
-            <div class="field field-row">
-              <label style="margin:0">允许群里管理员下指令（group_admin_commands）</label>
-              <label class="switch">
-                <input id="cfgQqGroupAdmin" type="checkbox">
-                <span class="slider"></span>
-              </label>
             </div>
 
             <div class="qq-group">
@@ -8575,7 +8569,6 @@
   var qqAdminExtras = [];
   var qqGroups = null;
   var qqRedactWords = null;
-  var cfgQqGroupAdmin = document.getElementById('cfgQqGroupAdmin');
   var cfgQqAllowImage = document.getElementById('cfgQqAllowImage');
   var cfgQqMaxImage = document.getElementById('cfgQqMaxImage');
   var cfgQqImageRecent = document.getElementById('cfgQqImageRecent');
@@ -10043,7 +10036,6 @@
       qqAdminExtras = admins.slice(1);
       renderAdminHint();
       if (qqGroups) qqGroups.set(c.allow_groups || []);
-      if (cfgQqGroupAdmin) cfgQqGroupAdmin.checked = !!c.group_admin_commands;
       if (cfgQqAllowImage) cfgQqAllowImage.checked = !!c.allow_image;
       if (cfgQqMaxImage) cfgQqMaxImage.value = c.max_image_mb != null ? c.max_image_mb : 8;
       if (cfgQqImageRecent) cfgQqImageRecent.value =
@@ -10138,7 +10130,6 @@
       access_token: cfgQqToken.value.trim(),
       admin_qq: adminList,
       allow_groups: qqGroups ? qqGroups.get() : [],
-      group_admin_commands: cfgQqGroupAdmin ? !!cfgQqGroupAdmin.checked : true,
       guest_prompt: guestValue,
       allow_image: cfgQqAllowImage ? !!cfgQqAllowImage.checked : false,
       max_image_mb: Number(cfgQqMaxImage && cfgQqMaxImage.value) || 8,
