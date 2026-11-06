@@ -42,7 +42,36 @@ STATIC_DIR = BASE_DIR / "static"
 
 # 安装目录（install.sh 会把代码放在这里，并写入 VERSION 文件）
 INSTALL_DIR = BASE_DIR.parent
+# 运行时版本：进程启动时读一次，之后不再变。安装/升级换掉磁盘文件后，
+# 这个值仍是旧进程的版本 —— 界面必须把「运行版本」和「磁盘版本」分开显示，
+# 否则会出现「磁盘已是 0.7.2、界面还写 0.7.0」的错觉。
 VERSION = updater.current_version()
+
+
+def disk_version() -> str:
+    """磁盘上 VERSION 文件里的版本（每次现读，用于和运行版本比对）"""
+    for p in (INSTALL_DIR / "VERSION", BASE_DIR / "VERSION"):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            val = line.strip().lstrip("v")
+            if val:
+                return val
+    return ""
+
+
+def version_state() -> dict:
+    """版本三元组：运行中 / 磁盘上 / 是否一致（三个接口共用同一份口径）"""
+    disk = disk_version()
+    return {
+        "version": VERSION,
+        "running_version": VERSION,
+        "disk_version": disk,
+        "version_match": bool(disk) and disk == VERSION,
+        "pid": os.getpid(),
+    }
 
 
 # ---------- 配置 ----------
@@ -764,12 +793,8 @@ def apply_config(cfg: dict):
     power.keeper.enabled = bool(wake_on)
     if not power.keeper.enabled:
         power.keeper.release_all()
-    ws_dir = cfg.get("workspace", {}).get("dir", "")
-    if ws_dir:
-        try:
-            tools.set_workspace(ws_dir)
-        except Exception:
-            pass
+    ws_dir = str(cfg.get("workspace", {}).get("dir") or DEFAULT_WORKSPACE)
+    ensure_workspace(ws_dir)
     SYSTEM_PROMPT = build_system_prompt()
     # QQ 通道跟着配置热更新：开关/地址/令牌/白名单改完就重连，不用重启后端
     _qq_apply_config(cfg.get("qq") or {})
@@ -791,12 +816,31 @@ def reload_persona() -> dict:
 PERMISSION_MODE = CFG.get("security", {}).get("permission_mode", "auto")
 tools.path_bound = PERMISSION_MODE != "full"
 
-# 工作区（默认 ~/deckmeido_workspace，可在设置里改）
-DEFAULT_WORKSPACE = Path.home() / "deckmeido_workspace"
-try:
-    tools.set_workspace(CFG.get("workspace", {}).get("dir") or str(DEFAULT_WORKSPACE))
-except Exception:
-    pass
+# 工作区（默认 ~/MeidoSpace，可在设置里改）
+DEFAULT_WORKSPACE = Path.home() / "MeidoSpace"
+# 状态里要能看出「工作区为什么不可用」：以前 mkdir 失败被 except: pass 吞掉，
+# 界面上只剩一句「目录不存在或不是文件夹」，用户没有任何可执行的信息。
+WORKSPACE_OK = True
+WORKSPACE_ERROR = ""
+
+
+def ensure_workspace(path: str | None = None) -> bool:
+    """切到工作区并确保目录存在；失败时记住原因，由状态接口带出"""
+    global WORKSPACE_OK, WORKSPACE_ERROR
+    target = str(path or DEFAULT_WORKSPACE)
+    try:
+        tools.set_workspace(target)
+    except Exception as exc:
+        WORKSPACE_OK = False
+        WORKSPACE_ERROR = f"{target}：{exc}"
+        print(f"[DeckMeido] 工作区不可用：{WORKSPACE_ERROR}", file=sys.stderr)
+        return False
+    WORKSPACE_OK = True
+    WORKSPACE_ERROR = ""
+    return True
+
+
+ensure_workspace(CFG.get("workspace", {}).get("dir") or str(DEFAULT_WORKSPACE))
 
 # ---------- 会话持久化 ----------
 # 状态与落盘都在 session_store 里（store.current_sid / store.history / store.turn ...）。
@@ -1742,6 +1786,11 @@ def get_status(gaming: bool | None = None) -> dict:
             "cache": llm.cache_stats(),
         },
         "workspace": str(tools.WORKSPACE),
+        # 工作区是否真的可用（mkdir 失败时不会再被静默吞掉）
+        "workspace_ok": WORKSPACE_OK,
+        "workspace_error": WORKSPACE_ERROR,
+        # 运行版本 vs 磁盘版本：装完没重启后端时两者会不一致，界面据此提示重启
+        **version_state(),
         # 控制类控件（点击输入/窗口聚焦/原生打字/构建依赖）的实测结果，
         # 前端在电量徽章左侧显示成「x/x + 绿灯/黄灯/红灯」
         "controls": depcheck.summary(),
@@ -2205,8 +2254,18 @@ async def api_browse(path: str = ""):
     except OSError:
         return {"path": raw, "parent": None, "entries": [], "error": "路径无效"}
     if not target.is_dir():
-        return {"path": str(target), "parent": None, "entries": [],
-                "error": "目录不存在或不是文件夹"}
+        # 工作区目录可能被用户/清理脚本删掉：打开文件管理器前先按工作区重建一次，
+        # 仍失败就把具体原因说清楚，别只回一句「目录不存在或不是文件夹」
+        if not raw and str(target) == str(Path(tools.WORKSPACE).resolve()):
+            if ensure_workspace(str(tools.WORKSPACE)):
+                target = Path(tools.WORKSPACE)
+            else:
+                return {"path": str(target), "parent": None, "entries": [],
+                        "error": f"工作区目录 {target} 建不出来（{WORKSPACE_ERROR}）。"
+                                 "请检查该路径是否有写权限，或在设置里换一个目录"}
+        else:
+            return {"path": str(target), "parent": None, "entries": [],
+                    "error": f"目录 {target} 不存在"}
     entries = []
     try:
         with os.scandir(target) as it:
@@ -3235,6 +3294,9 @@ async def api_set_config(req: ConfigUpdate, request: Request):
         # 关掉总开关时立刻结束正在进行的接管，不等下一次心跳
         await remote_input.manager.finish(remote_input.RI_DISABLED)
     return {"ok": True, "llm_configured": llm.configured, "workspace": str(tools.WORKSPACE),
+            # 工作区目录建不出来时把原因原样带回去（前端显示成人话，不再只报「不存在」）
+            "workspace_ok": WORKSPACE_OK,
+            "workspace_error": WORKSPACE_ERROR,
             # 回传归一之后的实值：前端滑条按它落位（比如 DeepSeek 上的「中」实际是 high）
             "reasoning_effort": llm.reasoning_effort,
             "with_shot": bool((CFG.get("agent") or {}).get("with_shot", True)),
@@ -3540,7 +3602,8 @@ async def api_stt_transcribe(req: Request):
 @app.get("/api/version")
 async def api_version():
     return {
-        "version": VERSION,
+        # version / running_version / disk_version / version_match / pid
+        **version_state(),
         "repo": updater.REPO,
         "update_source_label": updater.source_label(),
         "is_git": (INSTALL_DIR / ".git").exists(),
@@ -3667,8 +3730,18 @@ async def api_restart():
     所以这里只表明「需要重启」，由调用方（插件）去执行。插件拿到的
     `delegate: true` 就是让它走自己的 runuser 命令重放一遍。
     直接 curl 这个接口不会真的重启，这也避免了误调用把服务弄挂。
+
+    但现在网页端也需要一个能用的「重启后端」入口（版本不一致时提示用）。
+    这里只落一个重启请求标记：桌面客户端的看门狗每 5 秒看一次，插件在
+    拉状态时也会看一次，谁先看到谁用自己的启动命令重放，后端自己不杀自己。
     """
-    return {"ok": True, "version": VERSION, "delegate": True}
+    marker = paths.data_dir() / "restart.request"
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"写重启标记失败：{exc}")
+    return {"ok": True, "version": VERSION, "delegate": True, "requested": True}
 
 
 # 后台自动检查升级：启动时查一次，之后每天一次；只提示，不自动安装

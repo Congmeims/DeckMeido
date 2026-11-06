@@ -61,8 +61,25 @@
   }
   .logo { font-weight: 600; font-size: 17px; flex: 0 1 auto; min-width: 0;
           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 230px; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); flex: 0 0 auto; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); flex: 0 0 auto; cursor: pointer; }
   .dot.on { background: #2ecc71; }
+  /* 黄灯 = 链路刚断、正在重连；红灯 = 鉴权被拒或连续失败。悬停/点击看原因 */
+  .dot.warn { background: #e6b422; }
+  .conn-wrap { position: relative; display: inline-flex; flex: 0 0 auto; }
+  .conn-panel {
+    position: absolute; top: 24px; left: -10px; z-index: 40; width: 312px;
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 12px; box-shadow: 0 10px 30px rgba(0,0,0,.45);
+    font-size: 12px; line-height: 1.65;
+  }
+  .conn-panel[hidden] { display: none; }
+  .conn-panel h4 { font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+  .conn-row { display: flex; justify-content: space-between; gap: 10px; }
+  .conn-row .k { color: var(--muted); }
+  .conn-row .v { text-align: right; word-break: break-all; }
+  .conn-hint { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); }
+  .conn-act { margin-top: 8px; display: flex; gap: 8px; }
+  .stale-tag { color: #e6b422; }
   .badge {
     font-size: 12px; color: var(--muted);
     background: var(--surface-2);
@@ -2402,10 +2419,14 @@
 <header>
   <button class="cb-btn" id="btnMenu" title="菜单">菜单</button>
   <button class="cb-btn" id="btnRight" title="文件 / 终端">工具</button>
-  <span class="dot" id="dot"></span>
+  <div class="conn-wrap">
+    <span class="dot" id="dot" title="连接状态"></span>
+    <div class="conn-panel" id="connPanel" hidden></div>
+  </div>
   <span class="logo" id="hdrTitle" title="DeckMeido">DeckMeido</span>
   <span class="spacer"></span>
   <div class="hdr-right">
+    <span class="badge stale-tag" id="staleTag" hidden>已停止更新</span>
     <span class="badge" id="ctxBadge" hidden></span>
     <span class="badge ctrl" id="ctrlBadge" hidden></span>
     <span class="badge" id="modeBadge" hidden></span>
@@ -2679,7 +2700,7 @@
             </div>
             <div class="field">
               <label>工作区目录（编程/文件任务默认位置）</label>
-              <input id="cfgWorkspace" type="text" placeholder="~/deckmeido_workspace" autocomplete="off">
+              <input id="cfgWorkspace" type="text" placeholder="~/MeidoSpace" autocomplete="off">
             </div>
             <div class="field-hint" style="margin-top:0">
               语音播报在「女仆人格 → 语音回复」里；语音输入、带画面这些对话开关在「插件设置」里。
@@ -4227,13 +4248,92 @@
     window.visualViewport.addEventListener('resize', scrollBottomSafe);
   }
 
-  function setConnected(ok) {
-    dot.className = ok ? 'dot on' : 'dot';
-    // 连接状态只看绿灯，不再占文字位（断线时由绿灯熄灭提示）
-    sendBtn.disabled = !ok;
-    // 控件徽章里的「后端服务」一项跟随连接状态即时变色：
-    // 断线立刻红（带着 6/6 的旧绿灯缓存最误导人），重连后恢复
+  // ---------- 连接状态（绿 / 黄 / 红 + 原因面板） ----------
+  // 以前只有一个红/绿 dot：断线时用户只能看到一个红点，不知道是后端死了、
+  // 鉴权被拒还是只是闪断。这里把判定依据都记下来，悬停/点击就能看到原因。
+  var connInfo = {
+    state: 'off',           // on / warn / off
+    closeCode: null,        // 最近一次 WS 关闭码（4401 = 鉴权被拒）
+    closeCount: 0,          // 连续失败次数（连上就清零）
+    lastCloseAt: 0,
+    lastMsgAt: 0,           // 最后一次收到 WS 消息
+    lastStatusAt: 0,        // 最后一次 /api/status 成功
+    httpOk: null,           // 最近一次 /api/status 是否 200
+    authMode: '',           // 鉴权方式（回环 / 设备配对 / 未知）
+    runningVersion: '',
+    diskVersion: '',
+    versionMatch: null,
+    backendPid: null,
+  };
+  var connPanelEl = document.getElementById('connPanel');
+  var staleTagEl = document.getElementById('staleTag');
+
+  function fmtClock(ts) {
+    if (!ts) return '—';
+    var d = new Date(ts);
+    return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2)
+      + ':' + ('0' + d.getSeconds()).slice(-2);
+  }
+
+  function connPanelHtml() {
+    var wsTxt = !ws ? '未建立' : (ws.readyState === 0 ? '连接中' : (ws.readyState === 1 ? '已连接' : '已断开'));
+    var stateTxt = connInfo.state === 'on' ? '已连接'
+      : (connInfo.state === 'warn' ? '正在重连' : '连接失败');
+    var reason = '';
+    if (connInfo.state === 'off') {
+      if (connInfo.closeCode === 4401) reason = '鉴权被拒（登录已失效），请重新配对';
+      else if (connInfo.closeCount >= 3) reason = '连续 ' + connInfo.closeCount + ' 次连不上后端';
+      else if (connInfo.httpOk === false) reason = '后端没有应答（可能正在重启或已退出）';
+      else reason = '与后端的 WebSocket 已断开';
+    }
+    var rows = [
+      ['状态', stateTxt],
+      ['WebSocket', wsTxt + (connInfo.closeCode ? '（关闭码 ' + connInfo.closeCode + '）' : '')],
+      ['重连次数', String(connInfo.closeCount)],
+      ['最近断开', fmtClock(connInfo.lastCloseAt)],
+      ['/api/status', connInfo.httpOk === null ? '未请求' : (connInfo.httpOk ? '200' : '失败')],
+      ['鉴权方式', connInfo.authMode || '未知'],
+      // 常规只显示运行中后端报的一个版本；磁盘/运行是否一致在下面仅在不一致时提示
+      ['后端版本', connInfo.runningVersion || '未知'],
+      ['后端 pid', connInfo.backendPid ? String(connInfo.backendPid) : '未知'],
+      ['数据更新于', fmtClock(connInfo.lastStatusAt || connInfo.lastMsgAt)],
+    ];
+    var html = '<h4>连接详情</h4>';
+    rows.forEach(function (r) {
+      html += '<div class="conn-row"><span class="k">' + r[0] + '</span><span class="v">'
+        + r[1] + '</span></div>';
+    });
+    if (reason) html += '<div class="conn-hint">' + reason + '</div>';
+    if (connInfo.state !== 'on' && connInfo.closeCode !== 4401) {
+      html += '<div class="conn-hint">断线期间数据已停止更新，恢复后会自动补拉。</div>';
+    }
+    if (connInfo.versionMatch === false) {
+      html += '<div class="conn-hint">磁盘已是 v' + connInfo.diskVersion + '，运行中的是 v'
+        + connInfo.runningVersion + '，需要重启后端。</div>'
+        + '<div class="conn-act"><button class="cb-btn" id="connRestart">重启后端</button></div>';
+    }
+    return html;
+  }
+
+  function renderConnPanel() {
+    if (!connPanelEl || connPanelEl.hidden) return;
+    connPanelEl.innerHTML = connPanelHtml();
+    var btn = document.getElementById('connRestart');
+    if (btn) btn.addEventListener('click', requestBackendRestart);
+  }
+
+  function setConnState(state) {
+    connInfo.state = state;
+    dot.className = 'dot' + (state === 'on' ? ' on' : (state === 'warn' ? ' warn' : ''));
+    dot.title = state === 'on' ? '已连接后端'
+      : (state === 'warn' ? '正在重连…（点开看原因）' : '连接失败（点开看原因）');
+    sendBtn.disabled = state !== 'on';
     if (typeof renderControls === 'function' && lastControls) renderControls(lastControls);
+    if (staleTagEl) staleTagEl.hidden = state === 'on';
+    renderConnPanel();
+  }
+
+  function afterConnect(ok) {
     // 文件面板的两条提示条与断线联动：
     // - 断线时「AI 正在定位」的内容已经过期，立刻收掉；
     //   「加载中…/读取失败」也是断线留下的死状态
@@ -4250,7 +4350,34 @@
     }
     wasConnected = ok;
   }
+
+  function setConnected(ok) {
+    setConnState(ok ? 'on' : 'off');
+    afterConnect(ok);
+  }
   var wasConnected = false;
+  var workspaceWarned = false;
+
+  function requestBackendRestart() {
+    if (typeof addSystem === 'function') addSystem('已请求重启后端，请稍候…');
+    fetch('/api/restart', { method: 'POST', credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d) return;
+        if (d.delegate && typeof addSystem === 'function') {
+          addSystem('重启请求已提交：桌面客户端或插件会重放启动命令，几秒后自动恢复。');
+        }
+      })
+      .catch(function () {});
+  }
+
+  document.getElementById('dot').addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    connPanelEl.hidden = !connPanelEl.hidden;
+    if (!connPanelEl.hidden) renderConnPanel();
+  });
+  document.addEventListener('click', function () { if (connPanelEl) connPanelEl.hidden = true; });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && connPanelEl) connPanelEl.hidden = true; });
 
   var liveBox = null;      // 本轮对话的事件容器（实时渲染工具终端块）
   var liveToolCount = 0;   // 已实时渲染的工具数，避免 assistant_message 重复渲染
@@ -6210,7 +6337,12 @@
     ws = new WebSocket(proto + '://' + location.host + '/ws');
 
     ws.onopen = function () {
-      setConnected(true);
+      connInfo.closeCount = 0;
+      connInfo.closeCode = null;
+      connInfo.httpOk = null;
+      connInfo.lastMsgAt = Date.now();
+      setConnState('on');
+      afterConnect(true);
       backoff = 1000;
       reconnectTimer = null;
       authOverlay.classList.remove('show');
@@ -6633,7 +6765,15 @@
     };
 
     ws.onclose = function (ev) {
-      setConnected(false);
+      connInfo.closeCode = ev.code || 0;
+      connInfo.closeCount += 1;
+      connInfo.lastCloseAt = Date.now();
+      connInfo.lastMsgAt = connInfo.lastMsgAt || Date.now();
+      // 闪断先黄（正在重连），连续 3 次或鉴权被拒才红。这样用户能区分
+      // 「网络抖了一下」和「真的连不上/被踢了」
+      if (ev.code === 4401) setConnState('off');
+      else setConnState(connInfo.closeCount < 3 ? 'warn' : 'off');
+      afterConnect(false);
       hideTyping();
       stopHeartbeat();
       // 断联时把忙碌态复位：旧逻辑保留 busy=true，发送键一直停在终止态，
@@ -6822,6 +6962,9 @@
       .then(function (r) { return r.json(); })
       .then(function (d) {
         deviceSession = !!(d && d.authenticated);
+        // 连接面板里的「鉴权方式」：回环免验证 / 设备配对凭据
+        connInfo.authMode = d && d.local ? '本机回环（免验证）'
+          : (d && d.device ? '设备配对凭据' : '未登录');
         if (deviceSession) {
           if (d.version) authVer.textContent = 'v' + d.version;
           connect();
@@ -7006,6 +7149,19 @@
   });
 
   function renderStatus(s) {
+    // 版本：运行中的进程 vs 磁盘上的 VERSION。装完没重启后端时两者不一致，
+    // 状态点面板里给一句人话 + 重启入口，别让用户对着「0.7.0」干瞪眼
+    connInfo.runningVersion = s.running_version || s.version || '';
+    connInfo.diskVersion = s.disk_version || '';
+    connInfo.versionMatch = (typeof s.version_match === 'boolean') ? s.version_match : null;
+    connInfo.backendPid = s.pid || null;
+    renderConnPanel();
+    // 工作区建不出来时只提示一次，避免每 3 秒往对话里刷一条同样的系统消息
+    if (s.workspace_ok === false && !workspaceWarned) {
+      workspaceWarned = true;
+      addSystem('工作区不可用：' + (s.workspace_error || '未知原因')
+        + '（可在设置里改工作区目录）');
+    }
     renderControls(s.controls);
     // 服务端只要还在跑，前端就保持终止态 —— 哪怕是别的端（手机/桌面客户端）
     // 发起的任务，主人在这边也能一键叫停。
@@ -7332,13 +7488,28 @@
   function refreshStatus() {
     if (document.hidden) return;
     // 未连上（登录遮罩阶段）不发请求：未配对时每 3 秒一次毫无意义，
-    // 只会刷一屏 401 审计，旧版限流还会因此把本机 IP 封掉
-    if (!ws || ws.readyState !== 1) return;
+    // 只会刷一屏 401 审计，旧版限流还会因此把本机 IP 封掉。
+    // 断线时仍有配对凭据的话，改成 10 秒一次低频轮询：数据区会标
+    // 「已停止更新」，但至少不会把冻结的旧数字一直冒充实时
+    var connected = ws && ws.readyState === 1;
+    if (!connected && !deviceSession) return;
+    var now = Date.now();
+    var gap = connected ? 3000 : 10000;
+    if (now - lastPollAt < gap) return;
+    lastPollAt = now;
     fetch('/api/status')
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (s) { if (s) renderStatus(s); })
-      .catch(function () {});
+      .then(function (r) {
+        connInfo.httpOk = r.ok;
+        return r.ok ? r.json() : null;
+      })
+      .then(function (s) {
+        if (!s) return;
+        connInfo.lastStatusAt = Date.now();
+        renderStatus(s);
+      })
+      .catch(function () { connInfo.httpOk = false; });
   }
+  var lastPollAt = 0;
   setInterval(refreshStatus, 3000);
 
   // 删除：先点一下变成「确认删除」，再点一次才真删。

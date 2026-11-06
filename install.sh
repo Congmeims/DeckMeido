@@ -29,15 +29,17 @@
 #   —— 镜像站优先；镜像不可用或校验失败时自动回落到 GitHub Release
 #   —— 第一次跑：全新安装；之后再跑同一条：询问「升级 / 卸载」，选完才继续
 #   想手动选操作（含卸载）：下载脚本后 bash install.sh menu
-#   git 方式（需要本地源码目录时）：git clone ... && cd deckmeido && bash install.sh
+#   git 方式（需要本地源码目录时）：git clone ... && cd DeckMeido && bash install.sh
 #   已有脚本、只想走镜像拉最新版：bash install.sh from-mirror
+#   从旧目录 ~/deckmeido 改名到 ~/DeckMeido：bash install.sh migrate
 #
 # 再跑第一条 git clone 时若报「目标路径已存在，并且不是一个空目录」，
-# 说明 deckmeido 目录已存在——直接 cd deckmeido && bash install.sh 升级即可，
+# 说明 DeckMeido 目录已存在——直接 cd DeckMeido && bash install.sh 升级即可，
 # 不用删目录重新 clone。
 #
 # 环境变量：
-#   DECKMEIDO_DIR        安装目录，默认 ~/deckmeido
+#   DECKMEIDO_DIR        安装目录，默认 ~/DeckMeido（旧版 ~/deckmeido 会被识别并兜底）
+#   DECKMEIDO_WORKSPACE  工作区目录，默认 ~/MeidoSpace（与配置里的 [workspace].dir 同源）
 #   DECKMEIDO_PORT       服务端口，默认 18765
 #   DECKMEIDO_MIRROR     镜像站目录，默认 https://meido.meagames.cn/deckmeido
 #   DECKMEIDO_PIP_INDEX  pip 源；留空则实测各源下载速率，自动用最快的那个
@@ -59,37 +61,70 @@
 # 升级同步排除整个 userdata/，卸载按清单删除代码、userdata/ 整目录保留。
 set -euo pipefail
 
-APP=deckmeido
-INSTALL_DIR="${DECKMEIDO_DIR:-$HOME/$APP}"
+APP=deckmeido                 # 配置目录、数据目录沿用这个稳定标识（与安装目录大小写无关）
+APP_DIR=DeckMeido             # 安装目录名；Linux 路径区分大小写，这是真改名（旧名 ~/deckmeido）
+LEGACY_DIR="$HOME/$APP"
+DECKMEIDO_DIR_ENV="${DECKMEIDO_DIR:-}"
+INSTALL_DIR="${DECKMEIDO_DIR_ENV:-$HOME/$APP_DIR}"
 PORT="${DECKMEIDO_PORT:-18765}"
 # 国内镜像站（纯静态目录：latest.json / deckmeido-<ver>.tar.gz / SHA256SUMS / install.sh）
 MIRROR="${DECKMEIDO_MIRROR:-https://meido.meagames.cn/deckmeido}"
 MIRROR="${MIRROR%/}"
-GITHUB_REPO="Congmeims/deckmeido"
+GITHUB_REPO="Congmeims/DeckMeido"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/$APP"
 DESKTOP_DIR="$HOME/.local/share/applications"
 # 真正的「桌面」目录：可能是 Desktop 也可能是 桌面，取 xdg 配置，没配置就默认 Desktop
 DESKTOP_FOLDER="$(command -v xdg-user-dir >/dev/null 2>&1 && xdg-user-dir DESKTOP 2>/dev/null || true)"
 [ -n "$DESKTOP_FOLDER" ] && [ "$DESKTOP_FOLDER" != "$HOME" ] || DESKTOP_FOLDER="$HOME/Desktop"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+
+# 0.7.3 安装目录从 ~/deckmeido 改名为 ~/DeckMeido。老用户（旧目录带安装标记或
+# VERSION、且新目录还不存在）默认继续用旧目录原地升级，绝不悄悄装成两份；
+# 想改成新名字：bash install.sh migrate，或在交互菜单里选「迁移」。
+LEGACY_INSTALL=""
+if [ -z "$DECKMEIDO_DIR_ENV" ] && [ ! -e "$INSTALL_DIR" ] && [ -d "$LEGACY_DIR" ] &&
+   { [ -f "$LEGACY_DIR/.deckmeido-install" ] || [ -f "$LEGACY_DIR/VERSION" ]; }; then
+  INSTALL_DIR="$LEGACY_DIR"
+  LEGACY_INSTALL="$LEGACY_DIR"
+fi
+
 # 安装器写下的标记与清单：只有带标记的目录才允许卸载；清单记录本次安装
 # 实际铺进安装目录的条目，卸载时只按清单逐项删除，清单外的文件一律不动。
-INSTALL_MARKER="$INSTALL_DIR/.deckmeido-install"
-INSTALL_MANIFEST="$INSTALL_DIR/.deckmeido-manifest"
-CONFIG_MARKER="$CONFIG_DIR/.deckmeido-config"
-CONFIG_MANIFEST="$CONFIG_DIR/.deckmeido-config-manifest"
+# 这些路径都由 INSTALL_DIR 推导，迁移后统一刷新（refresh_paths）。
+DATA_DIR_ENV="${DECKMEIDO_DATA_DIR:-}"
+refresh_paths() {
+  INSTALL_MARKER="$INSTALL_DIR/.deckmeido-install"
+  INSTALL_MANIFEST="$INSTALL_DIR/.deckmeido-manifest"
+  CONFIG_MARKER="$CONFIG_DIR/.deckmeido-config"
+  CONFIG_MANIFEST="$CONFIG_DIR/.deckmeido-config-manifest"
+}
 
 # ---------- 用户数据根（userdata/） ----------
 # 所有用户可修改的数据统一放在数据根下：默认 $INSTALL_DIR/userdata，可用
 # DECKMEIDO_DATA_DIR 显式覆盖（客户端 / 插件拉起后端时也读这个变量）。卸载永远整目录
 # 保留，安装清单里也不会出现这里面的任何路径。
-DATA_DIR="${DECKMEIDO_DATA_DIR:-$INSTALL_DIR/userdata}"
-case "$DATA_DIR" in
-  "~"/*) DATA_DIR="$HOME/${DATA_DIR#\~/}" ;;
-  /*) ;;
-  *) DATA_DIR="$PWD/$DATA_DIR" ;;
-esac
-DATA_CONFIG="$DATA_DIR/config.toml"
+refresh_data_paths() {
+  DATA_DIR="${DATA_DIR_ENV:-$INSTALL_DIR/userdata}"
+  case "$DATA_DIR" in
+    "~"/*) DATA_DIR="$HOME/${DATA_DIR#\~/}" ;;
+    /*) ;;
+    *) DATA_DIR="$PWD/$DATA_DIR" ;;
+  esac
+  DATA_CONFIG="$DATA_DIR/config.toml"
+  DATA_PERSONA_DIR="$DATA_DIR/persona"
+  DATA_PERSONA="$DATA_PERSONA_DIR/meidosoul.json"
+  DATA_MEMORY="$DATA_DIR/memory.json"
+  DATA_SESSIONS="$DATA_DIR/sessions"        # 会话目录固定叫 sessions（复数）
+  DATA_UPLOADS="$DATA_DIR/uploads"
+  DATA_BOT="$DATA_DIR/meidobot"             # meidobot（QQ）通道归档
+  DATA_LOGS="$DATA_DIR/logs"                # backend.log / overlay.log / client-crash.log
+  DATA_MODELS="$DATA_DIR/models"            # 语音识别模型（sensevoice/）
+  # 安装器亲自装过的系统包清单：卸载时只对这份清单里的包提供「可选卸载」，
+  # 绝不动 SteamOS 自带组件与用户原本就装好的包
+  DEP_RECORD="$DATA_DIR/.deckmeido-deps"
+}
+refresh_paths
+refresh_data_paths
 
 # 端口解析：已有配置优先，没有配置才用 DECKMEIDO_PORT，最后是 18765。
 # 升级/重装时用户可能已经在 config.toml 或设置页里改过端口，预检、卸载都
@@ -130,18 +165,6 @@ except Exception:
 PY
 }
 
-DATA_PERSONA_DIR="$DATA_DIR/persona"
-DATA_PERSONA="$DATA_PERSONA_DIR/meidosoul.json"
-DATA_MEMORY="$DATA_DIR/memory.json"
-DATA_SESSIONS="$DATA_DIR/sessions"        # 会话目录固定叫 sessions（复数）
-DATA_UPLOADS="$DATA_DIR/uploads"
-DATA_BOT="$DATA_DIR/meidobot"             # meidobot（QQ）通道归档
-DATA_LOGS="$DATA_DIR/logs"                # backend.log / overlay.log / client-crash.log
-DATA_MODELS="$DATA_DIR/models"            # 语音识别模型（sensevoice/）
-# 安装器亲自装过的系统包清单：卸载时只对这份清单里的包提供「可选卸载」，
-# 绝不动 SteamOS 自带组件与用户原本就装好的包
-DEP_RECORD="$DATA_DIR/.deckmeido-deps"
-
 # 是否通过「curl | sh -」管道执行。管道执行时脚本不在磁盘上，$BASH_SOURCE[0]
 # 不是真实文件，sync_files 依赖的 $HERE/* 会指向错误位置；此时自动走
 # 远程发布包安装（镜像优先、GitHub 兜底），让「一行命令来回用」成为可能。
@@ -153,7 +176,12 @@ _is_piped() {
 }
 
 # ---------- 输出 ----------
-if [ -t 1 ]; then
+# 注意：start_install_log 之后 stdout 会变成接给 tee 的管道，`[ -t 1 ]` 当场失效。
+# 所以终端与否必须在这里先记下来，后面所有排版/进度判断都用 OUT_IS_TTY，
+# 否则一开日志，颜色和下载进度条就全没了。
+OUT_IS_TTY=0
+[ -t 1 ] && OUT_IS_TTY=1
+if [ "$OUT_IS_TTY" = 1 ]; then
   C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_ERR=$'\033[31m'; C_DIM=$'\033[2m'
   C_B=$'\033[1m'; C_C=$'\033[36m'; C_END=$'\033[0m'
 else
@@ -161,8 +189,48 @@ else
 fi
 info() { printf '%s==>%s %s\n' "$C_OK" "$C_END" "$*"; }
 warn() { printf '%s[!]%s %s\n' "$C_WARN" "$C_END" "$*"; }
-die()  { printf '%s[x]%s %s\n' "$C_ERR" "$C_END" "$*" >&2; exit 1; }
+die()  {
+  printf '%s[x]%s %s\n' "$C_ERR" "$C_END" "$*" >&2
+  # 失败时只把日志最后几行贴出来（完整日志在 userdata/logs/install-*.log），
+  # 让用户能立刻看到真正的报错，而不是被几十行安装输出淹没
+  if [ -n "${INSTALL_LOG:-}" ] && [ -s "$INSTALL_LOG" ]; then
+    # 输出是经 tee 转发的，tail 可能赶在 tee 落盘之前，停一下再读
+    sleep 0.2
+    printf '%s    最近日志（%s）：%s\n' "$C_DIM" "$INSTALL_LOG" "$C_END" >&2
+    tail -n 8 "$INSTALL_LOG" >&2 || true
+  fi
+  exit 1
+}
 dim()  { printf '%s    %s%s\n' "$C_DIM" "$*" "$C_END"; }
+
+# ---------- 安装步骤版式 ----------
+# 参考 apt / Homebrew：一步一行结果，不把原始日志糊到屏幕上。
+# 原始输出统一进 userdata/logs/install-<时间>.log，失败时由 die 贴最后几行。
+STEP_NO=0
+STEP_TOTAL=6
+reset_steps() { STEP_NO=0; }
+step() {
+  STEP_NO=$((STEP_NO + 1))
+  printf '\n%s[%d/%d]%s %s%s%s\n' "$C_B" "$STEP_NO" "$STEP_TOTAL" "$C_END" "$C_B" "$1" "$C_END"
+}
+step_ok()   { printf '      %s✓%s %s\n' "$C_OK" "$C_END" "$*"; }
+step_skip() { printf '      %s-%s 跳过：%s\n' "$C_DIM" "$C_END" "$*"; }
+step_note() { printf '      %s%s%s\n' "$C_DIM" "$*" "$C_END"; }
+step_fail() { printf '      %s✗%s %s\n' "$C_ERR" "$C_END" "$*"; }
+next_hint() { printf '      %s下一步：%s\n' "$C_WARN" "$*"; }
+
+# 安装日志：把后续 stdout/stderr 同时抄一份到 userdata/logs/install-<时间>.log。
+# 用 tee 进程替换而不是重开文件，屏幕上的输出保持原样。
+INSTALL_LOG=""
+start_install_log() {
+  [ -n "${DECKMEIDO_LOG_STARTED:-}" ] && return 0
+  DECKMEIDO_LOG_STARTED=1
+  mkdir -p "$DATA_LOGS" 2>/dev/null || return 0
+  INSTALL_LOG="$DATA_LOGS/install-$(date -u +%Y%m%d-%H%M%S).log"
+  : > "$INSTALL_LOG" 2>/dev/null || { INSTALL_LOG=""; return 0; }
+  exec > >(tee -a "$INSTALL_LOG") 2>&1
+  dim "安装日志：$INSTALL_LOG"
+}
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
@@ -529,12 +597,14 @@ term_cols() {
   [ -n "$c" ] || c=$(tput cols 2>/dev/null || echo 80)
   printf '%s' "${c:-80}"
 }
-ui_fits() { [ -t 1 ] && [ "$(term_cols)" -ge 72 ]; }
+ui_fits() { [ "$OUT_IS_TTY" = 1 ] && [ "$(term_cols)" -ge 72 ]; }
 
 HRULE="────────────────────────────────────────────────────────────"
 
 # 分区标题：┌─ 名称 ───────
+# 六步版式下（STEP_QUIET=1）不再插分区标题，避免把「每步一行结果」冲散。
 section() {
+  [ "${STEP_QUIET:-0}" = "1" ] && return 0
   local title="$1"
   if ui_fits; then
     local head="── $title " used fill
@@ -609,7 +679,7 @@ BUILD_ID="$(sed -n 's/^BUILD_ID=//p' /etc/os-release 2>/dev/null | tr -d '"' | h
 # ---------- 前置检查 ----------
 check_user() {
   if [ "$(id -u)" = "0" ]; then
-    die "不要用 sudo / root 运行。请直接执行：bash install.sh（会自动装到 $HOME/$APP）"
+    die "不要用 sudo / root 运行。请直接执行：bash install.sh（会自动装到 $HOME/$APP_DIR）"
   fi
 }
 
@@ -852,10 +922,14 @@ ask_yn() {
     printf '%s[?]%s %s %s（掌机：A 键=回车，默认 %s）' \
       "$C_WARN" "$C_END" "$q" "$tag" "$def"
     read -r ans || ans=""
-  else
+  elif { exec 3<>/dev/tty; } 2>/dev/null; then
     printf '%s[?]%s %s %s（掌机：A 键=回车，默认 %s）' \
-      "$C_WARN" "$C_END" "$q" "$tag" "$def" > /dev/tty
-    read -r ans < /dev/tty || ans=""
+      "$C_WARN" "$C_END" "$q" "$tag" "$def" >&3
+    read -r ans <&3 2>/dev/null || ans=""
+    exec 3<&- 3>&-
+  else
+    dim "没有可用的终端，按默认值处理"
+    ans="$def"
   fi
   ans=${ans:-$def}
   case "$ans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
@@ -865,16 +939,19 @@ ask_yn() {
 # 非交互（管道/日志）不能停住等人，直接说明「自动继续」。
 press_continue() {
   local hint="${1:-按 A（回车）继续}"
-  if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
+  if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ]; then
     dim "非交互，自动继续"
     return 0
   fi
   if [ -t 0 ]; then
     printf '%s[·]%s %s ' "$C_DIM" "$C_END" "$hint"
     read -r _ || true
+  elif { exec 3<>/dev/tty; } 2>/dev/null; then
+    printf '%s[·]%s %s ' "$C_DIM" "$C_END" "$hint" >&3
+    read -r _ <&3 2>/dev/null || true
+    exec 3<&- 3>&-
   else
-    printf '%s[·]%s %s ' "$C_DIM" "$C_END" "$hint" > /dev/tty
-    read -r _ < /dev/tty || true
+    dim "非交互，自动继续"
   fi
 }
 
@@ -996,18 +1073,40 @@ optional_downloads() {
 # 和 ask_yes 不一样，这里**没有默认值**：管道执行（curl | bash）时 stdin 是脚本本身，
 # 直接 read 会读到还没执行的脚本文本，所以固定从 /dev/tty 读。
 # 拿不到终端（无人值守、ssh 没分配 tty）就返回非 0，由调用方决定怎么退。
+#
+# 提示一律写 stderr（或 /dev/tty），stdout 只放答案：调用方用的是
+# choice=$(ask_choice ...)，提示若走 stdout 会被一起捕获，case 永远匹配不上，
+# 还会被 die 再打一遍（照片里的「提示打两遍 + 无效选择」就是这个）。
 ask_choice() {
-  local prompt="$1" ans=""
+  local prompt="$1" ans="" tty_ok=0
+  # 1) stdin 就是终端：正常交互
   if [ -t 0 ]; then
-    printf '%s[?]%s %s' "$C_WARN" "$C_END" "$prompt"
+    printf '%s[?]%s %s' "$C_WARN" "$C_END" "$prompt" >&2
     read -r ans || return 1
-  elif [ -r /dev/tty ]; then
-    printf '%s[?]%s %s' "$C_WARN" "$C_END" "$prompt" > /dev/tty
-    read -r ans < /dev/tty || return 1
-  else
-    return 1
+    printf '%s' "$ans"
+    return 0
   fi
-  printf '%s' "$ans"
+  # 2) 脚本在磁盘上、stdin 是调用方给的管道（echo 1 | bash install.sh）
+  if ! _is_piped; then
+    printf '%s[?]%s %s' "$C_WARN" "$C_END" "$prompt" >&2
+    if read -r ans 2>/dev/null; then
+      printf '%s' "$ans"
+      return 0
+    fi
+  fi
+  # 3) curl | bash 或 stdin 没数据：读控制终端。
+  #    先 exec 打开一次，失败时不会有 /dev/tty 报错糊屏。
+  if { exec 3<>/dev/tty; } 2>/dev/null; then
+    tty_ok=1
+    printf '%s[?]%s %s' "$C_WARN" "$C_END" "$prompt" >&3
+    if read -r ans <&3 2>/dev/null; then
+      exec 3<&- 3>&-
+      printf '%s' "$ans"
+      return 0
+    fi
+  fi
+  [ "$tty_ok" = 1 ] && exec 3<&- 3>&-
+  return 1
 }
 
 sudo_warmup() {
@@ -1876,7 +1975,7 @@ progress_bar() {
   else
     spd_text="测速中"
   fi
-  if [ ! -t 1 ]; then
+  if [ "$OUT_IS_TTY" != 1 ]; then
     # 非终端：当前包变了才打一行，重定向到日志时也能看出进度
     if [ -n "$cur" ] && [ "$cur" != "$_progress_last" ]; then
       printf '    [%s] %s  %s  %s  %s\n' "$pct_text" "$size_text" "$spd_text" "$eta_text" "$cur"
@@ -1896,6 +1995,102 @@ progress_bar() {
 ensure_data_layout() {
   ( umask 077; mkdir -p "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" "$DATA_LOGS" "$DATA_MODELS" ) 2>/dev/null || true
   chmod 700 "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" "$DATA_LOGS" "$DATA_MODELS" 2>/dev/null || true
+}
+
+# 工作区：安装/升级都保证它存在，幂等；已存在时一律不动里面内容。
+# 首次创建时顺手放两个说明文件，让用户在 Dolphin 里一眼看懂它是什么：
+#   .directory  KDE 文件夹备注（标准 Desktop Entry，右键属性里能看到）
+#   说明.txt    给用户看的纯文本
+# 这两个文件只在目录首次创建时写；已存在就完全不动，避免升级覆盖用户改过的内容。
+# 写入失败只记一行日志，绝不让安装失败。
+seed_workspace_notes() {
+  local ws="$1" f failed=0
+  f="$ws/.directory"
+  if [ ! -e "$f" ]; then
+    if ! cat > "$f" <<'EOF' 2>/dev/null
+[Desktop Entry]
+Type=Directory
+Icon=folder-documents
+Comment=DeckMeido 的工作区：AI 生成的文件都保存在这里
+EOF
+    then
+      failed=1
+    fi
+  fi
+  f="$ws/说明.txt"
+  if [ ! -e "$f" ]; then
+    if ! cat > "$f" <<'EOF' 2>/dev/null
+DeckMeido 的工作区
+==================
+
+这是 DeckMeido 的工作区：AI 生成、读取、编辑的文件都保存在这里。
+
+- 想让她处理文件时，把东西放进这个目录最方便；
+- 不要随意把整个目录删掉：里面可能有你要保留的成果；
+- 删除前请先确认没有还需要的内容（截图、文档、代码等）。
+
+工作区路径可以在设置页的「工作区」里改成别的目录。
+EOF
+    then
+      failed=1
+    fi
+  fi
+  if [ "$failed" = 1 ]; then
+    step_note "工作区说明文件写入失败（不影响使用，可稍后手动补建）"
+  fi
+  return 0
+}
+
+# 归属当前用户（deck）：脚本本身就以 deck 身份运行，新建目录天然属于 deck；
+# 这里只纠正历史遗留（之前被 sudo 跑过、属主是 root）的情况，失败不致命。
+ensure_workspace_owner() {
+  local ws="$1" cur owner
+  [ -d "$ws" ] || return 0
+  cur="$(id -u)"
+  owner="$(stat -c %u "$ws" 2>/dev/null || true)"
+  [ "$owner" = "$cur" ] && return 0
+  if need_cmd sudo && sudo -n chown "$(id -u):$(id -g)" "$ws" 2>/dev/null; then
+    step_note "已把工作区归属修正为当前用户：$ws"
+  else
+    step_note "工作区属主不是当前用户，且无法免密修正：$ws（可能需要 sudo chown）"
+  fi
+  return 0
+}
+
+# 旧工作区（0.7.3 之前叫 ~/deckmeido_workspace）：只提示，不自动搬，避免静默丢内容
+workspace_legacy_note() {
+  local ws="$1" old
+  for old in "$HOME/deckmeido_workspace" "$HOME/DeckMeido_workspace"; do
+    [ -d "$old" ] || continue
+    [ "$old" = "$ws" ] && continue
+    [ -n "$(find "$old" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ] || continue
+    if [ -z "$(find "$ws" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+      step_note "发现旧工作区 $old，需要时可迁移：cp -a \"$old/.\" \"$ws/\""
+    else
+      step_note "发现旧工作区 $old（当前工作区已有内容，未自动合并）"
+    fi
+  done
+  return 0
+}
+
+ensure_workspace() {
+  local ws; ws="$(workspace_dir)"
+  local fresh=0
+  if [ -d "$ws" ]; then
+    step_note "工作区已存在：$ws（内容未改动）"
+  else
+    if mkdir -p "$ws" 2>/dev/null; then
+      fresh=1
+      step_ok "已创建工作区：$ws"
+    else
+      step_fail "工作区创建失败：$ws（检查上一级目录是否有写权限）"
+      return 1
+    fi
+  fi
+  ensure_workspace_owner "$ws"
+  [ "$fresh" = 1 ] && seed_workspace_notes "$ws"
+  workspace_legacy_note "$ws"
+  return 0
 }
 
 # 解析校验：坏配置绝不能留给用户（后端启动时会直接退出）。
@@ -1979,27 +2174,66 @@ prepare_config() {
 # 里会直接退出，客户端只能报「后端核心启动失败」——表现就是升级后第一次
 # 打不开、再走一次升级（此时旧进程已经自己退出）才正常。
 # 只认 `python -m uvicorn server.main:app`，避免误杀 runuser 包装或安装脚本。
-stop_backend() {
-  local d pid pids="" i alive dir
-  local -a args
-  # 只收本安装目录下的后端；同机可能还有别的 deckmeido 源码目录在跑
-  dir="$(cd "$INSTALL_DIR" 2>/dev/null && pwd -P)" || return 0
+# 端口上监听的进程 pid（ss 优先，退化到 lsof）
+_port_pids() {
+  local port="$1"
+  if need_cmd ss; then
+    ss -ltnp "sport = :$port" 2>/dev/null | sed -nE 's/.*pid=([0-9]+).*/\1/p' | sort -u
+  elif need_cmd lsof; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u
+  fi
+}
+
+# 这个 pid 是不是本安装目录的 DeckMeido 进程
+# 判据：命令行含 server.main:app（或 client/main.py），并且 cwd 是本安装目录、
+# 或命令行里出现本安装目录。两层都满足才算，避免误杀同机别的 uvicorn。
+_pid_is_ours() {
+  local pid="$1" dir cmd cwd
+  [ -r "/proc/$pid/cmdline" ] || return 1
+  dir="$(cd "$INSTALL_DIR" 2>/dev/null && pwd -P)" || return 1
+  cmd="$( { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null )" || return 1
+  cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+  case "$cmd" in
+    *server.main:app*|*client/main.py*) ;;
+    *) return 1 ;;
+  esac
+  [ "$cwd" = "$dir" ] && return 0
+  case "$cmd" in
+    *"$dir"*) return 0 ;;
+  esac
+  return 1
+}
+
+# 本安装目录下所有后端进程：命令行特征 + 端口占用双通道。
+# 用户可能用 `nohup .venv/bin/python -m uvicorn server.main:app ...` 手动起过，
+# 它不是安装器拉起的 pid，只按 pid 记录根本停不掉。
+_backend_pids() {
+  local d pid seen="" pids cmd
   for d in /proc/[0-9]*; do
-    [ -r "$d/cmdline" ] || continue
-    args=()
-    mapfile -d '' -t args < "$d/cmdline" 2>/dev/null || continue
-    [ "${#args[@]}" -ge 4 ] || continue
-    case "${args[0]}" in *python*) ;; *) continue ;; esac
-    [ "${args[1]}" = "-m" ] || continue
-    [ "${args[2]}" = "uvicorn" ] || continue
-    [ "${args[3]}" = "server.main:app" ] || continue
-    [ "$(readlink "$d/cwd" 2>/dev/null)" = "$dir" ] || continue
     pid="${d#/proc/}"
     [ "$pid" = "$$" ] && continue
-    pids="$pids $pid"
+    # 进程可能在扫描过程中退出：重定向失败也别刷屏
+    cmd="$( { tr '\0' ' ' < "$d/cmdline"; } 2>/dev/null )" || continue
+    [ -n "$cmd" ] || continue
+    case "$cmd" in *server.main*) ;; *) continue ;; esac
+    _pid_is_ours "$pid" || continue
+    seen="$seen $pid"
   done
+  for pid in $(_port_pids "$PORT"); do
+    [ "$pid" = "$$" ] && continue
+    _pid_is_ours "$pid" || continue
+    case " $seen " in *" $pid "*) ;; *) seen="$seen $pid" ;; esac
+  done
+  printf '%s' "$seen"
+}
+
+# 停掉后端进程本身（不是客户端）。停不掉返回 1，由调用方明确报错，
+# 绝不在「旧进程还占着端口」的情况下继续换文件。
+stop_backend() {
+  local pids pid i alive
+  pids="$(_backend_pids)"
   [ -n "$pids" ] || return 0
-  dim "关闭旧后端（升级后由新客户端重新拉起）"
+  dim "关闭旧后端（PID:$pids）"
   # shellcheck disable=SC2086  # 这里就是要按空格拆成多个 pid
   kill -TERM $pids 2>/dev/null || true
   for i in $(seq 1 25); do
@@ -2012,7 +2246,74 @@ stop_backend() {
   done
   # shellcheck disable=SC2086
   kill -KILL $pids 2>/dev/null || true
-  sleep 0.2
+  sleep 0.5
+  for pid in $pids; do
+    if kill -0 "$pid" 2>/dev/null; then
+      warn "后端进程 $pid 停不掉（可能属于其他用户）"
+      return 1
+    fi
+  done
+  return 0
+}
+
+# 换文件前统一停机：客户端（watchdog 会补拉后端）+ 后端本身。
+stop_runtime() {
+  stop_client || true
+  if ! stop_backend; then
+    step_fail "旧后端还在运行，无法安全替换文件"
+    next_hint "手动执行：sudo pkill -f 'server.main:app'  或重启掌机后再装"
+    return 1
+  fi
+  return 0
+}
+
+# ---------- 运行版本闸门 ----------
+# 只比磁盘文件不算通过：必须问「运行中的进程」自己报什么版本。
+running_version() {
+  local raw
+  raw="$(curl -fsS -m 5 "http://127.0.0.1:$PORT/api/version" 2>/dev/null)" || return 0
+  [ -n "$raw" ] || return 0
+  if need_cmd python3; then
+    printf '%s' "$raw" | python3 -c \
+      'import json,sys; d=json.load(sys.stdin); print(d.get("running_version") or d.get("version") or "")' \
+      2>/dev/null && return 0
+  fi
+  printf '%s' "$raw" | grep -oE '"running_version"[[:space:]]*:[[:space:]]*"[^"]*"' |
+    head -n1 | sed -E 's/.*"([^"]*)"$/\1/' || true
+  return 0
+}
+
+# 没有客户端（无 GUI / 客户端没起来）时的兜底：直接拉后端，只为让闸门能验
+launch_backend() {
+  local py="$INSTALL_DIR/.venv/bin/python"
+  [ -x "$py" ] || return 1
+  mkdir -p "$DATA_LOGS" 2>/dev/null || true
+  ( cd "$INSTALL_DIR" && setsid nohup "$py" -m uvicorn server.main:app \
+      --host 127.0.0.1 --port "$PORT" >> "$DATA_LOGS/backend.log" 2>&1 & ) \
+    2>/dev/null || return 1
+  return 0
+}
+
+relaunch_runtime() {
+  launch_client >/dev/null 2>&1 && return 0
+  launch_backend
+}
+
+# verify_running_version <期望版本>
+# 只比对一次：不一致就直接失败退出，不自动杀进程重试、不回滚。
+# 装完仍跑着旧版本，多半是安装前就有一个脱管的后端没停干净，
+# 该由第 2 步（停机）负责；这里只是最后的兜底，报一句能马上执行的话。
+verify_running_version() {
+  local want="$1" got
+  wait_ready || true
+  got="$(running_version)"
+  if [ -n "$got" ] && [ "$got" = "$want" ]; then
+    step_ok "运行版本 v$got（与磁盘一致）"
+    return 0
+  fi
+  step_fail "运行中的后端报 v${got:-未知}，磁盘上是 v$want"
+  next_hint "先执行：pkill -f 'uvicorn server.main:app'，再重跑：bash $INSTALL_DIR/install.sh upgrade"
+  return 1
 }
 
 # 把字符串转成可以安全塞进 sed 的 s|...| 替换段：
@@ -2627,14 +2928,16 @@ PY
 }
 
 print_done() {
-  local ip ve
+  local ip ve rv
   ip=$(lan_ip)
   [ -n "$ip" ] || ip=$(hostname -I 2>/dev/null | awk '{print $1}')
   [ -n "$ip" ] || ip="<deck-ip>"
   ve=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '未知')
+  rv="$(running_version)"
   card
   card_title "DeckMeido 已就绪  ·  v$ve"
   card_line ""
+  card_line "运行版本     v${rv:-$ve}"
   card_line "本机控制台   http://127.0.0.1:$PORT/"
   card_line "局域网访问   http://$ip:$PORT/（新设备点「配对新设备」，按掌机上的 PIN 配对一次）"
   card_line "配置文件     $DATA_CONFIG"
@@ -2650,6 +2953,9 @@ print_done() {
 }
 
 # ---------- 子命令 ----------
+# 六步版式：检查环境 → 停止旧进程 → 下载并校验主程序 → 可选依赖 →
+# 部署插件与桌面入口 → 启动后端（并校验运行版本）。
+# 每一步只留一行结论；原始输出全进 userdata/logs/install-<时间>.log。
 do_install() {
   local deps="" gui_only=0 stt_only=0 tts_only=0
   for a in "$@"; do
@@ -2660,70 +2966,106 @@ do_install() {
       --tts)  tts_only=1 ;;   # 只补装语音合成依赖（piper-plus）
     esac
   done
-  if [ "$tts_only" = 1 ]; then
+  # 只补装某一项依赖：不换代码、不停机，走原来的轻量路径
+  check_user
+  legacy_prompt
+  if [ "$tts_only" = 1 ] || [ "$stt_only" = 1 ] || [ "$gui_only" = 1 ]; then
     check_user
+    start_install_log
     sync_files
     ensure_data_layout
-    DECKMEIDO_INSTALL_TTS=1 venv_install tts
+    ensure_workspace || true
+    if [ "$tts_only" = 1 ]; then
+      DECKMEIDO_INSTALL_TTS=1 venv_install tts
+    elif [ "$stt_only" = 1 ]; then
+      DECKMEIDO_INSTALL_STT=1 venv_install stt
+    else
+      venv_install gui
+    fi
     write_install_records
     return 0
   fi
-  if [ "$stt_only" = 1 ]; then
-    check_user
-    sync_files
-    ensure_data_layout
-    DECKMEIDO_INSTALL_STT=1 venv_install stt
-    write_install_records
-    return 0
-  fi
-  if [ "$gui_only" = 1 ]; then
-    check_user
-    sync_files
-    ensure_data_layout
-    venv_install gui
-    write_install_records
-    return 0
-  fi
+
+  check_user
   print_banner
-  section "环境预检"
+  start_install_log
+  STEP_QUIET=1
+  reset_steps
+  local disk_ver="" had_old=0
+
+  # [1/6] 检查环境
+  step "检查环境"
   check_prereq
-  info "安装目录：$INSTALL_DIR"
   preflight
-  section "同步程序文件"
+  step_ok "安装目录 $INSTALL_DIR，端口 $PORT"
+
+  # [2/6] 停止旧进程
+  # 换文件前必须没有旧后端占着端口：用户可能用 nohup 手动起过一份，
+  # 它不是安装器拉起的 pid，只按 pid 记录停不掉（0.7.1 装完仍是 0.7.0 的根因）。
+  step "停止旧进程"
+  [ -n "$(_backend_pids)" ] && had_old=1
+  pgrep -f "$INSTALL_DIR/client/main.py" >/dev/null 2>&1 && had_old=1
+  if ! stop_runtime; then
+    step_fail "旧进程没停掉，为安全起见没有替换任何文件"
+    die "请先按上面的提示手动停掉旧进程，再重跑安装"
+  fi
+  if [ "$had_old" = 1 ]; then
+    step_ok "旧后端与客户端已停止"
+  else
+    step_skip "没有运行中的后端 / 客户端"
+  fi
+
+  # [3/6] 下载并校验主程序（本地源码安装就是同步文件）
+  step "下载并校验主程序"
   sync_files
-  section "用户数据目录"
+  disk_ver="$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
+  step_ok "程序文件已就位：$INSTALL_DIR（v${disk_ver:-未知}）"
   ensure_data_layout
-  # 所有联网下载集中到这一步、逐条确认，之后各安装函数只按决定执行
-  optional_downloads
-  section "Python 运行环境"
-  # 依赖没装全不该让整个安装中断：代码已经同步好了，联网问题用户之后能自行重试
-  venv_install || true
-  section "写入配置"
   prepare_config
+  step_ok "配置已就绪：$DATA_CONFIG"
   # 之前卸载时备份的人设/记忆搬回来，让「她」还是原来的她
   restore_soul
-  section "桌面入口"
-  install_desktop
-  install_uninstaller
-  section "Decky 插件（游戏模式）"
-  install_plugin
-  # 所有安装动作结束后再落标记/清单，确保 venv、桌面项、插件都记录在内
-  write_install_records
+  ensure_workspace || true
+
+  # [4/6] 可选依赖
+  step "可选依赖"
+  optional_downloads
+  # 依赖没装全不该让整个安装中断：代码已经同步好了，联网问题用户之后能自行重试
+  if venv_install; then
+    step_ok "Python 运行环境已就绪"
+  else
+    step_note "运行依赖没装全，可重跑：bash $INSTALL_DIR/install.sh upgrade"
+  fi
   if [ "$deps" = "--deps" ] || [ "${DECKMEIDO_INSTALL_DEPS:-0}" = "1" ]; then
     deps_intro
     maybe_autorepair_after_image_update
-    install_deps
+    install_deps || true
+    step_ok "系统控件依赖已处理"
   else
-    deps_intro
-    dim "已跳过系统控件依赖。之后想装：bash install.sh install --deps"
+    system_notes
+    step_skip "系统控件依赖（之后想装：bash install.sh install --deps）"
   fi
-  section "启动"
-  # 后端由客户端拉起：装完顺手开一次客户端，后端就一并起来了
-  if launch_client && wait_ready; then
-    print_done
-  else
-    warn "客户端未能自动启动，请双击桌面上的 DeckMeido 图标（后端会随之拉起）"
+
+  # [5/6] 部署插件与桌面入口
+  step "部署插件与桌面入口"
+  install_desktop
+  install_uninstaller
+  install_plugin
+  # 所有安装动作结束后再落标记/清单，确保 venv、桌面项、插件都记录在内
+  write_install_records
+  step_ok "桌面入口、Decky 插件与安装清单已写入"
+
+  # [6/6] 启动后端并校验运行版本
+  step "启动后端"
+  if ! relaunch_runtime; then
+    step_fail "后端没能启动"
+    next_hint "手动启动：cd $INSTALL_DIR && .venv/bin/python -m uvicorn server.main:app --host 127.0.0.1 --port $PORT"
+    die "安装已完成，但后端没有起来"
   fi
+  if ! verify_running_version "${disk_ver:-0.0.0}"; then
+    die "安装已完成，但运行中的版本不是 v$disk_ver"
+  fi
+  print_done
 }
 
 # 停掉客户端：客户端是后端的父进程，还会在 watchdog 里自动补拉后端。
@@ -2747,50 +3089,93 @@ do_upgrade() {
   local deps="${1:-}" gui_only=0
   [ -d "$INSTALL_DIR" ] || die "$INSTALL_DIR 不存在，请先执行安装"
   if [ "$deps" = "--gui" ]; then gui_only=1; deps=""; fi
+  check_user
   print_banner
+  legacy_prompt
   # 升级只换代码和依赖，下面这些一律保留，用户不用担心升级丢数据
   dim "升级会保留：userdata/ 下的配置、人设、长期记忆、会话与上传文件，"
   dim "以及工作区；Decky 插件已装过会自动替换为新版本。"
-  echo
-  section "环境预检"
+  start_install_log
+  STEP_QUIET=1
+  reset_steps
+  local disk_ver="" had_old=0
+
+  # [1/6] 检查环境
+  step "检查环境"
   check_prereq
+  preflight
+  step_ok "安装目录 $INSTALL_DIR，端口 $PORT"
+
+  # [2/6] 停止旧进程
   # 顺序要紧：先停客户端（否则它的 watchdog 会把旧后端拉回来），
-  # 最后把可能已经「脱管」的后端进程也收掉，保证换文件时没有旧进程占着端口
-  stop_client
-  stop_backend
-  section "同步程序文件"
+  # 再把可能已经「脱管」的后端进程也收掉，保证换文件时没有旧进程占着端口
+  step "停止旧进程"
+  [ -n "$(_backend_pids)" ] && had_old=1
+  pgrep -f "$INSTALL_DIR/client/main.py" >/dev/null 2>&1 && had_old=1
+  if ! stop_runtime; then
+    step_fail "旧进程没停掉，为安全起见没有替换任何文件"
+    die "请先按上面的提示手动停掉旧进程，再重跑升级"
+  fi
+  if [ "$had_old" = 1 ]; then
+    step_ok "旧后端与客户端已停止"
+  else
+    step_skip "没有运行中的后端 / 客户端"
+  fi
+
+  # [3/6] 下载并校验主程序
+  step "下载并校验主程序"
   sync_files
-  section "用户数据目录"
+  disk_ver="$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
+  step_ok "程序文件已就位：$INSTALL_DIR（v${disk_ver:-未知}）"
   ensure_data_layout
-  optional_downloads
-  section "Python 运行环境"
+  ensure_workspace || true
+
+  # [4/6] 可选依赖
+  step "可选依赖"
   if [ "$gui_only" = 1 ]; then
     venv_install gui || true
+    step_ok "桌面客户端依赖已处理（只补装 PySide6，其余未动）"
+  else
+    optional_downloads
+    if venv_install; then
+      step_ok "Python 运行环境已就绪"
+    else
+      step_note "运行依赖没装全，可重跑：bash $INSTALL_DIR/install.sh upgrade"
+    fi
+    if [ "$deps" = "--deps" ]; then
+      maybe_autorepair_after_image_update
+      install_deps || true
+      step_ok "系统控件依赖已处理"
+    else
+      system_notes
+      step_skip "系统控件依赖（之后想装：bash install.sh upgrade --deps）"
+    fi
+  fi
+
+  # [5/6] 部署插件与桌面入口
+  step "部署插件与桌面入口"
+  if [ "$gui_only" = 1 ]; then
     write_install_records
-    launch_client || true
-    return 0
-  fi
-  venv_install || true
-  section "桌面入口"
-  install_desktop
-  install_uninstaller
-  section "Decky 插件（游戏模式）"
-  install_plugin
-  write_install_records
-  if [ "$deps" = "--deps" ]; then
-    maybe_autorepair_after_image_update
-    install_deps
+    step_skip "只补装桌面客户端，插件与桌面入口未改动"
   else
-    system_notes
+    install_desktop
+    install_uninstaller
+    install_plugin
+    write_install_records
+    step_ok "桌面入口、Decky 插件与安装清单已更新"
   fi
-  section "启动"
-  # 后端由客户端拉起：升级后关掉旧客户端再开新的，新代码才会生效
-  launch_client && wait_ready || true
-  if need_cmd curl && wait_ready; then
-    print_done
-  else
-    warn "升级完成。若界面还是旧版本，请关掉托盘里的 DeckMeido 再从桌面图标重开"
+
+  # [6/6] 启动后端并校验运行版本
+  step "启动后端"
+  if ! relaunch_runtime; then
+    step_fail "后端没能启动"
+    next_hint "手动启动：cd $INSTALL_DIR && .venv/bin/python -m uvicorn server.main:app --host 127.0.0.1 --port $PORT"
+    die "升级已完成，但后端没有起来"
   fi
+  if ! verify_running_version "${disk_ver:-0.0.0}"; then
+    die "升级已完成，但运行中的版本不是 v$disk_ver"
+  fi
+  print_done
 }
 
 # ---------- 远程发布包安装（镜像优先，GitHub 兜底） ----------
@@ -2883,7 +3268,7 @@ curl_progress() {
     fi
     # 15 秒没有任何新数据：明确提示卡住，而不是继续假装在跑
     [ "$stall" -ge 15 ] && stall_text="  [下载似乎卡住了：${stall} 秒没有新数据]"
-    if [ -t 1 ]; then
+    if [ "$OUT_IS_TTY" = 1 ]; then
       printf '\r\033[K%s%s%s  %s  %s  %s  %s%s  %s%s' \
         "$C_C" '.' "$C_END" "$label" "$size_text" "$pct_text" \
         "$spd_text" "" "$eta_text" "$stall_text"
@@ -2901,7 +3286,7 @@ curl_progress() {
     sleep 0.5
   done
   wait "$pid"; rc=$?
-  if [ -t 1 ]; then printf '\r\033[K'; fi
+  if [ "$OUT_IS_TTY" = 1 ]; then printf '\r\033[K'; fi
   [ "$rc" = 0 ] || return "$rc"
   if [ ! -s "$dest" ]; then
     warn "下载得到的文件是空的：$url"
@@ -3067,14 +3452,28 @@ cancel_running_turn() {
   curl -fsS -m 2 -X POST "http://127.0.0.1:$PORT/api/cancel" >/dev/null 2>&1 || true
 }
 
-# 工作区真实路径：优先读配置里的 workspace，删不到才退回默认目录。
-# 以前直接删 $HOME/deckmeido_workspace，而配置里指到别处的工作区根本删不到。
+# 工作区真实路径：优先读配置里的 [workspace].dir，没有才退回默认目录。
+# 以前这里 grep 的是 `workspace = "..."`，而配置里真正的键是 [workspace] 下的 dir，
+# 所以自定义工作区从来没被认到过。
 workspace_dir() {
   local cfg="$DATA_CONFIG" ws=""
-  if [ -f "$cfg" ]; then
-    ws=$(grep -oP '^\s*workspace\s*=\s*"\K[^"]*' "$cfg" 2>/dev/null | head -n1)
+  if [ -f "$cfg" ] && need_cmd python3; then
+    ws=$(python3 - "$cfg" <<'PY' 2>/dev/null || true
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as f:
+        d = tomllib.load(f)
+except Exception:
+    raise SystemExit(0)
+print((d.get("workspace") or {}).get("dir") or "")
+PY
+)
   fi
-  [ -n "$ws" ] || ws="${DECKMEIDO_WORKSPACE:-$HOME/${APP}_workspace}"
+  if [ -z "$ws" ] && [ -f "$cfg" ]; then
+    ws=$(awk '/^\[workspace\]/{f=1;next} /^\[/{f=0} f && /^[[:space:]]*dir[[:space:]]*=/{print; exit}' \
+      "$cfg" 2>/dev/null | sed -E 's/^[^=]*=[[:space:]]*"([^"]*)".*/\1/' || true)
+  fi
+  [ -n "$ws" ] || ws="${DECKMEIDO_WORKSPACE:-$HOME/MeidoSpace}"
   # 配置里可能写的是相对路径或 ~，统一展开
   case "$ws" in
     "~"/*) ws="$HOME/${ws#\~/}" ;;
@@ -3394,11 +3793,71 @@ do_uninstall() {
   return 0
 }
 
+# ---------- 旧安装目录兜底（0.7.3 改名 ~/deckmeido → ~/DeckMeido） ----------
+# 检测到旧目录时不能静默装成两份：交互时问「迁移 / 继续用旧路径」，
+# 非交互时明确说明本次继续用旧目录，并给出改名命令。
+# bash install.sh migrate 可以单独执行改名。
+do_migrate() {
+  local src="$LEGACY_DIR" dst="$HOME/$APP_DIR" ep
+  if [ ! -d "$src" ] || { [ ! -f "$src/.deckmeido-install" ] && [ ! -f "$src/VERSION" ]; }; then
+    die "没有可迁移的旧安装目录：$src（缺少 .deckmeido-install 或 VERSION）"
+  fi
+  if [ -e "$dst" ]; then
+    die "$dst 已存在；为免覆盖，请先确认并移走它，再执行迁移"
+  fi
+  info "迁移安装目录：$src → $dst"
+  mv "$src" "$dst" || die "迁移失败（目录可能正被占用；先停掉客户端与后端再试）"
+  # 脚本可能就在旧目录里运行：把 HERE 也指到新位置，后续 sync_files 才找得到源码
+  if [ "$HERE" = "$src" ]; then
+    HERE="$dst"
+  fi
+  INSTALL_DIR="$dst"
+  LEGACY_INSTALL=""
+  refresh_paths
+  refresh_data_paths
+  ep="$(config_port "$DATA_CONFIG" || true)"
+  [ -n "$ep" ] && PORT="$ep"
+  info "已迁移到 $dst（配置、userdata 与插件一起搬走；工作区在 $HOME/MeidoSpace，不在安装目录里）"
+  dim "接下来执行：bash $dst/install.sh upgrade（桌面快捷方式会在升级时指向新路径）"
+  return 0
+}
+
+LEGACY_CHOICE_MADE=0
+legacy_prompt() {
+  [ -n "$LEGACY_INSTALL" ] || return 0
+  [ "$LEGACY_CHOICE_MADE" = 1 ] && return 0
+  LEGACY_CHOICE_MADE=1
+  info "检测到旧安装目录：$LEGACY_INSTALL"
+  if [ ! -t 0 ]; then
+    dim "非交互模式：本次继续使用旧目录（不会在新位置再装一份）"
+    dim "想改到 $HOME/$APP_DIR：bash $LEGACY_INSTALL/install.sh migrate"
+    return 0
+  fi
+  echo
+  echo "  ${C_B}1${C_END}  迁移到 $HOME/$APP_DIR  ${C_DIM}（旧目录整体搬过去）${C_END}"
+  echo "  ${C_B}2${C_END}  继续使用旧目录 $LEGACY_INSTALL"
+  echo "  ${C_B}0${C_END}  退出"
+  echo
+  local choice
+  choice=$(ask_choice "请输入序号（1 迁移 / 2 继续 / 0 退出）：") || {
+    dim "没有可用的终端，本次继续使用旧目录"
+    return 0
+  }
+  case "$choice" in
+    1) do_migrate ;;
+    2|"") dim "本次继续使用旧目录：$LEGACY_INSTALL"; return 0 ;;
+    0|q|Q) info "已取消"; exit 0 ;;
+    *) die "无效选择：$choice（输入 1 迁移 / 2 继续 / 0 退出）" ;;
+  esac
+  return 0
+}
+
 # 无参数运行时弹出的交互菜单：检测是否已安装，给出带默认值的选项。
 # 明确带子命令（install/upgrade/uninstall/...）时跳过菜单，仍可直接批处理。
 show_menu() {
   check_user
   print_banner
+  legacy_prompt
 
   local installed=0
   [ -f "$INSTALL_DIR/VERSION" ] && installed=1
@@ -3455,6 +3914,7 @@ show_menu() {
 # 想跳过询问，直接带子命令：bash install.sh upgrade / install / uninstall / check / menu
 smart_default() {
   check_user
+  legacy_prompt
   if [ ! -f "$INSTALL_DIR/VERSION" ]; then
     info "未检测到已安装的 $APP，开始全新安装"
     do_install
@@ -3496,6 +3956,7 @@ case "${1:-}" in
   menu)          show_menu ;;
   install)       do_install "${2:-}" ;;
   upgrade|update) do_upgrade "${2:-}" ;;
+  migrate)      do_migrate ;;
   from-mirror)  do_from_mirror "${2:-}" ;;
   speedtest|mirror-test)
                 # 只测速不安装：看各个 pip 源实打实的下载速率

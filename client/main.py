@@ -85,6 +85,8 @@ _log_handle = None
 # 「关闭后保持停止、只有用户点启动才起来」。插件点「启动」会删掉它；
 # 手动打开客户端属于显式启动，不受这个标记限制。
 CORE_STOP_MARKER = _DATA_DIR / "core.stopped"
+# 网页端点了「重启后端」只会落这个标记（后端不杀自己），由客户端看门狗重放
+RESTART_REQUEST = _DATA_DIR / "restart.request"
 
 # 客户端崩溃日志：切游戏模式时 gamescope 会话重建会掐断 Wayland 连接，
 # Qt 在那种情况下是 abort()，Python 层 try/except 拦不住，只有 faulthandler
@@ -710,6 +712,15 @@ def main() -> int:
         # 手动「重启」期间旧核心已停、新核心还没起来，这里不能插一脚再拉一份
         if restart_state["running"]:
             watch_state["misses"] = 0
+            return
+        # 网页端点「重启后端」：后端只落标记，这里消费掉并走「重启」流程
+        if RESTART_REQUEST.exists():
+            try:
+                RESTART_REQUEST.unlink()
+            except OSError:
+                pass
+            watch_state["misses"] = 0
+            restart_core()
             return
         if CORE_STOP_MARKER.exists():
             watch_state["misses"] = 0

@@ -1,6 +1,6 @@
 {
   "name": "deckmeido-plugin",
-  "version": "0.7.1",
+  "version": "0.7.3",
   "description": "在 QAM 里带上当前游戏画面问 AI",
   "type": "module",
   "main": "dist/index.js",
@@ -10,7 +10,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Congmeims/deckmeido.git"
+    "url": "https://github.com/Congmeims/DeckMeido.git"
   },
   "dependencies": {
     "@decky/api": "^1.1.2",

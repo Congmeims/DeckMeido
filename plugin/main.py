@@ -59,7 +59,7 @@ def _find_install_dir() -> Path:
             cand = Path(home) / name
             if (cand / "server" / "main.py").exists():
                 return cand
-    return Path("/home/deck/deckmeido")
+    return Path("/home/deck/DeckMeido")
 
 
 INSTALL_DIR = _find_install_dir()
@@ -101,7 +101,7 @@ def _workspace() -> str:
 
 # 面板底部显示版本号：优先用后端 config 里报的版本（和网页设置页一致），
 # 后端连不上时退回插件自己的 package.json
-_PLUGIN_VERSION = "0.7.1"
+_PLUGIN_VERSION = "0.7.3"
 try:
     _pkg = json.loads((Path(__file__).resolve().parent / "package.json").read_text(encoding="utf-8"))
     _PLUGIN_VERSION = str(_pkg.get("version") or _PLUGIN_VERSION)
@@ -250,6 +250,11 @@ def _core_stopped_path() -> Path:
     # 存在 = 用户点过「关闭核心」，两条自动拉起路径（插件 _autostart_backend、
     # 客户端 watchdog）都必须跳过；只有显式「启动」才删掉它。
     return _data_dir() / "core.stopped"
+
+
+def _restart_marker() -> Path:
+    """网页端「重启后端」请求标记：后端只写它，由插件/客户端来重放启动命令"""
+    return _data_dir() / "restart.request"
 
 
 def _core_stopped() -> bool:
@@ -715,6 +720,22 @@ def _runtime_dir() -> str:
     return f"/run/user/{_target_uid()}"
 
 
+def _target_home() -> str:
+    """后端要用的 HOME（deck 的家目录）
+
+    插件是 root，`os.environ["HOME"]` 是 /root。后端用 runuser 降权后如果还
+    带着 /root，工作区默认值、Steam 配置路径、缓存目录全会指到 root 家目录，
+    表现为「工作区建不出来、游戏也认不出」。这里按目标 uid 查真实家目录。
+    """
+    if not _run_as():
+        return os.path.expanduser("~")
+    try:
+        import pwd
+        return pwd.getpwuid(_target_uid()).pw_dir
+    except Exception:
+        return "/home/deck"
+
+
 # 截屏落盘的目录：QAM 面板只拿路径，图不经过 Decky 的 IPC
 _SHOT_DIR = Path("/tmp/deckmeido_shots")
 
@@ -798,7 +819,10 @@ async def _start_backend(port: int) -> tuple[bool, str]:
         kwargs: dict = {
             "stdout": fd,
             "stderr": fd,
-            "env": {**os.environ, "XDG_RUNTIME_DIR": _runtime_dir()},
+            "env": {**os.environ,
+                    "HOME": _target_home(),
+                    "USER": "deck" if _run_as() else os.environ.get("USER", ""),
+                    "XDG_RUNTIME_DIR": _runtime_dir()},
         }
         if not _run_as():
             kwargs["start_new_session"] = True
@@ -1922,6 +1946,16 @@ class Plugin:
             f"（来源 {game.get('source') or 'none'} / 置信 {game.get('confidence') or 'none'}）"
         )
         lan_ip = _lan_ip()
+        # 网页端点了「重启后端」只落标记（后端不杀自己）：这里看到就消费掉，
+        # 用插件自己那套 runuser 命令重放一遍。放到后台任务里，别让面板请求
+        # 卡在重启过程中
+        marker = _restart_marker()
+        if marker.exists():
+            try:
+                marker.unlink()
+            except OSError:
+                pass
+            asyncio.get_running_loop().create_task(self.core_restart())
         return {
             "install_dir": str(INSTALL_DIR),
             "config_ok": _config_path().exists(),
@@ -1961,6 +1995,11 @@ class Plugin:
             "stt_duck": bool(prefs.get("stt_duck", True)),
             "stt_duck_available": bool(prefs.get("stt_duck_available", False)),
             "version": str(prefs.get("version") or _PLUGIN_VERSION),
+            # 运行版本 / 磁盘版本：安装换完文件但后端没重启时两者不一致，
+            # 面板据此提示「需要重启后端」，旁边就是已有的「重启核心」按钮
+            "running_version": str(ver.get("running_version") or ver.get("version") or ""),
+            "disk_version": str(ver.get("disk_version") or ""),
+            "version_match": bool(ver.get("version_match", True)),
             # 更新检测：两处设置页统一显示「有更新 / 当前最新」，不摆占位横线
             "update_has": bool(upd.get("has_update")),
             "update_latest": str(upd.get("latest") or ""),

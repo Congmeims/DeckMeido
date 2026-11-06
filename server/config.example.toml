@@ -144,12 +144,12 @@ github_enable = true
 # 镜像站目录（末尾不要加斜杠）
 mirror = "https://meido.meagames.cn/deckmeido"
 # GitHub 仓库（公开 API，不带认证头），改动前确认是 fork 的自己的仓库
-github_repo = "Congmeims/deckmeido"
+github_repo = "Congmeims/DeckMeido"
 # 本地离线更新包：扫描这个目录里形如 deckmeido-update-<版本>.zip 的文件，
 # 同名的 .sha256 必须存在（包级校验，缺了直接拒绝）。目录不存在时安静跳过。
 # 想关掉本地包检测就改成 local_enable = false。
 local_enable = true
-local_dir = "/home/deck/deckmeido_workspace"
+local_dir = "/home/deck/MeidoSpace"
 
 [tts]
 # 回复语音播报（在 Deck 扬声器上播放）。默认关闭，需要时在网页设置页
@@ -204,9 +204,10 @@ language = "zh"
 
 [workspace]
 # 编程/文件任务的默认工作区，可在设置面板修改。
-# 留空则使用 ~/deckmeido_workspace（自动创建，适配任意用户名）。
-# 这里写绝对路径可把工作区指到别处（如外置 SD 卡），注意别指向 / 或 $HOME 根目录。
-dir = ""
+# 默认 ~/MeidoSpace（安装器首次创建时会放 .directory 与 说明.txt）；留空也回落到这里。
+# 这里写绝对路径可把工作区指到别处（如外置 SD 卡），注意别指向 / 或 $HOME 根目录；
+# 非 deck 用户请改成自己的家目录路径。
+dir = "/home/deck/MeidoSpace"
 
 [qq]
 # QQ 远程控制通道（OneBot 11 / NapCat）。

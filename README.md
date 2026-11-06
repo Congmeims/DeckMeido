@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Congmeims/deckmeido/releases"><img src="https://img.shields.io/github/v/release/Congmeims/deckmeido?style=flat-square&color=1f6feb" alt="Release"></a>
-  <a href="https://github.com/Congmeims/deckmeido/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-2ea44f?style=flat-square" alt="License"></a>
+  <a href="https://github.com/Congmeims/DeckMeido/releases"><img src="https://img.shields.io/github/v/release/Congmeims/DeckMeido?style=flat-square&color=1f6feb" alt="Release"></a>
+  <a href="https://github.com/Congmeims/DeckMeido/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-2ea44f?style=flat-square" alt="License"></a>
   <img src="https://img.shields.io/badge/platform-SteamOS%20%7C%20Linux-1f6feb?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/python-3.11+-3776ab?style=flat-square" alt="Python">
 </p>
@@ -98,7 +98,7 @@ QAM 面板由 Decky 插件提供；插件以 root 运行，走本机回环免鉴
 ### 命令
 
 ```bash
-git clone https://github.com/Congmeims/deckmeido.git && cd deckmeido
+git clone https://github.com/Congmeims/DeckMeido.git && cd DeckMeido
 bash install.sh
 ```
 
@@ -123,7 +123,7 @@ bash install.sh speedtest            # 只测 pip 源速率
 ### 首次安装做了什么
 
 1. 预检 Python 版本、venv、`systemctl`、磁盘余量、端口占用与图形会话。
-2. 把程序同步到安装目录（默认 `~/deckmeido`，可用 `DECKMEIDO_DIR` 覆盖）。
+2. 把程序同步到安装目录（默认 `~/DeckMeido`，可用 `DECKMEIDO_DIR` 覆盖；旧版 `~/deckmeido` 会被识别并原地升级，可用 `bash install.sh migrate` 改名）。
 3. 创建数据根 `userdata/` 及 `persona/`、`sessions/`、`uploads/`、`meidobot/`、`logs/`、`models/`，目录权限 `700`。
 4. 建 `.venv` 并安装依赖；默认装 PySide6，`DECKMEIDO_SKIP_GUI=1` 可跳过。
 5. 从 `server/config.example.toml` 生成 `userdata/config.toml`，权限 `600`。
@@ -132,7 +132,7 @@ bash install.sh speedtest            # 只测 pip 源速率
 
 ### Decky 插件
 
-安装器发现 Decky 会询问，同意后把 `deploy/deckmeido-plugin.zip` 解到 `~/homebrew/plugins/DeckMeido`，并打印「插件已安装 v…」。到 **设置 → Decky Loader → 重新载入** 即可在 QAM 看到。没装 Decky 会整段跳过；之后想装可先装 Decky 再执行 `bash install.sh upgrade`，或运行 `bash ~/deckmeido/plugin/deploy.sh`。
+安装器发现 Decky 会询问，同意后把 `deploy/deckmeido-plugin.zip` 解到 `~/homebrew/plugins/DeckMeido`，并打印「插件已安装 v…」。到 **设置 → Decky Loader → 重新载入** 即可在 QAM 看到。没装 Decky 会整段跳过；之后想装可先装 Decky 再执行 `bash install.sh upgrade`，或运行 `bash ~/DeckMeido/plugin/deploy.sh`。
 
 ### 桌面客户端
 
@@ -150,7 +150,7 @@ bash install.sh speedtest            # 只测 pip 源速率
 | `[agent]` | `ask_template` / `translate_template` / `status_prompt` | 截图询问、截图翻译、状态栏短句的提示词 |
 | `[agent]` | `context_window` / `compact_ratio` | 上下文窗口（0 = 按模型名推断）与压缩触发比例 |
 | `[security]` | `permission_mode` | `manual` / `auto` / `full` |
-| `[workspace]` | `dir` | 文件工具工作区；留空用 `~/deckmeido_workspace` |
+| `[workspace]` | `dir` | 文件工具工作区；默认 `~/MeidoSpace` |
 | `[tts]` | `enable` / `engine` / `voice` / `speed` | 语音播报开关与音色 |
 | `[power]` | `keep_awake` | 后端运行期间抑制系统休眠 |
 | `[update]` | `github_enable` / `mirror` / `github_repo` | 双源更新：默认镜像与 GitHub 都探测，取更高版本 |
@@ -211,8 +211,8 @@ userdata/
 用安装目录里的卸载脚本：
 
 ```bash
-bash ~/deckmeido/uninstall.sh            # 按清单删安装器文件，保留 userdata/
-bash ~/deckmeido/uninstall.sh --purge    # 额外删安装器创建的配置备份（人设/记忆备份）
+bash ~/DeckMeido/uninstall.sh            # 按清单删安装器文件，保留 userdata/
+bash ~/DeckMeido/uninstall.sh --purge    # 额外删安装器创建的配置备份（人设/记忆备份）
 ```
 
 - 卸载按 `.deckmeido-manifest` 逐项删除，清单外的文件与目录都不动；`userdata/` 整目录保留，最后打印归档路径。
@@ -225,7 +225,7 @@ bash ~/deckmeido/uninstall.sh --purge    # 额外删安装器创建的配置备�
 
 - **软件内**：设置 → 关于 → 检查更新 → 升级。下载后校验 sha256，失败整份回滚；配置、会话、工作区不受影响，完成后自动重启。
 - **双源**：默认同时探测国内镜像与 GitHub Release，取版本更高者，同版本优先镜像；`[update] github_enable = false` 则只用镜像。
-- **命令行**：`bash ~/deckmeido/install.sh upgrade`，会先停客户端与后端，再同步代码与依赖；`--deps` 顺带检查控制类控件。
+- **命令行**：`bash ~/DeckMeido/install.sh upgrade`，会先停客户端与后端，再同步代码与依赖；`--deps` 顺带检查控制类控件。
 
 ## QQ 用法
 
@@ -263,8 +263,8 @@ bash ~/deckmeido/uninstall.sh --purge    # 额外删安装器创建的配置备�
 
 | 现象 | 排查 |
 | --- | --- |
-| 插件版本没变 | 看安装日志里是否有「插件已安装 v…」；到 设置 → Decky Loader 点「重新载入」，或运行 `bash ~/deckmeido/plugin/deploy.sh` |
-| 后端没起来 | 看 `~/deckmeido/userdata/logs/backend.log`（轮转备份在 `backend.log.1`）；确认 `18765` 没被别的进程占用 |
+| 插件版本没变 | 看安装日志里是否有「插件已安装 v…」；到 设置 → Decky Loader 点「重新载入」，或运行 `bash ~/DeckMeido/plugin/deploy.sh` |
+| 后端没起来 | 看 `~/DeckMeido/userdata/logs/backend.log`（轮转备份在 `backend.log.1`）；确认 `18765` 没被别的进程占用 |
 | 配置写坏了 | 删除 `userdata/config.toml` 后重启，会按模板重新生成（自定义项会丢）；人设 JSON 坏了会自动回落默认人设 |
 | QQ 连不上 | 网页 QQ 状态页看 `detail`；确认 `access_token` 非空且与 NapCat 一致、`ws_url` 可达、机器人已登录 |
 | 截图 / 点击不灵 | 跑 `bash install.sh check`；`ydotoold` 没运行会让 ydotool 报 socket 错误 |
@@ -275,7 +275,7 @@ bash ~/deckmeido/uninstall.sh --purge    # 额外删安装器创建的配置备�
 ## 开发
 
 ```
-deckmeido/
+DeckMeido/
 ├── install.sh        安装 / 升级 / 卸载 / 镜像安装 / 自检 / 测速
 ├── server/           FastAPI 后端：agent 循环、工具、LLM、会话、记忆、QQ、STT/TTS、静态前端
 ├── client/           PySide6 客户端（托盘、单实例、后端守护）

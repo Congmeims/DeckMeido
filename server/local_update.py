@@ -39,7 +39,7 @@ _CACHE_TTL = 10.0
 
 def local_dir() -> Path:
     cfg = updater.update_cfg()
-    return Path(str(cfg.get("local_dir") or "/home/deck/deckmeido_workspace")).expanduser()
+    return Path(str(cfg.get("local_dir") or (Path.home() / "MeidoSpace"))).expanduser()
 
 
 def enabled() -> bool:

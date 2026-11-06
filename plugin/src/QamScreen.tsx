@@ -2006,7 +2006,10 @@ export default function QamScreen() {
                       : "当前最新"
                 }
               />
-              <StatCell label="核心版本" value={s.status?.version || "读取中"} />
+              <StatCell
+                label="核心版本"
+                value={!s.status ? "读取中" : s.status.version || "—"}
+              />
               <StatCell
                 label="语音输入"
                 value={
@@ -2058,6 +2061,13 @@ export default function QamScreen() {
                 <div style={{ fontSize: 10.5, color: DIM }}>暂无事件</div>
               )}
             </div>
+
+            {s.status?.version_match === false && (
+              <div style={{ fontSize: 10.5, color: "#e0a33a", width: "100%", lineHeight: 1.4 }}>
+                磁盘已是 v{s.status.disk_version || "?"}，运行中的是 v
+                {s.status.running_version || s.status.version || "?"}，点「重启核心」后生效
+              </div>
+            )}
 
             <div style={{ display: "flex", gap: 6, width: "100%" }}>
               <div style={{ flex: "1 1 0", minWidth: 0 }}>

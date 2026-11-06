@@ -1304,7 +1304,18 @@ export default function BigScreen() {
                 label="屏幕截图"
                 value={s.status?.capture_ok ? "可用" : s.status?.capture_reason || "不可用"}
               />
-              <StatRow label="核心版本" value={s.status?.version || "—"} />
+              <StatRow
+                label="核心版本"
+                value={
+                  !s.status
+                    ? "—"
+                    : `${s.status.version || "—"}${
+                        s.status.version_match === false
+                          ? `（磁盘 ${s.status.disk_version || "?"}，重启后生效）`
+                          : ""
+                      }`
+                }
+              />
               <StatRow
                 label="语音输入"
                 value={

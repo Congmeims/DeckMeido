@@ -6,14 +6,14 @@
 #
 # 可选环境变量：
 #   DECK_HOST        默认 deck@192.168.124.14
-#   DECK_DIR         默认 /home/deck/deckmeido
+#   DECK_DIR         默认 /home/deck/DeckMeido
 #   DECK_PLUGIN_DIR  默认 /home/deck/homebrew/plugins/DeckMeido
 #   DECK_SUDO_PASS   Deck 上的 sudo 密码（必须，脚本不内置密码）
 #   DECK_PORT        默认 18765
 set -euo pipefail
 
 HOST="${DECK_HOST:-deck@192.168.124.14}"
-REMOTE="${DECK_DIR:-/home/deck/deckmeido}"
+REMOTE="${DECK_DIR:-/home/deck/DeckMeido}"
 PLUGIN_REMOTE="${DECK_PLUGIN_DIR:-/home/deck/homebrew/plugins/DeckMeido}"
 PORT="${DECK_PORT:-18765}"
 SUDO_PASS="${DECK_SUDO_PASS:-}"

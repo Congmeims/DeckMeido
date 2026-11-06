@@ -41,7 +41,7 @@ INSTALL_DIR = Path(__file__).resolve().parent.parent
 
 # 默认更新源。镜像站是纯静态目录：放 latest.json、deckmeido-<ver>.tar.gz、SHA256SUMS
 DEFAULT_MIRROR = "https://meido.meagames.cn/deckmeido"
-REPO = "Congmeims/deckmeido"
+REPO = "Congmeims/DeckMeido"
 GITHUB_API = "https://api.github.com"
 
 # 这些结果文件不随 tarball 覆盖：升级不该把用户的配置、会话、日志一起换掉。
@@ -129,7 +129,7 @@ def update_cfg() -> dict:
         "github_enable": True,       # 双源模式下是否探测 GitHub
         # 本地离线更新包：扫描这个目录里的 deckmeido-update-<ver>.zip
         "local_enable": True,
-        "local_dir": "/home/deck/deckmeido_workspace",
+        "local_dir": str(Path.home() / "MeidoSpace"),
     }
     try:
         import tomllib

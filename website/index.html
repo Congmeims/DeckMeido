@@ -363,7 +363,7 @@ footer { border-top: 1px solid var(--line); padding: 48px 0 60px; margin-top: 40
       </div>
       <div class="card reveal">
         <h3>② Git 源码</h3>
-        <p style="margin-top:6px; font-family:var(--mono); font-size:12.5px; color:var(--rose-2);">git clone https://github.com/Congmeims/deckmeido.git<br>cd deckmeido && bash install.sh</p>
+        <p style="margin-top:6px; font-family:var(--mono); font-size:12.5px; color:var(--rose-2);">git clone https://github.com/Congmeims/DeckMeido.git<br>cd DeckMeido && bash install.sh</p>
         <p style="margin-top:8px;">需要本地源码目录、或想贡献代码时用。</p>
       </div>
       <div class="card reveal">
@@ -451,8 +451,8 @@ footer { border-top: 1px solid var(--line); padding: 48px 0 60px; margin-top: 40
     <img class="logo" src="logo.png" alt="DeckMeido">
     <p>© 2026 DeckMeido · CC BY-NC 4.0 · 为你守着这台掌机的女仆</p>
     <div class="links">
-      <a href="https://github.com/Congmeims/deckmeido">GitHub</a>
-      <a href="https://github.com/Congmeims/deckmeido/releases">Releases</a>
+      <a href="https://github.com/Congmeims/DeckMeido">GitHub</a>
+      <a href="https://github.com/Congmeims/DeckMeido/releases">Releases</a>
       <a href="#features">能力</a>
       <a href="#faq">FAQ</a>
     </div>
@@ -486,7 +486,7 @@ const io = new IntersectionObserver((entries) => {
 document.querySelectorAll('.reveal').forEach(el => io.observe(el));
 
 // 版本源：主源=镜像站，兜底=GitHub Release；版本号不写死，全部从 latest.json 推导
-const REPO = 'Congmeims/deckmeido';
+const REPO = 'Congmeims/DeckMeido';
 const RELEASES = 'https://github.com/' + REPO + '/releases';
 const MIRROR = 'https://meido.meagames.cn/deckmeido'; // 主源
 const GH_LATEST = RELEASES + '/latest/download';      // 兜底

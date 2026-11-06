@@ -277,7 +277,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "list_dir",
-            "description": "列出目录内容（编程/文件任务先看结构）。默认列出工作区（家目录下的 deckmeido_workspace）",
+            "description": "列出目录内容（编程/文件任务先看结构）。默认列出工作区（家目录下的 MeidoSpace）",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2883,7 +2883,7 @@ def new_shot_state() -> dict:
 LAST_DIFF: dict | None = None
 
 
-WORKSPACE = Path.home() / "deckmeido_workspace"
+WORKSPACE = Path.home() / "MeidoSpace"
 
 
 def set_workspace(path: str):

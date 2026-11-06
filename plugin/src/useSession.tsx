@@ -57,6 +57,11 @@ export type Status = {
   game_confidence: string;
   game_ts: number;
   version: string;
+  // 运行中的后端版本 / 磁盘 VERSION / 两者是否一致。
+  // 安装换完文件但没重启后端时 version_match=false，面板提示「重启核心」
+  running_version?: string;
+  disk_version?: string;
+  version_match?: boolean;
   // 读不到后端配置时的明确原因（空串表示正常）
   config_error: string;
   // 局域网访问：地址（设置页展示、复制用）
