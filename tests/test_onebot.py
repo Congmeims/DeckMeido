@@ -398,7 +398,23 @@ class BotTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("设备状态" in str(t) for t in texts))
         await bot.stop()
 
-    async def test_rate_limit_is_silent(self):
+    async def test_status_output_redacted(self):
+        bot, ws = self.make(config={
+            "enable": True, "ws_url": "ws://127.0.0.1:3001",
+            "access_token": "tok", "admin_qq": ["10001"],
+            "redact_words": ["运行中"],
+        })
+        await bot.start()
+        self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
+        ws.feed(private_msg("10001", "meido /status"))
+        await bot.wait_idle()
+        texts = [str(s["params"]["message"]) for s in ws.sent
+                 if s.get("action") == "send_private_msg"]
+        self.assertTrue(any("***" in t for t in texts))
+        self.assertFalse(any("运行中" in t for t in texts))
+        await bot.stop()
+
+    async def test_rate_limit_notice_once(self):
         bot, ws = self.make(config={
             "enable": True, "ws_url": "ws://127.0.0.1:3001",
             "access_token": "tok", "admin_qq": ["10001"], "rate_per_minute": 1,
@@ -407,12 +423,15 @@ class BotTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
         ws.feed(private_msg("10001", "meido 一", mid="a"))
         ws.feed(private_msg("10001", "meido 二", mid="b"))
+        ws.feed(private_msg("10001", "meido 三", mid="c"))
         await bot.wait_idle()
         self.assertEqual(len(self.calls), 1)
-        # 第二条被限流丢弃：只应有一条回复
-        replies = [s for s in ws.sent if s.get("action") == "send_private_msg"]
-        self.assertEqual(len(replies), 1)
-        self.assertEqual(bot.state()["stats"]["rate_limited"], 1)
+        # 第二条被限流会给一句提示，第三条不再重复提示
+        replies = [str(s["params"]["message"]) for s in ws.sent
+                   if s.get("action") == "send_private_msg"]
+        self.assertEqual(len(replies), 2)
+        self.assertTrue(any("快" in r for r in replies))
+        self.assertEqual(bot.state()["stats"]["rate_limited"], 2)
         await bot.stop()
 
     async def test_incoming_truncated(self):

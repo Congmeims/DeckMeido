@@ -35,7 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from . import menu, memory, paths
+from . import menu, memory, paths, redact
 
 # ---------- 图片链接安全校验 ----------
 # NapCat 传来的图片地址是外部输入：必须挡住 file:// 等本地协议、
@@ -93,15 +93,17 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 _SAFE_OPENER = urllib.request.build_opener(_SafeRedirectHandler())
 
 DEFAULT_PREFIX = "meido"
-DEFAULT_RATE_PER_MINUTE = 20
+DEFAULT_RATE_PER_MINUTE = 6            # 每人每分钟条数（<=0 不限）
+DEFAULT_GROUP_RATE_PER_MINUTE = 10     # 每个群每分钟条数（<=0 不限）
 DEFAULT_MAX_MESSAGE_CHARS = 2000
-DEFAULT_REPLY_CHUNK_CHARS = 500
+DEFAULT_REPLY_CHUNK_CHARS = 300
+DEFAULT_MAX_REPLY_CHUNKS = 3
 DEFAULT_CONFIRM_TIMEOUT = 300.0
 DEFAULT_RECONNECT_MIN = 1.0
 DEFAULT_RECONNECT_MAX = 60.0
 DEFAULT_PING_INTERVAL = 30.0
 DEFAULT_PING_TIMEOUT = 15.0
-MAX_REPLY_CHUNKS = 5
+MAX_REPLY_CHUNKS = DEFAULT_MAX_REPLY_CHUNKS
 TRUNCATED_NOTE = "\n……（内容过长，已截断）"
 MAX_ALIAS_CHARS = 12           # 去掉标点后的整句长度上限，超过就不当别名
 MAX_GUEST_PROMPT = 2000        # 群友提示词硬上限（字符）
@@ -177,8 +179,13 @@ class OneBotConfig:
     auto_launch_after_install: bool = True
     auto_launch_wait_seconds: float = DEFAULT_AUTO_LAUNCH_WAIT
     rate_per_minute: int = DEFAULT_RATE_PER_MINUTE
+    group_rate_per_minute: int = DEFAULT_GROUP_RATE_PER_MINUTE
     max_message_chars: int = DEFAULT_MAX_MESSAGE_CHARS
     reply_chunk_chars: int = DEFAULT_REPLY_CHUNK_CHARS
+    max_reply_chunks: int = DEFAULT_MAX_REPLY_CHUNKS
+    # 输出侧敏感词：命中就换成 redact_mask；空表 = 不启用
+    redact_words: tuple[str, ...] = ()
+    redact_mask: str = redact.DEFAULT_MASK
     confirm_timeout: float = DEFAULT_CONFIRM_TIMEOUT
     reconnect_min: float = DEFAULT_RECONNECT_MIN
     reconnect_max: float = DEFAULT_RECONNECT_MAX
@@ -250,10 +257,17 @@ def parse_config(raw: dict | None) -> OneBotConfig:
             DEFAULT_AUTO_LAUNCH_WAIT),
         rate_per_minute=_as_int(raw.get("rate_per_minute", DEFAULT_RATE_PER_MINUTE),
                                 DEFAULT_RATE_PER_MINUTE),
+        group_rate_per_minute=_as_int(
+            raw.get("group_rate_per_minute", DEFAULT_GROUP_RATE_PER_MINUTE),
+            DEFAULT_GROUP_RATE_PER_MINUTE),
         max_message_chars=_as_int(raw.get("max_message_chars", DEFAULT_MAX_MESSAGE_CHARS),
                                   DEFAULT_MAX_MESSAGE_CHARS),
         reply_chunk_chars=_as_int(raw.get("reply_chunk_chars", DEFAULT_REPLY_CHUNK_CHARS),
                                   DEFAULT_REPLY_CHUNK_CHARS),
+        max_reply_chunks=_as_int(raw.get("max_reply_chunks", DEFAULT_MAX_REPLY_CHUNKS),
+                                 DEFAULT_MAX_REPLY_CHUNKS) or DEFAULT_MAX_REPLY_CHUNKS,
+        redact_words=redact.normalize_words(raw.get("redact_words")),
+        redact_mask=str(raw.get("redact_mask") or "").strip() or redact.DEFAULT_MASK,
         confirm_timeout=_as_float(raw.get("confirm_timeout", DEFAULT_CONFIRM_TIMEOUT),
                                   DEFAULT_CONFIRM_TIMEOUT),
         reconnect_min=_as_float(raw.get("reconnect_min", DEFAULT_RECONNECT_MIN),
@@ -583,6 +597,46 @@ class RateLimiter:
         return True
 
 
+class RateGate:
+    """用户 + 群两级限流：每人 6 条/分钟、每群 10 条/分钟（均可配置）
+
+    被限流不静默丢弃：返回一句短提示。提示按对象节流（同一个人/同一个群
+    一分钟最多收到一次），避免被限流后每发一条都收到一遍「太快了」。
+    """
+
+    NOTICE_USER = "发得太快啦，缓一分钟再来。"
+    NOTICE_GROUP = "群里消息太密了，大家先缓一下。"
+
+    def __init__(self, per_user: int, per_group: int, window: float = 60.0,
+                 notice_every: float = 60.0, clock=time.monotonic):
+        self._user = RateLimiter(per_user, window, clock)
+        self._group = RateLimiter(per_group, window, clock)
+        self.notice_every = float(notice_every)
+        self.clock = clock
+        self._noticed: dict[str, float] = {}
+
+    def _should_notice(self, key: str) -> bool:
+        now = self.clock()
+        last = self._noticed.get(key)
+        if last is not None and now - last < self.notice_every:
+            return False
+        self._noticed[key] = now
+        return True
+
+    def check(self, uin: str, group_id: str | None = None) -> tuple[bool, str]:
+        """返回 (是否放行, 提示文案)；放行或提示被节流时文案为空"""
+        key = str(uin or "")
+        if not self._user.allow(key):
+            return False, (self.NOTICE_USER if self._should_notice("u:" + key) else "")
+        # 按人限流通过后才记群配额：被限流的人不该把整群的名额吃掉
+        if group_id:
+            gkey = str(group_id)
+            if not self._group.allow(gkey):
+                return False, (self.NOTICE_GROUP
+                               if self._should_notice("g:" + gkey) else "")
+        return True, ""
+
+
 def truncate_text(text: str, limit: int) -> str:
     text = text or ""
     if limit <= 0 or len(text) <= limit:
@@ -685,7 +739,10 @@ class OneBotClient:
         self._last_heartbeat = 0.0
         self._last_message_at = 0.0
 
-        self._limiter = RateLimiter(self._cfg.rate_per_minute)
+        self._gate = RateGate(self._cfg.rate_per_minute,
+                              self._cfg.group_rate_per_minute)
+        self._redactor = redact.Redactor(self._cfg.redact_words,
+                                         self._cfg.redact_mask)
         self._backoff = Backoff(self._cfg.reconnect_min, self._cfg.reconnect_max)
         self._pending_calls: dict[str, asyncio.Future] = {}
         self._seq = 0
@@ -759,7 +816,9 @@ class OneBotClient:
         if cfg == self._cfg:
             return
         self._cfg = cfg
-        self._limiter = RateLimiter(cfg.rate_per_minute, clock=time.monotonic)
+        # 配置热更新：限流配额、分组配额、分段上限与敏感词表都在这里重建
+        self._gate = RateGate(cfg.rate_per_minute, cfg.group_rate_per_minute)
+        self._redactor = redact.Redactor(cfg.redact_words, cfg.redact_mask)
         self._backoff = Backoff(cfg.reconnect_min, cfg.reconnect_max)
         self._drop_pending()
         err = validate_config(cfg)
@@ -1067,7 +1126,8 @@ class OneBotClient:
 
     async def _send_text(self, ev: MessageEvent, text: str, at: bool = True,
                          chunk: str | None = None) -> None:
-        body = text if chunk is None else chunk
+        # 所有出站文字都从这里走：AI 回复、固定命令输出、限流提示都会过敏感词表
+        body = self._redactor.apply(text if chunk is None else chunk)
         if ev.group_id is None:
             await self._call_api("send_private_msg",
                                  {"user_id": _to_uid(ev.uin), "message": body})
@@ -1082,7 +1142,8 @@ class OneBotClient:
         self._stats["replies"] += 1
 
     async def _send_chunks(self, ev: MessageEvent, text: str) -> None:
-        chunks = split_reply(text, self._cfg.reply_chunk_chars)
+        chunks = split_reply(text, self._cfg.reply_chunk_chars,
+                             self._cfg.max_reply_chunks)
         if not chunks:
             chunks = ["（这一轮没有回复）"]
         for i, chunk in enumerate(chunks):
@@ -1110,7 +1171,7 @@ class OneBotClient:
             await self._send_text(ev, "这张图太大了，压缩后还是发不出去；先不发图了。")
             return False
         seg_image = {"type": "image", "data": {"file": f"base64://{b64}"}}
-        seg_text = {"type": "text", "data": {"text": caption}}
+        seg_text = {"type": "text", "data": {"text": self._redactor.apply(caption)}}
         # 出站消息到底带没带图段，必须能在日志里一眼看到：
         # 以前只在成功后记一句「图片发送成功」，链路上没带图时无从分辨
         self._log("info", "出站图文",
@@ -1161,10 +1222,15 @@ class OneBotClient:
         self._log("info", "收到消息",
                   f"{'群' if ev.group_id else '私聊'} uin={ev.uin}"
                   + (f" group={ev.group_id}" if ev.group_id else ""))
-        # 限流超限：静默丢弃，一个字都不回，免得被刷屏时反过来变成放大器
-        if not self._limiter.allow(ev.uin):
+        # 限流超限：不静默丢弃，回一句短提示；提示按人/群各节流一分钟，
+        # 不会每一条都回一遍把人刷屏
+        allowed, notice = self._gate.check(ev.uin, ev.group_id)
+        if not allowed:
             self._stats["rate_limited"] += 1
-            self._log("warn", "限流丢弃", f"uin={ev.uin}")
+            self._log("warn", "限流丢弃",
+                      f"uin={ev.uin}" + (f" group={ev.group_id}" if ev.group_id else ""))
+            if notice:
+                await self._send_text(ev, notice, at=False)
             return
         ev.text = truncate_text(ev.text, cfg.max_message_chars)
         nickname = self._nickname()
