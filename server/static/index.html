@@ -1322,6 +1322,16 @@
     resize: vertical;
   }
   .field-hint { font-size: 12px; color: var(--muted); margin-top: 6px; min-height: 16px; }
+  /* 素材署名（女仆人设 → 语音回复）：按语义分成两块硬换行，块内 nowrap。
+     日文句子从中间折行会读不通，所以先缩字号；缩到下限仍放不下时由横向滚动兜底。
+     字号由 fitTtsCredit() 按实际可用宽度算，这里只给默认 12px（继承 .field-hint） */
+  #ttsCredit {
+    min-height: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+  #ttsCredit .tts-credit-line { white-space: nowrap; line-height: 1.65; }
   /* 设置页里的下拉框：和输入框同一套外观，别再各写一份内联样式 */
   .cfg-select {
     width: 100%; padding: 12px 14px;
@@ -2841,8 +2851,8 @@
                  模型卡「クレジット表記について（必須）」= ■Piper Plus:つくよみちゃん；
                  语料署名 = ■つくよみちゃんコーパス（CV.夢前黎）。 -->
             <div class="field-hint" id="ttsCredit">
-              本ソフトウェアの音声合成には、フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）が無料公開している音声データを使用しています。<br>
-              <a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener" style="color:inherit">■つくよみちゃんコーパス（CV.夢前黎）</a>　<a href="https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan" target="_blank" rel="noopener" style="color:inherit">■Piper Plus:つくよみちゃん</a>　禁止用于人身攻击。
+              <div class="tts-credit-line">本ソフトウェアの音声合成には、フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）が無料公開している音声データを使用しています。</div>
+              <div class="tts-credit-line"><a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener" style="color:inherit">■つくよみちゃんコーパス（CV.夢前黎）</a>　<a href="https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan" target="_blank" rel="noopener" style="color:inherit">■Piper Plus:つくよみちゃん</a>　禁止用于人身攻击。</div>
             </div>
           </div>
           <!-- 长期记忆并入这里：记的是「她记得你什么」，本来就是人设的一部分，
@@ -6739,7 +6749,7 @@
     var savedSb = JSON.parse(localStorage.getItem('deckmeido_sb') || '{}');
     SB.collapsed = !!savedSb.collapsed;
   } catch (e) {}
-  window.addEventListener('resize', function () { rbApplyLayout(); sbApplyLayout(); if (termBig) termRefreshBig(); });
+  window.addEventListener('resize', function () { rbApplyLayout(); sbApplyLayout(); if (termBig) termRefreshBig(); fitTtsCredit(); });
   sbApplyLayout();
   // 首屏只走 rbShowTab 这一条路：它里面按 tab 决定要不要 fbLoad。
   // 之前这里另起一次 fbLoad，两路并发后到的会把先到的列表覆盖成「加载中…」
@@ -8555,6 +8565,28 @@
   var ttsDownload = document.getElementById('ttsDownload');
   var ttsPreview = document.getElementById('ttsPreview');
   var ttsAttribution = document.getElementById('ttsAttribution');
+  // 素材署名的两行都要整行显示，不允许在句子中间折行：先按可用宽度把字号
+  // 从 12px 往下缩（下限 10px 保住可读性），缩到下限还放不下时由横向滚动兜底。
+  // 人设页隐藏时量不到宽度，直接跳过；切到该页和窗口缩放时都会重算。
+  var ttsCredit = document.getElementById('ttsCredit');
+  var ttsCreditLines = ttsCredit
+    ? Array.prototype.slice.call(ttsCredit.querySelectorAll('.tts-credit-line')) : [];
+  function fitTtsCredit() {
+    if (!ttsCredit || !ttsCreditLines.length) return;
+    // 先复位，避免上一轮缩小后的字号影响这次测量
+    ttsCredit.style.fontSize = '';
+    var avail = ttsCredit.clientWidth;
+    if (!avail) return;
+    var base = parseFloat(getComputedStyle(ttsCredit).fontSize) || 12;
+    var needed = 0;
+    ttsCreditLines.forEach(function (el) {
+      if (el.scrollWidth > needed) needed = el.scrollWidth;
+    });
+    if (!needed || needed <= avail) return;
+    // 行宽和字号近似成正比；留 1% 余量，避免四舍五入后又挤出滚动条
+    var size = Math.max(10, Math.floor(base * avail / needed * 0.99 * 10) / 10);
+    ttsCredit.style.fontSize = size + 'px';
+  }
   var ttsPollTimer = 0;
   var ttsState = null;
   var ttsSpeaker = 'maid';
@@ -9629,7 +9661,7 @@
     });
     setBody.scrollTop = 0;
     // 人设页里的语音回复卡要看模型/下载的实时状态，切过来时刷新一次
-    if (name === 'persona') loadTtsStatus();
+    if (name === 'persona') { loadTtsStatus(); fitTtsCredit(); }
     // 按游戏预设可能在 Deck 上刚存过，切到插件页时重新拉一份
     if (name === 'plugin') loadPresets();
   }
