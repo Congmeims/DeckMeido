@@ -278,18 +278,9 @@ def main():
     print("==> 同步 winres")
     sync_winres(ver, tar, z)
 
-    # 离线更新包必须在 winres 同步之后生成：它就是把这 7 项产物重新打包
-    print("==> 本地更新包")
-    sys.path.insert(0, str(ROOT / "tools"))
-    import make_update_pkg  # noqa: E402
-    upd = make_update_pkg.build(ver)
-    print(f"    {upd.name} {upd.stat().st_size // 1024} KB")
-    print(f"    {upd.name}.sha256")
-
     print("==> 打包完成")
     print(f"    {tar}")
     print(f"    {z}")
-    print(f"    {upd}")
     print("    产物已写入 dist/ 与 winres/deckmeido/，没有上传步骤")
     print("    下一步：提交 winres/deckmeido/，再打 tag 并用 gh release 上传资产")
 

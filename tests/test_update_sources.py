@@ -323,5 +323,58 @@ class ApplyFallbackTest(unittest.TestCase):
                 updater._sums_verified(tf, "1" * 64)
 
 
+class InstallTreeRollbackTest(unittest.TestCase):
+    """_install_tree 的原子替换与逆序回滚（镜像 / GitHub 升级共用）"""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name)
+        self.install = self.root / "install"
+        self.stage = self.root / "stage"
+        (self.install / "server" / "sessions").mkdir(parents=True)
+        (self.install / "server" / "static" / "shots").mkdir(parents=True)
+        (self.install / "plugin").mkdir()
+        (self.install / "VERSION").write_text("0.7.0\n", encoding="utf-8")
+        (self.install / "server" / "main.py").write_text("OLD", encoding="utf-8")
+        (self.install / "server" / "config.toml").write_text("token = 'keep'\n",
+                                                             encoding="utf-8")
+        (self.install / "server" / "sessions" / "a.json").write_text("{}", encoding="utf-8")
+        (self.install / "plugin" / "package.json").write_text('{"version":"0.7.0"}',
+                                                             encoding="utf-8")
+        self.patches = [mock.patch.object(updater, "INSTALL_DIR", self.install)]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        self._td.cleanup()
+
+    def test_中途失败按逆序回滚(self):
+        (self.stage / "server").mkdir(parents=True)
+        (self.stage / "plugin").mkdir()
+        (self.stage / "VERSION").write_text("0.7.1\n", encoding="utf-8")
+        (self.stage / "server" / "main.py").write_text("NEW", encoding="utf-8")
+        (self.stage / "plugin" / "package.json").write_text('{"version":"0.7.1"}',
+                                                            encoding="utf-8")
+
+        real_replace = os.replace
+        calls = {"n": 0}
+
+        def flaky(a, b):
+            calls["n"] += 1
+            # 第 3 次发生在第二项上：此时第一项已经完整换好，正好验证逆序回滚
+            if calls["n"] == 3:
+                raise OSError("模拟写入失败")
+            return real_replace(a, b)
+
+        with mock.patch.object(updater.os, "replace", flaky):
+            with self.assertRaises(OSError):
+                updater._install_tree(self.stage, self.install / "update.log")
+        self.assertEqual((self.install / "server" / "main.py").read_text(), "OLD")
+        self.assertEqual((self.install / "VERSION").read_text().strip(), "0.7.0")
+        self.assertFalse(list(self.install.glob(".update-old-*")))
+        self.assertFalse(list(self.install.glob(".update-stage-*")))
+
 if __name__ == "__main__":
     unittest.main()

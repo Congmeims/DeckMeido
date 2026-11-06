@@ -127,9 +127,6 @@ def update_cfg() -> dict:
         "mirror": DEFAULT_MIRROR,
         "github_repo": REPO,
         "github_enable": True,       # 双源模式下是否探测 GitHub
-        # 本地离线更新包：扫描这个目录里的 deckmeido-update-<ver>.zip
-        "local_enable": True,
-        "local_dir": str(Path.home() / "MeidoSpace"),
     }
     try:
         import tomllib
@@ -147,10 +144,6 @@ def update_cfg() -> dict:
         out["github_repo"] = str(u["github_repo"]).strip()
     if isinstance(u.get("github_enable"), bool):
         out["github_enable"] = u["github_enable"]
-    if isinstance(u.get("local_enable"), bool):
-        out["local_enable"] = u["local_enable"]
-    if str(u.get("local_dir") or "").strip():
-        out["local_dir"] = str(u["local_dir"]).strip()
     return out
 
 
@@ -625,7 +618,7 @@ def _install_tree(src: Path, log_path: Path) -> None:
 
 def apply_tarball_bytes(blob: bytes, ver: str, *, expected_sha: str,
                         log_path: Path | None = None) -> str:
-    """把已下载/已上传的发布包字节装进安装目录（本地更新与远端升级共用）。
+    """把已下载的发布包字节装进安装目录（远端升级用）。
 
     校验值必须由调用方提供：没有校验值的包一律拒绝，避免被篡改的包直接覆盖代码。
     """
@@ -921,12 +914,11 @@ def apply(restart_service: bool = True, tag: str = "") -> dict:
 _SOURCE_NOTE = {
     "mirror": "（镜像站）",
     "github": "（GitHub）",
-    "local": "（本地更新包）",
 }
 
 
 def restart_after_apply(target: str, used: str, log_path: Path) -> dict:
-    """装完代码后的统一重启：本地包、镜像、GitHub 都走这里。
+    """装完代码后的统一重启：镜像、GitHub 都走这里。
 
     日志已由调用方落盘，这里只负责拉起 install.sh upgrade。
     用 /bin/sh 拉起会踩到 bash 专有语法（数组、进程替换），必须显式指定 bash；

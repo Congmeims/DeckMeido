@@ -3085,20 +3085,6 @@
             <button id="updApply" type="button">立即升级到最新版</button>
           </div>
           <div class="card">
-            <div class="card-title">本地更新包</div>
-            <p class="field-hint">从工作区目录自动检测，或手动选择一个更新包。校验通过后走同一条安装链路，失败会回滚。</p>
-            <div class="upd-note" id="localUpdNote">正在扫描工作区…</div>
-            <div class="about-row" style="gap:8px; flex-wrap:wrap">
-              <button id="localUpdApply" class="mini-btn" type="button" style="display:none">应用检测到的本地包</button>
-              <button id="localUpdPick" class="mini-btn" type="button">选择本地更新包</button>
-              <input id="localUpdFile" type="file" accept=".zip,application/zip" style="display:none">
-            </div>
-            <div id="localUpdProgWrap" style="display:none; margin-top:8px">
-              <div class="upd-note" id="localUpdProgText"></div>
-              <progress id="localUpdProg" value="0" max="100" style="width:100%; height:8px"></progress>
-            </div>
-          </div>
-          <div class="card">
             <div class="card-title">更新源</div>
             <div class="field field-row">
               <label style="margin:0">同时探测 GitHub（关掉只用国内镜像）</label>
@@ -8159,14 +8145,6 @@
   var updApply = document.getElementById('updApply');
   var cfgUpdGithub = document.getElementById('cfgUpdGithub');
   var updSourceHint = document.getElementById('updSourceHint');
-  var localUpdNote = document.getElementById('localUpdNote');
-  var localUpdApply = document.getElementById('localUpdApply');
-  var localUpdPick = document.getElementById('localUpdPick');
-  var localUpdFile = document.getElementById('localUpdFile');
-  var localUpdProgWrap = document.getElementById('localUpdProgWrap');
-  var localUpdProgText = document.getElementById('localUpdProgText');
-  var localUpdProg = document.getElementById('localUpdProg');
-  var localCandidate = null;
   // 跨屏接管设置（单开关：开 = 允许局域网接管）
   var cfgRiEnabled = document.getElementById('cfgRiEnabled');
   var cfgRiSens = document.getElementById('cfgRiSens');
@@ -8350,144 +8328,6 @@
         updNote.textContent = '升级请求失败，请稍后重试';
       });
   });
-
-  // ---------- 本地更新包 ----------
-  function localFmtBytes(n) {
-    n = Number(n) || 0;
-    if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(1) + 'GB';
-    if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + 'MB';
-    if (n >= 1024) return (n / 1024).toFixed(1) + 'KB';
-    return n + 'B';
-  }
-
-  function refreshLocalUpdate() {
-    localUpdNote.textContent = '正在扫描工作区…';
-    fetch('/api/update/local')
-      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
-      .then(function (res) {
-        var d = res.body || {};
-        if (!res.ok) {
-          localUpdApply.style.display = 'none';
-          localUpdNote.textContent = d.detail || '扫描本地更新包失败';
-          return;
-        }
-        if (!d.enabled) {
-          localUpdApply.style.display = 'none';
-          localUpdNote.textContent = '本地更新包检测已关闭（config.toml 的 [update] local_enable = false）。';
-          return;
-        }
-        if (d.available && d.candidate) {
-          localCandidate = d.candidate;
-          localUpdApply.style.display = 'inline-block';
-          localUpdNote.innerHTML = '检测到本地更新包 <b>v' + escapeHtml(d.candidate.version) +
-            '</b>（' + localFmtBytes(d.candidate.size) + '），可更新。';
-          return;
-        }
-        localCandidate = null;
-        localUpdApply.style.display = 'none';
-        var bad = (d.packages || []).filter(function (p) { return !p.ok; });
-        if (bad.length) {
-          localUpdNote.innerHTML = '工作区里有 ' + bad.length + ' 个包，但都没通过校验：' +
-            escapeHtml(bad[0].error || '原因未知');
-        } else if ((d.packages || []).length) {
-          localUpdNote.textContent = '工作区里有更新包，但没有比当前版本新的合法包。';
-        } else {
-          localUpdNote.textContent = '未发现本地更新包。放到 ' + d.dir + ' 目录即可自动检测。';
-        }
-      })
-      .catch(function () { localUpdNote.textContent = '扫描本地更新包失败，请稍后重试'; });
-  }
-
-  localUpdApply.addEventListener('click', function () {
-    if (!localCandidate) return;
-    localUpdApply.disabled = true;
-    localUpdNote.textContent = '正在校验并安装 v' + localCandidate.version + '…';
-    fetch('/api/update/local/apply', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: localCandidate.name }),
-    })
-      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
-      .then(function (res) {
-        if (!res.ok) {
-          localUpdApply.disabled = false;
-          localUpdNote.textContent = (res.body && res.body.detail) || '安装失败，已回滚';
-          refreshLocalUpdate();
-          return;
-        }
-        localUpdNote.textContent = (res.body && res.body.message)
-          || '安装完成，服务重启后生效。';
-      })
-      .catch(function () {
-        localUpdApply.disabled = false;
-        localUpdNote.textContent = '安装请求失败，请稍后重试';
-      });
-  });
-
-  localUpdPick.addEventListener('click', function () { localUpdFile.click(); });
-
-  localUpdFile.addEventListener('change', function () {
-    var f = localUpdFile.files && localUpdFile.files[0];
-    if (!f) return;
-    if (f.size > 512 * 1024 * 1024) {
-      localUpdNote.textContent = '更新包超过 512MB 上限';
-      return;
-    }
-    localUpdProgWrap.style.display = 'block';
-    localUpdProg.value = 0;
-    localUpdProgText.textContent = '正在计算 sha256（' + localFmtBytes(f.size) + '）…';
-    if (!window.crypto || !window.crypto.subtle) {
-      localUpdProgText.textContent = '当前页面不是安全上下文，无法计算 sha256；请在本机打开网页后再选包。';
-      return;
-    }
-    f.arrayBuffer().then(function (buf) {
-      return crypto.subtle.digest('SHA-256', buf);
-    }).then(function (digest) {
-      var arr = new Uint8Array(digest);
-      var hex = '';
-      for (var i = 0; i < arr.length; i++) hex += ('0' + arr[i].toString(16)).slice(-2);
-      uploadLocalPackage(f, hex);
-    }).catch(function () {
-      localUpdProgText.textContent = '读取文件失败，无法计算校验值';
-    });
-  });
-
-  function uploadLocalPackage(f, sha) {
-    var xhr = new XMLHttpRequest();
-    var started = Date.now();
-    xhr.open('POST', '/api/update/local/upload');
-    xhr.setRequestHeader('X-Package-Sha256', sha);
-    xhr.upload.onprogress = function (ev) {
-      if (!ev.lengthComputable) {
-        localUpdProgText.textContent = '上传中… ' + localFmtBytes(ev.loaded);
-        return;
-      }
-      var pct = Math.floor(ev.loaded * 100 / ev.total);
-      var sec = Math.max((Date.now() - started) / 1000, 0.1);
-      var rate = ev.loaded / sec;
-      localUpdProg.value = pct;
-      localUpdProgText.textContent = '上传中 ' + pct + '% · ' +
-        localFmtBytes(ev.loaded) + '/' + localFmtBytes(ev.total) +
-        ' · ' + localFmtBytes(rate) + '/s';
-    };
-    xhr.onload = function () {
-      var body = {};
-      try { body = JSON.parse(xhr.responseText || '{}'); } catch (e) { body = {}; }
-      if (xhr.status >= 200 && xhr.status < 300) {
-        localUpdProg.value = 100;
-        localUpdProgText.textContent = '校验通过，安装完成：' +
-          (body.message || '服务重启后生效。');
-      } else {
-        localUpdProgText.textContent = body.detail || ('上传/校验失败（HTTP ' + xhr.status + '）');
-      }
-    };
-    xhr.onerror = function () { localUpdProgText.textContent = '上传失败，请检查连接'; };
-    var fd = new FormData();
-    fd.append('file', f, f.name);
-    xhr.send(fd);
-  }
-
-  refreshLocalUpdate();
 
   // ---------- 设置页：设备配对与已配对设备 ----------
   function devTime(ts) {
