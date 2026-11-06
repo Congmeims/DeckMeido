@@ -328,6 +328,75 @@ class PersonaRouteTest(unittest.TestCase):
             cleaned="这是日服 v2.1.7 的立绘，角色 3星 版本，CV 是 石川由依。")
 
 
+class MixedLanguageRegressionTest(unittest.TestCase):
+    """中英日混排回归：整句主语言不被几个技术词带跑，引号内独立语言不丢。"""
+
+    def route(self, text, **kwargs):
+        return ttsmod.route_segments(text, "auto", **kwargs)
+
+    def test_技术词嵌在中文句里不整句换英文(self):
+        # 旧版按拉丁字符占比 0.75 判：这种句子会被判成 en，整句换语言
+        segs = self.route("把 API 和 GPU 的配置写进 README 再跑一遍。")
+        self.assertEqual(segs[0][0], "zh")
+        self.assertEqual(segs[-1][0], "zh")
+        # 英文词本身仍按 en 送，保证发音；但前后中文留在 zh
+        self.assertIn(("en", "API "), segs)
+        self.assertEqual("".join(t for _, t in segs),
+                         "把 API 和 GPU 的配置写进 README 再跑一遍。")
+
+    def test_蔚蓝档案角色资料混排(self):
+        text = "蔚蓝档案的Mika（ミカ）是崔尼蒂综合学园的学生会长，喜欢甜点。"
+        segs = self.route(text)
+        langs = [lang for lang, _ in segs]
+        self.assertEqual(langs[0], "zh")
+        self.assertIn("ja", langs)   # 括号里的片假名专名单独按日语
+        self.assertIn("en", langs)   # Mika 按英文读
+        self.assertEqual("".join(t for _, t in segs), text)
+
+    def test_翻译文档的中文说明加日文原文(self):
+        text = "原文「ミカは学生です」的意思是「Mika is a student」。"
+        segs = self.route(text)
+        self.assertEqual(segs[0], ("zh", "原文"))
+        self.assertEqual(segs[1], ("ja", "「ミカは学生です」"))
+        self.assertIn(("zh", "的意思是"), segs)
+        # 句末「。」按既有规则并入前一句，随英文段一起送
+        self.assertIn(("en", "「Mika is a student」。"), segs)
+        self.assertEqual("".join(t for _, t in segs), text)
+
+    def test_技术文档英文术语与路径(self):
+        text = "在 config.toml 里设置 port = 18765，然后重启后端。"
+        segs = self.route(text)
+        self.assertEqual(segs[0][0], "zh")
+        self.assertEqual(segs[-1][0], "zh")
+        self.assertEqual("".join(t for _, t in segs), text)
+
+    def test_括号内独立语言边界(self):
+        text = "他说「OK，thanks！」然后走了。"
+        segs = self.route(text)
+        self.assertEqual(segs[0], ("zh", "他说"))
+        # 既有句切规则先按「！」断开，闭合引号随下一段中文走；语言归属判对了
+        self.assertEqual(segs[1], ("en", "「OK，thanks！"))
+        self.assertEqual(segs[-1], ("zh", "」然后走了。"))
+        self.assertEqual("".join(t for _, t in segs), text)
+
+    def test_整句英文仍判英文(self):
+        self.assertEqual(self.route("Elegant Elegy is a skill."),
+                         [("en", "Elegant Elegy is a skill.")])
+
+    def test_日文句里的汉字全部按日语读(self):
+        segs = self.route("石川由依は声優です。")
+        self.assertTrue(all(lang == "ja" for lang, _ in segs))
+        self.assertEqual("".join(t for _, t in segs), "石川由依は声優です。")
+
+    def test_可选日文汉字词表(self):
+        # 无词表：纯汉字日文人名按中文读（已知限制）
+        self.assertEqual(self.route("石川由依"), [("zh", "石川由依")])
+        # 词表命中：整词按日语读
+        self.assertEqual(
+            self.route("石川由依", ja_terms=frozenset({"石川由依"})),
+            [("ja", "石川由依")])
+
+
 class _FakeProc:
     returncode = None
 

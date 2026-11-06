@@ -317,13 +317,13 @@ def _start_backend():
     try:
         # 每次拉起都重新读配置：设置页切换 lan_enable 后重启后端即可生效
         host = "0.0.0.0" if bool(_server_cfg().get("lan_enable", False)) else "127.0.0.1"
-        _dev_log("backend.spawn",
-                 argv=[str(python), "-m", "uvicorn", "server.main:app",
-                       "--host", host, "--port", PORT],
-                 cwd=str(DECKMEIDO_DIR))
+        argv = [str(python), "-m", "uvicorn", "server.main:app",
+                "--host", host, "--port", PORT,
+                # 和插件拉起时保持一致：默认 20s 心跳在 Deck 卡顿时会误判掉线
+                "--ws-ping-interval", "60", "--ws-ping-timeout", "120"]
+        _dev_log("backend.spawn", argv=argv, cwd=str(DECKMEIDO_DIR))
         return subprocess.Popen(
-            [str(python), "-m", "uvicorn",
-             "server.main:app", "--host", host, "--port", PORT],
+            argv,
             cwd=DECKMEIDO_DIR,
             stdout=_backend_log_fd(), stderr=subprocess.STDOUT,
             start_new_session=True,

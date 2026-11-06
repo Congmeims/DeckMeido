@@ -14,7 +14,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from server import paths, qqbot, session_store  # noqa: E402
+from server import paths, onebot, session_store  # noqa: E402
 
 
 class ForgetSessionTests(unittest.TestCase):
@@ -71,9 +71,9 @@ class ForgetSessionTests(unittest.TestCase):
         self.assertFalse(self.store.allow_fresh("s-local", ""))
 
 
-class QqDropSessionTests(unittest.TestCase):
+class OneBotDropSessionTests(unittest.TestCase):
     def test_drop_session_clears_pending_confirmation(self):
-        bot = qqbot.QQBot(
+        bot = onebot.OneBotClient(
             runner=lambda *a, **k: None,
             screenshot=lambda: None,
             status_provider=lambda: {},

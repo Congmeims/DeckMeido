@@ -887,6 +887,57 @@ def _fix_display_env(env: dict):
     env.setdefault("KDE_SESSION_VERSION", "6")
 
 
+def venv_bin_dir() -> Path | None:
+    """当前后端使用的 venv 的 bin 目录；后端不在 venv 里时返回 None"""
+    try:
+        exe = Path(sys.executable)
+        if exe.parent.name != "bin":
+            return None
+        if (exe.parent.parent / "pyvenv.cfg").exists():
+            return exe.parent
+    except Exception:
+        return None
+    return None
+
+
+def _command_env() -> dict:
+    """命令通道的环境变量：PATH 前置 venv/bin
+
+    以前直接抄 os.environ，PATH 里只有系统目录，命令里的 python3 落到
+    /usr/bin/python3，PIL 这些装在 .venv 里的包自然 import 不到。
+    """
+    env = dict(os.environ)
+    bin_dir = venv_bin_dir()
+    if bin_dir:
+        env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+    return env
+
+
+_INTERP_LOGGED = False
+
+
+def _log_interpreter(env: dict) -> None:
+    """首次跑命令时记一条：python3 实际落到哪个解释器（只记一次）"""
+    global _INTERP_LOGGED
+    if _INTERP_LOGGED:
+        return
+    _INTERP_LOGGED = True
+    try:
+        from . import devlog
+
+        info = {
+            "backend": sys.executable,
+            "python3": shutil.which("python3", path=env.get("PATH")) or "",
+            "python": shutil.which("python", path=env.get("PATH")) or "",
+            "venv_bin": str(venv_bin_dir() or ""),
+        }
+        devlog.log("command.interpreter", **info)
+        print(f"[DeckMeido] 命令通道解释器：python3={info['python3'] or '未找到'}"
+              f" python={info['python'] or '未找到'} venv={info['venv_bin'] or '无'}")
+    except Exception:
+        pass
+
+
 # 正在跑的 run_command 子进程。取消靠 asyncio 的 CancelledError 传播，
 # 但只要有一处 await 被卡住，那一条取消链就断了；这里留一份登记表，
 # 让「终止」还能沿着它把进程树直接砍掉（不依赖任务本身是否响应取消）
@@ -1074,7 +1125,7 @@ async def start_pty_session(command: str, cwd: str = "",
     - 不设超时、不阻塞等待——面板命令的生命周期由用户决定；
     - 输出实时流式推给前端，不是攒完一次性返回。
     """
-    env = dict(os.environ)
+    env = _command_env()
     _fix_display_env(env)
     env["TERM"] = "xterm-256color"
     env["COLUMNS"] = str(cols)
@@ -1427,8 +1478,9 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
                        detach: bool = False) -> str:
     global CURRENT_CMD
     timeout = max(1, min(int(timeout or 60), 300))
-    env = dict(os.environ)
+    env = _command_env()
     _fix_display_env(env)
+    _log_interpreter(env)
     # 工作区边界对命令通道同样生效：manual / auto 下把 cwd 收进工作区，
     # 写入路径越界则直接拒绝。以前这里固定 cwd=家目录，等于「文件工具受管、
     # 一条 cat ~/.config/xxx 就能绕过」。

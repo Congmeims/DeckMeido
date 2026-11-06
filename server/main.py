@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import audit, authguard, audiomute, depcheck, devlog, i18n, local_update, memory, netcfg, pairing, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
+from . import audit, authguard, audiomute, depcheck, devlog, i18n, local_update, memory, netcfg, onebot, pairing, paths, persona, policy, power, prompts, remote_input, singleton, status_line, tools, updater
 from .session_store import store
 from . import session_store
 from .tts import LANGUAGES, TTS, normalize_engine
@@ -731,6 +731,8 @@ tts = TTS(
     language=str(_tts_cfg.get("language", "auto") or "auto"),
     model_source=str(_tts_cfg.get("model_source", "auto") or "auto"),
     idle_unload_sec=float(_tts_cfg.get("idle_unload_sec", 600)),
+    # 可选日文汉字词表："石川由依,東京大学" —— 中文句里的日文专名按 ja 读
+    ja_terms=str(_tts_cfg.get("ja_terms", "") or ""),
 )
 
 # 语音识别：模型放在数据根（<data>/models/sensevoice），不进插件包也不进 venv。
@@ -1071,10 +1073,13 @@ def _trim_part(p: dict) -> dict:
             p = {"type": "text", "content": s[:_PART_TEXT_CAP] + f"…（省 {len(s) - _PART_TEXT_CAP} 字）"}
         return p
     ev = dict(p.get("event") or {})
-    for k in ("output", "text"):
-        s = ev.get(k)
-        if isinstance(s, str) and len(s) > _PART_EVENT_CAP:
-            ev[k] = s[:_PART_EVENT_CAP] + f"…（省 {len(s) - _PART_EVENT_CAP} 字）"
+    # 思考记录不裁：它要能刷新后原样重放，截断等于把用户看到的内容删掉。
+    # 其它事件只压 output/text 这类长文本字段
+    if ev.get("type") != "thought":
+        for k in ("output", "text"):
+            s = ev.get(k)
+            if isinstance(s, str) and len(s) > _PART_EVENT_CAP:
+                ev[k] = s[:_PART_EVENT_CAP] + f"…（省 {len(s) - _PART_EVENT_CAP} 字）"
     # 截图缩略图是 base64 或路径，两者都别进副档案：恢复时重新截屏即可，
     # 一张图就能顶掉几十条正文的预算
     ev.pop("image", None)
@@ -1123,6 +1128,10 @@ def _relieve_memory(events: list[dict]) -> None:
         print(f"[DeckMeido] 可用内存偏低，降载中（本进程 {used} MB，"
               f"parts {len(_stream_bufs)} 份待裁）", flush=True)
     for ev in events or []:
+        # 思考记录不降载：文本就是用户要能重新展开看全的内容。
+        # 这里只压工具输出 / 过渡正文这类「屏幕上早滚过去」的大段文本
+        if ev.get("type") == "thought":
+            continue
         for k in ("output", "text"):
             s = ev.get(k)
             if isinstance(s, str) and len(s) > 800:
@@ -1800,6 +1809,10 @@ def get_status(gaming: bool | None = None) -> dict:
         "workspace_error": WORKSPACE_ERROR,
         # 运行版本 vs 磁盘版本：装完没重启后端时两者会不一致，界面据此提示重启
         **version_state(),
+        # 前端据此决定要不要回报思考链实际渲染长度（仅 dev_mode 有意义）
+        "dev_mode": devlog.enabled(),
+        # 最近一次清日志的结果：有清不掉的文件时前端透出「N 个未能删除」
+        "log_clear": devlog.last_clear(),
         # 控制类控件（点击输入/窗口聚焦/原生打字/构建依赖）的实测结果，
         # 前端在电量徽章左侧显示成「x/x + 绿灯/黄灯/红灯」
         "controls": depcheck.summary(),
@@ -2954,11 +2967,25 @@ class ConfigUpdate(BaseModel):
     port: int | None = None
     # 开发者模式：写入 [runtime]，保存即生效（日志级别与细节记录不需要重启）
     dev_mode: bool | None = None
+    # 关闭开发者模式时是否自动清理 debug 日志（含轮转出来的 .1/.2）；默认 true
+    clear_debug_on_exit: bool | None = None
 
 
 class TTSPreviewRequest(BaseModel):
     # 试听文本；留空用一句内置短句
     text: str = ""
+
+
+class RenderReport(BaseModel):
+    """前端回报：本轮思考链实际渲染了多少字符、几段（仅 dev_mode 接收）"""
+    sid: str = ""
+    reasoning_chars: int = 0
+    segments: int = 0
+
+
+class LogClearRequest(BaseModel):
+    """清空日志：debug / run / install / all"""
+    category: str = "all"
 
 
 class PairConfirmRequest(BaseModel):
@@ -2986,7 +3013,7 @@ class DeviceIdRequest(BaseModel):
     device_id: str
 
 
-class QQConfigUpdate(BaseModel):
+class OneBotConfigUpdate(BaseModel):
     """远程连接页的 QQ 通道配置：只改界面上能编辑的字段
 
     限流、单条长度、确认超时、心跳这些留在 [qq] 段里用默认值，
@@ -3084,6 +3111,9 @@ async def api_get_config():
         "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
         # [runtime].dev_mode：网页设置页的开发者模式开关；保存后立即生效
         "dev_mode": devlog.enabled(),
+        # [runtime].clear_debug_on_exit：关开发者模式时自动清 debug 日志，默认开
+        "clear_debug_on_exit": bool(
+            (CFG.get("runtime") or {}).get("clear_debug_on_exit", True)),
         # 局域网访问地址：掌机 / 大屏 / 客户端设置页直接展示，别的设备照这个连
         "lan_url": f"http://{_lan_ip()}:{CFG['server'].get('port', 18765)}",
         "device_days": _device_days(),
@@ -3359,13 +3389,28 @@ async def api_set_config(req: ConfigUpdate, request: Request):
             raise HTTPException(status_code=400, detail="端口需为 1024-65535 之间的整数")
         updates.setdefault("server", {})["port"] = port
         audit.record("config", "port", "ok", ip=_client_ip(request), detail=str(port))
+    was_dev_mode = devlog.enabled()
     if req.dev_mode is not None:
         # 写 [runtime]，apply_config 里 devlog.configure 会立刻切换级别与文件
         updates.setdefault("runtime", {})["dev_mode"] = bool(req.dev_mode)
         audit.record("config", "dev_mode", "ok", ip=_client_ip(request),
                      detail="on" if req.dev_mode else "off")
+    if req.clear_debug_on_exit is not None:
+        # 新增配置键：默认 true（关开发者模式时清 debug 日志），允许用户关掉
+        updates.setdefault("runtime", {})["clear_debug_on_exit"] = bool(req.clear_debug_on_exit)
     if updates:
         save_config(updates)
+    clear_result = None
+    if req.dev_mode is False and was_dev_mode:
+        # 开发者模式从开到关：默认把 debug-*.log（含 .1/.2 轮转）清掉。
+        # 只认真正的开关切换；dev_mode 本来就是关的时候，改别的设置不会顺手删旧日志。
+        # 清理失败不影响配置保存，失败数会通过 /api/status 的 log_clear 透出。
+        try:
+            if bool((CFG.get("runtime") or {}).get("clear_debug_on_exit", True)):
+                clear_result = await asyncio.to_thread(devlog.clear_logs, "debug")
+        except Exception as exc:
+            print(f"[DeckMeido] 关闭开发者模式时清理 debug 日志失败：{exc}",
+                  file=sys.stderr)
     if ri.get("enabled") is False:
         # 关掉总开关时立刻结束正在进行的接管，不等下一次心跳
         await remote_input.manager.finish(remote_input.RI_DISABLED)
@@ -3382,6 +3427,15 @@ async def api_set_config(req: ConfigUpdate, request: Request):
             "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
             # dev_mode 保存即生效，不需要重启；重启项只算绑定地址与端口
             "dev_mode": devlog.enabled(),
+            "clear_debug_on_exit": bool(
+                (CFG.get("runtime") or {}).get("clear_debug_on_exit", True)),
+            # 关闭开发者模式触发的清理结果（没触发则为 null）
+            "log_clear": (None if clear_result is None else {
+                "deleted": clear_result["deleted"],
+                "truncated": clear_result["truncated"],
+                "failed": clear_result["failed"],
+                "freed_bytes": clear_result["freed_bytes"],
+            }),
             "restart_required": bool(req.lan_enable is not None or req.port is not None)}
 
 
@@ -3410,6 +3464,43 @@ async def api_auth_session(request: Request):
         "device_days": _device_days(),
         "version": VERSION,
     }
+
+
+@app.get("/api/logs/usage", dependencies=[Depends(require_auth)])
+async def api_logs_usage():
+    """日志占用：总量 / 分项 / 文件数 / debug 轮转上限"""
+    # 目录扫描放线程，避免日志多时卡住事件循环
+    return await asyncio.to_thread(devlog.usage)
+
+
+@app.post("/api/logs/clear", dependencies=[Depends(require_auth)])
+async def api_logs_clear(req: LogClearRequest):
+    """清空日志（不碰配置 / 会话 / 记忆 / 模型）。
+
+    正在写的 backend.log / overlay.log / 当前 debug 文件用 truncate，
+    其余直接删除；返回 freed_bytes 与失败清单，前端据此即时刷新占用。
+    """
+    try:
+        result = await asyncio.to_thread(devlog.clear_logs, req.category)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit.record("config", "logs_clear", "ok" if result["ok"] else "warn",
+                 ip=_client_ip(request), detail=req.category)
+    return result
+
+
+@app.post("/api/debug/render", dependencies=[Depends(require_auth)])
+async def api_debug_render(req: RenderReport):
+    """前端回报本轮思考链实际渲染了多少字（仅 dev_mode 可用）
+
+    和 reasoning.end / session.save 三条长度放在一起，能直接看出是哪一环短的：
+    LLM 收到 → 落盘 → 界面渲染。
+    """
+    if not devlog.enabled():
+        raise HTTPException(status_code=403, detail="开发者模式未开启")
+    devlog.log("ui.render", sid=req.sid, reasoning_chars=req.reasoning_chars,
+               segments=req.segments)
+    return {"ok": True}
 
 
 @app.post("/api/pair/start")
@@ -3978,20 +4069,20 @@ def _safe_clear_stream(sid: str) -> None:
 
 
 def _qq_log(level: str, event: str, detail: str = "") -> None:
-    """往 QQ 日志区补一条事件（qq_bot 在模块后段才创建，这里延迟取）"""
+    """往 QQ 日志区补一条事件（onebot_client 在模块后段才创建，这里延迟取）"""
     try:
-        qq_bot.log_event(level, event, detail)
+        onebot_client.log_event(level, event, detail)
     except Exception:
         pass
 
 
 async def _guest_reply(hist: list[dict], sys_prompt: str, text: str) -> str:
     """普通群友的一轮：只带 guest prompt + 自己会话最近几轮，零工具"""
-    if qqbot.looks_like_injection(text):
+    if onebot.looks_like_injection(text):
         _qq_log("warn", "injection_suspect", "群友消息命中提示注入关键词")
     if not llm.configured:
         return "（还没配置模型，等主人配好我再来陪你聊。）"
-    msgs = [{"role": "system", "content": sys_prompt or qqbot.DEFAULT_GUEST_PROMPT}]
+    msgs = [{"role": "system", "content": sys_prompt or onebot.DEFAULT_GUEST_PROMPT}]
     for item in (hist or [])[-6:]:
         role = item.get("role")
         content = str(item.get("content") or "")
@@ -4000,9 +4091,9 @@ async def _guest_reply(hist: list[dict], sys_prompt: str, text: str) -> str:
     try:
         out = await llm.chat(msgs)
     except Exception as e:
-        print(f"[DeckMeido][qq] 群友轮次失败：{e!r}", file=sys.stderr)
+        print(f"[DeckMeido][onebot] 群友轮次失败：{e!r}", file=sys.stderr)
         return "这一轮没接上，稍后再试。"
-    out, changed = qqbot.redact_output(str(out or ""))
+    out, changed = onebot.redact_output(str(out or ""))
     if changed:
         _qq_log("info", "output_redacted", "群友回复命中脱敏规则")
     return out.strip() or "嗯，我在。"
@@ -4813,7 +4904,7 @@ async def api_session_delete(sid: str):
     _stream_bufs.pop(sid, None)
     if sid.startswith("qq-"):
         try:
-            qq_bot.drop_session(sid)
+            onebot_client.drop_session(sid)
         except Exception:
             pass
     pend = pending_action
@@ -5553,35 +5644,61 @@ async def run_agent(events: list[dict], extra_system: str = "",
             flush_thought_now(turn_sid)
             await manager.broadcast({"type": "thought_end", "ts": time.time(), **_turn_tag()})
             thought_open = False
+            _rs_end("body_start")
         # final=False：这段正文可能只是工具调用前的过渡话，前端不写进 crash 缓冲；
         # 本轮结束时会有一次带 final=True 的完整正文推送（内容相同）
 
     thought_open = False
-    # 每轮 LLM 调用前清零：这一轮的思维链是实时播出去的，还是只在最后一次性返回
-    thought_emitted = False
-    # 本轮实时播给前端的思考原文，收尾时用它判断「这段 reasoning 是不是已经播过了」
+    # 本轮思维链在 events 里的那条记录：从第一片开始就建好、按到达顺序追加，
+    # 保证 session 里存下来的思考就是屏幕上实时出现过的完整那份。
+    # 以前只在最终响应里再补记，供应商只流式给 reasoning_content、最终字段
+    # 为空时，刷新重放就整段消失。
+    thought_ev = None
+    # 本轮实时播给前端的思考原文（仅用于判断最终字段是否比实时片段更全）
     thought_live = []
+    # dev_mode 埋点：每段思考累积到 500 字才记一行，不按分片刷屏
+    _rs = {"started": False, "chars": 0, "segs": 0, "next": 500}
+
+    def _rs_end(reason: str) -> None:
+        """一段思考结束：记总字符、段数、结束原因"""
+        if not _rs["started"]:
+            return
+        _rs["started"] = False
+        devlog.log("reasoning.end", sid=turn_sid, round=round_no,
+                   total_chars=_rs["chars"], segments=_rs["segs"], reason=reason)
 
     async def on_thought(text: str):
-        nonlocal thought_open, thought_emitted, thought_live
+        nonlocal thought_open, thought_ev, thought_live
         if not thought_open:
             thought_open = True
             # 先切话题：正文字要排在思维链前面，不然顺序会乱
             flush_delta_now(turn_sid)
             await manager.broadcast({"type": "thought_start", "ts": time.time(), **_turn_tag()})
+            thought_ev = {"type": "thought", "text": ""}
+            events.append(thought_ev)
+            _rs.update({"started": True, "chars": 0, "segs": 0, "next": 500})
+            devlog.log("reasoning.start", sid=turn_sid, round=round_no)
         # 思考阶段模型吐的片比正文还密（往往一个字一片），逐片广播最费前端
         _flush_thought_later(turn_sid, text, _turn_tag())
         thought_live.append(text)
-        # 记录「这一轮思考已经实时给前端播过了」，收尾时不再往 events 补记
-        thought_emitted = True
+        thought_ev["text"] += text
+        _rs["chars"] += len(text)
+        _rs["segs"] += 1
+        if _rs["chars"] >= _rs["next"]:
+            devlog.log("reasoning.delta", sid=turn_sid, round=round_no,
+                       total_chars=_rs["chars"], segments=_rs["segs"])
+            _rs["next"] = (_rs["chars"] // 500 + 1) * 500
 
     # 重试时重新开始思考：上一个半截思维链已经显示过，不补一个 thought_start
     # 的话新来的片段会接着拼到那块旧内容后面
     def _reset_thought() -> None:
-        nonlocal thought_open
+        nonlocal thought_open, thought_ev
         flush_thought_now(turn_sid)
+        _rs_end("retry")
         thought_open = False
         _thought_pend.pop(turn_sid, None)
+        # 上一段的半截记录留在 events 里（屏幕上出现过），新一段另起一块
+        thought_ev = None
 
     def _output_budget(used_msgs: list[dict], used: int | None = None) -> int:
         """按当前上下文剩余空间算出本次调用的输出上限。
@@ -5656,7 +5773,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 except Exception as e:
                     print(f"[DeckMeido] 工具轮中压缩失败，继续：{e}", file=sys.stderr)
 
-            thought_emitted = False
+            thought_ev = None
             thought_live = []
             msg = await llm.chat_with_tools_stream(msgs, round_tools, on_delta=on_delta,
                                                    on_thought=on_thought,
@@ -5668,6 +5785,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 flush_thought_now(turn_sid)
                 await manager.broadcast({"type": "thought_end", "ts": time.time(), **_turn_tag()})
                 thought_open = False
+                _rs_end("round_end")
 
             # 撞到输出上限时自动续写，把后半段接上（不再把用户丢给「请拆小步骤」）
             cont = 0
@@ -5706,16 +5824,34 @@ async def run_agent(events: list[dict], extra_system: str = "",
             _relieve_memory(events)
 
             # 思维链（reasoning_content，DeepSeek/Qwen 等支持）
-            # 只跳过「这一轮确实实时播过、且内容对得上」的那份：供应商不一定逐片
-            # 回调，有时整段只出现在最终响应里（on_thought 从没被调过），
-            # 那种情况必须照常记下来，否则长时间跑工具的那些轮次思考会整批消失。
-            # 也不能无条件追加：events 是有序流，此刻通常已越过工具块/过渡正文，
-            # 补进去就排到正文后面，界面上成了「话说完了还在想」
+            # 实时片段已经逐片追加到 thought_ev（见 on_thought），落盘内容与
+            # 屏幕上出现过的一致；这里只处理「供应商没有逐片回调、整段只出现在
+            # 最终响应里」的情况，并把最终字段比实时片段多出来的尾巴补上。
+            # 不再按「是否实时播过」整体跳过 —— 那会让 session 里一条思考记录
+            # 都不留，刷新重放时整段消失。
             reasoning = (msg.get("reasoning_content") or "").strip()
             if reasoning:
-                live = "".join(thought_live).strip()
-                if not (thought_emitted and live and (reasoning in live or live in reasoning)):
-                    events.append({"type": "thought", "text": reasoning})
+                if thought_ev is None:
+                    thought_ev = {"type": "thought", "text": reasoning}
+                    events.append(thought_ev)
+                    # 这一段只出现在最终响应里（没有逐片回调）
+                    devlog.log("reasoning.start", sid=turn_sid, round=round_no)
+                    devlog.log("reasoning.end", sid=turn_sid, round=round_no,
+                               total_chars=len(reasoning), segments=1,
+                               reason="final_only")
+                else:
+                    saved = thought_ev.get("text") or ""
+                    if reasoning not in saved:
+                        stripped = saved.strip()
+                        if stripped and reasoning.startswith(stripped):
+                            # 最终字段是实时片段的超集：补上没播到的那段
+                            thought_ev["text"] = saved + reasoning[len(stripped):]
+                        elif not stripped:
+                            thought_ev["text"] = reasoning
+                        else:
+                            # 内容对不上（重试换了思路）：另起一块，别把新的丢掉
+                            thought_ev = {"type": "thought", "text": reasoning}
+                            events.append(thought_ev)
 
             tool_calls = msg.get("tool_calls") or []
             # 每轮模型返回都记一笔：这一步到底动没动手、动了什么。
@@ -5899,7 +6035,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 if needs_approval or remote_risk.level == "hard_confirm":
                     # 挂起危险操作，等用户下一轮确认。把「谁在哪提的」一并记下，
                     # 确认时校验（见 _pending_matches），别的端说的「好」不算数。
-                    # hard 档只认「确认执行」，qqbot 侧会按这个标记收紧确认口径
+                    # hard 档只认「确认执行」，onebot 侧会按这个标记收紧确认口径
                     pending_action = {"name": name, "args": args,
                                       "description": tools.describe(name, args),
                                       "hard": remote_risk.level == "hard_confirm",
@@ -5937,7 +6073,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     p = tools.extract_paths(str(args.get("command", "")))
                     if p:
                         event["path"] = p
-                        event["is_dir"] = True
+                        event["is_dir"] = os.path.isdir(p)
                 activity = f"正在{label}：{summary}" if summary else f"正在{label}"
                 # 工具卡片要插在正文后面：先把手头攒的 delta 推出去，
                 # 否则这批字会晚于工具卡片到达，前端顺序就是乱的
@@ -6046,8 +6182,9 @@ async def run_agent(events: list[dict], extra_system: str = "",
         # 工具轮数用尽：最后再不给工具地问一次，让它基于已有结果收尾回答
         msg = await llm.chat_with_tools_stream(
             msgs, [], on_delta, max_tokens=_output_budget(msgs, _estimate_tokens(msgs)))
-        if msg.get("reasoning_content"):
-            events.append({"type": "thought", "text": msg["reasoning_content"]})
+        if msg.get("reasoning_content") and thought_ev is None:
+            thought_ev = {"type": "thought", "text": msg["reasoning_content"]}
+            events.append(thought_ev)
         answer = (msg.get("content") or "").strip()
         limit_note = (f"（已经连续执行 {MAX_TOOL_ROUNDS} 步，到了单轮上限，后面的步骤没有继续。"
                       f"要接着做的话说一声，或把 max_tool_rounds 调大）")
@@ -6193,7 +6330,7 @@ async def api_screenshot():
 # ---------- QQ 远程控制通道（OneBot 11 / NapCat 客户端） ----------
 
 def _qq_nickname() -> str:
-    """触发前缀就是软件里配置的昵称；昵称为空时由 qqbot 退回默认词"""
+    """触发前缀就是软件里配置的昵称；昵称为空时由 onebot 退回默认词"""
     return str(PERSONA.get("name") or "")
 
 
@@ -6273,7 +6410,7 @@ def _qq_install_target(cmd: str) -> str:
 
 async def _qq_maybe_launch_after_install(events: list) -> dict:
     """安装类命令跑成功后自动拉起程序并截一张图；只用于 QQ 管理员轮次"""
-    cfg = qqbot.parse_config(CFG.get("qq") or {})
+    cfg = onebot.parse_config(CFG.get("qq") or {})
     if not cfg.auto_launch_after_install:
         return {}
     for ev in events or []:
@@ -6340,7 +6477,7 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
     pend = pending_action
     if (isinstance(pend, dict) and (pend.get("client") or "") == "qq"
             and (pend.get("device") or "") == device):
-        if qqbot.is_confirm_text(text) or qqbot.is_hard_confirm(text):
+        if onebot.is_confirm_text(text) or onebot.is_hard_confirm(text):
             if ((pend.get("sid") or "") == sid
                     and (pend.get("epoch") or 0) == store.epoch
                     and (pend.get("turn_id") or "")):
@@ -6370,7 +6507,7 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
     image_part = _qq_image_data_url(image)
     turn_started = time.time()
     qq_cfg = CFG.get("qq") or {}
-    guest_text = (qqbot.guest_prompt(qq_cfg.get("guest_prompt"), _qq_nickname())
+    guest_text = (onebot.guest_prompt(qq_cfg.get("guest_prompt"), _qq_nickname())
                   if readonly else "")
     try:
         result = await handle_chat(text, client="qq", device=device,
@@ -6440,10 +6577,10 @@ def _qq_image_data_url(blob: bytes | None) -> str | None:
 
 
 def _qq_apply_config(raw: dict) -> None:
-    qq_bot.configure(qqbot.parse_config(raw))
+    onebot_client.configure(onebot.parse_config(raw))
 
 
-qq_bot = qqbot.QQBot(
+onebot_client = onebot.OneBotClient(
     runner=_qq_run_turn,
     screenshot=_qq_screenshot,
     status_provider=_qq_status_info,
@@ -6452,29 +6589,29 @@ qq_bot = qqbot.QQBot(
     # 单条图文的 base64 超 3MB 时，压到长边 1024 / q82 再发
     image_optimizer=lambda blob: _jpeg_for_llm(blob, max_side=1024, quality=82),
 )
-qq_bot.configure(qqbot.parse_config(CFG.get("qq") or {}))
+onebot_client.configure(onebot.parse_config(CFG.get("qq") or {}))
 
 
 @app.on_event("startup")
-async def _boot_qqbot():
-    await qq_bot.start()
+async def _boot_onebot():
+    await onebot_client.start()
 
 
 @app.on_event("shutdown")
-async def _stop_qqbot():
-    await qq_bot.stop()
+async def _stop_onebot():
+    await onebot_client.stop()
 
 
 @app.get("/api/qq/status", dependencies=[Depends(require_auth)])
 async def api_qq_status():
     """QQ 通道的连接状态与统计（令牌不回显），供远程连接页用"""
-    return qq_bot.state()
+    return onebot_client.state()
 
 
 @app.get("/api/qq/logs", dependencies=[Depends(require_auth)])
 async def api_qq_logs(limit: int = Query(default=100, ge=1, le=300)):
     """QQ 事件日志：只含事件与计数，不含令牌/消息正文；新的在前"""
-    return {"logs": qq_bot.logs(limit), "state": qq_bot.state()}
+    return {"logs": onebot_client.logs(limit), "state": onebot_client.state()}
 
 
 _QQ_ID_SPLIT = re.compile(r"[,，、\s]+")
@@ -6498,7 +6635,7 @@ def _qq_id_list(value) -> list[str]:
 
 def _qq_public_config() -> dict:
     """远程连接页要回填的可编辑字段；限流/超时只读展示，不给输入框"""
-    cfg = qqbot.parse_config(CFG.get("qq") or {})
+    cfg = onebot.parse_config(CFG.get("qq") or {})
     return {
         "enable": cfg.enable,
         "ws_url": cfg.ws_url,
@@ -6508,8 +6645,8 @@ def _qq_public_config() -> dict:
         "admin_qq": list(cfg.admin_qq),
         "allow_groups": list(cfg.allow_groups),
         "group_admin_commands": cfg.group_admin_commands,
-        **qqbot.guest_prompt_fields(cfg.guest_prompt),
-        "guest_prompt_max": qqbot.MAX_GUEST_PROMPT,
+        **onebot.guest_prompt_fields(cfg.guest_prompt),
+        "guest_prompt_max": onebot.MAX_GUEST_PROMPT,
         "allow_image": cfg.allow_image,
         "max_image_mb": cfg.max_image_mb,
         "image_save_dir": cfg.image_save_dir,
@@ -6517,12 +6654,12 @@ def _qq_public_config() -> dict:
         "text_log_path": cfg.text_log_path,
         "auto_launch_after_install": cfg.auto_launch_after_install,
         "auto_launch_wait_seconds": cfg.auto_launch_wait_seconds,
-        "archive_dir_default": str(qqbot.archive_root("")),
+        "archive_dir_default": str(onebot.archive_root("")),
         "rate_per_minute": cfg.rate_per_minute,
         "max_message_chars": cfg.max_message_chars,
         "reply_chunk_chars": cfg.reply_chunk_chars,
         "confirm_timeout": cfg.confirm_timeout,
-        "prefix": qqbot.prefix_for(_qq_nickname()),
+        "prefix": onebot.prefix_for(_qq_nickname()),
     }
 
 
@@ -6532,7 +6669,7 @@ async def api_qq_config():
 
 
 @app.post("/api/qq/config", dependencies=[Depends(require_auth)])
-async def api_save_qq_config(req: QQConfigUpdate):
+async def api_save_qq_config(req: OneBotConfigUpdate):
     """保存 QQ 配置并立即按新值重连；写盘统一走 write_config（先校验后原子写）"""
     updates: dict = {}
     if req.enable is not None:
@@ -6549,7 +6686,7 @@ async def api_save_qq_config(req: QQConfigUpdate):
         updates["group_admin_commands"] = bool(req.group_admin_commands)
     if req.guest_prompt is not None:
         try:
-            updates["guest_prompt"] = qqbot.normalize_guest_prompt(req.guest_prompt)
+            updates["guest_prompt"] = onebot.normalize_guest_prompt(req.guest_prompt)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     if req.allow_image is not None:
@@ -6571,8 +6708,8 @@ async def api_save_qq_config(req: QQConfigUpdate):
         save_config({"qq": updates})
         # save_config 会经 apply_config 热更新配置；这里再等一次重连落定，
         # 让接口返回的状态已经是新配置下的结果（不是旧的 connected）
-        await qq_bot.reconnect()
-    return {"ok": True, "state": qq_bot.state(), "config": _qq_public_config()}
+        await onebot_client.reconnect()
+    return {"ok": True, "state": onebot_client.state(), "config": _qq_public_config()}
 
 
 # 图片上传落在数据根（userdata/uploads），不再写进 server/static

@@ -17,10 +17,15 @@
 from __future__ import annotations
 
 import os
+import threading
+import uuid
 from pathlib import Path
 
 ENV_VAR = "DECKMEIDO_DATA_DIR"
 USERDATA = "userdata"
+
+# 探针失败再写日志时可能又走到 data_dir()/logs_dir()，用这个标记防递归
+_probe_logging = False
 
 
 def install_root() -> Path:
@@ -31,16 +36,42 @@ def install_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def _writable(path: Path) -> bool:
+def _probe_failed(path: Path, exc: OSError) -> None:
+    """写探针失败时留一条（仅 dev_mode 落盘），不再静默吞掉"""
+    global _probe_logging
+    if _probe_logging:
+        return
+    _probe_logging = True
     try:
-        if not path.is_dir():
-            return False
-        probe = path / ".deckmeido_write_test"
-        probe.write_text("", encoding="utf-8")
-        probe.unlink()
-        return True
-    except OSError:
+        from . import devlog
+
+        devlog.log("paths.probe_failed", path=str(path),
+                   error=f"{type(exc).__name__}: {exc}")
+    except Exception:
+        pass
+    finally:
+        _probe_logging = False
+
+
+def _writable(path: Path) -> bool:
+    """用一个唯一名的探针文件试写；并发下多个调用不会互相踩"""
+    if not path.is_dir():
         return False
+    probe = path / (
+        f".deckmeido_write_test.{os.getpid()}."
+        f"{threading.get_ident()}.{uuid.uuid4().hex}"
+    )
+    try:
+        probe.write_text("", encoding="utf-8")
+        return True
+    except OSError as exc:
+        _probe_failed(path, exc)
+        return False
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError as exc:
+            _probe_failed(path, exc)
 
 
 def data_dir() -> Path:

@@ -26,6 +26,15 @@ from typing import Any
 
 MAX_BYTES = 10 * 1024 * 1024
 BACKUP_COUNT = 2
+# 单类日志的展示上限：debug 单文件 10 MB + 2 个轮转
+LOG_CAP = MAX_BYTES * (BACKUP_COUNT + 1)
+# 正在被进程持有句柄的文件：只能 truncate，unlink 在 Linux 下看起来删了、
+# 实际空间不释放（fd 继续写已删除的 inode）
+_ACTIVE_NAMES = {"backend.log", "overlay.log"}
+_LOG_CATEGORIES = ("debug", "run", "install")
+_USAGE_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
+# 最近一次清理的结果：清不掉的文件数会透出到 /api/status
+_LAST_CLEAR: dict | None = None
 # 单个字段最多 4000 字：一条 LLM 回复或工具输出够看，又不会一条日志几十 MB
 MAX_FIELD = 4000
 LOGGER_NAME = "deckmeido.dev"
@@ -227,3 +236,153 @@ def startup_info() -> dict:
         "pid": os.getpid(),
         "env": env_summary(),
     }
+
+
+# ---------- 日志占用与清理 ----------
+#
+# 只处理 userdata/logs 下的 *.log（含轮转后缀），配置、会话、模型一概不碰。
+# 分类：debug = 调试日志（含 debug-client-* 与 .1/.2 轮转），install = 安装日志，
+# run = 其余运行日志（backend / overlay / client-crash 等）。
+
+def _category_of(name: str) -> str | None:
+    if ".log" not in name:
+        return None
+    if name.startswith("debug-"):
+        return "debug"
+    if name.startswith("install-"):
+        return "install"
+    return "run"
+
+
+def log_files(category: str = "all") -> list[Path]:
+    """列出某类日志文件（不存在或目录不可读时返回空列表，不抛异常）"""
+    try:
+        from . import paths
+
+        entries = list(paths.logs_dir().iterdir())
+    except OSError:
+        return []
+    out: list[Path] = []
+    for p in entries:
+        try:
+            if not p.is_file():
+                continue
+        except OSError:
+            continue
+        cat = _category_of(p.name)
+        if cat is None:
+            continue
+        if category not in ("all", "") and cat != category:
+            continue
+        out.append(p)
+    return out
+
+
+def _active_file_names(files: list[Path]) -> set[str]:
+    """正在被进程写着的文件：当前 debug handler 的 base 文件 + backend/overlay"""
+    names = {p.name for p in files if p.name in _ACTIVE_NAMES}
+    try:
+        if _HANDLER is not None:
+            names.add(Path(_HANDLER.baseFilename).name)
+    except Exception:
+        pass
+    return names
+
+
+def last_clear() -> dict | None:
+    """最近一次清理结果（/api/status 用，不做磁盘扫描）"""
+    return _LAST_CLEAR
+
+
+def usage() -> dict:
+    """目录扫描（带 2 秒缓存，避免设置页轮询时反复扫盘）"""
+    now = time.time()
+    cached = _USAGE_CACHE.get("data")
+    if cached is not None and now - float(_USAGE_CACHE.get("ts") or 0) < 2.0:
+        return cached
+    files = log_files("all")
+    active = _active_file_names(files)
+    cats: dict[str, dict] = {c: {"bytes": 0, "files": 0} for c in _LOG_CATEGORIES}
+    total_bytes = 0
+    for p in files:
+        cat = _category_of(p.name)
+        if cat is None:
+            continue
+        try:
+            size = p.stat().st_size
+        except OSError:
+            size = 0
+        cats[cat]["bytes"] += size
+        cats[cat]["files"] += 1
+        total_bytes += size
+    data = {
+        "total": {"bytes": total_bytes, "files": len(files)},
+        "categories": cats,
+        # debug 轮转上限（10 MB × 3 代）；其它分类没有独立上限，仅展示用量
+        "cap_bytes": LOG_CAP,
+        "active": sorted(active),
+        "last_clear": _LAST_CLEAR,
+    }
+    _USAGE_CACHE.update({"ts": now, "data": data})
+    return data
+
+
+def clear_logs(category: str = "all") -> dict:
+    """按类别清空日志；失败只记结果，不抛异常。
+
+    正在写的文件（backend.log / overlay.log / 当前 debug handler）用 truncate，
+    其余直接 unlink。返回 freed_bytes 与 failed 列表，调用方据此提示。
+    """
+    global _LAST_CLEAR
+    if category not in ("all", *_LOG_CATEGORIES):
+        raise ValueError(f"未知的日志类别：{category}")
+    files = log_files(category)
+    active = _active_file_names(files)
+    deleted = 0
+    truncated = 0
+    freed = 0
+    failed: list[dict] = []
+    for p in files:
+        try:
+            size = p.stat().st_size
+        except OSError:
+            size = 0
+        try:
+            if p.name in active:
+                # 持有句柄的文件不能删：truncate 成 0，fd 继续写这个 inode
+                with open(p, "r+b") as f:
+                    f.truncate(0)
+                truncated += 1
+            else:
+                p.unlink()
+                deleted += 1
+            freed += size
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            failed.append({"name": p.name, "error": f"{type(exc).__name__}: {exc}"})
+    result = {
+        "ok": not failed,
+        "category": category,
+        "deleted": deleted,
+        "truncated": truncated,
+        "failed": len(failed),
+        "failed_files": failed,
+        "freed_bytes": freed,
+        "usage": usage(),
+    }
+    _LAST_CLEAR = {
+        "ts": time.time(),
+        "category": category,
+        "failed": len(failed),
+        "failed_files": [f["name"] for f in failed],
+        "deleted": deleted,
+        "truncated": truncated,
+    }
+    if failed:
+        print(f"[DeckMeido] 清理日志（{category}）：{len(failed)} 个文件未能删除："
+              + "，".join(f["name"] for f in failed), file=sys.stderr)
+    # 清理后让下一次 usage 立刻反映真实占用
+    _USAGE_CACHE.update({"ts": 0.0, "data": None})
+    result["usage"] = usage()
+    return result

@@ -2754,6 +2754,22 @@
                 凭据、Cookie、URL 查询值、非回环 IP、QQ 号始终打码。
               </div>
             </div>
+            <div class="field">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input type="checkbox" id="cfgClearDebug" checked>
+                关闭开发者模式时自动清理调试日志（含轮转出来的 .1 / .2）
+              </label>
+            </div>
+            <div class="field">
+              <label>日志占用</label>
+              <div id="devLogUsage" class="field-hint">统计中…</div>
+              <div class="mem-foot" style="margin-top:8px;flex-wrap:wrap">
+                <button id="logClearDebug" class="mini-btn" type="button">清空调试日志</button>
+                <button id="logClearRun" class="mini-btn" type="button">清空运行日志</button>
+                <button id="logClearInstall" class="mini-btn" type="button">清空安装日志</button>
+              </div>
+              <div id="logClearNote" class="field-hint"></div>
+            </div>
           </div>
           <div class="card">
             <div class="card-title">设备配对</div>
@@ -3965,6 +3981,8 @@
     // 没有内容的思考不生成「思考 ▸」空头：屏幕上出现一排无内容的「思考 ·」纯属噪音
     if (!body.trim()) return null;
     var r = makeTlRow('思考', null, open);
+    // 标记成 thought：dev_mode 回报时只数思考块，不把工具输出混进去
+    r.tl.classList.add('thought');
     var arrow = document.createElement('span');
     arrow.className = 'tl-arrow';
     // 三角由 CSS 绘制，不放字符；方向由 .tl.open .tl-arrow 旋转控制
@@ -3975,6 +3993,20 @@
     r.tl.appendChild(bd);
     if (open) r.tl.classList.add('open');
     return r.tl;
+  }
+
+  // dev_mode 埋点：把本轮实际渲染出来的思考字符数/段数报给后端。
+  // 与日志里的 reasoning.end（模型吐出）、session.save（落盘）三条长度并排，
+  // 哪一环短了立刻能对上。生产模式直接不请求，接口也会 403。
+  function postDebugRender(sid, chars, segs) {
+    if (!serverDevMode || !sid) return;
+    try {
+      fetch('/api/debug/render', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sid: sid, reasoning_chars: chars, segments: segs })
+      }).catch(function () {});
+    } catch (e) {}
   }
 
   // 正文气泡（回合内按时间顺序穿插用）：final=true 时带底部按钮与时间
@@ -4402,6 +4434,8 @@
 
   var liveBox = null;      // 本轮对话的事件容器（实时渲染工具终端块）
   var liveToolCount = 0;   // 已实时渲染的工具数，避免 assistant_message 重复渲染
+  // 后端是否开启 dev_mode：只有开启时才回报思考链实际渲染长度（/api/debug/render）
+  var serverDevMode = false;
   var liveThoughtShown = 0; // 已实时渲染的思维链数
   var askShown = 0;         // 已实时渲染的提问数（收尾时按这个跳过 events 里的 ask）
   var liveThought = null;  // 实时思维链卡片（.thought-body 元素）
@@ -5117,7 +5151,7 @@
   // 那条提示是给用户看的「AI 把面板拽走了」，断线重连 / 刷新页面时弹一次纯属打扰。
   function fbLoad(path, sel, quiet) {
     var url = '/api/browse';
-    if (path) url += '&path=' + encodeURIComponent(path);
+    if (path) url += (url.indexOf('?') === -1 ? '?' : '&') + 'path=' + encodeURIComponent(path);
     rbEl('fbList').innerHTML = '<div class="fb-note">加载中…</div>';
     return fetch(url).then(function (r) { return r.json(); }).then(function (data) {
       if (!data || !data.path) {
@@ -6698,7 +6732,10 @@
               // 就会漏判，把 events 里的 ask 重画一遍（屏幕上两组「思考+同一句问题」）。
               // 这里直接看 liveBox 里是不是已经有问答卡片了
               var hasAsk = !!liveBox.querySelector('.ask-card');
-              var skip = liveToolCount, skipT = liveThoughtShown;
+              // 计数直接数容器里已经画出来的思考块：重连/重挂载会清零
+              // liveThoughtShown，清零后按计数跳过就会把同一段思考再画一遍
+              var skip = liveToolCount;
+              var skipT = liveBox.querySelectorAll('.tl.thought').length;
               // 最终正文气泡是「这一轮的结尾」：补渲染的思考块必须插在它前面，
               // 否则一条迟到的 thought 会追加到答复下方，屏幕上就成了
               // 「AI 说完了，下面又冒出一串思考」
@@ -6719,6 +6756,25 @@
             } else {
               renderEvents(msg.events);
             }
+          }
+          // dev_mode 埋点：统计本轮思考块实际渲染出来的字符数与段数。
+          // 有实时容器就数 DOM（最接近用户看到的）；没有则按本次补渲染的 events 计
+          if (serverDevMode && msg.sid) {
+            var rcChars = 0, rcSegs = 0;
+            if (liveBox) {
+              Array.prototype.forEach.call(
+                liveBox.querySelectorAll('.tl.thought .tl-body'), function (bd) {
+                  var n = (bd.textContent || '').length;
+                  if (n) { rcChars += n; rcSegs += 1; }
+                });
+            } else {
+              (msg.events || []).forEach(function (e) {
+                if (e && e.type === 'thought' && String(e.text || '').trim()) {
+                  rcChars += String(e.text).length; rcSegs += 1;
+                }
+              });
+            }
+            postDebugRender(msg.sid, rcChars, rcSegs);
           }
           if (liveBox && !liveBox.childNodes.length && liveBox.parentNode) {
             liveBox.parentNode.removeChild(liveBox);
@@ -7172,6 +7228,7 @@
   function renderStatus(s) {
     // 版本：运行中的进程 vs 磁盘上的 VERSION。装完没重启后端时两者不一致，
     // 状态点面板里给一句人话 + 重启入口，别让用户对着「0.7.0」干瞪眼
+    serverDevMode = !!s.dev_mode;
     connInfo.runningVersion = s.running_version || s.version || '';
     connInfo.diskVersion = s.disk_version || '';
     connInfo.versionMatch = (typeof s.version_match === 'boolean') ? s.version_match : null;
@@ -7182,6 +7239,12 @@
       workspaceWarned = true;
       addSystem('工作区不可用：' + (s.workspace_error || '未知原因')
         + '（可在设置里改工作区目录）');
+    }
+    // 关开发者模式时的清理有文件删不掉：状态里透出数量，别让用户以为已清空
+    if (s.log_clear && s.log_clear.failed && s.log_clear.ts !== logClearWarnedTs) {
+      logClearWarnedTs = s.log_clear.ts;
+      addSystem('有 ' + s.log_clear.failed + ' 个日志未能删除'
+        + '（可能仍被进程占用）。');
     }
     renderControls(s.controls);
     // 服务端只要还在跑，前端就保持终止态 —— 哪怕是别的端（手机/桌面客户端）
@@ -8016,6 +8079,80 @@
   var cfgHint = document.getElementById('cfgHint');
   var cfgDevMode = document.getElementById('cfgDevMode');
   var devModeHint = document.getElementById('devModeHint');
+  var cfgClearDebug = document.getElementById('cfgClearDebug');
+  var devLogUsage = document.getElementById('devLogUsage');
+  var logClearDebug = document.getElementById('logClearDebug');
+  var logClearRun = document.getElementById('logClearRun');
+  var logClearInstall = document.getElementById('logClearInstall');
+  var logClearNote = document.getElementById('logClearNote');
+  var logClearWarnedTs = 0;
+
+  // 日志占用：总占用 / debug 轮转上限 + 悬停看分项。清空后立即重拉，不等轮询
+  function refreshLogUsage() {
+    if (!devLogUsage) return;
+    fetch('/api/logs/usage').then(function (r) { return r.json(); }).then(function (u) {
+      var total = (u && u.total) || {};
+      devLogUsage.textContent = '日志占用 ' + fmtSize(total.bytes || 0)
+        + ' / ' + fmtSize(u.cap_bytes || 0) + '（' + (total.files || 0) + ' 个文件）';
+      var cats = (u && u.categories) || {};
+      var line = function (label, c) {
+        c = c || {};
+        return label + '：' + fmtSize(c.bytes || 0) + '，' + (c.files || 0) + ' 个文件';
+      };
+      var parts = [line('调试', cats.debug), line('运行', cats.run), line('安装', cats.install)];
+      if (u && u.active && u.active.length) parts.push('正在写入：' + u.active.join('、'));
+      if (u && u.last_clear && u.last_clear.failed) {
+        parts.push('上次清理失败 ' + u.last_clear.failed + ' 个');
+      }
+      devLogUsage.title = parts.join('\n');
+    }).catch(function () {});
+  }
+
+  function clearLogCategory(category, label) {
+    if (!window.confirm('确定清空' + label + '？清空后不可恢复。\n只清日志，不碰配置、会话、记忆和模型。')) return;
+    fetch('/api/logs/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category: category })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      var msg;
+      if (res.ok) {
+        msg = '已清空' + label + '，释放 ' + fmtSize(res.freed_bytes || 0) + '。';
+      } else {
+        msg = '清理' + label + '：' + (res.failed || 0)
+          + ' 个文件未能删除（可能仍被进程占用）。';
+      }
+      if (res.truncated) msg += ' 其中 ' + res.truncated + ' 个正在写入，已截断为 0。';
+      logClearNote.textContent = msg;
+      logClearNote.style.color = res.ok ? '' : '#e0a33a';
+      // 先用返回里的 usage 立即刷新数字，再拉一次校准（轮转可能刚发生）
+      var u = res.usage || {};
+      if (devLogUsage && u.total) {
+        devLogUsage.textContent = '日志占用 ' + fmtSize(u.total.bytes || 0)
+          + ' / ' + fmtSize(u.cap_bytes || 0) + '（' + (u.total.files || 0) + ' 个文件）';
+      }
+      refreshLogUsage();
+    }).catch(function (e) {
+      logClearNote.textContent = '清空失败：' + e;
+      logClearNote.style.color = '#e0493a';
+    });
+  }
+  if (logClearDebug) {
+    logClearDebug.addEventListener('click', function () { clearLogCategory('debug', '调试日志'); });
+  }
+  if (logClearRun) {
+    logClearRun.addEventListener('click', function () { clearLogCategory('run', '运行日志'); });
+  }
+  if (logClearInstall) {
+    logClearInstall.addEventListener('click', function () { clearLogCategory('install', '安装日志'); });
+  }
+  // 设置页打开期间每 5 秒刷新占用：日志轮转、后台写日志都会让数字变化，
+  // 不需要用户手动刷新页面；面板收起时不扫盘
+  if (devLogUsage) {
+    setInterval(function () {
+      if (devLogUsage.offsetParent !== null) refreshLogUsage();
+    }, 5000);
+  }
   var verTag = document.getElementById('verTag');
   var updCheck = document.getElementById('updCheck');
   var updNote = document.getElementById('updNote');
@@ -8614,6 +8751,8 @@
             ? '已开启：正在写 debug-<时间>.log。凭据与身份信息始终打码。'
             : '已关闭：保持现在的日志量。开启后立即生效，不用重启后端。';
         }
+        if (cfgClearDebug) cfgClearDebug.checked = c.clear_debug_on_exit !== false;
+        refreshLogUsage();
         // 更新源：双源探测，这里只控制是否同时查 GitHub
         cfgUpdGithub.checked = c.update_github_enable !== false;
         ddRefreshAll();
@@ -9024,7 +9163,9 @@
       lan_enable: cfgLanEnable.value === 'on',
       port: port,
       // 开发者模式：写入 [runtime]，保存即生效（日志级别与细节记录不用重启）
-      dev_mode: cfgDevMode ? (cfgDevMode.value === 'on') : false
+      dev_mode: cfgDevMode ? (cfgDevMode.value === 'on') : false,
+      // 关开发者模式时是否清 debug 日志（默认开）
+      clear_debug_on_exit: cfgClearDebug ? cfgClearDebug.checked : true
     };
     if (keyInput) { payload.api_key = keyInput; }
     if (apiKeyClear) { payload.clear_api_key = true; }
@@ -9060,6 +9201,20 @@
             ? '已开启：正在写 debug-<时间>.log。凭据与身份信息始终打码。'
             : '已关闭：保持现在的日志量。开启后立即生效，不用重启后端。';
         }
+        if (cfgClearDebug) cfgClearDebug.checked = res.clear_debug_on_exit !== false;
+        // 关开发者模式可能顺手清了 debug 日志：立刻刷新占用；有清不掉的透出数量
+        if (res.log_clear) {
+          if (res.log_clear.failed) {
+            logClearNote.textContent = '有 ' + res.log_clear.failed
+              + ' 个调试日志未能删除（可能仍被进程占用），下次启动前会再试。';
+            logClearNote.style.color = '#e0a33a';
+          } else {
+            logClearNote.textContent = '已清理调试日志，释放 '
+              + fmtSize(res.log_clear.freed_bytes || 0) + '。';
+            logClearNote.style.color = '';
+          }
+        }
+        refreshLogUsage();
         var restartNote = res.restart_required ? '（局域网开关/端口需重启后端生效）' : '';
         cfgHint.textContent = res.llm_configured
           ? ('已保存，正在拉取模型列表…' + restartNote)
@@ -10954,7 +11109,7 @@
   function compactContext() {
     if (busy) { addSystem('正在执行任务，等这一轮结束再压缩'); return; }
     var u = '/api/compact';
-    fetch(u + '&preview=true', { method: 'POST' })
+    fetch(u + '?preview=true', { method: 'POST' })
       .then(function (r) { return r.json(); })
       .then(function (p) {
         if (!p.ok) { addSystem('压缩失败：' + (p.detail || '未知错误')); return; }

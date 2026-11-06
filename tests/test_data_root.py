@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from server import paths, qqbot, session_store
+from server import paths, onebot, session_store
 
 
 class DataRootTest(unittest.TestCase):
@@ -54,13 +54,13 @@ class DataRootTest(unittest.TestCase):
 
     def test_qq_archive_follows_data_root(self):
         (self.install / "userdata").mkdir()
-        root = qqbot.archive_root("")
+        root = onebot.archive_root("")
         self.assertEqual(root, self.install / "userdata" / "meidobot")
-        cfg = qqbot.parse_config({})
-        index, images = qqbot.image_archive(cfg)
+        cfg = onebot.parse_config({})
+        index, images = onebot.image_archive(cfg)
         self.assertEqual(index, root)
         self.assertEqual(images, root / "images")
-        log = qqbot.text_log_location(cfg)
+        log = onebot.text_log_location(cfg)
         self.assertEqual(log, root / "text_log.txt")
 
     def test_session_paths_under_data_root(self):

@@ -320,6 +320,24 @@ class SessionStore:
                 # 至少不会互相踩坏对方正在写的临时文件
                 _atomic_write(p, body)
                 self._index_put(sid, data)
+                # dev_mode 埋点：落盘的思考字符数 / 文件 / 大小，与 reasoning.end、
+                # ui.render 三条长度直接对比，谁短一眼能看出来
+                try:
+                    from . import devlog
+
+                    if devlog.enabled():
+                        n = sum(
+                            len(str(ev.get("text") or ""))
+                            for m in (data.get("history") or [])
+                            for ev in (m.get("events") or [])
+                            if isinstance(ev, dict) and ev.get("type") == "thought"
+                        )
+                        devlog.log("session.save", session=sid, file=str(p),
+                                   size=p.stat().st_size,
+                                   history=len(data.get("history") or []),
+                                   reasoning_chars=n)
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[DeckMeido] 会话 {sid} 落盘失败：{e}", file=sys.stderr)
 

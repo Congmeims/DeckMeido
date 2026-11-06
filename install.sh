@@ -1761,7 +1761,9 @@ install_tts_deps() {
   local py="$1" start="${2:-0}"
   [ -x "$py" ] || return 0
   if "$py" -c "import piper_plus" >/dev/null 2>&1; then
-    dim "语音合成依赖已就绪（piper-plus）"
+    dim "语音合成依赖已存在（piper-plus）"
+    install_tts_nltk_data "$py"
+    verify_tts "$py" || true
     return 0
   fi
   # 版本不够时硬装只会得到「找不到匹配版本」的报错，先判断再决定
@@ -1793,10 +1795,121 @@ install_tts_deps() {
   section "语音合成依赖（可选）"
   if pip_install_with_switch "$py" requirements-tts.txt "$start"; then
     dim "语音合成依赖已就绪（首次播报会按需下载约 38MB 模型）"
+    install_tts_nltk_data "$py"
+    verify_tts "$py" || true
     return 0
   fi
   warn "语音合成依赖没装上：不影响其他功能，稍后重跑 install --tts 即可"
   dim "手动重试：$py -m pip install -r $INSTALL_DIR/requirements-tts.txt"
+  return 0
+}
+
+# 英文 G2P（piper-plus 自带的 g2p_en）需要 nltk 数据：cmudict + 词性标注器。
+# 安装阶段一次性下到 <数据根>/models/nltk_data；运行时联网会被 SSRF 拦截，
+# 所以这一步不能留到首次播报再做。失败只警告，不影响中文播报。
+install_tts_nltk_data() {
+  local py="$1" dir="$DATA_MODELS/nltk_data"
+  [ -x "$py" ] || return 0
+  mkdir -p "$dir" 2>/dev/null || {
+    warn "无法创建 $dir，英文语音可能不可用"
+    return 0
+  }
+  local out
+  out=$("$py" - "$dir" <<'PY' 2>&1
+import sys
+target = sys.argv[1]
+try:
+    import nltk
+except Exception as exc:
+    print(f"SKIP {type(exc).__name__}: {exc}")
+    raise SystemExit(0)
+ok_all = True
+for pkg in ("cmudict", "averaged_perceptron_tagger", "averaged_perceptron_tagger_eng"):
+    try:
+        ok = nltk.download(pkg, download_dir=target, quiet=True)
+        print(("OK " if ok else "FAIL ") + pkg)
+    except Exception as exc:
+        ok_all = False
+        print(f"FAIL {pkg}: {type(exc).__name__}: {exc}")
+raise SystemExit(0 if ok_all else 1)
+PY
+  ) || {
+    warn "英文语音数据（nltk）没下全：中文播报不受影响，英文段可能不出声"
+    dim "可重试：$py -m nltk.downloader -d $dir cmudict averaged_perceptron_tagger_eng"
+    return 0
+  }
+  dim "英文语音数据已就绪（$dir）"
+}
+
+# 真正合成一小段中文 + 一小段英文来判定「已就绪」，不再只看包在不在。
+# 模型未下载时无法自检，如实说明，不算失败。
+verify_tts() {
+  local py="$1"
+  local root="$DATA_MODELS/tts/tsukuyomi"
+  local onnx="$root/tsukuyomi-chan-6lang-fp16.onnx" cfg="$root/config.json"
+  [ -x "$py" ] || return 1
+  if [ ! -f "$onnx" ] || [ ! -f "$cfg" ]; then
+    dim "语音合成自检：模型未下载，无法试合成（设置页可下载后再试听）"
+    return 1
+  fi
+  local out
+  out=$(NLTK_DATA="$DATA_MODELS/nltk_data" "$py" - "$onnx" "$cfg" <<'PY' 2>&1
+import os, sys, tempfile, wave
+
+onnx, cfg_path = sys.argv[1], sys.argv[2]
+try:
+    import nltk
+    nltk.download = lambda *a, **k: True
+    from piper_plus import PiperVoice
+    voice = PiperVoice.load(onnx, config_path=cfg_path)
+except Exception as exc:
+    print(f"FAIL 加载模型失败：{type(exc).__name__}: {exc}")
+    raise SystemExit(1)
+
+mapping = getattr(getattr(voice, "config", None), "language_id_map", {}) or {}
+results = {}
+for lang, text in (("zh", "你好，这是语音自检。"),
+                   ("en", "This is a short speech check.")):
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        kwargs = {"length_scale": 1.0, "noise_scale": 0.667}
+        if isinstance(mapping.get(lang), int):
+            kwargs["language_id"] = mapping[lang]
+        with wave.open(path, "wb") as wav:
+            try:
+                voice.synthesize(text, wav, **kwargs)
+            except TypeError:
+                voice.synthesize(text, wav)
+        size = os.path.getsize(path)
+        results[lang] = size if size > 10000 else 0
+    except Exception as exc:
+        results[lang] = 0
+        print(f"FAIL {lang}: {type(exc).__name__}: {exc}")
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+ok = True
+for lang, label in (("zh", "中文"), ("en", "英文")):
+    size = results.get(lang)
+    if isinstance(size, int) and size > 10000:
+        print(f"OK {label} {size} 字节")
+    else:
+        ok = False
+        print(f"FAIL {label} 合成结果为空")
+raise SystemExit(0 if ok else 1)
+PY
+  ) || {
+    warn "语音合成自检未通过："
+    printf '%s\n' "$out" | sed 's/^/    /'
+    dim "中文可用的前提下，英文失败通常是 nltk 数据缺失；重跑 install --tts 可修复"
+    return 1
+  }
+  printf '%s\n' "$out" | sed 's/^/    /'
+  dim "语音合成自检通过（中文 + 英文）"
   return 0
 }
 

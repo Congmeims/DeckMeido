@@ -101,7 +101,7 @@ def _workspace() -> str:
 
 # 面板底部显示版本号：优先用后端 config 里报的版本（和网页设置页一致），
 # 后端连不上时退回插件自己的 package.json
-_PLUGIN_VERSION = "0.7.4"
+_PLUGIN_VERSION = "0.7.5"
 try:
     _pkg = json.loads((Path(__file__).resolve().parent / "package.json").read_text(encoding="utf-8"))
     _PLUGIN_VERSION = str(_pkg.get("version") or _PLUGIN_VERSION)
@@ -801,8 +801,12 @@ def _backend_log_fd() -> int:
         return -3  # subprocess.DEVNULL
 
 
-async def _start_backend(port: int) -> tuple[bool, str]:
-    """拉起后端，轮询到它应答为止；第二个返回值是失败原因
+async def _start_backend(port: int) -> tuple[bool, str, bool]:
+    """拉起后端，轮询到它应答为止
+
+    返回 (是否可用, 失败原因, 是否复用已有后端)。第三个值用于日志如实记录：
+    自己拉起的子进程被单实例守卫挡下、端口上本来就有后端在服务时，
+    不能再报「后端已自动启动」。
 
     以 deck 身份起（插件本身是 root，直接用 root 跑后端会让它生成的文件
     全归 root，下次客户端再拉就写不动了）。后端自己有单实例守卫
@@ -810,7 +814,7 @@ async def _start_backend(port: int) -> tuple[bool, str]:
     """
     py = INSTALL_DIR / ".venv" / "bin" / "python"
     if not py.exists():
-        return False, f"找不到 {py}"
+        return False, f"找不到 {py}", False
     log = _data_dir() / "logs" / "backend.log"
     try:
         fd = _backend_log_fd()
@@ -846,12 +850,13 @@ async def _start_backend(port: int) -> tuple[bool, str]:
                 except Exception:
                     pass
     except Exception as exc:
-        return False, f"启动失败：{exc}"
+        return False, f"启动失败：{exc}", False
     # 后端要加载模型、连设备，给足 40 秒
     for _ in range(80):
         core = await _core_http(port, "GET", "/api/status", timeout=2.0)
         if core.get("ok"):
-            if proc.returncode is not None:
+            reused = proc.returncode is not None
+            if reused:
                 pass    # 守卫让它自己退了、端口上是既有那份，属正常
             else:
                 # 不要直接丢引用：子进程对象被回收时 asyncio 会留一个
@@ -862,9 +867,9 @@ async def _start_backend(port: int) -> tuple[bool, str]:
                     except Exception:
                         pass
                 threading.Thread(target=_reap, daemon=True).start()
-            return True, ""
+            return True, "", reused
         if proc.returncode is not None:
-            return False, f"后端进程退出了（code {proc.returncode}），日志：{log}"
+            return False, f"后端进程退出了（code {proc.returncode}），日志：{log}", False
         await asyncio.sleep(0.5)
     # 40 秒没应答：这份进程要么卡在启动里，要么永远不会应答，杀掉免得占着端口
     if proc.returncode is None:
@@ -873,7 +878,7 @@ async def _start_backend(port: int) -> tuple[bool, str]:
             await asyncio.wait_for(proc.wait(), timeout=3)
         except Exception:
             pass
-    return False, f"后端 40 秒内没有应答，日志：{log}"
+    return False, f"后端 40 秒内没有应答，日志：{log}", False
 
 
 async def _stop_backend(port: int) -> None:
@@ -2109,7 +2114,7 @@ class Plugin:
         if core.get("ok"):
             return {"ok": True, "already": True}
         decky.logger.info("QAM 拉起后端 :%s", port)
-        ok, why = await _start_backend(port)
+        ok, why, _reused = await _start_backend(port)
         if not ok:
             decky.logger.error("拉起后端失败：%s", why)
             return {"ok": False, "error": why}
@@ -2387,7 +2392,7 @@ class Plugin:
             return {"ok": True, "already": True,
                     "version": str((ver.get("data") or {}).get("version") or "")}
         decky.logger.info("大屏页启动核心 :%s", port)
-        ok, why = await _start_backend(port)
+        ok, why, _reused = await _start_backend(port)
         if not ok:
             decky.logger.error("启动核心失败：%s", why)
             return {"ok": False, "error": why}
@@ -2415,7 +2420,7 @@ class Plugin:
 
         # 收掉旧进程（含外层 runuser 包装），再按启动时那套命令重放
         await _stop_backend(port)
-        ok, why = await _start_backend(port)
+        ok, why, _reused = await _start_backend(port)
         if not ok:
             return {"ok": False, "error": f"重启失败：{why}"}
         back = await _core_http(port, "GET", "/api/version", timeout=3.0)
@@ -2675,9 +2680,12 @@ class Plugin:
                 await self._stay_connected()
                 return
             decky.logger.info(f"自动启动后端 :{port}（第 {attempt}/{retries} 次）")
-            ok, why = await _start_backend(port)
+            ok, why, reused = await _start_backend(port)
             if ok:
-                decky.logger.info(f"后端已自动启动 :{port}")
+                if reused:
+                    decky.logger.info(f"已有后端在服务 :{port}，复用")
+                else:
+                    decky.logger.info(f"后端已自动启动 :{port}")
                 await self._stay_connected()
                 return
             decky.logger.warning(f"自动启动后端失败（第 {attempt} 次）：{why}")

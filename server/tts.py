@@ -70,6 +70,51 @@ MIN_FREE_BYTES = 80 * 1024 * 1024
 ESPEAK_SPEED = 170
 MAX_CHARS = 300
 
+# piper-plus 自带的英文 g2p_en 依赖 nltk 数据（cmudict / 词性标注器）。
+# 安装阶段会下到 <数据根>/models/nltk_data，运行时按这个目录找；
+# 数据缺失时 g2p_en 在 import 时会尝试 nltk.download，运行时联网会被
+# SSRF 拦截，表现就是英文段整段合成失败。
+NLTK_DATA_DIR_NAME = "nltk_data"
+
+
+def nltk_data_dir() -> Path:
+    return paths.data_dir() / "models" / NLTK_DATA_DIR_NAME
+
+
+def english_data_ready() -> bool:
+    """英文 G2P 需要的 nltk 数据是否齐全（只看目录，不 import nltk）"""
+    try:
+        root = nltk_data_dir()
+        return (
+            (root / "corpora" / "cmudict").exists()
+            and (root / "taggers" / "averaged_perceptron_tagger_eng").exists()
+        )
+    except Exception:
+        return False
+
+
+def prepare_english_backend() -> None:
+    """让 piper-plus 的英文前端只读本机数据，不在运行时联网。
+
+    - NLTK_DATA 指到安装时下好的目录；
+    - nltk.download 变成空操作：piper_plus 的 g2p_en 在 import 时无条件
+      调用它，联网被拦就会 import 失败；
+    - 数据目录仍缺失时，下面的空操作会让它继续走到 cmudict.dict()，
+      再由 speak() 把「英文前端不可用」如实写进 last_error。
+    """
+    try:
+        root = nltk_data_dir()
+        if root.is_dir():
+            os.environ["NLTK_DATA"] = str(root)
+        import nltk
+
+        if not getattr(nltk, "_deckmeido_offline", False):
+            nltk.download = lambda *a, **k: True  # type: ignore[assignment]
+            nltk._deckmeido_offline = True
+    except Exception:
+        pass
+
+
 # 说话文本清洗：代码块、URL、markdown 标记、常见表情符号都不适合念出来
 _FENCE_RE = re.compile(r"```.*?```", re.S)
 _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
@@ -91,6 +136,8 @@ _SENT_RE = re.compile(r"[^。！？!?；;：:\n]+[。！？!?；;：:\n]?")
 _KANA_RE = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff]")
 _CJK_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
+# 拉丁「词」：英文单词、缩写、版本号、路径等（用于数词数，判断是否整句英文）
+_LATIN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9'’\-_.:/]*")
 # 逐段切分：假名 / 汉字 / 数字 / 拉丁词（GPU、v0.7.0 这类整体保留）/ 其余单个字符。
 # 「其余」包括标点、空白和其它脚本，只用于拼回原文，不单独送语音。
 _SCRIPT_TOKEN_RE = re.compile(
@@ -107,7 +154,9 @@ _SCRIPT_TOKEN_RE = re.compile(
 # 「她的口头禅是「甘いものは正義です」…」7/26≈0.27。取 0.30 可以把这类中文
 # 主语句判回 zh，同时给真日语句（通常 >0.5）留足余量。
 KANA_JA_RATIO = 0.30
-# 拉丁字母占 3/4 以上才算整句英文，避免一两个英文术语把中文句子判成 en
+# 旧版按「拉丁字符占比」判整句英文（0.75）。实测「把 API 和 GPU 的配置改一下」
+# 这种中文句会被判成英文，整句换语言。现在改成按词数 + 是否有完整 CJK 语句判断，
+# 常量保留仅作参考，不再参与判定。
 LATIN_EN_RATIO = 0.75
 
 _HIRAGANA_RE = re.compile(r"[\u3040-\u309f]")
@@ -189,19 +238,22 @@ def _neighbor_script(tokens: list[tuple[str, str]], index: int, step: int) -> in
 
 
 def _sentence_language(text: str) -> str:
-    """整句主语言：拉丁绝对多数 → en；否则按假名占 CJK 的比例分 ja/zh。
+    """整句主语言：只有整句确属英文才判 en，否则按假名占 CJK 的比例分 ja/zh。
+
+    判据从「拉丁字符占比」改成「英文词数 + 是否还构成 CJK 句子」：
+    - 没有任何 CJK：有英文词就是 en；
+    - 有 CJK 和几个技术词：留在 zh/ja（不因 API/GPU 这类词整句换语言）；
+    - 「OK，thanks！」这种只剩 ≤2 个 CJK 字符、≥3 个英文词的，算整句英文。
 
     纯符号/空串没有可读内容，返回 zh 占位（不会产生语音片段）。
     """
     kana = len(_KANA_RE.findall(text))
     han = len(_CJK_RE.findall(text))
-    latin = len(_LATIN_RE.findall(text))
-    total = kana + han + latin
-    if total == 0:
-        return "zh"
-    if latin / total >= LATIN_EN_RATIO:
-        return "en"
-    if kana + han == 0:
+    words = _LATIN_WORD_RE.findall(text)
+    cjk = kana + han
+    if cjk == 0:
+        return "en" if words else "zh"
+    if len(words) >= 3 and cjk <= 2:
         return "en"
     # 只有片假名 + 汉字、完全没有平假名：日语行文几乎一定有助词/送假名，
     # 这种构成基本是中文句子里的外来专名（「ミカ的设定」「她喜欢ミカ」），
@@ -211,16 +263,18 @@ def _sentence_language(text: str) -> str:
     return "ja" if kana / (kana + han) >= KANA_JA_RATIO else "zh"
 
 
-def _token_language(tokens: list[tuple[str, str]], index: int, main: str) -> str:
+def _token_language(tokens: list[tuple[str, str]], index: int, main: str,
+                    ja_terms: frozenset[str] | None = None) -> str:
     """单个脚本片段的语言：以整句主语言为准，再做局部修正。
 
     - 假名永远是 ja，拉丁永远是 en；
     - 主语言 ja：句内所有汉字都按日语读（不要用中文音读和语汉字）；
-    - 主语言 zh/en：汉字只有紧贴「平假名」才算日语。片假名多为外来专名，
-      不把邻近汉字拖成日语。
+    - 主语言 zh/en：汉字只有紧贴「平假名」或命中 ja_terms 词表时才算日语。
+      片假名多为外来专名，不把邻近汉字拖成日语。
 
     已知限制：没有词典时，中文主语句里纯汉字写的日文人名/地名（石川由依、
-    東京大学）仍会判成 zh 并按中文读，这是无词典方案的必然取舍。
+    東京大学）仍会判成 zh 并按中文读。可选词表 [tts].ja_terms 可以逐个补上，
+    但只做整词匹配、不做分词，无法覆盖所有日文汉字词。
     """
     kind = tokens[index][0]
     if kind == "kana":
@@ -229,6 +283,8 @@ def _token_language(tokens: list[tuple[str, str]], index: int, main: str) -> str
         return "en"
     if kind == "han":
         if main == "ja":
+            return "ja"
+        if ja_terms and tokens[index][1] in ja_terms:
             return "ja"
         for j in (index - 1, index + 1):
             if 0 <= j < len(tokens):
@@ -239,14 +295,15 @@ def _token_language(tokens: list[tuple[str, str]], index: int, main: str) -> str
     return ""
 
 
-def _digit_language(tokens: list[tuple[str, str]], index: int, main: str) -> str:
+def _digit_language(tokens: list[tuple[str, str]], index: int, main: str,
+                    ja_terms: frozenset[str] | None = None) -> str:
     """数字没有自己的语言：优先跟前一段，其次跟后一段，绝不丢"""
     for step in (-1, 1):
         j = _neighbor_script(tokens, index, step)
         while j >= 0 and tokens[j][0] == "digit":
             j = _neighbor_script(tokens, j, step)
         if j >= 0:
-            lang = _token_language(tokens, j, main)
+            lang = _token_language(tokens, j, main, ja_terms)
             if lang:
                 return lang
     return "en"
@@ -283,7 +340,7 @@ def _context_spans(sentence: str) -> list[tuple[bool, str]]:
     return spans
 
 
-def _route_span(text: str, main: str) -> list[list[str]]:
+def _route_span(text: str, main: str, ja_terms: frozenset[str] | None = None) -> list[list[str]]:
     """把一段连续上下文按脚本切成 [语种, 片段] 列表（未合并、未切长）。"""
     tokens = [(m.lastgroup, m.group(0)) for m in _SCRIPT_TOKEN_RE.finditer(text)]
     segs: list[list[str]] = []
@@ -296,9 +353,9 @@ def _route_span(text: str, main: str) -> list[list[str]]:
                 lead += piece
             continue
         if kind == "digit":
-            lang = segs[-1][0] if segs else _digit_language(tokens, i, main)
+            lang = segs[-1][0] if segs else _digit_language(tokens, i, main, ja_terms)
         else:
-            lang = _token_language(tokens, i, main)
+            lang = _token_language(tokens, i, main, ja_terms)
         segs.append([lang, lead + piece])
         lead = ""
     if lead and segs:
@@ -306,7 +363,8 @@ def _route_span(text: str, main: str) -> list[list[str]]:
     return segs
 
 
-def _route_sentence(sentence: str) -> list[tuple[str, str]]:
+def _route_sentence(sentence: str,
+                    ja_terms: frozenset[str] | None = None) -> list[tuple[str, str]]:
     """一句之内先分括号语境，再各自按主语言切段，最后合并同语言相邻段。"""
     spans = _context_spans(sentence)
     outer_text = "".join(text for inside, text in spans if not inside)
@@ -315,7 +373,7 @@ def _route_sentence(sentence: str) -> list[tuple[str, str]]:
     pending = ""  # 只有标点/符号的片段不能单独丢，攒着并给相邻片段
     for inside, span_text in spans:
         lang = _sentence_language(span_text) if inside else outer_lang
-        rows = _route_span(span_text, lang)
+        rows = _route_span(span_text, lang, ja_terms)
         if not rows:
             pending += span_text
             continue
@@ -337,10 +395,11 @@ def _route_sentence(sentence: str) -> list[tuple[str, str]]:
 
 
 def route_segments(text: str, language: str = "auto",
-                   limit: int = MAX_CHARS) -> list[tuple[str, str]]:
+                   limit: int = MAX_CHARS,
+                   ja_terms: frozenset[str] | None = None) -> list[tuple[str, str]]:
     """按句子 + 脚本切段，返回 [(语种, 文本)]。
 
-    auto 时先按标点和换行分句，再给每句判主语言（拉丁占绝对多数是 en，
+    auto 时先按标点和换行分句，再给每句判主语言（只有整句英文才判 en，
     否则按假名占比分 ja/zh）；引号/括号内的文本单独判定。句内按脚本切成
     假名 / 汉字 / 拉丁 / 数字片段，标点和空白并进相邻片段，保证把片段
     拼回去后与原句（去掉纯空白）逐字等价；纯符号句子没有可读内容，返回空列表。
@@ -356,7 +415,7 @@ def route_segments(text: str, language: str = "auto",
         if forced:
             out.append((forced, sentence))
             continue
-        out.extend(_route_sentence(sentence))
+        out.extend(_route_sentence(sentence, ja_terms))
     # 超长段落再按长度硬切，保证每次合成不会一口气吃进一大段
     trimmed: list[tuple[str, str]] = []
     for lang, segment in out:
@@ -392,6 +451,7 @@ class TTS:
         model_source: str = "auto",
         model_root: Path | str | None = None,
         idle_unload_sec: float = 600.0,
+        ja_terms: str | list[str] | None = None,
     ):
         self.enable = bool(enable)
         self.engine = normalize_engine(engine)
@@ -406,6 +466,13 @@ class TTS:
         self.model_source = str(model_source or "auto").strip() or "auto"
         self.idle_unload_sec = _clamp(idle_unload_sec, 30, 24 * 3600, 600)
         self._model_root = Path(model_root) if model_root else None
+        # 可选日文汉字词表：中文句里纯汉字写的日文人名（石川由依）默认按中文读，
+        # 把词写进 [tts].ja_terms 后，命中整词就按日语读。只做整词匹配，不做分词。
+        if isinstance(ja_terms, str):
+            terms = ja_terms.replace("，", ",").split(",")
+        else:
+            terms = list(ja_terms or [])
+        self.ja_terms = frozenset(t.strip() for t in terms if t and t.strip())
 
         # 懒加载状态
         self._voice = None
@@ -527,6 +594,8 @@ class TTS:
             "active_engine": effective,
             "runtime": runtime,
             "model": model,
+            # 英文 G2P 的 nltk 数据是否就绪（缺了英文段合成失败）
+            "english_data": english_data_ready(),
             "model_root": str(self._safe_root() or ""),
             "model_source": self.model_source,
             "voice": self.voice,
@@ -628,6 +697,7 @@ class TTS:
         config = root / CONFIG_NAME
         if not (onnx.is_file() and config.is_file()):
             raise TTSError("语音模型未下载（约 38 MB）", kind="model")
+        prepare_english_backend()
         try:
             from piper_plus import PiperVoice
 
@@ -660,7 +730,8 @@ class TTS:
         self._last_error = ""
         self._last_failed_segments = 0
         try:
-            segments = route_segments(cleaned, self.language, self.max_chars)
+            segments = route_segments(cleaned, self.language, self.max_chars,
+                                      self.ja_terms)
             if not segments:
                 return
             devlog.log("tts.speak", chars=len(cleaned), segments=len(segments),
@@ -719,6 +790,7 @@ class TTS:
         with self._lock:
             voice = self._ensure_voice_locked()
             self._last_used = time.time()
+            prepare_english_backend()
             length_scale = self.length_scale / max(0.3, self.speed_scale)
             fd, name = tempfile.mkstemp(prefix="deckmeido-tts-", suffix=".wav")
             os.close(fd)

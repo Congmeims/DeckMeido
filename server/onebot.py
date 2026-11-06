@@ -193,7 +193,7 @@ TEXT_LOG_NAME = "text_log.txt"
 # ---------- 配置 ----------
 
 @dataclass(frozen=True)
-class QQConfig:
+class OneBotConfig:
     enable: bool = False
     ws_url: str = ""
     access_token: str = ""
@@ -259,10 +259,10 @@ def _as_str_list(value) -> tuple[str, ...]:
     return tuple(str(v).strip() for v in items if str(v).strip())
 
 
-def parse_config(raw: dict | None) -> QQConfig:
+def parse_config(raw: dict | None) -> OneBotConfig:
     """把 config.toml 的 [qq] 段转成配置对象：字段缺失/类型不对都取默认值"""
     raw = raw if isinstance(raw, dict) else {}
-    return QQConfig(
+    return OneBotConfig(
         enable=_as_bool(raw.get("enable", False)),
         ws_url=str(raw.get("ws_url") or "").strip(),
         access_token=str(raw.get("access_token") or "").strip(),
@@ -300,7 +300,7 @@ def parse_config(raw: dict | None) -> QQConfig:
     )
 
 
-def validate_config(cfg: QQConfig) -> str | None:
+def validate_config(cfg: OneBotConfig) -> str | None:
     """启动前校验：返回中文错误说明，None 表示可以连。绝不静默失败"""
     if not cfg.enable:
         return None
@@ -383,7 +383,7 @@ def archive_root(configured: str = "") -> Path:
     return paths.meidobot_dir()
 
 
-def image_archive(cfg: QQConfig) -> tuple[Path, Path]:
+def image_archive(cfg: OneBotConfig) -> tuple[Path, Path]:
     """存图目录：返回 (索引根, 图片根)。image_save_dir 显式配置时直接用。"""
     override = (cfg.image_save_dir or "").strip()
     if override:
@@ -393,7 +393,7 @@ def image_archive(cfg: QQConfig) -> tuple[Path, Path]:
     return base, base / "images"
 
 
-def text_log_location(cfg: QQConfig) -> Path:
+def text_log_location(cfg: OneBotConfig) -> Path:
     """引用保存文本的目标文件：text_log_path 覆盖，否则 <归档根>/text_log.txt"""
     override = (cfg.text_log_path or "").strip()
     if override:
@@ -604,7 +604,7 @@ def _admin_route(text: str, nickname: str, readonly: bool) -> Route:
                  alias_miss=0 < len(cleaned) <= MAX_ALIAS_CHARS)
 
 
-def route_message(cfg: QQConfig, ev: MessageEvent, nickname: str) -> Route:
+def route_message(cfg: OneBotConfig, ev: MessageEvent, nickname: str) -> Route:
     """权限判定与指令路由（纯函数，方便单测）
 
     管理员私聊：直接发 /shot 等或口语别名都能触发，其余当聊天；
@@ -718,7 +718,7 @@ class Backoff:
 
 # ---------- 通道本体 ----------
 
-class QQBot:
+class OneBotClient:
     def __init__(self, *, runner, screenshot, status_provider, nickname,
                  pending_clear=None, connect_factory=None, sleep=None,
                  clock=time.time, image_optimizer=None):
@@ -741,7 +741,7 @@ class QQBot:
         self._clock = clock
         self._image_optimizer = image_optimizer
 
-        self._cfg = QQConfig()
+        self._cfg = OneBotConfig()
         self._task: asyncio.Task | None = None
         self._restart_task: asyncio.Task | None = None
         self._ws = None
@@ -778,7 +778,7 @@ class QQBot:
         """只记事件与计数，绝不写令牌、消息正文"""
         from . import devlog
 
-        devlog.log(f"qqbot.{event}", level=level, detail=detail)
+        devlog.log(f"onebot.{event}", level=level, detail=detail)
         try:
             self._logs.append({
                 "ts": time.time(),
@@ -807,7 +807,7 @@ class QQBot:
                 try:
                     self._pending_clear(device, str(info.get("sid") or ""))
                 except Exception as e:
-                    print(f"[DeckMeido][qq] 清理挂起操作失败：{e!r}", file=sys.stderr)
+                    print(f"[DeckMeido][onebot] 清理挂起操作失败：{e!r}", file=sys.stderr)
         self._pending_conf.clear()
 
     def drop_session(self, sid: str) -> None:
@@ -822,8 +822,8 @@ class QQBot:
             if str(info.get("sid") or "") == sid:
                 self._pending_conf.pop(device, None)
 
-    def configure(self, cfg: QQConfig | dict | None) -> None:
-        cfg = cfg if isinstance(cfg, QQConfig) else parse_config(cfg)
+    def configure(self, cfg: OneBotConfig | dict | None) -> None:
+        cfg = cfg if isinstance(cfg, OneBotConfig) else parse_config(cfg)
         if cfg == self._cfg:
             return
         self._cfg = cfg
@@ -882,7 +882,7 @@ class QQBot:
             raise
         except Exception as e:
             self._last_error = repr(e)
-            print(f"[DeckMeido][qq] 重载失败：{e!r}", file=sys.stderr)
+            print(f"[DeckMeido][onebot] 重载失败：{e!r}", file=sys.stderr)
 
     async def start(self) -> None:
         self._booted = True
@@ -894,15 +894,15 @@ class QQBot:
         if err:
             self._state = "misconfigured"
             self._detail = err
-            print(f"[DeckMeido][qq] 未启动：{err}", file=sys.stderr)
+            print(f"[DeckMeido][onebot] 未启动：{err}", file=sys.stderr)
             return
         if self._task is not None and not self._task.done():
             return
         self._stopping = False
         self._detail = "正在连接"
-        self._task = asyncio.create_task(self._run(), name="qqbot")
+        self._task = asyncio.create_task(self._run(), name="onebot")
         self._log("info", "通道启动", f"目标 {_mask_url(self._cfg.ws_url)}")
-        print(f"[DeckMeido][qq] 已启动，目标 {_mask_url(self._cfg.ws_url)}")
+        print(f"[DeckMeido][onebot] 已启动，目标 {_mask_url(self._cfg.ws_url)}")
 
     async def stop(self, keep_detail: bool = False) -> None:
         self._stopping = True
@@ -1003,7 +1003,7 @@ class QQBot:
                 delay = self._backoff.delay(attempt - 1)
                 self._detail = f"连接失败，{delay:.0f} 秒后重试（第 {attempt} 次）"
                 self._log("error", "连接失败", f"{self._last_error}；{delay:.1f}s 后重试")
-                print(f"[DeckMeido][qq] 连接失败：{self._last_error}；{delay:.1f}s 后重试",
+                print(f"[DeckMeido][onebot] 连接失败：{self._last_error}；{delay:.1f}s 后重试",
                       file=sys.stderr)
                 await self._sleep(delay)
                 continue
@@ -1016,7 +1016,7 @@ class QQBot:
             self._connected_at = self._clock()
             attempt = 0
             self._log("info", "已连上 NapCat")
-            print("[DeckMeido][qq] 已连上 NapCat")
+            print("[DeckMeido][onebot] 已连上 NapCat")
             try:
                 await self._reader(ws)
             except asyncio.CancelledError:
@@ -1024,7 +1024,7 @@ class QQBot:
             except Exception as e:
                 self._last_error = f"{type(e).__name__}: {e}"
                 self._log("error", "连接中断", self._last_error)
-                print(f"[DeckMeido][qq] 连接中断：{self._last_error}", file=sys.stderr)
+                print(f"[DeckMeido][onebot] 连接中断：{self._last_error}", file=sys.stderr)
                 traceback.print_exc(file=sys.stderr)
             finally:
                 self._ws = None
@@ -1214,7 +1214,7 @@ class QQBot:
             raise
         except Exception as e:
             self._stats["errors"] += 1
-            print(f"[DeckMeido][qq] 处理消息失败：{e!r}", file=sys.stderr)
+            print(f"[DeckMeido][onebot] 处理消息失败：{e!r}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
             # 异常细节不外泄：QQ 上只说一句笼统的，详情留着本地日志
             try:
@@ -1298,7 +1298,7 @@ class QQBot:
                     try:
                         self._pending_clear(device, sid)
                     except Exception as e:
-                        print(f"[DeckMeido][qq] 清理超时挂起操作失败：{e!r}", file=sys.stderr)
+                        print(f"[DeckMeido][onebot] 清理超时挂起操作失败：{e!r}", file=sys.stderr)
                 self._log("warn", "确认超时", device)
                 await self._send_text(ev, "确认已超时，这次操作已作废。")
                 return
@@ -1317,7 +1317,7 @@ class QQBot:
                         try:
                             self._pending_clear(device, sid)
                         except Exception as e:
-                            print(f"[DeckMeido][qq] 撤销挂起操作失败：{e!r}", file=sys.stderr)
+                            print(f"[DeckMeido][onebot] 撤销挂起操作失败：{e!r}", file=sys.stderr)
                     self._log("info", "确认撤销", device)
             elif is_confirm_text(text):
                 # 沿用挂起操作那一轮的 turn_id：handle_chat 的认领校验要求
@@ -1329,7 +1329,7 @@ class QQBot:
                     try:
                         self._pending_clear(device, sid)
                     except Exception as e:
-                        print(f"[DeckMeido][qq] 撤销挂起操作失败：{e!r}", file=sys.stderr)
+                        print(f"[DeckMeido][onebot] 撤销挂起操作失败：{e!r}", file=sys.stderr)
                 self._log("info", "确认撤销", device)
         if not turn_id:
             # 每条消息带一个独立的轮次标识：确认时复用它，其它时候避免和上一轮混淆
@@ -1400,7 +1400,7 @@ class QQBot:
         try:
             info = await self._status_provider() or {}
         except Exception as e:
-            print(f"[DeckMeido][qq] 取设备状态失败：{e!r}", file=sys.stderr)
+            print(f"[DeckMeido][onebot] 取设备状态失败：{e!r}", file=sys.stderr)
         lines = [
             "设备状态",
             f"核心：{info.get('core') or '运行中'}",
@@ -1421,7 +1421,7 @@ class QQBot:
             blob, note = await self._screenshot()
         except Exception as e:
             self._log("error", "截图抓帧", f"异常 {type(e).__name__}")
-            print(f"[DeckMeido][qq] 截图失败：{e!r}", file=sys.stderr)
+            print(f"[DeckMeido][onebot] 截图失败：{e!r}", file=sys.stderr)
             await self._send_text(ev, "没截到当前画面（详情见设备日志）。")
             return
         if not blob:
