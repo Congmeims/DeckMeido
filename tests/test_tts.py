@@ -169,9 +169,10 @@ class ReadifyRouteTest(unittest.TestCase):
         self.assertEqual(ttsmod.detect_language("你好世界"), "zh")
         self.assertEqual(ttsmod.detect_language("Hello world"), "en")
 
-    def test_句子里假名优先判为日语(self):
+    def test_日语句子里的汉字贴着假名按日语读(self):
         segs = ttsmod.route_segments("今日は晴れです。", "auto")
-        self.assertEqual(segs, [("ja", "今日は晴れです。")])
+        self.assertTrue(all(lang == "ja" for lang, _ in segs))
+        self.assertEqual("".join(text for _, text in segs), "今日は晴れです。")
 
     def test_中英混排按脚本切开(self):
         segs = ttsmod.route_segments("你好Hello世界。", "auto")
@@ -188,6 +189,59 @@ class ReadifyRouteTest(unittest.TestCase):
         segs = ttsmod.route_segments("a" * 50, "auto", limit=20)
         self.assertTrue(len(segs) >= 3)
         self.assertTrue(all(len(text) <= 20 for _, text in segs))
+        self.assertEqual("".join(text for _, text in segs), "a" * 50)
+
+
+class ScriptRouteTest(unittest.TestCase):
+    """逐段混读：每句都按脚本切开，语言标注与拼接无损"""
+
+    def assertRoute(self, text, expected, language="auto"):
+        segs = ttsmod.route_segments(text, language)
+        self.assertEqual(segs, expected)
+        # 无损：拼接后与去掉首尾空白的原句逐字一致
+        self.assertEqual("".join(part for _, part in segs), text.strip())
+
+    def test_中英混排(self):
+        self.assertRoute("你好，world！", [("zh", "你好，"), ("en", "world！")])
+
+    def test_中文加日语假名(self):
+        # 汉字贴着假名 → 按日语读；同语言相邻片段会合并，避免把「你好」「です」拆成两次合成
+        self.assertRoute("你好です", [("ja", "你好です")])
+
+    def test_日语汉字与假名交替(self):
+        self.assertRoute("私は学生です。", [("ja", "私は学生です。")])
+
+    def test_纯汉字句子按中文读(self):
+        self.assertRoute("日本語", [("zh", "日本語")])
+
+    def test_数字跟相邻语言且绝不丢(self):
+        self.assertRoute(
+            "你好 123 world",
+            [("zh", "你好 123 "), ("en", "world")])
+
+    def test_引号里的日语与后面的中文(self):
+        # 按规则：句中有假名且汉字段紧贴假名（只隔标点）→ 判 ja，合并后整句一个 ja 段
+        self.assertRoute(
+            "「こんにちは」是你好的意思",
+            [("ja", "「こんにちは」是你好的意思")])
+
+    def test_英文缩写与版本号整体保留(self):
+        self.assertRoute("GPU", [("en", "GPU")])
+        self.assertRoute("v0.7.0", [("en", "v0.7.0")])
+
+    def test_纯符号与空句不合成(self):
+        self.assertEqual(ttsmod.route_segments("！？…", "auto"), [])
+        self.assertEqual(ttsmod.route_segments("   ", "auto"), [])
+        self.assertEqual(ttsmod.route_segments("", "auto"), [])
+
+    def test_固定语言优先不拆分(self):
+        self.assertRoute("你好です。", [("en", "你好です。")], language="en")
+
+    def test_多句各自切段仍无损(self):
+        text = "你好，world！今日は晴れです。"
+        segs = ttsmod.route_segments(text, "auto")
+        self.assertEqual([lang for lang, _ in segs], ["zh", "en", "ja"])
+        self.assertEqual("".join(part for _, part in segs), text)
 
 
 class _FakeProc:
@@ -269,6 +323,68 @@ class InterruptTest(unittest.TestCase):
         self.assertEqual(calls, [])
         _run(t.preview("试听一句。"))
         self.assertEqual(calls, ["试听一句。"])
+
+
+class SegmentFallbackTest(unittest.TestCase):
+    """个别片段失败只跳过该段；只有全部失败才整段退回 espeak"""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name)
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _tts(self):
+        t = ttsmod.TTS(enable=True, engine="piper-plus", model_root=self.root)
+        t._piper_ready = lambda: True
+        t._espeak_binary = lambda: "/usr/bin/espeak-ng"
+        return t
+
+    def test_单段失败不重念整句(self):
+        t = self._tts()
+        played = []
+        espeak_calls = []
+
+        def synth(text, language):
+            if "bad" in text:
+                raise ttsmod.TTSError("合成炸了", kind="synth")
+            p = self.root / f"{len(played)}.wav"
+            p.write_bytes(b"RIFF")
+            return p
+
+        async def play(wav, event):
+            played.append(wav)
+
+        async def espeak(text, event):
+            espeak_calls.append(text)
+
+        t._synth_wav = synth
+        t._play = play
+        t._speak_espeak = espeak
+        _run(t.speak("好 bad 坏翻译。"))
+        self.assertEqual(espeak_calls, [])
+        self.assertEqual(len(played), 2)  # 其余两段照常念完
+        self.assertEqual(t.status()["failed_segments"], 1)
+        self.assertIn("1/3", t._last_error)
+        self.assertIn("合成炸了", t._last_error)
+
+    def test_全部失败才整段退回_espeak(self):
+        t = self._tts()
+        espeak_calls = []
+
+        def synth(text, language):
+            raise ttsmod.TTSError("合成炸了", kind="synth")
+
+        async def espeak(text, event):
+            espeak_calls.append(text)
+
+        t._synth_wav = synth
+        t._speak_espeak = espeak
+        _run(t.speak("好 bad 坏翻译。"))
+        self.assertEqual(len(espeak_calls), 1)
+        self.assertEqual(t.status()["failed_segments"], 3)
+        self.assertIn("全部 3 段", t._last_error)
 
 
 if __name__ == "__main__":
