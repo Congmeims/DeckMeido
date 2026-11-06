@@ -2747,7 +2747,8 @@ class Plugin:
         # 后台自动拉一次：成功与否都不打扰用户，面板上本来就有状态和执行按钮。
         asyncio.get_running_loop().create_task(self._autostart_backend())
         # 游戏开始/退出的探测放后台：面板没开时也要能自动切换预设
-        asyncio.get_running_loop().create_task(self._preset_watch())
+        # 按住任务引用，避免 asyncio 只持弱引用时被回收
+        self._preset_task = asyncio.get_running_loop().create_task(self._preset_watch())
 
     async def _autostart_backend(self, retries: int = 3) -> None:
         """插件加载时自动拉起后端（失败不提示，面板上的按钮仍可手动重试）

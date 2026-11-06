@@ -56,6 +56,17 @@ export type Status = {
   game_source: string;
   game_confidence: string;
   game_ts: number;
+  // 按游戏提示词预设：当前套用的预设（applied=false 表示没有可用预设）
+  preset_applied?: boolean;
+  preset_id?: string;
+  preset_title?: string;
+  preset?: {
+    game_appid?: string;
+    game_name?: string;
+    preset_id?: string;
+    title?: string;
+    applied?: boolean;
+  };
   version: string;
   // 运行中的后端版本 / 磁盘 VERSION / 两者是否一致。
   // 安装换完文件但没重启后端时 version_match=false，面板提示「重启核心」
@@ -687,6 +698,30 @@ export function useSession() {
     }
   };
 
+  /** 把当前生效提示词存成正在运行的游戏的预设（插件后端负责存与套用） */
+  const savePreset = async () => {
+    try {
+      const r = (await call<[], {
+        ok: boolean;
+        game_name?: string;
+        title?: string;
+        error?: string;
+      }>("save_preset")) as {
+        ok: boolean;
+        game_name?: string;
+        title?: string;
+        error?: string;
+      };
+      if (!r.ok) throw new Error(r.error ?? "保存失败");
+      const where = r.game_name || r.title || "当前游戏";
+      pushLog("PRESET_SAVED", `已保存《${where}》的预设`);
+      setError("");
+      await refreshStatus();
+    } catch (e: any) {
+      fail("PRESET_SAVE_FAILED", `预设保存失败：${String(e?.message ?? e)}`);
+    }
+  };
+
   /** 保存后端端口：QAM / 大屏共用，越界由插件后端拒绝并回传原因。 */
   const savePort = async (port: number) => {
     try {
@@ -892,6 +927,7 @@ export function useSession() {
     toggleStt,
     saveAskTpl,
     saveTranslateTpl,
+    savePreset,
     savePort,
     coreStart,
     coreRestart,

@@ -805,6 +805,11 @@ export default function BigScreen() {
             <StatusChip color={coreColor}>{coreLine}</StatusChip>
             <StatusChip>{s.status ? `${s.status.ip}:${s.status.port}` : "—"}</StatusChip>
             {s.status?.game_name && <StatusChip>{s.status.game_name}</StatusChip>}
+            {s.status?.preset_applied && (
+              <StatusChip color={C.prompt}>
+                预设：{s.status.preset_title || "已套用"}
+              </StatusChip>
+            )}
           </div>
         </div>
 
@@ -1688,7 +1693,9 @@ export default function BigScreen() {
                         textOverflow: "ellipsis",
                       }}
                     >
-                      {latestLog ? `${latestLog.code} · ${fmtLogTime(latestLog.ts)}` : "—"}
+                      {latestLog
+                        ? `${latestLog.code}${latestLog.detail ? ` · ${latestLog.detail}` : ""} · ${fmtLogTime(latestLog.ts)}`
+                        : "—"}
                     </span>
                   </div>
 
@@ -1731,11 +1738,11 @@ export default function BigScreen() {
                   </div>
                 </div>
 
-                {/* 右 1/3：新会话、返回游戏两行 1fr 1fr 精确均分 */}
+                {/* 右 1/3：新会话、存为预设、返回游戏三行 1fr 精确均分 */}
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateRows: "1fr 1fr",
+                    gridTemplateRows: "1fr 1fr 1fr",
                     gap: 4,
                     minWidth: 0,
                     minHeight: 0,
@@ -1749,6 +1756,14 @@ export default function BigScreen() {
                     style={{ minHeight: 0 }}
                   >
                     {s.newing ? "新建中…" : "新会话"}
+                  </ActionButton>
+                  <ActionButton
+                    onClick={() => void s.savePreset()}
+                    description="存为预设"
+                    compact
+                    style={{ minHeight: 0 }}
+                  >
+                    存为预设
                   </ActionButton>
                   {/* B 键由 Steam 原生路由返回处理；这里再给一个显式入口，原生返回不生效时也不至于卡在页里 */}
                   <ActionButton

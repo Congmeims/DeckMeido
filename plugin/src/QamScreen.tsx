@@ -984,6 +984,30 @@ function useQamSession() {
     }
   };
 
+  /** 把当前生效提示词存成当前游戏的预设；反馈走维护事件（带游戏名） */
+  const savePreset = async () => {
+    try {
+      const r = (await call<[], {
+        ok: boolean;
+        game_name?: string;
+        title?: string;
+        error?: string;
+      }>("save_preset")) as {
+        ok: boolean;
+        game_name?: string;
+        title?: string;
+        error?: string;
+      };
+      if (!r.ok) throw new Error(r.error ?? "保存失败");
+      const where = r.game_name || r.title || "当前游戏";
+      pushLog("PRESET_SAVED", `已保存《${where}》的预设`);
+      setError("");
+      await refreshStatus();
+    } catch (e: any) {
+      fail("PRESET_SAVE_FAILED", `预设保存失败：${String(e?.message ?? e)}`);
+    }
+  };
+
   const coreStart = async () => {
     if (starting) return;
     setStarting(true);
@@ -1160,6 +1184,7 @@ function useQamSession() {
     changeModel,
     saveAskTpl,
     saveTranslateTpl,
+    savePreset,
     coreStart,
     coreRestart,
     coreKill,
@@ -2160,6 +2185,35 @@ export default function QamScreen() {
                   description="恢复默认翻译提示词"
                 >
                   恢复默认
+                </Btn>
+              </div>
+            </div>
+
+            {/* 按游戏提示词预设：把当前生效提示词存到正在运行的游戏上 */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", marginTop: 2 }}>
+              <div
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontSize: 10.5,
+                  color: DIM,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                按游戏预设：{s.status?.preset_applied
+                  ? (s.status.preset_title || "已套用")
+                  : (s.status?.game_name ? "暂无" : "未运行游戏")}
+              </div>
+              <div style={{ flex: "0 0 96px", width: 96 }}>
+                <Btn
+                  height={26}
+                  size={11}
+                  onClick={() => void s.savePreset()}
+                  description="把当前生效提示词保存为当前游戏的预设"
+                >
+                  存为预设
                 </Btn>
               </div>
             </div>
