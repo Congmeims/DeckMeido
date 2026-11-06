@@ -1296,6 +1296,24 @@
   .mem-foot .field-hint { margin: 0; flex: 1; }
   /* 脚注行里的小按钮也跟着一行高，别再用 mini-btn 的 min-height 顶起来 */
   .mem-foot .mini-btn { min-height: 32px; font-size: 13px; }
+  /* 按游戏提示词预设：一条一张小卡，窄屏时标题/内容/按钮自动换行 */
+  .preset-list { display: flex; flex-direction: column; gap: 12px; }
+  .preset-item {
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .preset-item:first-child { border-top: 0; padding-top: 0; }
+  .preset-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+  .preset-head b { font-size: 14px; }
+  .preset-head .preset-meta { font-size: 12px; color: var(--muted); word-break: break-all; }
+  .preset-head .preset-badge {
+    margin-left: auto; font-size: 11px; color: var(--brand);
+    border: 1px solid var(--brand); border-radius: 999px; padding: 1px 8px;
+  }
+  .preset-item .field { margin-bottom: 8px; }
+  .preset-item .mem-foot { flex-wrap: wrap; }
+  .preset-item .mem-foot .field-hint { flex: 1 1 140px; min-width: 0; }
 
   /* 设置页底部：版本号 + 检查/安装更新 */
   .about-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -3044,6 +3062,21 @@
             <div class="mem-foot">
               <span class="field-hint" id="tplHint"></span>
               <button id="tplSave" class="mini-btn" type="button">保存提示词</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">按游戏提示词预设</div>
+            <p class="pane-desc" style="margin-top:0">
+              游戏开始运行时自动套用对应预设，退出后恢复默认。预设只覆盖运行时的状态栏提示词，
+              不会改动上面的全局配置。当前：<span id="presetNow">—</span>
+            </p>
+            <div id="presetList" class="preset-list">
+              <div class="field-hint">读取中…</div>
+            </div>
+            <div class="mem-foot">
+              <span class="field-hint" id="presetHint"></span>
+              <button id="presetRefresh" class="mini-btn" type="button">刷新</button>
             </div>
           </div>
 
@@ -8849,6 +8882,8 @@
     setBody.scrollTop = 0;
     // 人设页里的语音回复卡要看模型/下载的实时状态，切过来时刷新一次
     if (name === 'persona') loadTtsStatus();
+    // 按游戏预设可能在 Deck 上刚存过，切到插件页时重新拉一份
+    if (name === 'plugin') loadPresets();
   }
 
   // 关掉设置 = 回到对话：主界面、侧栏会话列表、底部按钮文案都恢复原样
@@ -9693,6 +9728,161 @@
     cfgTranslateTemplate.value = trnTplDefault;
     tplHint.textContent = '已填入默认的翻译提示词，点「保存提示词」后生效';
   });
+
+  // ---------- 按游戏提示词预设 ----------
+  // 预设存在后端 userdata/presets/presets.json；网页与客户端共用这一份，
+  // 插件端只负责在游戏开始/退出时上报，不保存业务数据。
+  var presetListEl = document.getElementById('presetList');
+  var presetNowEl = document.getElementById('presetNow');
+  var presetHintEl = document.getElementById('presetHint');
+  var presetRefreshBtn = document.getElementById('presetRefresh');
+  var presetsLoading = false;
+
+  function setPresetHint(text) {
+    if (presetHintEl) presetHintEl.textContent = text || '';
+  }
+
+  function presetBindingText(item) {
+    // appid 优先；拿不到 appid 的老数据/非 Steam 游戏按名字匹配
+    return item.appid ? ('Steam AppID ' + item.appid) : '按游戏名匹配';
+  }
+
+  function buildPresetItem(item, cur) {
+    var wrap = document.createElement('div');
+    wrap.className = 'preset-item';
+
+    var head = document.createElement('div');
+    head.className = 'preset-head';
+    var name = document.createElement('b');
+    name.textContent = '《' + (item.game_name || ('appid ' + item.appid)) + '》';
+    head.appendChild(name);
+    var meta = document.createElement('span');
+    meta.className = 'preset-meta';
+    meta.textContent = presetBindingText(item);
+    head.appendChild(meta);
+    if (cur.preset_id && cur.preset_id === item.id) {
+      var badge = document.createElement('span');
+      badge.className = 'preset-badge';
+      badge.textContent = '使用中';
+      head.appendChild(badge);
+    }
+    wrap.appendChild(head);
+
+    var titleField = document.createElement('div');
+    titleField.className = 'field';
+    var titleLab = document.createElement('label');
+    titleLab.textContent = '预设名称（改名不影响绑定）';
+    var titleIn = document.createElement('input');
+    titleIn.type = 'text';
+    titleIn.maxLength = 60;
+    titleIn.value = item.title || '';
+    titleField.appendChild(titleLab);
+    titleField.appendChild(titleIn);
+    wrap.appendChild(titleField);
+
+    var promptField = document.createElement('div');
+    promptField.className = 'field';
+    var promptLab = document.createElement('label');
+    promptLab.textContent = '提示词内容';
+    var promptTa = document.createElement('textarea');
+    promptTa.rows = 4;
+    promptTa.value = item.prompt || '';
+    promptField.appendChild(promptLab);
+    promptField.appendChild(promptTa);
+    wrap.appendChild(promptField);
+
+    var foot = document.createElement('div');
+    foot.className = 'mem-foot';
+    var hint = document.createElement('span');
+    hint.className = 'field-hint';
+    foot.appendChild(hint);
+    var delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'mini-btn';
+    delBtn.textContent = '删除';
+    var saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'mini-btn';
+    saveBtn.textContent = '保存';
+    foot.appendChild(delBtn);
+    foot.appendChild(saveBtn);
+    wrap.appendChild(foot);
+
+    saveBtn.addEventListener('click', function () {
+      saveBtn.disabled = true;
+      hint.textContent = '保存中…';
+      memFetch('/api/presets/' + encodeURIComponent(item.id), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: titleIn.value, prompt: promptTa.value })
+      }).then(function (res) {
+        if (res && res.preset) {
+          item.title = res.preset.title;
+          item.prompt = res.preset.prompt;
+        }
+        hint.textContent = '已保存';
+        setPresetHint('预设已保存');
+        // 正在使用的预设改了内容，状态区/生效值要跟着变
+        return loadPresets();
+      }).catch(function (err) {
+        hint.textContent = '';
+        setPresetHint('保存失败：' + ((err && err.message) || '未知错误'));
+      }).then(function () { saveBtn.disabled = false; });
+    });
+
+    delBtn.addEventListener('click', function () {
+      if (!window.confirm('删除《' + (item.game_name || item.title || '该游戏') + '》的预设？')) return;
+      delBtn.disabled = true;
+      memFetch('/api/presets/' + encodeURIComponent(item.id), { method: 'DELETE' })
+        .then(function () {
+          setPresetHint('预设已删除');
+          return loadPresets();
+        })
+        .catch(function (err) {
+          setPresetHint('删除失败：' + ((err && err.message) || '未知错误'));
+        })
+        .then(function () { delBtn.disabled = false; });
+    });
+
+    return wrap;
+  }
+
+  function renderPresets(data) {
+    if (!presetListEl) return;
+    var cur = (data && data.current) || {};
+    if (presetNowEl) {
+      presetNowEl.textContent = cur.applied
+        ? ('《' + (cur.game_name || '当前游戏') + '》· ' + (cur.title || '已套用'))
+        : (cur.game_name ? ('《' + cur.game_name + '》暂无预设，使用默认提示词')
+          : '未检测到运行中的游戏');
+    }
+    presetListEl.textContent = '';
+    var items = (data && data.presets) || [];
+    if (!items.length) {
+      var empty = document.createElement('div');
+      empty.className = 'field-hint';
+      empty.textContent = '还没有预设：在 Deck 上运行游戏后，用插件端的「存为预设」保存当前提示词。';
+      presetListEl.appendChild(empty);
+      return;
+    }
+    items.forEach(function (item) { presetListEl.appendChild(buildPresetItem(item, cur)); });
+  }
+
+  function loadPresets() {
+    if (!presetListEl || presetsLoading) return;
+    presetsLoading = true;
+    memFetch('/api/presets').then(function (data) {
+      renderPresets(data || {});
+    }).catch(function (err) {
+      var msg = (err && err.message) || '';
+      var offline = /Failed to fetch|NetworkError|Load failed/i.test(msg);
+      setPresetHint('读取失败：' + (offline ? '连不上服务' : (msg || '未知错误')));
+    }).then(function () { presetsLoading = false; });
+  }
+
+  if (presetRefreshBtn) {
+    presetRefreshBtn.addEventListener('click', function () { loadPresets(); });
+  }
 
   // 刷新模型列表：和顶栏、插件端都用 /api/models，拉到的列表写进同一个下拉
   pluginModelRefresh.addEventListener('click', function () {
