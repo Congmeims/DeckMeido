@@ -29,7 +29,7 @@ from .llm import LLMClient
 from . import audit, authguard, audiomute, depcheck, devlog, i18n, memory, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, singleton, status_line, tools, updater
 from .session_store import store
 from . import session_store
-from .tts import LANGUAGES, TTS, normalize_engine
+from .tts import LANGUAGES, TTS, detect_language, normalize_engine, readify
 from .stt import STT, STTError, record_supported
 from .tomlcfg import ConfigWriteError, write_config
 
@@ -3052,6 +3052,10 @@ class OneBotConfigUpdate(BaseModel):
     max_reply_chunks: int | None = None
     redact_words: list[str] | str | None = None
     redact_mask: str | None = None
+    # 语音条（NapCat record 段）：只对主人 QQ 生效，超限/转码失败自动改发文字
+    voice_reply: bool | None = None
+    voice_max_seconds: float | None = None
+    voice_max_kb: int | None = None
 
 
 class AskTemplateUpdate(BaseModel):
@@ -6593,6 +6597,22 @@ def _qq_apply_config(raw: dict) -> None:
     onebot_client.configure(onebot.parse_config(raw))
 
 
+def _qq_voice_wav(text: str) -> Path:
+    """QQ 语音条合成（线程内跑）：复用 piper-plus，产出临时 wav，调用方负责删
+
+    piper 未装/模型缺失会抛 TTSError，由 onebot 记 voice.synth 后只发文字。
+    """
+    cleaned = readify(text, tts.max_chars)
+    if not cleaned:
+        raise ValueError("没有可朗读的文本")
+    language = tts.language if tts.language != "auto" else detect_language(cleaned)
+    return tts._synth_wav(cleaned, language)
+
+
+async def _qq_synth_voice(text: str) -> Path:
+    return await asyncio.to_thread(_qq_voice_wav, text)
+
+
 onebot_client = onebot.OneBotClient(
     runner=_qq_run_turn,
     screenshot=_qq_screenshot,
@@ -6601,6 +6621,7 @@ onebot_client = onebot.OneBotClient(
     pending_clear=_qq_clear_pending,
     # 单条图文的 base64 超 3MB 时，压到长边 1024 / q82 再发
     image_optimizer=lambda blob: _jpeg_for_llm(blob, max_side=1024, quality=82),
+    voice_synth=_qq_synth_voice,
 )
 onebot_client.configure(onebot.parse_config(CFG.get("qq") or {}))
 
@@ -6665,6 +6686,9 @@ def _qq_public_config() -> dict:
         "group_memo_max_chars": cfg.group_memo_max_chars,
         "redact_words": list(cfg.redact_words),
         "redact_mask": cfg.redact_mask,
+        "voice_reply": cfg.voice_reply,
+        "voice_max_seconds": cfg.voice_max_seconds,
+        "voice_max_kb": cfg.voice_max_kb,
         "confirm_timeout": cfg.confirm_timeout,
         "prefix": onebot.prefix_for(_qq_nickname()),
     }

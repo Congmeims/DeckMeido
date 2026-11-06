@@ -30,6 +30,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+import wave
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -103,6 +104,9 @@ DEFAULT_GROUP_MEMO_MAX_CHARS = 400
 DEFAULT_MAX_MESSAGE_CHARS = 2000
 DEFAULT_REPLY_CHUNK_CHARS = 300
 DEFAULT_MAX_REPLY_CHUNKS = 3
+# 伪造语音条：一轮回复最多额外发一条，超过时长/大小就只发文字
+DEFAULT_VOICE_MAX_SECONDS = 60.0
+DEFAULT_VOICE_MAX_KB = 4096
 DEFAULT_CONFIRM_TIMEOUT = 300.0
 DEFAULT_RECONNECT_MIN = 1.0
 DEFAULT_RECONNECT_MAX = 60.0
@@ -196,6 +200,10 @@ class OneBotConfig:
     group_memo_size: int = DEFAULT_GROUP_MEMO_SIZE
     group_memo_ttl: float = DEFAULT_GROUP_MEMO_TTL
     group_memo_max_chars: int = DEFAULT_GROUP_MEMO_MAX_CHARS
+    # 伪造语音条（NapCat record 段）：默认关闭，只对 admin_qq 生效
+    voice_reply: bool = False
+    voice_max_seconds: float = DEFAULT_VOICE_MAX_SECONDS
+    voice_max_kb: int = DEFAULT_VOICE_MAX_KB
     confirm_timeout: float = DEFAULT_CONFIRM_TIMEOUT
     reconnect_min: float = DEFAULT_RECONNECT_MIN
     reconnect_max: float = DEFAULT_RECONNECT_MAX
@@ -308,6 +316,12 @@ def parse_config(raw: dict | None) -> OneBotConfig:
         group_memo_max_chars=_as_int(
             raw.get("group_memo_max_chars", DEFAULT_GROUP_MEMO_MAX_CHARS),
             DEFAULT_GROUP_MEMO_MAX_CHARS) or DEFAULT_GROUP_MEMO_MAX_CHARS,
+        voice_reply=_as_bool(raw.get("voice_reply"), False),
+        voice_max_seconds=_as_float(
+            raw.get("voice_max_seconds", DEFAULT_VOICE_MAX_SECONDS),
+            DEFAULT_VOICE_MAX_SECONDS),
+        voice_max_kb=_as_int(raw.get("voice_max_kb", DEFAULT_VOICE_MAX_KB),
+                             DEFAULT_VOICE_MAX_KB),
         confirm_timeout=_as_float(raw.get("confirm_timeout", DEFAULT_CONFIRM_TIMEOUT),
                                   DEFAULT_CONFIRM_TIMEOUT),
         reconnect_min=_as_float(raw.get("reconnect_min", DEFAULT_RECONNECT_MIN),
@@ -326,6 +340,7 @@ ADVANCED_FIELDS = (
     "group_memo", "group_memo_size", "group_memo_ttl", "group_memo_max_chars",
     "rate_per_minute", "group_rate_per_minute", "reply_chunk_chars",
     "max_reply_chunks", "redact_words", "redact_mask",
+    "voice_reply", "voice_max_seconds", "voice_max_kb",
 )
 RATE_LIMIT_MAX = 600                    # 条/分钟上限
 GROUP_MEMO_SIZE_MAX = 100               # 每群保留条数上限
@@ -337,6 +352,10 @@ REPLY_CHUNK_MAX = 2000
 REPLY_CHUNKS_MIN = 1
 REPLY_CHUNKS_MAX = 10
 REDACT_MASK_MAX = 20
+VOICE_SECONDS_MIN = 1.0
+VOICE_SECONDS_MAX = 600.0
+VOICE_KB_MIN = 64
+VOICE_KB_MAX = 20480
 
 
 def normalize_advanced(raw: dict) -> tuple[dict, str | None]:
@@ -361,6 +380,8 @@ def normalize_advanced(raw: dict) -> tuple[dict, str | None]:
 
     if "group_memo" in raw:
         out["group_memo"] = bool(raw["group_memo"])
+    if "voice_reply" in raw:
+        out["voice_reply"] = bool(raw["voice_reply"])
     for key, lo, hi, label in (
             ("group_memo_size", 0, GROUP_MEMO_SIZE_MAX, "每群保留条数"),
             ("group_memo_max_chars", GROUP_MEMO_CHARS_MIN, GROUP_MEMO_CHARS_MAX,
@@ -368,7 +389,8 @@ def normalize_advanced(raw: dict) -> tuple[dict, str | None]:
             ("rate_per_minute", 0, RATE_LIMIT_MAX, "每人每分钟条数"),
             ("group_rate_per_minute", 0, RATE_LIMIT_MAX, "每群每分钟条数"),
             ("reply_chunk_chars", REPLY_CHUNK_MIN, REPLY_CHUNK_MAX, "每段字数"),
-            ("max_reply_chunks", REPLY_CHUNKS_MIN, REPLY_CHUNKS_MAX, "最多分段数")):
+            ("max_reply_chunks", REPLY_CHUNKS_MIN, REPLY_CHUNKS_MAX, "最多分段数"),
+            ("voice_max_kb", VOICE_KB_MIN, VOICE_KB_MAX, "语音大小上限（KB）")):
         err = take_int(key, lo, hi, label)
         if err:
             return {}, err
@@ -381,6 +403,15 @@ def normalize_advanced(raw: dict) -> tuple[dict, str | None]:
             return {}, (f"缓存有效期需在 0~{int(GROUP_MEMO_TTL_MAX)} 秒之间"
                         f"（当前 {ttl:g}）")
         out["group_memo_ttl"] = ttl
+    if "voice_max_seconds" in raw:
+        try:
+            seconds = float(raw["voice_max_seconds"])
+        except (TypeError, ValueError):
+            return {}, "语音时长上限必须是数字（秒）"
+        if seconds < VOICE_SECONDS_MIN or seconds > VOICE_SECONDS_MAX:
+            return {}, (f"语音时长上限需在 {VOICE_SECONDS_MIN:g}~"
+                        f"{VOICE_SECONDS_MAX:g} 秒之间（当前 {seconds:g}）")
+        out["voice_max_seconds"] = seconds
     if "redact_words" in raw:
         value = raw["redact_words"]
         text = value if isinstance(value, str) else "\n".join(str(v) for v in (value or []))
@@ -682,6 +713,11 @@ def _admin_route(text: str, nickname: str, readonly: bool) -> Route:
                  alias_miss=0 < len(cleaned) <= MAX_ALIAS_CHARS)
 
 
+def is_admin_user(cfg: OneBotConfig, ev: MessageEvent) -> bool:
+    """主人 QQ 判定：私聊、群聊、危险确认、语音条都只认 admin_qq 这一份名单"""
+    return ev.uin in cfg.admin_qq
+
+
 def route_message(cfg: OneBotConfig, ev: MessageEvent, nickname: str) -> Route:
     """权限判定与指令路由（纯函数，方便单测）
 
@@ -690,7 +726,7 @@ def route_message(cfg: OneBotConfig, ev: MessageEvent, nickname: str) -> Route:
     白名单群里：普通成员始终只读聊天；admin_qq 的号在
     group_admin_commands=true 时可下指令（危险操作仍要确认）。
     """
-    is_admin = ev.uin in cfg.admin_qq
+    is_admin = is_admin_user(cfg, ev)
     if ev.group_id is None:
         if not is_admin:
             return Route("ignore", reason="非管理员私聊")
@@ -839,7 +875,8 @@ class Backoff:
 class OneBotClient:
     def __init__(self, *, runner, screenshot, status_provider, nickname,
                  pending_clear=None, connect_factory=None, sleep=None,
-                 clock=time.time, image_optimizer=None):
+                 clock=time.time, image_optimizer=None,
+                 voice_synth=None, voice_convert=None):
         """
         runner: async (text, *, sid, device, readonly, turn_id, image=None)
                 -> {"reply", "pending", "image", "caption"}
@@ -848,6 +885,8 @@ class OneBotClient:
         nickname: () -> str（软件里配置的昵称，作为触发前缀）
         pending_clear: (device, sid) -> None（确认超时后清掉挂起的危险操作）
         image_optimizer: (bytes) -> bytes|None（base64 超限时压图，可选）
+        voice_synth: async (text) -> Path|None（合成语音 wav，调用方负责删文件）
+        voice_convert: async (wav_bytes) -> bytes（本地转码；None = 交给 NapCat 内置转码）
         """
         self._runner = runner
         self._screenshot = screenshot
@@ -858,6 +897,8 @@ class OneBotClient:
         self._sleep = sleep or asyncio.sleep
         self._clock = clock
         self._image_optimizer = image_optimizer
+        self._voice_synth = voice_synth
+        self._voice_convert = voice_convert
 
         self._cfg = OneBotConfig()
         self._task: asyncio.Task | None = None
@@ -1288,6 +1329,109 @@ class OneBotClient:
             chunks = ["（这一轮没有回复）"]
         for i, chunk in enumerate(chunks):
             await self._send_text(ev, chunk, at=(i == 0), chunk=chunk)
+        # 语音只发一条，且放在全部分段之后：文字先落地，语音失败也吞不掉回复
+        await self._maybe_send_voice(ev, text)
+
+    # -- 伪造语音条（NapCat record 段）--
+
+    async def _maybe_send_voice(self, ev: MessageEvent, text: str) -> bool:
+        """主人 QQ 的回复额外发一条语音；任何失败只记日志，不影响已发的文字"""
+        cfg = self._cfg
+        if not cfg.voice_reply or self._voice_synth is None:
+            return False
+        # 群友一律不触发：与私聊/指令权限共用同一份 admin_qq 判定
+        if not is_admin_user(cfg, ev):
+            return False
+        body = (text or "").strip()
+        if not body:
+            return False
+        path: Path | None = None
+        try:
+            path = await self._voice_synth(body)
+        except Exception as e:
+            self._log("warn", "voice.synth",
+                      f"合成失败：{type(e).__name__}: {e}"[:LOG_MAXLEN])
+            return False
+        if path is None:
+            self._log("info", "voice.synth", "没有可朗读的文本，只发文字")
+            return False
+        try:
+            return await self._send_voice_file(ev, Path(path))
+        finally:
+            try:
+                Path(path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    async def _send_voice_file(self, ev: MessageEvent, path: Path) -> bool:
+        """检查时长/大小 → 按需转码 → 发一条 record 段"""
+        cfg = self._cfg
+        info = self._inspect_wav(path)
+        if info is None:
+            self._log("warn", "voice.convert", "wav 无法解析，只发文字")
+            return False
+        seconds, size = info
+        if seconds > cfg.voice_max_seconds:
+            self._log("info", "voice.convert",
+                      f"时长 {seconds:.1f}s 超过上限 {cfg.voice_max_seconds:g}s，只发文字")
+            return False
+        if size > cfg.voice_max_kb * 1024:
+            self._log("info", "voice.convert",
+                      f"文件 {size / 1024:.0f}KB 超过上限 {cfg.voice_max_kb}KB，只发文字")
+            return False
+        try:
+            raw = path.read_bytes()
+        except OSError as e:
+            self._log("warn", "voice.convert", f"读取 wav 失败：{type(e).__name__}")
+            return False
+        payload = raw
+        if self._voice_convert is not None:
+            try:
+                payload = await self._voice_convert(raw)
+            except Exception as e:
+                self._log("warn", "voice.convert",
+                          f"转码失败（{type(e).__name__}），改发文字")
+                return False
+            if not payload:
+                self._log("warn", "voice.convert", "转码结果为空，改发文字")
+                return False
+            self._log("info", "voice.convert",
+                      f"本地转码 {len(raw)}→{len(payload)} 字节")
+        else:
+            # NapCat 文档：发送音频时由内置 silk/ffmpeg 转码，wav 可直接交给它
+            self._log("info", "voice.convert",
+                      "免本地转码：wav 交给 NapCat 内置 silk/ffmpeg")
+        b64 = base64.b64encode(payload).decode("ascii")
+        seg = {"type": "record", "data": {"file": f"base64://{b64}"}}
+        try:
+            if ev.group_id is None:
+                await self._call_api("send_private_msg",
+                                     {"user_id": _to_uid(ev.uin),
+                                      "message": [seg]}, timeout=30)
+            else:
+                await self._call_api("send_group_msg",
+                                     {"group_id": _to_uid(ev.group_id),
+                                      "message": [seg]}, timeout=30)
+        except Exception as e:
+            self._log("warn", "voice.send",
+                      f"NapCat 拒绝或超时：{type(e).__name__}")
+            return False
+        self._log("info", "voice.send",
+                  f"已发送 {seconds:.1f}s {len(payload)} 字节 base64 {len(b64)} 字节")
+        return True
+
+    @staticmethod
+    def _inspect_wav(path: Path) -> tuple[float, int] | None:
+        """读 wav 头拿时长（秒）与文件大小；不是合法 wav 返回 None"""
+        try:
+            with wave.open(str(path), "rb") as wav:
+                rate = wav.getframerate()
+                frames = wav.getnframes()
+            if not rate or frames <= 0:
+                return None
+            return frames / float(rate), path.stat().st_size
+        except (OSError, wave.Error, EOFError):
+            return None
 
     async def _send_image(self, ev: MessageEvent, blob: bytes, caption: str) -> bool:
         """单条 [text, image] 发送；base64 超限先压图，仍超限就明确回失败"""
@@ -1407,7 +1551,7 @@ class OneBotClient:
         if route.action == "command":
             self._stats["commands"] += 1
             if not menu.authorize(route.kind,
-                                  is_admin=ev.uin in cfg.admin_qq,
+                                  is_admin=is_admin_user(cfg, ev),
                                   in_group=ev.group_id is not None,
                                   group_admin_commands=cfg.group_admin_commands):
                 self._stats["ignored"] += 1
@@ -1453,7 +1597,7 @@ class OneBotClient:
         if not pending:
             return False
         # 群友不能替管理员确认：不是管理员就照常走后面的权限路由
-        if ev.uin not in self._cfg.admin_qq:
+        if not is_admin_user(self._cfg, ev):
             return False
         kind = str(pending.get("kind") or "")
         if self._clock() >= pending.get("expires_at", 0):

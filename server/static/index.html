@@ -3034,6 +3034,33 @@
                        placeholder="***" spellcheck="false">
               </div>
             </div>
+
+            <div class="qq-group">
+              <div class="qq-group-title">语音条</div>
+              <div class="field field-row">
+                <label style="margin:0">发送语音条（voice_reply）</label>
+                <label class="switch">
+                  <input id="cfgQqVoice" type="checkbox">
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="qq-num-grid">
+                <div class="field">
+                  <label>时长上限（秒，voice_max_seconds）</label>
+                  <input id="cfgQqVoiceSeconds" type="number" min="1" max="600" step="1"
+                         value="60" spellcheck="false">
+                </div>
+                <div class="field">
+                  <label>大小上限（KB，voice_max_kb）</label>
+                  <input id="cfgQqVoiceKb" type="number" min="64" max="20480" step="64"
+                         value="4096" spellcheck="false">
+                </div>
+              </div>
+              <div class="field-hint">
+                只在文字回复之外额外发一条语音，仅对主人 QQ 生效，群友不触发。
+                超过时长或大小上限、合成不可用、或 NapCat 拒绝时只发文字，不会吞回复。
+              </div>
+            </div>
             <div class="field field-row">
               <label style="margin:0">收图 / 存图（allow_image）</label>
               <label class="switch">
@@ -8326,6 +8353,9 @@
   var cfgQqChunkChars = document.getElementById('cfgQqChunkChars');
   var cfgQqChunks = document.getElementById('cfgQqChunks');
   var cfgQqRedactMask = document.getElementById('cfgQqRedactMask');
+  var cfgQqVoice = document.getElementById('cfgQqVoice');
+  var cfgQqVoiceSeconds = document.getElementById('cfgQqVoiceSeconds');
+  var cfgQqVoiceKb = document.getElementById('cfgQqVoiceKb');
   // 被保留但不在界面上的其余管理员号（老配置可能有多个）
   var qqAdminExtras = [];
   var qqGroups = null;
@@ -9782,6 +9812,11 @@
         c.max_reply_chunks != null ? c.max_reply_chunks : 3;
       if (qqRedactWords) qqRedactWords.set(c.redact_words || []);
       if (cfgQqRedactMask) cfgQqRedactMask.value = c.redact_mask || '***';
+      if (cfgQqVoice) cfgQqVoice.checked = !!c.voice_reply;
+      if (cfgQqVoiceSeconds) cfgQqVoiceSeconds.value =
+        c.voice_max_seconds != null ? c.voice_max_seconds : 60;
+      if (cfgQqVoiceKb) cfgQqVoiceKb.value =
+        c.voice_max_kb != null ? c.voice_max_kb : 4096;
       // 群友提示词：默认原文原样回填（{name} 不预先替换）。
       // 配置里存空串表示「用内置默认」，这里直接把后端下发的默认原文摆进
       // 输入框，首次打开看到的就是实际会生效的内容，而不是一个空框
@@ -9865,7 +9900,10 @@
       reply_chunk_chars: qqNum(cfgQqChunkChars, 300),
       max_reply_chunks: qqNum(cfgQqChunks, 3),
       redact_words: qqRedactWords ? qqRedactWords.get() : [],
-      redact_mask: cfgQqRedactMask ? cfgQqRedactMask.value.trim() : '***'
+      redact_mask: cfgQqRedactMask ? cfgQqRedactMask.value.trim() : '***',
+      voice_reply: cfgQqVoice ? !!cfgQqVoice.checked : false,
+      voice_max_seconds: qqNum(cfgQqVoiceSeconds, 60),
+      voice_max_kb: qqNum(cfgQqVoiceKb, 4096)
     };
     return memFetch('/api/qq/config', {
       method: 'POST',
@@ -9887,6 +9925,11 @@
         renderAdminHint();
         if (qqGroups) qqGroups.set(res.config.allow_groups || []);
         if (qqRedactWords) qqRedactWords.set(res.config.redact_words || []);
+        if (cfgQqVoice) cfgQqVoice.checked = !!res.config.voice_reply;
+        if (cfgQqVoiceSeconds) cfgQqVoiceSeconds.value =
+          res.config.voice_max_seconds != null ? res.config.voice_max_seconds : 60;
+        if (cfgQqVoiceKb) cfgQqVoiceKb.value =
+          res.config.voice_max_kb != null ? res.config.voice_max_kb : 4096;
       }
       if (res && res.state) renderQqStatus(res.state);
       else return loadQqStatus();

@@ -293,6 +293,16 @@ group_memo_size = 20
 group_memo_ttl = 300
 # 注入片段的总字数上限，超出时先丢更早的消息。
 group_memo_max_chars = 400
+# 伪造语音条（默认关闭）：开启后，主人 QQ 的回复在文字之外再额外发一条语音，
+# 走 NapCat 的 record 段（wav 交 NapCat 内置 silk/ffmpeg 转码）。
+# 仅对 admin_qq 生效，群友一律不触发；每条回复最多一条语音，不会每段都发。
+# 合成复用 [tts] 的 piper-plus 模型：运行时/模型缺失、超过下面的时长/大小上限、
+# 或 NapCat 拒绝发送时，只记日志并把文字照常发完，不会吞掉整条回复。
+voice_reply = false
+# 单条语音的时长上限（秒），超过就只发文字。
+voice_max_seconds = 60
+# 单条语音的文件大小上限（KB），超过就只发文字。
+voice_max_kb = 4096
 # 危险操作等「确认」的有效期（秒）；超时作废，不留着旧操作等下次确认。
 confirm_timeout = 300
 # 断线重连的指数退避：首次等待秒数、封顶秒数。

@@ -12,6 +12,7 @@ import socket
 import tempfile
 import time
 import unittest
+import wave
 from pathlib import Path
 from unittest import mock
 
@@ -242,6 +243,7 @@ class AdvancedConfigTest(unittest.TestCase):
             "group_rate_per_minute": 10, "reply_chunk_chars": 300,
             "max_reply_chunks": 3,
             "redact_words": ["密钥", "口令", "密"], "redact_mask": "***",
+            "voice_reply": True, "voice_max_seconds": 30, "voice_max_kb": 2048,
         })
         self.assertIsNone(err)
         cfg = onebot.parse_config(updates)
@@ -256,6 +258,9 @@ class AdvancedConfigTest(unittest.TestCase):
         # 单字词按规则忽略，不落库
         self.assertEqual(cfg.redact_words, ("密钥", "口令"))
         self.assertEqual(cfg.redact_mask, "***")
+        self.assertTrue(cfg.voice_reply)
+        self.assertEqual(cfg.voice_max_seconds, 30.0)
+        self.assertEqual(cfg.voice_max_kb, 2048)
 
     def test_redact_words_accepts_text(self):
         updates, err = onebot.normalize_advanced({"redact_words": "密钥，口令\n密"})
@@ -276,6 +281,11 @@ class AdvancedConfigTest(unittest.TestCase):
             ({"redact_words": ["长" * 31]}, "30 字"),
             ({"redact_mask": ""}, "不能为空"),
             ({"redact_mask": "x" * 21}, "20 字"),
+            ({"voice_max_seconds": 0}, "1~600"),
+            ({"voice_max_seconds": 601}, "1~600"),
+            ({"voice_max_seconds": "abc"}, "数字"),
+            ({"voice_max_kb": 63}, "64~20480"),
+            ({"voice_max_kb": 20481}, "64~20480"),
         )
         for raw, hint in cases:
             out, err = onebot.normalize_advanced(raw)
@@ -1458,6 +1468,10 @@ class ConfigTestExtra(unittest.TestCase):
         self.assertTrue(cfg.auto_launch_after_install)
         self.assertEqual(cfg.auto_launch_wait_seconds, 6.0)
         self.assertEqual(cfg.image_recent_minutes, 2.0)
+        # 伪造语音条默认关闭；上限 60 秒 / 4MB
+        self.assertFalse(cfg.voice_reply)
+        self.assertEqual(cfg.voice_max_seconds, 60.0)
+        self.assertEqual(cfg.voice_max_kb, 4096)
 
     def test_parse_new_fields(self):
         cfg = onebot.parse_config({
@@ -1502,6 +1516,198 @@ class NormalizeEventTest(unittest.TestCase):
     def test_ignores_non_message(self):
         self.assertIsNone(onebot.normalize_event({"post_type": "meta_event"}))
         self.assertIsNone(onebot.normalize_event({"post_type": "notice"}))
+
+
+class VoiceReplyTest(unittest.IsolatedAsyncioTestCase):
+    """伪造语音条：开关、权限、超限、转码失败、分段都只降级为文字"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="deckmeido-voice-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def wav(self, name="v.wav", seconds=1.0, rate=8000):
+        path = self.tmp / name
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(b"\x00\x00" * int(rate * seconds))
+        return path
+
+    def make(self, *, voice_synth, voice_convert=None, reply="好的", config=None):
+        ws = FakeWS()
+
+        async def runner(text, *, sid, device, readonly, turn_id="", image=None):
+            return {"reply": reply}
+
+        async def default_shot():
+            return b"png", "ok"
+
+        async def default_status():
+            return {"core": "运行中", "mode": "桌面模式"}
+
+        async def factory(cfg):
+            return ws
+
+        bot = onebot.OneBotClient(
+            runner=runner, screenshot=default_shot, status_provider=default_status,
+            nickname=lambda: "meido", connect_factory=factory,
+            sleep=asyncio.sleep, voice_synth=voice_synth,
+            voice_convert=voice_convert,
+        )
+        raw = {"enable": True, "ws_url": "ws://127.0.0.1:3001",
+               "access_token": "tok", "admin_qq": ["10001"],
+               "allow_groups": ["20001"], "voice_reply": True}
+        raw.update(config or {})
+        bot.configure(onebot.parse_config(raw))
+        return bot, ws
+
+    async def start(self, bot):
+        await bot.start()
+        self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
+
+    @staticmethod
+    def records(ws):
+        out = []
+        for frame in ws.sent:
+            message = frame.get("params", {}).get("message")
+            if not isinstance(message, list):
+                continue
+            for seg in message:
+                if seg.get("type") == "record":
+                    out.append(seg)
+        return out
+
+    @staticmethod
+    def texts(ws):
+        out = []
+        for frame in ws.sent:
+            message = frame.get("params", {}).get("message")
+            if isinstance(message, str):
+                out.append(message)
+            elif isinstance(message, list):
+                out.append("".join(s.get("data", {}).get("text", "")
+                                   for s in message if s.get("type") == "text"))
+        return out
+
+    async def test_disabled_sends_text_only(self):
+        called = []
+
+        async def synth(text):
+            called.append(text)
+            return self.wav()
+
+        bot, ws = self.make(voice_synth=synth, config={"voice_reply": False})
+        await self.start(bot)
+        ws.feed(private_msg("10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(called, [])
+        self.assertEqual(self.records(ws), [])
+        self.assertTrue(any("好的" in t for t in self.texts(ws)))
+        await bot.stop()
+
+    async def test_admin_gets_one_record_with_chunks(self):
+        synth_calls = []
+
+        async def synth(text):
+            synth_calls.append(text)
+            return self.wav()
+
+        bot, ws = self.make(voice_synth=synth, reply="好" * 120,
+                            config={"reply_chunk_chars": 50, "max_reply_chunks": 3})
+        await self.start(bot)
+        ws.feed(private_msg("10001", "meido 说点什么"))
+        await bot.wait_idle()
+        # 文字照样分段，语音只发一条，且用整段回复合成一次
+        self.assertEqual(len([t for t in self.texts(ws) if "好" in t]), 3)
+        self.assertEqual(len(self.records(ws)), 1)
+        self.assertEqual(len(synth_calls), 1)
+        self.assertEqual(synth_calls[0], "好" * 120)
+        record = self.records(ws)[0]
+        self.assertTrue(record["data"]["file"].startswith("base64://"))
+        await bot.stop()
+
+    async def test_over_seconds_falls_back_to_text(self):
+        async def synth(text):
+            return self.wav(seconds=2.0)
+
+        bot, ws = self.make(voice_synth=synth, config={"voice_max_seconds": 1})
+        await self.start(bot)
+        ws.feed(private_msg("10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(self.records(ws), [])
+        self.assertTrue(any("好的" in t for t in self.texts(ws)))
+        await bot.stop()
+
+    async def test_over_kb_falls_back_to_text(self):
+        async def synth(text):
+            return self.wav(seconds=1.0)
+
+        bot, ws = self.make(voice_synth=synth, config={"voice_max_kb": 1})
+        await self.start(bot)
+        ws.feed(private_msg("10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(self.records(ws), [])
+        self.assertTrue(any("好的" in t for t in self.texts(ws)))
+        await bot.stop()
+
+    async def test_convert_failure_falls_back_to_text(self):
+        async def synth(text):
+            return self.wav()
+
+        async def convert(raw):
+            raise RuntimeError("没有可用的转码器")
+
+        bot, ws = self.make(voice_synth=synth, voice_convert=convert)
+        await self.start(bot)
+        ws.feed(private_msg("10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(self.records(ws), [])
+        self.assertTrue(any("好的" in t for t in self.texts(ws)))
+        await bot.stop()
+
+    async def test_group_guest_never_triggers_voice(self):
+        called = []
+
+        async def synth(text):
+            called.append(text)
+            return self.wav()
+
+        bot, ws = self.make(voice_synth=synth)
+        await self.start(bot)
+        ws.feed(group_msg("20001", "30003", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(called, [])
+        self.assertEqual(self.records(ws), [])
+        await bot.stop()
+
+    async def test_group_admin_voice_uses_group_api(self):
+        async def synth(text):
+            return self.wav()
+
+        bot, ws = self.make(voice_synth=synth)
+        await self.start(bot)
+        ws.feed(group_msg("20001", "10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(len(self.records(ws)), 1)
+        actions = [f.get("action") for f in ws.sent
+                   if any(s.get("type") == "record"
+                          for s in (f.get("params", {}).get("message") or [])
+                          if isinstance(s, dict))]
+        self.assertEqual(actions, ["send_group_msg"])
+        await bot.stop()
+
+    async def test_synth_failure_falls_back_to_text(self):
+        async def synth(text):
+            raise RuntimeError("piper 未安装")
+
+        bot, ws = self.make(voice_synth=synth)
+        await self.start(bot)
+        ws.feed(private_msg("10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(self.records(ws), [])
+        self.assertTrue(any("好的" in t for t in self.texts(ws)))
+        await bot.stop()
 
 
 if __name__ == "__main__":
