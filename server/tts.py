@@ -51,6 +51,12 @@ SPEAKERS = (
 )
 SPEAKER_LABELS = {item["id"]: item["label"] for item in SPEAKERS}
 
+# 试听默认句：按发音人选，各用单一语言，避免中英混排跨段
+PREVIEW_TEXTS = {
+    SPEAKER_ROBOT: "你好，我是机器人语音。",
+    SPEAKER_MAID: "你好，我是月读酱。",
+}
+
 VOICE_ID = "tsukuyomi"
 VOICE_LABEL = "つくよみちゃん（ja/zh/en/es/fr/pt）"
 MODEL_DIR_NAME = "tsukuyomi"
@@ -869,8 +875,9 @@ class TTS:
                 self._cancel = None
 
     async def preview(self, text: str = ""):
-        """试听：不受 enable 开关限制，用当前引擎念一句短的。"""
-        await self.speak(text or "你好，我是月读酱。这样说话好听吗？", force=True)
+        """试听：不受 enable 开关限制；传了文本就用传入的，否则按发音人取默认句。"""
+        spoken = text or PREVIEW_TEXTS.get(self.speaker, PREVIEW_TEXTS[DEFAULT_SPEAKER])
+        await self.speak(spoken, force=True)
         return {"engine": self._last_engine, "error": self._last_error}
 
     async def stop(self):

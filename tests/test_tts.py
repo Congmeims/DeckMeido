@@ -776,5 +776,52 @@ class SpeakerTest(unittest.TestCase):
             t.synth_wav("   ")
 
 
+class PreviewTextTest(unittest.TestCase):
+    """试听默认句按发音人区分，传了文本则优先用传入的"""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name)
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _capture(self, speaker, text=""):
+        captured = {}
+
+        async def fake_espeak(spoken, event, voice=None, language=""):
+            captured["text"] = spoken
+            return True
+
+        async def fake_piper(segments, event):
+            captured["text"] = "".join(seg[1] for seg in segments)
+            return 0, 0, ""
+
+        t = ttsmod.TTS(enable=False, speaker=speaker, language="zh",
+                       model_root=self.root)
+        t._piper_ready = lambda: True
+        t._speak_espeak = fake_espeak
+        t._speak_piper = fake_piper
+        _run(t.preview(text))
+        return captured.get("text", "")
+
+    def test_默认句按发音人区分(self):
+        robot_text = self._capture("robot")
+        maid_text = self._capture("maid")
+        self.assertIn("机器人", robot_text)
+        self.assertNotIn("月读酱", robot_text)
+        self.assertIn("月读酱", maid_text)
+        self.assertNotIn("机器人", maid_text)
+        self.assertNotEqual(robot_text, maid_text)
+
+    def test_默认句常量不含对方称呼(self):
+        self.assertNotIn("月读酱", ttsmod.PREVIEW_TEXTS["robot"])
+        self.assertNotIn("机器人", ttsmod.PREVIEW_TEXTS["maid"])
+
+    def test_传入文本优先(self):
+        self.assertEqual(self._capture("robot", "自定义试听句"), "自定义试听句")
+        self.assertEqual(self._capture("maid", "自定义试听句"), "自定义试听句")
+
+
 if __name__ == "__main__":
     unittest.main()
