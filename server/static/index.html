@@ -11,6 +11,15 @@
 <title>DeckMeido</title>
 <style>
   :root {
+    /* 全局字体唯一来源：正文/标题/按钮/输入框都继承这一套。
+       首选 SteamOS 自带的 Noto Sans CJK SC（无衬线），末端再兜一层
+       sans-serif，避免缺字时被 fontconfig 回退成宋体/衬线体。
+       等宽只保留给代码、终端输出与配对码/令牌这类需要对齐的字符 */
+    --font-sans: "Noto Sans CJK SC", "Source Han Sans SC", "Noto Sans SC",
+                 "Noto Sans", system-ui, -apple-system, "Segoe UI",
+                 "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "Noto Sans Mono CJK SC", "SFMono-Regular",
+                 "Cascadia Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
     --bg: #0f1117;
     --surface: #1a1d27;
     --surface-2: #232737;
@@ -39,14 +48,15 @@
   body {
     background: var(--bg);
     color: var(--text);
-    font-family: "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC",
-                 "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-family: var(--font-sans);
     font-size: 16px;
     display: flex;
     flex-direction: column;
     height: 100dvh;
     overflow: hidden;
   }
+  /* 表单控件默认走平台的 UI 字体，会和正文不一致；统一继承正文那一套 */
+  button, input, select, textarea { font-family: inherit; }
 
   /* 顶部状态栏 */
   header {
@@ -371,7 +381,7 @@
 
   /* markdown 内容 */
   .msg pre { background: var(--code-bg); padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 6px 0; font-size: 13px; }
-  .msg code { background: var(--code-bg); padding: 2px 6px; border-radius: 5px; font-size: 13px; font-family: ui-monospace, monospace; }
+  .msg code { background: var(--code-bg); padding: 2px 6px; border-radius: 5px; font-size: 13px; font-family: var(--font-mono); }
   .msg pre code { background: none; padding: 0; }
   /* 用户气泡是蓝底：里面的行内代码/代码块若还用主题的代码底色，
      浅色主题下就是「浅灰块 + 继承来的白字」，整段看不见。
@@ -437,7 +447,7 @@
   .tl-chip {
     background: var(--surface-2); border-radius: 6px;
     padding: 1px 7px; font-size: 12px;
-    font-family: ui-monospace, monospace; color: var(--brand);
+    font-family: var(--font-mono); color: var(--brand);
     /* 300px 是桌面宽度上限；窄屏用 vw 收窄，避免把左侧标签压成竖排 */
     max-width: min(300px, 52vw);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -482,11 +492,11 @@
   .tl-body.pic .shot { display: block; width: auto; max-width: min(30vw, 400px); height: auto; }
   .tl-body.term {
     background: var(--code-bg); color: var(--code-text);
-    font-family: ui-monospace, monospace; font-size: 12px;
+    font-family: var(--font-mono); font-size: 12px;
   }
   .tl-file {
     display: flex; gap: 8px; align-items: center;
-    font-family: ui-monospace, monospace; font-size: 12.5px;
+    font-family: var(--font-mono); font-size: 12.5px;
   }
   .tl-file .fname { color: var(--brand); }
   .tl-file .add { color: #2ecc71; }
@@ -1245,13 +1255,13 @@
     display: flex; flex-direction: column; gap: 6px; background: var(--surface-2);
   }
   .pair-row-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-  .pair-row-head strong { font-size: 20px; letter-spacing: 4px; font-family: ui-monospace, monospace; }
+  .pair-row-head strong { font-size: 20px; letter-spacing: 4px; font-family: var(--font-mono); }
   .pair-row-meta { font-size: 12px; color: var(--muted); word-break: break-all; }
   .pair-row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .pair-empty { font-size: 12.5px; color: var(--muted); }
   /* 输入框 + 按钮一行（API Key / 端口 / 局域网地址都用它） */
   .token-row { display: flex; gap: 8px; align-items: stretch; }
-  .token-row input { flex: 1; font-family: ui-monospace, monospace; letter-spacing: 1px; }
+  .token-row input { flex: 1; font-family: var(--font-mono); letter-spacing: 1px; }
   .mini-btn {
     flex: none;
     /* 高度不再写死：跟随同一行的输入框（.token-row / .mem-add / .about-row 都靠 stretch 对齐），
@@ -1512,7 +1522,6 @@
   .qq-logs-body {
     height: 180px; overflow-y: auto; padding: 6px 10px;
     font-size: 12px; line-height: 1.55;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   .qq-log-row { display: flex; gap: 6px; padding: 1px 0; word-break: break-word; }
   .qq-log-time { flex: 0 0 auto; opacity: .55; }
@@ -1715,7 +1724,7 @@
   /* 系统状态卡（设备名已提到 .sb-head，这里只剩 CPU / RAM / SSD 几行）
      内边距收到 8px：侧栏窄屏下横向空间最值钱，进度条越长越好认 */
   .sys-card { padding: 8px; border-bottom: 1px solid var(--line); }
-  .sys-ip { font-size: 11.5px; color: var(--muted); font-family: ui-monospace, monospace; font-weight: 400; }
+  .sys-ip { font-size: 11.5px; color: var(--muted); font-weight: 400; }
   /* .sb-head 里 IP 行带端口（如 <deck-ip>:18765），比纯 IP 长，
      字号降到 10px 并允许省略，避免顶出栏宽 */
   .sb-head .sys-ip { font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1735,7 +1744,7 @@
   .fill { height: 100%; width: 0%; border-radius: 3px; background: var(--brand); transition: width .4s; }
   .fill.hot { background: var(--danger); }
   .fill.warn { background: #e6b422; }
-  .sys-val { font-size: 10.5px; font-family: ui-monospace, monospace; text-align: center; white-space: nowrap;
+  .sys-val { font-size: 10.5px; text-align: center; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
   /* 上下文行：窄屏时顶栏徽章被隐藏，改由这一行显示；宽屏有徽章就不重复占地方 */
   #ctxRow { display: none; }
@@ -1900,7 +1909,7 @@
   .ctrl-actions button { flex: 1; }
   .ctrl-actions button + button { flex: 0 0 auto; }
   .ctrl-log {
-    margin-top: 10px; font-family: ui-monospace, monospace; font-size: 11.5px;
+    margin-top: 10px; font-size: 11.5px;
     color: var(--muted); white-space: pre-wrap; word-break: break-word;
     max-height: 160px; overflow: auto;
   }
@@ -1909,7 +1918,7 @@
   #codeView.show { display: flex; }
   #codeBox { width: min(920px, 94vw); max-height: 86dvh; background: var(--code-bg); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
   #codeBox .cv-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surface); }
-  #codePre { flex: 1; overflow: auto; padding: 14px; color: var(--code-text); font-family: ui-monospace, monospace; font-size: 13px; white-space: pre-wrap; word-break: break-word; margin: 0; }
+  #codePre { flex: 1; overflow: auto; padding: 14px; color: var(--code-text); font-family: var(--font-mono); font-size: 13px; white-space: pre-wrap; word-break: break-word; margin: 0; }
   .msg pre { cursor: pointer; }
 
   /* ---------- 右侧常用工具栏（文件 / 终端） ---------- */
@@ -2038,7 +2047,6 @@
   #fbBar button svg { display: block; width: 14px; height: 14px; }
   #fbPath {
     flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted);
-    font-family: ui-monospace, monospace;
     overflow-x: auto; white-space: nowrap; scrollbar-width: none;
   }
   #fbPath::-webkit-scrollbar { display: none; }
@@ -2120,7 +2128,7 @@
   .fb-item.dragging { opacity: .45; }
   .fb-item[draggable="true"] { cursor: grab; }
   .fb-item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .fb-item .sz { flex: 0 0 auto; font-size: 10.5px; color: var(--muted); font-family: ui-monospace, monospace; }
+  .fb-item .sz { flex: 0 0 auto; font-size: 10.5px; color: var(--muted); }
   /* 右键菜单：文件面板里复制/剪切/粘贴/删除/重命名/新建文件夹 */
   #ctxMenu {
     position: fixed; z-index: 90; min-width: 150px;
@@ -2206,7 +2214,7 @@
     color: var(--muted); font-size: 12.5px; line-height: 1.6;
   }
   #termList .fb-note::before {
-    content: '>_'; font-family: ui-monospace, monospace; font-size: 22px;
+    content: '>_'; font-family: var(--font-mono); font-size: 22px;
     color: var(--text); opacity: .28; letter-spacing: 2px;
   }
   #termList .fb-note em { font-style: normal; color: var(--text); opacity: .75; }
@@ -2232,8 +2240,7 @@
   }
   #fbViewer .fv-name { flex: 1; min-width: 0; font-size: 13px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #fbViewer .fv-meta { flex: 0 0 auto; font-size: 11.5px; color: var(--muted);
-    font-family: ui-monospace, monospace; }
+  #fbViewer .fv-meta { flex: 0 0 auto; font-size: 11.5px; color: var(--muted); }
   #fbViewer .fv-btn {
     flex: 0 0 auto; border: 1px solid var(--line); background: var(--surface);
     color: var(--text); font-size: 12px; padding: 3px 9px; border-radius: 6px; cursor: pointer;
@@ -2244,7 +2251,7 @@
     display: none; flex: 0 1 320px; min-width: 120px;
     border: 1px solid var(--line); background: var(--bg); color: var(--text);
     font-size: 12px; padding: 3px 8px; border-radius: 6px;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
   }
   #fbViewer.term-mode .fv-keys { display: block; }
   #fbViewer.term-mode .fv-keys:focus { outline: 1px solid var(--brand); }
@@ -2260,7 +2267,7 @@
   #fbViewer .fv-body iframe { width: min(900px, 88vw); height: 76vh; border: 0; border-radius: 8px; background: #fff; }
   #fbViewer .fv-body pre {
     align-self: stretch; margin: 0; font-size: 12.5px; line-height: 1.5;
-    font-family: ui-monospace, monospace; white-space: pre; color: var(--text);
+    font-family: var(--font-mono); white-space: pre; color: var(--text);
     background: var(--code-bg); padding: 12px; border-radius: 8px;
     max-width: 88vw; overflow: auto;
   }
@@ -2284,7 +2291,7 @@
   .tm-head .who.me { background: rgba(46,204,113,.14); color: #2ecc71; }
   .tm-head .cmd {
     flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    font-family: ui-monospace, monospace; color: var(--text); font-size: 11.5px;
+    font-family: var(--font-mono); color: var(--text); font-size: 11.5px;
   }
   .tm-head .st { flex: 0 0 auto; font-size: 10.5px; }
   .tm-head .st.run { color: var(--brand); }
@@ -2292,7 +2299,7 @@
   .tm-head .st.bad { color: var(--danger); }
   .tm-out {
     margin: 0; padding: 0 8px 8px; max-height: 220px; overflow: auto;
-    font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.45;
+    font-family: var(--font-mono); font-size: 11px; line-height: 1.45;
     color: var(--code-text); white-space: pre-wrap; word-break: break-word;
     background: var(--code-bg); padding-top: 6px;
   }
@@ -2307,7 +2314,7 @@
        占半屏会挤掉对话 */
     position: relative; overflow: auto; max-height: 150px;
     background: var(--code-bg); padding: 4px 6px; border-top: 1px solid var(--line);
-    font-family: ui-monospace, monospace; line-height: 1.25;
+    font-family: var(--font-mono); line-height: 1.25;
     font-variant-ligatures: none;
   }
   .tm-term .ts {
@@ -2367,7 +2374,7 @@
        右边一大片留白。内边距交给 xterm 自己的 .xterm padding（见下） */
     position: relative; overflow: auto; height: 100%; width: 100%;
     background: var(--code-bg); padding: 0;
-    font-family: ui-monospace, monospace; line-height: 1.3;
+    font-family: var(--font-mono); line-height: 1.3;
     font-variant-ligatures: none;
   }
   /* 每格 span 要把字号显式继承下来：span 自带字号会让自适应算出来的值落不到格子上 */
@@ -2417,12 +2424,12 @@
   #termInput:focus-within { border-color: var(--brand); }
   #termInput > span {
     flex: 0 0 auto;
-    color: var(--muted); font-family: ui-monospace, monospace; font-size: 13px; user-select: none;
+    color: var(--muted); font-family: var(--font-mono); font-size: 13px; user-select: none;
   }
   #termCmd {
     flex: 1; min-width: 0; background: transparent; color: var(--text);
     border: none; padding: 10px 0;
-    font-family: ui-monospace, monospace; font-size: 13px; outline: none;
+    font-family: var(--font-mono); font-size: 13px; outline: none;
   }
   #termCmd::placeholder { color: var(--muted); opacity: .7; }
   /* 与中间的「发送」按钮同一套：34px 高、圆角 10px、品牌蓝、字重 600 */
