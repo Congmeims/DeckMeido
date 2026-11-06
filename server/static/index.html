@@ -1208,25 +1208,86 @@
   .usage-table tr:last-child td { border-bottom: none; }
   .usage-empty { color: var(--muted); font-size: 12px; padding: 6px 0; }
   /* ---------- 接口（多组 API 配置） ----------
-     每条一张小卡：标题行放「使用中」单选 + 名称 + 删除；地址与 Key 各占一行。
-     不用多列网格：窄屏（掌机竖屏）也能整行显示，不会被挤出卡片 */
+     每条一张可折叠小卡：收起只占一行（名称 · host · 掩码 Key · 使用中 · 删除），
+     展开才露出地址/Key 输入。当前使用那条左侧有一道强调色条。
+     头部不换行：360px 窄屏下让 host 截断，操作按钮永远留在右边 */
   .api-profile {
     border: 1px solid var(--line); border-radius: 12px;
-    padding: 10px 12px; margin-bottom: 10px; min-width: 0;
+    padding: 8px 10px; margin-bottom: 10px; min-width: 0;
+    background: var(--surface-2);
+    transition: border-color .15s, background .15s;
+  }
+  .api-profile.on {
+    border-color: color-mix(in srgb, var(--brand) 55%, var(--line));
+    box-shadow: inset 3px 0 0 var(--brand);
+    background: color-mix(in srgb, var(--brand) 7%, var(--surface-2));
   }
   .api-profile-head {
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    display: flex; align-items: center; gap: 6px; min-width: 0;
+    flex-wrap: nowrap;
   }
-  .api-profile-head .api-current {
-    display: inline-flex; align-items: center; gap: 4px;
-    font-size: 12px; color: var(--muted); cursor: pointer; flex: none;
+  /* 折叠箭头：小、不发亮，只在 hover 时提一点对比 */
+  .api-toggle {
+    flex: none; width: 20px; height: 20px; padding: 0; border: none;
+    background: transparent; color: var(--muted); cursor: pointer;
+    font-size: 12px; line-height: 20px; border-radius: 6px;
+    transition: transform .15s, color .15s;
   }
-  .api-profile-head .api-current input { margin: 0; }
-  .api-profile-head .api-name { flex: 1 1 140px; min-width: 0; }
-  .api-profile-head .api-remove { flex: none; margin-left: auto; }
+  .api-toggle:hover { color: var(--text); background: rgba(255,255,255,.06); }
+  .api-profile.open .api-toggle { transform: rotate(90deg); color: var(--text); }
+  /* 名称：长得像文本，不是原生输入框；聚焦时才显出可编辑的下划线 */
+  .api-profile-head .api-name {
+    flex: 1 1 88px; min-width: 0; width: auto;
+    height: 26px; padding: 0 6px; box-sizing: border-box;
+    border: 1px solid transparent; border-radius: 6px;
+    background: transparent; color: var(--text);
+    font-size: 14px; font-weight: 600; font-family: inherit;
+    outline: none; text-overflow: ellipsis;
+  }
+  .api-profile-head .api-name:hover { border-color: var(--line); }
+  .api-profile-head .api-name:focus {
+    border-color: var(--brand); background: var(--surface);
+  }
+  .api-profile-head .api-name::placeholder { color: var(--muted); font-weight: 400; }
+  /* 收起态摘要：host 可以截断，掩码 Key 固定不挤走 */
+  .api-profile.open .api-sum { display: none; }
+  .api-sum {
+    flex: 2 1 120px; min-width: 0; display: flex; align-items: center; gap: 6px;
+    font-size: 11.5px; color: var(--muted); overflow: hidden;
+  }
+  .api-sum .api-host {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .api-sum .api-mask { flex: none; color: var(--muted); opacity: .85; }
+  /* 「使用中」：徽章样式；未选中是淡描边，选中是品牌色实心 */
+  .api-current {
+    position: relative;
+    flex: none; display: inline-flex; align-items: center; gap: 4px;
+    height: 24px; padding: 0 9px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); color: var(--muted);
+    font-size: 11.5px; white-space: nowrap; user-select: none;
+  }
+  .api-current input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+  .api-current.on {
+    border-color: var(--brand); color: var(--brand);
+    background: color-mix(in srgb, var(--brand) 14%, transparent);
+  }
+  /* 删除：平时很淡，悬停才明显；窄屏也保留可点面积 */
+  .api-remove {
+    flex: none; width: 24px; height: 24px; padding: 0; border: none;
+    border-radius: 7px; background: transparent; color: var(--muted);
+    font-size: 13px; line-height: 24px; cursor: pointer;
+    opacity: .35; transition: opacity .15s, color .15s, background .15s;
+  }
+  .api-profile:hover .api-remove,
+  .api-remove:focus-visible { opacity: .9; }
+  .api-remove:hover { color: var(--danger); background: rgba(228,80,80,.12); }
+  /* 展开区：只有展开时占位，收起不占高度 */
+  .api-detail { display: none; margin-top: 6px; }
+  .api-profile.open .api-detail { display: block; }
   .api-profile .field { margin: 8px 0 0; }
   .api-profile .field input { width: 100%; min-width: 0; }
-  .api-profile .field-hint { word-break: break-all; }
+  .api-profile .field-hint { word-break: break-all; font-size: 11.5px; }
   .api-empty { color: var(--muted); font-size: 12px; padding: 4px 0 8px; }
   /* 底栏的垂直尺寸要和侧栏那条 .sb-foot 完全一样（上 8 / 下 10 / 按钮 34），
      两个分隔线才会落在同一条水平线上，不然左右各画一条、高低差一截 */
@@ -9295,6 +9356,9 @@
 
   function renderApiProfiles(c) {
     var rows = (c && c.api_profiles) || [];
+    // 重绘时保留展开状态，别保存一次就把用户正打开的那张卡收起来
+    var prevOpen = {};
+    apiProfilesState.profiles.forEach(function (p) { if (p.open) prevOpen[p.id] = true; });
     apiProfilesState.profiles = rows.map(function (p) {
       return {
         id: p.id,
@@ -9302,7 +9366,8 @@
         base_url: p.base_url || '',
         key_set: !!p.api_key_set,
         masked: p.api_key_masked || p.api_key || '',
-        temp: false
+        temp: false,
+        open: !!prevOpen[p.id]
       };
     });
     apiProfilesState.current = (c && c.current_api) || '';
@@ -9316,6 +9381,19 @@
     loadUsageStats();
   }
 
+  // 地址只露 host（收起态一行放得下）：https://api.deepseek.com/v1 → api.deepseek.com
+  function apiHostOf(u) {
+    var s = String(u || '').trim();
+    if (!s) return '未设置地址';
+    try {
+      var parsed = new URL(s);
+      return parsed.host || s;
+    } catch (e) {
+      // 用户可能只填了域名（没有协议），退化成手拆
+      return s.replace(/^[a-z]+:\/\//i, '').split('/')[0] || s;
+    }
+  }
+
   function paintApiProfiles() {
     var items = apiProfilesState.profiles;
     apiProfileList.innerHTML = '';
@@ -9327,16 +9405,27 @@
     var hasCurrent = items.some(function (p) { return p.id === apiProfilesState.current; });
     if (!hasCurrent) apiProfilesState.current = items[0].id;
     items.forEach(function (p) {
+      var isCurrent = p.id === apiProfilesState.current;
       var row = document.createElement('div');
-      row.className = 'api-profile';
+      row.className = 'api-profile' + (isCurrent ? ' on' : '') + (p.open ? ' open' : '');
+      // 收起态：名称 · host · 掩码 Key · 使用中徽章 · 删除图标；
+      // 展开态才出现地址/Key 输入。名称一直是 input，收起时透明、聚焦才显边框。
       row.innerHTML =
         '<div class="api-profile-head">'
-        + '<label class="api-current"><input type="radio" name="apiProfileCurrent"'
-        + (p.id === apiProfilesState.current ? ' checked' : '') + '> 使用中</label>'
+        + '<button class="api-toggle" type="button" aria-label="展开/收起" aria-expanded="'
+        + (p.open ? 'true' : 'false') + '">›</button>'
         + '<input class="api-name" type="text" maxlength="40" aria-label="名称/备注"'
         + ' placeholder="名称/备注" value="' + escapeHtml(p.name) + '">'
-        + '<button class="mini-btn api-remove" type="button">删除</button>'
+        + '<div class="api-sum">'
+        + '<span class="api-host">' + escapeHtml(apiHostOf(p.base_url)) + '</span>'
+        + '<span class="api-mask">' + escapeHtml(p.key_set ? p.masked : '未配置 Key') + '</span>'
         + '</div>'
+        + '<label class="api-current' + (isCurrent ? ' on' : '') + '">'
+        + '<input type="radio" name="apiProfileCurrent"'
+        + (isCurrent ? ' checked' : '') + '><span>使用中</span></label>'
+        + '<button class="api-remove" type="button" title="删除这组接口" aria-label="删除">✕</button>'
+        + '</div>'
+        + '<div class="api-detail">'
         + '<div class="field"><label>接口地址（base_url）</label>'
         + '<input class="api-base" type="text" autocomplete="off" placeholder="https://api.deepseek.com"'
         + ' value="' + escapeHtml(p.base_url) + '"></div>'
@@ -9345,9 +9434,25 @@
         + escapeHtml(p.key_set ? (p.masked + '（已配置，留空不改）') : 'sk-…') + '"></div>'
         + '<div class="field-hint">'
         + (p.key_set ? '已配置：' + escapeHtml(p.masked) : '还没有配置 Key')
+        + '</div>'
         + '</div>';
+      // 折叠只切 class，不重绘，避免把正在编辑的地址/Key 冲掉
+      row.querySelector('.api-toggle').addEventListener('click', function () {
+        p.open = !p.open;
+        row.classList.toggle('open', !!p.open);
+        row.querySelector('.api-toggle').setAttribute('aria-expanded', p.open ? 'true' : 'false');
+        if (!p.open) {
+          row.querySelector('.api-host').textContent =
+            apiHostOf(row.querySelector('.api-base').value);
+        }
+      });
       row.querySelector('.api-current input').addEventListener('change', function (ev) {
         if (!ev.target.checked) return;
+        // 徽章跟着切：多行里只有一条 on
+        Array.prototype.forEach.call(
+          apiProfileList.querySelectorAll('.api-current'),
+          function (el) { el.classList.remove('on'); });
+        row.querySelector('.api-current').classList.add('on');
         apiProfilesState.current = p.id;
         if (p.temp) {
           apiProfileHint.textContent = '这条还没保存，点「保存」后才会成为当前使用';
@@ -9358,6 +9463,7 @@
       row.querySelector('.api-remove').addEventListener('click', function () {
         var at = apiProfilesState.profiles.indexOf(p);
         if (at < 0) return;
+        if (!confirm('删除接口配置「' + (p.name || '未命名') + '」？点「保存」后生效，历史用量统计不会删除。')) return;
         apiProfilesState.profiles.splice(at, 1);
         if (apiProfilesState.current === p.id) {
           apiProfilesState.current = apiProfilesState.profiles.length
@@ -9415,8 +9521,9 @@
     }
     var wasEmpty = !apiProfilesState.profiles.length;
     apiProfilesState.profiles.push({
+      // 新增的这条默认展开：用户就是来填地址和 Key 的
       id: apiTempId(), name: '', base_url: DEFAULT_BASE_URL,
-      key_set: false, masked: '', temp: true
+      key_set: false, masked: '', temp: true, open: true
     });
     if (wasEmpty) apiProfilesState.current = apiProfilesState.profiles[0].id;
     paintApiProfiles();
