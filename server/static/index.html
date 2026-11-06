@@ -2655,9 +2655,9 @@
               <label>发音人</label>
               <div class="speaker-row" id="ttsSpeakerRow">
                 <button class="mini-btn speaker-btn" type="button" data-speaker="robot">机器人</button>
-                <button class="mini-btn speaker-btn" type="button" data-speaker="maid">女仆</button>
+                <button class="mini-btn speaker-btn" type="button" data-speaker="maid">月读酱</button>
               </div>
-              <div class="field-hint">机器人：Deck 自带语音；女仆：つくよみちゃん（本地模型）。</div>
+              <div class="field-hint">机器人：Deck 自带语音；月读酱：つくよみちゃん（本地模型）。</div>
             </div>
             <div class="field-hint" id="ttsEngineHint"></div>
             <div class="field-hint" id="ttsModelHint"></div>
@@ -9266,7 +9266,7 @@
 
   // ---------- 语音回复（「女仆人格」下面的语音回复卡） ----------
   // 只有两个发音人：robot = 机器人（Deck 自带），maid = 女仆（本地模型）
-  var TTS_SPEAKER_LABELS = { robot: '机器人', maid: '女仆' };
+  var TTS_SPEAKER_LABELS = { robot: '机器人', maid: '月读酱' };
 
   function setTtsSpeaker(value) {
     ttsSpeaker = value === 'robot' ? 'robot' : 'maid';
@@ -9287,7 +9287,7 @@
     // 只看「女仆是否就绪」：active_engine 是当前选中发音人实际用的引擎
     // （选机器人时它本来就是 espeak-ng），拿它判断会把装好的女仆误报成不可用
     if (ttsState && !ttsState.maid_ready) {
-      ttsEngineHint.textContent = '女仆语音暂时不可用，会先用机器人的声音朗读：'
+      ttsEngineHint.textContent = '月读酱语音暂时不可用，会先用机器人的声音朗读：'
         + (ttsState.maid_reason || ttsState.reason || '原因未知');
       ttsEngineHint.style.color = '#e06c75';
     } else {
@@ -9304,18 +9304,18 @@
     }
     var dl = ttsState.download || {};
     if (ttsState.model) {
-      ttsModelHint.textContent = '女仆语音模型已就绪：' + (ttsState.model_root || '');
+      ttsModelHint.textContent = '月读酱语音模型已就绪：' + (ttsState.model_root || '');
       ttsDownload.textContent = '已下载';
       ttsDownload.disabled = true;
       ttsDownloadHint.textContent = ttsState.loaded
         ? '模型已加载到内存' : '首次播报时加载，空闲后自动释放';
     } else if (!ttsState.runtime) {
-      ttsModelHint.textContent = '女仆语音暂不可用（本机没装模型运行时），可先选「机器人」。';
+      ttsModelHint.textContent = '月读酱语音暂不可用（本机没装模型运行时），可先选「机器人」。';
       ttsDownload.textContent = '下载模型';
       ttsDownload.disabled = true;
       ttsDownloadHint.textContent = '';
     } else if (dl.state === 'downloading' || dl.phase === 'cancelling') {
-      ttsModelHint.textContent = '正在下载女仆语音模型：' + (dl.percent || 0).toFixed(1) + '%'
+      ttsModelHint.textContent = '正在下载月读酱语音模型：' + (dl.percent || 0).toFixed(1) + '%'
         + (dl.file ? '（' + escapeHtml(dl.file) + '）' : '')
         + (dl.source_name ? '　来源：' + escapeHtml(dl.source_name) : '');
       ttsDownload.textContent = '取消下载';
@@ -9325,7 +9325,7 @@
           + (dl.total > 0 ? ' / ' + (dl.total / 1048576).toFixed(1) + ' MB' : '')
         : '';
     } else {
-      ttsModelHint.textContent = ttsState.reason || '女仆语音模型还没下载（约 38MB，默认走国内镜像）。';
+      ttsModelHint.textContent = ttsState.reason || '月读酱语音模型还没下载（约 38MB，默认走国内镜像）。';
       ttsDownload.textContent = '下载模型';
       ttsDownload.disabled = false;
       ttsDownloadHint.textContent = dl.state === 'error'

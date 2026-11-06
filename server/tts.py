@@ -47,7 +47,7 @@ SPEAKER_MAID = "maid"
 DEFAULT_SPEAKER = SPEAKER_MAID
 SPEAKERS = (
     {"id": SPEAKER_ROBOT, "label": "机器人"},
-    {"id": SPEAKER_MAID, "label": "女仆"},
+    {"id": SPEAKER_MAID, "label": "月读酱"},
 )
 SPEAKER_LABELS = {item["id"]: item["label"] for item in SPEAKERS}
 
@@ -870,7 +870,7 @@ class TTS:
 
     async def preview(self, text: str = ""):
         """试听：不受 enable 开关限制，用当前引擎念一句短的。"""
-        await self.speak(text or "你好，我是女仆。这样说话好听吗？", force=True)
+        await self.speak(text or "你好，我是月读酱。这样说话好听吗？", force=True)
         return {"engine": self._last_engine, "error": self._last_error}
 
     async def stop(self):
