@@ -1332,6 +1332,11 @@
     scrollbar-width: thin;
   }
   #ttsCredit .tts-credit-line { white-space: nowrap; line-height: 1.65; }
+  /* 语音回复卡的状态行：空着的时候不要占位。上一行的 field margin、空行的
+     min-height/margin 叠加，会在「发音人」说明和模型状态之间空出一大段 */
+  #ttsEngineHint:empty, #ttsModelHint:empty { display: none; }
+  /* 「已就绪」带完整模型路径，长串没有空格；窄屏按任意位置折行，别撑宽卡片 */
+  #ttsModelHint { overflow-wrap: anywhere; }
   /* 设置页里的下拉框：和输入框同一套外观，别再各写一份内联样式 */
   .cfg-select {
     width: 100%; padding: 12px 14px;
