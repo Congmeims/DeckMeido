@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import audit, authguard, audiomute, depcheck, devlog, i18n, memory, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, singleton, status_line, tools, updater
+from . import audit, authguard, audiomute, depcheck, devlog, i18n, memory, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, singleton, status_line, tools, updater, usage
 from .session_store import store
 from . import session_store
 from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, normalize_speaker,
@@ -3530,6 +3530,37 @@ async def api_logs_clear(req: LogClearRequest):
     audit.record("config", "logs_clear", "ok" if result["ok"] else "warn",
                  ip=_client_ip(request), detail=req.category)
     return result
+
+
+@app.get("/api/usage", dependencies=[Depends(require_auth)])
+async def api_usage(days: int = 14):
+    """本地用量统计（按日 / 按模型 / 按峰谷时段），不做网络请求"""
+    return await asyncio.to_thread(usage.snapshot, days, None, llm.base_url)
+
+
+@app.get("/api/usage/balance", dependencies=[Depends(require_auth)])
+async def api_usage_balance():
+    """查询官方余额；失败原因原样带回，前端不做静默处理"""
+    return await usage.fetch_balance(llm.base_url, llm.api_key)
+
+
+@app.get("/api/usage/export", dependencies=[Depends(require_auth)])
+async def api_usage_export():
+    """导出按日聚合的原始 JSON（浏览器直接下载）"""
+    data = await asyncio.to_thread(usage.export_data)
+    body = json.dumps(data, ensure_ascii=False, indent=1)
+    name = "deckmeido-usage-" + time.strftime("%Y%m%d-%H%M%S") + ".json"
+    return Response(content=body, media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.post("/api/usage/clear", dependencies=[Depends(require_auth)])
+async def api_usage_clear(request: Request):
+    """清空本地用量统计（不碰配置、会话与余额）"""
+    removed = await asyncio.to_thread(usage.clear)
+    audit.record("config", "usage_clear", "ok", ip=_client_ip(request),
+                 detail=str(removed))
+    return {"ok": True, "removed": removed}
 
 
 @app.post("/api/debug/render", dependencies=[Depends(require_auth)])
