@@ -243,6 +243,28 @@ def _as_str_list(value) -> tuple[str, ...]:
     return tuple(str(v).strip() for v in items if str(v).strip())
 
 
+_QQ_ID_SPLIT = re.compile(r"[,，、\s]+")
+
+
+def normalize_ids(value) -> list[str]:
+    """把数组或「逗号/顿号/换行分隔」的文本归一成去重后的 ID 列表
+
+    网页端现在提交数组；手写/旧调用可能还是字符串，两种都收。
+    """
+    if value is None:
+        return []
+    chunks = [value] if isinstance(value, str) else list(value)
+    ids: list[str] = []
+    seen: set[str] = set()
+    for chunk in chunks:
+        for part in _QQ_ID_SPLIT.split(str(chunk)):
+            part = part.strip()
+            if part and part not in seen:
+                seen.add(part)
+                ids.append(part)
+    return ids
+
+
 def parse_config(raw: dict | None) -> OneBotConfig:
     """把 config.toml 的 [qq] 段转成配置对象：字段缺失/类型不对都取默认值"""
     raw = raw if isinstance(raw, dict) else {}
@@ -297,6 +319,88 @@ def parse_config(raw: dict | None) -> OneBotConfig:
         ping_timeout=_as_float(raw.get("ping_timeout", DEFAULT_PING_TIMEOUT),
                                DEFAULT_PING_TIMEOUT),
     )
+
+
+# 网页设置页可改的高级项：保存时逐项校验边界，非法值拒绝并给出原因
+ADVANCED_FIELDS = (
+    "group_memo", "group_memo_size", "group_memo_ttl", "group_memo_max_chars",
+    "rate_per_minute", "group_rate_per_minute", "reply_chunk_chars",
+    "max_reply_chunks", "redact_words", "redact_mask",
+)
+RATE_LIMIT_MAX = 600                    # 条/分钟上限
+GROUP_MEMO_SIZE_MAX = 100               # 每群保留条数上限
+GROUP_MEMO_TTL_MAX = 86400.0            # 有效期上限（一天）
+GROUP_MEMO_CHARS_MIN = 50
+GROUP_MEMO_CHARS_MAX = 2000
+REPLY_CHUNK_MIN = 50
+REPLY_CHUNK_MAX = 2000
+REPLY_CHUNKS_MIN = 1
+REPLY_CHUNKS_MAX = 10
+REDACT_MASK_MAX = 20
+
+
+def normalize_advanced(raw: dict) -> tuple[dict, str | None]:
+    """校验网页提交的 QQ 高级设置，返回 (可落库的 updates, 错误说明)。
+
+    只处理 raw 里出现的键；任何一个值越界都整体拒绝（错误说明给用户看）。
+    0 在限频/条数/TTL 上都表示「不限/关闭」，与配置文件语义一致。
+    """
+    out: dict = {}
+
+    def take_int(key: str, lo: int, hi: int, label: str) -> str | None:
+        if key not in raw:
+            return None
+        try:
+            val = int(raw[key])
+        except (TypeError, ValueError):
+            return f"{label}必须是整数"
+        if val < lo or val > hi:
+            return f"{label}需在 {lo}~{hi} 之间（当前 {val}）"
+        out[key] = val
+        return None
+
+    if "group_memo" in raw:
+        out["group_memo"] = bool(raw["group_memo"])
+    for key, lo, hi, label in (
+            ("group_memo_size", 0, GROUP_MEMO_SIZE_MAX, "每群保留条数"),
+            ("group_memo_max_chars", GROUP_MEMO_CHARS_MIN, GROUP_MEMO_CHARS_MAX,
+             "注入片段字数上限"),
+            ("rate_per_minute", 0, RATE_LIMIT_MAX, "每人每分钟条数"),
+            ("group_rate_per_minute", 0, RATE_LIMIT_MAX, "每群每分钟条数"),
+            ("reply_chunk_chars", REPLY_CHUNK_MIN, REPLY_CHUNK_MAX, "每段字数"),
+            ("max_reply_chunks", REPLY_CHUNKS_MIN, REPLY_CHUNKS_MAX, "最多分段数")):
+        err = take_int(key, lo, hi, label)
+        if err:
+            return {}, err
+    if "group_memo_ttl" in raw:
+        try:
+            ttl = float(raw["group_memo_ttl"])
+        except (TypeError, ValueError):
+            return {}, "缓存有效期必须是数字（秒）"
+        if ttl < 0 or ttl > GROUP_MEMO_TTL_MAX:
+            return {}, (f"缓存有效期需在 0~{int(GROUP_MEMO_TTL_MAX)} 秒之间"
+                        f"（当前 {ttl:g}）")
+        out["group_memo_ttl"] = ttl
+    if "redact_words" in raw:
+        value = raw["redact_words"]
+        text = value if isinstance(value, str) else "\n".join(str(v) for v in (value or []))
+        parts = [p.strip() for p in re.split(r"[,\n，、;；]+", text) if p.strip()]
+        if len(parts) > redact.MAX_WORDS:
+            return {}, f"敏感词最多 {redact.MAX_WORDS} 条（当前 {len(parts)} 条）"
+        too_long = [p for p in parts if len(p) > redact.MAX_WORD_CHARS]
+        if too_long:
+            return {}, (f"单个敏感词最多 {redact.MAX_WORD_CHARS} 字："
+                        f"{too_long[0][:12]}…")
+        # 单字词按规则忽略；这里只落清洗后的结果
+        out["redact_words"] = list(redact.normalize_words(parts))
+    if "redact_mask" in raw:
+        mask = str(raw["redact_mask"] or "").strip()
+        if not mask:
+            return {}, "替换文字不能为空"
+        if len(mask) > REDACT_MASK_MAX:
+            return {}, f"替换文字最多 {REDACT_MASK_MAX} 字"
+        out["redact_mask"] = mask
+    return out, None
 
 
 def validate_config(cfg: OneBotConfig) -> str | None:

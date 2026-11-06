@@ -3023,8 +3023,8 @@ class DeviceIdRequest(BaseModel):
 class OneBotConfigUpdate(BaseModel):
     """远程连接页的 QQ 通道配置：只改界面上能编辑的字段
 
-    限流、单条长度、确认超时、心跳这些留在 [qq] 段里用默认值，
-    不铺成输入框。字段为 None 表示本次不改。
+    限流、分段、脱敏、群常识缓存的边界在 onebot.normalize_advanced 里
+    统一校验（非法值直接 400），字段为 None 表示本次不改。
     """
     enable: bool | None = None
     ws_url: str | None = None
@@ -3042,6 +3042,18 @@ class OneBotConfigUpdate(BaseModel):
     text_log_path: str | None = None
     auto_launch_after_install: bool | None = None
     auto_launch_wait_seconds: float | None = None
+    # 群常识只读缓存
+    group_memo: bool | None = None
+    group_memo_size: int | None = None
+    group_memo_ttl: float | None = None
+    group_memo_max_chars: int | None = None
+    # 限频 / 分段 / 输出脱敏
+    rate_per_minute: int | None = None
+    group_rate_per_minute: int | None = None
+    reply_chunk_chars: int | None = None
+    max_reply_chunks: int | None = None
+    redact_words: list[str] | str | None = None
+    redact_mask: str | None = None
 
 
 class AskTemplateUpdate(BaseModel):
@@ -6642,27 +6654,13 @@ async def api_qq_logs(limit: int = Query(default=100, ge=1, le=300)):
     return {"logs": onebot_client.logs(limit), "state": onebot_client.state()}
 
 
-_QQ_ID_SPLIT = re.compile(r"[,，、\s]+")
-
-
 def _qq_id_list(value) -> list[str]:
     """把数组或「逗号/换行分隔」的文本归一成去重后的 QQ 号列表"""
-    if value is None:
-        return []
-    chunks = [value] if isinstance(value, str) else list(value)
-    ids: list[str] = []
-    seen: set[str] = set()
-    for chunk in chunks:
-        for part in _QQ_ID_SPLIT.split(str(chunk)):
-            part = part.strip()
-            if part and part not in seen:
-                seen.add(part)
-                ids.append(part)
-    return ids
+    return onebot.normalize_ids(value)
 
 
 def _qq_public_config() -> dict:
-    """远程连接页要回填的可编辑字段；限流/超时只读展示，不给输入框"""
+    """远程连接页要回填的字段；超时/心跳这类只在配置文件里调"""
     cfg = onebot.parse_config(CFG.get("qq") or {})
     return {
         "enable": cfg.enable,
@@ -6684,8 +6682,16 @@ def _qq_public_config() -> dict:
         "auto_launch_wait_seconds": cfg.auto_launch_wait_seconds,
         "archive_dir_default": str(onebot.archive_root("")),
         "rate_per_minute": cfg.rate_per_minute,
+        "group_rate_per_minute": cfg.group_rate_per_minute,
         "max_message_chars": cfg.max_message_chars,
         "reply_chunk_chars": cfg.reply_chunk_chars,
+        "max_reply_chunks": cfg.max_reply_chunks,
+        "group_memo": cfg.group_memo,
+        "group_memo_size": cfg.group_memo_size,
+        "group_memo_ttl": cfg.group_memo_ttl,
+        "group_memo_max_chars": cfg.group_memo_max_chars,
+        "redact_words": list(cfg.redact_words),
+        "redact_mask": cfg.redact_mask,
         "confirm_timeout": cfg.confirm_timeout,
         "prefix": onebot.prefix_for(_qq_nickname()),
     }
@@ -6732,6 +6738,13 @@ async def api_save_qq_config(req: OneBotConfigUpdate):
     if req.auto_launch_wait_seconds is not None:
         updates["auto_launch_wait_seconds"] = max(
             0.0, float(req.auto_launch_wait_seconds))
+    # 高级项（群常识缓存 / 限频 / 分段 / 脱敏）统一走边界校验
+    advanced_raw = {name: getattr(req, name) for name in onebot.ADVANCED_FIELDS
+                    if getattr(req, name) is not None}
+    advanced, err = onebot.normalize_advanced(advanced_raw)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    updates.update(advanced)
     if updates:
         save_config({"qq": updates})
         # save_config 会经 apply_config 热更新配置；这里再等一次重连落定，

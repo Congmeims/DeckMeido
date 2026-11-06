@@ -1381,6 +1381,39 @@
   .qq-guest-meta { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
   .qq-guest-meta .field-hint { margin-top: 0; flex: 1; min-width: 0; }
   #qqGuestCount { flex: 0 0 auto; }
+  /* Onebot 高级设置分组：细分割线 + 两列数字项，窄视口收成一列 */
+  .qq-group { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--ri-line); }
+  .qq-group-title {
+    font-size: 12px; font-weight: 600; letter-spacing: .3px;
+    opacity: .8; margin-bottom: 10px;
+  }
+  .qq-num-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 16px;
+  }
+  .qq-num-grid .field { min-width: 0; }
+  @media (max-width: 720px) {
+    .qq-num-grid { grid-template-columns: minmax(0, 1fr); }
+  }
+  /* 逐条添加的列表：输入框 + 添加按钮，条目自动换行、区域限高滚动 */
+  .chip-add { display: flex; gap: 8px; align-items: stretch; }
+  .chip-add input { flex: 1; min-width: 0; }
+  .chip-list {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
+    max-height: 120px; overflow-y: auto; overflow-x: hidden;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    max-width: 100%; padding: 3px 4px 3px 10px; border-radius: 999px;
+    border: 1px solid var(--ri-line); background: var(--ri-bg); color: var(--ri-fg);
+    font-size: 12.5px; line-height: 1.6; word-break: break-all;
+  }
+  .chip button {
+    flex: none; border: 0; background: transparent; color: inherit; opacity: .65;
+    font-size: 14px; line-height: 1; padding: 2px 4px; cursor: pointer;
+  }
+  .chip button:hover { opacity: 1; color: #e05555; }
+  .chip-empty { font-size: 12px; color: var(--muted); }
   /* QQ 事件日志：固定高度滚动，级别色区分 */
   .qq-logs {
     margin-top: 12px; border: 1px solid var(--ri-line); border-radius: 10px;
@@ -2894,14 +2927,20 @@
               </div>
             </div>
             <div class="field">
-              <label>管理员 QQ（逗号或换行分隔，只有这些号能下指令）</label>
-              <textarea id="cfgQqAdmins" rows="3" placeholder="10001, 10002"
-                        spellcheck="false"></textarea>
+              <label for="cfgQqAdmins">主人 QQ</label>
+              <input id="cfgQqAdmins" type="text" inputmode="numeric" maxlength="15"
+                     placeholder="例如 10001" autocomplete="off" spellcheck="false">
+              <div class="field-hint" id="qqAdminHint">只有这个号能下指令。</div>
             </div>
             <div class="field">
-              <label>允许的群号（逗号或换行分隔，留空 = 不处理任何群消息）</label>
-              <textarea id="cfgQqGroups" rows="3" placeholder="20001"
-                        spellcheck="false"></textarea>
+              <label>允许的群号</label>
+              <div class="chip-add">
+                <input id="cfgQqGroupInput" type="text" inputmode="numeric" maxlength="15"
+                       placeholder="输入群号后点添加" autocomplete="off" spellcheck="false">
+                <button id="cfgQqGroupAdd" class="mini-btn" type="button">添加</button>
+              </div>
+              <div id="qqGroupChips" class="chip-list"></div>
+              <div class="field-hint" id="qqGroupHint"></div>
               <div class="field-hint">
                 群里必须 @ 机器人才处理。普通群成员只能闲聊；管理员可下指令（危险操作仍要确认）。
                 直接发 /shot、/status、/cancel 或「截个屏」「在吗」「停一下」都算。
@@ -2913,6 +2952,93 @@
                 <input id="cfgQqGroupAdmin" type="checkbox">
                 <span class="slider"></span>
               </label>
+            </div>
+
+            <div class="qq-group">
+              <div class="qq-group-title">群常识缓存</div>
+              <div class="field field-row">
+                <label style="margin:0">记录白名单群的最近消息（group_memo）</label>
+                <label class="switch">
+                  <input id="cfgQqMemo" type="checkbox">
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="qq-num-grid">
+                <div class="field">
+                  <label>每群保留条数（group_memo_size）</label>
+                  <input id="cfgQqMemoSize" type="number" min="0" max="100" step="1"
+                         value="20" spellcheck="false">
+                </div>
+                <div class="field">
+                  <label>有效期秒数（group_memo_ttl）</label>
+                  <input id="cfgQqMemoTtl" type="number" min="0" max="86400" step="30"
+                         value="300" spellcheck="false">
+                </div>
+                <div class="field">
+                  <label>注入字数上限（group_memo_max_chars）</label>
+                  <input id="cfgQqMemoChars" type="number" min="50" max="2000" step="10"
+                         value="400" spellcheck="false">
+                </div>
+              </div>
+              <div class="field-hint">
+                只在白名单群里记录，按群隔离；片段只给群友轮次做参考，不进会话历史、不写长期记忆。
+                条数或有效期填 0 = 关闭。管理员可在群里发 /memo 清除本群缓存。
+              </div>
+            </div>
+
+            <div class="qq-group">
+              <div class="qq-group-title">限频</div>
+              <div class="qq-num-grid">
+                <div class="field">
+                  <label>每人每分钟条数（rate_per_minute）</label>
+                  <input id="cfgQqRate" type="number" min="0" max="600" step="1"
+                         value="6" spellcheck="false">
+                </div>
+                <div class="field">
+                  <label>每群每分钟条数（group_rate_per_minute）</label>
+                  <input id="cfgQqGroupRate" type="number" min="0" max="600" step="1"
+                         value="10" spellcheck="false">
+                </div>
+              </div>
+              <div class="field-hint">0 = 不限。被限流时只发一次简短提示，不刷屏。</div>
+            </div>
+
+            <div class="qq-group">
+              <div class="qq-group-title">长回复分段</div>
+              <div class="qq-num-grid">
+                <div class="field">
+                  <label>每段字数（reply_chunk_chars）</label>
+                  <input id="cfgQqChunkChars" type="number" min="50" max="2000" step="10"
+                         value="300" spellcheck="false">
+                </div>
+                <div class="field">
+                  <label>最多段数（max_reply_chunks）</label>
+                  <input id="cfgQqChunks" type="number" min="1" max="10" step="1"
+                         value="3" spellcheck="false">
+                </div>
+              </div>
+            </div>
+
+            <div class="qq-group">
+              <div class="qq-group-title">输出脱敏</div>
+              <div class="field">
+                <label>替换词表（redact_words）</label>
+                <div class="chip-add">
+                  <input id="cfgQqRedactInput" type="text" maxlength="30"
+                         placeholder="输入敏感词后点添加" autocomplete="off" spellcheck="false">
+                  <button id="cfgQqRedactAdd" class="mini-btn" type="button">添加</button>
+                </div>
+                <div id="qqRedactChips" class="chip-list"></div>
+                <div class="field-hint" id="qqRedactHint"></div>
+                <div class="field-hint">
+                  命中后替换成下方文字；单字词会被忽略，最多 100 条，单个词最多 30 字。
+                </div>
+              </div>
+              <div class="field">
+                <label>替换成（redact_mask）</label>
+                <input id="cfgQqRedactMask" type="text" maxlength="20" value="***"
+                       placeholder="***" spellcheck="false">
+              </div>
             </div>
             <div class="field field-row">
               <label style="margin:0">收图 / 存图（allow_image）</label>
@@ -8190,7 +8316,28 @@
   var cfgQqUrl = document.getElementById('cfgQqUrl');
   var cfgQqToken = document.getElementById('cfgQqToken');
   var cfgQqAdmins = document.getElementById('cfgQqAdmins');
-  var cfgQqGroups = document.getElementById('cfgQqGroups');
+  var qqAdminHint = document.getElementById('qqAdminHint');
+  var cfgQqGroupInput = document.getElementById('cfgQqGroupInput');
+  var cfgQqGroupAdd = document.getElementById('cfgQqGroupAdd');
+  var qqGroupChipsBox = document.getElementById('qqGroupChips');
+  var qqGroupHint = document.getElementById('qqGroupHint');
+  var cfgQqRedactInput = document.getElementById('cfgQqRedactInput');
+  var cfgQqRedactAdd = document.getElementById('cfgQqRedactAdd');
+  var qqRedactChipsBox = document.getElementById('qqRedactChips');
+  var qqRedactHint = document.getElementById('qqRedactHint');
+  var cfgQqMemo = document.getElementById('cfgQqMemo');
+  var cfgQqMemoSize = document.getElementById('cfgQqMemoSize');
+  var cfgQqMemoTtl = document.getElementById('cfgQqMemoTtl');
+  var cfgQqMemoChars = document.getElementById('cfgQqMemoChars');
+  var cfgQqRate = document.getElementById('cfgQqRate');
+  var cfgQqGroupRate = document.getElementById('cfgQqGroupRate');
+  var cfgQqChunkChars = document.getElementById('cfgQqChunkChars');
+  var cfgQqChunks = document.getElementById('cfgQqChunks');
+  var cfgQqRedactMask = document.getElementById('cfgQqRedactMask');
+  // 被保留但不在界面上的其余管理员号（老配置可能有多个）
+  var qqAdminExtras = [];
+  var qqGroups = null;
+  var qqRedactWords = null;
   var cfgQqGroupAdmin = document.getElementById('cfgQqGroupAdmin');
   var cfgQqAllowImage = document.getElementById('cfgQqAllowImage');
   var cfgQqMaxImage = document.getElementById('cfgQqMaxImage');
@@ -9368,9 +9515,113 @@
     stopped: '已停止'
   };
 
-  // 逗号（中英文）/顿号/空白/换行都当作分隔符，和后端 _qq_id_list 一致
-  function qqSplitList(text) {
-    return String(text || '').split(/[,，、\s]+/).filter(function (v) { return v; });
+  // 数字输入框：空值/非法值回落到默认值（后端还有一层边界校验）
+  function qqNum(el, fallback) {
+    var raw = el && el.value !== '' ? Number(el.value) : NaN;
+    return isNaN(raw) ? fallback : raw;
+  }
+
+  // 逐条添加的列表控件：校验 → 去重 → 渲染 chip，删除走事件委托
+  function makeChipList(opts) {
+    var items = [];
+    function render() {
+      if (!opts.box) return;
+      if (!items.length) {
+        opts.box.innerHTML = '<span class="chip-empty">'
+          + escapeHtml(opts.empty || '') + '</span>';
+        return;
+      }
+      opts.box.innerHTML = items.map(function (value, i) {
+        return '<span class="chip">' + escapeHtml(value)
+          + '<button type="button" data-chip-index="' + i
+          + '" aria-label="删除">×</button></span>';
+      }).join('');
+    }
+    function add() {
+      if (!opts.input) return;
+      var raw = String(opts.input.value || '').trim();
+      var err = opts.check(raw, items);
+      if (err) {
+        if (opts.hint) opts.hint.textContent = err;
+        return;
+      }
+      items.push(raw);
+      opts.input.value = '';
+      if (opts.hint) opts.hint.textContent = '';
+      render();
+    }
+    if (opts.addBtn) opts.addBtn.addEventListener('click', add);
+    if (opts.input) {
+      opts.input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); add(); }
+      });
+      opts.input.addEventListener('input', function () {
+        if (opts.hint) opts.hint.textContent = '';
+      });
+    }
+    if (opts.box) {
+      opts.box.addEventListener('click', function (e) {
+        var btn = (e.target && e.target.closest)
+          ? e.target.closest('button[data-chip-index]') : null;
+        if (!btn) return;
+        var idx = Number(btn.getAttribute('data-chip-index'));
+        if (idx >= 0) { items.splice(idx, 1); render(); }
+      });
+    }
+    render();
+    return {
+      get: function () { return items.slice(); },
+      set: function (values) { items = (values || []).slice(); render(); }
+    };
+  }
+
+  function qqGroupIdError(value, items) {
+    if (!/^\d{5,15}$/.test(value)) return '群号应为 5~15 位数字';
+    if (items.indexOf(value) >= 0) return '这个群号已经在列表里了';
+    return '';
+  }
+
+  function qqRedactWordError(value, items) {
+    if (value.length < 2) return '单字词会被忽略，请至少输入 2 个字';
+    if (value.length > 30) return '单个敏感词最多 30 字';
+    if (items.indexOf(value) >= 0) return '这个词已经在列表里了';
+    return '';
+  }
+
+  qqGroups = makeChipList({
+    input: cfgQqGroupInput, addBtn: cfgQqGroupAdd, box: qqGroupChipsBox,
+    hint: qqGroupHint, empty: '未添加群号，群里指令不生效', check: qqGroupIdError
+  });
+  qqRedactWords = makeChipList({
+    input: cfgQqRedactInput, addBtn: cfgQqRedactAdd, box: qqRedactChipsBox,
+    hint: qqRedactHint, empty: '未添加敏感词，输出不做替换', check: qqRedactWordError
+  });
+
+  // 主人 QQ：只允许一个号；老配置里多出来的号存在 qqAdminExtras，保存时原样带回
+  function qqAdminError(value) {
+    if (!value) return '';
+    if (!/^\d{5,15}$/.test(value)) return '主人 QQ 应为 5~15 位数字';
+    return '';
+  }
+
+  function renderAdminHint() {
+    if (!qqAdminHint) return;
+    var typed = cfgQqAdmins ? cfgQqAdmins.value.trim() : '';
+    var err = qqAdminError(typed);
+    if (err) {
+      qqAdminHint.textContent = err;
+      qqAdminHint.style.color = '#e05555';
+      return;
+    }
+    qqAdminHint.style.color = '';
+    qqAdminHint.textContent = qqAdminExtras.length
+      ? ('只有这个号能下指令；检测到 ' + qqAdminExtras.length
+         + ' 个旧的管理员号，已保留，保存时不会丢弃。')
+      : '只有这个号能下指令。';
+  }
+
+  if (cfgQqAdmins) {
+    cfgQqAdmins.addEventListener('input', renderAdminHint);
   }
 
   function qqFmtDuration(sec) {
@@ -9529,8 +9780,11 @@
       cfgQqToken.value = c.access_token || '';
       cfgQqToken.type = 'password';
       qqTokenReveal.textContent = '显示';
-      cfgQqAdmins.value = (c.admin_qq || []).join('\n');
-      cfgQqGroups.value = (c.allow_groups || []).join('\n');
+      var admins = c.admin_qq || [];
+      cfgQqAdmins.value = admins[0] || '';
+      qqAdminExtras = admins.slice(1);
+      renderAdminHint();
+      if (qqGroups) qqGroups.set(c.allow_groups || []);
       if (cfgQqGroupAdmin) cfgQqGroupAdmin.checked = !!c.group_admin_commands;
       if (cfgQqAllowImage) cfgQqAllowImage.checked = !!c.allow_image;
       if (cfgQqMaxImage) cfgQqMaxImage.value = c.max_image_mb != null ? c.max_image_mb : 8;
@@ -9541,6 +9795,23 @@
       if (cfgQqAutoLaunch) cfgQqAutoLaunch.checked = c.auto_launch_after_install !== false;
       if (cfgQqAutoLaunchWait) cfgQqAutoLaunchWait.value =
         c.auto_launch_wait_seconds != null ? c.auto_launch_wait_seconds : 6;
+      // 高级项：群常识缓存 / 限频 / 分段 / 脱敏
+      if (cfgQqMemo) cfgQqMemo.checked = !!c.group_memo;
+      if (cfgQqMemoSize) cfgQqMemoSize.value =
+        c.group_memo_size != null ? c.group_memo_size : 20;
+      if (cfgQqMemoTtl) cfgQqMemoTtl.value =
+        c.group_memo_ttl != null ? c.group_memo_ttl : 300;
+      if (cfgQqMemoChars) cfgQqMemoChars.value =
+        c.group_memo_max_chars != null ? c.group_memo_max_chars : 400;
+      if (cfgQqRate) cfgQqRate.value = c.rate_per_minute != null ? c.rate_per_minute : 6;
+      if (cfgQqGroupRate) cfgQqGroupRate.value =
+        c.group_rate_per_minute != null ? c.group_rate_per_minute : 10;
+      if (cfgQqChunkChars) cfgQqChunkChars.value =
+        c.reply_chunk_chars != null ? c.reply_chunk_chars : 300;
+      if (cfgQqChunks) cfgQqChunks.value =
+        c.max_reply_chunks != null ? c.max_reply_chunks : 3;
+      if (qqRedactWords) qqRedactWords.set(c.redact_words || []);
+      if (cfgQqRedactMask) cfgQqRedactMask.value = c.redact_mask || '***';
       // 群友提示词：默认原文原样回填（{name} 不预先替换）。
       // 配置里存空串表示「用内置默认」，这里直接把后端下发的默认原文摆进
       // 输入框，首次打开看到的就是实际会生效的内容，而不是一个空框
@@ -9586,12 +9857,24 @@
     // 「恢复默认」填进来的原文不能当自定义值落库：内容与默认一致就存空串，
     // 后端才会按「用内置默认」处理（之后内置文案升级也能跟着变）
     var guestValue = guestText === qqGuestDefault.trim() ? '' : guestText;
+    var adminValue = cfgQqAdmins ? cfgQqAdmins.value.trim() : '';
+    var adminErr = qqAdminError(adminValue);
+    if (adminErr) {
+      qqHint.textContent = adminErr;
+      renderAdminHint();
+      return;
+    }
+    // 主号 + 老配置里保留的其余号（去重）：界面只编辑一个，但绝不静默丢数据
+    var adminList = adminValue ? [adminValue] : [];
+    qqAdminExtras.forEach(function (id) {
+      if (id !== adminValue && adminList.indexOf(id) < 0) adminList.push(id);
+    });
     var payload = {
       enable: !!cfgQqEnable.checked,
       ws_url: cfgQqUrl.value.trim(),
       access_token: cfgQqToken.value.trim(),
-      admin_qq: qqSplitList(cfgQqAdmins.value),
-      allow_groups: qqSplitList(cfgQqGroups.value),
+      admin_qq: adminList,
+      allow_groups: qqGroups ? qqGroups.get() : [],
       group_admin_commands: cfgQqGroupAdmin ? !!cfgQqGroupAdmin.checked : true,
       guest_prompt: guestValue,
       allow_image: cfgQqAllowImage ? !!cfgQqAllowImage.checked : false,
@@ -9602,7 +9885,17 @@
       text_log_path: cfgQqTextLog ? cfgQqTextLog.value.trim() : '',
       auto_launch_after_install: cfgQqAutoLaunch ? !!cfgQqAutoLaunch.checked : true,
       auto_launch_wait_seconds: (cfgQqAutoLaunchWait && cfgQqAutoLaunchWait.value !== '')
-        ? Number(cfgQqAutoLaunchWait.value) : 6
+        ? Number(cfgQqAutoLaunchWait.value) : 6,
+      group_memo: cfgQqMemo ? !!cfgQqMemo.checked : false,
+      group_memo_size: qqNum(cfgQqMemoSize, 20),
+      group_memo_ttl: qqNum(cfgQqMemoTtl, 300),
+      group_memo_max_chars: qqNum(cfgQqMemoChars, 400),
+      rate_per_minute: qqNum(cfgQqRate, 6),
+      group_rate_per_minute: qqNum(cfgQqGroupRate, 10),
+      reply_chunk_chars: qqNum(cfgQqChunkChars, 300),
+      max_reply_chunks: qqNum(cfgQqChunks, 3),
+      redact_words: qqRedactWords ? qqRedactWords.get() : [],
+      redact_mask: cfgQqRedactMask ? cfgQqRedactMask.value.trim() : '***'
     };
     return memFetch('/api/qq/config', {
       method: 'POST',
@@ -9617,6 +9910,13 @@
         updateQqGuestCount();
         renderQqGuestHint();
         qqPrefixHint.textContent = qqPrefixText(res.config.prefix, qqGuestSaved);
+        // 以服务端归一后的结果回填，避免前端显示与真实配置不一致
+        var savedAdmins = res.config.admin_qq || [];
+        cfgQqAdmins.value = savedAdmins[0] || '';
+        qqAdminExtras = savedAdmins.slice(1);
+        renderAdminHint();
+        if (qqGroups) qqGroups.set(res.config.allow_groups || []);
+        if (qqRedactWords) qqRedactWords.set(res.config.redact_words || []);
       }
       if (res && res.state) renderQqStatus(res.state);
       else return loadQqStatus();

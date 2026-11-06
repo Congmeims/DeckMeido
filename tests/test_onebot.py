@@ -218,6 +218,72 @@ class ConfigTest(unittest.TestCase):
                          "wss://example.com/ws")
 
 
+class AdvancedConfigTest(unittest.TestCase):
+    """网页设置页的高级项：归一、边界校验、老配置兼容"""
+
+    def test_normalize_ids_accepts_list_and_text(self):
+        self.assertEqual(onebot.normalize_ids("10001"), ["10001"])
+        self.assertEqual(onebot.normalize_ids("10001, 10002\n10001"),
+                         ["10001", "10002"])
+        self.assertEqual(onebot.normalize_ids(["20001", "20002,20001"]),
+                         ["20001", "20002"])
+        self.assertEqual(onebot.normalize_ids(None), [])
+
+    def test_multi_admin_old_config_kept_single_write_is_list(self):
+        multi = onebot.parse_config({"admin_qq": ["10001", "10002"]})
+        self.assertEqual(multi.admin_qq, ("10001", "10002"))
+        single = onebot.parse_config({"admin_qq": onebot.normalize_ids("10001")})
+        self.assertEqual(single.admin_qq, ("10001",))
+
+    def test_advanced_round_trip(self):
+        updates, err = onebot.normalize_advanced({
+            "group_memo": True, "group_memo_size": 20, "group_memo_ttl": 300,
+            "group_memo_max_chars": 400, "rate_per_minute": 6,
+            "group_rate_per_minute": 10, "reply_chunk_chars": 300,
+            "max_reply_chunks": 3,
+            "redact_words": ["密钥", "口令", "密"], "redact_mask": "***",
+        })
+        self.assertIsNone(err)
+        cfg = onebot.parse_config(updates)
+        self.assertTrue(cfg.group_memo)
+        self.assertEqual(cfg.group_memo_size, 20)
+        self.assertEqual(cfg.group_memo_ttl, 300.0)
+        self.assertEqual(cfg.group_memo_max_chars, 400)
+        self.assertEqual(cfg.rate_per_minute, 6)
+        self.assertEqual(cfg.group_rate_per_minute, 10)
+        self.assertEqual(cfg.reply_chunk_chars, 300)
+        self.assertEqual(cfg.max_reply_chunks, 3)
+        # 单字词按规则忽略，不落库
+        self.assertEqual(cfg.redact_words, ("密钥", "口令"))
+        self.assertEqual(cfg.redact_mask, "***")
+
+    def test_redact_words_accepts_text(self):
+        updates, err = onebot.normalize_advanced({"redact_words": "密钥，口令\n密"})
+        self.assertIsNone(err)
+        self.assertEqual(updates["redact_words"], ["密钥", "口令"])
+
+    def test_invalid_values_rejected(self):
+        cases = (
+            ({"group_memo_size": 101}, "0~100"),
+            ({"group_memo_ttl": -1}, "0~86400"),
+            ({"group_memo_ttl": "abc"}, "数字"),
+            ({"group_memo_max_chars": 10}, "50~2000"),
+            ({"rate_per_minute": 601}, "0~600"),
+            ({"group_rate_per_minute": -2}, "0~600"),
+            ({"reply_chunk_chars": 10}, "50~2000"),
+            ({"max_reply_chunks": 0}, "1~10"),
+            ({"redact_words": ["词"] * 101}, "100 条"),
+            ({"redact_words": ["长" * 31]}, "30 字"),
+            ({"redact_mask": ""}, "不能为空"),
+            ({"redact_mask": "x" * 21}, "20 字"),
+        )
+        for raw, hint in cases:
+            out, err = onebot.normalize_advanced(raw)
+            self.assertTrue(err, raw)
+            self.assertIn(hint, err)
+            self.assertEqual(out, {})
+
+
 class BackoffTest(unittest.TestCase):
     def test_growth_and_cap(self):
         b = onebot.Backoff(base=1, cap=60, factor=2, jitter=0)
