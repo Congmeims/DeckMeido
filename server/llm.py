@@ -4,11 +4,12 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sys
 import time
 
 import httpx
 
-from . import devlog
+from . import devlog, usage as usage_stats
 
 # 图片按 base64 内联进请求体，一张图就能到千万字符级。这里在发车前量一次
 # 请求体大小并记下来：出问题时能分清「体积大」和「真的花掉这么多 token」，
@@ -388,6 +389,12 @@ class LLMClient:
         if usage:
             msg["usage"] = usage
         _log_usage(usage)
+        # 本地用量统计（按日/按模型/按峰谷时段累计）；写盘失败绝不能打断对话
+        if usage:
+            try:
+                usage_stats.record(usage, model=self.model, base_url=self.base_url)
+            except Exception as exc:
+                print(f"[DeckMeido] 记录用量失败：{exc}", file=sys.stderr, flush=True)
         devlog.log(
             "llm.response",
             chars=len(msg.get("content") or ""),
