@@ -12,7 +12,6 @@
 #   bash install.sh check          自检：逐个实测控制类控件是否真的能用
 #   bash install.sh uninstall     卸载（删代码与依赖，保留人设/记忆，下次安装自动恢复）
 #   bash install.sh uninstall --purge   额外删安装器创建的配置备份（userdata/ 仍保留）
-#   bash install.sh service       渲染 systemd 用户单元（只生成不启用，后端由客户端拉起）
 #   bash install.sh from-mirror   从国内镜像站下载最新版并安装（GitHub 不通时用）
 #   bash install.sh speedtest     只测各 pip 源的下载速率，挑最快的那个
 #
@@ -67,8 +66,6 @@ MIRROR="${DECKMEIDO_MIRROR:-https://meido.meagames.cn/deckmeido}"
 MIRROR="${MIRROR%/}"
 GITHUB_REPO="Congmeims/deckmeido"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/$APP"
-UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-UNIT="deckmeido.service"
 DESKTOP_DIR="$HOME/.local/share/applications"
 # 真正的「桌面」目录：可能是 Desktop 也可能是 桌面，取 xdg 配置，没配置就默认 Desktop
 DESKTOP_FOLDER="$(command -v xdg-user-dir >/dev/null 2>&1 && xdg-user-dir DESKTOP 2>/dev/null || true)"
@@ -83,7 +80,7 @@ CONFIG_MANIFEST="$CONFIG_DIR/.deckmeido-config-manifest"
 
 # ---------- 用户数据根（userdata/） ----------
 # 所有用户可修改的数据统一放在数据根下：默认 $INSTALL_DIR/userdata，可用
-# DECKMEIDO_DATA_DIR 显式覆盖（服务单元也按这个变量注入）。卸载永远整目录
+# DECKMEIDO_DATA_DIR 显式覆盖（客户端 / 插件拉起后端时也读这个变量）。卸载永远整目录
 # 保留，安装清单里也不会出现这里面的任何路径。
 DATA_DIR="${DECKMEIDO_DATA_DIR:-$INSTALL_DIR/userdata}"
 case "$DATA_DIR" in
@@ -92,6 +89,46 @@ case "$DATA_DIR" in
   *) DATA_DIR="$PWD/$DATA_DIR" ;;
 esac
 DATA_CONFIG="$DATA_DIR/config.toml"
+
+# 端口解析：已有配置优先，没有配置才用 DECKMEIDO_PORT，最后是 18765。
+# 升级/重装时用户可能已经在 config.toml 或设置页里改过端口，预检、卸载都
+# 必须跟着这个值，不能一律拿环境变量覆盖掉。
+config_port() {
+  local cfg="${1:-}"
+  [ -f "$cfg" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 - "$cfg" <<'PY' 2>/dev/null || return 1
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as f:
+        port = int((tomllib.load(f).get("server") or {}).get("port"))
+except Exception:
+    raise SystemExit(1)
+if not 1024 <= port <= 65535:
+    raise SystemExit(1)
+print(port)
+PY
+}
+_existing_port="$(config_port "$DATA_CONFIG" || true)"
+if [ -n "$_existing_port" ]; then
+  PORT="$_existing_port"
+fi
+
+# 局域网开关：读已有配置的 [server].lan_enable（默认 false，只绑回环）
+config_lan_enable() {
+  local cfg="${1:-}"
+  [ -f "$cfg" ] || { printf '0'; return 0; }
+  command -v python3 >/dev/null 2>&1 || { printf '0'; return 0; }
+  python3 - "$cfg" <<'PY' 2>/dev/null || printf '0'
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as f:
+        print("1" if (tomllib.load(f).get("server") or {}).get("lan_enable") else "0")
+except Exception:
+    print("0")
+PY
+}
+
 DATA_PERSONA_DIR="$DATA_DIR/persona"
 DATA_PERSONA="$DATA_PERSONA_DIR/meidosoul.json"
 DATA_MEMORY="$DATA_DIR/memory.json"
@@ -202,7 +239,7 @@ remove_tree() {
 # 清单行格式：
 #   server/xxx            安装目录内的单个文件（相对路径）
 #   dir:client            安装目录内的整目录（安装器完全管理的部分）
-#   ext:/abs/path         安装目录之外、由安装器创建的路径（服务单元/桌面项/插件）
+#   ext:/abs/path         安装目录之外、由安装器创建的路径（桌面项/插件）
 # 清单外的任何条目都不动；userdata/ 与标记文件永远不会出现在清单里。
 
 # 相对条目校验：拒绝空、绝对路径、.. 逃逸，以及 userdata 与标记文件本身
@@ -220,7 +257,7 @@ manifest_rel_ok() {
 ext_path_allowed() {
   local p="${1%/}" root
   case "$p" in
-    "${UNIT_DIR%/}/$UNIT"|"${DESKTOP_DIR%/}/DeckMeido.desktop"|"${DESKTOP_FOLDER%/}/DeckMeido.desktop")
+    "${DESKTOP_DIR%/}/DeckMeido.desktop"|"${DESKTOP_FOLDER%/}/DeckMeido.desktop")
       return 0 ;;
   esac
   for root in "${DECKY_PLUGINS_DIR:-}" "$HOME/homebrew/plugins"; do
@@ -375,7 +412,7 @@ cleanup_empty_manifest_dirs() {
 #   · 整目录管理的：.venv client assets deploy tools plugin
 #   · server 逐文件列出，跳过日志与运行时缓存
 #   · 顶层文件：requirements、README、install.sh、VERSION、uninstall.sh 等
-#   · 安装目录之外的固定路径（服务单元、桌面项、Decky 插件）
+#   · 安装目录之外的固定路径（桌面项、Decky 插件）
 write_install_records() {
   [ -d "$INSTALL_DIR" ] || return 0
   local ver tmp="$INSTALL_MANIFEST.tmp" it rel root
@@ -406,7 +443,6 @@ write_install_records() {
   for it in requirements.txt requirements-gui.txt requirements-stt.txt README.md install.sh RELEASE-NOTES.md VERSION uninstall.sh pip-install.log; do
     [ -f "$INSTALL_DIR/$it" ] && printf '%s\n' "$it" >> "$tmp"
   done
-  [ -f "$UNIT_DIR/$UNIT" ] && printf 'ext:%s\n' "$UNIT_DIR/$UNIT" >> "$tmp"
   [ -f "$DESKTOP_DIR/DeckMeido.desktop" ] && printf 'ext:%s\n' "$DESKTOP_DIR/DeckMeido.desktop" >> "$tmp"
   [ -f "$DESKTOP_FOLDER/DeckMeido.desktop" ] && printf 'ext:%s\n' "$DESKTOP_FOLDER/DeckMeido.desktop" >> "$tmp"
   # Decky 插件目录可能落在 DECKY_PLUGINS_DIR，也可能就是默认的
@@ -586,7 +622,6 @@ PY
   if ! python3 -c "import venv, ensurepip" >/dev/null 2>&1; then
     die "缺少 python3-venv，请先安装（SteamOS: sudo steamos-readonly disable && sudo pacman -S python）"
   fi
-  need_cmd systemctl || warn "没有 systemctl，将不会注册开机自启服务"
 }
 
 # 装前预检：提前把「装到一半才炸」的情况暴露出来，而不是等 venv 建好、
@@ -1637,11 +1672,40 @@ ensure_data_layout() {
   chmod 700 "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" "$DATA_LOGS" "$DATA_MODELS" 2>/dev/null || true
 }
 
+# 解析校验：坏配置绝不能留给用户（后端启动时会直接退出）。
+# 没有 python3 时跳过，让后端自己报语法错。
+validate_config() {
+  local cfg="$1" out=""
+  command -v python3 >/dev/null 2>&1 || return 0
+  if ! out="$(python3 - "$cfg" <<'PY' 2>&1
+import sys
+import tomllib
+
+try:
+    with open(sys.argv[1], "rb") as fh:
+        tomllib.load(fh)
+except Exception as exc:
+    print(exc)
+    sys.exit(1)
+PY
+)"; then
+    warn "配置解析失败：$out"
+    return 1
+  fi
+  return 0
+}
+
 # 首次安装生成 config.toml；已有则原样保留
 prepare_config() {
   ensure_data_layout
-  local cfg="$DATA_CONFIG"
+  local cfg="$DATA_CONFIG" backup="" existed=0
   if [ -f "$cfg" ]; then
+    existed=1
+    if ! validate_config "$cfg"; then
+      die "已有配置无法解析：$cfg（本次未改动任何文件，请先修好再安装）"
+    fi
+    backup="$cfg.installbak"
+    cp -p "$cfg" "$backup"
     info "保留已有配置 $cfg"
     # 老配置没有 [update] 段：补上，并写入当前脚本用的镜像地址，
     # 免得以后换域名时新旧两批机器指向不同地方
@@ -1657,36 +1721,29 @@ prepare_config() {
     fi
   else
     cp "$INSTALL_DIR/server/config.example.toml" "$cfg"
-    info "生成配置 $cfg"
+    # 新装把本次安装使用的端口写进配置：运行时（客户端/插件）读的就是它，
+    # 避免出现「安装脚本用 DECKMEIDO_PORT=18766，配置里还写着 18765」
+    sed -i -E "s/^port *= *[0-9]+/port = $PORT/" "$cfg"
+    info "生成配置 $cfg（端口 $PORT）"
+  fi
+  # 写完端口后再解析一次；失败就回滚到改动前，不把坏配置留给用户
+  if ! validate_config "$cfg"; then
+    if [ "$existed" -eq 1 ]; then
+      mv -f "$backup" "$cfg"
+    else
+      rm -f "$cfg"
+    fi
+    die "生成的配置无法解析，已回滚：$cfg"
+  fi
+  if [ -n "$backup" ]; then
+    rm -f "$backup"
   fi
   # 配置里有 API Key 等敏感项，统一收紧到 0600
   chmod 600 "$cfg" 2>/dev/null || true
 }
 
-install_service() {
-  # 不再安装 systemd 开机自启服务。
-  #
-  # 历史原因：以前 install.sh 装一个 deckmeido.service，客户端启动时又自己拉一份后端，
-  # 两份抢同一个端口——谁先绑定谁对外服务，而它们各有一份内存历史，
-  # 重启时被另一半抢到，用户看到的就是「聊天记录丢了」。
-  # 现在后端只由客户端（桌面快捷方式）拉起，退出时一并收走。
-  # 这里仅做清理：把老版本装过的单元停掉删掉，避免升级后还有残留一起抢端口。
-  need_cmd systemctl || return 0
-  systemctl --user disable --now "$UNIT" >/dev/null 2>&1 || true
-  rm -f "$UNIT_DIR/$UNIT"
-  systemctl --user daemon-reload || true
-  # 兜底：万一还有裸跑的后端占着端口，停掉它，把入口让回客户端
-  if need_cmd fuser; then
-    fuser -k -TERM "$PORT/tcp" >/dev/null 2>&1 || true
-    sleep 1
-  fi
-}
-
-# 用 --purge 卸载前先停服务，否则进程会边跑边重建目录；从外部脚本升级时同样先停
-stop_service() {
-  need_cmd systemctl || return 0
-  systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
-}
+# 后端只由插件（游戏模式）和桌面客户端拉起，安装器不再生成或启用任何
+# systemd 服务单元，也不提供需要用户手动 enable 的入口。
 
 # 停掉后端进程本身（不是客户端）。
 #
@@ -1736,12 +1793,6 @@ stop_backend() {
 # 替换段里的 & 会展开成「整个匹配」，\ 和分隔符 | 会破坏语法
 sed_repl() {
   printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
-}
-
-# 手动安装 systemd 单元（默认不装：后端由客户端拉起，见 install_service 注释）
-render_service() {
-  sed "s|__INSTALL_DIR__|$(sed_repl "$INSTALL_DIR")|g; s|__PORT__|$(sed_repl "$PORT")|g" \
-    "$INSTALL_DIR/deploy/$UNIT" > "$UNIT_DIR/$UNIT"
 }
 
 # ---------- Decky 插件 ----------
@@ -1909,8 +1960,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP=deckmeido
 PORT="${DECKMEIDO_PORT:-18765}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/$APP"
-UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-UNIT=deckmeido.service
 DESKTOP_DIR="$HOME/.local/share/applications"
 DESKTOP_FOLDER="$(command -v xdg-user-dir >/dev/null 2>&1 && xdg-user-dir DESKTOP 2>/dev/null || true)"
 [ -n "$DESKTOP_FOLDER" ] && [ "$DESKTOP_FOLDER" != "$HOME" ] || DESKTOP_FOLDER="$HOME/Desktop"
@@ -1924,6 +1973,21 @@ CONFIG_MANIFEST="$CONFIG_DIR/.deckmeido-config-manifest"
 DATA_DIR="${DECKMEIDO_DATA_DIR:-$HERE/userdata}"
 case "$DATA_DIR" in "~"/*) DATA_DIR="$HOME/${DATA_DIR#\~/}" ;; esac
 DATA_CONFIG="$DATA_DIR/config.toml"
+# 端口解析与安装脚本一致：已有配置优先，没有配置才退回 DECKMEIDO_PORT
+if [ -f "$DATA_CONFIG" ] && command -v python3 >/dev/null 2>&1; then
+  _cfg_port="$(python3 - "$DATA_CONFIG" <<'PY' 2>/dev/null || true
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as f:
+        port = int((tomllib.load(f).get("server") or {}).get("port"))
+except Exception:
+    raise SystemExit(0)
+if 1024 <= port <= 65535:
+    print(port)
+PY
+)"
+  if [ -n "${_cfg_port:-}" ]; then PORT="$_cfg_port"; fi
+fi
 KEEP_NOTE="$DATA_DIR/README-KEPT.txt"
 DEP_RECORD="$DATA_DIR/.deckmeido-deps"
 
@@ -1998,7 +2062,7 @@ rel_ok() {
 ext_ok() {
   local p="${1%/}" root
   case "$p" in
-    "${UNIT_DIR%/}/$UNIT"|"${DESKTOP_DIR%/}/DeckMeido.desktop"|"${DESKTOP_FOLDER%/}/DeckMeido.desktop")
+    "${DESKTOP_DIR%/}/DeckMeido.desktop"|"${DESKTOP_FOLDER%/}/DeckMeido.desktop")
       return 0 ;;
   esac
   # 两个可能的位置都要认：Decky 自定义插件目录，以及默认的 ~/homebrew/plugins
@@ -2112,10 +2176,6 @@ if command -v curl >/dev/null 2>&1 && [ -f "$CFG" ]; then
 fi
 pkill -f "$HERE/client/launch.sh" 2>/dev/null || true
 pkill -f "$HERE/client/main.py" 2>/dev/null || true
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl --user disable --now "$UNIT" >/dev/null 2>&1 || true
-  systemctl --user daemon-reload || true
-fi
 pkill -f "$HERE/server/main.py" 2>/dev/null || true
 pkill -f "$HERE/server/overlay.py" 2>/dev/null || true
 
@@ -2222,6 +2282,9 @@ write_version_file() {
     ver=$(git -C "$INSTALL_DIR" describe --tags --always 2>/dev/null || true)
   fi
   [ -n "$ver" ] || ver=$(git -C "$HERE" describe --tags --always 2>/dev/null || true)
+  # 手工解包/无 git 的部署：退回插件 package.json 的 version，
+  # 避免 VERSION 被写成 0.0.0 导致界面显示 v0.0.0
+  [ -n "$ver" ] || ver=$(sed -nE 's/^  "version": "([^"]*)".*/\1/p' "$INSTALL_DIR/plugin/package.json" 2>/dev/null | head -n1)
   [ -n "$ver" ] || ver="0.0.0"
   printf '%s\n' "${ver#v}" > "$INSTALL_DIR/VERSION"
   dim "版本：$(cat "$INSTALL_DIR/VERSION")"
@@ -2246,7 +2309,7 @@ wait_ready() {
 }
 
 launch_client() {
-  # 服务由客户端拉起，所以装完直接帮用户开一次客户端，服务就齐了。
+  # 后端由客户端拉起，所以装完直接帮用户开一次客户端，服务就齐了。
   # 走 launch.sh 而不是直接跑 main.py：客户端在切游戏模式时会被 gamescope
   # 掐断 Wayland 连接而 abort，靠外壳脚本负责拉起和写崩溃栈。
   local launcher="$INSTALL_DIR/client/launch.sh"
@@ -2362,9 +2425,7 @@ do_install() {
   prepare_config
   # 之前卸载时备份的人设/记忆搬回来，让「她」还是原来的她
   restore_soul
-  section "桌面入口与服务"
-  stop_service
-  install_service
+  section "桌面入口"
   install_desktop
   install_uninstaller
   section "Decky 插件（游戏模式）"
@@ -2384,11 +2445,11 @@ do_install() {
     fi
   fi
   section "启动"
-  # 服务由客户端拉起：装完顺手开一次客户端，后台服务就一并起来了
+  # 后端由客户端拉起：装完顺手开一次客户端，后端就一并起来了
   if launch_client && wait_ready; then
     print_done
   else
-    warn "客户端未能自动启动，请双击桌面上的 DeckMeido 图标（服务会随之拉起）"
+    warn "客户端未能自动启动，请双击桌面上的 DeckMeido 图标（后端会随之拉起）"
   fi
 }
 
@@ -2420,10 +2481,9 @@ do_upgrade() {
   echo
   section "环境预检"
   check_prereq
-  # 顺序要紧：先停客户端（否则它的 watchdog 会把旧后端拉回来），再停服务，
+  # 顺序要紧：先停客户端（否则它的 watchdog 会把旧后端拉回来），
   # 最后把可能已经「脱管」的后端进程也收掉，保证换文件时没有旧进程占着端口
   stop_client
-  stop_service
   stop_backend
   section "同步程序文件"
   sync_files
@@ -2437,8 +2497,7 @@ do_upgrade() {
     return 0
   fi
   venv_install || true
-  section "桌面入口与服务"
-  install_service
+  section "桌面入口"
   install_desktop
   install_uninstaller
   section "Decky 插件（游戏模式）"
@@ -2451,7 +2510,7 @@ do_upgrade() {
     system_notes
   fi
   section "启动"
-  # 服务由客户端拉起：升级后关掉旧客户端再开新的，新代码才会生效
+  # 后端由客户端拉起：升级后关掉旧客户端再开新的，新代码才会生效
   launch_client && wait_ready || true
   if need_cmd curl && wait_ready; then
     print_done
@@ -2886,15 +2945,8 @@ do_uninstall() {
     sleep 1
     pkill -9 -f "$INSTALL_DIR/client/main.py" 2>/dev/null || true
   fi
-  stop_service
-  if need_cmd systemctl; then
-    dim "移除用户服务"
-    systemctl --user disable --now "$UNIT" >/dev/null 2>&1 || true
-    systemctl --user daemon-reload || true
-    # 服务单元本身由清单独条目删除，这里不再直接 rm
-  fi
-  # 兜底：后端被独立拉起时（旧版本装过 systemd 单元）也要收掉，否则卸载后
-  # 它还在 18765 上跑，下次安装会撞端口
+  stop_client
+  # 兜底：后端被独立拉起时也要收掉，否则卸载后它还在占着端口
   pkill -f "$INSTALL_DIR/server/main.py" 2>/dev/null || true
   pkill -f "$INSTALL_DIR/server/overlay.py" 2>/dev/null || true
   sleep 1
@@ -3123,10 +3175,7 @@ case "${1:-}" in
                 fi ;;
   check)        do_check "${2:-}" ;;
   uninstall)    do_uninstall "${2:-}" ;;
-  service)      check_user; mkdir -p "$UNIT_DIR"; render_service
-                info "已写入 $UNIT_DIR/$UNIT"
-                dim "启用并启动：systemctl --user daemon-reload && systemctl --user enable --now $UNIT" ;;
   -h|--help|help)
     grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -n 36 ;;
-  *) die "未知命令：$1（可用：无参数=智能装/升 / menu / install / upgrade / from-mirror / speedtest / check / uninstall / service）" ;;
+  *) die "未知命令：$1（可用：无参数=智能装/升 / menu / install / upgrade / from-mirror / speedtest / check / uninstall）" ;;
 esac

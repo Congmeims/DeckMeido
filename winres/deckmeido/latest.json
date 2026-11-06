@@ -1,10 +1,10 @@
 {
-  "tag": "0.6.11",
-  "name": "DeckMeido 0.6.11",
-  "notes": "# DeckMeido 0.6.11\n\n- release: 版本号更新到 0.6.11\n- client: 读不到配置时给出明确提示并允许手动输入令牌\n- ui: 增加局域网访问地址与令牌展示，网页输入支持分组令牌\n- plugin: 本机 QAM 与大屏取消独立解锁，改为直接使用后端配置令牌\n- security: 访问令牌改为 12 位 Crockford Base32\n- chore: 移除未使用局部变量\n- fix: 修正 zip 接口的可变默认参数\n- chore: 清理未使用导入\n- fix: 修正证书脚本语法与重复导入\n- security: 安装包拒绝越界符号链接\n- security: 校验 QQ 图片链接协议与内网地址\n- security: 缺少校验值时拒绝安装更新\n- security: 更新包默认强制 TLS 校验\n- security: 令牌失败尝试按 IP 限速\n- security: 令牌比较改用 compare_digest\n- ﻿security: 安装时生成随机令牌\n- release: 0.6.10 发布产物\n- release: 0.6.10 版本号\n- 插件截屏按模式分流：桌面模式转后端抓帧，抓不到时直接提示不再退页白等\n- 后端新增插件截图接口，桌面模式复用 spectacle/mss 抓帧并补会话环境变量\n",
-  "published_at": "2026-11-05T13:22:30+08:00",
+  "tag": "0.7.0",
+  "name": "DeckMeido 0.7.0",
+  "notes": "# DeckMeido 0.7.0\n\n- test(tts): 配置归一化、降级判定与打断行为单测\n- feat(web): 女仆人格下新增语音回复设置卡\n- feat(config): [tts] 增加引擎/音色/语言/语速等键并接入保存接口\n- feat(tts): 语音合成接入 piper-plus + つくよみちゃん 6 语模型\n- refactor(auth): 下线访问令牌，改为回环免验证 + 配对设备 HttpOnly Cookie\n- feat(plugin): QAM 页签加 L1/R1 键帽提示，移除令牌卡片与令牌状态字段\n- fix(plugin): QAM 支持 L1/R1 翻页，设置页文案与卡片高度按需求调整\n- tools: 新增一键部署脚本，插件 dist 变化时自动重载 Decky\n- feat(stt): 新增 [stt] model_source 配置与状态里的下载源字段\n- feat(stt): 模型下载改为国内镜像优先、多源切换与断点续传\n- 修复删除会话 500：补 pending_action 的 global 声明\n- 大屏设置页移除局域网访问与设备配对卡片\n- fix(plugin): 语音提示行固定高度，长报错不再挤走下载按钮\n- fix(audit): 同 IP 同路径的无效凭据 60 秒内只记一条\n- feat(web): 配对与审计长列表收敛为单一配对入口\n- feat(web): 远程连接页跨屏鼠标置顶，QQ 通道改名 Onebot 通道\n- fix(web): 群友提示词首次打开显示后端默认值\n- fix(web): 窄视口左右抽屉统一用遮罩点击收起\n- fix(config): 保存配置接口缺少 Request 参数导致必现 500\n- feat(web): 登录遮罩改为四格 PIN 输入\n",
+  "published_at": "2026-11-06T10:24:04+08:00",
   "files": {
-    "tarball": "deckmeido-0.6.11.tar.gz",
-    "sha256": "ac187c95062b83e4dfc84ff9e0cf91c73038150426739c04e1aba16c0046aaab"
+    "tarball": "deckmeido-0.7.0.tar.gz",
+    "sha256": "d7baacfcd070f1a3ac7929bacdedf91ea713ff018b7dada52de7836ca79a6829"
   }
 }
