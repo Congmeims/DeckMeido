@@ -5,13 +5,15 @@ server/session_store.py。这里不经过 main.py，避免把整个后端拉起�
 """
 import shutil
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from server import session_store
 from server.onebot import MessageEvent, session_sid
-from server.session_store import (SessionStore, qq_session_title, set_title)
+from server.session_store import (SessionStore, attach_voice, qq_session_title,
+                                  session_order, set_title)
 
 
 def ev(uin, group_id=None):
@@ -78,6 +80,50 @@ class QqSessionTitleTest(unittest.TestCase):
         self.assertEqual(data["title"], "QQ49334")
 
 
+class SessionOrderTest(unittest.TestCase):
+    """侧栏排序：updated 倒序，同一时间戳按 id 倒序，刷新前后顺序固定"""
+
+    def test_tie_breaks_by_id_and_is_stable(self):
+        items = [{"id": "b", "updated": 5}, {"id": "a", "updated": 5},
+                 {"id": "c", "updated": 6}]
+        self.assertEqual([i["id"] for i in session_order(items)], ["c", "b", "a"])
+        self.assertEqual([i["id"] for i in session_order(list(reversed(items)))],
+                         ["c", "b", "a"])
+
+
+class VoiceMetaTest(unittest.TestCase):
+    """语音元数据只挂到最后一条助手消息，老消息没有 voice 字段也不报错"""
+
+    meta = {"url": "/api/voice/abc.wav", "seconds": 1.2,
+            "speaker": "女仆", "bytes": 2048}
+
+    def test_attach_to_last_assistant_only(self):
+        hist = [
+            {"role": "user", "content": "你好", "ts": 1},
+            {"role": "assistant", "content": "第一轮", "ts": 2},
+            {"role": "user", "content": "再来", "ts": 3},
+            {"role": "assistant", "content": "第二轮", "ts": 4},
+        ]
+        ts = attach_voice(hist, self.meta)
+        self.assertEqual(ts, 4)
+        self.assertNotIn("voice", hist[1])
+        self.assertEqual(hist[3]["voice"], self.meta)
+
+    def test_attach_without_assistant_returns_none(self):
+        self.assertIsNone(attach_voice([{"role": "user", "content": "hi"}], self.meta))
+        self.assertIsNone(attach_voice([], self.meta))
+
+    def test_empty_voice_is_ignored(self):
+        hist = [{"role": "assistant", "content": "hi"}]
+        self.assertIsNone(attach_voice(hist, {}))
+        self.assertNotIn("voice", hist[0])
+
+    def test_old_history_without_voice_is_untouched(self):
+        hist = [{"role": "assistant", "content": "旧消息", "ts": 5}]
+        self.assertNotIn("voice", hist[0])
+        self.assertIsNone(attach_voice(hist, None))
+
+
 class QqSessionPersistTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="deckmeido-sess-"))
@@ -134,6 +180,33 @@ class QqSessionPersistTest(unittest.TestCase):
         data = SessionStore().read_session("qq-p-645849334")
         self.assertEqual(data.get("title"), "QQ49334")
         self.assertEqual(len(data.get("history") or []), 3)
+
+    def test_view_does_not_bump_updated(self):
+        """切走前的收尾写入（touch=False）不改 updated，点开会话不重排"""
+        store = SessionStore()
+        hist = [{"role": "user", "content": "旧内容"}]
+        store.write_session("qq-p-20001", hist)
+        self.barrier()
+        before = dict(store.index()["qq-p-20001"])
+        time.sleep(0.02)
+        store.write_session("qq-p-20001", hist, touch=False)
+        self.barrier()
+        self.assertEqual(store.index()["qq-p-20001"]["updated"],
+                         before["updated"])
+
+    def test_new_message_bumps_updated(self):
+        """只有真实活动（新消息落盘）才会前移"""
+        store = SessionStore()
+        store.write_session("qq-p-20002", [{"role": "user", "content": "一"}])
+        self.barrier()
+        before = store.index()["qq-p-20002"]["updated"]
+        time.sleep(0.02)
+        store.write_session("qq-p-20002", [
+            {"role": "user", "content": "一"},
+            {"role": "assistant", "content": "二"},
+        ])
+        self.barrier()
+        self.assertGreater(store.index()["qq-p-20002"]["updated"], before)
 
 
 if __name__ == "__main__":

@@ -243,16 +243,20 @@ class SessionStore:
 
     # ---------- 落盘 ----------
 
-    def save_current(self) -> None:
-        """把当前会话历史写盘，标题取第一条用户消息"""
-        self.write_session(self.current_sid, self.history)
+    def save_current(self, touch: bool = True) -> None:
+        """把当前会话历史写盘，标题取第一条用户消息
+
+        touch=False 用于「只是离开这个会话」的收尾写入：内容照存，但不刷新
+        updated，侧栏排序因此不会因为点开别的会话而跳动。
+        """
+        self.write_session(self.current_sid, self.history, touch=touch)
 
     def save_snapshot(self, sid: str, hist: list[dict]) -> bool:
         """把指定快照写回指定会话文件（会话中途被切走时，用这招把结果送回原会话）"""
         self.write_session(sid or self.current_sid, hist)
         return True
 
-    def write_session(self, sid: str, hist: list[dict]) -> None:
+    def write_session(self, sid: str, hist: list[dict], touch: bool = True) -> None:
         """原子写入一个会话文件。
 
         磁盘历史比本次要写的多时怎么办？答案是照写。以前这里做「缩水写合并」：
@@ -274,8 +278,14 @@ class SessionStore:
             if sid in self.deleted_sids:
                 # 会话已删除：迟到的落盘一律作废，否则等于把删掉的会话又变出来
                 return
+            # touch=False 的写入沿用索引里已有的 updated：查看会话不算真实活动，
+            # 不能把它顶到列表最前面。索引里没有（第一次写）才退回当前时间
+            prev = (self._index.get(sid) or {}).get("updated") or 0
+            if not prev:
+                prev = (self.wrote_map.get(sid) or (0, 0))[0]
             data = {"id": sid, "created": self.created_map.get(sid) or time.time(),
-                    "updated": time.time(), "history": hist}
+                    "updated": time.time() if touch else (prev or time.time()),
+                    "history": hist}
             set_title(data, hist)
             # 压缩游标必须一起落盘：否则重启后模型重新吃到全量历史，
             # 白白撑爆上下文窗口，又要再压缩一遍
@@ -530,6 +540,32 @@ class SessionStore:
 
 
 store = SessionStore()
+
+
+def session_order(items) -> list[dict]:
+    """侧栏排序：updated 倒序；同一时间戳再按 id 倒序
+
+    只加次级键就能保证刷新 / 强刷前后顺序固定，不会因为两轮写入落在
+    同一秒而互相换位。查看会话不刷新 updated，所以点开不会把谁顶到首位。
+    """
+    return sorted(items, key=lambda d: (d.get("updated") or 0,
+                                        str(d.get("id") or "")), reverse=True)
+
+
+def attach_voice(hist: list[dict], voice: dict) -> float | None:
+    """把这一轮语音的元数据挂到最后一条助手消息上
+
+    元数据里只有 URL / 时长 / 发音人 / 字节数，音频文件单独放在 userdata/voice，
+    不把 base64 塞进历史。没有助手消息（比如只发了语音没有文字）就返回 None，
+    调用方据此决定要不要再写盘；老消息本来就没有 voice 字段，不受影响。
+    """
+    if not isinstance(hist, list) or not isinstance(voice, dict) or not voice:
+        return None
+    for m in reversed(hist):
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            m["voice"] = dict(voice)
+            return float(m.get("ts") or 0)
+    return None
 
 
 def qq_session_title(sid: str) -> str:

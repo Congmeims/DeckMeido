@@ -127,6 +127,13 @@ def uploads_dir() -> Path:
     return path
 
 
+def voice_dir() -> Path:
+    """QQ 语音条的本地副本：<data>/voice，供网页 / 客户端 / 插件回放"""
+    path = data_dir() / "voice"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def meidobot_dir() -> Path:
     path = data_dir() / "meidobot"
     path.mkdir(parents=True, exist_ok=True)

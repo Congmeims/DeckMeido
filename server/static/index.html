@@ -114,6 +114,50 @@
     gap: 8px; flex-wrap: wrap;
   }
 
+  /* QQ 会话头部的 OneBot 状态灯 + 快捷面板 */
+  .qq-sess-wrap { position: relative; display: inline-flex; flex: 0 0 auto; }
+  .qq-sess-wrap[hidden] { display: none; }
+  .qq-sess-btn {
+    width: 26px; height: 26px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--line); border-radius: 50%;
+    background: var(--surface-2); cursor: pointer;
+  }
+  .qq-sess-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: #7b8194; box-shadow: 0 0 0 2px rgba(127,127,127,.16);
+  }
+  .qq-sess-dot.on { background: #2fa8ff; box-shadow: 0 0 8px rgba(47,168,255,.8); }
+  .qq-sess-dot.wait { background: #e6b422; animation: qqBreathe 1.4s ease-in-out infinite; }
+  @keyframes qqBreathe { 0%,100% { opacity: 1; } 50% { opacity: .38; } }
+  .qq-sess-panel {
+    position: absolute; top: 32px; right: 0; z-index: 60;
+    width: 220px; max-width: calc(100vw - 20px);
+    padding: 10px 12px;
+    background: var(--surface-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0,0,0,.45);
+    font-size: 13px;
+  }
+  .qq-sess-panel[hidden] { display: none; }
+  /* 设置页有自己的页头，不显示会话状态灯 */
+  body.settings-mode .qq-sess-wrap { display: none !important; }
+  .qq-sess-head {
+    display: flex; align-items: center; gap: 6px;
+    padding-bottom: 8px; margin-bottom: 6px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px; color: var(--muted);
+  }
+  .qq-sess-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; padding: 5px 0; cursor: pointer;
+  }
+  .qq-sess-row input { width: 16px; height: 16px; accent-color: var(--brand); }
+  .qq-sess-act { width: 100%; margin-top: 8px; text-align: center; }
+  .qq-sess-act[disabled] { opacity: .6; cursor: default; }
+  .qq-sess-hint { margin-top: 6px; font-size: 11.5px; color: var(--muted); min-height: 0; }
+  @media (prefers-reduced-motion: reduce) { .qq-sess-dot.wait { animation: none; } }
+
   /* 通用胶囊按钮（分享弹窗等） */
   .menu-btn {
     flex: 0 0 auto;
@@ -181,6 +225,35 @@
     line-height: 1.4;
   }
   .msg .time { display: block; margin-top: 4px; font-size: 11px; opacity: .55; }
+  /* 语音条：可点击播放的助手消息附件（QQ 语音回复本地回放） */
+  .voice-bubble {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 8px; padding: 6px 10px;
+    max-width: 260px;
+    border: 1px solid var(--line); border-radius: 12px;
+    background: rgba(127, 127, 127, .12);
+    cursor: pointer; user-select: none;
+  }
+  .voice-play {
+    width: 26px; height: 26px; flex: 0 0 auto;
+    border: none; border-radius: 50%;
+    background: var(--brand); color: #fff; font-size: 12px;
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .voice-wave {
+    flex: 1 1 auto; height: 4px; border-radius: 2px;
+    background: rgba(127, 127, 127, .3); position: relative; overflow: hidden;
+  }
+  .voice-wave i {
+    position: absolute; left: 0; top: 0; bottom: 0; width: 0;
+    background: var(--brand); transition: width .12s linear;
+  }
+  .voice-meta { font-size: 11px; opacity: .72; white-space: nowrap; }
+  .voice-bubble.playing .voice-play { animation: voicePulse 1.2s ease-in-out infinite; }
+  @keyframes voicePulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+  @media (prefers-reduced-motion: reduce) {
+    .voice-bubble.playing .voice-play { animation: none; }
+  }
   /* 提问气泡里附带的画面（截屏询问）：缩略图跟在正文下面，不再另起一条
      「截图」时间线行。宽度跟着气泡上限收，点开看原图 */
   .msg .msg-shot {
@@ -1219,8 +1292,6 @@
   }
   .field-hint { font-size: 12px; color: var(--muted); margin-top: 6px; min-height: 16px; }
   /* 设置页里的下拉框：和输入框同一套外观，别再各写一份内联样式 */
-  /* 设置页里的模型选择下拉：和上面输入框同宽，别继承工具栏下拉的固定 240px */
-  #modelCapsSelect { width: 100%; max-width: none; }
   .cfg-select {
     width: 100%; padding: 12px 14px;
     border: 1px solid var(--line); border-radius: 10px;
@@ -1720,6 +1791,10 @@
   }
   .sess:hover { background: var(--hover); }
   .sess.current { background: var(--surface-2); }
+  .sess.sess-placeholder {
+    color: var(--muted); font-size: 13px; padding: 10px 12px;
+    justify-content: flex-start;
+  }
   .sess .s-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sess .s-del {
     border: none; background: none; color: var(--muted); cursor: pointer;
@@ -2490,6 +2565,26 @@
   <span class="logo" id="hdrTitle" title="DeckMeido">DeckMeido</span>
   <span class="spacer"></span>
   <div class="hdr-right">
+    <!-- QQ 会话专属：OneBot 状态灯 + 快捷开关（状态与设置页共用同一份后端配置） -->
+    <div class="qq-sess-wrap" id="qqSessWrap" hidden>
+      <button type="button" class="qq-sess-btn" id="qqSessBtn" title="OneBot 状态与语音开关">
+        <span class="qq-sess-dot" id="qqSessDot"></span>
+      </button>
+      <div class="qq-sess-panel" id="qqSessPanel" hidden>
+        <div class="qq-sess-head">
+          <span class="qq-sess-dot" id="qqSessDot2"></span>
+          <span id="qqSessState">OneBot 状态</span>
+        </div>
+        <label class="qq-sess-row"><span>发语音</span>
+          <input type="checkbox" id="qsVoice"></label>
+        <label class="qq-sess-row"><span>群友发语音</span>
+          <input type="checkbox" id="qsVoiceMembers"></label>
+        <label class="qq-sess-row"><span>只发语音</span>
+          <input type="checkbox" id="qsVoiceOnly"></label>
+        <button type="button" class="menu-btn qq-sess-act" id="qsConnBtn">断开</button>
+        <div class="qq-sess-hint" id="qqSessHint"></div>
+      </div>
+    </div>
     <span class="badge stale-tag" id="staleTag" hidden>已停止更新</span>
     <span class="badge" id="ctxBadge" hidden></span>
     <span class="badge ctrl" id="ctrlBadge" hidden></span>
@@ -2678,10 +2773,7 @@
                  语料署名 = ■つくよみちゃんコーパス（CV.夢前黎）。 -->
             <div class="field-hint" id="ttsCredit">
               本ソフトウェアの音声合成には、フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）が無料公開している音声データを使用しています。<br>
-              <a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener" style="color:inherit">■つくよみちゃんコーパス（CV.夢前黎）</a><br>
-              <a href="https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan" target="_blank" rel="noopener" style="color:inherit">■Piper Plus:つくよみちゃん</a><br>
-              禁止用于人身攻击、政治/宗教/思想站队、无分级公开刺激性内容，以及允许他人二次利用的素材化发布（<a href="https://tyc.rei-yumesaki.net/material/corpus/#terms3" target="_blank" rel="noopener" style="color:inherit">利用規約</a>）。
-              合成只在本机播放，不再分发音频文件。
+              <a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener" style="color:inherit">■つくよみちゃんコーパス（CV.夢前黎）</a>　<a href="https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan" target="_blank" rel="noopener" style="color:inherit">■Piper Plus:つくよみちゃん</a>　禁止用于人身攻击。
             </div>
           </div>
           <!-- 长期记忆并入这里：记的是「她记得你什么」，本来就是人设的一部分，
@@ -3146,18 +3238,6 @@
           </p>
 
           <div class="card">
-            <div class="card-title">模型</div>
-            <div class="field">
-              <label>当前模型（选中立即生效，与顶栏下拉同步）</label>
-              <div class="about-row">
-                <select id="modelCapsSelect" class="cb-select" title="模型"></select>
-                <button id="pluginModelRefresh" class="mini-btn" type="button">刷新列表</button>
-              </div>
-              <div id="pluginModelHint" class="field-hint"></div>
-            </div>
-          </div>
-
-          <div class="card">
             <div class="card-title">对话与语音</div>
             <div class="field field-row">
               <label style="margin:0">带画面询问（截图随消息一起发）</label>
@@ -3190,7 +3270,7 @@
             </p>
             <div class="field">
               <label>截屏询问提示词</label>
-              <textarea id="cfgAskTemplate" rows="6" placeholder="留空保存即恢复默认"></textarea>
+              <textarea id="cfgAskTemplate" rows="4" placeholder="留空保存即恢复默认"></textarea>
               <div class="mem-foot">
                 <span class="field-hint">插件端点「截屏询问」时发给模型的提问。</span>
                 <button id="askTplReset" class="mini-btn" type="button">恢复默认</button>
@@ -3198,7 +3278,7 @@
             </div>
             <div class="field">
               <label>截屏翻译提示词</label>
-              <textarea id="cfgTranslateTemplate" rows="6" placeholder="留空保存即恢复默认"></textarea>
+              <textarea id="cfgTranslateTemplate" rows="4" placeholder="留空保存即恢复默认"></textarea>
               <div class="mem-foot">
                 <span class="field-hint">插件端点「截屏翻译」时的翻译指令。</span>
                 <button id="trnTplReset" class="mini-btn" type="button">恢复默认</button>
@@ -3225,15 +3305,6 @@
             </div>
           </div>
 
-          <div class="card">
-            <div class="card-title">核心状态与维护</div>
-            <div id="coreState"><div class="state-row"><span>状态</span><b>读取中…</b></div></div>
-            <div class="mem-foot">
-              <span class="field-hint">核心的启动 / 重启 / 关闭由 Decky 插件端和桌面客户端负责（网页只是它的前端，不能自己停掉自己）。</span>
-              <button id="coreRefresh" class="mini-btn" type="button">刷新状态</button>
-              <button id="pluginNewSess" class="mini-btn" type="button">新会话</button>
-            </div>
-          </div>
         </section>
 
         <section class="set-pane" data-pane="about">
@@ -3850,14 +3921,14 @@
     };
     try {
       addMsg(m.role === 'user' ? 'user' : 'assistant', m.brief || m.content, m.ts,
-             m.events, m.client, m.device);
+             m.events, m.client, m.device, m.voice);
     } finally {
       messages.appendChild = realAppend;
     }
     return holder.firstChild || holder;
   }
 
-  function addMsg(role, text, ts, events, client, device) {
+  function addMsg(role, text, ts, events, client, device, voice) {
     // 历史回放：事件与正文按「屏幕上出现过的顺序」串成一条时间线。
     // 旧版把事件块整体摆在正文上方，于是「思考→说话→执行」的顺序被打乱成
     // 「思考全在上、说话在中、命令在最下」；现在 order 里有序，按序摆放即可
@@ -3894,7 +3965,9 @@
       events.forEach(function (ev) { renderEvent(ev, box); });
       var tail = String(text || '').trim();
       if (!asked || (tail && tail !== String(asked.question || '').trim())) {
-        box.appendChild(makeTextBubble(text, true, ts));
+        var bubble = makeTextBubble(text, true, ts);
+        appendVoiceBubble(bubble, voice);
+        box.appendChild(bubble);
       }
       messages.appendChild(box);
       trimMessages();
@@ -3914,6 +3987,7 @@
       return;
     }
     var el = makeTextBubble(text, true, ts);
+    appendVoiceBubble(el, voice);
     messages.appendChild(el);
     trimMessages();
     fillFileSizes(el);
@@ -4184,6 +4258,112 @@
     el.appendChild(body);
     if (final) addMsgFoot(el, ts, 'assistant');
     return el;
+  }
+
+  // ---------- 语音条回放 ----------
+  // 一条 QQ 语音回复 = 后端留档的 wav + 极小的元数据（url/seconds/speaker）。
+  // 全程共用一个 <audio>：切到另一条时先暂停，保证不会叠音。
+  var voiceAudio = null;
+  var voiceCur = null;
+
+  function fmtVoiceSeconds(sec) {
+    sec = Math.max(0, Math.round(Number(sec) || 0));
+    return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+  }
+
+  function voiceEl() {
+    if (voiceAudio) return voiceAudio;
+    voiceAudio = new Audio();
+    voiceAudio.preload = 'none';
+    voiceAudio.addEventListener('timeupdate', function () {
+      if (!voiceCur) return;
+      var d = voiceAudio.duration;
+      var pct = d ? Math.min(100, voiceAudio.currentTime / d * 100) : 0;
+      var bar = voiceCur.querySelector('.voice-wave i');
+      if (bar) bar.style.width = pct + '%';
+    });
+    voiceAudio.addEventListener('ended', function () { voiceStopUI(); });
+    voiceAudio.addEventListener('pause', function () {
+      if (voiceCur && !voiceAudio.ended) voiceCur.classList.remove('playing');
+    });
+    return voiceAudio;
+  }
+
+  function voiceStopUI() {
+    if (voiceCur) {
+      voiceCur.classList.remove('playing');
+      var bar = voiceCur.querySelector('.voice-wave i');
+      if (bar) bar.style.width = '0%';
+    }
+    voiceCur = null;
+  }
+
+  function voiceFallback(bubble, meta) {
+    // QAM / Steam WebKit 对 <audio> 不稳：改让后端用本机播放器放
+    var btn = bubble.querySelector('.voice-play');
+    if (btn) btn.textContent = '…';
+    fetch('/api/voice/play', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: meta.url })
+    }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (btn) btn.textContent = '■';
+      bubble.classList.add('playing', 'fallback');
+      var label = bubble.querySelector('.voice-meta');
+      if (label) label.textContent = (meta.speaker || '机器人') + ' · 本机播放';
+    }).catch(function () {
+      if (btn) btn.textContent = '▶';
+      bubble.classList.remove('playing', 'fallback');
+      addSystem('语音播放失败：本机播放器不可用');
+    });
+  }
+
+  function voiceToggle(bubble, meta) {
+    var url = String((meta && meta.url) || '');
+    if (!url) return;
+    var audio = voiceEl();
+    if (voiceCur === bubble && !audio.paused) {
+      audio.pause();
+      return;
+    }
+    if (voiceCur && voiceCur !== bubble) {
+      try { audio.pause(); } catch (e) {}
+    }
+    voiceCur = bubble;
+    bubble.classList.add('playing');
+    audio.src = url;
+    var p = audio.play();
+    if (p && p.catch) {
+      p.catch(function () { voiceFallback(bubble, meta); });
+    }
+  }
+
+  // 把语音气泡挂到这条助手消息里面（语音只在该轮确实发过时才存在）
+  function appendVoiceBubble(el, meta) {
+    if (!el || !meta || !meta.url) return;
+    if (el.querySelector('.voice-bubble')) return;
+    var b = document.createElement('div');
+    b.className = 'voice-bubble';
+    b.title = '点击播放这条语音';
+    var play = document.createElement('button');
+    play.type = 'button';
+    play.className = 'voice-play';
+    play.textContent = '▶';
+    b.appendChild(play);
+    var wave = document.createElement('div');
+    wave.className = 'voice-wave';
+    wave.appendChild(document.createElement('i'));
+    b.appendChild(wave);
+    var label = document.createElement('span');
+    label.className = 'voice-meta';
+    label.textContent = (meta.speaker || '机器人') + ' · ' + fmtVoiceSeconds(meta.seconds);
+    b.appendChild(label);
+    b.addEventListener('click', function (e) {
+      e.stopPropagation();
+      voiceToggle(b, meta);
+    });
+    el.appendChild(b);
   }
 
   // 渲染单个事件（思维链 / 过渡正文 / 工具调用+终端输出 / 文件改动）到容器
@@ -6591,6 +6771,7 @@
           break;
         case 'history':
           if (msg.sid) currentSid = msg.sid;
+          syncQqSessButton();
           // 本端身份以后端这条连接实际看到的为准：前端按 UA 猜只是兜底
           if (msg.my_client) localClient = msg.my_client;
           messages.innerHTML = '';
@@ -6614,7 +6795,7 @@
             // brief 是界面专用的短文案：截屏询问那套提示词一百多字，
             // 各端都只显示它，真正发出去的仍然是 content
             addMsg(m.role === 'user' ? 'user' : 'assistant', m.brief || m.content, m.ts,
-                   m.events, m.client, m.device);
+                   m.events, m.client, m.device, m.voice);
           });
           if (histPending.length) {
             var moreBar = document.createElement('button');
@@ -6834,6 +7015,20 @@
             scrollBottomIfFollow();
           }
           break;
+        case 'voice_added':
+          // QQ 语音条是在文字发出之后才合成/发送的，后端成功后才补发这条事件；
+          // 找到对应时间戳的助手气泡，把播放条挂上去（换会话了就不处理）
+          if (msg.sid && currentSid && msg.sid !== currentSid) break;
+          if (!msg.voice || !msg.ts) break;
+          var vnodes = messages.querySelectorAll('.msg.assistant[data-ts]');
+          for (var vi = vnodes.length - 1; vi >= 0; vi--) {
+            if (vnodes[vi].dataset.ts === String(msg.ts)) {
+              appendVoiceBubble(vnodes[vi], msg.voice);
+              break;
+            }
+          }
+          break;
+
         case 'assistant_message':
           // 这一段负责把「这一轮结束」落实到界面上（补正文、挂按钮、清理时间线）。
           // 里面任何一步抛异常，旧代码都会连带跳过后面的 flushQueue ——
@@ -6997,6 +7192,7 @@
           addSystem(msg.text || '');
           break;
         case 'session_changed':
+        case 'history':
           loadSessions();
           break;
         case 'update_available':
@@ -7181,6 +7377,7 @@
         pairReset();
         authOverlay.classList.remove('show');
         reconnectNow();
+        loadSessions();
       })
       .catch(function () {
         pairBusy = false;
@@ -7210,6 +7407,9 @@
           if (d.version_display || d.version) {
             authVer.textContent = 'v' + (d.version_display || d.version);
           }
+          // 鉴权通过后要主动拉一次列表：脚本末尾那次 loadSessions 跑在
+          // /api/auth/session 返回之前，deviceSession 还是 false，会被直接跳过
+          loadSessions();
           connect();
           return;
         }
@@ -8199,7 +8399,6 @@
   var DEFAULT_BASE_URL = 'https://api.deepseek.com';
   var cfgApiKey = document.getElementById('cfgApiKey');
   var clearApiKey = document.getElementById('clearApiKey');
-  var modelCapsSelect = document.getElementById('modelCapsSelect');
   var apiKeyHint = document.getElementById('apiKeyHint');
   // 覆盖写时要不要显式清空 Key：点「清除」才置 true，其余情况一律按「不改」提交
   var apiKeyClear = false;
@@ -8353,6 +8552,18 @@
   var cfgQqVoiceOnly = document.getElementById('cfgQqVoiceOnly');
   var cfgQqVoiceSeconds = document.getElementById('cfgQqVoiceSeconds');
   var cfgQqVoiceKb = document.getElementById('cfgQqVoiceKb');
+  // QQ 会话头部的状态灯 + 快捷面板（与上面这些设置页控件共用同一份后端配置）
+  var qqSessWrap = document.getElementById('qqSessWrap');
+  var qqSessBtn = document.getElementById('qqSessBtn');
+  var qqSessPanel = document.getElementById('qqSessPanel');
+  var qqSessDot = document.getElementById('qqSessDot');
+  var qqSessDot2 = document.getElementById('qqSessDot2');
+  var qqSessStateText = document.getElementById('qqSessState');
+  var qsVoice = document.getElementById('qsVoice');
+  var qsVoiceMembers = document.getElementById('qsVoiceMembers');
+  var qsVoiceOnly = document.getElementById('qsVoiceOnly');
+  var qsConnBtn = document.getElementById('qsConnBtn');
+  var qqSessHint = document.getElementById('qqSessHint');
   // 被保留但不在界面上的其余管理员号（老配置可能有多个）
   var qqAdminExtras = [];
   var qqGroups = null;
@@ -8392,9 +8603,6 @@
   var cfgTranslateTemplate = document.getElementById('cfgTranslateTemplate');
   var tplHint = document.getElementById('tplHint');
   var sttHint = document.getElementById('sttHint');
-  var pluginModelHint = document.getElementById('pluginModelHint');
-  var pluginModelRefresh = document.getElementById('pluginModelRefresh');
-  var coreState = document.getElementById('coreState');
   var tplSave = document.getElementById('tplSave');
   // 默认模板只存后端下发的值，不在前端硬编码；「恢复默认」先把值填回文本框
   var askTplDefault = '';
@@ -8707,7 +8915,6 @@
     loadQqLogs();
     startQqStatusPolling();
     loadSttStatus();
-    loadCoreState();
     startPairPoll();
   }
 
@@ -9445,33 +9652,6 @@
     });
   });
 
-  // 核心状态：只读展示。/api/status 是网页实时状态，和「启动/重启/关闭核心」
-  // 这类由插件端/客户端执行的维护操作分开，不在网页里重复做一份会误导人的按钮
-  function loadCoreState() {
-    fetch('/api/status')
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      })
-      .then(function (s) {
-        var ctx = s.context || {};
-        var rows = [
-          ['核心', '运行中'],
-          ['模型', s.model || '未配置'],
-          ['模式', s.mode === 'gaming' ? '游戏模式' : '桌面模式'],
-          ['当前会话', ctx.sid ? '#' + ctx.sid : '新会话'],
-          ['上下文', (ctx.messages || 0) + ' 条 / ' + (ctx.percent || 0) + '%']
-        ];
-        coreState.innerHTML = rows.map(function (r) {
-          return '<div class="state-row"><span>' + r[0] + '</span><b>'
-            + escapeHtml(String(r[1])) + '</b></div>';
-        }).join('');
-      })
-      .catch(function () {
-        coreState.innerHTML = '<div class="state-row"><span>核心</span><b>连不上（可能正在重启）</b></div>';
-      });
-  }
-
   // ---------- 远程连接页：Onebot 通道 ----------
   var QQ_STATE_TEXT = {
     disabled: '已关闭',
@@ -9719,6 +9899,110 @@
     if (qqPrefixHint) qqPrefixHint.textContent = qqPrefixText(s.prefix, !!s.guest_prompt_custom);
   }
 
+  // 语音开关的单一来源：设置页和 QQ 会话面板都只改后端配置，
+  // 回来后用同一份 config 回填两边控件，避免各自缓存导致不一致
+  function applyQqVoiceConfig(c) {
+    if (!c) return;
+    var reply = !!c.voice_reply;
+    var members = c.voice_group_members !== false;
+    var only = !!c.voice_only;
+    if (cfgQqVoice) cfgQqVoice.checked = reply;
+    if (cfgQqVoiceMembers) cfgQqVoiceMembers.checked = members;
+    if (cfgQqVoiceOnly) cfgQqVoiceOnly.checked = only;
+    if (qsVoice) qsVoice.checked = reply;
+    if (qsVoiceMembers) qsVoiceMembers.checked = members;
+    if (qsVoiceOnly) qsVoiceOnly.checked = only;
+  }
+
+  // ---------- QQ 会话头部的 OneBot 状态灯 + 快捷面板 ----------
+  var qqSessState = '';
+  var qqSessTimer = 0;
+
+  function isQqSession(sid) { return /^qq-[gp]-/.test(String(sid || '')); }
+
+  function renderQqSessState(s) {
+    var state = String((s && s.state) || '');
+    qqSessState = state;
+    var cls = 'qq-sess-dot';
+    if (state === 'connected') cls += ' on';
+    else if (state === 'connecting' || state === 'reconnecting') cls += ' wait';
+    if (qqSessDot) qqSessDot.className = cls;
+    if (qqSessDot2) qqSessDot2.className = cls;
+    if (qqSessStateText) {
+      qqSessStateText.textContent = s
+        ? (QQ_STATE_TEXT[state] || state || '未知') : '读不到状态';
+    }
+    // 处理中时不让文案被状态刷新改回去，成功后由调用方重新启用
+    if (qsConnBtn && !qsConnBtn.disabled) {
+      qsConnBtn.textContent =
+        (state === 'connected' || state === 'connecting' || state === 'reconnecting')
+          ? '断开' : '连接';
+    }
+  }
+
+  function refreshQqSessState() {
+    return memFetch('/api/qq/status', {}).then(function (s) {
+      renderQqSessState(s);
+      return s;
+    }).catch(function () {
+      renderQqSessState(null);
+      return null;
+    });
+  }
+
+  function loadQqSessConfig() {
+    return memFetch('/api/qq/config', {}).then(function (c) {
+      applyQqVoiceConfig(c);
+      return c;
+    }).catch(function () { return null; });
+  }
+
+  function syncQqSessButton() {
+    if (!qqSessWrap) return;
+    var on = isQqSession(currentSid);
+    qqSessWrap.hidden = !on;
+    if (!on) {
+      if (qqSessPanel) qqSessPanel.hidden = true;
+      return;
+    }
+    refreshQqSessState();
+    if (!qqSessTimer) {
+      qqSessTimer = setInterval(function () {
+        if (qqSessWrap.hidden) return;
+        refreshQqSessState();
+      }, 10000);
+    }
+  }
+
+  function pushQqVoice(patch) {
+    [qsVoice, qsVoiceMembers, qsVoiceOnly].forEach(function (el) {
+      if (el) el.disabled = true;
+    });
+    if (qqSessHint) qqSessHint.textContent = '保存中…';
+    return memFetch('/api/qq/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    }).then(function (res) {
+      if (res && res.config) applyQqVoiceConfig(res.config);
+      if (res && res.state) renderQqSessState(res.state);
+      if (qqSessHint) qqSessHint.textContent = '已保存';
+      return res;
+    }).catch(function (err) {
+      if (qqSessHint) {
+        qqSessHint.textContent = '保存失败：' + ((err && err.message) || '未知错误');
+      }
+      // 失败时以服务端现有值为准，避免面板上的勾选与真实配置不一致
+      loadQqSessConfig();
+      return null;
+    }).then(function (res) {
+      [qsVoice, qsVoiceMembers, qsVoiceOnly].forEach(function (el) {
+        if (el) el.disabled = false;
+      });
+      return res;
+    });
+  }
+
   function loadQqStatus() {
     return memFetch('/api/qq/status', {}).then(function (s) {
       renderQqStatus(s);
@@ -9779,10 +10063,7 @@
         c.max_reply_chunks != null ? c.max_reply_chunks : 3;
       if (qqRedactWords) qqRedactWords.set(c.redact_words || []);
       if (cfgQqRedactMask) cfgQqRedactMask.value = c.redact_mask || '***';
-      if (cfgQqVoice) cfgQqVoice.checked = !!c.voice_reply;
-      if (cfgQqVoiceMembers) cfgQqVoiceMembers.checked =
-        c.voice_group_members !== false;
-      if (cfgQqVoiceOnly) cfgQqVoiceOnly.checked = !!c.voice_only;
+      applyQqVoiceConfig(c);
       if (cfgQqVoiceSeconds) cfgQqVoiceSeconds.value =
         c.voice_max_seconds != null ? c.voice_max_seconds : 60;
       if (cfgQqVoiceKb) cfgQqVoiceKb.value =
@@ -9897,10 +10178,7 @@
         renderAdminHint();
         if (qqGroups) qqGroups.set(res.config.allow_groups || []);
         if (qqRedactWords) qqRedactWords.set(res.config.redact_words || []);
-        if (cfgQqVoice) cfgQqVoice.checked = !!res.config.voice_reply;
-        if (cfgQqVoiceMembers) cfgQqVoiceMembers.checked =
-          res.config.voice_group_members !== false;
-        if (cfgQqVoiceOnly) cfgQqVoiceOnly.checked = !!res.config.voice_only;
+        applyQqVoiceConfig(res.config);
         if (cfgQqVoiceSeconds) cfgQqVoiceSeconds.value =
           res.config.voice_max_seconds != null ? res.config.voice_max_seconds : 60;
         if (cfgQqVoiceKb) cfgQqVoiceKb.value =
@@ -9923,6 +10201,63 @@
 
   qqSaveBtn.addEventListener('click', function () { void submitQq(false); });
   qqReconnectBtn.addEventListener('click', function () { void submitQq(true); });
+
+  // QQ 会话头部面板：打开时现拉一次状态与语音开关（不碰设置页未保存的其它项）
+  if (qqSessBtn) {
+    qqSessBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (qqSessPanel.hidden) {
+        qqSessPanel.hidden = false;
+        if (qqSessHint) qqSessHint.textContent = '';
+        refreshQqSessState();
+        loadQqSessConfig();
+      } else {
+        qqSessPanel.hidden = true;
+      }
+    });
+  }
+  document.addEventListener('click', function (e) {
+    if (qqSessPanel && !qqSessPanel.hidden
+        && qqSessWrap && !qqSessWrap.contains(e.target)) {
+      qqSessPanel.hidden = true;
+    }
+  });
+  if (qsVoice) {
+    qsVoice.addEventListener('change', function () {
+      void pushQqVoice({ voice_reply: !!qsVoice.checked });
+    });
+  }
+  if (qsVoiceMembers) {
+    qsVoiceMembers.addEventListener('change', function () {
+      void pushQqVoice({ voice_group_members: !!qsVoiceMembers.checked });
+    });
+  }
+  if (qsVoiceOnly) {
+    qsVoiceOnly.addEventListener('change', function () {
+      void pushQqVoice({ voice_only: !!qsVoiceOnly.checked });
+    });
+  }
+  if (qsConnBtn) {
+    qsConnBtn.addEventListener('click', function () {
+      var connected = qqSessState === 'connected'
+        || qqSessState === 'connecting' || qqSessState === 'reconnecting';
+      qsConnBtn.disabled = true;
+      qsConnBtn.textContent = '处理中…';
+      if (qqSessHint) qqSessHint.textContent = '';
+      memFetch(connected ? '/api/qq/disconnect' : '/api/qq/connect',
+               { method: 'POST' }).then(function (res) {
+        if (res && res.state) renderQqSessState(res.state);
+        if (qqSessHint) qqSessHint.textContent = connected ? '已断开' : '已发起连接';
+      }).catch(function (err) {
+        if (qqSessHint) {
+          qqSessHint.textContent = '操作失败：' + ((err && err.message) || '未知错误');
+        }
+      }).then(function () {
+        qsConnBtn.disabled = false;
+        refreshQqSessState();
+      });
+    });
+  }
 
   if (cfgQqGuestPrompt) {
     cfgQqGuestPrompt.addEventListener('input', function () {
@@ -10171,24 +10506,6 @@
   if (presetRefreshBtn) {
     presetRefreshBtn.addEventListener('click', function () { loadPresets(); });
   }
-
-  // 刷新模型列表：和顶栏、插件端都用 /api/models，拉到的列表写进同一个下拉
-  pluginModelRefresh.addEventListener('click', function () {
-    pluginModelHint.textContent = '刷新中…';
-    reloadModels().then(function (list) {
-      pluginModelHint.textContent = list.length
-        ? ('已刷新，共 ' + list.length + ' 个模型')
-        : '没拉到模型列表：检查「模型接入」里的地址和 Key 后重试';
-    });
-  });
-
-  // 新会话复用侧栏已有的入口，创建结果由那边的广播/提示负责
-  document.getElementById('pluginNewSess').addEventListener('click', function () {
-    document.getElementById('btnNewSess').click();
-    setTimeout(loadCoreState, 500);
-  });
-
-  document.getElementById('coreRefresh').addEventListener('click', loadCoreState);
 
   // ---------- 跨屏键鼠接管（PC 浏览器 ↔ Deck） ----------
   // 远程 PC 点 logo → Pointer Lock → 相对位移/按键走 /ws/input；
@@ -10725,15 +11042,10 @@
         return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
       }) + '">' + m + '</option>';
     });
-    // 顶部工具栏的模型下拉，和设置页的模型选择下拉，用同一份列表
+    // 模型下拉：顶栏和设置页共用同一份列表
     modelSelect.innerHTML = html;
-    if (modelCapsSelect) modelCapsSelect.innerHTML = html;
-    if (cur) {
-      modelSelect.value = cur;
-      if (modelCapsSelect) modelCapsSelect.value = cur;
-    }
+    if (cur) modelSelect.value = cur;
     if (modelSelect._dd && modelSelect._dd.refresh) modelSelect._dd.refresh();
-    if (modelCapsSelect && modelCapsSelect._dd && modelCapsSelect._dd.refresh) modelCapsSelect._dd.refresh();
   }
 
   // 从服务商拉当前配置的模型列表：GET /models，OpenAI 兼容接口都支持
@@ -10823,18 +11135,7 @@
   modelSelect.addEventListener('change', function () {
     postConfig({ model: modelSelect.value });
     addSystem('模型已切换为 ' + modelSelect.value);
-    if (modelCapsSelect) modelCapsSelect.value = modelSelect.value;
   });
-
-  // 设置页的模型选择下拉：选中即等于前台模型下拉，两个保持同步
-  if (modelCapsSelect) {
-    modelCapsSelect.addEventListener('change', function () {
-      if (modelSelect.value === modelCapsSelect.value) return;
-      modelSelect.value = modelCapsSelect.value;
-      if (modelSelect._dd && modelSelect._dd.refresh) modelSelect._dd.refresh();
-      modelSelect.dispatchEvent(new Event('change'));
-    });
-  }
 
   // ＋ 附件菜单
   document.getElementById('btnPlus').addEventListener('click', function (e) {
@@ -11093,7 +11394,7 @@
     wrap.appendChild(list);
     sel.parentNode.insertBefore(wrap, sel);
     wrap.appendChild(sel);
-    if (sel.id === 'modelSelect' || sel.id === 'modelCapsSelect') wrap.classList.add('dd-model');
+    if (sel.id === 'modelSelect') wrap.classList.add('dd-model');
     sel._dd = { wrap: wrap, trig: trig, label: label, list: list };
 
     function refreshLabel() {
@@ -11101,7 +11402,7 @@
       // 列表没拉到时（没有 Key / /api/models 失败 / 配置读取失败）别留一个空胶囊：
       // 240px 宽、只有箭头的空条看着像一条坏掉的 toast。给个占位文案，用户知道
       // 这里是「模型选择」，点开还能重新拉列表
-      var isModel = sel.id === 'modelSelect' || sel.id === 'modelCapsSelect';
+      var isModel = sel.id === 'modelSelect';
       label.textContent = (o && o.textContent) || (isModel ? '选择模型' : '请选择');
       wrap.classList.toggle('dd-empty', !(o && o.value));
     }
@@ -11148,13 +11449,13 @@
     refreshLabel();
   }
   function ddInitAll() {
-    [['permSelect'], ['modelSelect'], ['modelCapsSelect'], ['memKind'], ['cfgPerm']]
+    [['permSelect'], ['modelSelect'], ['memKind'], ['cfgPerm']]
       .forEach(function (id) { ddSelect(document.getElementById(id)); });
   }
   // config/模型列表异步加载后，select.value 被恢复但 label 没跟着变，
   // 强刷会导致下拉框显示第一个选项。这里统一按各自 value 刷新一次 label
   function ddRefreshAll() {
-    ['permSelect', 'modelSelect', 'modelCapsSelect', 'memKind', 'cfgPerm']
+    ['permSelect', 'modelSelect', 'memKind', 'cfgPerm']
       .forEach(function (id) {
         var el = document.getElementById(id);
         if (el && el._dd && el._dd.refresh) el._dd.refresh();
@@ -11294,12 +11595,24 @@
   // 最近一次拿到的会话名。设置页借用顶栏写「设置」，回来时要还回去，
   // 所以得记着原来叫什么
   var curSessTitle = '';
-  function loadSessions() {
+  // 列表占位：强刷时 /api/sessions 还没回来（或鉴权刚通过），先把侧栏撑起来，
+  // 不要留一块纯空白；已经有列表时失败就不动它，避免把能用的内容抹掉
+  function sessSkeleton(text) {
+    if (sessList.querySelector('.sess')) return;
+    sessList.innerHTML = '';
+    var row = document.createElement('div');
+    row.className = 'sess sess-placeholder';
+    row.textContent = text;
+    sessList.appendChild(row);
+  }
+  function loadSessions(retried) {
     if (!deviceSession) return;
+    sessSkeleton('加载中…');
     fetch('/api/sessions')
       .then(function (r) { return r.json(); })
       .then(function (d) {
         currentSid = d.current;
+        syncQqSessButton();
         sessList.innerHTML = '';
         var curTitle = '';
         (d.items || []).forEach(function (s) {
@@ -11352,7 +11665,16 @@
         // 设置在开着的时候后台刷新了会话列表，别把「设置」俩字顶掉
         if (document.body.classList.contains('settings-mode')) setHdrTitle('设置');
       })
-      .catch(function () {});
+      .catch(function () {
+        if (retried) {
+          sessSkeleton('会话列表加载失败，点这里重试');
+          var ph = sessList.querySelector('.sess-placeholder');
+          if (ph) ph.addEventListener('click', function () { loadSessions(); });
+          return;
+        }
+        sessSkeleton('会话列表加载失败，正在重试…');
+        setTimeout(function () { loadSessions(true); }, 800);
+      });
   }
   document.getElementById('btnNewSess').addEventListener('click', function () {
     // 新会话的创建结果要靠服务端的 session_changed 广播来刷新列表；

@@ -183,15 +183,15 @@ UI_LANG = ui_language()
 # 所以模板本身放在配置里，用户可以在设置页随时改（例如换个问法、加一条自己的要求）。
 DEFAULT_ASK_TEMPLATE = (
     "看我卡在哪一步，说说现在这个画面里我该做什么。"
-    "已经能从上图判断就不要搜索；最多搜 2 次，得到一个答案就停。\n"
-    "再总结成几条可以直接照做的步骤，200 字以内。\n"
+    "已经能从上图判断就不要搜索；最多搜 2 次，得到一个答案就停。"
+    "再总结成几条可以直接照做的步骤，200 字以内。"
     "不要剧透：只讲眼前这一步怎么过，不要提前说后面的剧情、结局或其他关卡的解法。"
 )
 # 英文模式的内置默认（机翻）：与上面中文版语义一致，同样是「不剧透、少搜索」
 DEFAULT_ASK_TEMPLATE_EN = (
     "Look at where I'm stuck and tell me what to do in this screen. "
-    "If the screenshot is enough, don't search; search at most twice and stop at one answer.\n"
-    "Then summarize it as a few steps I can follow directly, under 200 words.\n"
+    "If the screenshot is enough, don't search; search at most twice and stop at one answer. "
+    "Then summarize it as a few steps I can follow directly, under 200 words. "
     "No spoilers: only how to get past this step, no later story, endings, or other levels."
 )
 
@@ -205,12 +205,12 @@ ASK_TEMPLATE = str(CFG.get("agent", {}).get("ask_template") or "").strip() or de
 # 存进 [agent] translate_template，插件设置区保存后下一次翻译就用新的。
 DEFAULT_TRANSLATE_TEMPLATE = (
     "把画面上的外文原文先照抄出来，再逐句翻译成简体中文。"
-    "已经是中文就原样说明，不要翻译。\n"
+    "已经是中文就原样说明，不要翻译。"
     "只翻译、不解释剧情、不剧透，保持原文的换行和顺序。"
 )
 DEFAULT_TRANSLATE_TEMPLATE_EN = (
     "Copy the original text on screen first, then translate it sentence by sentence into English. "
-    "If it is already English, say so and do not translate.\n"
+    "If it is already English, say so and do not translate. "
     "Translate only: no story explanation, no spoilers, keep the original line breaks and order."
 )
 
@@ -883,9 +883,9 @@ def _sess_path(sid: str) -> Path:
     return store.sess_path(sid)
 
 
-def save_current_session():
+def save_current_session(touch: bool = True):
     """把当前会话历史写盘，标题取第一条用户消息"""
-    store.save_current()
+    store.save_current(touch=touch)
 
 
 def _fresh_sid() -> str:
@@ -4767,9 +4767,9 @@ async def api_sessions():
     以前会话一多，切会话 / 删会话（各端都会重拉这个接口）要解析几 MB JSON，
     而且全在事件循环里。索引只存四行字段，落盘时顺带更新。
     """
-    items = sorted(store.index().values(), key=lambda d: d.get("updated") or 0,
-                   reverse=True)
-    return {"current": store.current_sid, "items": items}
+    # 次级键用 id：同一秒落盘的多个会话顺序固定，强刷不会来回抖
+    return {"current": store.current_sid,
+            "items": session_store.session_order(store.index().values())}
 
 
 def _current_session_untouched() -> bool:
@@ -4785,7 +4785,8 @@ def _current_session_untouched() -> bool:
 @app.post("/api/sessions/create", dependencies=[Depends(require_auth)])
 async def api_session_create():
     global _ctx_used
-    save_current_session()
+    # 只是要离开当前会话：内容照存，但不刷新 updated，避免旧会话被顶到首位
+    save_current_session(touch=False)
     # 连点「新会话」会把侧栏刷成一排空会话，一个能用的都没有。
     # 已经在空会话里就原地不动，各端也不用重刷列表
     if _current_session_untouched():
@@ -4817,7 +4818,8 @@ async def api_session_switch(req: SwitchReq):
     p = _sess_path(req.id)
     if not p.exists():
         raise HTTPException(status_code=404, detail="session not found")
-    save_current_session()
+    # 查看动作不写时间戳：仅切走前的收尾写入，排序仍按最近真实活动
+    save_current_session(touch=False)
     try:
         # 整份会话可能有几 MB，读盘同样不能压在事件循环里
         body = await asyncio.to_thread(p.read_text, encoding="utf-8")
@@ -4977,9 +4979,7 @@ async def api_session_delete(sid: str):
         store.turn["active"] = False
         # 候选顺序按索引里的 updated（比 stat 每个文件便宜得多），
         # 真正要恢复的那一份才读文件
-        cand = [i["id"] for i in sorted(store.index().values(),
-                                        key=lambda d: d.get("updated") or 0,
-                                        reverse=True)
+        cand = [i["id"] for i in session_store.session_order(store.index().values())
                 if i.get("messages") and i["id"] not in store.deleted_sids]
         nxt = None
         for cand_sid in cand:
@@ -6638,6 +6638,45 @@ async def _qq_synth_voice(text: str) -> Path:
     return await asyncio.to_thread(_qq_voice_wav, text)
 
 
+# 语音落盘用的文件名：只允许 16 位十六进制 + .wav，路由按这个格式白名单校验
+VOICE_NAME_RE = re.compile(r"^[0-9a-f]{16}\.wav$")
+
+
+async def _qq_voice_saved(ev, path: Path, seconds: float, size: int) -> None:
+    """QQ 语音条实际发出后：留一份 wav 到 userdata/voice，并写进会话消息元数据
+
+    历史里只存 {url, seconds, speaker, bytes}，音频本体放独立文件，
+    不会把 base64 撑进会话 JSON。写入排在会话 IO 线程里，和正常落盘串行。
+    """
+    sid = onebot.session_sid(ev)
+    name = f"{secrets.token_hex(8)}.wav"
+    dest = paths.voice_dir() / name
+    await asyncio.to_thread(shutil.copyfile, str(path), str(dest))
+    meta = {
+        "url": f"/api/voice/{name}",
+        "seconds": round(float(seconds), 1),
+        "speaker": SPEAKER_LABELS.get(tts.speaker, "机器人"),
+        "bytes": int(size),
+    }
+    loop = asyncio.get_running_loop()
+
+    def _work() -> None:
+        with store.lock:
+            if sid in store.deleted_sids:
+                return
+            hist = (store.history if sid == store.current_sid
+                    else (store.read_session(sid).get("history") or []))
+            ts = session_store.attach_voice(hist, meta)
+            if ts is None:
+                return
+            store.write_session(sid, hist)
+        asyncio.run_coroutine_threadsafe(
+            manager.broadcast({"type": "voice_added", "sid": sid,
+                               "ts": ts, "voice": meta}), loop)
+
+    session_store.io_submit(_work)
+
+
 onebot_client = onebot.OneBotClient(
     runner=_qq_run_turn,
     screenshot=_qq_screenshot,
@@ -6647,6 +6686,7 @@ onebot_client = onebot.OneBotClient(
     # 单条图文的 base64 超 3MB 时，压到长边 1024 / q82 再发
     image_optimizer=lambda blob: _jpeg_for_llm(blob, max_side=1024, quality=82),
     voice_synth=_qq_synth_voice,
+    voice_saved=_qq_voice_saved,
 )
 onebot_client.configure(onebot.parse_config(CFG.get("qq") or {}))
 
@@ -6671,6 +6711,86 @@ async def api_qq_status():
 async def api_qq_logs(limit: int = Query(default=100, ge=1, le=300)):
     """QQ 事件日志：只含事件与计数，不含令牌/消息正文；新的在前"""
     return {"logs": onebot_client.logs(limit), "state": onebot_client.state()}
+
+
+@app.post("/api/qq/disconnect", dependencies=[Depends(require_auth)])
+async def api_qq_disconnect():
+    """手动断开 OneBot：只停连接，不改配置（开启状态保持不变）"""
+    await onebot_client.stop()
+    return {"ok": True, "state": onebot_client.state()}
+
+
+@app.post("/api/qq/connect", dependencies=[Depends(require_auth)])
+async def api_qq_connect():
+    """重新连接 OneBot；未启用或配置不完整时明确报错，交给界面提示"""
+    state = onebot_client.state()
+    if not state.get("enable"):
+        raise HTTPException(status_code=400,
+                            detail="OneBot 通道未启用（先在设置页打开）")
+    await onebot_client.reconnect()
+    state = onebot_client.state()
+    if state.get("state") == "misconfigured":
+        raise HTTPException(status_code=400,
+                            detail=state.get("detail") or "OneBot 配置不完整")
+    return {"ok": True, "state": state}
+
+
+# ---------- 语音回放（QQ 语音条留档） ----------
+
+class VoicePlayRequest(BaseModel):
+    url: str
+
+
+# 本机播放进程：并发点击时先停掉上一个，保证不叠音
+_voice_proc = None
+
+
+def _voice_path(url: str) -> Path:
+    """把 /api/voice/xxx.wav 解析成文件路径；不在白名单格式一律拒绝"""
+    name = str(url or "").rsplit("/", 1)[-1]
+    if not VOICE_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="语音地址不合法")
+    path = paths.voice_dir() / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="语音文件不存在")
+    return path
+
+
+@app.get("/api/voice/{name}", dependencies=[Depends(require_auth)])
+async def api_voice_file(name: str):
+    """语音条原件（wav）；网页走配对 Cookie，插件走本机回环"""
+    if not VOICE_NAME_RE.match(name):
+        raise HTTPException(status_code=404, detail="语音文件不存在")
+    path = paths.voice_dir() / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="语音文件不存在")
+    return FileResponse(path, media_type="audio/wav")
+
+
+@app.post("/api/voice/play", dependencies=[Depends(require_auth)])
+async def api_voice_play(req: VoicePlayRequest):
+    """QAM / WebKit 播不了 <audio> 时的降级：用后端现有播放器在本机播放"""
+    global _voice_proc
+    path = _voice_path(req.url)
+    player = TTS._player()
+    if not player:
+        raise HTTPException(status_code=501,
+                            detail="没有可用的本机播放器（pw-play / paplay / aplay 都找不到）")
+    if _voice_proc is not None and _voice_proc.returncode is None:
+        try:
+            _voice_proc.terminate()
+        except ProcessLookupError:
+            pass
+    try:
+        _voice_proc = await asyncio.create_subprocess_exec(
+            player, str(path),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"播放失败：{type(exc).__name__}") from exc
+    return {"ok": True, "fallback": "server"}
 
 
 def _qq_id_list(value) -> list[str]:

@@ -899,7 +899,7 @@ class OneBotClient:
     def __init__(self, *, runner, screenshot, status_provider, nickname,
                  pending_clear=None, connect_factory=None, sleep=None,
                  clock=time.time, image_optimizer=None,
-                 voice_synth=None, voice_convert=None):
+                 voice_synth=None, voice_convert=None, voice_saved=None):
         """
         runner: async (text, *, sid, device, readonly, turn_id, image=None)
                 -> {"reply", "pending", "image", "caption"}
@@ -910,6 +910,8 @@ class OneBotClient:
         image_optimizer: (bytes) -> bytes|None（base64 超限时压图，可选）
         voice_synth: async (text) -> Path|None（合成语音 wav，调用方负责删文件）
         voice_convert: async (wav_bytes) -> bytes（本地转码；None = 交给 NapCat 内置转码）
+        voice_saved: (ev, path, seconds, size) -> None（语音实际发出后留本地副本，
+                    供网页 / 插件回放；失败不影响已完成的发送）
         """
         self._runner = runner
         self._screenshot = screenshot
@@ -922,6 +924,7 @@ class OneBotClient:
         self._image_optimizer = image_optimizer
         self._voice_synth = voice_synth
         self._voice_convert = voice_convert
+        self._voice_saved = voice_saved
 
         self._cfg = OneBotConfig()
         self._task: asyncio.Task | None = None
@@ -1390,34 +1393,47 @@ class OneBotClient:
             self._log("info", "voice.synth", "没有可朗读的文本，只发文字")
             return False
         try:
-            return await self._send_voice_file(ev, Path(path))
+            info = await self._send_voice_file(ev, Path(path))
+            if info is not None and self._voice_saved is not None:
+                # 语音确实发出去了，留一份本地副本供网页 / 插件回放；
+                # 这一步失败只记日志，绝不影响已经成功的语音条
+                try:
+                    await self._voice_saved(ev, Path(path), info[0], info[1])
+                except Exception as e:
+                    self._log("warn", "voice.keep",
+                              f"本地留档失败：{type(e).__name__}: {e}"[:LOG_MAXLEN])
+            return info is not None
         finally:
             try:
                 Path(path).unlink(missing_ok=True)
             except OSError:
                 pass
 
-    async def _send_voice_file(self, ev: MessageEvent, path: Path) -> bool:
-        """检查时长/大小 → 按需转码 → 发一条 record 段"""
+    async def _send_voice_file(self, ev: MessageEvent, path: Path) -> tuple[float, int] | None:
+        """检查时长/大小 → 按需转码 → 发一条 record 段
+
+        成功返回 (时长秒, 原始 wav 字节数)：调用方据此留本地副本并在消息里
+        记录 voice 元数据；任何一步失败返回 None，由调用方保证文字照常发出。
+        """
         cfg = self._cfg
         info = self._inspect_wav(path)
         if info is None:
             self._log("warn", "voice.convert", "wav 无法解析，只发文字")
-            return False
+            return None
         seconds, size = info
         if seconds > cfg.voice_max_seconds:
             self._log("info", "voice.convert",
                       f"时长 {seconds:.1f}s 超过上限 {cfg.voice_max_seconds:g}s，只发文字")
-            return False
+            return None
         if size > cfg.voice_max_kb * 1024:
             self._log("info", "voice.convert",
                       f"文件 {size / 1024:.0f}KB 超过上限 {cfg.voice_max_kb}KB，只发文字")
-            return False
+            return None
         try:
             raw = path.read_bytes()
         except OSError as e:
             self._log("warn", "voice.convert", f"读取 wav 失败：{type(e).__name__}")
-            return False
+            return None
         payload = raw
         if self._voice_convert is not None:
             try:
@@ -1425,10 +1441,10 @@ class OneBotClient:
             except Exception as e:
                 self._log("warn", "voice.convert",
                           f"转码失败（{type(e).__name__}），改发文字")
-                return False
+                return None
             if not payload:
                 self._log("warn", "voice.convert", "转码结果为空，改发文字")
-                return False
+                return None
             self._log("info", "voice.convert",
                       f"本地转码 {len(raw)}→{len(payload)} 字节")
         else:
@@ -1450,13 +1466,13 @@ class OneBotClient:
             self._log("warn", "voice.send",
                       f"{voice_identity(cfg, ev)}的语音被 NapCat 拒绝或超时："
                       f"{type(e).__name__}")
-            return False
+            return None
         self._log("info", "voice.send",
                   f"已发送 {voice_identity(cfg, ev)} "
                   f"{seconds:.1f}s {len(payload)} 字节 base64 {len(b64)} 字节"
                   + ("，voice_only=true，已跳过文字" if cfg.voice_only
                      else "，voice_only=false"))
-        return True
+        return seconds, size
 
     @staticmethod
     def _inspect_wav(path: Path) -> tuple[float, int] | None:

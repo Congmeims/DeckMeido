@@ -1540,7 +1540,8 @@ class VoiceReplyTest(unittest.IsolatedAsyncioTestCase):
             w.writeframes(b"\x00\x00" * int(rate * seconds))
         return path
 
-    def make(self, *, voice_synth, voice_convert=None, reply="好的", config=None):
+    def make(self, *, voice_synth, voice_convert=None, reply="好的", config=None,
+             voice_saved=None):
         ws = FakeWS()
 
         async def runner(text, *, sid, device, readonly, turn_id="", image=None):
@@ -1559,7 +1560,7 @@ class VoiceReplyTest(unittest.IsolatedAsyncioTestCase):
             runner=runner, screenshot=default_shot, status_provider=default_status,
             nickname=lambda: "meido", connect_factory=factory,
             sleep=asyncio.sleep, voice_synth=voice_synth,
-            voice_convert=voice_convert,
+            voice_convert=voice_convert, voice_saved=voice_saved,
         )
         raw = {"enable": True, "ws_url": "ws://127.0.0.1:3001",
                "access_token": "tok", "admin_qq": ["10001"],
@@ -1633,6 +1634,61 @@ class VoiceReplyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(synth_calls[0], "好" * 120)
         record = self.records(ws)[0]
         self.assertTrue(record["data"]["file"].startswith("base64://"))
+        await bot.stop()
+
+    async def test_voice_saved_only_after_actual_send(self):
+        """语音真的发出去了才回调留档，回调时 wav 还在（之后才删临时文件）"""
+        saved = []
+
+        async def synth(text):
+            return self.wav(seconds=1.0)
+
+        async def keep(ev, path, seconds, size):
+            saved.append((ev.uin, seconds, size, Path(path).is_file()))
+
+        bot, ws = self.make(voice_synth=synth, voice_saved=keep)
+        await self.start(bot)
+        ws.feed(private_msg("10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(len(self.records(ws)), 1)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0][0], "10001")
+        self.assertGreater(saved[0][1], 0.5)
+        self.assertTrue(saved[0][3])
+        await bot.stop()
+
+    async def test_voice_not_saved_when_over_limit(self):
+        saved = []
+
+        async def synth(text):
+            return self.wav(seconds=2.0)
+
+        async def keep(ev, path, seconds, size):
+            saved.append(path)
+
+        bot, ws = self.make(voice_synth=synth, voice_saved=keep,
+                            config={"voice_max_seconds": 1})
+        await self.start(bot)
+        ws.feed(private_msg("10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(self.records(ws), [])
+        self.assertEqual(saved, [])
+        await bot.stop()
+
+    async def test_voice_saved_error_does_not_break_send(self):
+        """留档失败只记日志，语音条与文字都照常完成"""
+        async def synth(text):
+            return self.wav()
+
+        async def keep(ev, path, seconds, size):
+            raise OSError("磁盘满了")
+
+        bot, ws = self.make(voice_synth=synth, voice_saved=keep)
+        await self.start(bot)
+        ws.feed(private_msg("10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(len(self.records(ws)), 1)
+        self.assertTrue(any("好的" in t for t in self.texts(ws)))
         await bot.stop()
 
     async def test_over_seconds_falls_back_to_text(self):
