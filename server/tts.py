@@ -73,6 +73,13 @@ _MD_CHARS_RE = re.compile(r"[*_`#>\[\]|]")
 _EMOJI_RE = re.compile(
     "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF]")
 _SPACE_RE = re.compile(r"[ \t\u3000]+")
+# 评分星号、对错勾叉这类「可见符号」先映射成可读词。它们大多落在表情符号
+# 区间，如果直接删掉，播报里就会凭空少一个字符（例如 3★ 变成 3）。
+_SPOKEN_SYMBOLS = {
+    "★": "星", "☆": "星", "♥": "心", "♡": "心",
+    "✓": "对", "✔": "对", "✗": "错", "✘": "错",
+}
+_SYMBOL_RE = re.compile("|".join(re.escape(ch) for ch in _SPOKEN_SYMBOLS))
 
 # 分句与语种判定
 _SENT_RE = re.compile(r"[^。！？!?；;：:\n]+[。！？!?；;：:\n]?")
@@ -88,6 +95,20 @@ _SCRIPT_TOKEN_RE = re.compile(
     r"|(?P<latin>[A-Za-z][A-Za-z0-9'’\-_.:/]*)"
     r"|(?P<other>.)"
 )
+
+# 句子主语言的判定阈值（没有词典，只能按字符构成估）：
+# 日语正常行文里假名（助词、送假名）通常占 CJK 的一半左右；中文句里嵌片假名
+# 专名时，假名只占 5%～30%——实测「ミカ是崔尼蒂综合学园的学生会长…」7/27≈0.26、
+# 「她的口头禅是「甘いものは正義です」…」7/26≈0.27。取 0.30 可以把这类中文
+# 主语句判回 zh，同时给真日语句（通常 >0.5）留足余量。
+KANA_JA_RATIO = 0.30
+# 拉丁字母占 3/4 以上才算整句英文，避免一两个英文术语把中文句子判成 en
+LATIN_EN_RATIO = 0.75
+
+_HIRAGANA_RE = re.compile(r"[\u3040-\u309f]")
+# 引号/括号内的文本单独判定语言，外面的文本按外层主语言判定
+_BRACKET_OPEN = {"「", "『", "（", "(", "《"}
+_BRACKET_CLOSE = {"」", "』", "）", ")", "》"}
 
 
 class TTSError(RuntimeError):
@@ -125,6 +146,7 @@ def readify(text: str, limit: int = MAX_CHARS) -> str:
     text = _FENCE_RE.sub(" ", text or "")
     text = _INLINE_CODE_RE.sub(" ", text)
     text = _URL_RE.sub(" ", text)
+    text = _SYMBOL_RE.sub(lambda m: _SPOKEN_SYMBOLS[m.group(0)], text)
     text = _EMOJI_RE.sub(" ", text)
     text = _MD_CHARS_RE.sub(" ", text)
     text = text.replace("…", "。").replace("——", "，")
@@ -161,44 +183,157 @@ def _neighbor_script(tokens: list[tuple[str, str]], index: int, step: int) -> in
     return -1
 
 
-def _token_language(tokens: list[tuple[str, str]], index: int) -> str:
-    """单个脚本片段的语言：假名 ja、拉丁 en、汉字看是否贴着假名"""
+def _sentence_language(text: str) -> str:
+    """整句主语言：拉丁绝对多数 → en；否则按假名占 CJK 的比例分 ja/zh。
+
+    纯符号/空串没有可读内容，返回 zh 占位（不会产生语音片段）。
+    """
+    kana = len(_KANA_RE.findall(text))
+    han = len(_CJK_RE.findall(text))
+    latin = len(_LATIN_RE.findall(text))
+    total = kana + han + latin
+    if total == 0:
+        return "zh"
+    if latin / total >= LATIN_EN_RATIO:
+        return "en"
+    if kana + han == 0:
+        return "en"
+    return "ja" if kana / (kana + han) >= KANA_JA_RATIO else "zh"
+
+
+def _token_language(tokens: list[tuple[str, str]], index: int, main: str) -> str:
+    """单个脚本片段的语言：以整句主语言为准，再做局部修正。
+
+    - 假名永远是 ja，拉丁永远是 en；
+    - 主语言 ja：句内所有汉字都按日语读（不要用中文音读和语汉字）；
+    - 主语言 zh/en：汉字只有紧贴「平假名」才算日语。片假名多为外来专名，
+      不把邻近汉字拖成日语。
+
+    已知限制：没有词典时，中文主语句里纯汉字写的日文人名/地名（石川由依、
+    東京大学）仍会判成 zh 并按中文读，这是无词典方案的必然取舍。
+    """
     kind = tokens[index][0]
     if kind == "kana":
         return "ja"
     if kind == "latin":
         return "en"
     if kind == "han":
-        # 日语句子里汉字与假名交替出现：贴着假名（中间只隔标点/空白）的
-        # 汉字段按日语读；其余汉字段（中文说明等）按中文读。
-        for step in (-1, 1):
-            j = _neighbor_script(tokens, index, step)
-            if j >= 0 and tokens[j][0] == "kana":
-                return "ja"
+        if main == "ja":
+            return "ja"
+        for j in (index - 1, index + 1):
+            if 0 <= j < len(tokens):
+                neighbor = tokens[j]
+                if neighbor[0] == "kana" and _HIRAGANA_RE.search(neighbor[1]):
+                    return "ja"
         return "zh"
     return ""
 
 
-def _digit_language(tokens: list[tuple[str, str]], index: int) -> str:
+def _digit_language(tokens: list[tuple[str, str]], index: int, main: str) -> str:
     """数字没有自己的语言：优先跟前一段，其次跟后一段，绝不丢"""
     for step in (-1, 1):
         j = _neighbor_script(tokens, index, step)
         while j >= 0 and tokens[j][0] == "digit":
             j = _neighbor_script(tokens, j, step)
         if j >= 0:
-            lang = _token_language(tokens, j)
+            lang = _token_language(tokens, j, main)
             if lang:
                 return lang
     return "en"
+
+
+def _context_spans(sentence: str) -> list[tuple[bool, str]]:
+    """按引号/括号切成 (是否在括号内, 文本)，拼接后与原句逐字一致。
+
+    嵌套括号整体留在同一片段里（只做单层语境）；未闭合的括号一直算到句尾；
+    多出来的右括号按普通标点留在外面。两种情况都不会崩、不会丢字符。
+    """
+    spans: list[tuple[bool, str]] = []
+    buf = ""
+    depth = 0
+    for ch in sentence:
+        if ch in _BRACKET_OPEN:
+            if depth == 0:
+                if buf:
+                    spans.append((False, buf))
+                buf = ch
+            else:
+                buf += ch
+            depth += 1
+        elif ch in _BRACKET_CLOSE and depth > 0:
+            buf += ch
+            depth -= 1
+            if depth == 0:
+                spans.append((True, buf))
+                buf = ""
+        else:
+            buf += ch
+    if buf:
+        spans.append((depth > 0, buf))
+    return spans
+
+
+def _route_span(text: str, main: str) -> list[list[str]]:
+    """把一段连续上下文按脚本切成 [语种, 片段] 列表（未合并、未切长）。"""
+    tokens = [(m.lastgroup, m.group(0)) for m in _SCRIPT_TOKEN_RE.finditer(text)]
+    segs: list[list[str]] = []
+    lead = ""  # 段首标点先攒着，等第一个有声片段一起送
+    for i, (kind, piece) in enumerate(tokens):
+        if kind == "other":
+            if segs:
+                segs[-1][1] += piece
+            else:
+                lead += piece
+            continue
+        if kind == "digit":
+            lang = segs[-1][0] if segs else _digit_language(tokens, i, main)
+        else:
+            lang = _token_language(tokens, i, main)
+        segs.append([lang, lead + piece])
+        lead = ""
+    if lead and segs:
+        segs[-1][1] += lead
+    return segs
+
+
+def _route_sentence(sentence: str) -> list[tuple[str, str]]:
+    """一句之内先分括号语境，再各自按主语言切段，最后合并同语言相邻段。"""
+    spans = _context_spans(sentence)
+    outer_text = "".join(text for inside, text in spans if not inside)
+    outer_lang = _sentence_language(outer_text)
+    segs: list[list[str]] = []
+    pending = ""  # 只有标点/符号的片段不能单独丢，攒着并给相邻片段
+    for inside, span_text in spans:
+        lang = _sentence_language(span_text) if inside else outer_lang
+        rows = _route_span(span_text, lang)
+        if not rows:
+            pending += span_text
+            continue
+        if pending:
+            rows[0][1] = pending + rows[0][1]
+            pending = ""
+        segs.extend(rows)
+    if pending:
+        if not segs:
+            return []
+        segs[-1][1] += pending
+    merged: list[tuple[str, str]] = []
+    for lang, text in segs:
+        if merged and merged[-1][0] == lang:
+            merged[-1] = (lang, merged[-1][1] + text)
+        else:
+            merged.append((lang, text))
+    return merged
 
 
 def route_segments(text: str, language: str = "auto",
                    limit: int = MAX_CHARS) -> list[tuple[str, str]]:
     """按句子 + 脚本切段，返回 [(语种, 文本)]。
 
-    auto 时每句都按脚本切成连续片段：假名 / 汉字 / 拉丁 / 数字。
-    标点和空白不单独成段，而是并进相邻片段，保证把片段拼回去后与
-    原句逐字等价（纯符号句子没有可读内容，返回空列表）。
+    auto 时先按标点和换行分句，再给每句判主语言（拉丁占绝对多数是 en，
+    否则按假名占比分 ja/zh）；引号/括号内的文本单独判定。句内按脚本切成
+    假名 / 汉字 / 拉丁 / 数字片段，标点和空白并进相邻片段，保证把片段
+    拼回去后与原句（去掉纯空白）逐字等价；纯符号句子没有可读内容，返回空列表。
 
     固定语言优先：显式选了 ja/zh/en/... 时整句不拆，直接用该语言。
     """
@@ -211,33 +346,7 @@ def route_segments(text: str, language: str = "auto",
         if forced:
             out.append((forced, sentence))
             continue
-        tokens = [(m.lastgroup, m.group(0)) for m in _SCRIPT_TOKEN_RE.finditer(sentence)]
-        segs: list[list[str]] = []
-        lead = ""  # 句首标点先攒着，等第一个有声片段一起送
-        for i, (kind, piece) in enumerate(tokens):
-            if kind == "other":
-                if segs:
-                    segs[-1][1] += piece
-                else:
-                    lead += piece
-                continue
-            if kind == "digit":
-                lang = segs[-1][0] if segs else _digit_language(tokens, i)
-            else:
-                lang = _token_language(tokens, i)
-            segs.append([lang, lead + piece])
-            lead = ""
-        if lead and segs:
-            segs[-1][1] += lead
-        # 相邻且同语言的片段合并：日语汉字/假名交替时不必每两个字符就合成一次，
-        # 减少合成调用和段间停顿，同时不改变语言标注
-        merged: list[list[str]] = []
-        for lang, seg in segs:
-            if merged and merged[-1][0] == lang:
-                merged[-1][1] += seg
-            else:
-                merged.append([lang, seg])
-        out.extend((lang, seg) for lang, seg in merged)
+        out.extend(_route_sentence(sentence))
     # 超长段落再按长度硬切，保证每次合成不会一口气吃进一大段
     trimmed: list[tuple[str, str]] = []
     for lang, segment in out:
