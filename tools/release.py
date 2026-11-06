@@ -89,8 +89,21 @@ def build_tarball(ver: str) -> Path:
 
     out = DIST / f"{name}.tar.gz"
     DIST.mkdir(exist_ok=True)
+
+    def _norm_mode(ti: tarfile.TarInfo) -> tarfile.TarInfo:
+        # 源码在 Windows/NTFS 上时权限位是 0666/0644，tar 会原样带进包里；
+        # 解到 Deck 上后 client/launch.sh 这类脚本就没了可执行位，桌面快捷方式
+        # 点开报「缺少运行权限」。打包时统一：目录 0755、脚本 0755、其余 0644。
+        if ti.isdir():
+            ti.mode = 0o755
+        elif ti.name.endswith((".sh", ".desktop")):
+            ti.mode = 0o755
+        else:
+            ti.mode = 0o644
+        return ti
+
     with tarfile.open(out, "w:gz") as tf:
-        tf.add(stage, arcname=name)
+        tf.add(stage, arcname=name, filter=_norm_mode)
     shutil.rmtree(stage_root, ignore_errors=True)
     return out
 

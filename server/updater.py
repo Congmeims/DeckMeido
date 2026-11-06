@@ -588,6 +588,26 @@ def _merge(src: Path, dst: Path) -> None:
         shutil.copy2(item, target)
 
 
+def _ensure_exec_bits(root: Path) -> None:
+    """给脚本补上可执行位，避免覆盖安装后「缺少运行权限」。
+
+    发布包可能是在 Windows/NTFS 上打的（权限位是 0666），git 导出也可能把
+    `client/launch.sh` 这类脚本记成 0644。用 `bash install.sh` 调用不受影响，
+    但桌面快捷方式是直接执行 `client/launch.sh` 的，缺可执行位时 Steam 会弹
+    「缺少运行权限」，用户看到的就是热更新之后启动不了。这里在替换前统一补位，
+    单个文件失败不影响整体升级。
+    """
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            if not name.endswith((".sh", ".desktop")):
+                continue
+            p = Path(dirpath) / name
+            try:
+                p.chmod(p.stat().st_mode | 0o111)
+            except OSError:
+                pass
+
+
 def _install_tree(src: Path, log_path: Path) -> None:
     """把解压好的新版本装进安装目录：先在本机临时目录建完整副本，再逐个原子替换。
 
@@ -613,6 +633,9 @@ def _install_tree(src: Path, log_path: Path) -> None:
             else:
                 shutil.copy2(item, dst)
             staged.append(name)
+
+        # 统一补可执行位：包里的权限位不可信（Windows 打包常见 0666/0644）
+        _ensure_exec_bits(stage_root)
 
         # server/ 里混着运行期数据：整棵换掉之前先把它们搬进新副本
         server_src = INSTALL_DIR / "server"
@@ -978,18 +1001,36 @@ def restart_after_apply(target: str, used: str, log_path: Path) -> dict:
     直接把「代码已更新，重启生效」告诉用户。
     """
     bash = shutil.which("bash")
+    script = INSTALL_DIR / "install.sh"
     if not bash:
         return {"ok": True, "restarted": False, "version": target, "source": used,
                 "message": f"代码已更新到 {target}，但找不到 bash 来跑升级脚本，请手动重启程序"}
+    if not script.is_file():
+        return {"ok": True, "restarted": False, "version": target, "source": used,
+                "log": str(log_path),
+                "message": f"代码已更新到 {target}，但安装目录里没有 install.sh，"
+                           f"无法自动重启；请手动执行：bash {script} upgrade"}
+    try:
+        # 可执行位不可信（Windows 打包 / git 导出都可能是 0644）：先补再跑，
+        # 补不了也用 bash 调用，不会因为权限位卡住升级。
+        script.chmod(script.stat().st_mode | 0o111)
+    except OSError:
+        pass
     with open(log_path, "ab") as log:
         # 内联升级没有终端：显式声明非交互，install.sh 才会自动更新 QAM 插件。
         # 否则 ask_yes 读不到 /dev/tty 会回答「不」，插件就静默停在旧版本。
         env = dict(os.environ, DECKMEIDO_NONINTERACTIVE="1")
-        subprocess.Popen(
-            [bash, str(INSTALL_DIR / "install.sh"), "upgrade"],
-            cwd=str(INSTALL_DIR), stdout=log, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL, start_new_session=True, env=env,
-        )
+        try:
+            subprocess.Popen(
+                [bash, str(script), "upgrade"],
+                cwd=str(INSTALL_DIR), stdout=log, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, start_new_session=True, env=env,
+            )
+        except OSError as exc:
+            return {"ok": True, "restarted": False, "version": target, "source": used,
+                    "log": str(log_path),
+                    "message": f"代码已更新到 {target}，但升级脚本启动失败：{exc}；"
+                               f"请手动执行：bash {script} upgrade"}
     src_note = _SOURCE_NOTE.get(used, "")
     return {"ok": True, "restarted": True, "version": target, "source": used,
             "log": str(log_path),

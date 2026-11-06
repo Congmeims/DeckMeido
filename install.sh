@@ -78,6 +78,18 @@ DESKTOP_FOLDER="$(command -v xdg-user-dir >/dev/null 2>&1 && xdg-user-dir DESKTO
 [ -n "$DESKTOP_FOLDER" ] && [ "$DESKTOP_FOLDER" != "$HOME" ] || DESKTOP_FOLDER="$HOME/Desktop"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
+# 可执行位自愈：Windows/NTFS 打的包或 git 导出常把脚本记成 0644，用 bash 调用
+# 不受影响，但桌面快捷方式是直接执行 client/launch.sh 的——缺可执行位时 Steam
+# 会弹「缺少运行权限」，表现为热更新之后点图标起不来。每次运行先补一遍，
+# 单个文件补不动就算了，不影响后面的安装/升级。
+heal_exec_bits() {
+  local root="$1" f
+  for f in install.sh uninstall.sh client/launch.sh plugin/deploy.sh deploy/DeckMeido.desktop; do
+    [ -f "$root/$f" ] && chmod +x "$root/$f" 2>/dev/null || true
+  done
+}
+heal_exec_bits "$HERE"
+
 # 0.7.3 安装目录从 ~/deckmeido 改名为 ~/DeckMeido。老用户（旧目录带安装标记或
 # VERSION、且新目录还不存在）默认继续用旧目录原地升级，绝不悄悄装成两份；
 # 想改成新名字：bash install.sh migrate，或在交互菜单里选「迁移」。
@@ -1570,6 +1582,8 @@ sync_files() {
   [ -f "$HERE/install.sh" ] || die "当前目录不像 DeckMeido 源码目录（缺 install.sh）"
   if [ "$HERE" = "$(cd "$INSTALL_DIR" 2>/dev/null && pwd -P)" ]; then
     info "已在使用目录 $INSTALL_DIR"
+    # 热更新只换文件不重跑安装流程，这里也必须补权限，否则 launch.sh 会残留 0644
+    heal_exec_bits "$INSTALL_DIR"
     write_version_file
     return
   fi
@@ -1594,8 +1608,7 @@ sync_files() {
       cp -f "$HERE/$it" "$INSTALL_DIR/$it"
     fi
   done
-  chmod +x "$INSTALL_DIR/install.sh" 2>/dev/null || true
-  chmod +x "$INSTALL_DIR/client/launch.sh" 2>/dev/null || true
+  heal_exec_bits "$INSTALL_DIR"
   write_version_file
 }
 
