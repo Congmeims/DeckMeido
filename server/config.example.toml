@@ -147,15 +147,31 @@ mirror = "https://meido.meagames.cn/deckmeido"
 github_repo = "Congmeims/deckmeido"
 
 [tts]
-# 回复语音播报（调用 Deck 内置 TTS，在 Deck 扬声器上播放）。
-# 默认关闭，需要时在网页设置页勾选，或把这里改成 true。
-# 播报依赖系统装了 espeak-ng（install.sh 安装时可选的控制类控件之一）。
+# 回复语音播报（在 Deck 扬声器上播放）。默认关闭，需要时在网页设置页
+# 「女仆人格」>「语音回复」里勾选，或把这里改成 true。
+# 主引擎 piper-plus + つくよみちゃん 6 语模型（日语/中文/英语/西/法/葡），
+# 模型不随包分发，首次播报前可在设置页点「下载模型」（约 38MB），
+# 存到 <数据根>/models/tts/tsukuyomi；空闲一段时间后自动释放内存。
+# 运行时未装、模型缺失或加载失败会自动退回 espeak-ng，状态里能看到原因。
 enable = false
-# 引擎命令：espeak-ng / espeak / spd-say
-engine = "espeak-ng"
-# espeak-ng 语言：cmn=普通话，en-us=英语
-voice = "cmn"
-# 语速（词/分钟）
+# 引擎：piper-plus（推荐）/ espeak-ng（系统兜底）
+engine = "piper-plus"
+# 音色：piper-plus 用 tsukuyomi；退回 espeak-ng 时用 cmn / en-us / ja
+voice = "tsukuyomi"
+# 语言：auto 按文字自动判定（假名→日语，汉字→中文，拉丁字母→英语）；
+# 也可以强制成 ja / zh / en / es / fr / pt
+language = "auto"
+# 语速倍率：1.0 = 模型默认，>1 更快，<1 更慢（仅 piper-plus，0.5–2.0）
+speed_scale = 1.0
+# 句内时长缩放（内部参数）：越大越慢；与 speed_scale 串联，一般不用改
+length_scale = 1.0
+# 韵律噪声（0–1）：越大停顿/语调起伏越明显；0.667 与模型示例一致
+noise_scale = 0.667
+# 下载源：auto（默认，国内镜像优先→huggingface）/ mirror / hf / 自定义 URL 前缀
+model_source = "auto"
+# piper-plus 空闲多少秒后释放已加载的模型（30–86400）
+idle_unload_sec = 600
+# 兜底 espeak-ng 的语速（词/分钟）与音色，只在退回 espeak-ng 时使用
 speed = 170
 # 单次播报最长字符数（防止超长回复读个没完）
 max_chars = 300

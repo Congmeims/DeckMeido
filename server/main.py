@@ -29,7 +29,7 @@ from .llm import LLMClient
 from . import audit, authguard, audiomute, depcheck, i18n, memory, netcfg, pairing, paths, persona, policy, power, prompts, qqbot, remote_input, singleton, status_line, tools, updater
 from .session_store import store
 from . import session_store
-from .tts import TTS
+from .tts import LANGUAGES, TTS, normalize_engine
 from .stt import STT, STTError, record_supported
 from .tomlcfg import ConfigWriteError, write_config
 
@@ -685,10 +685,16 @@ SYSTEM_PROMPT = build_system_prompt()
 _tts_cfg = CFG.get("tts", {})
 tts = TTS(
     enable=bool(_tts_cfg.get("enable", False)),
-    engine=_tts_cfg.get("engine", "espeak-ng"),
-    voice=_tts_cfg.get("voice", "cmn"),
+    engine=_tts_cfg.get("engine", "piper-plus"),
+    voice=_tts_cfg.get("voice", "tsukuyomi"),
     speed=int(_tts_cfg.get("speed", 170)),
     max_chars=int(_tts_cfg.get("max_chars", 300)),
+    speed_scale=float(_tts_cfg.get("speed_scale", 1.0)),
+    length_scale=float(_tts_cfg.get("length_scale", 1.0)),
+    noise_scale=float(_tts_cfg.get("noise_scale", 0.667)),
+    language=str(_tts_cfg.get("language", "auto") or "auto"),
+    model_source=str(_tts_cfg.get("model_source", "auto") or "auto"),
+    idle_unload_sec=float(_tts_cfg.get("idle_unload_sec", 600)),
 )
 
 # 语音识别：模型放在数据根（<data>/models/sensevoice），不进插件包也不进 venv。
@@ -730,7 +736,8 @@ def apply_config(cfg: dict):
     llm.normalize()
     t = cfg.get("tts", {})
     was_enabled = tts.enable
-    tts.enable = bool(t.get("enable", False))
+    # 引擎/音色/模型源一变，apply 会释放已加载的 ONNX；其余参数直接热更新
+    tts.apply(t)
     # 关掉播报时立刻掐断正在念的那句，不能等它自己读完。
     # apply_config 也可能在启动阶段（没跑事件循环）被调用，那时没有 loop 可建任务
     if was_enabled and not tts.enable:
@@ -738,8 +745,6 @@ def apply_config(cfg: dict):
             asyncio.get_running_loop().create_task(tts.stop())
         except RuntimeError:
             pass
-    tts.voice = t.get("voice", "cmn")
-    tts.speed = int(t.get("speed", 170))
     # 语音输入开关热更新；关掉时顺手把已加载的模型释放掉，别让它白占内存
     s = cfg.get("stt", {})
     stt.enable = bool(s.get("enable", True))
@@ -1747,6 +1752,8 @@ def get_status(gaming: bool | None = None) -> dict:
         # 虚拟手柄能不能用（后端视角）：给插件/大屏透传，避免靠 root 权限误判
         "gamepad_ok": gamepad_ok,
         "gamepad_reason": gamepad_reason,
+        # 语音合成实际用哪个引擎、为什么降级：tts_engine / tts_ready / tts_error
+        **tts.summary(),
     }
 
 
@@ -2770,6 +2777,15 @@ class ConfigUpdate(BaseModel):
     clear_api_key: bool = False
     model: str | None = None
     tts_enable: bool | None = None
+    # [tts] 引擎/音色/语言/语速：写回 config.toml，apply_config 热更新
+    # 值非法时归一化或夹到合法区间，不让一次手滑把播报弄哑
+    tts_engine: str | None = None
+    tts_voice: str | None = None
+    tts_language: str | None = None
+    tts_speed: int | None = None
+    tts_speed_scale: float | None = None
+    tts_noise_scale: float | None = None
+    tts_length_scale: float | None = None
     # 语音输入开关：和 tts_enable 一样走热更新，插件端 /api/stt/toggle 写的是同一份 [stt]
     stt_enable: bool | None = None
     # 录音期间静音外放：写入 [stt] duck_output
@@ -2806,6 +2822,11 @@ class ConfigUpdate(BaseModel):
     # 局域网访问开关与监听端口：写入 [server]，绑定地址要重启后端才生效
     lan_enable: bool | None = None
     port: int | None = None
+
+
+class TTSPreviewRequest(BaseModel):
+    # 试听文本；留空用一句内置短句
+    text: str = ""
 
 
 class PairConfirmRequest(BaseModel):
@@ -2907,6 +2928,13 @@ async def api_get_config():
         "model": llm.model,
         "reasoning_effort": llm.reasoning_effort,
         "tts_enable": tts.enable,
+        # 语音合成的引擎/音色/语速：设置页「女仆人格」下面的语音回复卡片读这些
+        "tts_engine": tts.engine,
+        "tts_voice": tts.voice,
+        "tts_language": tts.language,
+        "tts_speed": tts.speed,
+        "tts_speed_scale": tts.speed_scale,
+        "tts_noise_scale": tts.noise_scale,
         # 带画面询问的开关：面板重开后按它恢复，不能只存在前端内存里
         "with_shot": bool((CFG.get("agent") or {}).get("with_shot", True)),
         # 语音输入开关：和语音播报一样，面板上要能显示和切换
@@ -3100,8 +3128,35 @@ async def api_set_config(req: ConfigUpdate, request: Request):
     updates = {}
     if llm_updates:
         updates["llm"] = llm_updates
+    # 语音合成：开关与引擎参数写同一段 [tts]，用 setdefault 合并避免互相覆盖。
+    # 前端只传改了的那几项；非法值在这里拦住，别让保存接口 500
+    tts_updates = {}
     if req.tts_enable is not None:
-        updates["tts"] = {"enable": req.tts_enable}
+        tts_updates["enable"] = bool(req.tts_enable)
+    if req.tts_engine is not None:
+        tts_updates["engine"] = normalize_engine(req.tts_engine)
+    if req.tts_voice is not None:
+        voice = req.tts_voice.strip()
+        if not voice or len(voice) > 40 or any(ch.isspace() for ch in voice):
+            raise HTTPException(status_code=400, detail="音色名称不合法")
+        tts_updates["voice"] = voice
+    if req.tts_language is not None:
+        language = req.tts_language.strip().lower()
+        if language not in LANGUAGES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"语言只能是 {', '.join(LANGUAGES)} 之一")
+        tts_updates["language"] = language
+    if req.tts_speed is not None:
+        tts_updates["speed"] = max(80, min(320, int(req.tts_speed)))
+    if req.tts_speed_scale is not None:
+        tts_updates["speed_scale"] = round(max(0.5, min(2.0, float(req.tts_speed_scale))), 2)
+    if req.tts_noise_scale is not None:
+        tts_updates["noise_scale"] = round(max(0.0, min(1.0, float(req.tts_noise_scale))), 3)
+    if req.tts_length_scale is not None:
+        tts_updates["length_scale"] = round(max(0.4, min(3.0, float(req.tts_length_scale))), 2)
+    if tts_updates:
+        updates["tts"] = tts_updates
     if req.stt_enable is not None:
         # 语音输入：apply_config 里关掉时会顺手 unload 模型，和插件端 toggle 走同一条路径
         updates["stt"] = {"enable": bool(req.stt_enable)}
@@ -3325,6 +3380,34 @@ async def api_set_tts(enabled: bool = Query(...)):
     """
     save_config({"tts": {"enable": bool(enabled)}})
     return {"ok": True, "tts_enable": tts.enable}
+
+
+@app.get("/api/tts", dependencies=[Depends(require_auth)])
+async def api_tts_status():
+    """语音合成状态：引擎是否可用、模型是否已下载、下载进度、署名信息。"""
+    return {"ok": True, **tts.status()}
+
+
+@app.post("/api/tts/download", dependencies=[Depends(require_auth)])
+async def api_tts_download():
+    """后台下载语音模型（约 38MB）；重复点击不会开第二个线程。"""
+    return {"ok": True, **tts.start_download()}
+
+
+@app.post("/api/tts/download/cancel", dependencies=[Depends(require_auth)])
+async def api_tts_download_cancel():
+    return {"ok": True, **tts.request_cancel()}
+
+
+@app.post("/api/tts/preview", dependencies=[Depends(require_auth)])
+async def api_tts_preview(req: TTSPreviewRequest):
+    """就地试听：用当前引擎/语速念一句短的，返回实际用到的引擎与失败原因。"""
+    result = await tts.preview(req.text)
+    return {
+        "ok": bool(result.get("engine")),
+        "engine": result.get("engine", ""),
+        "error": result.get("error", ""),
+    }
 
 
 @app.get("/api/ask-template", dependencies=[Depends(require_auth)])
