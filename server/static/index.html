@@ -2806,12 +2806,6 @@
               </div>
             </div>
             <div class="field">
-              <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                <input type="checkbox" id="cfgClearDebug" checked>
-                关闭开发者模式时自动清理调试日志（含轮转出来的 .1 / .2）
-              </label>
-            </div>
-            <div class="field">
               <label>日志占用</label>
               <div id="devLogUsage" class="field-hint">统计中…</div>
               <div class="mem-foot" style="margin-top:8px;flex-wrap:wrap">
@@ -8223,8 +8217,6 @@
   var saveCfg = document.getElementById('saveCfg');
   var cfgHint = document.getElementById('cfgHint');
   var cfgDevMode = document.getElementById('cfgDevMode');
-  var devModeHint = document.getElementById('devModeHint');
-  var cfgClearDebug = document.getElementById('cfgClearDebug');
   var devLogUsage = document.getElementById('devLogUsage');
   var logClearDebug = document.getElementById('logClearDebug');
   var logClearRun = document.getElementById('logClearRun');
@@ -8767,11 +8759,7 @@
         // [runtime].dev_mode：保存即生效，不要求重启；日志细节见设置页说明
         if (cfgDevMode) {
           cfgDevMode.value = c.dev_mode ? 'on' : 'off';
-          devModeHint.textContent = c.dev_mode
-            ? '已开启：正在写 debug-<时间>.log。凭据与身份信息始终打码。'
-            : '已关闭：保持现在的日志量。开启后立即生效，不用重启后端。';
         }
-        if (cfgClearDebug) cfgClearDebug.checked = c.clear_debug_on_exit !== false;
         refreshLogUsage();
         // 更新源：双源探测，这里只控制是否同时查 GitHub
         cfgUpdGithub.checked = c.update_github_enable !== false;
@@ -9185,9 +9173,7 @@
       lan_enable: cfgLanEnable.value === 'on',
       port: port,
       // 开发者模式：写入 [runtime]，保存即生效（日志级别与细节记录不用重启）
-      dev_mode: cfgDevMode ? (cfgDevMode.value === 'on') : false,
-      // 关开发者模式时是否清 debug 日志（默认开）
-      clear_debug_on_exit: cfgClearDebug ? cfgClearDebug.checked : true
+      dev_mode: cfgDevMode ? (cfgDevMode.value === 'on') : false
     };
     if (keyInput) { payload.api_key = keyInput; }
     if (apiKeyClear) { payload.clear_api_key = true; }
@@ -9219,22 +9205,6 @@
         loadSttStatus();
         if (cfgDevMode) {
           cfgDevMode.value = res.dev_mode ? 'on' : 'off';
-          devModeHint.textContent = res.dev_mode
-            ? '已开启：正在写 debug-<时间>.log。凭据与身份信息始终打码。'
-            : '已关闭：保持现在的日志量。开启后立即生效，不用重启后端。';
-        }
-        if (cfgClearDebug) cfgClearDebug.checked = res.clear_debug_on_exit !== false;
-        // 关开发者模式可能顺手清了 debug 日志：立刻刷新占用；有清不掉的透出数量
-        if (res.log_clear) {
-          if (res.log_clear.failed) {
-            logClearNote.textContent = '有 ' + res.log_clear.failed
-              + ' 个调试日志未能删除（可能仍被进程占用），下次启动前会再试。';
-            logClearNote.style.color = '#e0a33a';
-          } else {
-            logClearNote.textContent = '已清理调试日志，释放 '
-              + fmtSize(res.log_clear.freed_bytes || 0) + '。';
-            logClearNote.style.color = '';
-          }
         }
         refreshLogUsage();
         var restartNote = res.restart_required ? '（局域网开关/端口需重启后端生效）' : '';

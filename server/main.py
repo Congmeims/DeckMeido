@@ -2974,8 +2974,6 @@ class ConfigUpdate(BaseModel):
     port: int | None = None
     # 开发者模式：写入 [runtime]，保存即生效（日志级别与细节记录不需要重启）
     dev_mode: bool | None = None
-    # 关闭开发者模式时是否自动清理 debug 日志（含轮转出来的 .1/.2）；默认 true
-    clear_debug_on_exit: bool | None = None
 
 
 class TTSPreviewRequest(BaseModel):
@@ -3152,9 +3150,6 @@ async def api_get_config():
         "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
         # [runtime].dev_mode：网页设置页的开发者模式开关；保存后立即生效
         "dev_mode": devlog.enabled(),
-        # [runtime].clear_debug_on_exit：关开发者模式时自动清 debug 日志，默认开
-        "clear_debug_on_exit": bool(
-            (CFG.get("runtime") or {}).get("clear_debug_on_exit", True)),
         # 局域网访问地址：掌机 / 大屏 / 客户端设置页直接展示，别的设备照这个连
         "lan_url": f"http://{_lan_ip()}:{CFG['server'].get('port', 18765)}",
         "device_days": _device_days(),
@@ -3435,28 +3430,15 @@ async def api_set_config(req: ConfigUpdate, request: Request):
             raise HTTPException(status_code=400, detail="端口需为 1024-65535 之间的整数")
         updates.setdefault("server", {})["port"] = port
         audit.record("config", "port", "ok", ip=_client_ip(request), detail=str(port))
-    was_dev_mode = devlog.enabled()
     if req.dev_mode is not None:
-        # 写 [runtime]，apply_config 里 devlog.configure 会立刻切换级别与文件
+        # 写 [runtime]，apply_config 里 devlog.configure 会立刻切换级别与文件。
+        # 关闭开发者模式不再自动清理 debug 日志（设置页已无该开关，固定为「不清理」），
+        # 需要清理时由用户点「清空调试日志」。
         updates.setdefault("runtime", {})["dev_mode"] = bool(req.dev_mode)
         audit.record("config", "dev_mode", "ok", ip=_client_ip(request),
                      detail="on" if req.dev_mode else "off")
-    if req.clear_debug_on_exit is not None:
-        # 新增配置键：默认 true（关开发者模式时清 debug 日志），允许用户关掉
-        updates.setdefault("runtime", {})["clear_debug_on_exit"] = bool(req.clear_debug_on_exit)
     if updates:
         save_config(updates)
-    clear_result = None
-    if req.dev_mode is False and was_dev_mode:
-        # 开发者模式从开到关：默认把 debug-*.log（含 .1/.2 轮转）清掉。
-        # 只认真正的开关切换；dev_mode 本来就是关的时候，改别的设置不会顺手删旧日志。
-        # 清理失败不影响配置保存，失败数会通过 /api/status 的 log_clear 透出。
-        try:
-            if bool((CFG.get("runtime") or {}).get("clear_debug_on_exit", True)):
-                clear_result = await asyncio.to_thread(devlog.clear_logs, "debug")
-        except Exception as exc:
-            print(f"[DeckMeido] 关闭开发者模式时清理 debug 日志失败：{exc}",
-                  file=sys.stderr)
     if ri.get("enabled") is False:
         # 关掉总开关时立刻结束正在进行的接管，不等下一次心跳
         await remote_input.manager.finish(remote_input.RI_DISABLED)
@@ -3473,15 +3455,6 @@ async def api_set_config(req: ConfigUpdate, request: Request):
             "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
             # dev_mode 保存即生效，不需要重启；重启项只算绑定地址与端口
             "dev_mode": devlog.enabled(),
-            "clear_debug_on_exit": bool(
-                (CFG.get("runtime") or {}).get("clear_debug_on_exit", True)),
-            # 关闭开发者模式触发的清理结果（没触发则为 null）
-            "log_clear": (None if clear_result is None else {
-                "deleted": clear_result["deleted"],
-                "truncated": clear_result["truncated"],
-                "failed": clear_result["failed"],
-                "freed_bytes": clear_result["freed_bytes"],
-            }),
             "restart_required": bool(req.lan_enable is not None or req.port is not None)}
 
 

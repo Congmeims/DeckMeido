@@ -52,10 +52,8 @@ port = 18765
 # 日志写到 userdata/logs/debug-<时间>.log；单文件 10 MB，保留 2 个旧文件，
 # 总计约 30 MB。凭据、Cookie、URL 查询值、非回环 IP、QQ 号始终会打码，
 # 与开关无关。
+# 关闭开发者模式不会自动删除已写出的 debug-*.log；需要清理时在设置页点「清空调试日志」。
 dev_mode = false
-# 关闭开发者模式时是否自动清理 debug-*.log（含轮转出来的 .1/.2）。
-# 默认 true；清理失败不影响配置保存，失败数会透出到状态接口。
-clear_debug_on_exit = true
 
 [security]
 # 已配对设备凭据的有效期（天）。Cookie 勾选「保持登录」时按这个时长下发。
