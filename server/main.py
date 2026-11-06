@@ -3551,6 +3551,21 @@ async def api_logs_clear(req: LogClearRequest):
         result = await asyncio.to_thread(devlog.clear_logs, req.category)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        # 清理本身出任何意外都不该变成 500 纯文本（前端会 JSON.parse 失败）：
+        # 把异常类型和原因带回去，让界面能直接显示为什么没清掉
+        detail = f"{type(exc).__name__}: {exc}"
+        print(f"[DeckMeido] 清空日志失败：{detail}", file=sys.stderr)
+        result = {
+            "ok": False,
+            "category": req.category,
+            "deleted": 0,
+            "truncated": 0,
+            "failed": 1,
+            "failed_files": [{"name": "logs", "error": detail}],
+            "freed_bytes": 0,
+            "usage": None,
+        }
     audit.record("config", "logs_clear", "ok" if result["ok"] else "warn",
                  ip=_client_ip(request), detail=req.category)
     return result

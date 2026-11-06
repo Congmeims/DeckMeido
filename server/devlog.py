@@ -260,7 +260,9 @@ def log_files(category: str = "all") -> list[Path]:
         from . import paths
 
         entries = list(paths.logs_dir().iterdir())
-    except OSError:
+    except Exception:
+        # logs_dir() 在数据根不可写时抛 RuntimeError（不是 OSError）；
+        # 这里只是「列文件」，目录不可用就当没有日志，不能把接口带成 500
         return []
     out: list[Path] = []
     for p in entries:
@@ -345,7 +347,7 @@ def clear_logs(category: str = "all") -> dict:
     for p in files:
         try:
             size = p.stat().st_size
-        except OSError:
+        except Exception:
             size = 0
         try:
             if p.name in active:
@@ -359,7 +361,9 @@ def clear_logs(category: str = "all") -> dict:
             freed += size
         except FileNotFoundError:
             pass
-        except OSError as exc:
+        except Exception as exc:
+            # 单个文件被占用/无权限/只读：跳过并记录，继续清其余文件，
+            # 不让一个清不掉的文件把整个接口带成 500
             failed.append({"name": p.name, "error": f"{type(exc).__name__}: {exc}"})
     result = {
         "ok": not failed,
@@ -369,7 +373,7 @@ def clear_logs(category: str = "all") -> dict:
         "failed": len(failed),
         "failed_files": failed,
         "freed_bytes": freed,
-        "usage": usage(),
+        "usage": None,
     }
     _LAST_CLEAR = {
         "ts": time.time(),
@@ -382,7 +386,11 @@ def clear_logs(category: str = "all") -> dict:
     if failed:
         print(f"[DeckMeido] 清理日志（{category}）：{len(failed)} 个文件未能删除："
               + "，".join(f["name"] for f in failed), file=sys.stderr)
-    # 清理后让下一次 usage 立刻反映真实占用
+    # 清理后让下一次 usage 立刻反映真实占用（缓存作废后再扫一次）
     _USAGE_CACHE.update({"ts": 0.0, "data": None})
-    result["usage"] = usage()
+    try:
+        result["usage"] = usage()
+    except Exception:
+        # 占用统计失败不影响「已经删掉了哪些文件」这个结果
+        result["usage"] = None
     return result

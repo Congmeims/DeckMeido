@@ -8585,54 +8585,102 @@
   var logClearNote = document.getElementById('logClearNote');
   var logClearWarnedTs = 0;
 
-  // 日志占用：总占用 / debug 轮转上限 + 悬停看分项。清空后立即重拉，不等轮询
+  // 统一解析接口响应：先看状态码 / Content-Type，只有确实是 JSON 才 parse。
+  // 后端偶发 500 时返回的是纯文本 "Internal Server Error"，旧代码直接
+  // r.json() 会抛 SyntaxError，用户看到的就成了「清空失败：SyntaxError…」。
+  function readApiResponse(r) {
+    var type = ((r.headers && r.headers.get('Content-Type')) || '').toLowerCase();
+    return r.text().then(function (text) {
+      var raw = text || '';
+      if (type.indexOf('json') >= 0 || /^[\[{]/.test(raw.trim())) {
+        try {
+          return { ok: r.ok, status: r.status, data: JSON.parse(raw) };
+        } catch (e) { /* 不是合法 JSON，按纯文本处理 */ }
+      }
+      return { ok: r.ok, status: r.status, data: null, text: raw };
+    });
+  }
+
+  // 日志占用文案：总占用 / debug 轮转上限 + 悬停看分项
+  function applyLogUsage(u) {
+    if (!devLogUsage || !u || !u.total) return;
+    devLogUsage.textContent = '日志占用 ' + fmtSize(u.total.bytes || 0)
+      + ' / ' + fmtSize(u.cap_bytes || 0) + '（' + (u.total.files || 0) + ' 个文件）';
+    var cats = u.categories || {};
+    var line = function (label, c) {
+      c = c || {};
+      return label + '：' + fmtSize(c.bytes || 0) + '，' + (c.files || 0) + ' 个文件';
+    };
+    var parts = [line('调试', cats.debug), line('运行', cats.run), line('安装', cats.install)];
+    if (u.active && u.active.length) parts.push('正在写入：' + u.active.join('、'));
+    if (u.last_clear && u.last_clear.failed) {
+      parts.push('上次清理失败 ' + u.last_clear.failed + ' 个');
+    }
+    devLogUsage.title = parts.join('\n');
+  }
+
+  // 日志占用：清空后立即重拉，不等轮询
   function refreshLogUsage() {
     if (!devLogUsage) return;
-    fetch('/api/logs/usage').then(function (r) { return r.json(); }).then(function (u) {
-      var total = (u && u.total) || {};
-      devLogUsage.textContent = '日志占用 ' + fmtSize(total.bytes || 0)
-        + ' / ' + fmtSize(u.cap_bytes || 0) + '（' + (total.files || 0) + ' 个文件）';
-      var cats = (u && u.categories) || {};
-      var line = function (label, c) {
-        c = c || {};
-        return label + '：' + fmtSize(c.bytes || 0) + '，' + (c.files || 0) + ' 个文件';
-      };
-      var parts = [line('调试', cats.debug), line('运行', cats.run), line('安装', cats.install)];
-      if (u && u.active && u.active.length) parts.push('正在写入：' + u.active.join('、'));
-      if (u && u.last_clear && u.last_clear.failed) {
-        parts.push('上次清理失败 ' + u.last_clear.failed + ' 个');
-      }
-      devLogUsage.title = parts.join('\n');
+    fetch('/api/logs/usage').then(readApiResponse).then(function (res) {
+      if (res.data) applyLogUsage(res.data);
     }).catch(function () {});
   }
 
+  function logClearNoteText(msg, level) {
+    if (!logClearNote) return;
+    logClearNote.textContent = msg;
+    logClearNote.style.color = level === 2 ? '#e0493a' : (level === 1 ? '#e0a33a' : '');
+  }
+
+  // 三个清空按钮共用：无论成功、部分失败、HTTP 错误还是非 JSON 响应，
+  // 都只显示「状态码 + 简短原因」，不再把解析异常抛给用户
   function clearLogCategory(category, label) {
     if (!window.confirm('确定清空' + label + '？清空后不可恢复。\n只清日志，不碰配置、会话、记忆和模型。')) return;
+    logClearNoteText('正在清空' + label + '…', 0);
     fetch('/api/logs/clear', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ category: category })
-    }).then(function (r) { return r.json(); }).then(function (res) {
+    }).then(readApiResponse).then(function (res) {
+      var d = res.data;
+      if (!d) {
+        // 非 JSON（如 500 纯文本）：显示状态码和截断后的原文
+        var detail = (res.text || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        logClearNoteText('清空' + label + '失败：HTTP ' + res.status
+          + (detail ? '（' + detail + '）' : ''), 2);
+        refreshLogUsage();
+        return;
+      }
+      if (!res.ok) {
+        // 400/401/403 等也带 JSON（detail 字段），照样能把原因说清楚
+        logClearNoteText('清空' + label + '失败：' + (d.detail || ('HTTP ' + res.status)), 2);
+        refreshLogUsage();
+        return;
+      }
       var msg;
-      if (res.ok) {
-        msg = '已清空' + label + '，释放 ' + fmtSize(res.freed_bytes || 0) + '。';
+      var level = 0;
+      if (d.ok) {
+        msg = '已清空' + label + '，释放 ' + fmtSize(d.freed_bytes || 0) + '。';
+      } else if (d.failed_files && d.failed_files.length) {
+        var first = d.failed_files[0] || {};
+        msg = '清理' + label + '：' + (d.failed || d.failed_files.length)
+          + ' 个文件未能删除（' + (first.name || '未知') + '：'
+          + (first.error || '未知原因') + '）。';
+        level = 1;
       } else {
-        msg = '清理' + label + '：' + (res.failed || 0)
-          + ' 个文件未能删除（可能仍被进程占用）。';
+        msg = '清理' + label + '失败：' + (d.detail || d.error || ('HTTP ' + res.status));
+        level = 2;
       }
-      if (res.truncated) msg += ' 其中 ' + res.truncated + ' 个正在写入，已截断为 0。';
-      logClearNote.textContent = msg;
-      logClearNote.style.color = res.ok ? '' : '#e0a33a';
+      if (d.truncated) msg += ' 其中 ' + d.truncated + ' 个正在写入，已截断为 0。';
+      logClearNoteText(msg, level);
+      if (d.usage) applyLogUsage(d.usage);
       // 先用返回里的 usage 立即刷新数字，再拉一次校准（轮转可能刚发生）
-      var u = res.usage || {};
-      if (devLogUsage && u.total) {
-        devLogUsage.textContent = '日志占用 ' + fmtSize(u.total.bytes || 0)
-          + ' / ' + fmtSize(u.cap_bytes || 0) + '（' + (u.total.files || 0) + ' 个文件）';
-      }
       refreshLogUsage();
     }).catch(function (e) {
-      logClearNote.textContent = '清空失败：' + e;
-      logClearNote.style.color = '#e0493a';
+      // 只有网络层错误（断网、请求被拒）才会到这里
+      logClearNoteText('清空失败：' + (e && e.message ? e.message : e), 2);
+      refreshLogUsage();
     });
   }
   if (logClearDebug) {
