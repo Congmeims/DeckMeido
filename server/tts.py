@@ -753,8 +753,19 @@ class TTS:
             if not segments:
                 return
             devlog.log("tts.speak", chars=len(cleaned), segments=len(segments),
-                       language=self.language, max_chars=self.max_chars,
+                       engine=self.engine, language=self.language,
+                       max_chars=self.max_chars,
                        piper_ready=self._piper_ready())
+            if self.engine == "espeak-ng":
+                # 引擎下拉选了 espeak-ng 就必须真的用它：之前只要 piper 模型
+                # 可用就一律走 piper，网页上改引擎/音色听不出任何变化。
+                voice = self.voice
+                if voice == VOICE_ID:
+                    # 从 piper 继承下来的音色名 espeak-ng 不认识，按语言映射
+                    voice = ESPEAK_LANG_VOICES.get(self.language, "cmn")
+                await self._speak_espeak(cleaned, event, voice=voice,
+                                         language=self.language)
+                return
             if self._piper_ready():
                 try:
                     failures, degraded, first_error = await self._speak_piper(
@@ -963,7 +974,7 @@ class TTS:
         args.append(text)
         self._last_engine = "espeak-ng"
         devlog.log("tts.segment", engine="espeak-ng", binary=name, chars=len(text),
-                   language=language or spoken)
+                   voice=spoken, language=language or spoken)
         started = time.perf_counter()
         try:
             proc = await asyncio.create_subprocess_exec(

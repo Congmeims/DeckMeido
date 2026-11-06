@@ -478,6 +478,73 @@ class InterruptTest(unittest.TestCase):
         self.assertEqual(calls, ["试听一句。"])
 
 
+class EngineSelectionTest(unittest.TestCase):
+    """引擎下拉选 espeak-ng 时必须真的走 espeak，不能被可用的 piper 顶替"""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name)
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _tts(self, engine, voice, language="zh"):
+        t = ttsmod.TTS(enable=True, engine=engine, voice=voice,
+                       language=language, model_root=self.root)
+        t._piper_ready = lambda: True
+        t._espeak_binary = lambda: "/usr/bin/espeak-ng"
+        return t
+
+    def test_选了_espeak_ng_时不再走_piper(self):
+        t = self._tts("espeak-ng", "en-us")
+        piper_calls = []
+        espeak_calls = []
+
+        async def fake_piper(segments, event):
+            piper_calls.append(segments)
+            return 0, 0, ""
+
+        async def fake_espeak(text, event, **kw):
+            espeak_calls.append((text, kw.get("voice")))
+
+        t._speak_piper = fake_piper
+        t._speak_espeak = fake_espeak
+        _run(t.speak("你好。"))
+        self.assertEqual(piper_calls, [])
+        self.assertEqual(espeak_calls, [("你好。", "en-us")])
+
+    def test_从_piper_继承的音色名按语言映射(self):
+        # 配置里 engine 改成 espeak-ng 但 voice 还是 tsukuyomi 时，
+        # 不能把 piper 的音色名直接丢给 espeak-ng（它不认识）
+        t = self._tts("espeak-ng", ttsmod.VOICE_ID)
+        espeak_calls = []
+
+        async def fake_espeak(text, event, **kw):
+            espeak_calls.append((text, kw.get("voice")))
+
+        t._speak_espeak = fake_espeak
+        _run(t.speak("你好。"))
+        self.assertEqual(espeak_calls, [("你好。", "cmn")])
+
+    def test_选_piper_时仍然走_piper(self):
+        t = self._tts("piper-plus", ttsmod.VOICE_ID)
+        piper_calls = []
+        espeak_calls = []
+
+        async def fake_piper(segments, event):
+            piper_calls.append(segments)
+            return 0, 0, ""
+
+        async def fake_espeak(text, event, **kw):
+            espeak_calls.append(text)
+
+        t._speak_piper = fake_piper
+        t._speak_espeak = fake_espeak
+        _run(t.speak("你好。"))
+        self.assertEqual(len(piper_calls), 1)
+        self.assertEqual(espeak_calls, [])
+
+
 class SegmentFallbackTest(unittest.TestCase):
     """个别片段合成失败时逐段用 espeak-ng 念出来，绝不静默丢段"""
 
