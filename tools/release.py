@@ -6,13 +6,15 @@
     python tools/release.py 0.6.6
 不带版本号时读 plugin/package.json 的 version。
 
-产物只写到 dist/。发版剩下的步骤是人工的：
-  1. 把 dist/ 里的产物同步进 winres/deckmeido/ 并提交；
+产物写到 dist/，并自动同步到 winres/deckmeido/（该目录只保留当前版本产物）。
+剩下的发布步骤是人工的：
+  1. 提交 winres/deckmeido/ 里的产物；
   2. 用 gh release 把 tar.gz / 插件 zip / sha256 / latest.json / install.sh
      作为资产传到 GitHub。
 """
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -24,6 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
+WINRES = ROOT / "winres" / "deckmeido"
 
 ITEMS = [
     "server", "client", "assets", "deploy", "plugin",
@@ -206,6 +209,36 @@ def write_meta(ver: str, tarball: Path):
     )
 
 
+def sync_winres(ver: str, tarball: Path, zip_path: Path) -> None:
+    """把当前版本产物同步到 winres/deckmeido，并清掉其它版本的旧包。
+
+    约定：这个目录只放最新版本，用户直接从里面取包装机。清理按文件名里的
+    版本号判断，绝不按修改时间（避免误删刚复制进来的当前版本）；与版本号
+    无关的 install.sh / latest.json / SHA256SUMS 永远保留并覆盖。
+    """
+    WINRES.mkdir(parents=True, exist_ok=True)
+    current = [
+        tarball.name, f"{tarball.name}.sha256",
+        zip_path.name, f"{zip_path.name}.sha256",
+    ]
+    pat = re.compile(r"^deckmeido(?:-plugin)?-(\d+(?:\.\d+)*)\.(?:tar\.gz|zip)(?:\.sha256)?$")
+    removed = []
+    for p in sorted(WINRES.iterdir()):
+        if not p.is_file() or p.name in current:
+            continue
+        m = pat.match(p.name)
+        if m and m.group(1) != ver:
+            p.unlink()
+            removed.append(p.name)
+    for name in removed:
+        print(f"    清理旧产物 {name}")
+    for name in current + ["install.sh", "latest.json", "SHA256SUMS"]:
+        src = DIST / name
+        if src.exists():
+            shutil.copy2(src, WINRES / name)
+    print(f"    已同步到 winres/deckmeido（只保留 {ver} 版本产物）")
+
+
 def main():
     ver = sys.argv[1] if len(sys.argv) > 1 else json.loads(
         (ROOT / "plugin" / "package.json").read_text(encoding="utf-8")
@@ -242,11 +275,14 @@ def main():
     if audit.returncode != 0:
         sys.exit("发布包里有疑似凭据，已中止本次发布（见上面的列表）")
 
+    print("==> 同步 winres")
+    sync_winres(ver, tar, z)
+
     print("==> 打包完成")
     print(f"    {tar}")
     print(f"    {z}")
-    print("    产物只在 dist/，没有上传步骤")
-    print("    下一步：同步 dist/ 到 winres/deckmeido/ 并提交，再用 gh release 上传资产")
+    print("    产物已写入 dist/ 与 winres/deckmeido/，没有上传步骤")
+    print("    下一步：提交 winres/deckmeido/，再打 tag 并用 gh release 上传资产")
 
 
 if __name__ == "__main__":
