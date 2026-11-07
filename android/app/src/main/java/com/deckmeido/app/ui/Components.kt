@@ -113,7 +113,7 @@ fun connText(state: ConnState): String = when (state) {
 }
 
 @Composable
-fun MessageBubble(message: ChatMessage) {
+fun MessageBubble(message: ChatMessage, onSpeak: (() -> Unit)? = null) {
     if (message.role == "system") {
         Text(
             message.content,
@@ -157,6 +157,19 @@ fun MessageBubble(message: ChatMessage) {
                         MaterialTheme.colorScheme.onSurface
                     },
                 )
+                if (!isUser && onSpeak != null) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        TextButton(
+                            onClick = onSpeak,
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                        ) {
+                            Text("播报", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
             }
         }
     }
@@ -169,3 +182,20 @@ fun formatTime(epochSeconds: Double): String {
 }
 
 fun formatTime(epochSeconds: Long): String = formatTime(epochSeconds.toDouble())
+
+/** 文件大小：与网页端 fbFmtSize 同一套单位，避免两端数字看起来对不上。 */
+fun formatBytes(bytes: Long?): String {
+    if (bytes == null) return "—"
+    if (bytes < 1024) return "${bytes}B"
+    if (bytes < 1024 * 1024) return "${bytes / 1024}K"
+    if (bytes < 1024L * 1024 * 1024) {
+        return String.format(Locale.US, "%.1fM", bytes / 1048576.0)
+    }
+    return String.format(Locale.US, "%.1fG", bytes / 1073741824.0)
+}
+
+/** 修改时间：后端没给（旧版本 / stat 失败）时显示 —，不要留空。 */
+fun formatMtime(epochSeconds: Double?): String {
+    if (epochSeconds == null || epochSeconds <= 0.0) return "—"
+    return formatTime(epochSeconds)
+}

@@ -1,5 +1,9 @@
 package com.deckmeido.app.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,7 +13,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,8 +38,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 
 @Composable
@@ -48,7 +53,6 @@ fun ChatScreen(vm: DeckMeidoViewModel) {
     ScreenScaffold(
         title = title,
         subtitle = connText(vm.connState),
-        onBack = { vm.back() },
         modifier = Modifier.imePadding(),
         actions = {
             if (vm.running || vm.awaitingReply || vm.queuedCount > 0) {
@@ -68,7 +72,7 @@ fun ChatScreen(vm: DeckMeidoViewModel) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             items(vm.messages) { message ->
-                MessageBubble(message)
+                MessageBubble(message, onSpeak = { vm.speak(message.content) })
             }
             if (vm.thoughtText.isNotBlank()) {
                 item("thought") { ThoughtBlock(vm.thoughtText) }
@@ -106,8 +110,23 @@ fun ChatScreen(vm: DeckMeidoViewModel) {
 
 @Composable
 private fun ChatBottomBar(vm: DeckMeidoViewModel) {
+    val context = LocalContext.current
+    val micLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) vm.startRecording() else vm.onMicPermissionDenied()
+    }
+    val onMicClick = {
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        if (granted) vm.startRecording() else micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+
     Surface(color = MaterialTheme.colorScheme.surface) {
         Column {
+            if (vm.ttsLoading || vm.ttsActive) {
+                SpeakBar(vm)
+            }
             if (vm.queuedCount > 0) {
                 Row(
                     Modifier
@@ -124,36 +143,95 @@ private fun ChatBottomBar(vm: DeckMeidoViewModel) {
                     TextButton(onClick = { vm.clearQueue() }) { Text("清空") }
                 }
             }
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                OutlinedTextField(
-                    value = vm.inputText,
-                    onValueChange = { vm.inputText = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = {
-                        Text(
-                            if (vm.running || vm.awaitingReply) {
-                                "本轮进行中，发送会排队"
-                            } else {
-                                "说点什么…"
-                            },
-                        )
-                    },
-                    maxLines = 4,
-                )
-                Spacer(Modifier.width(8.dp))
-                Button(
-                    onClick = { vm.send() },
-                    enabled = vm.inputText.isNotBlank(),
+            if (vm.recording) {
+                RecordBar(vm)
+            } else {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.Bottom,
                 ) {
-                    Text("发送")
+                    TextButton(
+                        onClick = onMicClick,
+                        enabled = !vm.sttBusy,
+                    ) {
+                        Text(if (vm.sttBusy) "识别中…" else "语音")
+                    }
+                    OutlinedTextField(
+                        value = vm.inputText,
+                        onValueChange = { vm.inputText = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = {
+                            Text(
+                                if (vm.running || vm.awaitingReply) {
+                                    "本轮进行中，发送会排队"
+                                } else {
+                                    "说点什么…"
+                                },
+                            )
+                        },
+                        maxLines = 4,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = { vm.send() },
+                        enabled = vm.inputText.isNotBlank(),
+                    ) {
+                        Text("发送")
+                    }
                 }
             }
+        }
+    }
+}
+
+/** 录音中：显示秒数与上限，完成即上传 STT 并填进输入框（不自动发送）。 */
+@Composable
+private fun RecordBar(vm: DeckMeidoViewModel) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+        Spacer(Modifier.width(10.dp))
+        Text(
+            "录音中 ${vm.recordSeconds}s / 60s",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        Spacer(Modifier.weight(1f))
+        TextButton(onClick = { vm.cancelRecording() }) { Text("取消") }
+        Button(onClick = { vm.finishRecording() }) { Text("完成") }
+    }
+}
+
+/** 播报控制条：合成中 / 播放中 / 暂停中。 */
+@Composable
+private fun SpeakBar(vm: DeckMeidoViewModel) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            when {
+                vm.ttsLoading -> "正在合成语音…"
+                vm.ttsPaused -> "播报已暂停"
+                else -> "正在播报…"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        Spacer(Modifier.weight(1f))
+        if (!vm.ttsLoading) {
+            TextButton(onClick = { vm.toggleSpeaking() }) {
+                Text(if (vm.ttsPaused) "继续" else "暂停")
+            }
+            TextButton(onClick = { vm.stopSpeaking() }) { Text("停止") }
         }
     }
 }

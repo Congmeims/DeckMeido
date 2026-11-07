@@ -48,6 +48,19 @@ fun ConnectScreen(vm: DeckMeidoViewModel) {
         )
         Spacer(Modifier.height(8.dp))
 
+        Button(
+            onClick = { vm.startScan() },
+            enabled = !vm.connecting,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("扫码配对")
+        }
+        Text(
+            "在 Deck 上打开 http://127.0.0.1:18765/pair/qr 显示二维码，用这里扫一下即可完成配对，不用手输地址和 PIN。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
         OutlinedTextField(
             value = vm.baseUrlInput,
             onValueChange = { vm.baseUrlInput = it },

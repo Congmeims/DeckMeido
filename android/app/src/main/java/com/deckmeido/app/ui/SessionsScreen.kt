@@ -9,10 +9,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -29,12 +29,11 @@ import com.deckmeido.app.data.SessionItem
 fun SessionsScreen(vm: DeckMeidoViewModel) {
     ScreenScaffold(
         title = "会话",
-        subtitle = connText(vm.connState),
+        subtitle = connText(vm.connState) + " · 点会话直接进入聊天",
         actions = {
             TextButton(onClick = { vm.refreshSessions() }, enabled = !vm.sessionsLoading) {
                 Text("刷新")
             }
-            TextButton(onClick = { vm.disconnect() }) { Text("断开") }
         },
     ) { padding ->
         Column(
@@ -65,7 +64,8 @@ fun SessionsScreen(vm: DeckMeidoViewModel) {
                                 SessionRow(
                                     item = item,
                                     current = item.id == vm.currentSid,
-                                    onClick = { vm.openPreview(item.id) },
+                                    switching = vm.switchingSession && vm.currentSid != item.id,
+                                    onClick = { vm.openSession(item.id) },
                                 )
                             }
                         }
@@ -82,21 +82,17 @@ fun SessionsScreen(vm: DeckMeidoViewModel) {
                     )
                 }
             }
-            Button(
-                onClick = { vm.enterChat() },
-                enabled = vm.connState is ConnState.Online,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-            ) {
-                Text("进入当前会话")
-            }
         }
     }
 }
 
 @Composable
-private fun SessionRow(item: SessionItem, current: Boolean, onClick: () -> Unit) {
+private fun SessionRow(
+    item: SessionItem,
+    current: Boolean,
+    switching: Boolean,
+    onClick: () -> Unit,
+) {
     Card(
         Modifier
             .fillMaxWidth()
@@ -128,8 +124,12 @@ private fun SessionRow(item: SessionItem, current: Boolean, onClick: () -> Unit)
                 )
                 Box(Modifier.width(6.dp))
             }
+            if (switching) {
+                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
+                Box(Modifier.width(6.dp))
+            }
             Text(
-                "预览 ›",
+                "聊天 ›",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
