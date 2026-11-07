@@ -1071,10 +1071,10 @@ optional_downloads() {
     export DECKMEIDO_INSTALL_TTS=0
   fi
 
-  # 5. 系统控件依赖（代替用户动手的 ydotool / wtype / grim 等）
+  # 5. 系统控件依赖（代替用户动手的 ydotool / wtype 等）
   local deps_present=""
-  if need_cmd ydotool && need_cmd wtype && need_cmd grim; then
-    deps_present="ydotool/wtype/grim 已在 PATH"
+  if need_cmd ydotool && need_cmd wtype; then
+    deps_present="ydotool/wtype 已在 PATH"
   fi
   if opt_download "系统控件依赖（--deps）" "模拟点击/输入、截图等系统能力，需 sudo 走 pacman/AUR" "约 100MB" "$deps_present" n; then
     export DECKMEIDO_INSTALL_DEPS=1
