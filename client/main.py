@@ -639,7 +639,8 @@ class RestartToast(QWidget):
 
     Qt 托盘气泡不能显示剩余秒数、也不会按预算自动消失，所以自己画一块：
     - 成功：倒计时到点前就切换成「重启成功」，0.9 秒后关闭，随后退出进程；
-    - 超时/失败：停掉倒计时并显示「仍在重启」或失败原因，不再假装成功。
+    - 超时/失败：停掉倒计时并显示「仍在重启」或失败原因，不再假装成功；
+      失败提示不自动消失，由用户点击卡片关闭，或下一次重启时重置。
     """
 
     def __init__(self) -> None:
@@ -656,6 +657,8 @@ class RestartToast(QWidget):
         lay.setContentsMargins(18, 14, 18, 14)
         self._label = QLabel("", self)
         self._label.setWordWrap(True)
+        # 让点击落在卡片本身：失败提示常驻后靠点击关闭，别被 QLabel 吃掉
+        self._label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         lay.addWidget(self._label)
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
@@ -684,7 +687,7 @@ class RestartToast(QWidget):
             text = "重启成功，正在拉起新客户端…"
             self._label.setStyleSheet("")
         else:
-            text = self._fail_text or "重启失败"
+            text = (self._fail_text or "重启失败") + "\n点击此卡片关闭"
             self._label.setStyleSheet("color: #ff8f86;")
         self._label.setText(text)
         self._place()
@@ -721,8 +724,15 @@ class RestartToast(QWidget):
         self._refresh()
         self.show()
         self.raise_()
-        # 失败结果要看得见：独立停留时间，与成功倒计时无关
-        QTimer.singleShot(12000, self.close)
+        # 失败结果必须停住：只有成功才自动消失。这里不再定时关闭，
+        # 由用户点击卡片手动关闭，或下一次重启（start）重置。
+
+    def mousePressEvent(self, event) -> None:
+        """失败/超时提示常驻，点击卡片即关闭；倒计时与成功态不响应点击"""
+        if self._mode in ("failure", "overdue"):
+            self.close()
+            return
+        super().mousePressEvent(event)
 
 
 def main() -> int:
