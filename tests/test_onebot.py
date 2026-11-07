@@ -139,16 +139,42 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(route.kind, "status")
         self.assertFalse(route.readonly)
 
-    def test_admin_exempt_from_whitelist_and_at(self):
-        # 主人豁免：不在白名单的群、没 @、没加前缀，固定命令照样执行
-        route = onebot.route_message(self.cfg(), self.ev("10001", "/shot", "29999", False), "meido")
+    def test_admin_in_whitelisted_group_exempt_from_at(self):
+        # 白名单群内：主人免 @、免前缀，固定命令照样执行
+        route = onebot.route_message(self.cfg(), self.ev("10001", "/shot", "20001", False), "meido")
         self.assertEqual(route.action, "command")
         self.assertEqual(route.kind, "shot")
+
+    def test_admin_in_nonwhite_group_is_ignored(self):
+        # 群白名单先于管理员身份：不在名单里的群，主人也不触发
+        route = onebot.route_message(self.cfg(), self.ev("10001", "/shot", "29999", False), "meido")
+        self.assertEqual(route.action, "ignore")
+        self.assertIn("白名单", route.reason)
 
     def test_admin_private_exempt(self):
         route = onebot.route_message(self.cfg(), self.ev("10001", "/shot"), "meido")
         self.assertEqual(route.action, "command")
         self.assertEqual(route.kind, "shot")
+
+    def test_empty_whitelist_blocks_all_groups(self):
+        # 空名单 = 全禁，主人也不例外；私聊主人不受影响
+        cfg = self.cfg(allow_groups=())
+        for uin in ("10001", "30003"):
+            route = onebot.route_message(cfg, self.ev(uin, "meido /status", "20001", True), "meido")
+            self.assertEqual(route.action, "ignore", uin)
+        self.assertEqual(onebot.route_message(cfg, self.ev("10001", "/status"), "meido").action,
+                         "command")
+
+    def test_reply_eligible_same_gate_as_routing(self):
+        cfg = self.cfg()
+        self.assertTrue(onebot.reply_eligible(cfg, self.ev("10001", "", "20001", False)))
+        self.assertFalse(onebot.reply_eligible(cfg, self.ev("10001", "", "29999", False)))
+        self.assertTrue(onebot.reply_eligible(cfg, self.ev("10001", "")))
+        self.assertFalse(onebot.reply_eligible(cfg, self.ev("30003", "")))
+        self.assertFalse(onebot.reply_eligible(cfg, self.ev("30003", "", "20001", False)))
+        self.assertTrue(onebot.reply_eligible(cfg, self.ev("30003", "", "20001", True)))
+        self.assertFalse(onebot.reply_eligible(self.cfg(allow_groups=()),
+                                                self.ev("10001", "", "20001", True)))
 
     def test_unknown_slash_gets_single_hint_route(self):
         route = onebot.route_message(self.cfg(), self.ev("10001", "/nope"), "meido")
@@ -562,16 +588,81 @@ class BotTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.state()["stats"]["errors"], 1)
         await bot.stop()
 
-    async def test_nonwhite_group_admin_still_replies(self):
-        """主人豁免：非白名单群里主人发指令仍要正常回复（既有语义）"""
+    async def test_nonwhite_group_admin_gets_no_output(self):
+        """群白名单先于管理员身份：非白名单群里主人也不能触发任何出站"""
         bot, ws = self.make()
         await bot.start()
         self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
         ws.feed(group_msg("29999", "10001", "meido /status"))
+        ws.feed(group_msg("29999", "10001", "/shot"))
         await bot.wait_idle()
-        sent = [p for p in ws.sent if p.get("action") == "send_group_msg"]
-        self.assertTrue(sent)
-        self.assertIn("设备状态", json.dumps(sent, ensure_ascii=False))
+        self.assertEqual(reply_payloads(ws), [])
+        self.assertEqual(self.calls, [])
+        self.assertEqual(bot.state()["stats"]["ignored"], 2)
+        logs = json.dumps(bot.logs(20), ensure_ascii=False)
+        self.assertIn("reason=group_not_allowed", logs)
+        self.assertIn("group=29999", logs)
+        self.assertIn("uin=10001", logs)
+        await bot.stop()
+
+    async def test_nonwhite_group_any_message_zero_outbound(self):
+        """非白名单群：@/不 @/命令/别名/图片/语音配置全都不产生任何出站"""
+        bot, ws = self.make(config={
+            "enable": True, "ws_url": "ws://127.0.0.1:3001",
+            "access_token": "tok", "admin_qq": ["10001"],
+            "allow_groups": ["20001"], "allow_image": True,
+            "rate_per_minute": 1, "group_rate_per_minute": 1,
+        })
+        await bot.start()
+        self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
+        ws.feed(group_msg("29999", "10001", "meido /status", at=True, mid="a"))
+        ws.feed(group_msg("29999", "10001", "meido 你好", at=False, mid="b"))
+        ws.feed(group_msg("29999", "30003", "截个屏", at=True, mid="c"))
+        ws.feed(group_msg("29999", "30003", "meido 你好", at=False, mid="d"))
+        await bot.wait_idle()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(reply_payloads(ws), [])
+        self.assertEqual(bot.state()["stats"]["ignored"], 4)
+        # 被白名单拦下的消息既不占限流配额，也不触发限流提示
+        self.assertEqual(bot.state()["stats"]["rate_limited"], 0)
+        self.assertEqual(bot.state()["stats"]["received"], 0)
+        await bot.stop()
+
+    async def test_empty_whitelist_blocks_all_groups_but_private_admin_works(self):
+        """allow_groups 为空 = 全禁：群消息零出站，私聊主人照常回复"""
+        bot, ws = self.make(config={
+            "enable": True, "ws_url": "ws://127.0.0.1:3001",
+            "access_token": "tok", "admin_qq": ["10001"], "allow_groups": [],
+        })
+        await bot.start()
+        self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
+        ws.feed(group_msg("20001", "10001", "meido /status"))
+        ws.feed(group_msg("20001", "30003", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(reply_payloads(ws), [])
+        self.assertEqual(bot.state()["stats"]["ignored"], 2)
+        ws.feed(private_msg("10001", "meido 今天天气怎么样"))
+        await bot.wait_idle()
+        self.assertEqual(len(self.calls), 1)
+        self.assertTrue(reply_payloads(ws))
+        self.assertIn("群聊白名单为空", json.dumps(bot.logs(30), ensure_ascii=False))
+        await bot.stop()
+
+    async def test_call_api_backstop_blocks_unauthorized_targets(self):
+        """任何绕过前置判定的直接发送，也会在 _call_api 层被挡下"""
+        bot, ws = self.make()
+        await bot.start()
+        self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
+        with self.assertRaises(PermissionError):
+            await bot._call_api("send_group_msg",
+                                {"group_id": 29999, "message": "x"})
+        with self.assertRaises(PermissionError):
+            await bot._call_api("send_private_msg",
+                                {"user_id": 30003, "message": "x"})
+        self.assertEqual(reply_payloads(ws), [])
+        logs = json.dumps(bot.logs(20), ensure_ascii=False)
+        self.assertIn("reason=target_not_allowed", logs)
         await bot.stop()
 
     async def test_incoming_truncated(self):
@@ -952,15 +1043,20 @@ class AliasTest(unittest.TestCase):
         self.assertEqual(route.action, "chat")
         self.assertTrue(route.readonly)
 
-    def test_group_admin_exempt_from_whitelist_and_at(self):
-        """主人豁免：不在白名单、没有 @ 也能按管理员指令路由（预期语义）"""
+    def test_group_admin_exempt_from_at_in_whitelist(self):
+        """白名单群内：主人免 @ 也能按管理员指令路由"""
         route = alias_route("截个屏", group="20001", at=True)
         self.assertEqual(route.kind, "shot")
         self.assertFalse(route.readonly)
-        route = alias_route("截个屏", group="29999", at=True)
-        self.assertEqual(route.kind, "shot")
         route = alias_route("截个屏", group="20001", at=False)
         self.assertEqual(route.kind, "shot")
+
+    def test_admin_nonwhite_group_ignored(self):
+        # 群白名单先于管理员身份，非白名单群一律忽略
+        route = alias_route("截个屏", group="29999", at=True)
+        self.assertEqual(route.action, "ignore")
+        route = alias_route("截个屏", group="29999", at=False)
+        self.assertEqual(route.action, "ignore")
 
     def test_non_admin_still_ignored_in_nonwhite_group(self):
         route = alias_route("截个屏", group="29999", at=True, uin="30003")
@@ -1395,14 +1491,14 @@ class ShotTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([seg.get("type") for seg in message], ["text", "image"])
         self.assertEqual(message[0]["data"]["text"], "截图已奉上")
 
-    async def test_admin_group_shot_is_single_reply_without_whitelist(self):
-        """主人豁免：不在白名单的群、没 @ 也直接执行；只回一条，不进 AI"""
+    async def test_admin_group_shot_without_at_in_whitelisted_group(self):
+        """白名单群内：主人免 @ 也直接执行；只回一条，不进 AI"""
         async def shot():
             return PNG, "ok"
 
         bot, ws, calls = await start_bot(screenshot=shot)
-        ev = group_event("29999", "10001", "/shot")
-        ev["message"] = [seg_text("/shot")]  # 去掉 @：主人仍然可以
+        ev = group_event("20001", "10001", "/shot")
+        ev["message"] = [seg_text("/shot")]  # 去掉 @：白名单内主人仍然可以
         ws.feed(ev)
         self.assertTrue(await wait_until(lambda: reply_payloads(ws)))
         await bot.wait_idle()
@@ -1411,6 +1507,24 @@ class ShotTest(unittest.IsolatedAsyncioTestCase):
         segs = [seg.get("type") for seg in sent[0]["params"]["message"]]
         self.assertEqual([x for x in segs if x != "at"], ["text", "image"])
         self.assertEqual(calls, [], "固定命令不得继续进入 AI 回合")
+
+    async def test_group_shot_in_nonwhite_group_gets_no_output(self):
+        """非白名单群里的 /shot：不截图、不回复、不进 AI"""
+        called = []
+
+        async def shot():
+            called.append(True)
+            return PNG, "ok"
+
+        bot, ws, calls = await start_bot(screenshot=shot)
+        ev = group_event("29999", "10001", "/shot")
+        ev["message"] = [seg_text("/shot")]
+        ws.feed(ev)
+        await bot.wait_idle()
+        self.assertEqual(reply_payloads(ws), [])
+        self.assertEqual(calls, [])
+        self.assertEqual(called, [])
+        await bot.stop()
 
     async def test_unknown_slash_gets_one_hint_and_no_ai(self):
         bot, ws, calls = await start_bot()
@@ -1905,6 +2019,23 @@ class VoiceReplyTest(unittest.IsolatedAsyncioTestCase):
                           for s in (f.get("params", {}).get("message") or [])
                           if isinstance(s, dict))]
         self.assertEqual(actions, ["send_group_msg"])
+        await bot.stop()
+
+    async def test_nonwhite_group_voice_is_not_synthesized(self):
+        """非白名单群：连语音合成都不触发，更不会有 record 段出站"""
+        called = []
+
+        async def synth(text):
+            called.append(text)
+            return self.wav()
+
+        bot, ws = self.make(voice_synth=synth, config={"voice_reply": True})
+        await self.start(bot)
+        ws.feed(group_msg("29999", "10001", "meido 你好"))
+        await bot.wait_idle()
+        self.assertEqual(called, [])
+        self.assertEqual(self.records(ws), [])
+        self.assertEqual(self.texts(ws), [])
         await bot.stop()
 
     async def test_synth_failure_falls_back_to_text(self):

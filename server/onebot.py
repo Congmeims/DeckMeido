@@ -9,8 +9,11 @@ WebSocket 服务器，本机不开任何入站端口。NapCat 重启、网络抖
 
 安全模型：
   - 只处理白名单里的管理员 QQ 私聊；别人的私聊静默忽略，一个字都不回；
-  - 群聊必须被 @ 才处理，而且只能聊天（工具层按只读上下文拦死设备操作）；
-  - 命令（/status /shot /cancel）只在管理员私聊里解析；
+  - 群聊只响应 allow_groups 里的群（空 = 全禁，主人也不例外）；
+    非白名单群的消息零出站，只记一行结构化日志；
+  - 白名单群里必须被 @ 才处理（主人免 @），群友只能聊天
+    （工具层按只读上下文拦死设备操作）；
+  - 命令（/status /shot /cancel）在管理员私聊或白名单群里解析；
   - 每分钟条数、单条长度都设上限，超限的静默丢弃、不回发；
   - 任何异常只回一句笼统的话，细节写本地日志。
 """
@@ -731,8 +734,21 @@ def is_admin_user(cfg: OneBotConfig, ev: MessageEvent) -> bool:
     return ev.uin in cfg.admin_qq
 
 
+def group_allowed(cfg: OneBotConfig, ev: MessageEvent) -> bool:
+    """群聊白名单：不在名单里的群一律不响应（空名单 = 全禁）
+
+    这是整条链路的第一道门，主人 QQ 也不能绕过——群聊是公共场合，
+    只要群号没配置，连提示、错误、限流通知都不能发出去。私聊不受影响。
+    """
+    if ev.group_id is None:
+        return True
+    return ev.group_id in cfg.allow_groups
+
+
 def voice_allowed(cfg: OneBotConfig, ev: MessageEvent) -> bool:
     """语音条触发者：私聊仍只认主人 QQ；群聊可放开给群成员"""
+    if not group_allowed(cfg, ev):
+        return False
     if is_admin_user(cfg, ev):
         return True
     return ev.group_id is not None and cfg.voice_group_members
@@ -746,17 +762,17 @@ def voice_identity(cfg: OneBotConfig, ev: MessageEvent) -> str:
 def route_message(cfg: OneBotConfig, ev: MessageEvent, nickname: str) -> Route:
     """权限判定与指令路由（纯函数，方便单测）
 
-    主人豁免（唯一规则）：is_admin_user 为真时，私聊 / 任意群 / 是否 @ /
-    群是否在白名单 / 群指令开关，全都不再拦截，直接按管理员的指令路由。
-    非管理员私聊：静默忽略；
-    非管理员群聊：不在白名单或没 @ 机器人时静默忽略，其余只读聊天。
+    顺序固定：群白名单 → 管理员身份 → 私聊/群友身份。
+    群聊一律先过 allow_groups（空 = 全禁），主人也不能绕过；白名单群内的
+    主人仍免 @、可执行指令。非管理员私聊：静默忽略；
+    非管理员群聊：没 @ 机器人时静默忽略，其余只读聊天。
     """
+    if not group_allowed(cfg, ev):
+        return Route("ignore", reason="群不在白名单")
     if is_admin_user(cfg, ev):
         return _admin_route(ev.text, nickname, readonly=False)
     if ev.group_id is None:
         return Route("ignore", reason="非管理员私聊")
-    if not cfg.allow_groups or ev.group_id not in cfg.allow_groups:
-        return Route("ignore", reason="群不在白名单")
     if not ev.at_bot:
         return Route("ignore", reason="群里没有 @ 机器人")
     body = strip_prefix(ev.text, nickname)
@@ -764,16 +780,19 @@ def route_message(cfg: OneBotConfig, ev: MessageEvent, nickname: str) -> Route:
 
 
 def reply_eligible(cfg: OneBotConfig, ev: MessageEvent) -> bool:
-    """这个事件是否有资格收到回复：主人任意位置；群友只限白名单群里 @ 的情况
+    """这个事件是否有资格收到回复：主人私聊/白名单群；群友只限 @ 的情况
 
     与 route_message 的放行条件保持同一份语义。所有出站函数都用它兜底，
     防止某个分支在 A 处判定忽略、却在 B 处把消息发出去。
+    群白名单优先于管理员身份：非白名单群里的主人也不回。
     """
+    if not group_allowed(cfg, ev):
+        return False
     if is_admin_user(cfg, ev):
         return True
     if ev.group_id is None:
         return False
-    return bool(ev.at_bot) and ev.group_id in cfg.allow_groups
+    return bool(ev.at_bot)
 
 
 # ---------- 限流 / 截断 / 退避 ----------
@@ -1050,6 +1069,11 @@ class OneBotClient:
         running = self._task is not None and not self._task.done()
         self._log("info", "配置已更新",
                   f"enable={cfg.enable} 管理员={len(cfg.admin_qq)} 群={len(cfg.allow_groups)}")
+        if cfg.enable and not cfg.allow_groups:
+            # 空名单 = 全禁：更容易被误读成「不限」，启动时明确记一笔
+            self._log("warn", "群聊白名单为空",
+                      "allow_groups=[]：所有群消息一律不响应（空 = 全禁）；"
+                      "主人私聊不受影响")
         # 只有「启动过」之后才自动重启：import 阶段 configure 不该拉起连接，
         # 真正的启动入口是 start()
         if self._booted and (running or (cfg.enable and not err)):
@@ -1306,6 +1330,20 @@ class OneBotClient:
 
     async def _call_api(self, action: str, params: dict, timeout: float = 15.0,
                         strict_retcode: bool = False):
+        # 发送类 API 的最后一道兜底：目标群必须仍在白名单里，私聊目标必须是主人。
+        # 正常链路在更早的 reply_eligible 就拦住了；这里防止将来新增旁路调用。
+        if action == "send_group_msg":
+            target = str((params or {}).get("group_id") or "")
+            if target not in self._cfg.allow_groups:
+                self._log("warn", "skip",
+                          f"reason=target_not_allowed action={action} group={target}")
+                raise PermissionError("出站目标群不在白名单")
+        elif action == "send_private_msg":
+            target = str((params or {}).get("user_id") or "")
+            if target not in self._cfg.admin_qq:
+                self._log("warn", "skip",
+                          f"reason=target_not_allowed action={action} uin={target}")
+                raise PermissionError("出站私聊目标不是主人")
         ws = self._ws
         if ws is None:
             raise ConnectionError("QQ 通道未连接")
@@ -1578,9 +1616,17 @@ class OneBotClient:
                 pass
 
     async def _dispatch_inner(self, ev: MessageEvent) -> None:
+        cfg = self._cfg
+        # 第一道门（顺序固定）：群聊只认白名单，空名单 = 全禁。
+        # 非白名单群的消息在这里就结束：不消耗限流配额、不写群缓存、不产生
+        # 任何出站（文字/图片/语音/表情/提示/错误/限流通知），只留一行结构化日志。
+        if not group_allowed(cfg, ev):
+            self._stats["ignored"] += 1
+            self._log("warn", "skip",
+                      f"reason=group_not_allowed group={ev.group_id} uin={ev.uin}")
+            return
         self._stats["received"] += 1
         self._last_message_at = self._clock()
-        cfg = self._cfg
         self._log("info", "收到消息",
                   f"{'群' if ev.group_id else '私聊'} uin={ev.uin}"
                   + (f" group={ev.group_id}" if ev.group_id else ""))
@@ -1590,22 +1636,14 @@ class OneBotClient:
         # 免得它们跟着聊天正文进长期记忆，长成「@meido 帮我记住…」这种条目
         ev.text = memory.clean_text(ev.text, names=(nickname, ev.sender_name))
         # 群常识缓存：只记白名单群里的闲聊（含没 @ 的），供群友轮次做只读参考
-        if ev.group_id and cfg.group_memo and ev.group_id in cfg.allow_groups:
+        if ev.group_id and cfg.group_memo:
             try:
                 self._memo.remember(ev.group_id, ev.sender_name, ev.text)
             except Exception as e:
                 self._log("warn", "群缓存写入失败", repr(e))
         device = device_tag(ev)
-        # 先做权限路由，再限流：非白名单群里的消息根本不该得到任何回执，
-        # 也就不能在这里消耗配额、更不能发「太快了」这类提示（以前提示在
-        # 路由之前发，会把限流提示直接发进没有授权的群）
-        route = route_message(cfg, ev, nickname)
-        if route.action == "ignore":
-            self._stats["ignored"] += 1
-            self._log("info", "权限忽略", route.reason)
-            return
-        # 限流超限：不静默丢弃，回一句短提示；提示按人/群各节流一分钟，
-        # 不会每一条都回一遍把人刷屏
+        # 判定顺序：白名单/私聊（上面已过）→ 限流 → 权限（管理员）→ 处理。
+        # 非白名单群根本走不到这里，也就不能消耗配额、更不能收到「太快了」提示。
         allowed, notice = self._gate.check(ev.uin, ev.group_id)
         if not allowed:
             self._stats["rate_limited"] += 1
@@ -1613,6 +1651,12 @@ class OneBotClient:
                       f"uin={ev.uin}" + (f" group={ev.group_id}" if ev.group_id else ""))
             if notice:
                 await self._send_text(ev, notice, at=False)
+            return
+        # 权限路由：管理员 / 私聊 / 群友，只在白名单群内生效
+        route = route_message(cfg, ev, nickname)
+        if route.action == "ignore":
+            self._stats["ignored"] += 1
+            self._log("info", "权限忽略", route.reason)
             return
         # 危险固定命令的二次确认：上一条挂起的命令先在这里消化掉
         if await self._consume_menu_confirm(ev, device):
