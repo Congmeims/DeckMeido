@@ -21,7 +21,7 @@ from pathlib import Path
 
 import tomllib
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Depends, UploadFile, Response, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -7224,5 +7224,47 @@ async def api_save_qq_config(req: OneBotConfigUpdate):
 
 # 图片上传落在数据根（userdata/uploads），不再写进 server/static
 app.mount("/uploads", StaticFiles(directory=str(paths.uploads_dir())), name="uploads")
+
+
+def _serving_on_steamos() -> bool:
+    """服务端是否跑在 SteamOS 上（字体作用域的判定前提之一）。
+
+    只认发行版标记，不用 UA 里的 "Linux" 之类容易误判的字符串：
+    PC 上装个 Linux 浏览器不该被当成掌机。
+    """
+    if sys.platform != "linux":
+        return False
+    try:
+        text = Path("/etc/os-release").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    fields = {}
+    for line in text.splitlines():
+        if "=" in line:
+            key, val = line.split("=", 1)
+            fields[key.strip()] = val.strip().strip('"')
+    return (fields.get("ID", "").lower() == "steamos"
+            or "steamos" in fields.get("NAME", "").lower())
+
+
+SERVING_ON_STEAMOS = _serving_on_steamos()
+
+
+@app.get("/", include_in_schema=False)
+@app.get("/index.html", include_in_schema=False)
+async def index_page(request: Request):
+    """首屏注入运行环境标记：字体在 CSS 里按 data-runtime 切换，不靠 JS 后切。
+
+    - 服务端在 SteamOS，且请求来自本机回环（客户端 / QAM / 掌机浏览器）
+      → data-runtime="deck"，保持统一的 Noto 字体；
+    - 其余（PC 浏览器经局域网访问、开发机）→ "pc"，恢复改动前的字体。
+    """
+    client = request.client.host if request.client else ""
+    runtime = "deck" if SERVING_ON_STEAMOS and netcfg.is_loopback(client) else "pc"
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    html = html.replace("<html ", f'<html data-runtime="{runtime}" ', 1)
+    return HTMLResponse(html)
+
+
 # 静态网页控制台（放最后挂载，避免覆盖 API 路由）
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

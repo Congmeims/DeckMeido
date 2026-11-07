@@ -42,6 +42,24 @@
     --ri-focus: rgba(26,159,255,.95);
     --ri-focus-soft: rgba(26,159,255,.28);
   }
+  /* PC 网页恢复改动前（fee6bc2 之前）的字体：正文 PingFang 优先，
+     等宽回到 ui-monospace 体系。Deck 环境（html[data-runtime="deck"]）
+     继续用 :root 里的 Noto 那套，互不影响。标记由服务端首屏注入。 */
+  html[data-runtime="pc"] {
+    --font-sans: "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC",
+                 "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, monospace;
+  }
+  /* 这几个位置改动前本来就是等宽，统一字体时并进了正文；PC 恢复回来 */
+  html[data-runtime="pc"] .sys-ip,
+  html[data-runtime="pc"] .sys-val,
+  html[data-runtime="pc"] #fbPath,
+  html[data-runtime="pc"] .fb-item .sz,
+  html[data-runtime="pc"] #fbViewer .fv-meta,
+  html[data-runtime="pc"] .ctrl-log { font-family: ui-monospace, monospace; }
+  html[data-runtime="pc"] .qq-logs-body {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; }
   /* 脚本回退字体在这里常常把字画成深色块，中文统一交给系统字体 */
@@ -56,7 +74,9 @@
     overflow: hidden;
   }
   /* 表单控件默认走平台的 UI 字体，会和正文不一致；统一继承正文那一套 */
-  button, input, select, textarea { font-family: inherit; }
+  /* 表单控件继承正文只对 Deck 生效；PC 网页保持浏览器默认控件字体 */
+  html[data-runtime="deck"] button, html[data-runtime="deck"] input,
+  html[data-runtime="deck"] select, html[data-runtime="deck"] textarea { font-family: inherit; }
 
   /* 顶部状态栏 */
   header {
