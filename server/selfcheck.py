@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import os
 import re
 import shutil
@@ -28,6 +29,10 @@ import zipfile
 from pathlib import Path
 
 from . import depcheck, tools, tts as tts_mod
+
+# 后端把 stdout/stderr 落进 userdata/logs/backend.log；未知异常在这里留完整堆栈，
+# 界面只拿到脱敏后的一句话，不暴露 Python 原文。
+logger = logging.getLogger("deckmeido.selfcheck")
 
 _tts = None
 
@@ -149,8 +154,6 @@ COMPONENTS = [
                "约 1MB", "package", "bash install.sh check --fix", True),
     _component("spectacle", "spectacle（截图）", lambda: _which_status("spectacle", "spectacle"),
                "约 5MB", "package", "bash install.sh check --fix", True),
-    _component("grim", "grim（截图备选）", lambda: _which_status("grim", "grim"),
-               "约 1MB", "package", "bash install.sh check --fix", True),
     _component("espeak", "espeak-ng（机器人语音）",
                lambda: _which_status("espeak-ng", "espeak-ng"),
                "约 5MB", "package", "bash install.sh check --fix", True),
@@ -325,6 +328,20 @@ def start(component: str, hook=None) -> dict:
     return {"ok": True, "job": job_snapshot()}
 
 
+def _job_error_text(exc: Exception, component: str, action: str = "安装") -> str:
+    """把异常转成界面可读的一句话。
+
+    已知业务失败（RuntimeError / PackageError 且带中文原因）原样展示；
+    其余异常（例如 subprocess 参数组合错误、逻辑 bug）只露类型，完整堆栈写日志。
+    """
+    text = str(exc).strip()
+    if isinstance(exc, (RuntimeError, PackageError)) and text:
+        return text
+    logger.exception("%s任务出现未预期异常：component=%s", action, component)
+    return (f"{action}过程中出现内部错误（{type(exc).__name__}），"
+            "详细堆栈已写入后端日志（userdata/logs/backend.log）")
+
+
 def _run_job(item: dict) -> None:
     key = item["key"]
     try:
@@ -345,7 +362,8 @@ def _run_job(item: dict) -> None:
         _set(key, "done", 0.0, "需要在终端执行", state="need_terminal",
              error=str(exc))
     except Exception as exc:
-        _set(key, "error", 0.0, "安装失败", state="error", error=str(exc) or "未知错误")
+        _set(key, "error", 0.0, "安装失败", state="error",
+             error=_job_error_text(exc, key))
 
 
 class _NeedTerminal(Exception):
@@ -398,7 +416,7 @@ def _run_uninstall(component: str) -> None:
         _set(component, "done", 100.0, "已卸载，可在本页重新安装", state="done")
     except Exception as exc:
         _set(component, "error", 0.0, "卸载失败", state="error",
-             error=str(exc) or "未知错误")
+             error=_job_error_text(exc, component, "卸载"))
 
 
 def _poll_sleep(stop_check=None) -> None:
@@ -521,8 +539,11 @@ def _install_package(item: dict) -> str:
             except RuntimeError as exc:
                 rc, out = 126, str(exc)
             if _pkexec_denied(rc, out):
-                _set(key, "auth", 50.0, "没有拿到 polkit 授权，改用管理员密码…")
-                password = _request_password(key, "需要管理员密码来安装系统包")
+                # polkit 被取消/拒绝要单独说清楚，不能和「密码错误」混在一起
+                _set(key, "auth", 50.0, "polkit 授权未通过，改用管理员密码…")
+                password = _request_password(
+                    key, "polkit 授权未通过（弹窗被取消或未允许），请输入管理员密码继续安装",
+                    timeout_reason="polkit 授权未通过")
                 _set(key, "install", 85.0, f"pacman 安装 {spec['package']}…")
                 rc, out = _exec_install("password", password, path, spec["package"])
         else:
@@ -798,6 +819,8 @@ def _exec_install(mode: str, password: str | None, path: Path, name: str,
     """按授权方式执行「关只读 → pacman → 恢复只读」脚本。
 
     密码通过 stdin 传给 `sudo -S`，不进 argv，也不会出现在任何日志/界面里。
+    注意：subprocess 的 capture_output 与 stdout/stderr 互斥，这里只用前者，
+    再在 Python 里把两路文本合并，避免 ValueError 把界面拖进「失败」。
     """
     base = ["bash", "-c", _INSTALL_SCRIPT, "deckmeido-install", str(path), name]
     if mode == "sudo":
@@ -807,12 +830,12 @@ def _exec_install(mode: str, password: str | None, path: Path, name: str,
     else:
         argv = ["sudo", "-S", "-p", ""] + base
     kwargs = dict(capture_output=True, text=True, timeout=timeout,
-                  stderr=subprocess.STDOUT, env={**os.environ})
+                  env={**os.environ})
     if mode == "password":
         kwargs["input"] = (password or "") + "\n"
     try:
         proc = subprocess.run(argv, **kwargs)
-        return proc.returncode, proc.stdout or ""
+        return proc.returncode, ((proc.stdout or "") + (proc.stderr or "")).strip()
     except subprocess.TimeoutExpired:
         raise RuntimeError("安装超时（约 10 分钟），可能卡在依赖下载；请重试")
     except FileNotFoundError:
@@ -836,7 +859,8 @@ def _sudo_check(password: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
-def _request_password(component: str, message: str) -> str:
+def _request_password(component: str, message: str,
+                      timeout_reason: str = "") -> str:
     """把任务挂起等界面输入密码；超时或连续错误都由这里统一抛错"""
     global _pw_value, _pw_fail, _pw_attempts, _pw_waiting
     with _pw_lock:
@@ -848,7 +872,8 @@ def _request_password(component: str, message: str) -> str:
     _set(component, "auth", 50.0, message, state="need_password")
     try:
         if not _pw_event.wait(PASSWORD_WAIT_SECONDS):
-            raise RuntimeError("等待管理员密码超时，请重新点击安装")
+            extra = f"（{timeout_reason}）" if timeout_reason else ""
+            raise RuntimeError(f"等待管理员密码超时{extra}，请重新点击安装")
     finally:
         _pw_waiting = False
     with _pw_lock:
@@ -910,10 +935,26 @@ def _clear_password() -> None:
 
 
 def _install_error_text(out: str, rc: int) -> str:
-    """从 pacman / 脚本输出里挑出真正的失败原因，而不是只报「失败」"""
+    """从 pacman / 脚本输出里挑出真正的失败原因，并按原因分类，不混成一句「失败」。
+
+    分类：只读保护、sudoers 无权、sudo 拒绝密码、polkit 未授权、pacman 失败。
+    后几类文案彼此不重叠，界面据此就能判断是哪一步出的问题。
+    """
+    low = (out or "").lower()
     if "DECKMEIDO_ERR readonly_disable" in (out or ""):
         return ("无法关闭 SteamOS 只读保护，系统包需要可写根分区；"
                 "请先在终端执行 steamos-readonly disable 后重试")
+    if "not in the sudoers" in low:
+        return ("当前用户不在 sudoers 中，无法用密码提权安装；"
+                "请换有 sudo 权限的账号，或让管理员把该用户加入 sudoers")
+    if any(s in low for s in ("incorrect password attempt", "sorry, try again",
+                              "a password is required", "a terminal is required")):
+        return ("管理员密码未被 sudo 接受（密码错误或已过期），"
+                "请重新点击安装并重新输入密码")
+    if any(s in low for s in ("not authorized", "no authentication agent",
+                              "executing command as another user")):
+        return ("polkit 授权未通过（弹窗被取消或未允许），"
+                "请重新点击安装，或在弹窗里允许本次授权")
     lines = [l.strip() for l in (out or "").splitlines() if l.strip()]
     lines = [l for l in lines if not l.startswith("DECKMEIDO_")]
     keys = ("error", "failed", "invalid", "could not", "unable", "conflict",
@@ -922,4 +963,4 @@ def _install_error_text(out: str, rc: int) -> str:
     hits = [l for l in lines if any(k in l.lower() for k in keys)]
     picked = hits[:3] if hits else lines[-3:]
     detail = "；".join(picked)[-400:]
-    return f"安装失败：{detail or f'安装命令退出码 {rc}'}"
+    return f"系统包安装失败（pacman 退出码 {rc}）：{detail or '没有返回可读的错误信息'}"

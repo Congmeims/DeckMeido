@@ -235,6 +235,29 @@ class JobTest(SelfcheckBase):
             self.assertFalse(sc.sudo_silent())
             self.assertEqual(run.call_count, 0)
 
+    def test_未预期异常不把Python原文抛给界面(self):
+        """真机曾把 ValueError 原文抛到卡片；现在只给类型 + 日志指引"""
+        item = {"key": "grim", "name": "grim（截图备选）", "size": "",
+                "action": "package", "command": "", "privileged": True}
+        boom = ValueError(
+            "stdout and stderr arguments may not be used with capture_output.")
+        with mock.patch.object(sc, "_install_package", side_effect=boom), \
+                mock.patch.object(sc.logger, "exception") as log:
+            sc._run_job(item)
+        job = sc.job_snapshot()
+        self.assertEqual(job["state"], "error")
+        self.assertNotIn("capture_output", job["error"])
+        self.assertIn("内部错误", job["error"])
+        self.assertIn("ValueError", job["error"])
+        log.assert_called_once()
+
+    def test_已知业务失败原因仍然原样展示(self):
+        item = {"key": "tts_model", "name": "x", "size": "", "action": "python",
+                "command": "", "privileged": False}
+        with mock.patch.object(sc, "_install_tts", side_effect=RuntimeError("磁盘满了")):
+            sc._run_job(item)
+        self.assertEqual(sc.job_snapshot()["error"], "磁盘满了")
+
 
 class NltkInstallTest(SelfcheckBase):
     def _zip(self) -> bytes:
@@ -567,6 +590,88 @@ class PackageInstallTest(SelfcheckBase):
         res = sc.provide_password("ydotool", "   ")
         self.assertFalse(res["ok"])
         self.assertEqual(res["reason"], "empty")
+
+    def test_polkit被拒时提示polkit原因(self):
+        tmp = tempfile.mkdtemp(prefix="dm-pkg-")
+        msgs = []
+
+        def fake_pw(key, message, timeout_reason=""):
+            msgs.append((message, timeout_reason))
+            return "pw"
+
+        def fake_exec(mode, pw, path, name, timeout=630.0):
+            return (126, "Error executing command as another user: Not authorized") \
+                if mode == "pkexec" else (0, "")
+
+        with mock.patch.object(sc, "package_spec", return_value=dict(self.SPEC)), \
+                mock.patch.object(sc, "_workspace_tmp", return_value=Path(tmp)), \
+                mock.patch.object(sc, "_download_to", side_effect=self._fake_download), \
+                mock.patch.object(sc, "_verify_package"), \
+                mock.patch.object(sc, "sudo_silent", return_value=False), \
+                mock.patch.object(sc, "_pkexec_ready", return_value=True), \
+                mock.patch.object(sc, "_request_password", side_effect=fake_pw), \
+                mock.patch.object(sc, "_exec_install", side_effect=fake_exec):
+            sc._run_job(self._item())
+        self.assertEqual(sc.job_snapshot()["state"], "done")
+        self.assertEqual(msgs[0][1], "polkit 授权未通过")
+        self.assertIn("polkit", msgs[0][0])
+
+    def test_等待密码超时带上polkit原因(self):
+        with mock.patch.object(sc, "_pw_event", threading.Event()), \
+                mock.patch.object(sc, "_set"), \
+                mock.patch.object(sc, "PASSWORD_WAIT_SECONDS", 0.01):
+            with self.assertRaises(RuntimeError) as ctx:
+                sc._request_password("grim", "等待授权", timeout_reason="polkit 授权未通过")
+        self.assertIn("超时", str(ctx.exception))
+        self.assertIn("polkit", str(ctx.exception))
+
+    def test_失败原因按类型区分(self):
+        self.assertIn("sudoers", sc._install_error_text(
+            "deck is not in the sudoers file. This incident will be reported.", 1))
+        self.assertIn("密码未被 sudo 接受", sc._install_error_text(
+            "sudo: 1 incorrect password attempt", 1))
+        self.assertIn("polkit", sc._install_error_text(
+            "Error executing command as another user: Not authorized", 126))
+        text = sc._install_error_text(
+            "error: failed to commit transaction (conflicting files)\n"
+            "grim: exists in filesystem", 1)
+        self.assertIn("pacman 退出码 1", text)
+        self.assertIn("exists in filesystem", text)
+
+
+class ExecInstallTest(SelfcheckBase):
+    """subprocess.run 的参数组合：capture_output 不能和 stdout/stderr 混用"""
+
+    def test_只传capture_output并合并两路输出(self):
+        proc = _FakeProc(rc=1, stdout="out line\n", stderr="err line\n")
+        with mock.patch.object(sc.subprocess, "run", return_value=proc) as run:
+            rc, out = sc._exec_install(
+                "password", "pw", Path("/tmp/x.pkg.tar.zst"), "grim")
+        self.assertEqual(rc, 1)
+        self.assertIn("out line", out)
+        self.assertIn("err line", out)
+        kwargs = run.call_args.kwargs
+        self.assertNotIn("stdout", kwargs)
+        self.assertNotIn("stderr", kwargs)
+        self.assertTrue(kwargs["capture_output"])
+        self.assertEqual(kwargs["input"], "pw\n")
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:4], ["sudo", "-S", "-p", ""])
+        self.assertNotIn("pw", " ".join(argv))
+
+    def test_免密sudo与pkexec不传密码(self):
+        for mode, expect in (("sudo", ["sudo", "-n"]), ("pkexec", ["pkexec"])):
+            proc = _FakeProc(rc=0, stdout="ok")
+            with mock.patch.object(sc.subprocess, "run", return_value=proc) as run:
+                rc, out = sc._exec_install(
+                    mode, None, Path("/tmp/x.pkg.tar.zst"), "grim")
+            self.assertEqual(rc, 0)
+            self.assertEqual(out, "ok")
+            kwargs = run.call_args.kwargs
+            self.assertNotIn("stdout", kwargs)
+            self.assertNotIn("stderr", kwargs)
+            self.assertNotIn("input", kwargs)
+            self.assertEqual(run.call_args.args[0][:len(expect)], expect)
 
 
 class UninstallPlanTest(unittest.TestCase):
