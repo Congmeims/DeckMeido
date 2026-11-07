@@ -632,6 +632,10 @@
   body.native #micBtn { display: block; }
   #micBtn.rec { background: var(--danger); color: #fff; }
   #micBtn.busy { opacity: .6; pointer-events: none; }
+  /* 清空按钮：有内容才出现。用 :placeholder-shown 判断，
+     脚本直接改输入框时也不会出现「按钮还亮着但框已经空了」的状态漂移 */
+  #clearBtn { display: none; font-size: 13px; }
+  #input:not(:placeholder-shown) + #composerBar #clearBtn { display: block; }
   .cb-btn {
     min-width: 34px; padding: 0 10px; height: 34px; border: none; border-radius: 10px;
     background: var(--surface-2); color: var(--muted);
@@ -2096,6 +2100,8 @@
     #permSelect { max-width: 88px; font-size: 12px; padding: 0 6px; }
     #send { min-width: 48px; padding: 0 12px; font-size: 14px; }
     .cb-btn { padding: 0 8px; }
+    /* 窄屏把清空按钮收窄，优先保证「发送」不被挤出可视区 */
+    #clearBtn { min-width: 30px; padding: 0 6px; font-size: 12px; }
   }
   #ctrlBadge { cursor: pointer; }
   #ctrlBadge:active { opacity: .7; }
@@ -2995,6 +3001,8 @@
       <!-- 语音输入：只有 Native 客户端显示（网页与大屏/QAM 不加），
            点击开始/停止录音，识别结果填进输入框不自动发送 -->
       <button class="cb-btn" id="micBtn" title="语音输入（仅桌面客户端）">语音</button>
+      <!-- 清空输入框：只在有内容时出现，点它不会触发发送 -->
+      <button class="cb-btn" id="clearBtn" type="button" title="清空输入框">清空</button>
     </div>
   </div>
 </div>
@@ -3634,7 +3642,7 @@
               </label>
             </div>
             <div class="field-hint" style="margin-top:0">
-              按住右扳机开始录音，松开自动识别并直接发送这条消息；识别为空则不发送。
+              按住右扳机开始录音，松开后把识别文字填入输入框，不自动发送。
               只在客户端窗口激活且语音输入可用时响应，关掉后 R2 不做任何处理。
             </div>
           </div>
@@ -9407,8 +9415,6 @@
   var micChunks = [], micRate = 48000, micTimer = null;
   // 客户端 R2：按下时麦克风还没拿到就松手，要取消这次录音
   var micStartPending = false, micR2Release = false;
-  // 这次录音是 R2 触发的：识别出文字后直接发送（点麦克风按钮仍只填输入框）
-  var micR2Send = false;
 
   function micReset() {
     if (micTimer) { clearTimeout(micTimer); micTimer = null; }
@@ -9482,7 +9488,6 @@
         fbToast('语音输入未启用或模型未下载：到设置 → 对话与语音里开启并下载模型', 'chat', true);
         micBtn.classList.remove('busy');
         micStartPending = false;
-        micR2Send = false;
         return;
       }
     } catch (e) { /* 状态读不到也继续试，真失败由下面提示 */ }
@@ -9493,7 +9498,6 @@
       });
     } catch (e) {
       micStartPending = false;
-      micR2Send = false;
       var name = e && e.name ? String(e.name) : '';
       // 桌面客户端里最常见的失败是被拒绝授权（NotAllowedError），Chromium 只给
       // 一句 "Permission denied"，用户看不出该做什么，这里换成可操作的说明
@@ -9508,14 +9512,13 @@
     // 按下 R2 后还没拿到麦克风就松手了：直接放弃这一次，不进入录音
     if (micR2Release) {
       try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
-      micStartPending = false; micR2Release = false; micR2Send = false;
+      micStartPending = false; micR2Release = false;
       return;
     }
     var Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) {
       try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
       micStartPending = false;
-      micR2Send = false;
       fbToast('当前环境不支持录音', 'chat', true);
       return;
     }
@@ -9558,21 +9561,12 @@
       try { d = await res.json(); } catch (e) {}
       if (!res.ok || !d.ok) throw new Error(d.detail || d.error || ('HTTP ' + res.status));
       var text = String(d.text || '').trim();
-      if (text) {
-        insertVoiceText(text);
-        // R2 按住说话：松手识别到文字就直接发出去；点麦克风按钮仍只填输入框
-        if (micR2Send) submitInput();
-      } else if (micR2Send) {
-        // 空识别不发送，给一次轻提示（不弹错误框，不打断输入）
-        fbToast('没有识别到内容，靠近麦克风再说一次', 'chat', false);
-      } else {
-        fbToast('没有识别到内容，靠近麦克风再说一次', 'chat', true);
-      }
+      if (text) insertVoiceText(text);
+      else fbToast('没有识别到内容，靠近麦克风再说一次', 'chat', true);
     } catch (e) {
       fbToast('语音识别失败：' + (e && e.message ? e.message : e), 'chat', true);
     } finally {
       micState = 'idle';
-      micR2Send = false;
       micBtn.classList.remove('busy');
       micBtn.textContent = tr('语音');
       micBtn.title = '语音输入（仅桌面客户端）';
@@ -9593,17 +9587,13 @@
     if (kind === 'start') {
       if (micState !== 'idle' || micStartPending) return false;
       micR2Release = false;
-      micR2Send = true;
       micStartPending = true;
       micStart();
       return true;
     }
     if (kind === 'stop') {
       if (micState === 'recording') { micStop(); return true; }
-      if (micStartPending) {
-        micR2Release = true;
-        micR2Send = false;
-      }
+      if (micStartPending) micR2Release = true;
       return micStartPending;
     }
     return false;
@@ -9623,6 +9613,13 @@
     // 球是绝对定位在 #composer 上的，输入框长高不会改变它的相对位置，
     // 只需要刷新「该不该显示」——长高本身可能让可视区变矮
     syncJumpLatest();
+  });
+  // 清空只清正文，不动待发送附件；清完把焦点还回输入框，方便接着打
+  document.getElementById('clearBtn').addEventListener('click', function () {
+    input.value = '';
+    input.style.height = 'auto';
+    input.dispatchEvent(new Event('input'));
+    input.focus();
   });
 
   pairBtn.addEventListener('click', pairStart);
