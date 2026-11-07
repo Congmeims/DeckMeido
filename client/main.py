@@ -501,6 +501,133 @@ def apply_app_font(app: QApplication) -> None:
     app.setFont(font)
 
 
+class R2Trigger(QObject):
+    """把右扳机（R2）转成网页里的按住说话。
+
+    Qt6 没有 QGamepad，客户端走 SDL2（ctypes）读手柄：
+    - 游戏模式下 Steam Input 会独占物理手柄，但它通过 uinput 暴露一只
+      虚拟 X360 手柄；SDL2 的 evdev 后端读到的是这只虚拟手柄，所以
+      gamescope 下仍能拿到 R2，不依赖 X11/Qt 的手柄支持。
+    - 只读不抓取（不做 EVIOCGRAB），也不改键位，不抢游戏/系统的输入。
+    - 拿不到 libSDL2 或没有手柄时自动降级为不启用，不影响客户端其它功能。
+    """
+
+    pressed = Signal()
+    released = Signal()
+
+    _SUBSYSTEMS = 0x00000200 | 0x00002000 | 0x00004000  # JOYSTICK | GAMECONTROLLER | EVENTS
+    _AXIS_R2 = 5                                        # SDL_CONTROLLER_AXIS_TRIGGERRIGHT
+    _PRESS = 19000                                      # 约 0.58
+    _RELEASE = 11000                                    # 约 0.34，回滞避免抖动
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._sdl = None
+        self._ctrl = None
+        self._down = False
+        self._miss = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(40)
+        self._timer.timeout.connect(self._poll)
+
+    def start(self) -> bool:
+        try:
+            import ctypes
+            import ctypes.util
+
+            names = [ctypes.util.find_library("SDL2") or "",
+                     "libSDL2-2.0.so.0", "SDL2.dll"]
+            sdl = None
+            for name in names:
+                if not name:
+                    continue
+                try:
+                    sdl = ctypes.CDLL(name)
+                    break
+                except OSError:
+                    continue
+            if sdl is None:
+                return False
+            sdl.SDL_Init.argtypes = [ctypes.c_uint32]
+            sdl.SDL_Init.restype = ctypes.c_int
+            sdl.SDL_QuitSubSystem.argtypes = [ctypes.c_uint32]
+            sdl.SDL_NumJoysticks.restype = ctypes.c_int
+            sdl.SDL_IsGameController.argtypes = [ctypes.c_int]
+            sdl.SDL_IsGameController.restype = ctypes.c_int
+            sdl.SDL_GameControllerOpen.argtypes = [ctypes.c_int]
+            sdl.SDL_GameControllerOpen.restype = ctypes.c_void_p
+            sdl.SDL_GameControllerGetAttached.argtypes = [ctypes.c_void_p]
+            sdl.SDL_GameControllerGetAttached.restype = ctypes.c_int
+            sdl.SDL_GameControllerGetAxis.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            sdl.SDL_GameControllerGetAxis.restype = ctypes.c_int16
+            sdl.SDL_GameControllerClose.argtypes = [ctypes.c_void_p]
+            if sdl.SDL_Init(self._SUBSYSTEMS) != 0:
+                return False
+            self._sdl = sdl
+            self._open()
+            self._timer.start()
+            return True
+        except Exception:
+            self._sdl = None
+            return False
+
+    def _open(self) -> bool:
+        if self._ctrl or not self._sdl:
+            return bool(self._ctrl)
+        try:
+            for i in range(max(0, self._sdl.SDL_NumJoysticks())):
+                if not self._sdl.SDL_IsGameController(i):
+                    continue
+                ctrl = self._sdl.SDL_GameControllerOpen(i)
+                if ctrl:
+                    self._ctrl = ctrl
+                    self._down = False
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _poll(self) -> None:
+        sdl = self._sdl
+        if not sdl:
+            self._timer.stop()
+            return
+        try:
+            sdl.SDL_PumpEvents()
+            if self._ctrl and not sdl.SDL_GameControllerGetAttached(self._ctrl):
+                sdl.SDL_GameControllerClose(self._ctrl)
+                self._ctrl = None
+                self._down = False
+            if not self._ctrl:
+                # 约 1 秒重试一次，手柄晚到或热插拔后能自己接上
+                self._miss += 1
+                if self._miss >= 25:
+                    self._miss = 0
+                    self._open()
+                return
+            value = int(sdl.SDL_GameControllerGetAxis(self._ctrl, self._AXIS_R2))
+            if not self._down and value > self._PRESS:
+                self._down = True
+                self.pressed.emit()
+            elif self._down and value < self._RELEASE:
+                self._down = False
+                self.released.emit()
+        except Exception:
+            self._timer.stop()
+
+    def stop(self) -> None:
+        self._timer.stop()
+        try:
+            if self._sdl:
+                if self._ctrl:
+                    self._sdl.SDL_GameControllerClose(self._ctrl)
+                self._sdl.SDL_QuitSubSystem(self._SUBSYSTEMS)
+        except Exception:
+            pass
+        self._ctrl = None
+        self._down = False
+
+
 def main() -> int:
     _enable_crash_log()
     _dev_log("client.start", argv=sys.argv, cwd=os.getcwd(), pid=os.getpid(),
@@ -584,6 +711,21 @@ def main() -> int:
     # ≈1240/1.2=1033px 会掉进断点把右栏收成抽屉；1.1 时 CSS 视口≈1127px，
     # 稳过断点，三栏布局（1.5:6.25:2.25）在客户端里才和网页端一致。
     view.setZoomFactor(1.1)
+
+    # ---- R2 按住说话：SDL2 读手柄，网页里的开关决定是否启用 ----
+    # 只在客户端窗口激活时把事件转给网页；网页再判断语音是否可用，
+    # 任何一步不满足都不拦截 R2（SDL 只读，不做抓取或改键）。
+    r2 = R2Trigger(view)
+
+    def _r2_send(kind: str) -> None:
+        if not view.isActiveWindow():
+            return
+        view.page().runJavaScript("window.dmR2 && window.dmR2('%s')" % kind)
+
+    r2.pressed.connect(lambda: _r2_send("start"))
+    r2.released.connect(lambda: _r2_send("stop"))
+    r2.start()
+    app.aboutToQuit.connect(r2.stop)
 
     # ---- 系统托盘：最小化后仍可在托盘找回 ----
     tray = QSystemTrayIcon(icon, app)
