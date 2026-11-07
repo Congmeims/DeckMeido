@@ -99,8 +99,15 @@ else
 fi
 
 # ---------- 2. 重启后端 ----------
-log "2/5 重启 deckmeido-backend"
-ssh "$HOST" "systemctl --user restart deckmeido-backend" || die "重启后端失败"
+# 线上客户端实际由 Decky 的 app-DeckMeido@<哈希>.service 实例单元启动，
+# 旧的安装方式才是 deckmeido-backend；按实际存在的单元自动选，别重启错目标。
+UNIT=$(ssh "$HOST" "systemctl --user list-units --all --no-legend --plain 'app-DeckMeido@*.service' 2>/dev/null | sed 's/^[^a-zA-Z]*//' | awk '{print \$1}' | grep -E '^app-DeckMeido@.+\.service$' | head -n 1" || true)
+if [ -z "$UNIT" ] && ssh "$HOST" "systemctl --user cat deckmeido-backend >/dev/null 2>&1"; then
+  UNIT=deckmeido-backend
+fi
+[ -n "$UNIT" ] || die "找不到 DeckMeido 的 systemd 用户单元（app-DeckMeido@*.service 或 deckmeido-backend）"
+log "2/5 重启 $UNIT"
+ssh "$HOST" "systemctl --user restart $UNIT" || die "重启 $UNIT 失败"
 
 # ---------- 3. 最小自检 ----------
 log "3/5 等待后端就绪并自检 /api/status"
@@ -112,7 +119,7 @@ for _ in $(seq 1 20); do
 done
 if [ "$CODE" != "200" ]; then
   printf '\n最近 40 行后端日志：\n'
-  ssh "$HOST" "journalctl --user -u deckmeido-backend --since '2 min ago' --no-pager | tail -40" || true
+  ssh "$HOST" "journalctl --user -u $UNIT --since '2 min ago' --no-pager | tail -40" || true
   die "后端没有在 20 秒内返回 200（当前 $CODE）"
 fi
 printf '  /api/status -> 200\n'
