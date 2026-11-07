@@ -502,24 +502,32 @@ def apply_app_font(app: QApplication) -> None:
     app.setFont(font)
 
 
-class R2Trigger(QObject):
-    """把右扳机（R2）转成网页里的按住说话。
+def _r1_log(msg: str) -> None:
+    """R1 按住说话的运行日志：stderr 一行（现场可直接看）+ 开发者日志"""
+    print(f"[DeckMeido] R1 按住说话：{msg}", file=sys.stderr)
+    _dev_log("r1", msg=msg)
+
+
+class R1Trigger(QObject):
+    """把右肩键（R1）转成网页里的按住说话。
 
     Qt6 没有 QGamepad，客户端走 SDL2（ctypes）读手柄：
     - 游戏模式下 Steam Input 会独占物理手柄，但它通过 uinput 暴露一只
       虚拟 X360 手柄；SDL2 的 evdev 后端读到的是这只虚拟手柄，所以
-      gamescope 下仍能拿到 R2，不依赖 X11/Qt 的手柄支持。
+      gamescope 下仍能拿到 R1，不依赖 X11/Qt 的手柄支持。
     - 只读不抓取（不做 EVIOCGRAB），也不改键位，不抢游戏/系统的输入。
-    - 拿不到 libSDL2 或没有手柄时自动降级为不启用，不影响客户端其它功能。
+    - 拿不到 libSDL2、没有手柄或读取失败时记一行日志并降级为不启用，
+      不影响客户端其它功能。
     """
 
     pressed = Signal()
     released = Signal()
 
     _SUBSYSTEMS = 0x00000200 | 0x00002000 | 0x00004000  # JOYSTICK | GAMECONTROLLER | EVENTS
-    _AXIS_R2 = 5                                        # SDL_CONTROLLER_AXIS_TRIGGERRIGHT
-    _PRESS = 19000                                      # 约 0.58
-    _RELEASE = 11000                                    # 约 0.34，回滞避免抖动
+    # SDL_CONTROLLER_BUTTON_RIGHTSHOULDER = 10。
+    # 已在 Deck 上用 SDL_GameControllerGetStringForButton 逐值枚举确认：
+    # 9=leftshoulder、10=rightshoulder，不要凭记忆改这个数字。
+    _BUTTON_R1 = 10
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -527,6 +535,7 @@ class R2Trigger(QObject):
         self._ctrl = None
         self._down = False
         self._miss = 0
+        self._missing_logged = False
         self._timer = QTimer(self)
         self._timer.setInterval(40)
         self._timer.timeout.connect(self._poll)
@@ -548,6 +557,7 @@ class R2Trigger(QObject):
                 except OSError:
                     continue
             if sdl is None:
+                _r1_log("未找到 SDL2 运行库，按住说话不可用")
                 return False
             sdl.SDL_Init.argtypes = [ctypes.c_uint32]
             sdl.SDL_Init.restype = ctypes.c_int
@@ -559,17 +569,20 @@ class R2Trigger(QObject):
             sdl.SDL_GameControllerOpen.restype = ctypes.c_void_p
             sdl.SDL_GameControllerGetAttached.argtypes = [ctypes.c_void_p]
             sdl.SDL_GameControllerGetAttached.restype = ctypes.c_int
-            sdl.SDL_GameControllerGetAxis.argtypes = [ctypes.c_void_p, ctypes.c_int]
-            sdl.SDL_GameControllerGetAxis.restype = ctypes.c_int16
+            sdl.SDL_GameControllerGetButton.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            sdl.SDL_GameControllerGetButton.restype = ctypes.c_int
             sdl.SDL_GameControllerClose.argtypes = [ctypes.c_void_p]
-            if sdl.SDL_Init(self._SUBSYSTEMS) != 0:
+            rc = sdl.SDL_Init(self._SUBSYSTEMS)
+            if rc != 0:
+                _r1_log(f"SDL_Init 失败（错误码 {rc}），按住说话不可用")
                 return False
             self._sdl = sdl
             self._open()
             self._timer.start()
             return True
-        except Exception:
+        except Exception as exc:
             self._sdl = None
+            _r1_log(f"初始化失败，按住说话不可用：{exc!r}")
             return False
 
     def _open(self) -> bool:
@@ -583,9 +596,14 @@ class R2Trigger(QObject):
                 if ctrl:
                     self._ctrl = ctrl
                     self._down = False
+                    self._missing_logged = False
+                    _r1_log(f"已连接手柄（设备序号 {i}）")
                     return True
-        except Exception:
-            pass
+        except Exception as exc:
+            _r1_log(f"枚举手柄失败：{exc!r}")
+        if not self._missing_logged:
+            self._missing_logged = True
+            _r1_log("没有可用的手柄，按住说话暂不可用（接上后会自动重试）")
         return False
 
     def _poll(self) -> None:
@@ -599,6 +617,7 @@ class R2Trigger(QObject):
                 sdl.SDL_GameControllerClose(self._ctrl)
                 self._ctrl = None
                 self._down = False
+                _r1_log("手柄已断开，等待重新连接")
             if not self._ctrl:
                 # 约 1 秒重试一次，手柄晚到或热插拔后能自己接上
                 self._miss += 1
@@ -606,14 +625,21 @@ class R2Trigger(QObject):
                     self._miss = 0
                     self._open()
                 return
-            value = int(sdl.SDL_GameControllerGetAxis(self._ctrl, self._AXIS_R2))
-            if not self._down and value > self._PRESS:
+            value = int(sdl.SDL_GameControllerGetButton(self._ctrl, self._BUTTON_R1))
+            if value not in (0, 1):
+                _r1_log(f"读取 R1 返回异常值 {value}，停止轮询")
+                self._timer.stop()
+                return
+            if not self._down and value == 1:
                 self._down = True
+                _r1_log("按下")
                 self.pressed.emit()
-            elif self._down and value < self._RELEASE:
+            elif self._down and value == 0:
                 self._down = False
+                _r1_log("松开")
                 self.released.emit()
-        except Exception:
+        except Exception as exc:
+            _r1_log(f"读取 R1 失败，停止轮询：{exc!r}")
             self._timer.stop()
 
     def stop(self) -> None:
@@ -913,20 +939,24 @@ def main() -> int:
     # 稳过断点，三栏布局（1.5:6.25:2.25）在客户端里才和网页端一致。
     view.setZoomFactor(1.1)
 
-    # ---- R2 按住说话：SDL2 读手柄，网页里的开关决定是否启用 ----
+    # ---- R1 按住说话：SDL2 读右肩键，网页里的开关决定是否启用 ----
     # 只在客户端窗口激活时把事件转给网页；网页再判断语音是否可用，
-    # 任何一步不满足都不拦截 R2（SDL 只读，不做抓取或改键）。
-    r2 = R2Trigger(view)
+    # 任何一步不满足都不拦截 R1（SDL 只读，不做抓取或改键）。
+    # 事件名沿用网页里的 dmR2（start/stop），协议不变。
+    r1 = R1Trigger(view)
 
-    def _r2_send(kind: str) -> None:
+    def _r1_send(kind: str) -> None:
         if not view.isActiveWindow():
             return
-        view.page().runJavaScript("window.dmR2 && window.dmR2('%s')" % kind)
+        view.page().runJavaScript(
+            "window.dmR2 && window.dmR2('%s')" % kind,
+            lambda result: _r1_log(f"网页 {kind} -> {result!r}"),
+        )
 
-    r2.pressed.connect(lambda: _r2_send("start"))
-    r2.released.connect(lambda: _r2_send("stop"))
-    r2.start()
-    app.aboutToQuit.connect(r2.stop)
+    r1.pressed.connect(lambda: _r1_send("start"))
+    r1.released.connect(lambda: _r1_send("stop"))
+    r1.start()
+    app.aboutToQuit.connect(r1.stop)
 
     # ---- 系统托盘：最小化后仍可在托盘找回 ----
     tray = QSystemTrayIcon(icon, app)
