@@ -3761,6 +3761,15 @@
 
 <script>
 (function () {
+  // 顶层初始化分块兜底：某一块写错/元素缺失时只跳过这一块，
+  // 后面的 Enter 发送、粘贴、命令补全等初始化仍然照常生效。
+  function safeInit(name, fn) {
+    try {
+      fn();
+    } catch (e) {
+      console.error('[init] ' + name + ' 初始化失败，已跳过该块', e);
+    }
+  }
   var messages = document.getElementById('messages');
   var input = document.getElementById('input');
   var sendBtn = document.getElementById('send');
@@ -8196,8 +8205,12 @@
   // ---------- 右栏：可补装组件 ----------
   // 组件清单由后端注册表实测得出；安装是后台单任务，进度走 WS selfcheck_progress，
   // 1 秒轮询只是 WS 断线时的兜底，不重复触发安装
-  var scList = el('selfcheckList');
-  var scHint = el('selfcheckHint');
+  // 这两项会被设置页/WD 回调跨块调用，提前挂在 IIFE 作用域上
+  var loadSelfcheck = function () {};
+  var onSelfcheckProgress = function () {};
+  safeInit('自检组件面板', function () {
+  var scList = rbEl('selfcheckList');
+  var scHint = rbEl('selfcheckHint');
   var scRows = {};
   var scPollTimer = null;
 
@@ -8295,7 +8308,7 @@
     }
   }
 
-  function loadSelfcheck() {
+  loadSelfcheck = function () {
     return fetch('/api/selfcheck')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
@@ -8343,12 +8356,13 @@
       .catch(function () { scHint.textContent = '安装请求失败（连接异常）'; });
   }
 
-  function onSelfcheckProgress(msg) {
+  onSelfcheckProgress = function (msg) {
     applyScProgress(msg);
     if (msg.state && msg.state !== 'running' && scPollTimer === null) {
       setTimeout(loadSelfcheck, 600);
     }
-  }
+  };
+  });
 
   function renderStatus(s) {
     // 版本：运行中的进程 vs 磁盘上的 VERSION。装完没重启后端时两者不一致，
@@ -13178,6 +13192,7 @@
 
   // ---------- / 快捷命令 ----------
   // 压缩上下文：先问后端「会压掉多少」，用户看到条数和 token 再决定
+  safeInit('快捷命令补全', function () {
   function compactContext() {
     if (busy) { addSystem('正在执行任务，等这一轮结束再压缩'); return; }
     var u = '/api/compact';
@@ -13223,6 +13238,7 @@
       fileList.appendChild(b);
     });
     fileList.classList.add('show');
+  });
   });
 
 })();
