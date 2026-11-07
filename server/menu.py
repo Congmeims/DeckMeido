@@ -192,8 +192,8 @@ def spec_for(kind: str) -> Spec | None:
 def authorize(kind: str, *, is_admin: bool) -> bool:
     """固定命令的权限判定（唯一入口）
 
-    主人 QQ（is_admin）在私聊与任意群、是否需要 @、是否开了群指令开关，
-    都不再额外拦截：这条「主人豁免」是固定命令唯一的口子。
+    群白名单在 onebot 入站就判过了（非白名单群零出站）；这里只判身份：
+    主人 QQ 在私聊与白名单群里可以执行固定命令；
     群友与陌生人一律不允许执行固定命令，只能走只读聊天。
     """
     if spec_for(kind) is None or not is_admin:
@@ -232,6 +232,40 @@ def confirm_decision(spec: Spec | None, text: str) -> str:
             return "ask_hard"
         return "cancel"
     return "execute" if is_confirm_text(text) else "cancel"
+
+
+# QQ 远程额外高危命令：现有 tools/policy 规则之外的补充。
+# 重点覆盖「卸载软件 / 删除目录 / 清理包缓存」这类模型容易顺手执行的命令，
+# 命中后按硬确认处理（必须回「确认执行」）。
+_QQ_DANGER_RULES: tuple[tuple[str, str], ...] = (
+    ("flatpak_uninstall", r"\bflatpak\b[^\n]*\b(uninstall|remove)\b"),
+    ("snap_remove", r"\bsnap\b[^\n]*\b(remove|purge)\b"),
+    ("pacman_clean", r"\b(?:pacman|paru|yay)\b[^\n]*\s-(?:Sc|ScC|Scc)\b"),
+    ("apt_autoremove", r"\b(?:apt|apt-get)\b[^\n]*\bautoremove\b"),
+    ("brew_uninstall", r"\bbrew\b[^\n]*\b(uninstall|remove)\b"),
+    ("rpm_erase", r"\brpm\b[^\n]*\s-(?:e|E)\b"),
+)
+
+
+def remote_command_danger(cmd: str, depth: int = 0) -> str:
+    """QQ 远程额外危险命令：返回命中的规则名，未命中返回空串
+
+    只做补充判定，命中后由调用方走「确认执行」硬确认。
+    嵌套的 sh -c 内容同样递归检查，避免换个壳绕过。
+    """
+    text = str(cmd or "").strip()
+    if not text:
+        return ""
+    for rule, pattern in _QQ_DANGER_RULES:
+        if re.search(pattern, text, re.IGNORECASE):
+            return rule
+    if depth < 3:
+        for inner in re.findall(
+                r"(?:sh|bash|zsh)\s+-c\s+[\"']([^\"']+)[\"']", text, re.IGNORECASE):
+            hit = remote_command_danger(inner, depth + 1)
+            if hit:
+                return hit
+    return ""
 
 
 def help_text(nickname: str = "") -> str:

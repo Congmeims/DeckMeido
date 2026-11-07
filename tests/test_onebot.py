@@ -665,6 +665,23 @@ class BotTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("reason=target_not_allowed", logs)
         await bot.stop()
 
+    async def test_direct_do_chat_rejects_unauthorized_source(self):
+        """模拟旁路直接调 _do_chat：不入回合、不建会话、零出站"""
+        bot, ws = self.make()
+        await bot.start()
+        self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
+        ev = onebot.MessageEvent(uin="30003", text="卸了重装", group_id="29999",
+                                 at_bot=True, self_id="99999")
+        await bot._do_chat(ev, onebot.Route("chat", text="卸了重装", readonly=True))
+        self.assertEqual(self.calls, [], "非白名单群不得进入 AI 回合")
+        self.assertIsNone(bot._turn_task)
+        self.assertEqual(reply_payloads(ws), [])
+        logs = json.dumps(bot.logs(20), ensure_ascii=False)
+        self.assertIn("reason=turn_not_authorized", logs)
+        self.assertIn("group=29999", logs)
+        self.assertIn("uin=30003", logs)
+        await bot.stop()
+
     async def test_incoming_truncated(self):
         bot, ws = self.make(config={
             "enable": True, "ws_url": "ws://127.0.0.1:3001",

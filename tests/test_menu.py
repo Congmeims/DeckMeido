@@ -152,5 +152,31 @@ class MemoryAddTest(unittest.TestCase):
             self.assertEqual(item["text"], "记得下班带伞")
 
 
+class RemoteDangerTest(unittest.TestCase):
+    """QQ 远程额外高危命令：卸载 / 清理包缓存 / 自动清理"""
+
+    def test_uninstall_commands(self):
+        for cmd in ("flatpak uninstall org.example.App",
+                    "flatpak remove org.example.App",
+                    "snap remove foo",
+                    "brew uninstall wget",
+                    "rpm -e pkg"):
+            self.assertTrue(menu.remote_command_danger(cmd), cmd)
+
+    def test_clean_and_autoremove(self):
+        for cmd in ("pacman -Sc", "sudo pacman -Scc", "apt autoremove",
+                    "sudo apt-get autoremove"):
+            self.assertTrue(menu.remote_command_danger(cmd), cmd)
+
+    def test_nested_shell_is_checked(self):
+        self.assertTrue(menu.remote_command_danger(
+            "sh -c 'flatpak uninstall org.example.App'"))
+
+    def test_read_only_commands_are_normal(self):
+        for cmd in ("flatpak list", "pacman -Qi foo", "snap list",
+                    "systemctl status foo", "ls -la", "apt list --installed"):
+            self.assertEqual(menu.remote_command_danger(cmd), "", cmd)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, memory, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, selfcheck, singleton, status_line, tools, updater, usage
+from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, memory, menu, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, selfcheck, singleton, status_line, tools, updater, usage
 from .session_store import store
 from . import session_store
 from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, normalize_speaker,
@@ -1992,7 +1992,13 @@ async def _run_tool(name: str, args: dict):
 
     只在这一处落日志，避免每个调用点手写。参数与结果都会过长截断、
     凭据字段打码（devlog 内部负责）。
+
+    回合内闸门：QQ 回合的来源未授权时，任何工具调用一律拒绝。
+    这是纵深防御，正常链路在 onebot 入站就已经拦掉了。
     """
+    if onebot.turn_authorized() is False:
+        onebot.log_tool_blocked(name)
+        return f"[{name}] 来源未授权，工具调用被拒绝（onebot.tool.blocked）。"
     if not devlog.enabled():
         return await tools.execute(name, args)
     start = time.perf_counter()
@@ -6417,11 +6423,16 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 # 升级会让服务重启、对话中断，无论什么权限模式都要用户点头
                 if name == "self_update" and args.get("action") == "upgrade":
                     needs_approval = True
+                extra_danger = ""
                 if name == "run_command":
                     cmd = str(args.get("command", ""))
+                    # QQ 远程额外高危表（menu.py）：卸载软件、清理包缓存、自动清理等，
+                    # 现有 tools/policy 规则没覆盖到的也一律按硬确认拦下
+                    extra_danger = (menu.remote_command_danger(cmd)
+                                    if ctx.force_confirm else "")
                     if ctx.force_confirm:
                         # 远程入口（QQ）：full 模式下也只放行不碰电源/系统的普通命令
-                        needs_approval = tools.is_dangerous(cmd)
+                        needs_approval = tools.is_dangerous(cmd) or bool(extra_danger)
                     elif PERMISSION_MODE == "manual":
                         needs_approval = True
                     elif PERMISSION_MODE == "auto":
@@ -6434,7 +6445,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     # hard 档只认「确认执行」，onebot 侧会按这个标记收紧确认口径
                     pending_action = {"name": name, "args": args,
                                       "description": tools.describe(name, args),
-                                      "hard": remote_risk.level == "hard_confirm",
+                                      "hard": (remote_risk.level == "hard_confirm"
+                                               or bool(extra_danger)),
                                       "sid": store.turn.get("sid") or store.current_sid,
                                       "epoch": store.turn.get("epoch") or store.epoch,
                                       "turn_id": store.turn.get("turn_id") or "",
@@ -6867,8 +6879,17 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
 
     走现有 handle_chat，但用 QQ 自己的会话（sid）和来源标记（device）：
     本地界面正在看的会话不会被追答写进去，历史里也能分清每条来自哪个 QQ / 群。
+
+    来源授权闸门：只有 onebot 明确标记为已授权（True）才开回合。
+    未授权时直接返回，不写会话、不广播、不跑工具——避免界面里出现一条
+    「已开始询问卸载哪个」的会话，让用户误以为它在干活。
     """
     global _ctx_used, pending_action
+    if not onebot.qq_turn_authorized():
+        onebot.log_tool_blocked("qq_turn")
+        _qq_log("warn", "回合拒绝",
+                f"reason=unauthorized_source uin={device}")
+        return {"reply": "", "denied": True, "unauthorized": True}
     if not turn_id:
         turn_id = "qq-" + secrets.token_hex(6)
     # 挂起的危险操作只认「同一个 QQ 来源」的确认，并且必须沿用那一轮的 turn_id，

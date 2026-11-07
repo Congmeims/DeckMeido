@@ -482,6 +482,31 @@ def _mask_url(url: str) -> str:
 _TURN_GROUP_CONTEXT: contextvars.ContextVar[str] = contextvars.ContextVar(
     "deckmeido_group_context", default="")
 
+# QQ 回合授权标记：None = 不是 QQ 回合（本地网页/插件/QAM，行为不变）；
+# True = 来源已过白名单/私聊判定；False = 来源未授权。
+# _do_chat 创建回合任务前写入；main.py 的 _qq_run_turn 与工具层据此拒绝执行。
+# 这是纵深防御：即使将来有旁路绕过 _dispatch_inner，也不会真的动手。
+_TURN_AUTHORIZED: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
+    "deckmeido_turn_authorized", default=None)
+
+
+def turn_authorized() -> bool | None:
+    """当前回合的来源授权状态；None 表示不是 QQ 回合"""
+    return _TURN_AUTHORIZED.get()
+
+
+def qq_turn_authorized() -> bool:
+    """QQ 回合只有在明确标记为已授权时才算数（默认拒绝）"""
+    return _TURN_AUTHORIZED.get() is True
+
+
+def log_tool_blocked(tool: str) -> None:
+    """回合内闸门命中：记一行可核对的结构化日志"""
+    from . import devlog
+
+    devlog.log("onebot.tool.blocked", reason="unauthorized_source",
+               tool=str(tool)[:120])
+
 
 def guest_prompt(configured: str | None, name: str = "") -> str:
     """群友提示词的最终文案：空则用内置默认，{name} 换成软件昵称"""
@@ -1758,10 +1783,17 @@ class OneBotClient:
         return self._turn_task is not None and not self._turn_task.done()
 
     async def _do_chat(self, ev: MessageEvent, route: Route) -> None:
+        cfg = self._cfg
+        # 纵深防御：进回合前再判一次来源。正常链路在 _dispatch_inner 已经拦过；
+        # 这里保证即使将来有人直接调 _do_chat，也不会开回合、不会建会话、不会跑工具。
+        if not reply_eligible(cfg, ev):
+            self._stats["ignored"] += 1
+            self._log("warn", "skip",
+                      f"reason=turn_not_authorized group={ev.group_id} uin={ev.uin}")
+            return
         if self._busy():
             await self._send_text(ev, "上一件事还在处理，稍等一下；要停下就发 /cancel。")
             return
-        cfg = self._cfg
         device = device_tag(ev)
         sid = session_sid(ev)
         text = (route.text or "").strip()
@@ -1831,11 +1863,15 @@ class OneBotClient:
         # 用 ContextVar 把片段交给本轮子任务：main.py 里的 QQ 轮次会在子任务里
         # 调用 guest_prompt()，这样片段只在本轮生效，不写进会话历史、不跨群串味
         token = _TURN_GROUP_CONTEXT.set(context) if context else None
+        # 授权标记必须在 create_task 之前写入：子任务复制当前 context，
+        # 工具层就能看到「这一轮的来源是否被允许」
+        token_auth = _TURN_AUTHORIZED.set(True)
         try:
             task = asyncio.create_task(
                 self._runner(text, sid=sid, device=device,
                              readonly=route.readonly, turn_id=turn_id, image=image))
         finally:
+            _TURN_AUTHORIZED.reset(token_auth)
             if token is not None:
                 _TURN_GROUP_CONTEXT.reset(token)
         if context:
