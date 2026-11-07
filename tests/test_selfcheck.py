@@ -268,5 +268,129 @@ class NltkInstallTest(SelfcheckBase):
         self.assertIn("超时", str(ctx.exception))
 
 
+class _FakeProc:
+    def __init__(self, rc=0, stdout="", stderr=""):
+        self.returncode = rc
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class _FakeResp:
+    """最小可用的 urlopen 响应：按块读、带 Content-Length"""
+
+    def __init__(self, data, length=None):
+        self._data = data
+        self._pos = 0
+        self.headers = {"Content-Length": str(len(data) if length is None else length)}
+
+    def read(self, n=-1):
+        if self._pos >= len(self._data):
+            return b""
+        end = len(self._data) if n is None or n < 0 else min(len(self._data), self._pos + n)
+        chunk = self._data[self._pos:end]
+        self._pos = end
+        return chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class DownloadTest(SelfcheckBase):
+    URL = "https://mirror.example/extra/os/x86_64/ydotool-0.2.1-1-x86_64.pkg.tar.zst"
+
+    def _proc(self, name="ydotool", version="0.2.1", url=None):
+        return _FakeProc(stdout=f"{name}|{version}|{url or self.URL}\n")
+
+    def test_只接受系统包组件(self):
+        with self.assertRaises(sc.PackageDownloadError) as ctx:
+            sc.package_spec("no-such-component")
+        self.assertEqual(ctx.exception.reason, "unknown_component")
+        with self.assertRaises(sc.PackageDownloadError) as ctx:
+            sc.package_spec("tts_model")
+        self.assertEqual(ctx.exception.reason, "not_package")
+
+    def test_已就绪的包不再下载(self):
+        with mock.patch.object(sc.shutil, "which", return_value="/usr/bin/ydotool"), \
+                mock.patch.object(sc.subprocess, "run") as run:
+            with self.assertRaises(sc.PackageDownloadError) as ctx:
+                sc.package_spec("ydotool")
+        self.assertEqual(ctx.exception.reason, "already_ready")
+        run.assert_not_called()
+
+    def test_文件名含包名版本且地址只来自pacman(self):
+        with mock.patch.object(sc.shutil, "which", return_value=None), \
+                mock.patch.object(sc.subprocess, "run", return_value=self._proc()) as run:
+            spec = sc.package_spec("ydotool")
+        self.assertEqual(spec["package"], "ydotool")
+        self.assertEqual(spec["version"], "0.2.1")
+        self.assertEqual(spec["url"], self.URL)
+        self.assertEqual(spec["filename"], "ydotool-0.2.1-1-x86_64.pkg.tar.zst")
+        argv = run.call_args[0][0]
+        self.assertEqual(argv[:4], ["pacman", "-Sp", "--print-format", "%n|%v|%l"])
+        # 请求参数只应带包名，不能带任何 URL
+        self.assertEqual(argv[4:], ["ydotool"])
+
+    def test_espeak使用真实包名(self):
+        url = "https://mirror.example/extra/espeak-ng-1.51.1-6-x86_64.pkg.tar.zst"
+        with mock.patch.object(sc.shutil, "which", return_value=None), \
+                mock.patch.object(sc.subprocess, "run",
+                                  return_value=self._proc("espeak-ng", "1.51.1", url)) as run:
+            spec = sc.package_spec("espeak")
+        self.assertEqual(spec["package"], "espeak-ng")
+        self.assertEqual(run.call_args[0][0][4], "espeak-ng")
+
+    def test_拒绝非http地址(self):
+        with mock.patch.object(sc.shutil, "which", return_value=None), \
+                mock.patch.object(sc.subprocess, "run",
+                                  return_value=self._proc(url="file:///etc/passwd")):
+            with self.assertRaises(sc.PackageDownloadError) as ctx:
+                sc.package_spec("ydotool")
+        self.assertEqual(ctx.exception.reason, "unsafe_url")
+
+    def test_下载成功_写入临时文件并可清理(self):
+        body = b"PKG-DATA"
+        with mock.patch.object(sc.shutil, "which", return_value=None), \
+                mock.patch.object(sc.subprocess, "run", return_value=self._proc()), \
+                mock.patch.object(sc.urllib.request, "urlopen", return_value=_FakeResp(body)):
+            res = sc.download_package("ydotool")
+        try:
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["size"], len(body))
+            self.assertIn("ydotool", res["filename"])
+            self.assertIn("0.2.1", res["filename"])
+            self.assertEqual(Path(res["path"]).read_bytes(), body)
+            self.assertEqual(sc.job_snapshot()["state"], "done")
+        finally:
+            sc.cleanup_package(res["path"])
+        self.assertFalse(Path(res["path"]).exists())
+
+    def test_下载失败透传原因(self):
+        with mock.patch.object(sc.shutil, "which", return_value=None), \
+                mock.patch.object(sc.subprocess, "run", return_value=self._proc()), \
+                mock.patch.object(sc.urllib.request, "urlopen",
+                                  side_effect=OSError("镜像连不上")):
+            with self.assertRaises(sc.PackageDownloadError) as ctx:
+                sc.download_package("ydotool")
+        self.assertEqual(ctx.exception.reason, "download_failed")
+        self.assertIn("镜像连不上", str(ctx.exception))
+        job = sc.job_snapshot()
+        self.assertEqual(job["state"], "error")
+        self.assertIn("镜像连不上", job["error"])
+
+    def test_下载不完整要报错(self):
+        body = b"x" * 10
+        with mock.patch.object(sc.shutil, "which", return_value=None), \
+                mock.patch.object(sc.subprocess, "run", return_value=self._proc()), \
+                mock.patch.object(sc.urllib.request, "urlopen",
+                                  return_value=_FakeResp(body, length=20)):
+            with self.assertRaises(sc.PackageDownloadError) as ctx:
+                sc.download_package("ydotool")
+        self.assertEqual(ctx.exception.reason, "download_failed")
+        self.assertIn("不完整", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

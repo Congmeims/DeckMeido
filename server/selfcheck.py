@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -366,3 +369,156 @@ def _install_package(item: dict) -> None:
     if not shutil.which(probe):
         raise RuntimeError(f"装完仍找不到 {probe}")
     _set(item["key"], "verify", 100.0, "已就绪")
+
+
+# ---------- 系统包下载 ----------
+# 不能提权时不再让用户复制命令，而是把真实的安装包下载到浏览器。
+# 下载地址只从本机 pacman 配置解析（`pacman -Sp`），请求里只接受组件 key，
+# 不接受任何 URL —— 这样接口不会变成任意地址抓取（SSRF）的跳板。
+PACKAGE_NAMES = {"espeak": "espeak-ng"}
+_PKG_SCHEMES = ("http://", "https://")
+_PKG_SAFE_RE = re.compile(r"[^A-Za-z0-9._+-]")
+_DL_CHUNK = 64 * 1024
+_download_lock = threading.Lock()
+
+
+class PackageDownloadError(Exception):
+    """下载失败：reason 给前端分类，message 直接展示给用户"""
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
+
+
+def _pkg_url_ok(url: str) -> bool:
+    """只允许 http(s)、无空白/换行的镜像地址；拒绝 file://、data: 等本地协议"""
+    if not url or any(ch in url for ch in "\r\n\t "):
+        return False
+    low = url.lower()
+    if not any(low.startswith(s) for s in _PKG_SCHEMES):
+        return False
+    parts = urllib.parse.urlsplit(url)
+    if not parts.hostname:
+        return False
+    # 不允许 user:pass@ 形式，避免把凭据拼进可下载地址
+    netloc = parts.netloc.rsplit("@", 1)
+    return len(netloc) == 1
+
+
+def _pkg_filename(name: str, version: str, url: str) -> str:
+    """优先用镜像给出的原始包文件名；否则按 包名-版本 重建，两种都可辨识"""
+    base = urllib.parse.unquote(url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1])
+    safe = _PKG_SAFE_RE.sub("_", base)
+    if name in safe and version in safe and safe.endswith(
+            (".pkg.tar.zst", ".pkg.tar.xz", ".pkg.tar.gz")):
+        return safe
+    return _PKG_SAFE_RE.sub("_", f"{name}-{version}.pkg.tar.zst")
+
+
+def package_spec(component: str) -> dict:
+    """解析某个组件对应的包名/版本/下载地址；只接受注册表里的系统包 key"""
+    item = _BY_KEY.get(component)
+    if not item:
+        raise PackageDownloadError("unknown_component", "未知组件")
+    if item["action"] != "package":
+        raise PackageDownloadError("not_package", "该组件不是系统包，不能下载")
+    status, _ = item["status_fn"]()
+    if status == "ready":
+        raise PackageDownloadError("already_ready", f"{item['name']} 已就绪，无需下载")
+    pkg = PACKAGE_NAMES.get(component, component)
+    try:
+        proc = subprocess.run(
+            ["pacman", "-Sp", "--print-format", "%n|%v|%l", pkg],
+            capture_output=True, text=True, timeout=20.0, env={**os.environ})
+    except FileNotFoundError:
+        raise PackageDownloadError("pacman_missing", "本机没有 pacman，无法解析安装包")
+    except subprocess.TimeoutExpired:
+        raise PackageDownloadError("resolve_failed", "pacman 解析安装包超时")
+    except OSError as exc:
+        raise PackageDownloadError("resolve_failed", f"调用 pacman 失败：{exc}")
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()[-300:]
+        raise PackageDownloadError(
+            "resolve_failed", f"无法解析 {pkg} 的下载地址：{detail or 'pacman 退出码 %s' % proc.returncode}")
+    # -Sp 可能连带打印依赖；只取目标包那一行，避免下错文件
+    for line in proc.stdout.splitlines():
+        parts = [x.strip() for x in line.split("|")]
+        if len(parts) < 3:
+            continue
+        name, version, url = parts[0], parts[1], parts[2]
+        if name != pkg:
+            continue
+        if not _pkg_url_ok(url):
+            raise PackageDownloadError("unsafe_url", f"pacman 给出的地址不受支持：{url[:120]}")
+        return {"component": component, "package": name, "version": version,
+                "url": url, "filename": _pkg_filename(name, version, url)}
+    raise PackageDownloadError(
+        "resolve_failed", f"pacman 没有给出 {pkg} 的下载地址（包数据库可能未同步）")
+
+
+def download_package(component: str, hook=None) -> dict:
+    """把安装包抓到临时文件，返回路径供接口用 FileResponse 发出去。
+
+    进度沿用既有 selfcheck_progress 机制（download → verify），不另造一套。
+    失败抛 PackageDownloadError，调用方把 reason/error 原样给前端。
+    """
+    if hook:
+        set_progress_hook(hook)
+    with _download_lock:
+        with _job_lock:
+            if _job_thread and _job_thread.is_alive():
+                raise PackageDownloadError("busy", "已有安装任务在进行，请等它完成")
+        spec = package_spec(component)
+        name, version = spec["package"], spec["version"]
+        _set(component, "download", 2.0, f"开始下载 {name} {version}…")
+        tmpdir = tempfile.mkdtemp(prefix="deckmeido-pkg-")
+        path = os.path.join(tmpdir, spec["filename"])
+        try:
+            req = urllib.request.Request(spec["url"], headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=30.0) as resp:
+                total = int(resp.headers.get("Content-Length") or 0)
+                got = 0
+                last_pct = 2.0
+                with open(path, "wb") as fh:
+                    while True:
+                        chunk = resp.read(_DL_CHUNK)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        got += len(chunk)
+                        if total:
+                            pct = 4.0 + 92.0 * got / total
+                            if pct - last_pct >= 1.0:
+                                last_pct = pct
+                                _set(component, "download", pct,
+                                     f"下载 {name} {pct:.0f}%")
+                if total and got < total:
+                    raise PackageDownloadError(
+                        "download_failed",
+                        f"下载不完整：{got}/{total} 字节，请重试")
+            _set(component, "verify", 97.0, "校验安装包…")
+            size = os.path.getsize(path)
+            if size <= 0:
+                raise PackageDownloadError("download_failed", "下载到的文件是空的，请重试")
+            _set(component, "done", 100.0, f"已下载 {spec['filename']}",
+                 state="done")
+            return {"ok": True, "path": path, "filename": spec["filename"],
+                    "size": size, "package": name, "version": version,
+                    "url_host": urllib.parse.urlsplit(spec["url"]).hostname or ""}
+        except PackageDownloadError as exc:
+            _set(component, "error", 0.0, "下载失败", state="error", error=str(exc))
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            raise
+        except Exception as exc:
+            _set(component, "error", 0.0, "下载失败", state="error", error=str(exc))
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            raise PackageDownloadError(
+                "download_failed", f"下载失败：{exc or '未知错误'}") from exc
+
+
+def cleanup_package(path: str) -> None:
+    """响应发完就删临时目录（FileResponse 的 background 回调）"""
+    try:
+        shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+    except Exception:
+        pass

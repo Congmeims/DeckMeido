@@ -8217,6 +8217,7 @@
   function scBtnLabel(it, job) {
     if (job && job.component === it.key && job.state === 'running') return '进行中…';
     if (it.status === 'ready') return '已就绪';
+    if (!it.can_install && it.action === 'package') return '下载';
     if (!it.can_install) return '复制命令';
     return it.key === 'ydotoold' ? '修复' : '安装';
   }
@@ -8230,6 +8231,42 @@
     } else {
       scHint.textContent = '请手动复制：' + text;
     }
+  }
+
+  function downloadComponent(it, btn) {
+    var oldLabel = scBtnLabel(it, null);
+    btn.disabled = true;
+    btn.textContent = '下载中…';
+    scHint.textContent = '正在准备 ' + it.name + ' 的安装包…';
+    fetch('/api/selfcheck/download?component=' + encodeURIComponent(it.key))
+      .then(function (r) {
+        if (!r.ok) {
+          return r.json().then(function (j) {
+            throw new Error((j && (j.error || j.reason)) || ('HTTP ' + r.status));
+          }, function () { throw new Error('HTTP ' + r.status); });
+        }
+        var cd = r.headers.get('Content-Disposition') || '';
+        var m = /filename="([^"]+)"/i.exec(cd);
+        return r.blob().then(function (blob) {
+          return { blob: blob, name: m ? m[1] : (it.key + '.pkg.tar.zst') };
+        });
+      })
+      .then(function (x) {
+        var url = URL.createObjectURL(x.blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = x.name;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+        scHint.textContent = '已下载 ' + x.name
+          + '，可双击安装，或执行 sudo pacman -U ' + x.name;
+        btn.textContent = '重新下载';
+        btn.disabled = false;
+      })
+      .catch(function (e) {
+        scHint.textContent = '下载失败：' + (e && e.message ? e.message : '连接异常');
+        btn.textContent = oldLabel;
+        btn.disabled = false;
+      });
   }
 
   function renderSelfcheck(data) {
@@ -8259,7 +8296,10 @@
       detail.className = 'sc-detail';
       detail.textContent = it.detail || '';
       var cmd = null;
-      if (!it.can_install && it.command) {
+      if (!it.can_install && it.action === 'package') {
+        btn.addEventListener('click', function () { downloadComponent(it, btn); });
+      } else if (!it.can_install && it.command) {
+        // 兜底：非系统包的非静默项仍可按旧方式复制命令
         cmd = document.createElement('div');
         cmd.className = 'sc-cmd';
         cmd.textContent = it.command;
@@ -8315,7 +8355,7 @@
         if (!d || !d.components) { scHint.textContent = '读取组件清单失败'; return; }
         renderSelfcheck(d);
         scHint.textContent = '已就绪 ' + d.ready + '/' + d.total
-          + '。需要 root 的项会在终端补装，网页不会假装成功。';
+          + '。需要 root 的项会下载安装包，装好后系统包才可用。';
         if (d.job && d.job.state === 'running') startScPoll();
       })
       .catch(function () { scHint.textContent = '读取组件清单失败（连接异常）'; });
