@@ -6,8 +6,8 @@
 - tts_model  : 复用 tts.start_download()（hf-mirror / huggingface 双源 + 大小校验）
 - nltk_data  : GitHub raw → jsDelivr → ghfast 三个源，zip 解压后按目录校验
 - ydotoold   : depcheck.fix_ydotoold()（systemd 用户单元，不需要 root）
-- 系统包     : pacman；只有探测到受限 sudoers（`sudo -n` 可用）才静默执行，
-               否则只返回终端命令，绝不假装成功
+- 系统包     : 软件内下载到工作区临时目录 → 校验 → 提权安装 → 重新探测；
+               提权顺序为免密 sudo → polkit → 界面密码（sudo -S），全程不落浏览器下载
 
 进度用阶段权重法：下载 / 解包 / 校验各占一段，回调由 main 接到 WS 广播。
 同一时间只允许一个安装任务；重复点击直接返回「进行中」。
@@ -27,7 +27,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from . import depcheck, tts as tts_mod
+from . import depcheck, tools, tts as tts_mod
 
 _tts = None
 
@@ -161,6 +161,11 @@ COMPONENTS = [
 
 _BY_KEY = {c["key"]: c for c in COMPONENTS}
 STATUS_LABELS = {"ready": "已就绪", "missing": "缺失", "mismatch": "版本不符"}
+PHASE_LABELS = {
+    "prepare": "准备", "download": "下载", "verify": "校验",
+    "auth": "授权", "install": "安装", "remove": "卸载",
+    "done": "完成", "error": "失败",
+}
 
 # 允许网页自己卸载的组件：只限我们写入/启用过的东西。
 # 系统包（pacman）一律不在这里出现——卸载包要用户自己决定，后端不代劳。
@@ -232,17 +237,21 @@ def uninstall_plan(key: str) -> dict:
 def _public(item: dict) -> dict:
     status, detail = item["status_fn"]()
     action = item["action"]
-    can_install = action in ("python", "service")
+    # 系统包也走软件内自动安装：没有免密 sudo 时由界面收密码，
+    # 所以「能不能装」不再取决于 sudo 探测，只影响是否需要额外授权
+    can_install = action in ("python", "service", "package")
     command = item["command"]
+    needs_auth = False
     if action == "package":
-        can_install = sudo_silent()
+        needs_auth = not sudo_silent()
         if not command:
             command = "bash install.sh check --fix"
     out = {
         "key": item["key"], "name": item["name"], "size": item["size"],
         "status": status, "status_label": STATUS_LABELS.get(status, status),
         "detail": detail, "action": action,
-        "can_install": bool(can_install), "command": command,
+        "can_install": bool(can_install), "needs_auth": needs_auth,
+        "command": command,
         "can_uninstall": False, "uninstall": None,
     }
     if status == "ready" and item["key"] in UNINSTALLABLE:
@@ -276,6 +285,7 @@ def _set(component: str, phase: str, percent: float, message: str = "",
     with _job_lock:
         _job = {
             "component": component, "phase": phase,
+            "phase_label": PHASE_LABELS.get(phase, phase),
             "percent": max(0.0, min(100.0, float(percent))),
             "message": message, "state": state, "error": error,
             "updated_at": time.time(),
@@ -319,6 +329,7 @@ def _run_job(item: dict) -> None:
     key = item["key"]
     try:
         _set(key, "prepare", 1.0, "准备中…")
+        msg = "已就绪"
         if key == "tts_model":
             _install_tts()
         elif key == "nltk_data":
@@ -326,10 +337,10 @@ def _run_job(item: dict) -> None:
         elif key == "ydotoold":
             _install_ydotoold()
         elif item["action"] == "package":
-            _install_package(item)
+            msg = _install_package(item) or msg
         else:
             raise RuntimeError("该组件不支持自动安装")
-        _set(key, "done", 100.0, "已就绪", state="done")
+        _set(key, "done", 100.0, msg, state="done")
     except _NeedTerminal as exc:
         _set(key, "done", 0.0, "需要在终端执行", state="need_terminal",
              error=str(exc))
@@ -476,40 +487,132 @@ def _install_ydotoold() -> None:
     _set("ydotoold", "verify", 100.0, msg or "ydotoold 已就绪")
 
 
-def _install_package(item: dict) -> None:
-    """系统包：只有受限 sudoers 放行才静默装，否则交给用户去终端"""
-    if not sudo_silent():
-        raise _NeedTerminal(item["command"] or "bash install.sh check --fix")
-    pkg = item["key"]
-    _set(item["key"], "install", 20.0, f"pacman 安装 {pkg}…")
-    rc, out = _run(["sudo", "-n", "pacman", "-S", "--needed", "--noconfirm", pkg],
-                   timeout=600.0)
-    if rc != 0:
-        raise RuntimeError((out or f"pacman 退出码 {rc}")[-300:])
-    _set(item["key"], "verify", 90.0, "检查命令是否可用…")
-    probe = "espeak-ng" if item["key"] == "espeak" else item["key"]
-    if not shutil.which(probe):
-        raise RuntimeError(f"装完仍找不到 {probe}")
-    _set(item["key"], "verify", 100.0, "已就绪")
+def _install_package(item: dict) -> str:
+    """系统包：软件内下载 → 校验 → 提权安装 → 重新探测，全程不用浏览器下载。
+
+    提权顺序：免密 sudo → polkit（有图形会话时）→ 界面收密码走 sudo -S。
+    安装包装在工作区临时目录，无论成败都会清理。
+    """
+    key = item["key"]
+    spec = package_spec(key)
+    tmpdir = _workspace_tmp()
+    try:
+        path = Path(tmpdir) / spec["filename"]
+        _set(key, "download", 3.0,
+             f"下载 {spec['package']} {spec['version']}…")
+        _download_to(spec, path, key)
+        _set(key, "verify", 45.0, "校验安装包…")
+        _verify_package(path, spec)
+
+        rc = 0
+        out = ""
+        if sudo_silent():
+            _set(key, "install", 85.0, f"pacman 安装 {spec['package']}…")
+            rc, out = _exec_install("sudo", None, path, spec["package"])
+            if rc != 0 and _needs_password(out):
+                # 免密缓存过期（例如服务重启后）：不直接报错，改走界面密码
+                password = _request_password(key, "免密 sudo 失效，需要管理员密码")
+                _set(key, "install", 85.0, f"pacman 安装 {spec['package']}…")
+                rc, out = _exec_install("password", password, path, spec["package"])
+        elif _pkexec_ready():
+            _set(key, "auth", 50.0, "等待系统授权（请在桌面确认弹窗）…")
+            try:
+                rc, out = _exec_install("pkexec", None, path, spec["package"], 90.0)
+            except RuntimeError as exc:
+                rc, out = 126, str(exc)
+            if _pkexec_denied(rc, out):
+                _set(key, "auth", 50.0, "没有拿到 polkit 授权，改用管理员密码…")
+                password = _request_password(key, "需要管理员密码来安装系统包")
+                _set(key, "install", 85.0, f"pacman 安装 {spec['package']}…")
+                rc, out = _exec_install("password", password, path, spec["package"])
+        else:
+            password = _request_password(key, "需要管理员密码来安装系统包")
+            _set(key, "install", 85.0, f"pacman 安装 {spec['package']}…")
+            rc, out = _exec_install("password", password, path, spec["package"])
+
+        if rc != 0:
+            raise RuntimeError(_install_error_text(out, rc))
+
+        _set(key, "verify", 92.0, "重新检测组件状态…")
+        status, status_detail = item["status_fn"]()
+        if status != "ready":
+            raise RuntimeError(
+                f"安装完成但 {item['name']} 仍不可用：{status_detail or status}")
+        warn = "DECKMEIDO_WARN restore_failed" in (out or "")
+        if warn:
+            _set(key, "verify", 99.0,
+                 "安装完成，但只读保护未恢复，请手动执行 steamos-readonly enable")
+            return "已就绪（只读保护未恢复，请手动执行 steamos-readonly enable）"
+        _set(key, "verify", 99.0, "已就绪")
+        return ""
+    finally:
+        _clear_password()
+        _cleanup_tmp(tmpdir)
 
 
-# ---------- 系统包下载 ----------
-# 不能提权时不再让用户复制命令，而是把真实的安装包下载到浏览器。
+# ---------- 系统包：软件内下载并安装 ----------
 # 下载地址只从本机 pacman 配置解析（`pacman -Sp`），请求里只接受组件 key，
 # 不接受任何 URL —— 这样接口不会变成任意地址抓取（SSRF）的跳板。
+# 安装包下到工作区临时目录，校验后直接交给 pacman，最后清理临时目录。
 PACKAGE_NAMES = {"espeak": "espeak-ng"}
 _PKG_SCHEMES = ("http://", "https://")
 _PKG_SAFE_RE = re.compile(r"[^A-Za-z0-9._+-]")
 _DL_CHUNK = 64 * 1024
-_download_lock = threading.Lock()
+
+PASSWORD_WAIT_SECONDS = 300.0
+PASSWORD_MAX_ATTEMPTS = 3
 
 
-class PackageDownloadError(Exception):
-    """下载失败：reason 给前端分类，message 直接展示给用户"""
+class PackageError(Exception):
+    """安装包相关的失败：reason 给前端分类，message 直接展示给用户"""
 
     def __init__(self, reason: str, message: str):
         super().__init__(message)
         self.reason = reason
+
+
+# 提权三选一：免密 sudo → polkit 弹窗 → 界面收密码走 sudo -S。
+# 密码只存在进程内存的本任务里，用完立即清空，不写日志、不写配置、不回显。
+_pw_lock = threading.Lock()
+_pw_event = threading.Event()
+_pw_value: str | None = None
+_pw_fail = ""
+_pw_attempts = 0
+_pw_waiting = False
+
+# 一次提权会话里把「关只读 → 安装 → 恢复只读」串成一条命令：
+# 既减少授权次数，也保证无论 pacman 成败都会把 SteamOS 恢复成只读。
+_INSTALL_SCRIPT = r'''pkg="$1"
+name="$2"
+ro=0
+restore() {
+  if [ "$ro" = 1 ]; then
+    if ! steamos-readonly enable >/dev/null 2>&1; then
+      echo "DECKMEIDO_WARN restore_failed"
+    fi
+  fi
+}
+trap restore EXIT
+trap 'exit 130' INT TERM
+if command -v steamos-readonly >/dev/null 2>&1; then
+  if steamos-readonly disable >/dev/null 2>&1; then
+    ro=1
+  else
+    echo "DECKMEIDO_ERR readonly_disable"
+    exit 11
+  fi
+fi
+if pacman -U --needed --noconfirm "$pkg" 2>&1; then
+  exit 0
+fi
+echo "DECKMEIDO_INFO local_install_failed"
+# SteamOS 换镜像后 keyring 常与仓库对不上，签名校验会直接失败；先修 keyring
+pacman-key --init >/dev/null 2>&1 || true
+pacman-key --populate archlinux holo >/dev/null 2>&1 || true
+# 本地包缺依赖时回退到仓库安装（会补下依赖，但目标包仍在本地）
+pacman -Sy --needed --noconfirm "$name" 2>&1
+exit $?
+'''
 
 
 def _pkg_url_ok(url: str) -> bool:
@@ -541,26 +644,26 @@ def package_spec(component: str) -> dict:
     """解析某个组件对应的包名/版本/下载地址；只接受注册表里的系统包 key"""
     item = _BY_KEY.get(component)
     if not item:
-        raise PackageDownloadError("unknown_component", "未知组件")
+        raise PackageError("unknown_component", "未知组件")
     if item["action"] != "package":
-        raise PackageDownloadError("not_package", "该组件不是系统包，不能下载")
+        raise PackageError("not_package", "该组件不是系统包，不能下载")
     status, _ = item["status_fn"]()
     if status == "ready":
-        raise PackageDownloadError("already_ready", f"{item['name']} 已就绪，无需下载")
+        raise PackageError("already_ready", f"{item['name']} 已就绪，无需下载")
     pkg = PACKAGE_NAMES.get(component, component)
     try:
         proc = subprocess.run(
             ["pacman", "-Sp", "--print-format", "%n|%v|%l", pkg],
             capture_output=True, text=True, timeout=20.0, env={**os.environ})
     except FileNotFoundError:
-        raise PackageDownloadError("pacman_missing", "本机没有 pacman，无法解析安装包")
+        raise PackageError("pacman_missing", "本机没有 pacman，无法解析安装包")
     except subprocess.TimeoutExpired:
-        raise PackageDownloadError("resolve_failed", "pacman 解析安装包超时")
+        raise PackageError("resolve_failed", "pacman 解析安装包超时")
     except OSError as exc:
-        raise PackageDownloadError("resolve_failed", f"调用 pacman 失败：{exc}")
+        raise PackageError("resolve_failed", f"调用 pacman 失败：{exc}")
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()[-300:]
-        raise PackageDownloadError(
+        raise PackageError(
             "resolve_failed", f"无法解析 {pkg} 的下载地址：{detail or 'pacman 退出码 %s' % proc.returncode}")
     # -Sp 可能连带打印依赖；只取目标包那一行，避免下错文件
     for line in proc.stdout.splitlines():
@@ -571,76 +674,246 @@ def package_spec(component: str) -> dict:
         if name != pkg:
             continue
         if not _pkg_url_ok(url):
-            raise PackageDownloadError("unsafe_url", f"pacman 给出的地址不受支持：{url[:120]}")
+            raise PackageError("unsafe_url", f"pacman 给出的地址不受支持：{url[:120]}")
         return {"component": component, "package": name, "version": version,
                 "url": url, "filename": _pkg_filename(name, version, url)}
-    raise PackageDownloadError(
+    raise PackageError(
         "resolve_failed", f"pacman 没有给出 {pkg} 的下载地址（包数据库可能未同步）")
 
 
-def download_package(component: str, hook=None) -> dict:
-    """把安装包抓到临时文件，返回路径供接口用 FileResponse 发出去。
-
-    进度沿用既有 selfcheck_progress 机制（download → verify），不另造一套。
-    失败抛 PackageDownloadError，调用方把 reason/error 原样给前端。
-    """
-    if hook:
-        set_progress_hook(hook)
-    with _download_lock:
-        with _job_lock:
-            if _job_thread and _job_thread.is_alive():
-                raise PackageDownloadError("busy", "已有安装任务在进行，请等它完成")
-        spec = package_spec(component)
-        name, version = spec["package"], spec["version"]
-        _set(component, "download", 2.0, f"开始下载 {name} {version}…")
-        tmpdir = tempfile.mkdtemp(prefix="deckmeido-pkg-")
-        path = os.path.join(tmpdir, spec["filename"])
-        try:
-            req = urllib.request.Request(spec["url"], headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=30.0) as resp:
-                total = int(resp.headers.get("Content-Length") or 0)
-                got = 0
-                last_pct = 2.0
-                with open(path, "wb") as fh:
-                    while True:
-                        chunk = resp.read(_DL_CHUNK)
-                        if not chunk:
-                            break
-                        fh.write(chunk)
-                        got += len(chunk)
-                        if total:
-                            pct = 4.0 + 92.0 * got / total
-                            if pct - last_pct >= 1.0:
-                                last_pct = pct
-                                _set(component, "download", pct,
-                                     f"下载 {name} {pct:.0f}%")
-                if total and got < total:
-                    raise PackageDownloadError(
-                        "download_failed",
-                        f"下载不完整：{got}/{total} 字节，请重试")
-            _set(component, "verify", 97.0, "校验安装包…")
-            size = os.path.getsize(path)
-            if size <= 0:
-                raise PackageDownloadError("download_failed", "下载到的文件是空的，请重试")
-            _set(component, "done", 100.0, f"已下载 {spec['filename']}",
-                 state="done")
-            return {"ok": True, "path": path, "filename": spec["filename"],
-                    "size": size, "package": name, "version": version,
-                    "url_host": urllib.parse.urlsplit(spec["url"]).hostname or ""}
-        except PackageDownloadError as exc:
-            _set(component, "error", 0.0, "下载失败", state="error", error=str(exc))
-            shutil.rmtree(tmpdir, ignore_errors=True)
-            raise
-        except Exception as exc:
-            _set(component, "error", 0.0, "下载失败", state="error", error=str(exc))
-            shutil.rmtree(tmpdir, ignore_errors=True)
-            raise PackageDownloadError(
-                "download_failed", f"下载失败：{exc or '未知错误'}") from exc
-
-
-def cleanup_package(path: str) -> None:
-    """响应发完就删临时目录（FileResponse 的 background 回调）"""
+def _workspace_tmp() -> Path:
+    """工作区里的临时目录；工作区不可写时退回系统临时目录"""
     try:
-        shutil.rmtree(os.path.dirname(path), ignore_errors=True)
-    except Exception:
-        pass
+        base = Path(tools.WORKSPACE) / ".deckmeido-tmp"
+        base.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(prefix="pkg-", dir=str(base)))
+    except OSError:
+        return Path(tempfile.mkdtemp(prefix="deckmeido-pkg-"))
+
+
+def _cleanup_tmp(tmpdir: Path) -> None:
+    """删安装包；顺手把空的 .deckmeido-tmp 也收掉，不在工作区留痕"""
+    shutil.rmtree(str(tmpdir), ignore_errors=True)
+    parent = Path(tmpdir).parent
+    if parent.name == ".deckmeido-tmp":
+        try:
+            parent.rmdir()
+        except OSError:
+            pass
+
+
+def _download_to(spec: dict, path: Path, component: str) -> None:
+    """下载安装包到临时文件；进度 3%→43%，不完整直接判失败"""
+    req = urllib.request.Request(spec["url"], headers={"User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=30.0) as resp:
+            total = int(resp.headers.get("Content-Length") or 0)
+            got = 0
+            last_pct = 3.0
+            with open(path, "wb") as fh:
+                while True:
+                    chunk = resp.read(_DL_CHUNK)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    got += len(chunk)
+                    if total:
+                        pct = 3.0 + 40.0 * got / total
+                        if pct - last_pct >= 1.0:
+                            last_pct = pct
+                            _set(component, "download", pct,
+                                 f"下载 {spec['package']} {got * 100 // total}%")
+            if total and got < total:
+                raise PackageError(
+                    "download_failed", f"下载不完整：{got}/{total} 字节，请重试")
+            if not total:
+                _set(component, "download", 43.0, f"下载 {spec['package']} 完成")
+    except PackageError:
+        raise
+    except Exception as exc:
+        raise PackageError("download_failed", f"下载失败：{exc or '未知错误'}") from exc
+
+
+def _verify_package(path: Path, spec: dict) -> None:
+    """校验下载到的是目标包：非空、扩展名正常、pacman 读出的包名一致"""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    if size <= 0:
+        raise PackageError("download_failed", "下载到的安装包是空的，请重试")
+    if not path.name.lower().endswith((".pkg.tar.zst", ".pkg.tar.xz", ".pkg.tar.gz")):
+        raise PackageError("verify_failed", f"安装包扩展名异常：{path.name}")
+    rc, out = _run(["pacman", "-Qp", str(path)], timeout=15.0)
+    if rc != 0:
+        raise PackageError(
+            "verify_failed", f"安装包校验失败：{(out or 'pacman -Qp 失败')[-200:]}")
+    head = (out or "").splitlines()[0].split() if out else []
+    if head and head[0] != spec["package"]:
+        raise PackageError(
+            "verify_failed", f"安装包名称不符：期望 {spec['package']}，实际 {head[0]}")
+
+
+# SteamOS 桌面常见的 polkit 认证代理；检测到才去弹窗，
+# 避免无代理时 pkexec 空等一次没人看的授权
+_POLKIT_AGENTS = (
+    "polkit-kde-authentication-agent-1",
+    "polkit-gnome-authentication-agent-1",
+    "polkit-mate-authentication-agent-1",
+    "lxpolkit",
+)
+
+
+def _pkexec_ready() -> bool:
+    """有 pkexec 且有图形认证代理时才尝试 polkit"""
+    if not shutil.which("pkexec"):
+        return False
+    if not shutil.which("pgrep"):
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    for name in _POLKIT_AGENTS:
+        rc, _ = _run(["pgrep", "-f", name], timeout=3.0)
+        if rc == 0:
+            return True
+    return False
+
+
+def _pkexec_denied(rc: int, out: str) -> bool:
+    """pkexec 授权失败（未授权 / 用户取消 / 没有认证代理）"""
+    if rc in (126, 127):
+        return True
+    low = (out or "").lower()
+    return any(s in low for s in (
+        "no authentication agent", "not authorized", "not permitted"))
+
+
+def _needs_password(out: str) -> bool:
+    """免密 sudo 缓存过期时会报这些字样，需要回退到界面密码"""
+    low = (out or "").lower()
+    return any(s in low for s in ("password is required", "a terminal is required",
+                                  "askpass", "sudo: a password"))
+
+
+def _exec_install(mode: str, password: str | None, path: Path, name: str,
+                  timeout: float = 630.0) -> tuple[int, str]:
+    """按授权方式执行「关只读 → pacman → 恢复只读」脚本。
+
+    密码通过 stdin 传给 `sudo -S`，不进 argv，也不会出现在任何日志/界面里。
+    """
+    base = ["bash", "-c", _INSTALL_SCRIPT, "deckmeido-install", str(path), name]
+    if mode == "sudo":
+        argv = ["sudo", "-n"] + base
+    elif mode == "pkexec":
+        argv = ["pkexec"] + base
+    else:
+        argv = ["sudo", "-S", "-p", ""] + base
+    kwargs = dict(capture_output=True, text=True, timeout=timeout,
+                  stderr=subprocess.STDOUT, env={**os.environ})
+    if mode == "password":
+        kwargs["input"] = (password or "") + "\n"
+    try:
+        proc = subprocess.run(argv, **kwargs)
+        return proc.returncode, proc.stdout or ""
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("安装超时（约 10 分钟），可能卡在依赖下载；请重试")
+    except FileNotFoundError:
+        raise RuntimeError("找不到 sudo / polkit，无法提权安装")
+    except OSError as exc:
+        raise RuntimeError(f"调用安装命令失败：{exc}")
+
+
+def _sudo_check(password: str) -> tuple[bool, str]:
+    """用 `sudo -S -v` 验证密码（只验证，不执行任何命令）"""
+    try:
+        proc = subprocess.run(
+            ["sudo", "-S", "-p", "", "-v"], input=password + "\n",
+            capture_output=True, text=True, timeout=15.0, env={**os.environ})
+        return proc.returncode == 0, (proc.stdout + proc.stderr).strip()
+    except FileNotFoundError:
+        return False, "本机没有 sudo"
+    except subprocess.TimeoutExpired:
+        return False, "sudo 校验超时"
+    except OSError as exc:
+        return False, str(exc)
+
+
+def _request_password(component: str, message: str) -> str:
+    """把任务挂起等界面输入密码；超时或连续错误都由这里统一抛错"""
+    global _pw_value, _pw_fail, _pw_attempts, _pw_waiting
+    with _pw_lock:
+        _pw_value = None
+        _pw_fail = ""
+        _pw_attempts = 0
+        _pw_event.clear()
+        _pw_waiting = True
+    _set(component, "auth", 50.0, message, state="need_password")
+    try:
+        if not _pw_event.wait(PASSWORD_WAIT_SECONDS):
+            raise RuntimeError("等待管理员密码超时，请重新点击安装")
+    finally:
+        _pw_waiting = False
+    with _pw_lock:
+        password, _pw_value = _pw_value, None
+        fail = _pw_fail
+    if fail:
+        raise RuntimeError(fail)
+    if not password:
+        raise RuntimeError("未收到管理员密码")
+    return password
+
+
+def provide_password(component: str, password: str) -> dict:
+    """界面提交管理员密码：先验证，通过后交给正在等待的安装任务"""
+    global _pw_value, _pw_fail, _pw_attempts
+    if not isinstance(password, str) or not password.strip():
+        return {"ok": False, "reason": "empty", "error": "请输入管理员密码"}
+    with _job_lock:
+        job = dict(_job or {})
+    if (job.get("component") != component or job.get("state") != "need_password"
+            or not _pw_waiting):
+        return {"ok": False, "reason": "not_waiting", "error": "当前没有等待授权的安装任务"}
+    ok, _out = _sudo_check(password)
+    if ok:
+        with _pw_lock:
+            _pw_value = password
+            _pw_attempts = 0
+            _pw_event.set()
+        return {"ok": True}
+    with _pw_lock:
+        _pw_attempts += 1
+        left = PASSWORD_MAX_ATTEMPTS - _pw_attempts
+        if left <= 0:
+            _pw_fail = "管理员密码连续错误，安装已终止"
+            _pw_event.set()
+    if left <= 0:
+        return {"ok": False, "reason": "too_many_attempts",
+                "error": "密码连续错误，安装已终止"}
+    _set(component, "auth", 50.0, f"管理员密码不正确，还可尝试 {left} 次",
+         state="need_password", error="密码不正确")
+    return {"ok": False, "reason": "bad_password",
+            "error": f"密码不正确，还可再试 {left} 次"}
+
+
+def _clear_password() -> None:
+    global _pw_value, _pw_fail, _pw_attempts, _pw_waiting
+    with _pw_lock:
+        _pw_value = None
+        _pw_fail = ""
+        _pw_attempts = 0
+        _pw_waiting = False
+        _pw_event.clear()
+
+
+def _install_error_text(out: str, rc: int) -> str:
+    """从 pacman / 脚本输出里挑出真正的失败原因，而不是只报「失败」"""
+    if "DECKMEIDO_ERR readonly_disable" in (out or ""):
+        return ("无法关闭 SteamOS 只读保护，系统包需要可写根分区；"
+                "请先在终端执行 steamos-readonly disable 后重试")
+    lines = [l.strip() for l in (out or "").splitlines() if l.strip()]
+    lines = [l for l in lines if not l.startswith("DECKMEIDO_")]
+    keys = ("error", "failed", "invalid", "could not", "unable", "conflict",
+            "exists in filesystem", "not found", "signature", "denied",
+            "permission", "只读", "无法", "失败")
+    hits = [l for l in lines if any(k in l.lower() for k in keys)]
+    picked = hits[:3] if hits else lines[-3:]
+    detail = "；".join(picked)[-400:]
+    return f"安装失败：{detail or f'安装命令退出码 {rc}'}"

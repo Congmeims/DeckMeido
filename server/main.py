@@ -23,7 +23,6 @@ import tomllib
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Depends, UploadFile, Response, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from .llm import LLMClient
@@ -4006,43 +4005,28 @@ async def api_selfcheck_uninstall(component: str = Query(...)):
     return res
 
 
+class SelfcheckPasswordBody(BaseModel):
+    component: str
+    password: str
+
+
+@app.post("/api/selfcheck/password", dependencies=[Depends(require_auth)])
+async def api_selfcheck_password(req: SelfcheckPasswordBody):
+    """界面提交管理员密码，交给正在等待授权的系统包安装任务。
+
+    密码只在后端内存里转交，不落日志、不写配置、不在响应里回显。
+    """
+    res = await asyncio.to_thread(
+        selfcheck.provide_password, req.component, req.password)
+    if not res.get("ok"):
+        code = 409 if res.get("reason") == "not_waiting" else 400
+        return JSONResponse(res, status_code=code)
+    return res
+
+
 @app.get("/api/selfcheck/progress", dependencies=[Depends(require_auth)])
 async def api_selfcheck_progress():
     return {"ok": True, "job": selfcheck.job_snapshot()}
-
-
-@app.get("/api/selfcheck/download", dependencies=[Depends(require_auth)])
-async def api_selfcheck_download(component: str = Query(...)):
-    """下载系统包的安装文件（无法提权时用）。
-
-    只接受组件 key：真实下载地址由后端从本机 pacman 配置解析，
-    前端不传也不能传 URL，接口不会变成任意地址抓取。
-    """
-    loop = asyncio.get_running_loop()
-
-    def hook(payload: dict) -> None:
-        try:
-            asyncio.run_coroutine_threadsafe(
-                manager.broadcast({"type": "selfcheck_progress", **payload}), loop)
-        except Exception:
-            pass
-
-    try:
-        res = await asyncio.to_thread(selfcheck.download_package, component, hook)
-    except selfcheck.PackageDownloadError as exc:
-        if exc.reason == "busy":
-            code = 409
-        elif exc.reason in ("unknown_component", "not_package", "already_ready"):
-            code = 400
-        else:
-            code = 502
-        return JSONResponse(
-            {"ok": False, "reason": exc.reason, "error": str(exc)}, status_code=code)
-    return FileResponse(
-        res["path"], filename=res["filename"],
-        media_type="application/octet-stream",
-        background=BackgroundTask(selfcheck.cleanup_package, res["path"]),
-    )
 
 
 @app.post("/api/tts/preview", dependencies=[Depends(require_auth)])

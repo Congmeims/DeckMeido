@@ -1444,8 +1444,13 @@
   /* ---------- 语音回复卡：标题+开关 / 发音人+状态+试听 / 一行模型状态 ---------- */
   /* 这张卡只用三层：比其它卡片更矮，内边距和行距都收紧 */
   .tts-card { padding: 12px 16px 10px; margin-bottom: 12px; }
-  .tts-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
-  .tts-head .card-title { margin: 0; }
+  /* 子卡片标题行统一：标题靠左，总开关贴内容区右边缘并垂直居中；标题过长省略 */
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .card-head .card-title {
+    margin: 0; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .card-head > .switch { flex: 0 0 auto; margin: 0 0 0 auto; }
   /* 发音人一行：窄屏放不下时「状态+试听」整体换到下一行右对齐 */
   .tts-row2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
   .tts-label { flex: 0 0 auto; font-size: 13px; color: var(--muted); }
@@ -1665,6 +1670,13 @@
     font-size: 12px; font-weight: 600; letter-spacing: .3px;
     opacity: .8; margin-bottom: 10px;
   }
+  /* 分组子标题带开关时，开关与标题同一行最右侧，标题过长省略 */
+  .qq-group-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  .qq-group-head .qq-group-title {
+    margin-bottom: 0; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .qq-group-head > .switch { flex: 0 0 auto; margin: 0 0 0 auto; }
   .qq-num-grid {
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0 16px;
@@ -2111,29 +2123,37 @@
     .ri-io-row { grid-template-columns: minmax(0, 1fr); }
   }
   /* ---------- 桌面控件自检：两栏（左自检 / 右可补装组件） ---------- */
-  /* 这块内容比同页其它卡片稀疏，收窄卡片本身；360px 窄屏仍占满整宽 */
-  .ctrl-card { max-width: 560px; }
-  @media (max-width: 640px) { .ctrl-card { max-width: none; } }
   .ctrl-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
   .ctrl-col { min-width: 0; }
   .ctrl-sub { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
   .sc-list { display: flex; flex-direction: column; gap: 6px; }
+  /* 每行统一结构：名称 / 体积 / 状态徽章 / 操作按钮四列固定，子行说明单独占一行 */
   .sc-row {
     border: 1px solid var(--line); border-radius: 10px;
-    padding: 8px 10px; background: var(--surface-2);
+    padding: 8px 10px; background: var(--surface-2); box-sizing: border-box;
   }
-  .sc-head { display: flex; align-items: center; gap: 8px; }
+  .sc-head {
+    display: grid; grid-template-columns: minmax(0, 1fr) 64px 64px 84px;
+    align-items: center; gap: 8px; min-height: 28px;
+  }
   .sc-name { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sc-size { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
+  .sc-size {
+    font-size: 11px; color: var(--muted); text-align: center;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .sc-badge {
-    flex: 0 0 auto; margin-left: auto; font-size: 11px; padding: 1px 7px;
+    justify-self: center; font-size: 11px; padding: 1px 7px;
     border-radius: 999px; border: 1px solid var(--line); white-space: nowrap;
   }
   .sc-badge.ready { color: #2ecc71; border-color: rgba(46,204,113,.5); background: rgba(46,204,113,.1); }
   .sc-badge.missing { color: #e0a33a; border-color: rgba(224,163,58,.5); background: rgba(224,163,58,.1); }
   .sc-badge.mismatch { color: #d0492b; border-color: rgba(208,73,43,.5); background: rgba(208,73,43,.1); }
-  .sc-btn { flex: 0 0 auto; min-height: 28px; padding: 0 10px; font-size: 12px; }
-  .sc-detail { margin-top: 3px; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+  .sc-btn { width: 84px; min-height: 28px; padding: 0 6px; font-size: 12px; }
+  .sc-detail {
+    margin-top: 4px; font-size: 11.5px; color: var(--muted);
+    line-height: 1.5; overflow-wrap: anywhere;
+  }
+  .sc-detail:empty { display: none; }
   .sc-detail.red { color: #d0492b; }
   .sc-cmd {
     margin-top: 4px; padding: 6px 8px; border-radius: 8px;
@@ -2141,11 +2161,24 @@
     font-family: var(--font-mono); font-size: 11.5px;
     white-space: pre-wrap; word-break: break-all; cursor: pointer;
   }
+  /* 管理员密码入口：只在后端任务 state=need_password 时展开 */
+  .sc-auth { display: none; align-items: center; gap: 6px; margin-top: 6px; }
+  .sc-auth.show { display: flex; }
+  .sc-pw {
+    flex: 1; min-width: 0; height: 28px; padding: 0 8px; box-sizing: border-box;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--surface); color: var(--text); font-size: 12px;
+  }
+  .sc-auth-btn { flex: 0 0 auto; width: 84px; min-height: 28px; padding: 0 6px; font-size: 12px; }
   .sc-progress { display: none; align-items: center; gap: 8px; margin-top: 6px; }
   .sc-progress.show { display: flex; }
   .sc-bar { flex: 1; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
   .sc-bar i { display: block; height: 100%; width: 0; background: #2ecc71; transition: width .25s; }
   .sc-pct { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
+  @media (max-width: 420px) {
+    .sc-head { grid-template-columns: minmax(0, 1fr) 48px 56px 68px; gap: 6px; }
+    .sc-btn, .sc-auth-btn { width: 68px; }
+  }
   @media (max-width: 720px) {
     .ctrl-cols { grid-template-columns: 1fr; }
   }
@@ -3053,7 +3086,7 @@
             </div>
           </div>
           <div class="card tts-card">
-            <div class="tts-head">
+            <div class="card-head">
               <div class="card-title">语音回复</div>
               <label class="switch" title="回复时用语音播报">
                 <input id="cfgTts" type="checkbox">
@@ -3224,19 +3257,18 @@
           </p>
 
           <div class="card" id="riEnableCard">
-            <div class="card-title">跨屏鼠标（远程接管）</div>
+            <div class="card-head">
+              <div class="card-title">跨屏鼠标（远程接管）</div>
+              <label class="switch" title="允许局域网设备接管">
+                <input id="cfgRiEnabled" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
             <p class="pane-desc" style="margin-top:0">
               在电脑浏览器里点左下角 DeckMeido logo 就进入接管：鼠标从电脑上消失，出现在这台 Deck 上，
               能操作 Steam UI、游戏和这个页面。按 Esc、再点一次 logo，或在 Deck 客户端里点 logo 释放。
               开关没开时点 logo，会先把你带到这里的开关上。
             </p>
-            <div class="field field-row">
-              <label style="margin:0">允许局域网设备接管（总开关）</label>
-              <label class="switch">
-                <input id="cfgRiEnabled" type="checkbox">
-                <span class="slider"></span>
-              </label>
-            </div>
             <div class="ri-io-row">
               <div class="field">
                 <label>指针灵敏度 <span id="cfgRiSensVal" class="field-hint">1.5×</span></label>
@@ -3249,26 +3281,25 @@
               </div>
             </div>
             <div class="field-hint" style="color:#e0a33a">
-              安全提示：这个开关同时就是「允许局域网设备接管」。开启后，局域网内任何已配对设备
+              安全提示：标题右侧的开关同时就是「允许局域网设备接管」。开启后，局域网内任何已配对设备
               都能控制这台机器。只在可信网络里用，用完及时关闭。
             </div>
             <div class="field-hint" id="riCfgState">当前状态：未接管</div>
           </div>
 
           <div class="card">
-            <div class="card-title">Onebot 通道</div>
+            <div class="card-head">
+              <div class="card-title">Onebot 通道</div>
+              <label class="switch" title="启用 Onebot 通道">
+                <input id="cfgQqEnable" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
             <div id="qqStatus" class="qq-status">
               <div class="qq-status-head">
                 <span class="qq-dot off"></span>
                 <span class="qq-state-text">正在读取状态…</span>
               </div>
-            </div>
-            <div class="field field-row">
-              <label style="margin:0">启用 Onebot 通道</label>
-              <label class="switch">
-                <input id="cfgQqEnable" type="checkbox">
-                <span class="slider"></span>
-              </label>
             </div>
             <div class="field field-row">
               <label style="margin:0">重启后自动连接</label>
@@ -3322,10 +3353,9 @@
             </div>
 
             <div class="qq-group">
-              <div class="qq-group-title">群常识缓存</div>
-              <div class="field field-row">
-                <label style="margin:0">记录白名单群的最近消息（group_memo）</label>
-                <label class="switch">
+              <div class="qq-group-head">
+                <div class="qq-group-title">群常识缓存</div>
+                <label class="switch" title="记录白名单群的最近消息">
                   <input id="cfgQqMemo" type="checkbox">
                   <span class="slider"></span>
                 </label>
@@ -3409,10 +3439,9 @@
             </div>
 
             <div class="qq-group">
-              <div class="qq-group-title">语音条</div>
-              <div class="field field-row">
-                <label style="margin:0">发送语音条（voice_reply）</label>
-                <label class="switch">
+              <div class="qq-group-head">
+                <div class="qq-group-title">语音条</div>
+                <label class="switch" title="发送语音条">
                   <input id="cfgQqVoice" type="checkbox">
                   <span class="slider"></span>
                 </label>
@@ -8316,10 +8345,12 @@
   var scPollTimer = null;
 
   function scBtnLabel(it, job) {
-    if (job && job.component === it.key && job.state === 'running') return '进行中…';
+    if (job && job.component === it.key) {
+      if (job.state === 'running') return '进行中…';
+      if (job.state === 'need_password') return '等待授权';
+    }
     if (it.status === 'ready') return it.can_uninstall ? '卸载' : '已就绪';
-    if (!it.can_install && it.action === 'package') return '下载';
-    if (!it.can_install) return '复制命令';
+    if (!it.can_install) return it.command ? '复制命令' : '已就绪';
     return it.key === 'ydotoold' ? '修复' : '安装';
   }
 
@@ -8334,39 +8365,39 @@
     }
   }
 
-  function downloadComponent(it, btn) {
-    var oldLabel = scBtnLabel(it, null);
+  // 提权安装：免密 sudo / polkit 都拿不到权限时，后端把任务停在 need_password，
+  // 这里只负责把密码交给后端；输入框内容提交后立即清空，不保存到任何地方
+  function submitPassword(key, input, btn) {
+    var pw = input.value;
+    if (!pw) { scHint.textContent = '请输入管理员密码'; input.focus(); return; }
     btn.disabled = true;
-    btn.textContent = '下载中…';
-    scHint.textContent = '正在准备 ' + it.name + ' 的安装包…';
-    fetch('/api/selfcheck/download?component=' + encodeURIComponent(it.key))
-      .then(function (r) {
-        if (!r.ok) {
-          return r.json().then(function (j) {
-            throw new Error((j && (j.error || j.reason)) || ('HTTP ' + r.status));
-          }, function () { throw new Error('HTTP ' + r.status); });
-        }
-        var cd = r.headers.get('Content-Disposition') || '';
-        var m = /filename="([^"]+)"/i.exec(cd);
-        return r.blob().then(function (blob) {
-          return { blob: blob, name: m ? m[1] : (it.key + '.pkg.tar.zst') };
-        });
-      })
-      .then(function (x) {
-        var url = URL.createObjectURL(x.blob);
-        var a = document.createElement('a');
-        a.href = url; a.download = x.name;
-        document.body.appendChild(a); a.click(); a.remove();
-        setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-        scHint.textContent = '已下载 ' + x.name;
-        btn.textContent = '重新下载';
-        btn.disabled = false;
-      })
-      .catch(function (e) {
-        scHint.textContent = '下载失败：' + (e && e.message ? e.message : '连接异常');
-        btn.textContent = oldLabel;
-        btn.disabled = false;
-      });
+    input.disabled = true;
+    scHint.textContent = '正在验证管理员密码…';
+    fetch('/api/selfcheck/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ component: key, password: pw })
+    }).then(function (r) {
+      return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; },
+                            function () { return { ok: false, status: r.status, j: null }; });
+    }).then(function (x) {
+      input.value = '';
+      input.disabled = false;
+      btn.disabled = false;
+      if (x.ok && x.j && x.j.ok) {
+        scHint.textContent = '授权通过，正在安装…';
+        return;
+      }
+      scHint.textContent = (x.j && (x.j.error || x.j.reason))
+        || ('授权失败 HTTP ' + x.status);
+      if (x.j && x.j.reason === 'not_waiting') loadSelfcheck();
+      else input.focus();
+    }).catch(function () {
+      input.value = '';
+      input.disabled = false;
+      btn.disabled = false;
+      scHint.textContent = '授权请求失败（连接异常）';
+    });
   }
 
   // 卸载：只允许我们自己管理的组件；确认框里写清删什么、多大，
@@ -8418,7 +8449,7 @@
       var nm = document.createElement('span');
       nm.className = 'sc-name'; nm.textContent = it.name; nm.title = it.name;
       var sz = document.createElement('span');
-      sz.className = 'sc-size'; sz.textContent = it.size || '';
+      sz.className = 'sc-size'; sz.textContent = it.size || ''; sz.title = it.size || '';
       var badge = document.createElement('span');
       badge.className = 'sc-badge ' + (it.status || 'missing');
       badge.textContent = it.status_label || it.status || '';
@@ -8426,24 +8457,42 @@
       btn.className = 'mini-btn sc-btn'; btn.type = 'button';
       btn.textContent = scBtnLabel(it, job);
       btn.disabled = (it.status === 'ready' && !it.can_uninstall)
-        || (job && job.component === it.key && job.state === 'running');
+        || (job && job.component === it.key
+            && (job.state === 'running' || job.state === 'need_password'));
       head.append(nm, sz, badge, btn);
 
+      // 补充说明独立一行；为空时 CSS :empty 自动收掉，不与名称混排
       var detail = document.createElement('div');
       detail.className = 'sc-detail';
       detail.textContent = it.detail || '';
+
       var cmd = null;
-      if (it.status === 'ready' && it.can_uninstall) {
-        btn.addEventListener('click', function () { uninstallComponent(it, btn); });
-      } else if (!it.can_install && it.action === 'package') {
-        btn.addEventListener('click', function () { downloadComponent(it, btn); });
-      } else if (!it.can_install && it.command) {
+      if (!it.can_install && it.action !== 'package' && it.command) {
         // 兜底：非系统包的非静默项仍可按旧方式复制命令
         cmd = document.createElement('div');
         cmd.className = 'sc-cmd';
         cmd.textContent = it.command;
         cmd.title = '点击复制';
         cmd.addEventListener('click', function () { copyCmd(it.command); });
+      }
+
+      var auth = document.createElement('div');
+      auth.className = 'sc-auth';
+      var pw = document.createElement('input');
+      pw.type = 'password'; pw.className = 'sc-pw';
+      pw.placeholder = '管理员密码'; pw.autocomplete = 'off';
+      var authBtn = document.createElement('button');
+      authBtn.className = 'mini-btn sc-auth-btn'; authBtn.type = 'button';
+      authBtn.textContent = '确认授权';
+      auth.append(pw, authBtn);
+      authBtn.addEventListener('click', function () { submitPassword(it.key, pw, authBtn); });
+      pw.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); submitPassword(it.key, pw, authBtn); }
+      });
+
+      if (it.status === 'ready' && it.can_uninstall) {
+        btn.addEventListener('click', function () { uninstallComponent(it, btn); });
+      } else if (!it.can_install && it.command) {
         btn.addEventListener('click', function () { copyCmd(it.command); });
       } else {
         btn.addEventListener('click', function () { installComponent(it.key); });
@@ -8461,9 +8510,12 @@
 
       row.append(head, detail);
       if (cmd) row.appendChild(cmd);
-      row.appendChild(prog);
+      row.append(auth, prog);
       scList.appendChild(row);
-      scRows[it.key] = { detail: detail, prog: prog, fill: fill, pct: pct };
+      scRows[it.key] = {
+        detail: detail, prog: prog, fill: fill, pct: pct,
+        auth: auth, pw: pw, authBtn: authBtn
+      };
     });
     if (job && job.component && scRows[job.component]) {
       applyScProgress(job);
@@ -8476,14 +8528,25 @@
     r.prog.classList.add('show');
     var pct = Math.max(0, Math.min(100, job.percent || 0));
     r.fill.style.width = pct + '%';
+    var waiting = job.state === 'need_password';
     r.fill.style.background = job.state === 'error' ? '#e04a4a'
-      : (job.state === 'need_terminal' ? '#e0a33a' : '#2ecc71');
-    r.pct.textContent = job.state === 'error' ? '失败'
-      : (job.state === 'need_terminal' ? '需终端' : (job.phase || '') + ' ' + pct.toFixed(0) + '%');
+      : ((job.state === 'need_terminal' || waiting) ? '#e0a33a' : '#2ecc71');
+    if (job.state === 'error') r.pct.textContent = '失败';
+    else if (job.state === 'need_terminal') r.pct.textContent = '需终端';
+    else if (waiting) r.pct.textContent = '需要授权';
+    else r.pct.textContent = (job.phase_label || job.phase || '') + ' ' + pct.toFixed(0) + '%';
     var msg = job.error || job.message || '';
     if (msg) {
       r.detail.textContent = msg;
       r.detail.className = 'sc-detail' + (job.state === 'error' ? ' red' : '');
+    }
+    r.auth.classList.toggle('show', waiting);
+    if (waiting) {
+      r.pw.disabled = false;
+      r.authBtn.disabled = false;
+      if (!r.pw.value) setTimeout(function () {
+        try { r.pw.focus(); } catch (e) {}
+      }, 0);
     }
   }
 
@@ -8494,8 +8557,10 @@
         if (!d || !d.components) { scHint.textContent = '读取组件清单失败'; return; }
         renderSelfcheck(d);
         scHint.textContent = '已就绪 ' + d.ready + '/' + d.total
-          + '。需要 root 的项会下载安装包，装好后系统包才可用。';
-        if (d.job && d.job.state === 'running') startScPoll();
+          + '。缺失的系统包会在本页自动下载安装，需要时按提示输入管理员密码。';
+        if (d.job && (d.job.state === 'running' || d.job.state === 'need_password')) {
+          startScPoll();
+        }
       })
       .catch(function () { scHint.textContent = '读取组件清单失败（连接异常）'; });
   }
@@ -8509,7 +8574,8 @@
           var job = d && d.job;
           if (!job) return;
           applyScProgress(job);
-          if (job.state === 'running') return;
+          // need_password 是等待状态，不能当成结束去刷新页面，否则密码输入框会被重建
+          if (job.state === 'running' || job.state === 'need_password') return;
           clearInterval(scPollTimer); scPollTimer = null;
           loadSelfcheck();
         })
@@ -8537,7 +8603,9 @@
 
   onSelfcheckProgress = function (msg) {
     applyScProgress(msg);
-    if (msg.state && msg.state !== 'running' && scPollTimer === null) {
+    // 等待密码时不要刷新清单，保住用户正在输入的密码框
+    if (msg.state && msg.state !== 'running' && msg.state !== 'need_password'
+        && scPollTimer === null) {
       setTimeout(loadSelfcheck, 600);
     }
   };

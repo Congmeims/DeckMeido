@@ -59,6 +59,7 @@ class SelfcheckBase(unittest.TestCase):
         sc._job_thread = None
         sc._hook = None
         sc._sudo_cache = None
+        sc._clear_password()
 
     def tearDown(self):
         sc._tts = self._old_tts
@@ -69,6 +70,7 @@ class SelfcheckBase(unittest.TestCase):
         sc._job_thread = None
         sc._hook = None
         sc._sudo_cache = None
+        sc._clear_password()
 
 
 class StatusTest(SelfcheckBase):
@@ -120,18 +122,19 @@ class StatusTest(SelfcheckBase):
             self.assertEqual(status, "mismatch")
             self.assertIn("systemd", detail)
 
-    def test_快照里系统包是否可装跟随受限sudo探测(self):
+    def test_快照里系统包始终可在软件内安装_是否需要授权跟随sudo探测(self):
         fake = _FakeEngine(runtime=True, model=True)
         sc.set_tts(fake)
         with mock.patch.object(sc, "sudo_silent", return_value=False):
             items = {i["key"]: i for i in sc.snapshot()["components"]}
         self.assertTrue(items["tts_model"]["can_install"])
         self.assertTrue(items["ydotoold"]["can_install"])
-        self.assertFalse(items["ydotool"]["can_install"])
-        self.assertTrue(items["ydotool"]["command"])
+        # 没有免密 sudo 也能在软件内装，只是界面会要求输入管理员密码
+        self.assertTrue(items["ydotool"]["can_install"])
+        self.assertTrue(items["ydotool"]["needs_auth"])
         with mock.patch.object(sc, "sudo_silent", return_value=True):
             items = {i["key"]: i for i in sc.snapshot()["components"]}
-        self.assertTrue(items["ydotool"]["can_install"])
+        self.assertFalse(items["ydotool"]["needs_auth"])
 
     def test_快照计数与状态标签(self):
         sc.set_tts(_FakeEngine(runtime=False, model=False))
@@ -187,14 +190,33 @@ class JobTest(SelfcheckBase):
         self.assertEqual(job["state"], "error")
         self.assertEqual(job["error"], "磁盘满了")
 
-    def test_需要提权时给终端命令而不是假装成功(self):
+    def test_系统包没有免密sudo时走界面密码流程(self):
         item = {"key": "ydotool", "name": "x", "size": "", "action": "package",
-                "command": "bash install.sh check --fix", "privileged": True}
-        with mock.patch.object(sc, "sudo_silent", return_value=False):
+                "command": "bash install.sh check --fix", "privileged": True,
+                "status_fn": lambda: ("ready", "")}
+        tmp = tempfile.mkdtemp(prefix="dm-pkg-")
+        spec = {"package": "ydotool", "version": "0.2.1",
+                "url": "https://m/x.pkg.tar.zst", "filename": "x.pkg.tar.zst"}
+        calls = []
+
+        def fake_exec(mode, password, path, name, timeout=630.0):
+            calls.append((mode, password))
+            return 0, ""
+
+        with mock.patch.object(sc, "package_spec", return_value=spec), \
+                mock.patch.object(sc, "_workspace_tmp", return_value=Path(tmp)), \
+                mock.patch.object(sc, "_download_to"), \
+                mock.patch.object(sc, "_verify_package"), \
+                mock.patch.object(sc, "sudo_silent", return_value=False), \
+                mock.patch.object(sc, "_pkexec_ready", return_value=False), \
+                mock.patch.object(sc, "_request_password", return_value="pw"), \
+                mock.patch.object(sc, "_exec_install", side_effect=fake_exec), \
+                mock.patch.object(sc.shutil, "which", return_value="/usr/bin/ydotool"):
             sc._run_job(item)
         job = sc.job_snapshot()
-        self.assertEqual(job["state"], "need_terminal")
-        self.assertEqual(job["error"], "bash install.sh check --fix")
+        self.assertEqual(job["state"], "done")
+        self.assertEqual(calls, [("password", "pw")])
+        self.assertFalse(Path(tmp).exists())
 
     def test_不支持自动安装的分支落到错误态(self):
         item = {"key": "mystery", "name": "x", "size": "", "action": "python",
@@ -298,24 +320,24 @@ class _FakeResp:
         return False
 
 
-class DownloadTest(SelfcheckBase):
+class PackageSpecTest(SelfcheckBase):
     URL = "https://mirror.example/extra/os/x86_64/ydotool-0.2.1-1-x86_64.pkg.tar.zst"
 
     def _proc(self, name="ydotool", version="0.2.1", url=None):
         return _FakeProc(stdout=f"{name}|{version}|{url or self.URL}\n")
 
     def test_只接受系统包组件(self):
-        with self.assertRaises(sc.PackageDownloadError) as ctx:
+        with self.assertRaises(sc.PackageError) as ctx:
             sc.package_spec("no-such-component")
         self.assertEqual(ctx.exception.reason, "unknown_component")
-        with self.assertRaises(sc.PackageDownloadError) as ctx:
+        with self.assertRaises(sc.PackageError) as ctx:
             sc.package_spec("tts_model")
         self.assertEqual(ctx.exception.reason, "not_package")
 
-    def test_已就绪的包不再下载(self):
+    def test_已就绪的包不再安装(self):
         with mock.patch.object(sc.shutil, "which", return_value="/usr/bin/ydotool"), \
                 mock.patch.object(sc.subprocess, "run") as run:
-            with self.assertRaises(sc.PackageDownloadError) as ctx:
+            with self.assertRaises(sc.PackageError) as ctx:
                 sc.package_spec("ydotool")
         self.assertEqual(ctx.exception.reason, "already_ready")
         run.assert_not_called()
@@ -346,50 +368,193 @@ class DownloadTest(SelfcheckBase):
         with mock.patch.object(sc.shutil, "which", return_value=None), \
                 mock.patch.object(sc.subprocess, "run",
                                   return_value=self._proc(url="file:///etc/passwd")):
-            with self.assertRaises(sc.PackageDownloadError) as ctx:
+            with self.assertRaises(sc.PackageError) as ctx:
                 sc.package_spec("ydotool")
         self.assertEqual(ctx.exception.reason, "unsafe_url")
 
-    def test_下载成功_写入临时文件并可清理(self):
-        body = b"PKG-DATA"
-        with mock.patch.object(sc.shutil, "which", return_value=None), \
-                mock.patch.object(sc.subprocess, "run", return_value=self._proc()), \
-                mock.patch.object(sc.urllib.request, "urlopen", return_value=_FakeResp(body)):
-            res = sc.download_package("ydotool")
-        try:
-            self.assertTrue(res["ok"])
-            self.assertEqual(res["size"], len(body))
-            self.assertIn("ydotool", res["filename"])
-            self.assertIn("0.2.1", res["filename"])
-            self.assertEqual(Path(res["path"]).read_bytes(), body)
-            self.assertEqual(sc.job_snapshot()["state"], "done")
-        finally:
-            sc.cleanup_package(res["path"])
-        self.assertFalse(Path(res["path"]).exists())
 
-    def test_下载失败透传原因(self):
-        with mock.patch.object(sc.shutil, "which", return_value=None), \
-                mock.patch.object(sc.subprocess, "run", return_value=self._proc()), \
-                mock.patch.object(sc.urllib.request, "urlopen",
-                                  side_effect=OSError("镜像连不上")):
-            with self.assertRaises(sc.PackageDownloadError) as ctx:
-                sc.download_package("ydotool")
-        self.assertEqual(ctx.exception.reason, "download_failed")
-        self.assertIn("镜像连不上", str(ctx.exception))
+class PackageInstallTest(SelfcheckBase):
+    """软件内安装：下载 → 校验 → 提权 → 安装 → 重新探测，全程清理临时文件"""
+
+    SPEC = {"package": "ydotool", "version": "0.2.1",
+            "url": "https://mirror.example/ydotool-0.2.1-1-x86_64.pkg.tar.zst",
+            "filename": "ydotool-0.2.1-1-x86_64.pkg.tar.zst"}
+
+    def _item(self, status=("ready", "")):
+        return {"key": "ydotool", "name": "ydotool（点击 / 输入）", "size": "",
+                "action": "package", "command": "", "privileged": True,
+                "status_fn": lambda: status}
+
+    def _fake_download(self, spec, path, component):
+        path.write_bytes(b"PKG")
+
+    def _run(self, sudo_silent=False, pkexec=False, exec_side_effect=None,
+             password="pw", status=("ready", "")):
+        tmp = tempfile.mkdtemp(prefix="dm-pkg-")
+        calls = []
+
+        def fake_exec(mode, pw, path, name, timeout=630.0):
+            calls.append((mode, pw))
+            if exec_side_effect:
+                return exec_side_effect.pop(0)
+            return 0, ""
+
+        patches = [
+            mock.patch.object(sc, "package_spec", return_value=dict(self.SPEC)),
+            mock.patch.object(sc, "_workspace_tmp", return_value=Path(tmp)),
+            mock.patch.object(sc, "_download_to", side_effect=self._fake_download),
+            mock.patch.object(sc, "_verify_package"),
+            mock.patch.object(sc, "sudo_silent", return_value=sudo_silent),
+            mock.patch.object(sc, "_pkexec_ready", return_value=pkexec),
+            mock.patch.object(sc, "_request_password", return_value=password),
+            mock.patch.object(sc, "_exec_install", side_effect=fake_exec),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        sc._run_job(self._item(status))
+        return tmp, calls
+
+    def test_免密sudo一次完成并清理临时目录(self):
+        tmp, calls = self._run(sudo_silent=True)
+        job = sc.job_snapshot()
+        self.assertEqual(job["state"], "done")
+        self.assertEqual(calls, [("sudo", None)])
+        self.assertFalse(Path(tmp).exists())
+
+    def test_polkit被拒后回退到界面密码(self):
+        tmp, calls = self._run(
+            pkexec=True,
+            exec_side_effect=[(126, "Error executing command as another user: Not authorized"),
+                              (0, "")])
+        self.assertEqual(sc.job_snapshot()["state"], "done")
+        self.assertEqual(calls, [("pkexec", None), ("password", "pw")])
+        self.assertFalse(Path(tmp).exists())
+
+    def test_免密sudo失效时回退界面密码(self):
+        tmp, calls = self._run(
+            sudo_silent=True,
+            exec_side_effect=[(1, "sudo: a password is required"), (0, "")])
+        self.assertEqual(sc.job_snapshot()["state"], "done")
+        self.assertEqual(calls, [("sudo", None), ("password", "pw")])
+        self.assertFalse(Path(tmp).exists())
+
+    def test_pacman失败透传真实原因(self):
+        detail = "error: failed to commit transaction (conflicting files)\ngrim: exists in filesystem"
+        tmp, _calls = self._run(sudo_silent=True, exec_side_effect=[(1, detail)])
         job = sc.job_snapshot()
         self.assertEqual(job["state"], "error")
-        self.assertIn("镜像连不上", job["error"])
+        self.assertIn("failed to commit", job["error"])
+        self.assertIn("exists in filesystem", job["error"])
+        self.assertFalse(Path(tmp).exists())
+
+    def test_只读保护关闭失败给明确提示(self):
+        self._run(sudo_silent=True,
+                  exec_side_effect=[(11, "DECKMEIDO_ERR readonly_disable")])
+        job = sc.job_snapshot()
+        self.assertEqual(job["state"], "error")
+        self.assertIn("只读", job["error"])
+        self.assertIn("steamos-readonly disable", job["error"])
+
+    def test_只读保护恢复失败仍算完成但给出提示(self):
+        self._run(sudo_silent=True,
+                  exec_side_effect=[(0, "DECKMEIDO_WARN restore_failed")])
+        job = sc.job_snapshot()
+        self.assertEqual(job["state"], "done")
+        self.assertIn("只读保护", job["message"])
+
+    def test_装完仍找不到命令要报错(self):
+        self._run(sudo_silent=True, status=("missing", "找不到 ydotool"))
+        job = sc.job_snapshot()
+        self.assertEqual(job["state"], "error")
+        self.assertIn("找不到", job["error"])
+
+    def test_下载成功写文件并推进进度(self):
+        body = b"PKG-DATA"
+        tmp = tempfile.mkdtemp(prefix="dm-dl-")
+        path = Path(tmp) / "a.pkg.tar.zst"
+        with mock.patch.object(sc.urllib.request, "urlopen",
+                               return_value=_FakeResp(body)):
+            sc._download_to(self.SPEC, path, "ydotool")
+        self.assertEqual(path.read_bytes(), body)
+        self.assertEqual(sc.job_snapshot()["phase"], "download")
+        self.assertGreater(sc.job_snapshot()["percent"], 3.0)
+
+    def test_下载失败透传原因(self):
+        tmp = tempfile.mkdtemp(prefix="dm-dl-")
+        path = Path(tmp) / "a.pkg.tar.zst"
+        with mock.patch.object(sc.urllib.request, "urlopen",
+                               side_effect=OSError("镜像连不上")):
+            with self.assertRaises(sc.PackageError) as ctx:
+                sc._download_to(self.SPEC, path, "ydotool")
+        self.assertEqual(ctx.exception.reason, "download_failed")
+        self.assertIn("镜像连不上", str(ctx.exception))
 
     def test_下载不完整要报错(self):
+        tmp = tempfile.mkdtemp(prefix="dm-dl-")
+        path = Path(tmp) / "a.pkg.tar.zst"
         body = b"x" * 10
-        with mock.patch.object(sc.shutil, "which", return_value=None), \
-                mock.patch.object(sc.subprocess, "run", return_value=self._proc()), \
-                mock.patch.object(sc.urllib.request, "urlopen",
-                                  return_value=_FakeResp(body, length=20)):
-            with self.assertRaises(sc.PackageDownloadError) as ctx:
-                sc.download_package("ydotool")
+        with mock.patch.object(sc.urllib.request, "urlopen",
+                               return_value=_FakeResp(body, length=20)):
+            with self.assertRaises(sc.PackageError) as ctx:
+                sc._download_to(self.SPEC, path, "ydotool")
         self.assertEqual(ctx.exception.reason, "download_failed")
         self.assertIn("不完整", str(ctx.exception))
+
+    def test_校验包名不符要拒绝(self):
+        tmp = tempfile.mkdtemp(prefix="dm-verify-")
+        path = Path(tmp) / "x.pkg.tar.zst"
+        path.write_bytes(b"PKG")
+        with mock.patch.object(sc, "_run", return_value=(0, "other 1.0\n")):
+            with self.assertRaises(sc.PackageError) as ctx:
+                sc._verify_package(path, self.SPEC)
+        self.assertEqual(ctx.exception.reason, "verify_failed")
+        self.assertIn("名称不符", str(ctx.exception))
+
+    def test_空文件校验失败(self):
+        tmp = tempfile.mkdtemp(prefix="dm-verify-")
+        path = Path(tmp) / "x.pkg.tar.zst"
+        path.write_bytes(b"")
+        with self.assertRaises(sc.PackageError) as ctx:
+            sc._verify_package(path, self.SPEC)
+        self.assertEqual(ctx.exception.reason, "download_failed")
+
+    def test_密码错误三次终止(self):
+        sc._job = {"component": "ydotool", "state": "need_password"}
+        sc._pw_waiting = True
+        with mock.patch.object(sc, "_sudo_check", return_value=(False, "Sorry")):
+            r1 = sc.provide_password("ydotool", "bad")
+            r2 = sc.provide_password("ydotool", "bad")
+            r3 = sc.provide_password("ydotool", "bad")
+        self.assertEqual(r1["reason"], "bad_password")
+        self.assertEqual(r2["reason"], "bad_password")
+        self.assertEqual(r3["reason"], "too_many_attempts")
+        sc._pw_waiting = False
+        sc._job = None
+
+    def test_非等待状态提交密码被拒绝(self):
+        res = sc.provide_password("ydotool", "pw")
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reason"], "not_waiting")
+
+    def test_无polkit代理时不尝试弹窗(self):
+        with mock.patch.object(sc.shutil, "which", return_value="/usr/bin/tool"), \
+                mock.patch.object(sc, "_run", return_value=(1, "")):
+            self.assertFalse(sc._pkexec_ready())
+
+    def test_有polkit代理时才走弹窗(self):
+        with mock.patch.object(sc.shutil, "which", return_value="/usr/bin/tool"), \
+                mock.patch.object(sc, "_run", return_value=(0, "123 polkit-kde")):
+            self.assertTrue(sc._pkexec_ready())
+
+    def test_免密sudo失效字样判定(self):
+        self.assertTrue(sc._needs_password("sudo: a password is required"))
+        self.assertFalse(sc._needs_password("error: failed to commit transaction"))
+
+    def test_空密码被拒绝(self):
+        res = sc.provide_password("ydotool", "   ")
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reason"], "empty")
 
 
 class UninstallPlanTest(unittest.TestCase):
