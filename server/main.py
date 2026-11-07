@@ -3730,7 +3730,7 @@ async def api_logs_usage():
 
 
 @app.post("/api/logs/clear", dependencies=[Depends(require_auth)])
-async def api_logs_clear(req: LogClearRequest):
+async def api_logs_clear(req: LogClearRequest, request: Request):
     """清空日志（不碰配置 / 会话 / 记忆 / 模型）。
 
     正在写的 backend.log / overlay.log / 当前 debug 文件用 truncate，
