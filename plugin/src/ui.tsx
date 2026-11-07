@@ -255,7 +255,9 @@ export function localMediaUrl(base: string, raw: string): string {
     const u = new URL(s, base || undefined);
     if (u.protocol !== "http:" && u.protocol !== "https:") return "";
     const host = u.hostname.toLowerCase();
-    if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") return "";
+    if (host !== "127.0.0.1" && host !== "localhost" && host !== "[::1]" && host !== "::1") {
+      return "";
+    }
     return u.href;
   } catch {
     return "";
@@ -1115,7 +1117,11 @@ function VoiceBar({ voice, base, size }: { voice: ChatVoice; base: string; size:
         </div>
         <span
           style={{
-            flex: "0 0 auto",
+            flex: "0 1 auto",
+            minWidth: 0,
+            maxWidth: "45%",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
             color: DIM,
             fontSize: size * 0.88,
             whiteSpace: "nowrap",
