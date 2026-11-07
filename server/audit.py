@@ -15,9 +15,16 @@ _lock = threading.Lock()
 _events: deque[dict] = deque(maxlen=MAX_EVENTS)
 
 
+_RESERVED = {"ts", "kind", "action", "result", "ip", "reason", "detail"}
+
+
 def record(kind: str, action: str, result: str, ip: str = "", reason: str = "",
-           detail: str = "") -> dict:
-    """记一条审计事件（最新的在前），返回写入的那条。"""
+           detail: str = "", extra: dict | None = None) -> dict:
+    """记一条审计事件（最新的在前），返回写入的那条。
+
+    extra 用于终端这类需要结构化字段（退出码/起止时间/是否确认）的场景，
+    不允许覆盖基础字段。
+    """
     ev = {
         "ts": time.time(),
         "kind": kind,
@@ -27,6 +34,11 @@ def record(kind: str, action: str, result: str, ip: str = "", reason: str = "",
         "reason": reason,
         "detail": detail,
     }
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            if key in _RESERVED:
+                continue
+            ev[key] = value
     with _lock:
         _events.appendleft(ev)
     return ev

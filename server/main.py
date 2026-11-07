@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from .llm import LLMClient
-from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, memory, menu, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, selfcheck, singleton, status_line, tools, updater, usage
+from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, memory, menu, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, remote_terminal, selfcheck, singleton, status_line, tools, updater, usage
 from .session_store import store
 from . import session_store
 from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, TTSError, normalize_speaker,
@@ -134,6 +134,8 @@ def save_config(updates: dict):
 
 
 CFG = load_config()
+# 远程终端默认关闭；启动时把 [terminal] 段的限流/超时参数装进管理器
+remote_terminal.manager.configure(CFG)
 
 # 开发者模式与统一脱敏：尽早装好，后面的启动日志、traceback、uvicorn 访问日志
 # 都会经过同一层脱敏；开关本身按 [runtime].dev_mode 决定是否记录细节。
@@ -782,6 +784,8 @@ def apply_config(cfg: dict):
     global CFG, PERMISSION_MODE, PERSONA, SYSTEM_PROMPT, MAX_TOOL_ROUNDS, ASK_TEMPLATE
     global TRANSLATE_TEMPLATE, UI_LANG, API_STATE
     CFG = cfg
+    # [terminal] 远程终端开关/限流参数热更新
+    remote_terminal.manager.configure(cfg)
     # [runtime].dev_mode 热更新：改完保存即生效，不用重启后端
     devlog.configure(cfg)
     devlog.log("config.reload", sections=sorted(cfg.keys()))
@@ -2793,6 +2797,393 @@ async def ws_terminal(ws: WebSocket):
             pass
 
 
+# ---------- 远程终端（多会话 / 真 PTY） ----------
+# 与上面的单会话面板终端完全独立：不复用 run_command 的审批 ContextVar，
+# 开关默认关闭，危险命令按 policy 判定并要求客户端显式确认。
+
+class RemoteTerminalCreate(BaseModel):
+    cwd: str | None = None
+    cols: int = 120
+    rows: int = 36
+    # 来源标识（手机 / 网页 / 客户端名），只进审计，不参与鉴权
+    source: str = ""
+
+
+class RemoteTerminalExec(BaseModel):
+    command: str
+    confirm: bool = False
+    source: str = ""
+
+
+class RemoteTerminalInput(BaseModel):
+    # UTF-8 文本或 base64 二进制（控制序列用它）
+    data: str = ""
+    encoding: str = "utf-8"
+    confirm: bool = False
+    source: str = ""
+
+
+def _terminal_settings() -> remote_terminal.TerminalSettings:
+    return remote_terminal.settings_from(CFG)
+
+
+def _terminal_guard() -> JSONResponse | None:
+    """开关关闭时统一 403；CFG 每次现读，热更新/测试直改都能生效。"""
+    settings = _terminal_settings()
+    remote_terminal.manager.configure(CFG)
+    if not settings.enabled:
+        return _terminal_error(remote_terminal.TerminalError(
+            "remote_shell_disabled",
+            "远程终端未开启：[terminal] remote_shell = false，可在设置页打开",
+            403))
+    return None
+
+
+def _terminal_error(exc: remote_terminal.TerminalError) -> JSONResponse:
+    body = {"ok": False, "error_code": exc.code, "reason": exc.reason}
+    body.update(exc.extra)
+    return JSONResponse(status_code=exc.status, content=body)
+
+
+def _terminal_session_or_error(sid: str):
+    session = remote_terminal.manager.get(sid)
+    if session is None:
+        return None, _terminal_error(remote_terminal.TerminalError(
+            "session_not_found", "会话不存在或已过期", 404))
+    return session, None
+
+
+def _terminal_confirm_error(result: dict) -> JSONResponse:
+    return _terminal_error(remote_terminal.TerminalError(
+        "confirm_required",
+        str(result.get("reason") or "危险命令需要确认"),
+        428,
+        {
+            "need_confirm": True,
+            "level": result.get("level"),
+            "rule": result.get("rule"),
+            "command": result.get("command"),
+        }))
+
+
+@app.get("/api/terminal/sessions", dependencies=[Depends(require_auth)])
+async def api_terminal_sessions():
+    """远程终端开关、默认值与当前会话列表。"""
+    denied = _terminal_guard()
+    if denied is not None:
+        return denied
+    settings = _terminal_settings()
+    return {
+        "ok": True,
+        "enabled": settings.enabled,
+        "settings": settings.public(),
+        "sessions": [s.snapshot() for s in remote_terminal.manager.sessions()],
+    }
+
+
+@app.post("/api/terminal/sessions", dependencies=[Depends(require_auth)])
+async def api_terminal_session_create(req: RemoteTerminalCreate, request: Request):
+    """创建一个常驻 shell 会话。"""
+    denied = _terminal_guard()
+    if denied is not None:
+        return denied
+    ip = _client_ip(request)
+    try:
+        session = await remote_terminal.manager.create(
+            owner=ip, source=(req.source or "").strip()[:60],
+            cwd=req.cwd, cols=req.cols, rows=req.rows)
+    except remote_terminal.TerminalError as exc:
+        return _terminal_error(exc)
+    return {"ok": True, "session": session.snapshot()}
+
+
+@app.get("/api/terminal/sessions/{sid}", dependencies=[Depends(require_auth)])
+async def api_terminal_session_get(sid: str):
+    denied = _terminal_guard()
+    if denied is not None:
+        return denied
+    session, error = _terminal_session_or_error(sid)
+    if error is not None:
+        return error
+    return {"ok": True, "session": session.snapshot()}
+
+
+@app.post("/api/terminal/sessions/{sid}/exec", dependencies=[Depends(require_auth)])
+async def api_terminal_session_exec(sid: str, req: RemoteTerminalExec,
+                                    request: Request):
+    """提交一条命令：命中危险判定时返回 428，客户端带 confirm=true 再提交。"""
+    denied = _terminal_guard()
+    if denied is not None:
+        return denied
+    session, error = _terminal_session_or_error(sid)
+    if error is not None:
+        return error
+    try:
+        result = session.run(
+            req.command, req.confirm, _client_ip(request),
+            (req.source or "").strip()[:60])
+    except remote_terminal.TerminalError as exc:
+        return _terminal_error(exc)
+    if result.get("need_confirm"):
+        return _terminal_confirm_error(result)
+    return {
+        "ok": True,
+        "token": result["token"],
+        "confirmed": result["confirmed"],
+        "level": result["level"],
+        "session": result["session"],
+    }
+
+
+@app.post("/api/terminal/sessions/{sid}/input", dependencies=[Depends(require_auth)])
+async def api_terminal_session_input(sid: str, req: RemoteTerminalInput,
+                                     request: Request):
+    """原始 stdin 写入：交互程序的按键 / 密码输入走这里。"""
+    denied = _terminal_guard()
+    if denied is not None:
+        return denied
+    session, error = _terminal_session_or_error(sid)
+    if error is not None:
+        return error
+    encoding = (req.encoding or "utf-8").strip().lower()
+    if encoding in ("utf-8", "utf8", "text"):
+        raw = req.data.encode("utf-8")
+    elif encoding in ("base64", "b64"):
+        try:
+            raw = base64.b64decode(req.data, validate=True)
+        except Exception:
+            return _terminal_error(remote_terminal.TerminalError(
+                "bad_encoding", "data 不是合法的 base64", 400))
+    else:
+        return _terminal_error(remote_terminal.TerminalError(
+            "bad_encoding", "encoding 只能是 utf-8 或 base64", 400))
+    try:
+        result = session.feed(
+            raw, req.confirm, _client_ip(request),
+            (req.source or "").strip()[:60])
+    except remote_terminal.TerminalError as exc:
+        return _terminal_error(exc)
+    if result.get("need_confirm"):
+        return _terminal_confirm_error(result)
+    return {"ok": True, "bytes": result.get("bytes", len(raw))}
+
+
+@app.post("/api/terminal/sessions/{sid}/terminate",
+          dependencies=[Depends(require_auth)])
+async def api_terminal_session_terminate(sid: str, request: Request):
+    """终止会话：先 SIGTERM，1 秒不退再强杀，进程组一起收。"""
+    denied = _terminal_guard()
+    if denied is not None:
+        return denied
+    session, error = _terminal_session_or_error(sid)
+    if error is not None:
+        return error
+    was_alive = session.alive
+    await session.terminate("terminated")
+    if was_alive:
+        audit.record(
+            "terminal", "close", "ok", ip=_client_ip(request),
+            reason="terminated", detail="", extra={"session_id": sid})
+    return {"ok": True, "already_ended": not was_alive,
+            "session": session.snapshot()}
+
+
+@app.get("/api/terminal/sessions/{sid}/output",
+         dependencies=[Depends(require_auth)])
+async def api_terminal_session_output(
+        sid: str,
+        cursor: int = Query(default=0, ge=0),
+        max_bytes: int = Query(
+            default=remote_terminal.DEFAULT_OUTPUT_PAGE_BYTES,
+            ge=1024, le=remote_terminal.MAX_OUTPUT_PAGE_BYTES)):
+    """按游标读取输出块（base64）；客户端断线重连后从这里补历史。"""
+    denied = _terminal_guard()
+    if denied is not None:
+        return denied
+    session, error = _terminal_session_or_error(sid)
+    if error is not None:
+        return error
+    chunks, next_cursor, dropped = session.read_output(cursor, max_bytes)
+    return {
+        "ok": True,
+        "session": session.snapshot(),
+        "chunks": [
+            {"seq": seq, "encoding": "base64",
+             "data": base64.b64encode(data).decode("ascii")}
+            for seq, data in chunks
+        ],
+        "next_cursor": next_cursor,
+        "dropped": dropped,
+        "truncated": session.truncated,
+    }
+
+
+@app.websocket("/ws/terminal/{sid}")
+async def ws_terminal_session(ws: WebSocket, sid: str):
+    """远程终端输出订阅（独立于面板用的 /ws/terminal）。
+
+    服务端 → 客户端：
+      {"type":"hello","session":{...},"cursor":N}
+      {"type":"output","seq":N,"encoding":"base64","data":"..."}
+      {"type":"cursor","next_cursor":N,"dropped":bool}
+      {"type":"truncated","total_bytes":N,"limit":N}
+      {"type":"exited","state":"exited|terminated|timeout","exit_code":N}
+      {"type":"confirm_required","level":"deny|hard_confirm","rule":"...",
+       "command":"...","reason":"..."}
+      {"type":"exec_started","token":"...","confirmed":bool}
+      {"type":"pong","ts":N}
+      {"type":"error","code":"...","reason":"..."}
+    客户端 → 服务端：
+      {"type":"exec","command":"...","confirm":false}
+      {"type":"input","data":"<base64>","confirm":false}
+      {"type":"resize","cols":N,"rows":N}
+      {"type":"ping"}
+      {"type":"stop"}
+    """
+    client_ip = ws.client.host if ws.client else ""
+    if not _ws_authorized(ws):
+        audit.record("auth", "ws_remote_terminal", "fail", ip=client_ip,
+                     reason="unpaired")
+        await ws.accept()
+        await ws.close(code=4401)
+        return
+
+    await ws.accept()
+    settings = _terminal_settings()
+    if not settings.enabled:
+        await ws.send_json({
+            "type": "error",
+            "code": "remote_shell_disabled",
+            "reason": "远程终端未开启：[terminal] remote_shell = false",
+        })
+        await ws.close(code=4403)
+        return
+    session = remote_terminal.manager.get(sid)
+    if session is None:
+        await ws.send_json({
+            "type": "error", "code": "session_not_found",
+            "reason": "会话不存在或已过期",
+        })
+        await ws.close(code=4404)
+        return
+
+    try:
+        cursor = max(0, int(ws.query_params.get("cursor") or 0))
+    except ValueError:
+        cursor = 0
+    session.touch()
+    queue = session.subscribe(cursor)
+    await ws.send_json({
+        "type": "hello", "session": session.snapshot(), "cursor": cursor,
+    })
+
+    async def _pump():
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            await ws.send_json(event)
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+    pump_task = asyncio.create_task(_pump())
+    try:
+        while True:
+            data = await ws.receive_json()
+            kind = data.get("type")
+            if kind == "ping":
+                session.touch()
+                await ws.send_json({"type": "pong", "ts": time.time()})
+            elif kind == "input":
+                try:
+                    raw = base64.b64decode(str(data.get("data") or ""),
+                                           validate=True)
+                except Exception:
+                    await ws.send_json({
+                        "type": "error", "code": "bad_encoding",
+                        "reason": "data 不是合法的 base64",
+                    })
+                    continue
+                try:
+                    result = session.feed(
+                        raw, bool(data.get("confirm")), client_ip,
+                        str(data.get("source") or "ws")[:60])
+                except remote_terminal.TerminalError as exc:
+                    await ws.send_json({
+                        "type": "error", "code": exc.code, "reason": exc.reason,
+                    })
+                    continue
+                if result.get("need_confirm"):
+                    await ws.send_json({
+                        "type": "confirm_required",
+                        "level": result.get("level"),
+                        "rule": result.get("rule"),
+                        "command": result.get("command"),
+                        "reason": result.get("reason"),
+                    })
+            elif kind == "exec":
+                try:
+                    result = session.run(
+                        str(data.get("command") or ""),
+                        bool(data.get("confirm")), client_ip,
+                        str(data.get("source") or "ws")[:60])
+                except remote_terminal.TerminalError as exc:
+                    await ws.send_json({
+                        "type": "error", "code": exc.code, "reason": exc.reason,
+                    })
+                    continue
+                if result.get("need_confirm"):
+                    await ws.send_json({
+                        "type": "confirm_required",
+                        "level": result.get("level"),
+                        "rule": result.get("rule"),
+                        "command": result.get("command"),
+                        "reason": result.get("reason"),
+                    })
+                else:
+                    await ws.send_json({
+                        "type": "exec_started",
+                        "token": result.get("token"),
+                        "confirmed": result.get("confirmed", False),
+                    })
+            elif kind == "resize":
+                try:
+                    session.resize(int(data.get("cols") or 120),
+                                   int(data.get("rows") or 36))
+                except Exception:
+                    pass
+            elif kind == "stop":
+                await session.terminate("terminated")
+                # 留一点时间把 exited 事件发出去，再关连接
+                try:
+                    await asyncio.wait_for(asyncio.shield(pump_task), 1.0)
+                except Exception:
+                    pass
+                break
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        session.unsubscribe(queue)
+        pump_task.cancel()
+        try:
+            await pump_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+@app.on_event("shutdown")
+async def _stop_remote_terminal():
+    """服务重启/停止时把所有远程终端会话一起收掉，别留孤儿 shell。"""
+    try:
+        await remote_terminal.manager.close_all("shutdown")
+    except Exception:
+        pass
+
+
 @app.websocket("/ws/input")
 async def ws_input(ws: WebSocket):
     """跨屏键鼠接管 WebSocket（PC 浏览器 ↔ Deck 输入注入）
@@ -3197,6 +3588,12 @@ class ConfigUpdate(BaseModel):
     port: int | None = None
     # 开发者模式：写入 [runtime]，保存即生效（日志级别与细节记录不需要重启）
     dev_mode: bool | None = None
+    # 远程终端：默认关闭的高危能力，写入 [terminal]，保存即生效
+    terminal_enabled: bool | None = None
+    terminal_idle_timeout: int | None = None
+    terminal_max_sessions: int | None = None
+    terminal_max_output_bytes: int | None = None
+    terminal_shell: str | None = None
 
 
 class TTSPreviewRequest(BaseModel):
@@ -3452,6 +3849,13 @@ async def api_get_config():
         "remote_input_enabled": remote_input.enabled(CFG.get("remote_input") or {}),
         "remote_input_sensitivity": float((CFG.get("remote_input") or {}).get("sensitivity", 1.5) or 1.5),
         "remote_input_max_minutes": int((CFG.get("remote_input") or {}).get("max_minutes", 30) or 30),
+        # 远程终端：设置页开关与限流参数（默认全部关闭/保守值）
+        "terminal_remote_shell": _terminal_settings().enabled,
+        "terminal_idle_timeout": _terminal_settings().idle_timeout_s,
+        "terminal_max_sessions": _terminal_settings().max_sessions,
+        "terminal_max_output_bytes": _terminal_settings().max_output_bytes,
+        "terminal_shell": _terminal_settings().shell,
+        "terminal_cwd": _terminal_settings().cwd,
     }
 
 
@@ -3732,8 +4136,34 @@ async def api_set_config(req: ConfigUpdate, request: Request):
         updates.setdefault("runtime", {})["dev_mode"] = bool(req.dev_mode)
         audit.record("config", "dev_mode", "ok", ip=_client_ip(request),
                      detail="on" if req.dev_mode else "off")
+    term = {}
+    if req.terminal_enabled is not None:
+        term["remote_shell"] = bool(req.terminal_enabled)
+    if req.terminal_idle_timeout is not None:
+        term["idle_timeout_seconds"] = max(
+            remote_terminal.MIN_IDLE_TIMEOUT_S,
+            min(remote_terminal.MAX_IDLE_TIMEOUT_S, int(req.terminal_idle_timeout)))
+    if req.terminal_max_sessions is not None:
+        term["max_sessions"] = max(
+            remote_terminal.MIN_MAX_SESSIONS,
+            min(remote_terminal.MAX_MAX_SESSIONS, int(req.terminal_max_sessions)))
+    if req.terminal_max_output_bytes is not None:
+        term["max_output_bytes"] = max(
+            remote_terminal.MIN_MAX_OUTPUT_BYTES,
+            min(remote_terminal.MAX_MAX_OUTPUT_BYTES,
+                int(req.terminal_max_output_bytes)))
+    if req.terminal_shell is not None:
+        shell = req.terminal_shell.strip()
+        if len(shell) > remote_terminal.MAX_SHELL_CHARS:
+            raise HTTPException(status_code=400, detail="shell 配置过长")
+        term["shell"] = shell
+    if term:
+        updates["terminal"] = term
     if updates:
         save_config(updates)
+    if req.terminal_enabled is False:
+        # 关闭开关立刻回收全部会话，不允许旧进程继续跑
+        await remote_terminal.manager.close_all("disabled")
     if ri.get("enabled") is False:
         # 关掉总开关时立刻结束正在进行的接管，不等下一次心跳
         await remote_input.manager.finish(remote_input.RI_DISABLED)
@@ -3756,6 +4186,12 @@ async def api_set_config(req: ConfigUpdate, request: Request):
             "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
             # dev_mode 保存即生效，不需要重启；重启项只算绑定地址与端口
             "dev_mode": devlog.enabled(),
+            # 远程终端开关回传实值，设置页不用再拉一次
+            "terminal_remote_shell": _terminal_settings().enabled,
+            "terminal_idle_timeout": _terminal_settings().idle_timeout_s,
+            "terminal_max_sessions": _terminal_settings().max_sessions,
+            "terminal_max_output_bytes": _terminal_settings().max_output_bytes,
+            "terminal_shell": _terminal_settings().shell,
             "restart_required": bool(req.lan_enable is not None or req.port is not None)}
 
 
