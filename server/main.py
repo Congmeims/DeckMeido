@@ -3215,6 +3215,8 @@ class OneBotConfigUpdate(BaseModel):
     统一校验（非法值直接 400），字段为 None 表示本次不改。
     """
     enable: bool | None = None
+    # 重启后自动连接：与 enable 解耦，默认 false（缺键按 false）
+    auto_connect: bool | None = None
     ws_url: str | None = None
     access_token: str | None = None
     # 接受数组（新前端）或逗号/换行分隔的字符串（手写/旧调用）
@@ -7069,7 +7071,10 @@ onebot_client.configure(onebot.parse_config(CFG.get("qq") or {}))
 
 @app.on_event("startup")
 async def _boot_onebot():
-    await onebot_client.start()
+    # 默认不自启：enabled 只表示「允许运行」，重启后必须手动点连接。
+    # 只有显式打开 auto_connect 才会在 core 启动时自动建连。
+    if onebot_client.should_auto_connect():
+        await onebot_client.start()
 
 
 @app.on_event("shutdown")
@@ -7179,6 +7184,7 @@ def _qq_public_config() -> dict:
     cfg = onebot.parse_config(CFG.get("qq") or {})
     return {
         "enable": cfg.enable,
+        "auto_connect": cfg.auto_connect,
         "ws_url": cfg.ws_url,
         # 这个页面本身要已配对或本机回环才能打开，回明文才能「点编辑才可见」；
         # 状态接口始终不回显
@@ -7223,10 +7229,16 @@ async def api_qq_config():
 
 @app.post("/api/qq/config", dependencies=[Depends(require_auth)])
 async def api_save_qq_config(req: OneBotConfigUpdate):
-    """保存 QQ 配置并立即按新值重连；写盘统一走 write_config（先校验后原子写）"""
+    """保存 QQ 配置；只改配置与下次启动行为，不顺手触发连接
+
+    写盘统一走 write_config（先校验后原子写）。连接/重连只能由
+    /api/qq/connect 或设置页「重新连接」显式触发。
+    """
     updates: dict = {}
     if req.enable is not None:
         updates["enable"] = bool(req.enable)
+    if req.auto_connect is not None:
+        updates["auto_connect"] = bool(req.auto_connect)
     if req.ws_url is not None:
         updates["ws_url"] = req.ws_url.strip()
     if req.access_token is not None:
@@ -7264,9 +7276,10 @@ async def api_save_qq_config(req: OneBotConfigUpdate):
     updates.update(advanced)
     if updates:
         save_config({"qq": updates})
-        # save_config 会经 apply_config 热更新配置；这里再等一次重连落定，
-        # 让接口返回的状态已经是新配置下的结果（不是旧的 connected）
-        await onebot_client.reconnect()
+        # 保存只改配置/下次启动行为。关闭通道时断开现有连接；
+        # 其余情况一律不自动连接——连接必须由用户显式点击。
+        if not onebot_client.state().get("enabled"):
+            await onebot_client.stop()
     return {"ok": True, "state": onebot_client.state(), "config": _qq_public_config()}
 
 

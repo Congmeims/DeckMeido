@@ -3231,6 +3231,17 @@
                 <span class="slider"></span>
               </label>
             </div>
+            <div class="field field-row">
+              <label style="margin:0">重启后自动连接</label>
+              <label class="switch">
+                <input id="cfgQqAutoConnect" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field-hint" id="qqAutoConnectHint">
+              关闭（默认）：每次启动都保持「已启用 · 未连接」，需要手动点连接；
+              打开后也只是下次启动生效，保存时不会立即连接。
+            </div>
             <div class="field">
               <label>NapCat WebSocket 地址（ws_url）</label>
               <input id="cfgQqUrl" type="text" placeholder="wss://napcat.example.com/ws"
@@ -3264,8 +3275,9 @@
               <div id="qqGroupChips" class="chip-list"></div>
               <div class="field-hint" id="qqGroupHint"></div>
               <div class="field-hint">
-                群里必须 @ 机器人才处理（主人 QQ 不受此限，任意群直接发指令）。
+                群里必须 @ 机器人才处理（主人 QQ 在白名单群内免 @，可直接发指令）。
                 普通群成员只能闲聊；主人可下指令（危险操作仍要确认）。
+                群号留空 = 全禁，所有群消息一律不响应（主人也不触发）。
                 直接发 /shot、/status、/cancel 或「截个屏」「在吗」「停一下」都算。
               </div>
             </div>
@@ -9483,6 +9495,7 @@
   var riCfgState = document.getElementById('riCfgState');
   // Onebot 通道（远程连接页）：状态轮询 + 配置回填
   var cfgQqEnable = document.getElementById('cfgQqEnable');
+  var cfgQqAutoConnect = document.getElementById('cfgQqAutoConnect');
   var cfgQqUrl = document.getElementById('cfgQqUrl');
   var cfgQqToken = document.getElementById('cfgQqToken');
   var cfgQqAdmins = document.getElementById('cfgQqAdmins');
@@ -9553,6 +9566,8 @@
   // 群友提示词：默认原文由后端下发，前端不硬编码；{name} 原样显示
   var qqGuestDefault = '';
   var qqGuestSaved = '';
+  // 上次保存的「重启后自动连接」，用于保存提示「下次启动生效」
+  var qqAutoSaved = false;
   var QQ_GUEST_MAX = 2000;
   // 插件设置（和 Decky 插件端共用一份后端配置）
   var cfgWithShot = document.getElementById('cfgWithShot');
@@ -11047,7 +11062,7 @@
     connecting: '正在连接',
     connected: '已连接',
     reconnecting: '重连中',
-    stopped: '已停止'
+    stopped: '已启用 · 未连接'
   };
 
   // 数字输入框：空值/非法值回落到默认值（后端还有一层边界校验）
@@ -11287,6 +11302,9 @@
     var sendRecv = '收 ' + (Number(stats.received) || 0) + ' · 回 ' + (Number(stats.replies) || 0);
     if (Number(stats.rate_limited)) sendRecv += ' · 限流丢 ' + Number(stats.rate_limited);
     var rows = [
+      ['运行授权', s.enabled ? '已启用' : '已关闭'],
+      ['重启自动连接', s.auto_connect ? '已开启（仅下次启动生效）' : '未开启'],
+      ['实际连接', s.connected ? '已连接' : '未连接'],
       ['主机', s.url || '—'],
       ['连接时长', connectedFor || '—'],
       ['重连次数', String(Number(stats.reconnects) || 0)],
@@ -11434,6 +11452,8 @@
   function loadQqConfig() {
     return memFetch('/api/qq/config', {}).then(function (c) {
       cfgQqEnable.checked = !!c.enable;
+      if (cfgQqAutoConnect) cfgQqAutoConnect.checked = !!c.auto_connect;
+      qqAutoSaved = !!c.auto_connect;
       cfgQqUrl.value = c.ws_url || '';
       cfgQqToken.value = c.access_token || '';
       cfgQqToken.type = 'password';
@@ -11498,10 +11518,9 @@
   }
 
   /**
-   * 提交 QQ 表单。保存按钮和重新连接按钮都走这里：
-   * 后端 POST /api/qq/config 会写盘、热更新并等重连落定；
-   * 配置没变时 configure 会提前返回，但接口里的 reconnect 仍会强制重连一次。
-   * withReconnect 只影响提示文案，动作都是「应用当前表单并重连」。
+   * 提交 QQ 表单。保存按钮和「重新连接」按钮都走这里：
+   * 后端 POST /api/qq/config 只写盘 + 热更新，不会触发连接；
+   * withReconnect 时才额外 POST /api/qq/connect，显式建连。
    */
   function submitQq(withReconnect) {
     // 配置没读回来时表单是空的，直接提交会把已有域名/令牌清空
@@ -11533,6 +11552,7 @@
     });
     var payload = {
       enable: !!cfgQqEnable.checked,
+      auto_connect: cfgQqAutoConnect ? !!cfgQqAutoConnect.checked : false,
       ws_url: cfgQqUrl.value.trim(),
       access_token: cfgQqToken.value.trim(),
       admin_qq: adminList,
@@ -11581,6 +11601,7 @@
         cfgQqAdmins.value = savedAdmins[0] || '';
         qqAdminExtras = savedAdmins.slice(1);
         renderAdminHint();
+        if (cfgQqAutoConnect) cfgQqAutoConnect.checked = !!res.config.auto_connect;
         if (qqGroups) qqGroups.set(res.config.allow_groups || []);
         if (qqRedactWords) qqRedactWords.set(res.config.redact_words || []);
         applyQqVoiceConfig(res.config);
@@ -11589,10 +11610,27 @@
         if (cfgQqVoiceKb) cfgQqVoiceKb.value =
           res.config.voice_max_kb != null ? res.config.voice_max_kb : 4096;
       }
+      var autoNow = !!(res && res.config && res.config.auto_connect);
+      var autoChanged = autoNow !== qqAutoSaved;
+      qqAutoSaved = autoNow;
+      var connectedNow = !!(res && res.state && res.state.connected);
       if (res && res.state) renderQqStatus(res.state);
-      else return loadQqStatus();
-      qqHint.textContent = withReconnect
-        ? '已按当前表单重新连接；状态会在上方刷新'
+      else loadQqStatus();
+      if (withReconnect) {
+        // 保存不会建连；「重新连接」按钮在保存后再显式调一次 connect
+        return memFetch('/api/qq/connect', { method: 'POST' }).then(function (r) {
+          if (r && r.state) renderQqStatus(r.state);
+          qqHint.textContent = '已按当前表单重新连接；状态会在上方刷新';
+          return res;
+        }).catch(function (err) {
+          var msg = (err && err.message) || '';
+          qqHint.textContent = '配置已保存，但连接失败：' + (msg || '未知错误');
+          return res;
+        });
+      }
+      qqHint.textContent = autoChanged && !connectedNow
+        ? '已保存；「重启后自动连接」已改为' + (autoNow ? '开启' : '关闭')
+          + '，下次启动生效，当前仍未连接'
         : '已保存；群友提示词：' + (qqGuestSaved ? '自定义' : '默认');
       return res;
     }).catch(function (err) {

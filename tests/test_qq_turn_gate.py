@@ -128,5 +128,56 @@ class TurnGateTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, [True])
 
 
+class StartupBehaviorTest(unittest.IsolatedAsyncioTestCase):
+    """冷启动与保存配置都不能顺手建连"""
+
+    async def test_boot_hook_skips_connect_when_auto_off(self):
+        with mock.patch.object(main.onebot_client, "should_auto_connect",
+                               return_value=False), \
+                mock.patch.object(main.onebot_client, "start",
+                               new=mock.AsyncMock()) as started:
+            await main._boot_onebot()
+        started.assert_not_called()
+
+    async def test_boot_hook_connects_when_auto_on(self):
+        with mock.patch.object(main.onebot_client, "should_auto_connect",
+                               return_value=True), \
+                mock.patch.object(main.onebot_client, "start",
+                               new=mock.AsyncMock()) as started:
+            await main._boot_onebot()
+        started.assert_awaited_once()
+
+    async def test_save_config_never_reconnects(self):
+        req = main.OneBotConfigUpdate(enable=True, auto_connect=True)
+        with mock.patch.object(main, "save_config") as saved, \
+                mock.patch.object(main, "_qq_public_config", return_value={}), \
+                mock.patch.object(main.onebot_client, "state",
+                                  return_value={"enabled": True}), \
+                mock.patch.object(main.onebot_client, "reconnect",
+                                  new=mock.AsyncMock()) as reconnected, \
+                mock.patch.object(main.onebot_client, "stop",
+                                  new=mock.AsyncMock()) as stopped:
+            res = await main.api_save_qq_config(req)
+        saved.assert_called_once()
+        self.assertEqual(saved.call_args[0][0]["qq"]["auto_connect"], True)
+        reconnected.assert_not_called()
+        stopped.assert_not_called()
+        self.assertTrue(res["ok"])
+
+    async def test_save_disable_stops_existing_connection(self):
+        req = main.OneBotConfigUpdate(enable=False, auto_connect=False)
+        with mock.patch.object(main, "save_config"), \
+                mock.patch.object(main, "_qq_public_config", return_value={}), \
+                mock.patch.object(main.onebot_client, "state",
+                                  return_value={"enabled": False}), \
+                mock.patch.object(main.onebot_client, "reconnect",
+                                  new=mock.AsyncMock()) as reconnected, \
+                mock.patch.object(main.onebot_client, "stop",
+                                  new=mock.AsyncMock()) as stopped:
+            await main.api_save_qq_config(req)
+        reconnected.assert_not_called()
+        stopped.assert_awaited_once()
+
+
 if __name__ == "__main__":
     unittest.main()

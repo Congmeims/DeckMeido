@@ -176,6 +176,9 @@ TEXT_LOG_NAME = "text_log.txt"
 @dataclass(frozen=True)
 class OneBotConfig:
     enable: bool = False
+    # 重启后是否自动连接：默认 false。enabled 只表示「允许运行」，
+    # 真正建连要么手动点，要么显式打开这个开关。
+    auto_connect: bool = False
     ws_url: str = ""
     access_token: str = ""
     admin_qq: tuple[str, ...] = ()
@@ -283,6 +286,7 @@ def parse_config(raw: dict | None) -> OneBotConfig:
     raw = raw if isinstance(raw, dict) else {}
     return OneBotConfig(
         enable=_as_bool(raw.get("enable", False)),
+        auto_connect=_as_bool(raw.get("auto_connect"), False),
         ws_url=str(raw.get("ws_url") or "").strip(),
         access_token=str(raw.get("access_token") or "").strip(),
         admin_qq=_as_str_list(raw.get("admin_qq")),
@@ -1083,25 +1087,32 @@ class OneBotClient:
         self._backoff = Backoff(cfg.reconnect_min, cfg.reconnect_max)
         self._drop_pending()
         err = validate_config(cfg)
-        if not cfg.enable:
-            self._state = "disabled"
-            self._detail = "已关闭（[qq] enable = false）"
-        elif err:
-            self._state = "misconfigured"
-            self._detail = err
-        else:
-            self._detail = "待连接"
         running = self._task is not None and not self._task.done()
+        if not cfg.enable:
+            if not running:
+                self._state = "disabled"
+                self._detail = "已关闭（[qq] enable = false）"
+        elif err:
+            if not running:
+                self._state = "misconfigured"
+                self._detail = err
+        elif not running:
+            # 已启用但未连接：这是冷启动/刚保存配置的默认状态。
+            # enabled 只是「允许运行」，不会因为保存配置就顺手连上。
+            self._state = "stopped"
+            self._detail = "已启用 · 未连接（等手动连接）"
         self._log("info", "配置已更新",
-                  f"enable={cfg.enable} 管理员={len(cfg.admin_qq)} 群={len(cfg.allow_groups)}")
+                  f"enable={cfg.enable} auto_connect={cfg.auto_connect} "
+                  f"管理员={len(cfg.admin_qq)} 群={len(cfg.allow_groups)}")
         if cfg.enable and not cfg.allow_groups:
             # 空名单 = 全禁：更容易被误读成「不限」，启动时明确记一笔
             self._log("warn", "群聊白名单为空",
                       "allow_groups=[]：所有群消息一律不响应（空 = 全禁）；"
                       "主人私聊不受影响")
-        # 只有「启动过」之后才自动重启：import 阶段 configure 不该拉起连接，
-        # 真正的启动入口是 start()
-        if self._booted and (running or (cfg.enable and not err)):
+        # 配置热更新只做「关闭」：enable 改成 false 时断开现有连接。
+        # 绝不在这里自动建连——保存配置不是连接动作，冷启动的自动连接
+        # 由 main.py 的 startup 钩子按 auto_connect 决定。
+        if self._booted and running and not cfg.enable:
             self._schedule_restart()
 
     def _schedule_restart(self) -> asyncio.Task | None:
@@ -1140,6 +1151,14 @@ class OneBotClient:
         except Exception as e:
             self._last_error = repr(e)
             print(f"[DeckMeido][onebot] 重载失败：{e!r}", file=sys.stderr)
+
+    def should_auto_connect(self) -> bool:
+        """冷启动是否自动建连：enabled 与 auto_connect 必须同时为真
+
+        默认 auto_connect=false：即使 enable=true，也只表示「允许运行」，
+        core 启动后保持未连接，等设置页/QQ 面板/接口手动触发。
+        """
+        return bool(self._cfg.enable and self._cfg.auto_connect)
 
     async def start(self) -> None:
         self._booted = True
@@ -1191,8 +1210,14 @@ class OneBotClient:
 
     def state(self) -> dict:
         running = self._task is not None and not self._task.done()
+        connected = self._state == "connected" and running
         return {
             "enable": self._cfg.enable,
+            # 三个概念分开返回：enabled=允许运行，auto_connect=重启后自动连，
+            # connected=当前真的有连接。旧字段 running/state 继续保留给旧前端。
+            "enabled": self._cfg.enable,
+            "auto_connect": self._cfg.auto_connect,
+            "connected": connected,
             "running": running,
             "state": self._state,
             "detail": self._detail,

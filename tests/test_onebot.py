@@ -2183,5 +2183,44 @@ class VoiceReplyTest(unittest.IsolatedAsyncioTestCase):
         await bot.stop()
 
 
+class AutoConnectConfigTest(unittest.TestCase):
+    """enabled / auto_connect / connected 三者解耦"""
+
+    def _bot(self, raw):
+        async def noop(*a, **k):
+            return None
+        base = {"ws_url": "ws://127.0.0.1:3001", "access_token": "tok",
+                "admin_qq": ["10001"], "allow_groups": ["20001"]}
+        base.update(raw)
+        bot = onebot.OneBotClient(runner=noop, screenshot=noop,
+                                  status_provider=noop, nickname=lambda: "meido")
+        bot.configure(onebot.parse_config(base))
+        return bot
+
+    def test_missing_key_defaults_false(self):
+        cfg = onebot.parse_config({"enable": True})
+        self.assertTrue(cfg.enable)
+        self.assertFalse(cfg.auto_connect)
+
+    def test_auto_connect_parsed(self):
+        cfg = onebot.parse_config({"enable": True, "auto_connect": True})
+        self.assertTrue(cfg.auto_connect)
+
+    def test_should_auto_connect_requires_both(self):
+        self.assertFalse(self._bot({"enable": False, "auto_connect": True}).should_auto_connect())
+        self.assertFalse(self._bot({"enable": True, "auto_connect": False}).should_auto_connect())
+        self.assertTrue(self._bot({"enable": True, "auto_connect": True}).should_auto_connect())
+
+    def test_enabled_but_not_connected_state(self):
+        bot = self._bot({"enable": True, "auto_connect": True})
+        state = bot.state()
+        self.assertTrue(state["enabled"])
+        self.assertTrue(state["auto_connect"])
+        self.assertFalse(state["connected"])
+        self.assertEqual(state["state"], "stopped")
+        self.assertIn("未连接", state["detail"])
+        self.assertIsNone(bot._task, "configure 不能顺手建连")
+
+
 if __name__ == "__main__":
     unittest.main()
