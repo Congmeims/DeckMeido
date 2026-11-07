@@ -2531,6 +2531,20 @@
   }
   .fbt-card.running { border-color: rgba(26,159,255,.45); }
   .fbt-card.fail { border-color: rgba(232,70,58,.45); }
+  /* 准备阶段（正在读文件夹）还不知道总进度：用一段来回滑动的条表示「还在动」，
+     不能让用户盯着静止的 0% 以为卡死 */
+  .fbt-card.preparing .fbt-fill {
+    width: 30%; transition: none;
+    animation: fbtSlide 1.15s ease-in-out infinite;
+  }
+  @keyframes fbtSlide {
+    0% { margin-left: 0; }
+    50% { margin-left: 70%; }
+    100% { margin-left: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .fbt-card.preparing .fbt-fill { animation: none; width: 100%; opacity: .35; }
+  }
   .fbt-head { display: flex; align-items: center; gap: 6px; min-height: 20px; }
   .fbt-title {
     flex: 1 1 auto; min-width: 0; font-size: 12px; font-weight: 600;
@@ -6562,10 +6576,17 @@
   // 上传走 /api/upload-stream（原始请求体直接落盘），进度用 XHR upload.onprogress。
   // 目录：dataTransfer.files 里目录只会退化成 0 字节同名 File，必须用
   // webkitGetAsEntry() 递归展开，每个文件连同相对路径入队，目录用 /api/fs mkdir 重建。
-  var fbUploadTasks = [];   // {id,base,files[],status,finished,expanded,limit,xhr}
+  var fbUploadTasks = [];   // {id,base,files[],status,finished,expanded,limit,xhr,preparing,phaseText,partial}
   var fbUploadSeq = 0;
   var fbUploadBusy = false;
+  // 串行槽当前归属的任务：取消/失败收尾时只释放自己占的槽，
+  // 免得旧任务的异步回调把下一个任务的忙碌标记清掉，造成两个任务同时上传
+  var fbUploadOwner = null;
   var fbMkdirCache = {};    // 绝对目录路径 -> true（已建）| {error}（建失败）
+  // 单文件上限按目标目录缓存 10 秒：同一次拖入可能拆成多批任务，
+  // 每批都去问一次 /api/upload-limit 没必要；磁盘余量 10 秒内变化可忽略
+  var fbLimitCache = { key: null, at: 0, limit: null };
+  var FB_LIMIT_TTL = 10 * 1000;
 
   // [FB-UPLOAD-HELPERS-BEGIN]
   // 下面是纯函数：体积格式化 / 长路径中间省略 / 整批汇总，只做计算不碰 DOM，
@@ -6633,6 +6654,44 @@
     parts.push(tail);
     return parts.join(' · ');
   }
+
+  // 进度百分比：<10% 保留一位小数，避免 4.5MB / 3.9GB 长时间停在「0%」
+  function fbPctText(p) {
+    var v = Number(p) || 0;
+    if (v <= 0) return '0%';
+    if (v >= 100) return '100%';
+    if (v < 10) return v.toFixed(1) + '%';
+    return Math.floor(v) + '%';
+  }
+
+  // 任务副行 / 当前阶段行：卡片首绘和进度刷新共用，避免两处文案不一致
+  function fbTaskSubText(task, st) {
+    st = st || fbTaskStats(task);
+    if (task && task.preparing) {
+      return '已发现 ' + st.total + ' 个文件' +
+        (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : '');
+    }
+    return '已完成 ' + st.done + '/' + st.total + ' · 已传 ' +
+      fbFmtBytes(st.sentBytes) + (st.totalBytes ? ' / ' + fbFmtBytes(st.totalBytes) : '');
+  }
+
+  function fbTaskNowText(task, st) {
+    st = st || fbTaskStats(task);
+    if (st.current) return '正在上传：' + fbMidPath(st.current, 52);
+    if (task && task.preparing) return '正在读取文件夹…';
+    return (task && task.phaseText) ? task.phaseText : '准备中…';
+  }
+
+  // 选下一个要推进的任务：wait 和 running 都算。
+  // running 表示这一批还有下一个文件 —— 只看 wait 会让首个文件传完后整批停死。
+  function fbPickTask(tasks) {
+    for (var i = 0; i < tasks.length; i++) {
+      var t = tasks[i];
+      if (!t || t.finished || t.cancelled) continue;
+      if (t.status === 'wait' || t.status === 'running') return t;
+    }
+    return null;
+  }
   // [FB-UPLOAD-HELPERS-END]
 
   function fbTaskById(id) {
@@ -6664,30 +6723,40 @@
     });
     var card = document.createElement('div');
     card.className = 'fbt-card ' +
-      (finished ? 'finished' : (task.status === 'running' ? 'running' : 'wait')) +
-      (st.failed ? ' fail' : '') + (task.expanded ? ' expanded' : '');
+      (finished ? 'finished' : (task.preparing ? 'preparing' :
+        (task.status === 'running' ? 'running' : 'wait')) +
+      (st.failed ? ' fail' : '') + (task.expanded ? ' expanded' : '')) ;
     card.setAttribute('data-task', String(task.id));
 
     var head = document.createElement('div');
     head.className = 'fbt-head';
     var title = document.createElement('span');
     title.className = 'fbt-title';
-    title.textContent = finished ? fbTaskSummary(task)
-      : ('上传 ' + st.total + ' 个文件' + (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : ''));
+    if (finished) title.textContent = fbTaskSummary(task);
+    else if (task.preparing) {
+      title.textContent = '正在读取文件列表 · 已发现 ' + st.total + ' 个文件';
+    } else {
+      title.textContent = '上传 ' + st.total + ' 个文件' +
+        (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : '');
+    }
     title.title = title.textContent;
     head.appendChild(title);
 
     if (!finished) {
-      var pct = document.createElement('span');
-      pct.className = 'fbt-pct';
-      pct.textContent = Math.floor(st.percent) + '%';
-      head.appendChild(pct);
+      if (!task.preparing) {
+        var pct = document.createElement('span');
+        pct.className = 'fbt-pct';
+        pct.textContent = fbPctText(st.percent);
+        head.appendChild(pct);
+      }
       head.appendChild(fbTaskBtn('取消', 'cancel', 'danger'));
     } else {
       if (problems.length) {
         head.appendChild(fbTaskBtn(task.expanded ? '收起' : '明细', 'toggle'));
       }
-      if (retryable && !task.blocked) head.appendChild(fbTaskBtn('重试', 'retry'));
+      if (retryable && !task.blocked && !task.partial) {
+        head.appendChild(fbTaskBtn('重试', 'retry'));
+      }
       var x = document.createElement('button');
       x.className = 'fbt-x';
       x.type = 'button';
@@ -6702,19 +6771,20 @@
     bar.className = 'fbt-bar';
     var fill = document.createElement('div');
     fill.className = 'fbt-fill';
-    fill.style.width = (finished ? (st.failed ? st.percent : 100) : st.percent) + '%';
+    if (!task.preparing) {
+      fill.style.width = (finished ? (st.failed ? st.percent : 100) : st.percent) + '%';
+    }
     bar.appendChild(fill);
     card.appendChild(bar);
 
     var sub = document.createElement('div');
     sub.className = 'fbt-sub';
-    sub.textContent = '已完成 ' + st.done + '/' + st.total + ' · 已传 ' +
-      fbFmtBytes(st.sentBytes) + (st.totalBytes ? ' / ' + fbFmtBytes(st.totalBytes) : '');
+    sub.textContent = fbTaskSubText(task, st);
     card.appendChild(sub);
 
     var now = document.createElement('div');
     now.className = 'fbt-now';
-    now.textContent = st.current ? ('正在上传：' + fbMidPath(st.current, 52)) : '准备中…';
+    now.textContent = fbTaskNowText(task, st);
     card.appendChild(now);
 
     var detail = document.createElement('div');
@@ -6756,26 +6826,35 @@
     var card = document.querySelector('#fbQueue .fbt-card[data-task="' + task.id + '"]');
     if (!card) return;
     var st = fbTaskStats(task);
+    // 准备阶段文件是边遍历边入队的，标题里的「已发现 N 个」也要跟着涨
+    var title = card.querySelector('.fbt-title');
+    if (title) {
+      var titleText = task.finished ? fbTaskSummary(task)
+        : task.preparing
+          ? ('正在读取文件列表 · 已发现 ' + st.total + ' 个文件')
+          : ('上传 ' + st.total + ' 个文件' +
+             (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : ''));
+      if (title.textContent !== titleText) {
+        title.textContent = titleText;
+        title.title = titleText;
+      }
+    }
     var pct = card.querySelector('.fbt-pct');
-    if (pct) pct.textContent = Math.floor(st.percent) + '%';
+    if (pct) pct.textContent = fbPctText(st.percent);
+    // 准备阶段进度条交给 CSS 的来回滑动动画，不写宽度
     var fill = card.querySelector('.fbt-fill');
-    if (fill) fill.style.width = st.percent + '%';
+    if (fill && !task.preparing) fill.style.width = st.percent + '%';
     var sub = card.querySelector('.fbt-sub');
-    if (sub) {
-      sub.textContent = '已完成 ' + st.done + '/' + st.total + ' · 已传 ' +
-        fbFmtBytes(st.sentBytes) + (st.totalBytes ? ' / ' + fbFmtBytes(st.totalBytes) : '');
-    }
+    if (sub) sub.textContent = fbTaskSubText(task, st);
     var now = card.querySelector('.fbt-now');
-    if (now) {
-      now.textContent = st.current ? ('正在上传：' + fbMidPath(st.current, 52)) : '准备中…';
-    }
+    if (now) now.textContent = fbTaskNowText(task, st);
   }
 
   function fbDropHint() {
     var drop = rbEl('fbDrop');
     if (!drop || drop.classList.contains('hot')) return;
     var active = fbUploadTasks.filter(function (t) {
-      return t.status === 'wait' || t.status === 'running';
+      return t.preparing || t.status === 'wait' || t.status === 'running';
     }).length;
     drop.textContent = active ? '正在上传到当前目录…' : '拖文件/文件夹到这里上传到当前目录';
   }
@@ -6812,48 +6891,60 @@
     return null;
   }
 
+  // 释放串行槽：只有当前占用者才能释放，避免取消后残留回调把新任务的状态清掉
+  function fbTaskRelease(task) {
+    if (fbUploadOwner === task) {
+      fbUploadOwner = null;
+      fbUploadBusy = false;
+    }
+  }
+
   function fbTaskFinish(task) {
     task.status = task.cancelled ? 'cancelled' : 'done';
     task.finished = true;
+    task.preparing = false;
+    task.phaseText = '';
     task.expanded = false;
     fbMkdirCache = {};
     fbTaskRender();
     fbLoad(fb.path || '');
   }
 
-  // 单任务串行：一卡里的文件一个接一个传，避免并发把内存/网络打满
+  // 单任务串行：一卡里的文件一个接一个传，避免并发把内存/网络打满。
+  // 注意「running」也是可推进状态 —— 只挑 wait 会让首个文件传完后整批停死。
   function fbTaskPump() {
     if (fbUploadBusy) return;
-    var task = null;
-    for (var i = 0; i < fbUploadTasks.length; i++) {
-      if (fbUploadTasks[i].status === 'wait' && !fbUploadTasks[i].finished) {
-        task = fbUploadTasks[i];
-        break;
-      }
-    }
+    var task = fbPickTask(fbUploadTasks);
     if (!task) return;
+    // 还在遍历文件夹：等列表读完再开传，别和目录遍历抢主线程
+    if (task.preparing) return;
     var item = fbTaskNextItem(task);
     if (!item) { fbTaskFinish(task); fbTaskPump(); return; }
     task.status = 'running';
     fbUploadBusy = true;
+    fbUploadOwner = task;
+    task.phaseText = '正在读取目标目录上限…';
     fbTaskRender();
     fbTaskEnsureLimit(task, function () {
-      if (task.cancelled) { fbUploadBusy = false; return; }
+      if (task.cancelled) { fbTaskRelease(task); fbTaskPump(); return; }
       // 本地先按同一口径挡一次：提示里同时给出「当前上限」和「该文件」
       if (task.limit != null && item.size > task.limit) {
         item.status = 'fail';
         item.err = '单文件超过当前上限 ' + fbFmtBytes(task.limit) +
                    '，该文件 ' + fbFmtBytes(item.size);
-        fbUploadBusy = false;
+        fbTaskRelease(task);
         fbTaskRender();
         fbTaskPump();
         return;
       }
+      task.phaseText = '正在准备目录…';
+      fbTaskPaint(task);
       fbEnsureDir(task.base, item.parent, function (err) {
+        if (task.cancelled) { fbTaskRelease(task); fbTaskPump(); return; }
         if (err) {
           item.status = 'fail';
           item.err = '目录创建失败：' + err;
-          fbUploadBusy = false;
+          fbTaskRelease(task);
           fbTaskRender();
           fbTaskPump();
           return;
@@ -6863,30 +6954,50 @@
     });
   }
 
-  // 每次任务开始时查一次目标目录的单文件上限（磁盘剩余空间会变，重试时重查）
+  // 每个任务开始时取一次目标目录的单文件上限（同一目录 10 秒内复用，重试时重查）。
+  // 绝不按文件查 —— 882 个文件串行往返会直接把界面卡在「准备中」。
   function fbTaskEnsureLimit(task, cb) {
     if (task.limit !== undefined) { cb(); return; }
+    var key = String(task.base || '');
+    var now = Date.now();
+    if (fbLimitCache.key === key && fbLimitCache.limit != null &&
+        (now - fbLimitCache.at) < FB_LIMIT_TTL) {
+      task.limit = fbLimitCache.limit;
+      cb();
+      return;
+    }
     fetch('/api/upload-limit?dir=' + encodeURIComponent(task.base || ''))
       .then(function (r) { return r.json().catch(function () { return {}; }); })
       .then(function (j) {
-        task.limit = (j && typeof j.limit === 'number') ? j.limit : null;
+        var lim = (j && typeof j.limit === 'number') ? j.limit : null;
+        task.limit = lim;
+        // 只有拿到数值才进缓存；查询失败下个任务重新问
+        if (lim != null) {
+          fbLimitCache.key = key;
+          fbLimitCache.at = Date.now();
+          fbLimitCache.limit = lim;
+        }
         cb();
       })
       .catch(function () { task.limit = null; cb(); });
   }
 
   function fbTaskCancel(task) {
-    if (task.finished) return;
+    if (!task || task.finished) return;
     task.cancelled = true;
+    // 准备阶段取消要立刻生效：遍历器下一项就会看到 cancelled 退出；
+    // 标 partial 让「重试」不要拿一份残缺文件列表继续传
+    if (task.preparing) {
+      task.partial = true;
+      task.phaseText = '';
+    }
     task.files.forEach(function (f) {
       if (f.status === 'wait' || f.status === 'uploading') f.status = 'cancelled';
     });
     var xhr = task.xhr;
     task.xhr = null;
-    if (xhr) {
-      fbUploadBusy = false;
-      try { xhr.abort(); } catch (e) {}
-    }
+    if (xhr) { try { xhr.abort(); } catch (e) {} }
+    fbTaskRelease(task);
     fbTaskFinish(task);
     fbTaskPump();
   }
@@ -6894,6 +7005,8 @@
   // onlyIndex 指定单项重试；null = 任务级重试（所有可重试的失败/取消项）
   function fbTaskRetry(task, onlyIndex) {
     if (task.blocked) return;
+    // 准备阶段被取消的任务只列出了一部分文件，重试会漏掉其余文件
+    if (task.preparing || task.partial) return;
     var any = false;
     task.files.forEach(function (f, i) {
       if (onlyIndex != null && i !== onlyIndex) return;
@@ -6970,6 +7083,7 @@
     item.status = 'uploading';
     item.loaded = 0;
     item.err = '';
+    task.phaseText = '';   // 开始真正传数据了，阶段行交给「正在上传：xxx」
     fbTaskPaint(task);
     var full = fbJoinPath(task.base, item.parent);
     var xhr = new XMLHttpRequest();
@@ -6990,8 +7104,8 @@
     };
     xhr.onload = function () {
       task.xhr = null;
-      if (task.cancelled) { fbUploadBusy = false; return; }
-      fbUploadBusy = false;
+      if (task.cancelled) { fbTaskRelease(task); fbTaskPump(); return; }
+      fbTaskRelease(task);
       if (xhr.status >= 200 && xhr.status < 300) {
         item.status = 'done';
         item.loaded = item.size;
@@ -7008,8 +7122,8 @@
     };
     xhr.onerror = function () {
       task.xhr = null;
-      if (task.cancelled) { fbUploadBusy = false; return; }
-      fbUploadBusy = false;
+      if (task.cancelled) { fbTaskRelease(task); fbTaskPump(); return; }
+      fbTaskRelease(task);
       item.status = 'fail';
       item.err = '网络错误：连不上后端服务';
       fbTaskRender();
@@ -7017,8 +7131,8 @@
     };
     xhr.onabort = function () {
       task.xhr = null;
-      if (task.cancelled) { fbUploadBusy = false; return; }
-      fbUploadBusy = false;
+      if (task.cancelled) { fbTaskRelease(task); fbTaskPump(); return; }
+      fbTaskRelease(task);
       item.status = 'fail';
       item.err = '上传已中断';
       fbTaskRender();
@@ -7044,30 +7158,17 @@
     }));
   }
 
-  // 一次拖入 / 多选的所有文件收进同一个任务（整个文件夹也只是一张卡）
-  function fbTaskPush(items, opts) {
-    var base = fb.path || '';
-    var files = (items || []).map(function (it) {
-      var f = {
-        rel: it.rel,
-        name: (it.file && it.file.name) || (it.rel || '').split('/').pop(),
-        parent: it.parent || '',
-        file: it.file || null,
-        size: it.file ? it.file.size : 0,
-        status: 'wait',
-        loaded: 0,
-        err: ''
-      };
-      // 遍历阶段就失败（读不到文件/目录）的条目也留在明细里，原因可见
-      if (it.fail) { f.status = 'fail'; f.err = it.fail; }
-      return f;
-    });
-    if (!files.length) return null;
+  // 建一张空任务卡。preparing=true 表示还在读文件夹，卡片先摆出来显示「已发现 N 个」
+  function fbTaskCreate(base, opts) {
+    opts = opts || {};
     var task = {
-      id: ++fbUploadSeq, base: base, files: files,
+      id: ++fbUploadSeq, base: base || '', files: [],
       status: 'wait', finished: false, expanded: false,
       cancelled: false, limit: undefined, xhr: null,
-      blocked: !!(opts && opts.blocked)
+      blocked: !!opts.blocked,
+      preparing: !!opts.preparing,
+      phaseText: opts.phaseText || '',
+      partial: false
     };
     fbUploadTasks.push(task);
     // 已完成的任务卡最多留 4 张，再多就清掉最早的，避免一整天下来越堆越高
@@ -7077,6 +7178,34 @@
       var i = fbUploadTasks.indexOf(old);
       if (i >= 0) fbUploadTasks.splice(i, 1);
     }
+    return task;
+  }
+
+  // 把一个遍历到的条目追加进任务（准备阶段边读边入队，进度才看得见）
+  function fbTaskAddItem(task, it) {
+    if (!task || !it) return null;
+    var f = {
+      rel: it.rel,
+      name: (it.file && it.file.name) || (it.rel || '').split('/').pop(),
+      parent: it.parent || '',
+      file: it.file || null,
+      size: it.file ? it.file.size : 0,
+      status: 'wait',
+      loaded: 0,
+      err: ''
+    };
+    // 遍历阶段就失败（读不到文件/目录）的条目也留在明细里，原因可见
+    if (it.fail) { f.status = 'fail'; f.err = it.fail; }
+    task.files.push(f);
+    return f;
+  }
+
+  // 一次拖入 / 多选的所有文件收进同一个任务（整个文件夹也只是一张卡）
+  function fbTaskPush(items, opts) {
+    var raw = items || [];
+    if (!raw.length) return null;
+    var task = fbTaskCreate(fb.path || '', opts);
+    raw.forEach(function (it) { fbTaskAddItem(task, it); });
     fbTaskBind();
     fbTaskRender();
     fbTaskPump();
@@ -7137,33 +7266,75 @@
       fbUploadTo(Array.prototype.slice.call((dt && dt.files) || []));
       return;
     }
-    var out = [];
-    var idx = 0;
-    (function next() {
-      if (idx >= entries.length) {
-        // 空文件夹：没有文件可传，也要说一声，不能看起来像什么都没发生
-        if (!out.length) { fbToast('没有找到可上传的文件', 'file', true); return; }
-        fbTaskPush(out);
+    if (!fb.path) { fbToast('目标目录还没加载完成，请稍后再试', 'file', true); return; }
+    // 先把「正在读取文件列表」的卡摆出来：882 个文件遍历要几秒，
+    // 用户必须看得到「已发现 N 个」在涨，而且此时「取消」就能立刻生效
+    var task = fbTaskCreate(fb.path, { preparing: true, phaseText: '正在读取文件夹…' });
+    fbTaskBind();
+    fbTaskRender();
+    var idx = 0, lastPaint = 0;
+    // 遍历器共享的状态：cancelled 让它在下一项就退出，count 控制每 32 项让出主线程
+    var state = {
+      count: 0,
+      cancelled: function () { return !!task.cancelled; }
+    };
+    function paint(force) {
+      var now = Date.now();
+      if (!force && now - lastPaint < 120) return;
+      lastPaint = now;
+      fbTaskPaint(task);
+    }
+    function finishWalk() {
+      // 准备阶段被取消：卡已由 fbTaskCancel 收尾，残缺列表不再显示
+      if (task.cancelled) return;
+      // 空文件夹：没有文件可传，也要说一声，不能看起来像什么都没发生
+      if (!task.files.length) {
+        var pos = fbUploadTasks.indexOf(task);
+        if (pos >= 0) fbUploadTasks.splice(pos, 1);
+        fbTaskRender();
+        fbToast('没有找到可上传的文件', 'file', true);
         return;
       }
-      fbWalkEntry(entries[idx++], '', out, next);
+      task.preparing = false;
+      task.phaseText = '';
+      task.status = 'wait';
+      fbTaskRender();
+      fbTaskPump();
+    }
+    (function next() {
+      if (task.cancelled) return;
+      if (idx >= entries.length) { finishWalk(); return; }
+      fbWalkEntry(entries[idx++], '', function (it) {
+        if (task.cancelled) return;
+        fbTaskAddItem(task, it);
+        paint(false);
+      }, next, state);
     })();
   }
 
   // 递归读目录：DirectoryReader 一次只返回一批，必须反复读到空数组为止。
-  // 每个文件带上相对路径（如 素材/a.png）入队，父级目录由 fbEnsureDir 逐段重建。
-  function fbWalkEntry(entry, relDir, out, done) {
+  // 每读到一个文件立刻交给 onItem（准备阶段才能边读边显示已发现数量），
+  // state.cancelled() 为真时下一项就停止；每 32 项 setTimeout(0) 让出主线程，
+  // 否则几百个文件同步压下来，界面连「取消」都点不动。
+  function fbWalkEntry(entry, relDir, onItem, done, state) {
     if (!entry) { done(); return; }
+    var st = state || {};
+    function emit(it, next) {
+      st.count = (st.count || 0) + 1;
+      onItem(it);
+      if (st.count % 32 === 0) setTimeout(next, 0);
+      else next();
+    }
+    function stopped() { return !!(st.cancelled && st.cancelled()); }
     if (entry.isFile) {
+      if (stopped()) { done(); return; }
       entry.file(function (f) {
-        out.push({ file: f, rel: relDir ? relDir + '/' + f.name : f.name,
-                   parent: relDir || '' });
-        done();
+        emit({ file: f, rel: relDir ? relDir + '/' + f.name : f.name,
+               parent: relDir || '' }, done);
       }, function () {
         // 读不到具体文件也要留一行失败明细，不能静默跳过
-        out.push({ rel: relDir ? relDir + '/' + entry.name : entry.name,
-                   parent: relDir || '', fail: '无法读取该文件（权限不足或已被移动）' });
-        done();
+        emit({ rel: relDir ? relDir + '/' + entry.name : entry.name,
+               parent: relDir || '', fail: '无法读取该文件（权限不足或已被移动）' }, done);
       });
       return;
     }
@@ -7171,22 +7342,23 @@
     var reader = entry.createReader();
     var kids = [];
     (function readMore() {
+      if (stopped()) { done(); return; }
       reader.readEntries(function (batch) {
         if (!batch || !batch.length) {
           var nextDir = relDir ? relDir + '/' + entry.name : entry.name;
           var i = 0;
           (function walkNext() {
+            if (stopped()) { done(); return; }
             if (i >= kids.length) { done(); return; }
-            fbWalkEntry(kids[i++], nextDir, out, walkNext);
+            fbWalkEntry(kids[i++], nextDir, onItem, walkNext, st);
           })();
           return;
         }
         kids = kids.concat(Array.prototype.slice.call(batch));
         readMore();
       }, function () {
-        out.push({ rel: relDir ? relDir + '/' + entry.name : entry.name,
-                   parent: relDir || '', fail: '无法读取该文件夹（权限不足）' });
-        done();
+        emit({ rel: relDir ? relDir + '/' + entry.name : entry.name,
+               parent: relDir || '', fail: '无法读取该文件夹（权限不足）' }, done);
       });
     })();
   }

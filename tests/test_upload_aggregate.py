@@ -60,6 +60,37 @@ out.cancelled = fbTaskSummary({status: 'cancelled', files: [
   {status: 'done', size: 10}, {status: 'fail', size: 40}, {status: 'cancelled', size: 50}
 ]});
 out.empty = fbTaskSummary({status: 'done', files: []});
+
+// 百分比：4.5 MB / 3.9 GB ≈ 0.113%，不能显示成「0%」让用户以为没动
+out.pct0 = fbPctText(0);
+out.pctTiny = fbPctText(0.113);
+out.pctNine = fbPctText(9.94);
+out.pctMid = fbPctText(55.7);
+out.pct100 = fbPctText(100);
+
+// 任务调度：running 也必须继续被选中（首个文件传完后整批不能停死）
+out.pickRunning = fbPickTask([
+  {id: 1, status: 'running'},
+  {id: 2, status: 'wait'}
+]).id;
+out.pickSkipDone = fbPickTask([
+  {id: 3, status: 'running', finished: true},
+  {id: 4, status: 'wait'}
+]).id;
+out.pickSkipCancelled = fbPickTask([{id: 5, status: 'wait', cancelled: true}]);
+out.pickNone = fbPickTask([{id: 6, status: 'done', finished: true}]);
+
+// 准备阶段（正在读文件夹）必须显示「已发现 N 个」，不能一直停在「准备中…」
+var prepTask = {preparing: true, phaseText: '正在读取文件夹…', files: [
+  {status: 'wait', size: 100}, {status: 'wait', size: 200}
+]};
+out.prepSub = fbTaskSubText(prepTask);
+out.prepNow = fbTaskNowText(prepTask);
+out.phaseNow = fbTaskNowText({status: 'wait', phaseText: '正在读取目标目录上限…',
+  files: [{status: 'wait', size: 1}]});
+out.uploadingNow = fbTaskNowText({files: [
+  {status: 'uploading', size: 10, loaded: 5, rel: 'big.bin'}
+]});
 console.log(JSON.stringify(out));
 """
 
@@ -114,3 +145,24 @@ class UploadAggregateTest(unittest.TestCase):
         self.assertEqual(self.out["cancelled"],
                          "3 个文件 · 100 B · 已取消 · 1 成功 1 失败")
         self.assertEqual(self.out["empty"], "0 个文件 · 0 成功")
+
+    def test_百分比小于10时保留一位小数(self):
+        self.assertEqual(self.out["pct0"], "0%")
+        # 882 个文件 / 3.9 GB 刚传完第一个 4.5 MB 时是 0.113%，不能显示成 0%
+        self.assertEqual(self.out["pctTiny"], "0.1%")
+        self.assertEqual(self.out["pctNine"], "9.9%")
+        self.assertEqual(self.out["pctMid"], "55%")
+        self.assertEqual(self.out["pct100"], "100%")
+
+    def test_运行中的任务必须继续被调度(self):
+        # 回归：只挑 status=wait 会让首个文件传完后整批停在「准备中…」
+        self.assertEqual(self.out["pickRunning"], 1)
+        self.assertEqual(self.out["pickSkipDone"], 4)
+        self.assertIsNone(self.out["pickSkipCancelled"])
+        self.assertIsNone(self.out["pickNone"])
+
+    def test_准备阶段文案不再停在准备中(self):
+        self.assertEqual(self.out["prepSub"], "已发现 2 个文件 · 300 B")
+        self.assertEqual(self.out["prepNow"], "正在读取文件夹…")
+        self.assertEqual(self.out["phaseNow"], "正在读取目标目录上限…")
+        self.assertEqual(self.out["uploadingNow"], "正在上传：big.bin")
