@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import sys
@@ -16,6 +17,7 @@ import time
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -131,6 +133,51 @@ class StreamPartsTest(unittest.TestCase):
                          ["先打开 Kazumi，再截一张图确认窗口",
                           "窗口应该起来了，但我看不到新画面"])
         path.unlink()
+
+
+class TerminalStatusTest(unittest.IsolatedAsyncioTestCase):
+    """插件（大屏/QAM）只吃 ws 推送：一轮收尾必须补发 running=false。
+
+    3291bf 的现场：网页端这一轮在 15:14:40 就结束了，但最后一次 status
+    广播（run_agent 中途那次）还是 running=true，之后再也没有收尾状态，
+    面板重新打开时会先收到缓存值，凭空显示「思考中…」。
+    """
+
+    def setUp(self):
+        self.sent: list[dict] = []
+
+    async def _broadcast(self, msg):
+        self.sent.append(msg)
+
+    async def test_success_broadcasts_terminal_status(self):
+        async def fake_chat(text, announce=True, **kw):
+            return {"reply": "ok", "events": []}
+
+        with mock.patch.object(main, "handle_chat", fake_chat), \
+                mock.patch.object(main.manager, "broadcast", self._broadcast), \
+                mock.patch.object(main, "get_status", lambda *a, **k: {"running": False}):
+            await main.start_chat("生成一个11月份的日历", announce=False)
+
+        self.assertTrue(self.sent, "一轮结束必须广播收尾状态")
+        last = self.sent[-1]
+        self.assertEqual(last["type"], "status")
+        self.assertFalse(last["data"]["running"])
+
+    async def test_cancel_also_broadcasts_terminal_status(self):
+        async def slow_chat(text, announce=True, **kw):
+            await asyncio.sleep(5)
+
+        with mock.patch.object(main, "handle_chat", slow_chat), \
+                mock.patch.object(main.manager, "broadcast", self._broadcast), \
+                mock.patch.object(main, "get_status", lambda *a, **k: {"running": False}):
+            task = asyncio.create_task(main.start_chat("hi", announce=False))
+            await asyncio.sleep(0.05)
+            main.current_task.cancel()
+            res = await task
+
+        self.assertTrue(res.get("cancelled"))
+        self.assertTrue(self.sent, "取消这一轮也必须广播收尾状态")
+        self.assertFalse(self.sent[-1]["data"]["running"])
 
 
 if __name__ == "__main__":

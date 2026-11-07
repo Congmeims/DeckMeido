@@ -7545,10 +7545,14 @@
               var pBox = addMsg('assistant', pText, msg.partial.ts, pEvs);
               if (pBox) {
                 liveBox = pBox;
-                liveToolCount = pEvs.filter(function (e) {
+                var pTools = pEvs.filter(function (e) {
                   return e && e.type === 'tool';
                 }).length;
+                liveToolCount = pTools;
                 liveThoughtShown = pBox.querySelectorAll('.tl.thought').length;
+                // 屏幕上已经有这一轮的内容了：读秒措辞不能还停在「等待模型响应」
+                waitSeen = true;
+                waitUsedTool = pTools > 0;
               }
             }
           }
@@ -7639,6 +7643,7 @@
           showTyping();
           break;
         case 'stream_start':
+          waitSeen = true;   // 已经收到正文：读秒措辞不再是「等待模型响应」
           hideTyping();
           // 上一段正文已经说完（工具调用后会另起一段），翻篇进缓存
           turnCacheNextSeg();
@@ -7668,6 +7673,7 @@
             }
             break;
           }
+          waitSeen = true;
           if (!streamBody) {
             // 兜底：stream_start 丢了（重连窗口、别的端已经开跑、事件乱序）时
             // 以前这里静默丢弃，正文就整段不见了。现在就地补一个气泡，
@@ -7692,6 +7698,7 @@
           }
           break;
         case 'thought_start':
+          waitSeen = true;
           thoughtFlushNow();   // 上一段思考的尾巴先落地，别串到新块里
           if (!liveBox) {
             liveBox = document.createElement('div');
@@ -7716,6 +7723,7 @@
           scrollBottomIfFollow();
           break;
         case 'thought_delta':
+          waitSeen = true;
           if (liveThought) {
             thoughtTextPend += msg.text;
             thoughtFlushSoon();
@@ -7742,6 +7750,8 @@
         case 'tool_done':
           // 工具跑完就撤掉动作文案，别让命令早已结束、界面还写着「正在执行命令 …」；
           // 计时仍继续显示本轮的「已执行 N 秒」
+          waitSeen = true;
+          waitUsedTool = true;   // 真的执行过工具，之后才配说「已执行」
           waitLabel = '';
           if (typingEl) {
             var _tlbl = typingEl.querySelector('.typing-label');
@@ -8960,14 +8970,27 @@
       lbl.className = 'typing-label';
       typingEl.insertBefore(lbl, typingEl.firstChild);
     }
-    // 保留「正在做什么」，后面再追加秒数；否则工具事件一过就只剩读秒，
+    // 措辞按真实进度分三档：还没收到任何字节 = 等上游；只有思考/正文 = 已思考；
+    // 真跑过工具 = 已执行。保留「正在做什么」前缀，否则工具事件一过就只剩读秒，
     // 用户分不清是在跑哪条命令
-    lbl.textContent = (waitLabel ? waitLabel + ' · ' : '')
-      + '已执行 ' + waitBase + ' 秒'
-      + (waitBase >= 45 ? '（还在跑，可以按终止停下）' : '');
+    var word = waitUsedTool ? '已执行' : (waitSeen ? '已思考' : '等待模型响应');
+    lbl.textContent = (waitUsedTool && waitLabel ? waitLabel + ' · ' : '')
+      + word + ' ' + waitBase + ' 秒'
+      + (waitBase >= (waitUsedTool || waitSeen ? 45 : 30)
+          ? ((waitUsedTool || waitSeen)
+              ? '（还在跑，可以按终止停下）'
+              : '（上游还没返回内容，可继续等待或按终止停下）')
+          : '');
   }
   function startWaitTimer(since) {
+    // status 每秒都会来这里续接计时，不能每次都把标志清零；
+    // 只有 running_since 变了（换了一轮）才重置「已经收到过什么」
+    var prev = waitTurnTs;
     stopWaitTimer();
+    // 两个起点都已知、且对不上，才算换了新的一轮；重连后第一次拿到
+    // since（prev 还是 0）不能把 partial 已经恢复出来的内容当没发生过
+    if (since && prev && since !== prev) { waitSeen = false; waitUsedTool = false; }
+    waitTurnTs = since || 0;
     waitBase = since ? Math.max(0, Math.round(Date.now() / 1000 - since)) : 0;
     if (since) waitTick(); else waitBase = 0;
     waitTimer = setInterval(waitTick, 1000);
@@ -9270,6 +9293,8 @@
       if (!waitTimer) startWaitTimer(0);
     } else {
       stopWaitTimer();
+      // 这一轮收尾：下一次读秒必须重新从「等待模型响应」算起
+      waitSeen = false; waitUsedTool = false; waitTurnTs = 0;
     }
     updateSendBtn();
   }

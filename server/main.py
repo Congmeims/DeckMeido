@@ -3064,6 +3064,16 @@ async def start_chat(text: str, announce: bool = True, **kwargs):
         return {"reply": "已终止当前操作", "events": [], "cancelled": True}
     finally:
         current_task = None
+        # 收尾必须补一条 running=false。插件（大屏 / QAM）只吃 ws 推送、不轮询
+        # HTTP，而 run_agent 中途那几次 status 广播都发生在 current_task 置空之前，
+        # 少了这一条，最后一次「running=true」会永久挂在面板上——表现就是
+        # 网页端这一轮早就结束，插件面板一打开却立刻显示「思考中…」。
+        # 成功、异常、取消（含用户点终止）都会走到这里，三种收尾口径一致。
+        try:
+            await asyncio.shield(manager.broadcast(
+                {"type": "status", "data": get_status()}))
+        except Exception:
+            pass
 
 
 @app.post("/api/cancel", dependencies=[Depends(require_auth)])

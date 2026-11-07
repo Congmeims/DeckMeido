@@ -2204,8 +2204,24 @@ class Plugin:
         elif _THREAD:
             _emit({"kind": "thread", "items": _THREAD})
         # 面板重开时后端可能正在跑一轮（别端发起的）：状态得补一次，
-        # 否则界面上什么提示都没有，用户会以为卡住了
-        _emit({"kind": "status", "running": _STREAM_RUNNING, "since": _STREAM_SINCE})
+        # 否则界面上什么提示都没有，用户会以为卡住了。
+        # 但不能只发缓存的 _STREAM_RUNNING：它只在 ws 收到 status 时更新，
+        # 后端收尾那条 running=false 要是没到（旧版后端根本不发），
+        # 最后一个「运行中」会永久挂着，面板一打开就凭空显示「思考中」。
+        # 这里直接问一次 HTTP 状态，拿不到再退回缓存值。
+        global _STREAM_RUNNING, _STREAM_SINCE
+        cfg = _load_server_cfg()
+        port = int(cfg.get("port", 18765))
+        st = await _core_http(port, "GET", "/api/status", timeout=2.0)
+        data = st.get("data") if st.get("ok") else None
+        if isinstance(data, dict) and "running" in data:
+            run = bool(data.get("running"))
+            since = float(data.get("running_since") or 0) if run else 0.0
+            _STREAM_RUNNING = run
+            _STREAM_SINCE = since
+        else:
+            run, since = _STREAM_RUNNING, _STREAM_SINCE
+        _emit({"kind": "status", "running": run, "since": since})
         return {"ok": True}
 
     async def start_backend(self) -> dict:
