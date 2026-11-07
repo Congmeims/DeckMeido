@@ -323,11 +323,13 @@ cwd = ""                      # 空 = 用户家目录
 ## 6. 实现说明与测试
 
 - **PTY**：Linux/SteamOS 上使用 `ptyprocess.PtyProcess.spawn`（`forkpty`，即设置控制终端）
-  拉起真 PTY；依赖缺失时退回 `pty.openpty + subprocess.Popen(start_new_session=True)`。
+  拉起真 PTY；依赖在 `requirements.txt` 声明为 `ptyprocess>=0.7,<0.8`，缺失时退回
+  `pty.openpty + subprocess.Popen(start_new_session=True)`。两者都不可用时，创建会话
+  返回 501 `pty_unavailable` 并附安装命令，服务本身照常启动（依赖为惰性导入）。
   输出按 4 KiB 块读取，经 `run_in_executor` 交给事件循环，不阻塞请求。
 - **退出码**：每条 `exec` 注入随机 token 的标记行，解析后得到该命令退出码；标记行
   从客户端可见输出中剔除（兼容 Windows cmd 的提示符前缀）。
 - **Windows 开发机**：`pty` 不可用，测试走 `cmd.exe` + 管道后端（`backend="pipe"`）。
   这只是让 `python -m unittest discover -s tests` 能在 Windows 跑通；正式目标机始终是 PTY。
-- **测试**：`python -m unittest discover -s tests`（725 个用例全绿）；
+- **测试**：`python -m unittest discover -s tests`（749 个用例全绿）；
   单独跑：`python -m unittest tests.test_remote_terminal -v`。

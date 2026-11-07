@@ -180,6 +180,22 @@ class RemoteTerminalApiTest(unittest.TestCase):
         r2 = self.client.get("/api/terminal/sessions")
         self.assertEqual(r2.status_code, 401, r2.text)
 
+    def test_缺少pty支持时返回可读错误而不是堆栈(self):
+        self._enable()
+        err = remote_terminal.TerminalError(
+            "pty_unavailable",
+            "当前环境缺少 pty 支持（ptyprocess 与 pty.openpty 均不可用）",
+            501, extra={"missing": ["ptyprocess", "pty.openpty"]})
+        with mock.patch.object(remote_terminal, "_spawn", side_effect=err):
+            r = self.client.post("/api/terminal/sessions", json={"source": "test"},
+                                 headers=self.auth)
+        self.assertEqual(r.status_code, 501, r.text)
+        body = r.json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["error_code"], "pty_unavailable")
+        self.assertIn("pty", body["reason"])
+        self.assertEqual(body["missing"], ["ptyprocess", "pty.openpty"])
+
     def test_设置页可读写开关与参数(self):
         r = self.client.get("/api/config", headers=self.auth)
         self.assertEqual(r.status_code, 200, r.text)
@@ -423,6 +439,30 @@ class RemoteTerminalTimeoutTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await first.terminate("test")
             await mgr.close_all("test")
+
+
+class RemoteTerminalPtyBackendTest(unittest.TestCase):
+    """ptyprocess 与 pty.openpty 都不可用时，必须是可读 501，而不是裸堆栈。"""
+
+    def test_双后端缺失时抛可读错误(self):
+        fake_pty = types.ModuleType("pty")
+
+        def _no_openpty():
+            raise OSError("no pty support")
+
+        fake_pty.openpty = _no_openpty
+        settings = remote_terminal.TerminalSettings(enabled=True)
+        with mock.patch.object(remote_terminal, "_load_ptyprocess",
+                               return_value=None), \
+                mock.patch.dict(sys.modules, {"pty": fake_pty}), \
+                mock.patch.object(remote_terminal.os, "name", "posix"):
+            with self.assertRaises(remote_terminal.TerminalError) as ctx:
+                remote_terminal._spawn(settings, _DATA, 36, 120)
+        self.assertEqual(ctx.exception.code, "pty_unavailable")
+        self.assertEqual(ctx.exception.status, 501)
+        self.assertIn("pty", ctx.exception.reason)
+        self.assertEqual(ctx.exception.extra["missing"],
+                         ["ptyprocess", "pty.openpty"])
 
 
 if __name__ == "__main__":

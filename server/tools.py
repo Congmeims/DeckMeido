@@ -963,7 +963,21 @@ CURRENT_CMD: dict | None = None
 # 一个 PTY 会话 = 一个 ptyprocess.PtyProcess + 一条 asyncio 读循环任务。
 # 读循环把 PTY 的输出字节原样推进一个 asyncio.Queue，WebSocket 端点从
 # 队列取出来发给前端 xterm.js；前端敲的按键经 WebSocket 原样写回 PTY。
-import ptyprocess as _pty
+# ptyprocess 是终端面板的硬依赖，但不该因为它缺失就让整个后端起不来：
+# 防御式导入，缺依赖时只让 PTY 面板不可用，其余功能照常。
+try:
+    import ptyprocess as _pty
+except Exception:  # ImportError，或装坏了的 ptyprocess
+    _pty = None
+
+
+def pty_missing_reason() -> str | None:
+    """PTY 面板不可用时返回给用户看的原因；可用时返回 None。"""
+    if _pty is not None:
+        return None
+    return ("当前环境缺少 pty 支持（未安装 ptyprocess），终端面板暂不可用；"
+            "请执行：.venv/bin/python -m pip install 'ptyprocess>=0.7,<0.8'")
+
 
 # 活跃的 PTY 会话。面板同一时间只用一条（_LIVE_PTY_SESSIONS 的最后一项），
 # 但按进程 id 记，避免「终止旧命令→起新命令」时旧会话的收尾把新的清掉
@@ -1125,6 +1139,9 @@ async def start_pty_session(command: str, cwd: str = "",
     - 不设超时、不阻塞等待——面板命令的生命周期由用户决定；
     - 输出实时流式推给前端，不是攒完一次性返回。
     """
+    if _pty is None:
+        # 不抛堆栈：调用方（/api/terminal/run）把异常转成可读错误返回给前端
+        raise RuntimeError(pty_missing_reason() or "当前环境缺少 pty 支持")
     env = _command_env()
     _fix_display_env(env)
     env["TERM"] = "xterm-256color"

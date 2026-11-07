@@ -392,9 +392,19 @@ def _spawn(settings: TerminalSettings, cwd: str, rows: int,
                 return _PtyProcessHandle(proc), argv
             except Exception:
                 pass
-        import pty
+        try:
+            import pty
 
-        master, slave = pty.openpty()
+            master, slave = pty.openpty()
+        except Exception as exc:
+            # 双后端都不可用（常见于精简容器 / 缺 ptyprocess 的设备）：
+            # 不能抛裸堆栈，也不能让服务起不来，只让终端这一个功能返回可读错误。
+            raise TerminalError(
+                "pty_unavailable",
+                "当前环境缺少 pty 支持（ptyprocess 与 pty.openpty 均不可用），"
+                "远程终端暂不可用；请在设备上安装 ptyprocess："
+                ".venv/bin/python -m pip install 'ptyprocess>=0.7,<0.8'",
+                501, extra={"missing": ["ptyprocess", "pty.openpty"]}) from exc
         _set_winsize(slave, rows, cols)
         proc = subprocess.Popen(
             argv, cwd=cwd, env=env, stdin=slave, stdout=slave, stderr=slave,
@@ -855,6 +865,9 @@ class RemoteTerminalManager:
         try:
             # 同线程拉起 PTY：fork 后子进程只做 exec，避免在工作线程里 fork
             handle, argv = _spawn(settings, str(target), rows, cols)
+        except TerminalError:
+            # 缺 pty 支持等可读错误原样上抛，不要被包成笼统的 spawn_failed
+            raise
         except Exception as exc:
             raise TerminalError("spawn_failed", f"启动 shell 失败：{exc}", 500)
         sid = uuid.uuid4().hex[:12]
