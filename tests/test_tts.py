@@ -823,5 +823,40 @@ class PreviewTextTest(unittest.TestCase):
         self.assertEqual(self._capture("maid", "自定义试听句"), "自定义试听句")
 
 
+class PreviewTimeoutTest(unittest.TestCase):
+    """播放端挂住（paplay 卡在坏 sink 上）时，试听必须在超时后返回原因而不是挂死"""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name)
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def test_播放端不返回时超时并主动停播(self):
+        t = ttsmod.TTS(enable=False, engine="espeak-ng", model_root=self.root)
+        stopped = []
+
+        async def fake_espeak(text, event, **kw):
+            # 模拟播放进程一直不退出：只有外层超时取消才会结束
+            await asyncio.sleep(5)
+
+        async def fake_stop():
+            stopped.append(True)
+
+        t._speak_espeak = fake_espeak
+        t.stop = fake_stop
+        old = ttsmod.PREVIEW_TIMEOUT
+        ttsmod.PREVIEW_TIMEOUT = 0.05
+        try:
+            result = _run(t.preview("试听一句。"))
+        finally:
+            ttsmod.PREVIEW_TIMEOUT = old
+        self.assertTrue(result["timed_out"])
+        self.assertIn("超时", result["error"])
+        # 超时后必须再掐一次播放（speak 开头的那次 stop 之外）
+        self.assertGreaterEqual(len(stopped), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -49,6 +49,8 @@ SPEAKERS = (
     {"id": SPEAKER_ROBOT, "label": "机器人"},
     {"id": SPEAKER_MAID, "label": "月读酱"},
 )
+# 试听接口的硬超时：合成 + 播放整体超过这个时间就判定播放端挂起
+PREVIEW_TIMEOUT = 20.0
 SPEAKER_LABELS = {item["id"]: item["label"] for item in SPEAKERS}
 
 # 试听默认句：按发音人选，各用单一语言，避免中英混排跨段
@@ -875,10 +877,25 @@ class TTS:
                 self._cancel = None
 
     async def preview(self, text: str = ""):
-        """试听：不受 enable 开关限制；传了文本就用传入的，否则按发音人取默认句。"""
+        """试听：不受 enable 开关限制；传了文本就用传入的，否则按发音人取默认句。
+
+        播放端（paplay/aplay）在音频输出不可用时可能一直不返回。这里给整段
+        试听加硬超时，超时后主动掐掉播放进程并把原因带回接口，避免 HTTP
+        请求和界面按钮一起卡死。
+        """
         spoken = text or PREVIEW_TEXTS.get(self.speaker, PREVIEW_TEXTS[DEFAULT_SPEAKER])
-        await self.speak(spoken, force=True)
-        return {"engine": self._last_engine, "error": self._last_error}
+        timed_out = False
+        try:
+            await asyncio.wait_for(self.speak(spoken, force=True),
+                                   timeout=PREVIEW_TIMEOUT)
+        except asyncio.TimeoutError:
+            timed_out = True
+            self._last_error = (
+                f"试听超时：{int(PREVIEW_TIMEOUT)} 秒内播放端没有返回"
+                "（音频输出可能不可用）")
+            await self.stop()
+        return {"engine": self._last_engine, "error": self._last_error,
+                "timed_out": timed_out}
 
     async def stop(self):
         event = self._cancel

@@ -9407,6 +9407,8 @@
   var ttsDownloadHint = document.getElementById('ttsDownloadHint');
   var ttsPill = document.getElementById('ttsPill');
   var ttsPreview = document.getElementById('ttsPreview');
+  // 试听请求序号：超时/失败后重试时，旧请求的迟到回调不许覆盖新一轮的按钮状态
+  var ttsPreviewSeq = 0;
   var ttsAttribution = document.getElementById('ttsAttribution');
   // 素材署名的两行都要整行显示，不允许在句子中间折行：先按可用宽度把字号
   // 从 12px 往下缩（下限 10px 保住可读性），缩到下限还放不下时由横向滚动兜底。
@@ -11109,11 +11111,13 @@
   }
 
   // 只提交发音人：切换/试听前先存下来，不用等整页保存
-  function saveTtsQuick() {
+  // opts 可带 signal：试听那边超时会中止整条请求链
+  function saveTtsQuick(opts) {
     return fetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tts_speaker: ttsSpeaker })
+      body: JSON.stringify({ tts_speaker: ttsSpeaker }),
+      signal: opts && opts.signal
     }).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
@@ -11134,24 +11138,60 @@
       });
   });
 
+  // 试听：必须有一条「无论如何都复位」的出口。
+  // 以前只有 fetch 成功/失败才复位，后端播放端卡住（paplay 挂在坏的 sink 上）
+  // 时请求永不返回，按钮就永久停在「试听中…」。这里三管齐下：
+  // 1) 与服务端 PREVIEW_TIMEOUT 对齐的 20 秒前端超时，到点主动 abort，
+  //    并在提示区写出失败原因；
+  // 2) done() 幂等，超时后迟到的响应不会把按钮再锁回去；
+  // 3) 每次点击带序号，只有最新一次点击能回写界面，旧请求不覆盖新状态，
+  //    所以超时/失败后可以直接再点一次重试。
   ttsPreview.addEventListener('click', function () {
+    var PREVIEW_TIMEOUT_MS = 20000;
+    var seq = ttsPreviewSeq + 1;
+    ttsPreviewSeq = seq;
+    var finished = false;
+    var timer = null;
+    var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+
     ttsPreview.disabled = true;
     ttsPreview.textContent = '试听中…';
+
     var done = function (msg) {
+      if (finished) return;
+      finished = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      // 旧请求（用户已经重新点过）不复位也不写提示，避免覆盖新一轮状态
+      if (seq !== ttsPreviewSeq) return;
       ttsPreview.disabled = false;
       ttsPreview.textContent = '试听';
       if (msg) ttsDownloadHint.textContent = msg;
     };
-    saveTtsQuick()
+
+    var abort = function () {
+      if (!ctrl) return;
+      try { ctrl.abort(); } catch (e) { /* 已结束就忽略 */ }
+    };
+
+    timer = setTimeout(function () {
+      timer = null;
+      abort();
+      done('试听失败：' + (PREVIEW_TIMEOUT_MS / 1000) +
+           ' 秒内没有响应（音频输出可能不可用），可再点一次重试');
+    }, PREVIEW_TIMEOUT_MS);
+
+    saveTtsQuick({ signal: ctrl && ctrl.signal })
       .then(function () {
         return fetch('/api/tts/preview', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({})
+          body: JSON.stringify({}),
+          signal: ctrl && ctrl.signal
         });
       })
       .then(function (r) { return r.json(); })
       .then(function (d) {
+        if (finished) return;
         if (d && d.ok) {
           done('已用「' + (d.speaker_label || TTS_SPEAKER_LABELS[ttsSpeaker]) + '」试听。');
         } else {
@@ -11159,7 +11199,12 @@
         }
         loadTtsStatus();
       })
-      .catch(function () { done('试听失败：请求没有成功'); });
+      .catch(function (err) {
+        // 超时那条出口已经写过原因，这里只处理「非超时」的失败
+        if (finished) return;
+        var why = (err && err.name === 'AbortError') ? '请求已中止' : '请求没有成功';
+        done('试听失败：' + why);
+      });
   });
 
   ttsSpeakerBtns.forEach(function (btn) {

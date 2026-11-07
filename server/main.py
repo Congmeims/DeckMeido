@@ -4027,7 +4027,7 @@ async def api_tts_preview(req: TTSPreviewRequest):
     """就地试听：用当前发音人念一句短的，返回实际用到的引擎与失败原因。"""
     result = await tts.preview(req.text)
     return {
-        "ok": bool(result.get("engine")),
+        "ok": bool(result.get("engine")) and not result.get("timed_out"),
         # 引擎名只用于日志/诊断；界面按 speaker 展示
         "engine": result.get("engine", ""),
         "speaker": tts.speaker,
