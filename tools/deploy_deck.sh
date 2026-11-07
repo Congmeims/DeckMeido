@@ -10,6 +10,8 @@
 #   DECK_PLUGIN_DIR  默认 /home/deck/homebrew/plugins/DeckMeido
 #   DECK_SUDO_PASS   Deck 上的 sudo 密码（必须，脚本不内置密码）
 #   DECK_PORT        默认 18765
+#   DECK_BACKUP_KEEP 每类备份保留份数，默认 3
+#   DECK_BACKUP_MAX_MB 每类备份总量上限（MB），默认 200，超出删最旧
 set -euo pipefail
 
 HOST="${DECK_HOST:-deck@192.168.124.14}"
@@ -18,6 +20,10 @@ PLUGIN_REMOTE="${DECK_PLUGIN_DIR:-/home/deck/homebrew/plugins/DeckMeido}"
 PORT="${DECK_PORT:-18765}"
 SUDO_PASS="${DECK_SUDO_PASS:-}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 备份固定落在数据根的 userdata/backups/deploy/，不再往 /home/deck 根目录丢文件
+BACKUP_DIR="$REMOTE/userdata/backups/deploy"
+BACKUP_KEEP="${DECK_BACKUP_KEEP:-3}"
+BACKUP_MAX_MB="${DECK_BACKUP_MAX_MB:-200}"
 
 log() { printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 die() { printf '\n[失败] %s\n' "$*" >&2; exit 1; }
@@ -36,6 +42,46 @@ sudo_remote() {
   # 只用于固定命令，参数由调用方拼好；密码通过 stdin 传给 sudo -S
   ssh "$HOST" "echo '$SUDO_PASS' | sudo -S -p '' $1"
 }
+
+# ---------- 部署前备份 ----------
+# 每次部署前把当前 server/ client/ 打包一份到 userdata/backups/deploy/，
+# 备份完成后校验归档可读；再按「每类最近 N 份 + 单类总量上限」清理最旧的。
+log "备份现有 server/ client/ 到 $BACKUP_DIR"
+TS=$(date +%Y%m%d-%H%M%S)
+BACKUP_TAR="$BACKUP_DIR/DeckMeido-server-backup-$TS.tar.gz"
+ssh "$HOST" "mkdir -p $BACKUP_DIR" || die "创建备份目录失败"
+BACKUP_SRC="server client"
+if ssh "$HOST" "cd $REMOTE && [ -f VERSION ] && [ -f COMMIT ]"; then
+  BACKUP_SRC="server client VERSION COMMIT"
+fi
+ssh "$HOST" "cd $REMOTE && tar -czf $BACKUP_TAR $BACKUP_SRC" || die "备份失败"
+ssh "$HOST" "tar -tzf $BACKUP_TAR > /dev/null" || die "备份校验失败：归档不可读（$BACKUP_TAR）"
+BACKUP_SIZE=$(ssh "$HOST" "stat -c %s $BACKUP_TAR" || echo 0)
+printf '  %s（%s 字节，归档可读）\n' "$(basename "$BACKUP_TAR")" "$BACKUP_SIZE"
+
+# 保留策略：按 DeckMeido-<类>-backup-<时间戳>.tar.gz 分组，每组只留最近 N 份，
+# 总量超过上限就继续删最旧；永远保留每组最新的一份。
+ssh "$HOST" "python3 - '$BACKUP_DIR' '$BACKUP_KEEP' '$BACKUP_MAX_MB'" <<'PY' || printf '  保留策略执行失败（不影响本次部署）\n'
+import glob, os, re, sys
+d, keep, cap = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]) * 1024 * 1024
+pat = re.compile(r"^(.*-backup-)\d{8}-\d{6}\.tar\.gz$")
+groups = {}
+for p in glob.glob(os.path.join(d, "*.tar.gz")):
+    m = pat.match(os.path.basename(p))
+    if m:
+        groups.setdefault(m.group(1), []).append(p)
+for prefix, files in sorted(groups.items()):
+    files.sort(key=lambda p: (os.path.getmtime(p), p))
+    total = sum(os.path.getsize(p) for p in files)
+    count = len(files)
+    while count > 1 and (count > keep or total > cap):
+        p = files.pop(0)
+        size = os.path.getsize(p)
+        os.remove(p)
+        total -= size
+        count -= 1
+        print("  prune:", os.path.basename(p))
+PY
 
 # ---------- 1. 同步后端与客户端 ----------
 log "1/5 同步 server/ 与 client/ 到 $REMOTE"
