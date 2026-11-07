@@ -8,9 +8,12 @@
 还会把 sys.stdout / sys.stderr 包一层，保证 traceback、uvicorn 访问日志
 这些「顺手写出去」的内容也不会把凭据带进文件。
 
-轮转：单文件 10 MB，保留 2 个旧文件，总计约 30 MB。Deck 通常是 64 GB /
-256 GB 存储，30 MB 可以忽略；同时足够装下几轮带请求/响应正文的调试日志。
-超过上限自动丢最旧的，不会写满存储。
+轮转：单文件 5 MB，保留 2 个旧文件（.1 / .2），单个文件家族约 15 MB。
+Deck 通常是 64 GB / 256 GB 存储，15 MB 可以忽略；同时足够装下几轮带请求/响应
+正文的调试日志。超过上限自动丢最旧的，不会写满存储。
+debug-<时间>.log 由 RotatingFileHandler 自己轮转；backend.log / overlay.log /
+debug-client-*.log 由客户端进程写入（backend.log 的句柄一直开到客户端退出），
+服务端只做「拷贝成 .1 → 原地截断」，不 rename / 不 unlink。
 """
 from __future__ import annotations
 
@@ -18,16 +21,23 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
+import threading
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
-MAX_BYTES = 10 * 1024 * 1024
+MAX_BYTES = 5 * 1024 * 1024
 BACKUP_COUNT = 2
-# 单类日志的展示上限：debug 单文件 10 MB + 2 个轮转
+# 单类日志的展示上限：单文件 5 MB + 2 个轮转
 LOG_CAP = MAX_BYTES * (BACKUP_COUNT + 1)
+# 通用轮转的扫描间隔（秒）：backend.log 等文件由别的进程持有，
+# 只能轮询大小；10 分钟一次足够及时，也不会频繁扫盘
+ROTATE_INTERVAL = 600.0
+_ROTATE_LOCK = threading.Lock()
+_ROTATOR_STARTED = False
 # 正在被进程持有句柄的文件：只能 truncate，unlink 在 Linux 下看起来删了、
 # 实际空间不释放（fd 继续写已删除的 inode）
 _ACTIVE_NAMES = {"backend.log", "overlay.log"}
@@ -192,6 +202,8 @@ def configure(cfg: dict) -> None:
     if _ENABLED:
         _ensure_handler()
     _apply_levels(_ENABLED)
+    # 轮转与 dev_mode 无关：backend.log 等即使不写调试日志也会一直增长
+    start_rotator()
 
 
 def apply_levels() -> None:
@@ -278,6 +290,88 @@ def log_files(category: str = "all") -> list[Path]:
             continue
         out.append(p)
     return out
+
+
+# ---------- 通用日志轮转 ----------
+#
+# RotatingFileHandler 只覆盖当前 debug 文件。backend.log / overlay.log /
+# debug-client-*.log 由客户端进程写入，其中 backend.log 的句柄一直开到客户端退出；
+# 对这类文件 rename 后写入仍落在旧 inode（新文件看起来永远不增长），
+# 所以统一用「拷贝到 .N → 原地截断」，正在写的句柄会继续写到新的末尾。
+
+def _is_rotated_name(name: str) -> bool:
+    """带 .1/.2 轮转后缀的文件不再参与轮转"""
+    return bool(re.search(r"\.[1-9]\d*$", name))
+
+
+def _rotate_one(path: Path, keep: int = BACKUP_COUNT,
+                max_bytes: int = MAX_BYTES) -> bool:
+    """超过上限就轮转一份；返回是否发生轮转。
+
+    已有 .1 → .2、.2 → .3 … 逐级后移，最旧的丢弃；然后把当前内容拷成 .1，
+    最后原地截断。拷贝而不是 rename，是为了兼容还被客户端进程持有句柄的文件。
+    """
+    try:
+        if path.stat().st_size <= max_bytes:
+            return False
+    except OSError:
+        return False
+    try:
+        for idx in range(keep - 1, 0, -1):
+            src = path.with_name(f"{path.name}.{idx}")
+            dst = path.with_name(f"{path.name}.{idx + 1}")
+            if src.exists():
+                os.replace(src, dst)
+        shutil.copyfile(path, path.with_name(f"{path.name}.1"))
+        with open(path, "r+b") as f:
+            f.truncate(0)
+        return True
+    except Exception:
+        return False
+
+
+def rotate_logs() -> list[str]:
+    """扫一遍日志目录，把超限的 .log 轮转；返回实际轮转的文件名"""
+    rotated: list[str] = []
+    with _ROTATE_LOCK:
+        for p in log_files("all"):
+            if _is_rotated_name(p.name):
+                continue
+            # 当前 debug 文件由 RotatingFileHandler 自己管，别两套逻辑打架
+            if _HANDLER is not None:
+                try:
+                    if p.name == Path(_HANDLER.baseFilename).name:
+                        continue
+                except Exception:
+                    pass
+            if _rotate_one(p):
+                rotated.append(p.name)
+    if rotated:
+        _USAGE_CACHE.update({"ts": 0.0, "data": None})
+    return rotated
+
+
+def _rotator_loop() -> None:
+    while True:
+        try:
+            rotate_logs()
+        except Exception:
+            pass
+        time.sleep(ROTATE_INTERVAL)
+
+
+def start_rotator() -> None:
+    """启动后台轮转线程；重复调用无副作用"""
+    global _ROTATOR_STARTED
+    if _ROTATOR_STARTED:
+        return
+    _ROTATOR_STARTED = True
+    try:
+        t = threading.Thread(target=_rotator_loop, name="deckmeido-log-rotate",
+                             daemon=True)
+        t.start()
+    except Exception:
+        _ROTATOR_STARTED = False
 
 
 def _active_file_names(files: list[Path]) -> set[str]:
