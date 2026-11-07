@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -19,7 +20,8 @@ import tomllib
 import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QLibraryInfo, QObject, Qt, QThread, QTimer, QTranslator, QUrl, Signal
+from PySide6.QtCore import (QEvent, QLibraryInfo, QObject, QProcess, Qt, QThread,
+                            QTimer, QTranslator, QUrl, Signal)
 from PySide6.QtGui import QAction, QFont, QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (QApplication, QLabel, QMenu, QMessageBox, QSystemTrayIcon,
@@ -761,6 +763,163 @@ class RestartToast(QWidget):
         super().mousePressEvent(event)
 
 
+# 系统原生通知（freedesktop / Plasma），托盘「重启」优先走这条
+NOTIFY_SERVICE = "org.freedesktop.Notifications"
+NOTIFY_PATH = "/org/freedesktop/Notifications"
+
+
+def _notify_log(msg: str) -> None:
+    print(f"[DeckMeido] 重启通知：{msg}", file=sys.stderr)
+    _dev_log("restart.notify", msg=msg)
+
+
+class NativeRestartNotice(QObject):
+    """托盘「重启」的系统原生通知：开始一条、结束时同 id 替换成结果。
+
+    为什么不用 QtDBus：Notify / CloseNotification 的 id 是 uint32，PySide6 6.x
+    没有 QVariant，Python int 会被编码成 int32，Plasma 直接回
+    "No such method 'Notify' ... (signature '…i')"。gdbus 按接口内省签名编参，
+    这里用子进程调它，Deck（glib2）自带，不引入新依赖。
+
+    与应用内卡片的对应关系（两条路径不会同时出现）：
+    - 开始：发「正在重启」一条，超时 12s；秒数只写托盘 tooltip，不刷通知；
+    - 成功：同 id 替换成「已重启」，3s 自动消失（对应卡片「0.9 秒关闭」，
+      随后照旧 1.1 秒退出进程）；
+    - 失败：同 id 替换成失败原因，timeout=0 + urgency=critical（常驻），
+      带 default 动作，点击通知或托盘菜单的「重启失败详情」看完整原因；
+    - 超时：同 id 替换成「仍在重启」，常驻等人看；
+    - 发不出去（没有通知服务 / D-Bus 不可用 / gdbus 不存在）：start() 返回
+      False，由调用方回退应用内 RestartToast，并已记日志。
+    """
+
+    clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._id = 0
+        self._detail = ""
+        self._monitor = None
+        self._buf = ""
+        self._keep = False
+
+    @staticmethod
+    def _call(method: str, args: list, timeout: float = 4.0) -> str | None:
+        cmd = ["gdbus", "call", "--session", "--dest", NOTIFY_SERVICE,
+               "--object-path", NOTIFY_PATH, "--method", NOTIFY_SERVICE + "." + method,
+               *[str(a) for a in args]]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except Exception as exc:
+            _notify_log(f"{method} 调用失败：{exc!r}")
+            return None
+        if proc.returncode != 0:
+            reason = (proc.stderr or proc.stdout or "").strip().replace("\n", " ")
+            _notify_log(f"{method} 失败：{reason[:200]}")
+            return None
+        return proc.stdout.strip()
+
+    def _notify(self, summary: str, body: str, expire_ms: int, urgency: int,
+                with_detail: bool) -> int | None:
+        actions = "['default','查看详情']" if with_detail else "[]"
+        out = self._call("Notify", [
+            "DeckMeido", self._id, "", summary, body, actions,
+            "{'urgency': <byte %d>}" % urgency, expire_ms,
+        ])
+        if out is None:
+            return None
+        m = re.search(r"uint32\s+(\d+)", out)
+        if not m:
+            _notify_log(f"解析通知 id 失败：{out[:120]}")
+            return None
+        return int(m.group(1))
+
+    def _start_monitor(self) -> None:
+        """监听 ActionInvoked，点通知能看详情；只在原生通知期间跑"""
+        if self._monitor is not None:
+            return
+        proc = QProcess(self)
+        proc.setProgram("gdbus")
+        proc.setArguments(["monitor", "--session", "--dest", NOTIFY_SERVICE,
+                           "--object-path", NOTIFY_PATH])
+        proc.readyReadStandardOutput.connect(self._read_monitor)
+        proc.start()
+        self._monitor = proc
+
+    def _read_monitor(self) -> None:
+        if self._monitor is None:
+            return
+        self._buf += self._monitor.readAllStandardOutput().data().decode("utf-8", "replace")
+        lines = self._buf.split("\n")
+        self._buf = lines.pop()
+        for line in lines:
+            m = re.search(r"ActionInvoked \(uint32 (\d+), '([^']*)'\)", line)
+            if not m or not self._id:
+                continue
+            if int(m.group(1)) == self._id and m.group(2) == "default":
+                self.clicked.emit()
+
+    def start(self) -> bool:
+        nid = self._notify("正在重启 DeckMeido",
+                           "客户端与核心正在重启，请稍候…", 12000, 1, False)
+        if nid is None:
+            _notify_log("原生通知发不出去，回退应用内提示卡")
+            return False
+        self._id = nid
+        self._keep = False
+        self._detail = ""
+        self._start_monitor()
+        _notify_log(f"开始通知已发出 id={nid}")
+        return True
+
+    def success(self) -> bool:
+        if not self._id:
+            return False
+        nid = self._notify("DeckMeido 已重启",
+                           "客户端与核心已重启，正在拉起新客户端…", 3000, 1, False)
+        if nid is None:
+            _notify_log("成功结果没发出去，改回应用内提示")
+            return False
+        self._id = nid
+        self._keep = True   # 进程马上退出，别把这条成功通知一起关掉
+        _notify_log(f"成功结果已替换 id={nid}")
+        return True
+
+    def fail(self, detail: str) -> bool:
+        if not self._id:
+            return False
+        self._detail = str(detail)
+        body = self._detail if len(self._detail) <= 200 else self._detail[:200] + "…"
+        nid = self._notify("重启失败", body + "\n点击通知查看详情", 0, 2, True)
+        if nid is None:
+            _notify_log("失败结果没发出去，改回应用内提示")
+            return False
+        self._id = nid
+        _notify_log(f"失败结果已替换 id={nid}（常驻，可点开详情）")
+        return True
+
+    def overdue(self) -> None:
+        if not self._id:
+            return
+        nid = self._notify("仍在重启 DeckMeido", "已超过预计时间，正在等待结果…", 0, 1, False)
+        if nid is not None:
+            self._id = nid
+            _notify_log(f"超时提示已替换 id={nid}")
+        else:
+            _notify_log("超时提示没发出去，继续等结果")
+
+    def detail(self) -> str:
+        return self._detail
+
+    def stop(self) -> None:
+        if self._monitor is not None:
+            self._monitor.kill()
+            self._monitor.waitForFinished(1000)
+            self._monitor = None
+        if self._id and not self._keep:
+            self._call("CloseNotification", [self._id])
+        self._id = 0
+
+
 def main() -> int:
     _enable_crash_log()
     _dev_log("client.start", argv=sys.argv, cwd=os.getcwd(), pid=os.getpid(),
@@ -999,7 +1158,7 @@ def main() -> int:
         # watchdog 重拉的后端同样是我们 spawn 的，退出时要一并收走
         _STARTED_BACKEND = backend["proc"]
 
-    restart_state = {"running": False}
+    restart_state = {"running": False, "native": False}
 
     def _terminate_work():
         """终止当前这一轮：复用后端 /api/cancel（取消对话任务 + 砍登记的子进程树）"""
@@ -1085,6 +1244,31 @@ def main() -> int:
     restart_toast = RestartToast()
     app.aboutToQuit.connect(restart_toast.close)
 
+    restart_notice = NativeRestartNotice()
+    app.aboutToQuit.connect(restart_notice.stop)
+    restart_tip = {"left": 0}
+
+    def _restart_tip_tick() -> None:
+        restart_tip["left"] -= 1
+        if restart_tip["left"] <= 0:
+            tip_timer.stop()
+            tray.setToolTip("DeckMeido · 重启中（已超过预计时间）")
+            restart_notice.overdue()
+            return
+        tray.setToolTip(f"DeckMeido · 重启中，剩余 {restart_tip['left']} 秒")
+
+    tip_timer = QTimer(app)
+    tip_timer.setInterval(1000)
+    tip_timer.timeout.connect(_restart_tip_tick)
+
+    def show_restart_detail() -> None:
+        """点原生通知或托盘菜单都落到这里：把完整失败原因摊开"""
+        text = restart_notice.detail() or "没有可显示的重启失败原因。"
+        QMessageBox.information(None, "重启失败详情",
+                                f"{text}\n\n后端日志：{BACKEND_LOG}")
+
+    restart_notice.clicked.connect(show_restart_detail)
+
     def report_restart(result) -> None:
         global _STARTED_BACKEND
         if isinstance(result, Exception):
@@ -1137,26 +1321,44 @@ def main() -> int:
         finally:
             restart_state["running"] = False
 
+    def _restart_tip_reset() -> None:
+        tip_timer.stop()
+        tray.setToolTip("DeckMeido")
+
+    def _restart_failed(detail: str) -> None:
+        act_restart.setEnabled(True)
+        act_restart_detail.setVisible(True)
+        tray.setToolTip(f"DeckMeido · 重启失败：{detail[:60]}")
+        # 原生通知能替换就替换（常驻 + 可点详情）；替换失败才退回应用内卡片
+        if restart_state["native"] and restart_notice.fail(detail):
+            return
+        restart_notice.stop()
+        restart_toast.finish_failure(detail)
+
     def report_restart_client(result) -> None:
         global _restart_requested
         act_restart.setText("重启")
+        _restart_tip_reset()
         # 用户在这几秒里又点了「退出」：以退出为准，不再拉起任何新实例
         if _quitting:
+            restart_notice.stop()
             restart_toast.close()
             return
         if isinstance(result, Exception):
-            act_restart.setEnabled(True)
-            restart_toast.finish_failure(str(result))
+            _restart_failed(str(result))
             return
         try:
             _schedule_relaunch()
         except Exception as exc:
-            act_restart.setEnabled(True)
-            restart_toast.finish_failure(str(exc))
+            _restart_failed(str(exc))
             return
         _restart_requested = True
-        # 成功路径：倒计时提示转成结果并自动关闭，再走正常退出流程
-        restart_toast.finish_success()
+        # 成功路径：原生通知同 id 换成「已重启」，3 秒自动消失后就该退出进程了
+        # （对应旧卡片「0.9 秒自动关闭」；语义不变，只是载体换成了系统通知）
+        if restart_state["native"] and restart_notice.success():
+            pass
+        else:
+            restart_toast.finish_success()
         QTimer.singleShot(1100, app.quit)
 
     def restart_client() -> None:
@@ -1164,8 +1366,16 @@ def main() -> int:
             return
         act_restart.setEnabled(False)
         act_restart.setText("重启中…")
+        act_restart_detail.setVisible(False)
         # 倒计时从真正开始重启时起算：预算 = 等核心退出 8s + 退出/拉起 1s
-        restart_toast.start(RESTART_BUDGET_SEC)
+        restart_state["native"] = restart_notice.start()
+        if restart_state["native"]:
+            # 秒数只在托盘 tooltip 里走，不每秒刷系统通知
+            restart_tip["left"] = RESTART_BUDGET_SEC
+            tray.setToolTip(f"DeckMeido · 重启中，剩余 {RESTART_BUDGET_SEC} 秒")
+            tip_timer.start()
+        else:
+            restart_toast.start(RESTART_BUDGET_SEC)
         run_worker(_restart_client_work, report_restart_client, app)
 
     # 托盘菜单顺序固定：终止 → 显示 → 重启 → 退出
@@ -1177,12 +1387,17 @@ def main() -> int:
     act_restart = QAction("重启", menu)
     act_restart.setToolTip("重启客户端与核心")
     act_restart.triggered.connect(restart_client)
+    # 只在重启失败后出现在托盘菜单里：点它等于点失败通知，看完整原因
+    act_restart_detail = QAction("重启失败详情…", menu)
+    act_restart_detail.setVisible(False)
+    act_restart_detail.triggered.connect(show_restart_detail)
     act_quit = QAction("退出", menu)
     act_quit.triggered.connect(app.quit)
     menu.addAction(act_terminate)
     menu.addSeparator()
     menu.addAction(act_show)
     menu.addAction(act_restart)
+    menu.addAction(act_restart_detail)
     menu.addSeparator()
     menu.addAction(act_quit)
     tray.setContextMenu(menu)
