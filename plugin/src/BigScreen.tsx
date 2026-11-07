@@ -6,7 +6,7 @@ import {
   Navigation,
   showModal,
 } from "@decky/ui";
-import { ACCENT, DIM, ERR_COLOR, ImeTextArea, ImeTextField, Md, TEXT } from "./ui";
+import { ACCENT, DIM, ERR_COLOR, ImeTextArea, ImeTextField, Md, MessageContent, TEXT } from "./ui";
 import { statusLineFor } from "./statusLine";
 import { bumpOnce, stepTab } from "./tabNav";
 import { Item, useSession } from "./useSession";
@@ -212,20 +212,21 @@ function StatRow({
 
 function MessageBubble({
   mine,
+  item,
   text,
-  image,
   streaming,
 }: {
   mine?: boolean;
-  text: string;
-  image?: string;
+  item?: Item;
+  text?: string;
   streaming?: boolean;
 }) {
+  const system = item?.role === "system";
   return (
     <div
       style={{
         display: "flex",
-        justifyContent: mine ? "flex-end" : "flex-start",
+        justifyContent: system ? "center" : mine ? "flex-end" : "flex-start",
         width: "100%",
         minWidth: 0,
       }}
@@ -237,11 +238,23 @@ function MessageBubble({
           // 短行消息右侧就留一大块空白（截图里接收方气泡右边空的来源）
           width: "fit-content",
           minWidth: 0,
-          padding: "8px 12px",
+          padding: system ? "2px 8px" : "8px 12px",
           borderRadius: 4,
-          background: mine ? "rgba(90,169,230,.16)" : "rgba(255,255,255,.06)",
-          borderLeft: mine ? "3px solid transparent" : `3px solid ${ACCENT}`,
-          borderRight: mine ? `3px solid ${ACCENT}` : "3px solid transparent",
+          background: system
+            ? "transparent"
+            : mine
+              ? "rgba(90,169,230,.16)"
+              : "rgba(255,255,255,.06)",
+          borderLeft: system
+            ? "none"
+            : mine
+              ? "3px solid transparent"
+              : `3px solid ${ACCENT}`,
+          borderRight: system
+            ? "none"
+            : mine
+              ? `3px solid ${ACCENT}`
+              : "3px solid transparent",
           boxSizing: "border-box",
           whiteSpace: "pre-wrap",
           wordBreak: "break-word",
@@ -249,26 +262,15 @@ function MessageBubble({
           // 正文字号/行高挂在这里：Md 的段落 div 不设字号，靠继承拿到
           fontSize: CHAT_FONT,
           lineHeight: CHAT_LH,
+          color: system ? DIM : undefined,
+          textAlign: system ? "center" : undefined,
         }}
       >
-        {image && (
-          <img
-            src={image}
-            style={{
-              display: "block",
-              // 图片按自身缩放上限定宽：百分比会反过来撑大 fit-content 气泡，
-              // 带图消息右边就留一大块空白
-              maxWidth: 420,
-              maxHeight: 256,
-              width: "auto",
-              height: "auto",
-              objectFit: "contain",
-              marginBottom: text ? 8 : 0,
-              borderRadius: 4,
-            }}
-          />
+        {item ? (
+          <MessageContent item={item} size={CHAT_FONT} align={mine ? "right" : "left"} />
+        ) : (
+          <Md text={text ?? ""} align={mine ? "right" : "left"} size={CHAT_FONT} />
         )}
-        <Md text={text} align={mine ? "right" : "left"} size={CHAT_FONT} />
         {streaming && <span style={{ color: DIM }}>▍</span>}
       </div>
     </div>
@@ -387,12 +389,7 @@ function ChatLog({
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
         {items.map((m, i) => (
-          <MessageBubble
-            key={`${m.ts}-${i}`}
-            mine={m.role === "user"}
-            text={m.text}
-            image={m.image}
-          />
+          <MessageBubble key={`${m.ts}-${i}`} mine={m.role === "user"} item={m} />
         ))}
         {streaming && <MessageBubble text={streaming} streaming />}
         {busy && !streaming && <MessageBubble text={`思考中…（${elapsed}s）`} />}

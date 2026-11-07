@@ -10,7 +10,7 @@ import {
   TextField,
   ToggleField,
 } from "@decky/ui";
-import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, TEXT, copyText } from "./ui";
+import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, MessageContent, TEXT, copyText } from "./ui";
 import { statusLineFor } from "./statusLine";
 import { bumpOnce, stepTab } from "./tabNav";
 import { applyPadOrder, steamClient } from "./padOrder";
@@ -238,20 +238,21 @@ function StatCell({ label, value }: { label: string; value: React.ReactNode }) {
 
 function Bubble({
   mine,
+  item,
   text,
-  image,
   streaming,
 }: {
   mine?: boolean;
-  text: string;
-  image?: string;
+  item?: Item;
+  text?: string;
   streaming?: boolean;
 }) {
+  const system = item?.role === "system";
   return (
     <div
       style={{
         display: "flex",
-        justifyContent: mine ? "flex-end" : "flex-start",
+        justifyContent: system ? "center" : mine ? "flex-end" : "flex-start",
         width: "100%",
         minWidth: 0,
       }}
@@ -259,38 +260,41 @@ function Bubble({
       <div
         style={{
           maxWidth: "100%",
-          // 有图时吃满整行（百分比宽度会把 fit-content 撑大），纯文字按内容收缩
-          width: image ? "100%" : "fit-content",
+          // 有图/事件时吃满整行（百分比宽度会把 fit-content 撑大），纯文字按内容收缩
+          width: system ? "100%" : item?.image ? "100%" : "fit-content",
           minWidth: 0,
-          padding: "6px 8px",
+          padding: system ? "2px 6px" : "6px 8px",
           borderRadius: 4,
-          background: mine ? "rgba(90,169,230,.16)" : "rgba(255,255,255,.06)",
-          borderLeft: mine ? "2px solid transparent" : `2px solid ${ACCENT}`,
-          borderRight: mine ? `2px solid ${ACCENT}` : "2px solid transparent",
+          background: system
+            ? "transparent"
+            : mine
+              ? "rgba(90,169,230,.16)"
+              : "rgba(255,255,255,.06)",
+          borderLeft: system
+            ? "none"
+            : mine
+              ? "2px solid transparent"
+              : `2px solid ${ACCENT}`,
+          borderRight: system
+            ? "none"
+            : mine
+              ? `2px solid ${ACCENT}`
+              : "2px solid transparent",
           boxSizing: "border-box",
           whiteSpace: "pre-wrap",
           wordBreak: "break-word",
           overflowWrap: "anywhere",
           fontSize: 12,
           lineHeight: 1.5,
+          color: system ? DIM : undefined,
+          textAlign: system ? "center" : undefined,
         }}
       >
-        {image && (
-          <img
-            src={image}
-            style={{
-              display: "block",
-              maxWidth: "100%",
-              maxHeight: 180,
-              width: "auto",
-              height: "auto",
-              objectFit: "contain",
-              marginBottom: text ? 6 : 0,
-              borderRadius: 4,
-            }}
-          />
+        {item ? (
+          <MessageContent item={item} size={12} align={mine ? "right" : "left"} />
+        ) : (
+          <Md text={text ?? ""} align={mine ? "right" : "left"} size={12} />
         )}
-        <Md text={text} align={mine ? "right" : "left"} size={12} />
         {streaming && <span style={{ color: DIM }}>▍</span>}
       </div>
     </div>
@@ -332,7 +336,7 @@ function ChatLog({
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
         {items.map((m, i) => (
-          <Bubble key={`${m.ts}-${i}`} mine={m.role === "user"} text={m.text} image={m.image} />
+          <Bubble key={`${m.ts}-${i}`} mine={m.role === "user"} item={m} />
         ))}
         {streaming && <Bubble text={streaming} streaming />}
         {busy && !streaming && <Bubble text={`思考中…（${elapsed}s）`} />}

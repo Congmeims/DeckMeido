@@ -107,12 +107,41 @@ export type PairedDevice = {
   last_seen: number;
 };
 
+/** 一轮里发生过的过程事件，字段与后端 events 对齐（见 server/main.py） */
+export type ChatEvent =
+  | { type: "thought"; text: string }
+  | { type: "text"; text: string }
+  | { type: "ask"; question: string; options?: string[] }
+  | {
+      type: "tool";
+      name?: string;
+      label?: string;
+      summary?: string;
+      output?: string;
+      error?: string;
+      reason?: string;
+      denied?: boolean;
+      approved?: boolean;
+      files?: string[];
+      diff?: { add?: number; del?: number };
+      path?: string;
+      image?: string;
+    };
+
+/** TTS 留档：url 只指向本机后端，seconds/speaker 来自 metadata */
+export type ChatVoice = { url: string; seconds?: number; speaker?: string };
+
 export type Item = {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   text: string;
   client: string;
   ts: number;
   image?: string;
+  device?: string;
+  events?: ChatEvent[];
+  voice?: ChatVoice;
+  /** 本机后端地址（http://127.0.0.1:port），用于把 /files、/uploads 相对路径补全 */
+  base?: string;
 };
 
 export type Delta =

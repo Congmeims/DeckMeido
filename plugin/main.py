@@ -27,7 +27,7 @@ import threading
 import time
 import tomllib
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import decky
 
@@ -1467,20 +1467,177 @@ def _push_thread(item: dict):
     _emit({"kind": "thread", "items": _THREAD})
 
 
+# 面板上能展开的过程事件最多留这么多条，再多只会把 QAM 的滚动拖卡
+_MAX_EVENTS = 40
+_MAX_EVENT_TEXT = 6000
+_MAX_TOOL_OUTPUT = 4000
+
+# 只允许回环地址：模型/外部消息里出现的图片、音频不能把面板指到外网去
+_LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
+# 这些前缀是后端自己的静态资源，直接拼回环前缀即可
+_STATIC_PREFIXES = ("/shots/", "/uploads/", "/files/", "/api/")
+
+
+def _local_base() -> str:
+    """后端在本机的回环地址；前端用它补全 /files、/uploads 这类相对路径"""
+    return f"http://127.0.0.1:{int(_load_server_cfg().get('port', 18765))}"
+
+
+def _media_url(raw: str) -> str:
+    """把后端给的资源地址归一成回环 URL，外站地址直接丢掉"""
+    s = str(raw or "").strip()
+    if not s or s.startswith("//"):
+        return ""
+    if s.startswith("/"):
+        return _local_base() + s
+    try:
+        u = urlsplit(s)
+    except Exception:
+        return ""
+    if u.scheme not in ("http", "https"):
+        return ""
+    if (u.hostname or "").lower() not in _LOCAL_HOSTS:
+        return ""
+    return s
+
+
 def _shot_url(path: str) -> str:
     """把截图路径拼成面板能直接加载的地址
 
     后端给的 /shots/xxx 走回环；插件自己截的那张在 /tmp 下，交给后端落盘以后
-    才会有 /shots/ 的地址。所以这里两种都认：以 / 开头的当后端静态路径，
-    其余的当本机文件路径。回环访问免鉴权，不再携带令牌。
+    才会有 /shots/ 的地址。所以这里两种都认：静态前缀当后端资源，其余当本机
+    文件路径交给 /shots/local。回环访问免鉴权，不再携带令牌。
     """
-    if not path:
+    s = str(path or "").strip()
+    if not s:
         return ""
-    cfg = _load_server_cfg()
-    port = int(cfg.get("port", 18765))
-    if path.startswith("/"):
-        return f"http://127.0.0.1:{port}{path}"
-    return f"http://127.0.0.1:{port}/shots/local?path={quote(path)}"
+    if s.startswith(_STATIC_PREFIXES):
+        return _local_base() + s
+    if s.startswith(("http://", "https://")):
+        return _media_url(s)
+    if s.startswith("/"):
+        return f"{_local_base()}/shots/local?path={quote(s)}"
+    return ""
+
+
+def _voice_item(raw) -> dict | None:
+    """语音元数据 → 前端语音条；地址只认本机后端"""
+    if not isinstance(raw, dict):
+        return None
+    url = _media_url(str(raw.get("url") or ""))
+    if not url:
+        return None
+    try:
+        seconds = float(raw.get("seconds") or 0)
+    except (TypeError, ValueError):
+        seconds = 0.0
+    speaker = str(raw.get("speaker") or "").strip()[:40]
+    return {"url": url, "seconds": round(seconds, 1), "speaker": speaker}
+
+
+def _tool_event(ev: dict) -> dict:
+    """工具事件收敛成前端会用到的那几个字段（长输出截断，图片走回环）"""
+    out: dict = {"type": "tool"}
+    for key, limit in (("name", 60), ("label", 80), ("summary", 400),
+                       ("path", 400), ("error", 600), ("reason", 600)):
+        val = str(ev.get(key) or "").strip()
+        if val:
+            out[key] = val[:limit]
+    if ev.get("output"):
+        text = str(ev["output"])
+        out["output"] = text[:_MAX_TOOL_OUTPUT]
+    if ev.get("approved"):
+        out["approved"] = True
+    if ev.get("denied"):
+        out["denied"] = True
+    image = _shot_url(str(ev.get("image") or "")) if ev.get("image") else ""
+    if image:
+        out["image"] = image
+    diff = ev.get("diff")
+    if isinstance(diff, dict):
+        try:
+            out["diff"] = {"add": int(diff.get("add") or 0),
+                           "del": int(diff.get("del") or 0)}
+        except (TypeError, ValueError):
+            pass
+    files = [str(f)[:300] for f in (ev.get("files") or []) if str(f).strip()][:10]
+    if files:
+        out["files"] = files
+    return out
+
+
+def _event_items(raw, role: str) -> list[dict]:
+    """历史/实时 events → 前端事件列表（体积封顶，未知类型丢掉）"""
+    out: list[dict] = []
+    for ev in raw or []:
+        if not isinstance(ev, dict):
+            continue
+        typ = str(ev.get("type") or "")
+        # 提问者自己附带的画面挂在 item.image 上，不再走助手侧时间线
+        if typ == "screenshot" and role == "user":
+            continue
+        if typ == "thought":
+            text = str(ev.get("text") or "").strip()
+            if text:
+                out.append({"type": "thought", "text": text[:_MAX_EVENT_TEXT]})
+        elif typ == "text":
+            text = str(ev.get("text") or "").strip()
+            if text:
+                out.append({"type": "text", "text": text[:_MAX_EVENT_TEXT]})
+        elif typ == "ask":
+            question = str(ev.get("question") or "").strip()
+            if question:
+                options = [str(o)[:200] for o in (ev.get("options") or [])
+                           if str(o).strip()][:6]
+                out.append({"type": "ask", "question": question[:2000],
+                            "options": options})
+        elif typ in ("tool", "screenshot"):
+            # 截图事件的 type 与工具不同，但前端统一按工具行展示（缩略图 + 折叠）
+            tool_ev = ev if typ == "tool" else {**ev, "type": "tool",
+                   "name": str(ev.get("name") or "screenshot")}
+            out.append(_tool_event(tool_ev))
+        if len(out) >= _MAX_EVENTS:
+            break
+    return out
+
+
+def _thread_item(m: dict, base: str) -> dict | None:
+    """后端的一条历史/广播消息 → 面板 Item（保留 events/voice/device）"""
+    if not isinstance(m, dict):
+        return None
+    role = str(m.get("role") or "")
+    if role not in ("user", "assistant"):
+        return None
+    content = m.get("content")
+    # 随图那条多模态消息（content 是数组）不进面板，画面由 events 里的路径显示
+    if isinstance(content, list):
+        return None
+    item: dict = {
+        "role": role,
+        # brief 是界面专用的短文案（截屏询问那套提示词一百多字，长显会把面板撑开）
+        "text": str(m.get("brief") or content or ""),
+        "client": str(m.get("client") or ""),
+        "ts": float(m.get("ts") or 0),
+        "base": base,
+    }
+    device = str(m.get("device") or "")
+    if device:
+        item["device"] = device
+    events = _event_items(m.get("events"), role)
+    if events:
+        item["events"] = events
+    if role == "user":
+        # 兼容旧渲染：用户气泡顶部单独放一张随提问的画面
+        for ev in m.get("events") or []:
+            if isinstance(ev, dict) and ev.get("image"):
+                image = _shot_url(str(ev["image"]))
+                if image:
+                    item["image"] = image
+                break
+    voice = _voice_item(m.get("voice"))
+    if voice:
+        item["voice"] = voice
+    return item
 
 
 def _sync_thread(hist: list):
@@ -1489,26 +1646,12 @@ def _sync_thread(hist: list):
     只看文本消息：随图那条多模态消息（content 是数组）不进面板，
     它的画面由挂在 user 消息 events 里的路径显示。
     """
+    base = _local_base()
     out = []
     for m in hist:
-        if not isinstance(m, dict) or m.get("role") not in ("user", "assistant"):
-            continue
-        content = m.get("content")
-        if isinstance(content, list):
-            continue
-        image = ""
-        for ev in m.get("events") or []:
-            if isinstance(ev, dict) and ev.get("image"):
-                image = _shot_url(str(ev["image"]))
-                break
-        out.append({
-            "role": m["role"],
-            # brief 是界面专用的短文案（截屏询问那套提示词一百多字，长显会把面板撑开）
-            "text": str(m.get("brief") or content or ""),
-            "client": str(m.get("client") or ""),
-            "ts": float(m.get("ts") or 0),
-            **({"image": image} if image else {}),
-        })
+        item = _thread_item(m, base)
+        if item is not None:
+            out.append(item)
     _THREAD[:] = out[-_THREAD_MAX:]
     _emit({"kind": "thread", "items": _THREAD})
 
@@ -1665,37 +1808,64 @@ async def _read_loop(bk: _Backend):
             _emit({"kind": "pad_order", "action": act})
             continue
         if typ == "user_message":
-            item = {
+            item = _thread_item({
                 "role": "user",
                 # 带 brief 的那一轮（截屏询问）只显示短文案：
                 # 一百多字的提示词长显会把面板撑开
-                "text": str(msg.get("brief") or msg.get("text") or ""),
-                "client": str(msg.get("client") or ""),
-                "ts": float(msg.get("ts") or 0),
-            }
-            # 截屏询问附带的画面：后端已存成 /shots/xxx 并挂在 events 上
-            for ev in msg.get("events") or []:
-                if isinstance(ev, dict) and ev.get("image"):
-                    item["image"] = _shot_url(str(ev["image"]))
-                    break
+                "text": msg.get("text"),
+                "brief": msg.get("brief"),
+                "events": msg.get("events"),
+                "client": msg.get("client"),
+                "device": msg.get("device"),
+                "ts": msg.get("ts"),
+            }, _local_base())
+            if item is None:
+                continue
             # 后端那条广播里带不出图（落盘失败）时，若这一轮就是本机刚截的那张，
             # 用本地那份顶上：面板上总得有一张能看到的画面
-            if not item.get("image") and item["client"] == "qam":
+            if not item.get("image") and item.get("client") == "qam":
                 local = _TURN_SHOT_PATH or _LAST_SHOT_PATH
                 if local:
                     item["image"] = _shot_url(local)
             _push_thread(item)
             continue
+        if typ == "voice_added":
+            # TTS 生成完才广播元数据；按时间戳挂回面板里的那条助手消息
+            voice = _voice_item(msg.get("voice"))
+            ts = float(msg.get("ts") or 0)
+            if voice and ts:
+                for m in reversed(_THREAD):
+                    if m.get("role") == "assistant" and abs(float(m.get("ts") or 0) - ts) < 1e-6:
+                        m["voice"] = voice
+                        _emit({"kind": "thread", "items": _THREAD})
+                        break
+            continue
+        if typ == "system":
+            # 系统提示（连接恢复、操作完成之类）：居中的一行弱化文字，不进历史
+            text = str(msg.get("text") or "").strip()
+            if text:
+                _push_thread({
+                    "role": "system",
+                    "text": text,
+                    "client": "",
+                    "ts": float(msg.get("ts") or 0),
+                    "base": _local_base(),
+                })
+            continue
         if typ == "assistant_message":
             # 助手消息现在也带来源（后端按同一轮的提问打标）；老数据没有这个字段，
             # 退回「最近一条 user 的 client」来归户
             text = str(msg.get("text") or "")
-            _push_thread({
+            item = _thread_item({
                 "role": "assistant",
                 "text": text,
-                "client": str(msg.get("client") or _nearby_client()),
-                "ts": float(msg.get("ts") or 0),
-            })
+                "events": msg.get("events"),
+                "client": msg.get("client") or _nearby_client(),
+                "voice": msg.get("voice"),
+                "ts": msg.get("ts"),
+            }, _local_base())
+            if item is not None:
+                _push_thread(item)
             if not mine:
                 continue
             if msg.get("cancelled"):
