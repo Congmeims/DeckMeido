@@ -780,16 +780,14 @@ def _make_thumb(src: Path, width: int = 480) -> str:
 def _backend_log_fd() -> int:
     """后端 stdout/stderr 的去处：和客户端一样写 backend.log，不丢
 
-    以前插件拉起后端只能 DEVNULL，崩了连 traceback 都没有；这里照
-    client/main.py 的做法留一代备份，超过 5MB 就滚动。
+    这里只追加一行启动标记；轮转由后端自己的 devlog 负责（5 MB、保留 2 代），
+    插件不再单独生成 .1，避免和客户端 / 服务端两套轮转互相覆盖。
     """
     log = _data_dir() / "logs" / "backend.log"
     _restore_owner()
     try:
         log.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(log.parent, 0o700)
-        if log.exists() and log.stat().st_size > 5 * 1024 * 1024:
-            os.replace(log, log.with_name("backend.log.1"))
         fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         if os.getuid() == 0:
             # 插件是 root，日志要交给 deck，客户端下次追加时才写得动

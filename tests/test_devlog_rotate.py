@@ -13,6 +13,7 @@ from server import devlog
 KB = 1024
 MAX_BYTES = devlog.MAX_BYTES
 KEEP = devlog.BACKUP_COUNT
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class LogRotateTest(unittest.TestCase):
@@ -51,7 +52,7 @@ class LogRotateTest(unittest.TestCase):
         self.assertEqual(devlog.rotate_logs(), ["backend.log"])
 
         self.assertEqual(self._size("backend.log"), 0)      # 原地截断，句柄继续可写
-        self.assertEqual(self._size("backend.log.1"), 6000)  # 新快照
+        self.assertEqual(self._size("backend.log.1"), MAX_BYTES // KB)  # 截到上限
         self.assertEqual(self._size("backend.log.2"), 2000)  # 旧 .1 后移
         self.assertFalse((self.logs / "backend.log.3").exists())
 
@@ -75,6 +76,35 @@ class LogRotateTest(unittest.TestCase):
         self.assertEqual(devlog.rotate_logs(), [])
         self.assertEqual([p.name for p in self.logs.iterdir()],
                          ["debug-20260101-120000.log.1"])
+
+    def test_family_capped_across_repeated_rotations(self):
+        """每次轮转前都涨到 9 MB：.1/.2 仍封顶在 5 MB，家族不超 15 MB"""
+        for _ in range(6):
+            self._write("backend.log", 9000)
+            self.assertEqual(devlog.rotate_logs(), ["backend.log"])
+
+        names = sorted(p.name for p in self.logs.iterdir())
+        self.assertEqual(names, ["backend.log", "backend.log.1", "backend.log.2"])
+        self.assertEqual(self._size("backend.log.1"), MAX_BYTES // KB)
+        family = sum(p.stat().st_size for p in self.logs.iterdir())
+        self.assertLessEqual(family, MAX_BYTES * (KEEP + 1))
+
+    def test_repeated_starts_append_without_creating_backup(self):
+        """客户端/插件多次拉起后端：只追加启动标记，不产生 .1"""
+        for _ in range(5):
+            with open(self.logs / "backend.log", "ab") as f:
+                f.write(b"===== backend start =====\n" + b"x" * (3 * KB))
+        self.assertFalse((self.logs / "backend.log.1").exists())
+
+    def test_client_and_plugin_only_append_marker(self):
+        """轮转只有一个来源：两个入口不得再搬运/替换 backend.log"""
+        for rel, append_call in (("client/main.py", 'open(BACKEND_LOG, "ab"'),
+                                 ("plugin/main.py", "os.O_APPEND")):
+            src = (ROOT / rel).read_text(encoding="utf-8")
+            self.assertIn(append_call, src)
+            self.assertNotIn("backend.log.1", src)
+            self.assertNotIn("os.replace(log", src)
+            self.assertNotIn("os.replace(BACKEND_LOG", src)
 
     def test_usage_and_clear_cover_numbered_files(self):
         self._write("debug-20260101-120000.log", 10)

@@ -90,7 +90,6 @@ WINDOW_W, WINDOW_H = 1240, 760
 _DATA_DIR = _resolve_data_dir()
 # 运行期文件统一放数据根：代码目录升级时会被整份覆盖，日志不能放在那里
 BACKEND_LOG = _DATA_DIR / "logs" / "backend.log"
-_BACKEND_LOG_MAX = 5 * 1024 * 1024   # 5 MB，只留一代 backend.log.1
 _log_handle = None
 
 # 插件大屏页「关闭核心」留下的标记：存在时 watchdog 不自动重拉，保证
@@ -295,6 +294,8 @@ def _backend_log_fd():
     以前一律 DEVNULL，后端一崩连一行 traceback 都留不下——12:52 那次
     崩溃到现在都查不出死因，就是因为证据被自己丢掉了。
     句柄在父进程里持有到退出为止，避免每次 Popen 漏一个 fd。
+    轮转完全交给后端自己的 devlog（5 MB、保留 2 代）：这里只追加一行启动
+    标记，不搬运 / 不替换 backend.log，免得两套逻辑互相覆盖备份。
     """
     global _log_handle
     if _log_handle is not None:
@@ -305,8 +306,6 @@ def _backend_log_fd():
             BACKEND_LOG.parent.chmod(0o700)
         except OSError:
             pass
-        if BACKEND_LOG.exists() and BACKEND_LOG.stat().st_size > _BACKEND_LOG_MAX:
-            os.replace(BACKEND_LOG, BACKEND_LOG.with_name("backend.log.1"))
         _log_handle = open(BACKEND_LOG, "ab", buffering=0)
         try:
             os.chmod(BACKEND_LOG, 0o600)

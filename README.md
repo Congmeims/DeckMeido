@@ -192,7 +192,7 @@ userdata/
 ├── uploads/                 用户上传与工作区文件
 ├── models/sensevoice/       语音识别模型（首次使用时按需下载）
 ├── logs/
-│   ├── backend.log          后端日志（滚动保留 backend.log.1）
+│   ├── backend.log          后端日志（由后端轮转，保留 backend.log.1/.2）
 │   ├── overlay.log          操作遮罩日志
 │   └── client-crash.log     客户端崩溃栈
 ├── core.stopped             插件「关闭核心」标记，与客户端共享
@@ -265,7 +265,7 @@ bash ~/DeckMeido/uninstall.sh --purge    # 额外删安装器创建的配置备�
 | 现象 | 排查 |
 | --- | --- |
 | 插件版本没变 | 看安装日志里是否有「插件已安装 v…」；到 设置 → Decky Loader 点「重新载入」，或运行 `bash ~/DeckMeido/plugin/deploy.sh` |
-| 后端没起来 | 看 `~/DeckMeido/userdata/logs/backend.log`（轮转备份在 `backend.log.1`）；确认 `18765` 没被别的进程占用 |
+| 后端没起来 | 看 `~/DeckMeido/userdata/logs/backend.log`（轮转备份 `backend.log.1/.2`，只在后端运行时产生）；确认 `18765` 没被别的进程占用 |
 | 配置写坏了 | 删除 `userdata/config.toml` 后重启，会按模板重新生成（自定义项会丢）；人设 JSON 坏了会自动回落默认人设 |
 | QQ 连不上 | 网页 QQ 状态页看 `detail`；确认 `access_token` 非空且与 NapCat 一致、`ws_url` 可达、机器人已登录 |
 | 截图 / 点击不灵 | 跑 `bash install.sh check`；`ydotoold` 没运行会让 ydotool 报 socket 错误 |

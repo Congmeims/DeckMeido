@@ -14,6 +14,9 @@ Deck 通常是 64 GB / 256 GB 存储，15 MB 可以忽略；同时足够装下�
 debug-<时间>.log 由 RotatingFileHandler 自己轮转；backend.log / overlay.log /
 debug-client-*.log 由客户端进程写入（backend.log 的句柄一直开到客户端退出），
 服务端只做「拷贝成 .1 → 原地截断」，不 rename / 不 unlink。
+backend.log 的轮转只有一个来源：本模块的 rotate_logs()。客户端和插件拉起
+后端时只追加一行带时间戳的启动标记，不再自己生成 .1，否则两套逻辑会互相
+覆盖对方的备份，份数与大小都不受控。
 """
 from __future__ import annotations
 
@@ -310,13 +313,16 @@ def _rotate_one(path: Path, keep: int = BACKUP_COUNT,
 
     已有 .1 → .2、.2 → .3 … 逐级后移，最旧的丢弃；然后把当前内容拷成 .1，
     最后原地截断。拷贝而不是 rename，是为了兼容还被客户端进程持有句柄的文件。
+    拷贝只取最后 max_bytes 字节：扫描是 10 分钟一次，上次扫描到现在可能已经
+    涨过头，整份照抄会让 .1 超过上限，「单文件 5 MB」就不成立了。
     轮转完再扫一遍同名前缀，把序号大于 keep 的旧文件删掉——逐级后移只会覆盖
     .1…keep，更早版本留下的 .3/.4… 否则永远不会被回收，份数就不再固定。
     """
     try:
-        if path.stat().st_size <= max_bytes:
-            return False
+        size = path.stat().st_size
     except OSError:
+        return False
+    if size <= max_bytes:
         return False
     try:
         for idx in range(keep - 1, 0, -1):
@@ -324,13 +330,21 @@ def _rotate_one(path: Path, keep: int = BACKUP_COUNT,
             dst = path.with_name(f"{path.name}.{idx + 1}")
             if src.exists():
                 os.replace(src, dst)
-        shutil.copyfile(path, path.with_name(f"{path.name}.1"))
+        _copy_tail(path, path.with_name(f"{path.name}.1"), max_bytes, size)
         with open(path, "r+b") as f:
             f.truncate(0)
         _drop_extra_generations(path, keep)
         return True
     except Exception:
         return False
+
+
+def _copy_tail(src: Path, dst: Path, limit: int, size: int) -> None:
+    """把 src 的最后 limit 字节抄到 dst（日志只留最近一段，新内容优先）"""
+    with open(src, "rb") as fin, open(dst, "wb") as fout:
+        if size > limit:
+            fin.seek(size - limit)
+        shutil.copyfileobj(fin, fout)
 
 
 def _drop_extra_generations(path: Path, keep: int) -> None:
