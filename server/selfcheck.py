@@ -723,6 +723,27 @@ def _cleanup_tmp(tmpdir: Path) -> None:
             pass
 
 
+def _net_error_text(exc: Exception) -> str:
+    """把 urllib / SSL 的底层异常转成用户能看懂的网络原因，不露 Python 原文。
+
+    真实原因写进后端日志，界面只拿分类文案（连接断开 / 超时 / 证书 / DNS / 404）。
+    """
+    low = f"{type(exc).__name__} {exc}".lower()
+    if "certificate" in low or "cert verify" in low:
+        return "HTTPS 证书校验失败，请检查系统时间与镜像地址"
+    if "timed out" in low or "timeout" in low:
+        return "连接镜像超时，请检查网络后重试"
+    if any(s in low for s in ("eof", "connection reset", "remote end closed",
+                              "broken pipe", "connection aborted")):
+        return "连接被镜像提前断开，请重试"
+    if any(s in low for s in ("name or service not known", "nodename",
+                              "getaddrinfo", "dns")):
+        return "无法解析镜像域名（DNS 失败）"
+    if "404" in low:
+        return "镜像返回 404，安装包可能已更新，请刷新后重试"
+    return f"网络错误（{type(exc).__name__}），请检查网络后重试"
+
+
 def _download_to(spec: dict, path: Path, component: str) -> None:
     """下载安装包到临时文件；进度 3%→43%，不完整直接判失败"""
     req = urllib.request.Request(spec["url"], headers={"User-Agent": UA})
@@ -752,7 +773,9 @@ def _download_to(spec: dict, path: Path, component: str) -> None:
     except PackageError:
         raise
     except Exception as exc:
-        raise PackageError("download_failed", f"下载失败：{exc or '未知错误'}") from exc
+        # 原始异常留日志备查，界面只看分类文案
+        logger.warning("下载安装包失败 url=%s: %r", spec.get("url"), exc)
+        raise PackageError("download_failed", f"下载失败：{_net_error_text(exc)}") from exc
 
 
 def _verify_package(path: Path, spec: dict) -> None:

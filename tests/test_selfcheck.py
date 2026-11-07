@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import io
+import ssl
 import sys
 import tempfile
 import threading
@@ -511,7 +512,30 @@ class PackageInstallTest(SelfcheckBase):
             with self.assertRaises(sc.PackageError) as ctx:
                 sc._download_to(self.SPEC, path, "ydotool")
         self.assertEqual(ctx.exception.reason, "download_failed")
-        self.assertIn("镜像连不上", str(ctx.exception))
+        self.assertIn("下载失败", str(ctx.exception))
+
+    def test_下载异常不把Python原文抛给界面(self):
+        """真机 SSL EOF 时界面曾出现 `<urlopen error ...>`；现在只给分类文案"""
+        tmp = tempfile.mkdtemp(prefix="dm-dl-")
+        path = Path(tmp) / "a.pkg.tar.zst"
+        boom = ssl.SSLError("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred "
+                            "in violation of protocol (_ssl.c:1082)")
+        with mock.patch.object(sc.urllib.request, "urlopen", side_effect=boom), \
+                mock.patch.object(sc.logger, "warning"):
+            with self.assertRaises(sc.PackageError) as ctx:
+                sc._download_to(self.SPEC, path, "ydotool")
+        text = str(ctx.exception)
+        self.assertIn("连接被镜像提前断开", text)
+        self.assertNotIn("_ssl.c", text)
+        self.assertNotIn("UNEXPECTED_EOF", text)
+
+    def test_网络异常按类型分类(self):
+        self.assertIn("超时", sc._net_error_text(TimeoutError("timed out")))
+        self.assertIn("证书", sc._net_error_text(
+            ssl.SSLError("certificate verify failed")))
+        self.assertIn("DNS", sc._net_error_text(OSError(
+            "[Errno -2] Name or service not known")))
+        self.assertIn("404", sc._net_error_text(OSError("HTTP Error 404: Not Found")))
 
     def test_下载不完整要报错(self):
         tmp = tempfile.mkdtemp(prefix="dm-dl-")
