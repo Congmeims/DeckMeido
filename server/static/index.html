@@ -7435,6 +7435,9 @@
           }
           // 流式阶段先建一个空壳，边收边填；结束时空的会被撤掉（不留空头）
           var trow = makeTlRow('思考', null, true);
+          // 必须带 .thought：收尾时按这个类名数「屏幕上已经画过的思考」，
+          // 数不到就会把 events 里的思考整批重画一遍，叠在正文后面
+          trow.tl.classList.add('thought');
           var tarr0 = document.createElement('span');
           tarr0.className = 'tl-arrow';
           // 三角由 CSS 绘制，方向交给 .tl.open 旋转
@@ -7502,6 +7505,9 @@
           // 最终正文就是时间线里的最后一段气泡：原地把它补成「正式回复」（带按钮/时间），
           // 而不是抽出来另起一条——否则这一段会掉到所有事件下面，顺序又乱回去
           var promoted = false;   // 最终正文是否已原地补进时间线
+          // 最终正文那个气泡的引用。streamEl 马上会被清空，收尾补渲染 events 时
+          // 还要靠它把迟到的思考/工具插到正文之前，所以先单独留一份
+          var finalBubble = null;
           // 这一轮的正文就是那句问题、屏幕上已经以气泡形式出现过了（见 case 'ask'），
           // 收尾时别再补一条一模一样的
           // 判据只看「这一轮有没有 ask」和「正文是不是就是那句问题」，
@@ -7523,6 +7529,7 @@
               if (msg.ts) streamEl.dataset.ts = String(msg.ts);
               addMsgFoot(streamEl, msg.ts, 'assistant');
               promoted = true;
+              finalBubble = streamEl;
               if (liveBox && streamEl.parentNode === liveBox) {
                 // 标记一下：整轮的末尾，供重试/分享识别
                 streamEl.classList.add('turn-final');
@@ -7560,24 +7567,32 @@
               var skipT = liveBox.querySelectorAll('.tl.thought').length;
               // 最终正文气泡是「这一轮的结尾」：补渲染的思考块必须插在它前面，
               // 否则一条迟到的 thought 会追加到答复下方，屏幕上就成了
-              // 「AI 说完了，下面又冒出一串思考」
-              var tailRef = (promoted && streamEl && streamEl.parentNode === liveBox)
-                            ? streamEl : null;
+              // 「AI 说完了，下面又冒出一串思考」。
+              // 注意用 finalBubble 而不是 streamEl —— 后者在上面的缓存收尾里已经置空
+              var tailRef = (promoted && finalBubble && finalBubble.parentNode === liveBox)
+                            ? finalBubble : null;
               msg.events.forEach(function (e) {
                 if (e.type === 'text') return;
                 if (e.type === 'ask' && hasAsk) return;
                 if (e.type === 'tool' && skip > 0) { skip--; return; }
                 if (e.type === 'thought' && skipT > 0) { skipT--; return; }
-                if (e.type === 'thought' && tailRef) {
-                  var tr0 = makeThoughtRow(e.text, false);
-                  if (tr0) liveBox.insertBefore(tr0, tailRef);
-                  return;
+                // renderEvent 只会往容器末尾追加；要落在正文之前就先画到临时容器，
+                // 再按顺序整体挪过去，多段思考/工具之间的相对顺序保持不变
+                var tmp = document.createElement('div');
+                renderEvent(e, tmp);
+                while (tmp.firstChild) {
+                  if (tailRef) liveBox.insertBefore(tmp.firstChild, tailRef);
+                  else liveBox.appendChild(tmp.firstChild);
                 }
-                renderEvent(e, liveBox);
               });
             } else {
               renderEvents(msg.events);
             }
+          }
+          // 万一流式阶段正文之后又冒过一段思考（模型先说话、再补 reasoning），
+          // 把最终正文挪回容器末尾：屏幕上永远是「思考在前、正文在后」
+          if (promoted && finalBubble && finalBubble.parentNode === liveBox) {
+            liveBox.appendChild(finalBubble);
           }
           // dev_mode 埋点：统计本轮思考块实际渲染出来的字符数与段数。
           // 有实时容器就数 DOM（最接近用户看到的）；没有则按本次补渲染的 events 计
