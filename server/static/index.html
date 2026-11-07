@@ -6724,8 +6724,8 @@
     var card = document.createElement('div');
     card.className = 'fbt-card ' +
       (finished ? 'finished' : (task.preparing ? 'preparing' :
-        (task.status === 'running' ? 'running' : 'wait')) +
-      (st.failed ? ' fail' : '') + (task.expanded ? ' expanded' : '')) ;
+        (task.status === 'running' ? 'running' : 'wait'))) +
+      (st.failed ? ' fail' : '') + (task.expanded ? ' expanded' : '');
     card.setAttribute('data-task', String(task.id));
 
     var head = document.createElement('div');
@@ -6799,7 +6799,7 @@
       nm.textContent = fbMidPath(f.rel || f.name || '', 50);
       nm.title = f.rel || f.name || '';
       top.appendChild(nm);
-      if (f.file && !task.blocked) {
+      if (f.file && !task.blocked && !task.partial) {
         top.appendChild(fbTaskBtn('重试', 'retry-item', '', task.files.indexOf(f)));
       }
       row.appendChild(top);
