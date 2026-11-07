@@ -611,6 +611,25 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.chat_calls, [])
         self.assertEqual(self.service.state, "armed")
 
+    async def test_transcript_intent_and_plan_are_logged(self):
+        events = []
+        original = wake.devlog.log
+        wake.devlog.log = lambda event, **fields: events.append((event, fields))
+        self.addCleanup(setattr, wake.devlog, "log", original)
+        self.text = "放一首稻香"
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        logged = {}
+        for event, fields in events:
+            logged.setdefault(event, fields)
+        self.assertEqual(logged["wake.transcribe"]["text"], self.text)
+        self.assertEqual(logged["wake.intent"]["kind"], "song")
+        self.assertEqual(logged["wake.intent"]["query"], "稻香")
+        self.assertEqual(logged["wake.song.plan"]["status"], "ok")
+        self.assertTrue(logged["wake.song.play"]["ok"])
+
     async def test_song_miss_speaks_and_returns_to_armed(self):
         self.song_plan = media.SongPlan("miss", "没找到那首歌")
         self.text = "放一首稻香"

@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import difflib
+import itertools
 import json
 import os
 import re
@@ -35,6 +36,8 @@ import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
+
+from . import devlog
 
 MPRIS_PREFIX = "org.mpris.MediaPlayer2."
 PLAYER_PATH = "/org/mpris/MediaPlayer2"
@@ -49,7 +52,9 @@ DUCK_RATIO = 0.25
 LOADER_HOST = "127.0.0.1"
 LOADER_PORT = 1337
 RPC_TIMEOUT = 6.0
-RPC_ID = 1
+# Decky Loader 会在同一个 id 上回放上一次的响应：复用 id 会拿到旧结果，
+# 必须每次请求用唯一 id，并在读取循环里校验 id 与本次请求一致。
+_rpc_ids = itertools.count(1)
 PLUGIN_NAME = "Decky Music"
 # 只允许调这几个方法：点播链路需要的最小集合，避免变成任意插件调用
 _RPC_METHODS = {
@@ -365,6 +370,63 @@ def _loader_token() -> str:
     return token
 
 
+def _next_rpc_id() -> int:
+    """每次请求取唯一 id（Loader 复用 id 会把上一次的响应当成这一次的）。"""
+    return next(_rpc_ids)
+
+
+def _brief(value) -> str:
+    """RPC 结果的日志摘要：列表只记条数，字典只记链路相关字段。"""
+    if isinstance(value, list):
+        return f"list[{len(value)}]"
+    if isinstance(value, dict):
+        parts = []
+        if "ok" in value:
+            parts.append(f"ok={value.get('ok')}")
+        if isinstance(value.get("songs"), list):
+            parts.append(f"songs={len(value['songs'])}")
+        for key in ("index", "playing", "queue_mode", "player_failed"):
+            if key in value:
+                parts.append(f"{key}={value.get(key)}")
+        if not parts:
+            parts.append(f"keys={len(value)}")
+        return ",".join(parts)
+    return str(value)[:120]
+
+
+def _rpc_exchange(token: str, req_id: int, payload: str, method: str):
+    """在一条新 WS 上发请求并等**同一个 id** 的应答。"""
+    from websockets.sync.client import connect
+
+    with connect(f"ws://{LOADER_HOST}:{LOADER_PORT}/ws?auth={token}",
+                 open_timeout=RPC_TIMEOUT, close_timeout=1) as ws:
+        ws.send(payload)
+        deadline = time.monotonic() + RPC_TIMEOUT
+        while True:
+            remain = deadline - time.monotonic()
+            if remain <= 0:
+                raise MediaError(f"Decky Music 没有响应（{method} 超时）", "没反应")
+            raw = ws.recv(timeout=remain)
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(msg, dict) or msg.get("id") != req_id:
+                # id 不是本次请求的：Loader 串出来的旧响应，丢掉继续等
+                continue
+            kind = msg.get("type")
+            if kind == 1:
+                return msg.get("result")
+            if kind == 2:
+                raise MediaError("Decky Music 插件已停止", "点播没准备好")
+            err = msg.get("error") or {}
+            text = (err.get("message") if isinstance(err, dict) else "") \
+                or (err.get("name") if isinstance(err, dict) else "") \
+                or "未知错误"
+            raise MediaError(f"Decky Music 调用失败（{method}）：{text}",
+                             "查不到" if method == "search_songs" else "操作失败")
+
+
 def _rpc(method: str, *args):
     """调 Decky Music 的插件方法，返回它的原样结果。
 
@@ -376,47 +438,37 @@ def _rpc(method: str, *args):
         raise MediaError(f"不允许的插件方法：{method}", "操作失败")
     token = _loader_token()
     try:
-        from websockets.sync.client import connect
+        from websockets.sync.client import connect  # noqa: F401
     except Exception as exc:
         raise MediaError("缺少 websockets 库，无法调用 Decky Music",
                          "点播没准备好") from exc
+    req_id = _next_rpc_id()
     payload = json.dumps(
-        {"type": 0, "id": RPC_ID, "route": "loader/call_plugin_method",
+        {"type": 0, "id": req_id, "route": "loader/call_plugin_method",
          "args": [PLUGIN_NAME, method, *args]},
         ensure_ascii=False)
+    started = time.monotonic()
     try:
-        with connect(f"ws://{LOADER_HOST}:{LOADER_PORT}/ws?auth={token}",
-                     open_timeout=RPC_TIMEOUT, close_timeout=1) as ws:
-            ws.send(payload)
-            deadline = time.monotonic() + RPC_TIMEOUT
-            while True:
-                remain = deadline - time.monotonic()
-                if remain <= 0:
-                    raise MediaError(f"Decky Music 没有响应（{method} 超时）", "没反应")
-                raw = ws.recv(timeout=remain)
-                try:
-                    msg = json.loads(raw)
-                except Exception:
-                    continue
-                if not isinstance(msg, dict) or msg.get("id") != RPC_ID:
-                    continue
-                kind = msg.get("type")
-                if kind == 1:
-                    return msg.get("result")
-                if kind == 2:
-                    raise MediaError("Decky Music 插件已停止", "点播没准备好")
-                err = msg.get("error") or {}
-                text = (err.get("message") if isinstance(err, dict) else "") \
-                    or (err.get("name") if isinstance(err, dict) else "") \
-                    or "未知错误"
-                raise MediaError(f"Decky Music 调用失败（{method}）：{text}",
-                                 "查不到" if method == "search_songs" else "操作失败")
-    except MediaError:
+        result = _rpc_exchange(token, req_id, payload, method)
+    except MediaError as exc:
+        devlog.log("media.rpc", method=method, id=req_id,
+                   elapsed_ms=int((time.monotonic() - started) * 1000),
+                   error=getattr(exc, "reason", "") or str(exc))
         raise
     except TimeoutError as exc:
+        devlog.log("media.rpc", method=method, id=req_id,
+                   elapsed_ms=int((time.monotonic() - started) * 1000),
+                   error="timeout")
         raise MediaError(f"Decky Music 没有响应（{method} 超时）", "没反应") from exc
     except Exception as exc:
+        devlog.log("media.rpc", method=method, id=req_id,
+                   elapsed_ms=int((time.monotonic() - started) * 1000),
+                   error=str(exc))
         raise MediaError(f"调用 Decky Music 失败：{exc}", "点播没准备好") from exc
+    devlog.log("media.rpc", method=method, id=req_id,
+               elapsed_ms=int((time.monotonic() - started) * 1000),
+               result=_brief(result))
+    return result
 
 
 def search_songs(keyword: str, page: int = 0) -> list[dict]:
@@ -554,7 +606,11 @@ def resolve_song(query: str) -> SongPlan:
     if not query:
         return SongPlan("miss", "没听清要放哪首")
     candidates = _search_candidates(query)
+    devlog.log("media.song.search", query=query, count=len(candidates),
+               threshold=MATCH_THRESHOLD)
     if not candidates:
+        devlog.log("media.song.resolve", query=query, status="miss", count=0,
+                   top_score=0.0, name="", singer="")
         return SongPlan("miss", f"没找到{query[:12]}")
     ranked: list[tuple[float, dict]] = []
     seen = set()
@@ -567,6 +623,10 @@ def resolve_song(query: str) -> SongPlan:
     ranked.sort(key=lambda pair: pair[0], reverse=True)
     top_score, top = ranked[0]
     if top_score < MATCH_THRESHOLD:
+        devlog.log("media.song.resolve", query=query, status="miss",
+                   count=len(ranked), top_score=top_score,
+                   name=str(top.get("name") or ""),
+                   singer=str(top.get("singer") or ""))
         return SongPlan("miss", f"没找到{query[:12]}")
     name = str(top.get("name") or "")
     singer = str(top.get("singer") or "")
@@ -579,9 +639,16 @@ def resolve_song(query: str) -> SongPlan:
         if not _same_title(top_key, _norm(str(song.get("name") or ""))):
             rival = score
             break
+    status = "ok"
     if rival >= MATCH_THRESHOLD and top_score - rival < AMBIGUITY_GAP:
-        return SongPlan("ask", f"是{_label(name, singer)}吗", item, name, singer)
-    return SongPlan("ok", f"放{_label(name, singer)}", item, name, singer)
+        status = "ask"
+        speech = f"是{_label(name, singer)}吗"
+    else:
+        speech = f"放{_label(name, singer)}"
+    devlog.log("media.song.resolve", query=query, status=status,
+               count=len(ranked), top_score=top_score, rival_score=rival,
+               threshold=MATCH_THRESHOLD, name=name, singer=singer)
+    return SongPlan(status, speech, item, name, singer)
 
 
 def resolve_random() -> SongPlan:
@@ -600,6 +667,8 @@ def resolve_random() -> SongPlan:
     chosen = random.choice(pool)
     name = str(chosen.get("name") or "")
     singer = str(chosen.get("singer") or "")
+    devlog.log("media.song.random", pool=len(pool), id=str(chosen.get("id")),
+               name=name, singer=singer)
     item = {
         "id": str(chosen.get("id")),
         "media_mid": str(chosen.get("media_mid") or chosen.get("id")),
@@ -612,8 +681,32 @@ def resolve_random() -> SongPlan:
     return SongPlan("ok", f"放{_label(name, singer)}", item, name, singer)
 
 
+def _verify_playing(item: dict) -> None:
+    """回读播放态：必须是目标曲目且在播放，否则算「没放出来」。
+
+    Loader 的 RPC 之前会串响应，导致「调用成功」变成假成功；这里用插件自己
+    的真相源（`get_playback` 的 current.id + playing）确认真的开播了。
+    """
+    try:
+        playback = _rpc("get_playback")
+    except MediaError as exc:
+        raise MediaError(f"放歌后读不到播放状态：{exc.reason}", "没放出来") from exc
+    if not isinstance(playback, dict):
+        raise MediaError("放歌后读不到播放状态", "没放出来")
+    current = playback.get("current")
+    current_id = str((current or {}).get("id") or "") if isinstance(current, dict) else ""
+    ok = current_id == str(item.get("id")) and playback.get("playing") is True
+    devlog.log("media.song.verify", want=str(item.get("id")), current=current_id,
+               playing=playback.get("playing"),
+               player_failed=playback.get("player_failed"), ok=ok)
+    if not ok:
+        raise MediaError(
+            f"歌曲没放出来（current={current_id or '无'} playing={playback.get('playing')}）",
+            "没放出来")
+
+
 def play_plan(item: dict | None) -> None:
-    """放一首歌。
+    """放一首歌，并回读确认真的开始播放。
 
     队列是普通模式且当前有位置：插到当前下一首再跳过去，用户原来的队列保留；
     电台模式（插入会被插件静默忽略）或空队列：直接用它开一个新队列。
@@ -627,14 +720,19 @@ def play_plan(item: dict | None) -> None:
             playback = {}
         index = playback.get("index") if isinstance(playback, dict) else None
         mode = str(playback.get("queue_mode") or "") if isinstance(playback, dict) else ""
+        route = "rebuild"
         if mode == "normal" and isinstance(index, int) and index >= 0:
             try:
                 _rpc("queue_insert_next", item)
                 _rpc("queue_play", index + 1)
-                return
-            except MediaError:
-                pass
-        _rpc("play_queue", [item], 0)
+                route = "queue"
+            except MediaError as exc:
+                devlog.log("media.song.queue.fallback", error=str(exc))
+        if route != "queue":
+            _rpc("play_queue", [item], 0)
+        devlog.log("media.song.play", id=str(item.get("id")),
+                   name=str(item.get("name") or ""), route=route)
+        _verify_playing(item)
 
 
 # ---------- 口令匹配 ----------

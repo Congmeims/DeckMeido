@@ -4,8 +4,10 @@
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -258,6 +260,121 @@ class FakeLoader:
         return [m for m, _ in self.calls]
 
 
+class FakePlayback:
+    """get_playback 的真相源：queue_play / play_queue 会真的改它。"""
+
+    def __init__(self, index=3, mode="normal", playing=False, current=None,
+                 insert_error=False):
+        self.index = index
+        self.mode = mode
+        self.playing = playing
+        self.current = current
+        self.pending = None
+        self.insert_error = insert_error
+
+    def handlers(self):
+        return {
+            "get_playback": lambda *_: self.snapshot(),
+            "queue_insert_next": self.insert,
+            "queue_play": self.play_index,
+            "play_queue": self.play_queue,
+        }
+
+    def snapshot(self):
+        return {
+            "index": self.index,
+            "queue_mode": self.mode,
+            "playing": self.playing,
+            "current": {"id": self.current} if self.current else None,
+        }
+
+    def insert(self, item):
+        if self.insert_error:
+            raise media.MediaError("insert failed")
+        self.pending = str(item.get("id"))
+        return None
+
+    def play_index(self, index):
+        self.index = int(index)
+        if self.pending is not None:
+            self.current = self.pending
+            self.pending = None
+        self.playing = True
+        return None
+
+    def play_queue(self, items, start_index=0):
+        self.current = str(items[start_index].get("id"))
+        self.index = int(start_index)
+        self.playing = True
+        return None
+
+
+class FakeSocket:
+    """内存里的单条 Loader WS 连接。"""
+
+    def __init__(self, responder, sent):
+        self.responder = responder
+        self.sent = sent
+        self._inbox = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def send(self, payload):
+        request = json.loads(payload)
+        self.sent.append(request)
+        self._inbox = [json.dumps(msg, ensure_ascii=False)
+                       for msg in self.responder(request)]
+
+    def recv(self, timeout=None):
+        if not self._inbox:
+            raise TimeoutError("没有更多消息")
+        return self._inbox.pop(0)
+
+
+def _install_fake_ws(testcase, responder):
+    """把 `websockets.sync.client.connect` 换成内存实现，返回收到的请求列表。"""
+    sent = []
+
+    def connect(url, **kwargs):
+        return FakeSocket(responder, sent)
+
+    try:
+        import websockets.sync.client as client
+    except Exception:  # 没装 websockets：塞一个最小替身模块
+        modules = {
+            "websockets": types.ModuleType("websockets"),
+            "websockets.sync": types.ModuleType("websockets.sync"),
+            "websockets.sync.client": types.ModuleType("websockets.sync.client"),
+        }
+        modules["websockets"].sync = modules["websockets.sync"]
+        modules["websockets.sync"].client = modules["websockets.sync.client"]
+        modules["websockets.sync.client"].connect = connect
+        saved = {name: sys.modules.get(name) for name in modules}
+        sys.modules.update(modules)
+
+        def restore():
+            for name, old in saved.items():
+                if old is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = old
+
+        testcase.addCleanup(restore)
+    else:
+        original = client.connect
+        client.connect = connect
+        testcase.addCleanup(setattr, client, "connect", original)
+
+    original_token = media._loader_token
+    media._loader_token = lambda: "test-token"
+    testcase.addCleanup(setattr, media, "_loader_token", original_token)
+    return sent
+
+
 SONGS = [
     {"mid": "1001", "name": "稻香", "singer": "周杰伦", "album": "魔杰座",
      "duration": 221, "cover": "c1", "media_mid": "1001", "max_quality": "lossless"},
@@ -424,21 +541,89 @@ class SongTests(unittest.TestCase):
     # ---- 播放计划 ----
 
     def test_play_plan_keeps_queue_in_normal_mode(self):
+        self.loader.handlers.update(FakePlayback(index=3, current="3").handlers())
         media.play_plan({"id": "1001", "name": "稻香"})
         self.assertEqual(self.loader.methods(),
-                         ["get_playback", "queue_insert_next", "queue_play"])
+                         ["get_playback", "queue_insert_next", "queue_play",
+                          "get_playback"])
         self.assertEqual(self.loader.calls[2][1], (4,))
 
     def test_play_plan_restarts_queue_in_radio_mode(self):
-        self.loader.handlers["get_playback"] = {"index": 0, "queue_mode": "radio"}
+        self.loader.handlers.update(
+            FakePlayback(index=0, mode="radio", current="9").handlers())
         media.play_plan({"id": "1002", "name": "晴天"})
-        self.assertEqual(self.loader.methods(), ["get_playback", "play_queue"])
+        self.assertEqual(self.loader.methods(),
+                         ["get_playback", "play_queue", "get_playback"])
         self.assertEqual(self.loader.calls[1][1][1], 0)
 
     def test_play_plan_rejects_incomplete_item(self):
         with self.assertRaises(media.MediaError):
             media.play_plan({"name": "稻香"})
         self.assertEqual(self.loader.calls, [])
+
+    def test_play_plan_reports_when_playback_did_not_start(self):
+        # 插件接受了调用但没开播（音源失败）：不能当成功回去报「放稻香」
+        fake = FakePlayback(index=3, current="3")
+        fake.play_index = lambda index: setattr(fake, "index", int(index))
+        self.loader.handlers.update(fake.handlers())
+        with self.assertRaises(media.MediaError) as ctx:
+            media.play_plan({"id": "1001", "name": "稻香"})
+        self.assertEqual(ctx.exception.speech, "没放出来")
+
+    def test_play_plan_rebuild_path_also_verifies(self):
+        # 插入失败退回 play_queue：同样要回读，播放没起来就报错
+        fake = FakePlayback(index=3, mode="normal", current="3",
+                            insert_error=True)
+        fake.play_queue = lambda items, start_index=0: setattr(
+            fake, "current", str(items[0].get("id")))
+        self.loader.handlers.update(fake.handlers())
+        with self.assertRaises(media.MediaError) as ctx:
+            media.play_plan({"id": "1001", "name": "稻香"})
+        self.assertEqual(ctx.exception.speech, "没放出来")
+        self.assertEqual(self.loader.methods(),
+                         ["get_playback", "queue_insert_next", "play_queue",
+                          "get_playback"])
+
+    # ---- RPC 唯一 id ----
+
+    def test_rpc_ids_are_unique_per_request(self):
+        sent = _install_fake_ws(
+            self, lambda req: [{"type": 1, "id": req["id"], "result": {}}])
+        media._rpc = self._orig_rpc
+        media._rpc("get_queue")
+        media._rpc("get_playback")
+        self.assertEqual(len(sent), 2)
+        self.assertNotEqual(sent[0]["id"], sent[1]["id"])
+
+    def test_rpc_ignores_previous_response_with_stale_id(self):
+        def responder(req):
+            return [
+                {"type": 1, "id": req["id"] - 1, "result": {"stale": True}},
+                {"type": 1, "id": req["id"], "result": {"ok": True}},
+            ]
+        _install_fake_ws(self, responder)
+        media._rpc = self._orig_rpc
+        result = media._rpc("get_queue")
+        self.assertEqual(result, {"ok": True})
+
+    # ---- 打点 ----
+
+    def test_resolve_logs_chain_fields(self):
+        events = []
+        original = media.devlog.log
+        media.devlog.log = lambda event, **fields: events.append((event, fields))
+        self.addCleanup(setattr, media.devlog, "log", original)
+        media.resolve_song("稻香")
+        logged = {}
+        for event, fields in events:
+            logged.setdefault(event, fields)
+        self.assertEqual(logged["media.song.search"]["count"], len(SONGS))
+        self.assertEqual(logged["media.song.search"]["threshold"],
+                         media.MATCH_THRESHOLD)
+        resolve = logged["media.song.resolve"]
+        self.assertEqual(resolve["status"], "ok")
+        self.assertEqual(resolve["name"], "稻香")
+        self.assertGreaterEqual(resolve["top_score"], media.MATCH_THRESHOLD)
 
     # ---- RPC 白名单 ----
 

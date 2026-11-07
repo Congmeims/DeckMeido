@@ -292,6 +292,135 @@ def normalize_engine(raw: str | None) -> str:
     return "espeak-ng"
 
 
+# ---------- 播报音量临时抬升 ----------
+# 系统音量很低时（Deck 上实测默认 sink 可能只有 20%），合成正常也听不清。
+# 播报前把默认 sink 临时抬到可听水平，播完无条件恢复；只读探测失败、找不到
+# pactl/wpctl、或用户关掉 [tts] boost_volume 时全程不动系统音量。
+# 只在「用户当前音量低于可听下限」时抬，恢复时也只回写仍等于临时值的音量：
+# 用户中途自己调过音量就保留他的新值，不被恢复动作覆盖。
+BOOST_BELOW = 0.40
+BOOST_TARGET = 0.55
+
+_boost_lock = threading.Lock()
+_boost_clicks = 0          # 同时进行的播报数：只有降到 0 才恢复
+_boost_prev: int | None = None   # 用户原来的音量（百分比）
+_boost_set: int | None = None    # 临时抬到的音量（百分比）
+
+
+def _volume_tool() -> str:
+    """音量读写工具：pactl 百分比读写最直接，没有时用 wpctl。"""
+    if shutil.which("pactl"):
+        return "pactl"
+    if shutil.which("wpctl"):
+        return "wpctl"
+    return ""
+
+
+def _run_volume(args: list[str]):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=3.0)
+    except Exception:
+        return None
+
+
+def sink_state() -> tuple[int, bool] | None:
+    """默认 sink 的 (音量百分比, 是否静音)；读不到返回 None，调用方保持原行为。"""
+    tool = _volume_tool()
+    if tool == "pactl":
+        vol = _run_volume(["pactl", "get-sink-volume", "@DEFAULT_SINK@"])
+        mute = _run_volume(["pactl", "get-sink-mute", "@DEFAULT_SINK@"])
+        if vol is None or vol.returncode != 0:
+            return None
+        match = re.search(r"(\d+)%", vol.stdout or "")
+        if not match:
+            return None
+        muted = bool(mute and mute.returncode == 0
+                     and "yes" in (mute.stdout or "").lower())
+        return int(match.group(1)), muted
+    if tool == "wpctl":
+        out = _run_volume(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"])
+        if out is None or out.returncode != 0:
+            return None
+        text = out.stdout or ""
+        match = re.search(r"Volume:\s*([0-9.]+)", text)
+        if not match:
+            return None
+        return int(round(float(match.group(1)) * 100)), "[MUTED]" in text
+    return None
+
+
+def _set_sink_volume(percent: int) -> bool:
+    tool = _volume_tool()
+    if tool == "pactl":
+        out = _run_volume(["pactl", "set-sink-volume", "@DEFAULT_SINK@",
+                           f"{int(percent)}%"])
+    elif tool == "wpctl":
+        out = _run_volume(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@",
+                           f"{int(percent) / 100:.2f}"])
+    else:
+        return False
+    return bool(out and out.returncode == 0)
+
+
+def boost_enter(enabled: bool) -> dict:
+    """播报开始：音量低于下限时临时抬到 BOOST_TARGET，返回当时的 sink 快照。
+
+    无论是否真的抬升都要计数：`boost_exit` 一定会在播报结束（含异常/取消）
+    时配对调用，只有最后一个退出才恢复，避免并发播报互相把音量改回去。
+    """
+    global _boost_clicks, _boost_prev, _boost_set
+    state = sink_state()
+    snapshot = {
+        "volume": state[0] if state else None,
+        "muted": state[1] if state else None,
+        "boosted": False,
+    }
+    with _boost_lock:
+        _boost_clicks += 1
+        if _boost_clicks > 1:
+            snapshot["boosted"] = _boost_set is not None
+            return snapshot
+        if state is None or not enabled:
+            return snapshot
+        level = state[0]
+        if level >= int(BOOST_BELOW * 100):
+            return snapshot
+        target = int(BOOST_TARGET * 100)
+        if not _set_sink_volume(target):
+            return snapshot
+        _boost_prev, _boost_set = level, target
+        snapshot["boosted"] = True
+        return snapshot
+
+
+def boost_exit() -> None:
+    """播报结束（成功/失败/取消/异常退出都一样）：恢复临时抬高的音量。"""
+    global _boost_clicks, _boost_prev, _boost_set
+    with _boost_lock:
+        if _boost_clicks <= 0:
+            return
+        _boost_clicks -= 1
+        if _boost_clicks > 0:
+            return
+        prev, applied = _boost_prev, _boost_set
+        _boost_prev = _boost_set = None
+        if prev is None or applied is None:
+            return
+        state = sink_state()
+        if state is None or abs(state[0] - applied) > 1:
+            # 读不到状态，或用户中途自己调过音量：保留现状，不覆盖用户的值
+            return
+        _set_sink_volume(prev)
+
+
+def boost_reset() -> None:
+    """测试用：清掉计数与记录，避免用例之间互相影响。"""
+    global _boost_clicks, _boost_prev, _boost_set
+    with _boost_lock:
+        _boost_clicks = 0
+        _boost_prev = _boost_set = None
+
+
 def normalize_speaker(raw: str | None) -> str:
     """把配置里的发音人写成 robot / maid 两种之一。
 
@@ -599,6 +728,7 @@ class TTS:
         model_root: Path | str | None = None,
         idle_unload_sec: float = 600.0,
         ja_terms: str | list[str] | None = None,
+        boost_volume: bool = True,
     ):
         self.enable = bool(enable)
         # 发音人是唯一来源：显式 speaker 优先，老配置的 engine/voice 映射过来
@@ -624,6 +754,9 @@ class TTS:
         else:
             terms = list(ja_terms or [])
         self.ja_terms = frozenset(t.strip() for t in terms if t and t.strip())
+        # 播报时临时抬升系统音量（音量过低时），播完恢复；可在设置里关掉
+        self.boost_volume = bool(boost_volume)
+        self._sink_snapshot: dict | None = None
 
         # 懒加载状态
         self._voice = None
@@ -781,6 +914,8 @@ class TTS:
             "speed_scale": self.speed_scale,
             "length_scale": self.length_scale,
             "noise_scale": self.noise_scale,
+            # 播报音量过低时是否临时抬升（播完恢复）
+            "boost_volume": self.boost_volume,
             "ready": effective == "piper-plus" or bool(self._espeak_binary()),
             "reason": reason,
             "loaded": self._voice is not None,
@@ -850,6 +985,7 @@ class TTS:
         self.idle_unload_sec = _clamp(
             cfg.get("idle_unload_sec", self.idle_unload_sec), 30, 24 * 3600, 600
         )
+        self.boost_volume = bool(cfg.get("boost_volume", self.boost_volume))
 
     # ---------- 懒加载 ----------
 
@@ -934,6 +1070,8 @@ class TTS:
         self._last_degraded_segments = 0
         self._announced = False
         try:
+            self._sink_snapshot = boost_enter(self.boost_volume)
+            devlog.log("tts.boost", enabled=self.boost_volume, **self._sink_log_fields())
             segments = route_segments(cleaned, self.language, self.max_chars,
                                       self.ja_terms)
             if not segments:
@@ -984,6 +1122,8 @@ class TTS:
         finally:
             if self._cancel is event:
                 self._cancel = None
+            boost_exit()
+            self._sink_snapshot = None
             if self._announced:
                 self._announced = False
                 self._announce_state("end")
@@ -1209,7 +1349,7 @@ class TTS:
         # 少了它只会打印用法后退出，piper 这一路会被误判成"播放器失败"而降级
         args = [*args, str(wav)]
         devlog.log("tts.play", player=os.path.basename(player),
-                   sink=sink or "default")
+                   sink=sink or "default", **self._sink_log_fields())
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.DEVNULL,
@@ -1242,6 +1382,8 @@ class TTS:
         os.close(fd)
         path = Path(name)
         try:
+            self._sink_snapshot = boost_enter(self.boost_volume)
+            devlog.log("tts.boost", enabled=self.boost_volume, **self._sink_log_fields())
             path.write_bytes(data)
             await self._play(path, event)
             return True
@@ -1251,6 +1393,8 @@ class TTS:
             raise
         finally:
             path.unlink(missing_ok=True)
+            boost_exit()
+            self._sink_snapshot = None
             if self._cancel is event:
                 self._cancel = None
 
@@ -1263,6 +1407,15 @@ class TTS:
         sink = pick_sink()
         self._sink_cache = (now, sink)
         return sink
+
+    def _sink_log_fields(self) -> dict:
+        """日志用：播报开始时的 sink 音量/静音/是否临时抬升。"""
+        snap = self._sink_snapshot or {}
+        return {
+            "sink_volume": snap.get("volume"),
+            "sink_mute": snap.get("muted"),
+            "boosted": snap.get("boosted"),
+        }
 
     @staticmethod
     def _player_args(player: str, sink: str | None) -> tuple[list[str], dict | None]:
@@ -1304,6 +1457,8 @@ class TTS:
         self._last_engine = "espeak-ng"
         devlog.log("tts.segment", engine="espeak-ng", binary=name, chars=len(text),
                    voice=spoken, language=language or spoken)
+        devlog.log("tts.play", player=name, sink="default",
+                   **self._sink_log_fields())
         started = time.perf_counter()
         try:
             proc = await asyncio.create_subprocess_exec(

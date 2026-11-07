@@ -1023,7 +1023,7 @@ class WakeService:
             if not text:
                 self._abort("没有识别到文字")
                 return
-            devlog.log("wake.transcribe", chars=len(text))
+            devlog.log("wake.transcribe", chars=len(text), text=text)
             # 上一轮问过「是 XXX 那首吗」：这一句先当作回答，最多问一次
             pending, self._pending_confirm = self._pending_confirm, None
             if pending is not None:
@@ -1040,6 +1040,8 @@ class WakeService:
             # 本地快速通道：命中口令就直接执行，不进对话、不进思考态
             intent = media.match_intent(text)
             if intent is not None:
+                devlog.log("wake.intent", kind=intent.kind, action=intent.action,
+                           query=intent.query)
                 if intent.kind == "random":
                     await self._run_random()
                     return
@@ -1117,6 +1119,8 @@ class WakeService:
             return
         if self._round_cancelled:
             return
+        devlog.log("wake.song.plan", query=query, status=plan.status,
+                   name=plan.name, singer=plan.singer)
         if plan.status == "ask":
             # 只问一次：下一轮的第一句话由 _run_round 当作回答处理
             self._pending_confirm = plan
@@ -1154,6 +1158,8 @@ class WakeService:
             return
         if self._round_cancelled:
             return
+        devlog.log("wake.song.plan", query="<random>", status=plan.status,
+                   name=plan.name, singer=plan.singer)
         if plan.status != "ok":
             await self._speak_short(plan.speech or "曲库空的")
             if not self._round_cancelled:
@@ -1164,16 +1170,20 @@ class WakeService:
     async def _play_and_ack(self, plan) -> None:
         """真正开播 + 一句短反馈。播放失败也念原因，然后照常回待机。"""
         speech = plan.speech or f"放{plan.label}"
+        played = False
         try:
             if not self._media_play:
                 raise media.MediaError("点播入口未就绪", "播放失败")
             await asyncio.to_thread(self._media_play, plan.item)
+            played = True
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             speech = getattr(exc, "speech", "") or "播放失败"
             self._last_error = getattr(exc, "reason", "") or str(exc) or "播放失败"
             devlog.log("wake.song.play.error", name=plan.name, error=str(exc))
+        devlog.log("wake.song.play", name=plan.name, ok=played,
+                   id=str(plan.item.get("id") if plan.item else ""))
         if self._round_cancelled:
             return
         await self._speak_short(speech)

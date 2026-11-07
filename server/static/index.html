@@ -3425,6 +3425,14 @@
                 <button id="ttsPreview" class="mini-btn tts-preview" type="button">试听</button>
               </div>
             </div>
+            <div class="tts-row2">
+              <label class="tts-label">播报音量</label>
+              <label class="switch" title="播报时系统音量太低就临时抬高，播完恢复原值">
+                <input id="cfgTtsBoost" type="checkbox">
+                <span class="slider"></span>
+              </label>
+              <span class="field-hint">低于 40% 时临时抬到 55%，播完恢复</span>
+            </div>
             <!-- つくよみちゃんコーパス利用規約第③类（音声つき会話AIソフト）要求在使用者
                  能看到的位置署名。下面内容照抄官方模板与模型卡，不要改写：
                  模型卡「クレジット表記について（必須）」= ■Piper Plus:つくよみちゃん；
@@ -11669,6 +11677,8 @@
   // '' = 还没选（用后端默认的当前使用）；'all' = 全部汇总
   var usageApi = '';
   var cfgTts = document.getElementById('cfgTts');
+  // 播报音量临时抬升的开关（[tts] boost_volume，默认开）
+  var cfgTtsBoost = document.getElementById('cfgTtsBoost');
   // 语音回复卡（「女仆人格」下面）：两个发音人 + 试听 + 模型下载
   var ttsSpeakerRow = document.getElementById('ttsSpeakerRow');
   var ttsSpeakerBtns = ttsSpeakerRow ? Array.prototype.slice.call(
@@ -12841,6 +12851,8 @@
         renderApiProfiles(c);
         apiProfilesLoaded = true;
         cfgTts.checked = c.tts_enable;
+        // 播报音量抬升：老配置没有这项，后端缺省即开
+        if (cfgTtsBoost) cfgTtsBoost.checked = c.tts_boost_volume !== false;
         // 发音人只有两个选项：新键优先，老配置没有 speaker 时按引擎映射
         setTtsSpeaker(c.tts_speaker
           || (c.tts_engine === 'espeak-ng' ? 'robot' : 'maid'));
@@ -13271,6 +13283,7 @@
       current_api: apiProfilesState.current || '',
       tts_enable: cfgTts.checked,
       tts_speaker: ttsSpeaker,
+      tts_boost_volume: cfgTtsBoost ? !!cfgTtsBoost.checked : true,
       with_shot: !!cfgWithShot.checked,
       chat_voice: cfgChatVoice ? !!cfgChatVoice.checked : true,
       stt_enable: !!cfgStt.checked,
