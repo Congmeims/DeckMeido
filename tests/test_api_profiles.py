@@ -182,6 +182,37 @@ class ProfilesUpdateTest(ConfigBase):
         self.assertEqual(data["llm"].get("api_key", ""), "")
 
 
+class NormBaseTest(unittest.TestCase):
+    """误粘完整端点时必须剥掉，否则会拼成 .../chat/completions/chat/completions"""
+
+    def test_正常地址只去空白与尾斜杠(self):
+        self.assertEqual(apicfg.norm_base("  https://api.deepseek.com/  "),
+                         "https://api.deepseek.com")
+        self.assertEqual(apicfg.norm_base("https://api.deepseek.com/v1"),
+                         "https://api.deepseek.com/v1")
+
+    def test_剥掉误粘的_chat_completions(self):
+        self.assertEqual(apicfg.norm_base("https://api.deepseek.com/chat/completions"),
+                         "https://api.deepseek.com")
+        self.assertEqual(apicfg.norm_base("https://api.deepseek.com/chat/completions/"),
+                         "https://api.deepseek.com")
+
+    def test_带_v1_的完整端点保留_v1(self):
+        self.assertEqual(apicfg.norm_base("https://api.openai.com/v1/chat/completions"),
+                         "https://api.openai.com/v1")
+        self.assertEqual(apicfg.norm_base("https://api.openai.com/v1/completions"),
+                         "https://api.openai.com/v1")
+
+    def test_重复粘贴也能剥干净(self):
+        self.assertEqual(
+            apicfg.norm_base("https://api.deepseek.com/chat/completions/chat/completions"),
+            "https://api.deepseek.com")
+
+    def test_空串保持为空(self):
+        self.assertEqual(apicfg.norm_base(""), "")
+        self.assertEqual(apicfg.norm_base(None), "")
+
+
 class MaskTest(unittest.TestCase):
     def test_掩码规则(self):
         self.assertEqual(apicfg.mask_key(""), "")

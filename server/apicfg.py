@@ -44,8 +44,21 @@ def mask_key(key: str) -> str:
     return f"{key[:6]}…{key[-4:]}"
 
 
-def _norm_base(url: str) -> str:
-    return (url or "").strip().rstrip("/")
+# 用户常把完整端点粘进「接口地址」：https://api.deepseek.com/chat/completions。
+# 保存后代码还会再拼一段 /chat/completions，变成 .../chat/completions/chat/completions
+# → 404。这里剥掉误粘的端点后缀；/v1 之类正常路径段保留（OpenAI 兼容接口需要它）。
+_ENDPOINT_SUFFIX_RE = re.compile(r"/(?:chat/completions|completions)$", re.I)
+
+
+def norm_base(url: str) -> str:
+    """接口地址去空白/尾斜杠，并剥掉误粘的端点后缀（可重复出现）"""
+    out = (url or "").strip().rstrip("/")
+    while True:
+        trimmed = _ENDPOINT_SUFFIX_RE.sub("", out).rstrip("/")
+        if trimmed == out:
+            break
+        out = trimmed
+    return out
 
 
 def _new_id(profiles: list[dict]) -> str:
@@ -70,7 +83,7 @@ def _clean(raw: dict, id_hint: str = "") -> dict:
     return {
         "id": pid,
         "name": name,
-        "base_url": _norm_base(str(raw.get("base_url") or "")),
+        "base_url": norm_base(str(raw.get("base_url") or "")),
         "api_key": str(raw.get("api_key") or "").strip(),
     }
 
@@ -103,7 +116,7 @@ def from_config(cfg: dict) -> dict:
     profiles = normalize(llm.get("apis"))
     migrated = False
     if not profiles:
-        base = _norm_base(str(llm.get("base_url") or ""))
+        base = norm_base(str(llm.get("base_url") or ""))
         key = str(llm.get("api_key") or "").strip()
         if base or key:
             profiles = [{"id": LEGACY_ID, "name": DEFAULT_NAME,
