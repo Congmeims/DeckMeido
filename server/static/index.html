@@ -2362,17 +2362,30 @@
   #fbFollow.show { display: flex; }
   #fbFollow .p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     direction: rtl; text-align: left; }
-  /* AI 切换目录的跟踪提示：占自己的一行（不叠在别的元素上，之前 absolute
-     会把面包屑路径盖住，看起来文字重叠），出现时把下方内容推开、消失时收起 */
+  /* AI 切换目录的跟踪槽位：常驻固定 30px 高，不再按需冒出来把文件列表推下去。
+     激活时蓝底 +「AI 正在定位 <路径>」，空闲时灰点 +「AI 空闲」。
+     纯展示、不接收点击，避免误触 */
   #fbTrackTip {
-    display: none; align-items: center; gap: 6px;
-    padding: 7px 10px; font-size: 11.5px; color: #1a9fff;
-    background: rgba(26,159,255,.12); border-bottom: 1px solid rgba(26,159,255,.25);
+    flex: 0 0 30px; height: 30px; box-sizing: border-box;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 10px; font-size: 11.5px;
+    color: var(--muted); background: var(--surface-2);
+    border-bottom: 1px solid var(--line);
+    overflow: hidden;
+    pointer-events: none;
+    user-select: none;
   }
-  #fbTrackTip.show { display: flex; animation: fbTipIn .28s ease; }
-  @keyframes fbTipIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
-  #fbTrackTip .ico { color: #1a9fff; }
-  #fbTrackTip .p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  #fbTrackTip.show {
+    color: #1a9fff;
+    background: rgba(26,159,255,.12);
+    border-bottom-color: rgba(26,159,255,.25);
+    animation: fbTipIn .28s ease;
+  }
+  @keyframes fbTipIn { from { opacity: .4; } to { opacity: 1; } }
+  #fbTrackTip .ico { flex: 0 0 auto; color: inherit; }
+  #fbTrackTip .label { flex: 0 0 auto; white-space: nowrap; }
+  #fbTrackTip .p { flex: 1 1 auto; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
     direction: rtl; text-align: left; }
   /* AI 跟随跳转时列表的一次淡入过渡：替换「清空→闪白→重绘」的生硬切换 */
   #fbList.fb-anim { animation: fbListIn .34s ease; }
@@ -4026,8 +4039,9 @@
   <div class="rb-pane on" id="rbPaneFile">
     <!-- 用户手动点过别处后不再跟着 AI 跑，这条横幅就是「点此回到跟随」的入口 -->
     <div id="fbFollow"><span>AI 正在看：</span><span class="p" id="fbFollowPath"></span><span>· 点此跟随</span></div>
-    <!-- AI 主动切换目录时的跟踪提示：短暂淡入淡出，告诉用户面板是被 AI 拽过去的 -->
-    <div id="fbTrackTip"><span class="ico">◉</span><span>AI 正在定位</span><span class="p" id="fbTrackPath"></span></div>
+    <!-- AI 主动切换目录的跟踪槽位：固定 30px 高、常驻显示；
+         激活时显示路径，空闲时只留灰点 +「AI 空闲」，不推动下方列表 -->
+    <div id="fbTrackTip"><span class="ico">◉</span><span class="label" id="fbTrackLabel">AI 空闲</span><span class="p" id="fbTrackPath"></span></div>
     <div id="fbBar">
       <button id="fbUp" title="上一级"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
       <button id="fbHome" title="回到工作区"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg></button>
@@ -5516,7 +5530,8 @@
     //   这里再来一次就是白打一个 /api/browse（面板闪一下「加载中…」）
     if (typeof rbEl === 'function') {
       var tip = rbEl('fbTrackTip');
-      if (tip) tip.classList.remove('show');
+      if (tip && typeof fbTrackIdle === 'function') fbTrackIdle();
+      else if (tip) tip.classList.remove('show');
       // 静默补拉：不弹「AI 正在定位」，见 fbLoad 的 quiet 参数
       if (ok && !wasConnected && typeof fbLoad === 'function' && RB && RB.tab === 'file') {
         fbLoad(fb.follow ? (fb.aiPath || fb.path || '') : (fb.path || ''), null, true);
@@ -6843,19 +6858,33 @@
     }, 300);
   }
 
-  // AI 切换目录时的「跟踪提示」：在列表顶部短暂弹出「AI 正在定位 → 路径」，
-  // 淡入淡出，让用户一眼知道面板是被 AI 拽过去的，而不是自己误触。
+  // AI 切换目录时的跟踪槽位：平时保持「AI 空闲」，AI 定位时点亮并显示路径。
+  // 槽位高度固定，出现/消失都不会推动下面的文件列表，避免误触。
+  function fbTrackIdle() {
+    var tip = rbEl('fbTrackTip');
+    if (!tip) return;
+    clearTimeout(tip._hide);
+    tip._hide = null;
+    tip.classList.remove('show');
+    var lb = rbEl('fbTrackLabel');
+    if (lb) lb.textContent = 'AI 空闲';
+    var p = rbEl('fbTrackPath');
+    if (p) { p.textContent = ''; p.title = ''; }
+  }
+
   function fbTrackTip(path) {
     var tip = rbEl('fbTrackTip');
     if (!tip) return;
+    var lb = rbEl('fbTrackLabel');
+    if (lb) lb.textContent = 'AI 正在定位';
     var p = rbEl('fbTrackPath');
-    if (p) p.textContent = path || '';
+    if (p) { p.textContent = path || ''; p.title = path || ''; }
     tip.classList.remove('show');
-    // 强制重排以重新触发 CSS 动画
+    // 强制重排以重新触发 CSS 动画（高度固定，不会引起列表位移）
     void tip.offsetWidth;
     tip.classList.add('show');
     clearTimeout(tip._hide);
-    tip._hide = setTimeout(function () { tip.classList.remove('show'); }, 2200);
+    tip._hide = setTimeout(fbTrackIdle, 2200);
   }
 
   rbEl('rbTabFile').addEventListener('click', function () { rbShowTab('file'); });
