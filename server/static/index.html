@@ -2837,6 +2837,117 @@
   #termRun:active { transform: scale(.95); }
   #termRun:disabled { opacity: .4; cursor: default; transform: none; }
 
+  /* ---------- 远程终端（自己敲命令，可交互）----------
+     与上方 #rbPaneTerm 的 AI 只读条带是两套东西：这里连的是
+     /api/terminal/sessions + /ws/terminal/{id}，输出进自定义等宽滚动区 */
+  #rbPaneShell { min-height: 0; }
+  #shHead {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-bottom: 1px solid var(--line);
+  }
+  #shMeta { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  #shCwd {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--font-mono); font-size: 11.5px; color: var(--muted);
+  }
+  #shExit { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #shExit.bad { color: #e0746a; }
+  #shTerminate {
+    flex: 0 0 auto; border: 1px solid rgba(232,70,58,.55);
+    background: rgba(232,70,58,.12); color: #e8463a;
+    font-size: 11.5px; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+    white-space: nowrap;
+  }
+  #shTerminate:active { opacity: .7; }
+  #shTerminate:disabled { opacity: .4; cursor: default; }
+  #shSessRow {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
+    padding: 6px 10px; border-bottom: 1px solid var(--line);
+  }
+  #shSessions {
+    flex: 1 1 auto; min-width: 0; display: flex; gap: 4px;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  }
+  #shSessions::-webkit-scrollbar { display: none; }
+  .sh-chip {
+    flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px;
+    max-width: 130px; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--surface-2);
+    color: var(--muted); font-size: 11px; cursor: pointer;
+    font-family: var(--font-mono);
+  }
+  .sh-chip.on { color: var(--text); border-color: var(--brand); background: rgba(26,159,255,.14); }
+  .sh-chip .dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; background: #8b91a3; }
+  .sh-chip .dot.run { background: #2ecc71; }
+  .sh-chip .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sh-chip-empty { flex: 0 0 auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+  #shNew {
+    flex: 0 0 auto; border: 1px solid var(--line); background: var(--surface-2);
+    color: var(--text); font-size: 11.5px; padding: 4px 10px;
+    border-radius: 999px; cursor: pointer; white-space: nowrap;
+  }
+  #shNew:active { opacity: .7; }
+  #shNew:disabled { opacity: .45; cursor: default; }
+  #shNotice {
+    flex: 0 0 auto; padding: 6px 10px; font-size: 11.5px; line-height: 1.5;
+    color: #e0a33a; background: rgba(224,163,58,.1);
+    border-bottom: 1px solid rgba(224,163,58,.25); word-break: break-word;
+  }
+  #shNotice[hidden] { display: none; }
+  /* 输出区：等宽、可换行，横向绝不溢出；内容按块追加，不整块重画 */
+  #shOut {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+    padding: 8px 10px 14px;
+    background: var(--code-bg); color: var(--code-text);
+    font-family: var(--font-mono); font-size: 12px; line-height: 1.45;
+    white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+    -webkit-overflow-scrolling: touch;
+  }
+  #shOut .sh-banner {
+    margin: 4px 0; padding: 5px 8px; border-radius: 6px;
+    border: 1px dashed rgba(224,163,58,.5); background: rgba(224,163,58,.1);
+    color: #e0a33a; font-size: 11px; white-space: normal;
+    font-family: var(--font-sans);
+  }
+  .sh-empty {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+    padding: 16px 4px; color: var(--muted); white-space: normal;
+    font-family: var(--font-sans);
+  }
+  .sh-empty .t { font-size: 13px; font-weight: 600; color: var(--text); }
+  .sh-empty .d { font-size: 12px; line-height: 1.6; max-width: 280px; }
+  .sh-empty-btn {
+    border: 1px solid var(--brand); background: rgba(26,159,255,.16);
+    color: var(--text); font-size: 12px; padding: 5px 12px;
+    border-radius: 999px; cursor: pointer;
+  }
+  .sh-empty-btn:active { opacity: .7; }
+  #shBar {
+    flex: 0 0 auto; display: flex; align-items: flex-end; gap: 6px;
+    padding: 8px; border-top: 1px solid var(--line);
+  }
+  #shInput {
+    flex: 1 1 auto; min-width: 0; min-height: 38px; max-height: 120px;
+    resize: none; padding: 8px 10px; box-sizing: border-box;
+    border: 1px solid var(--line); border-radius: 10px;
+    background: var(--surface-2); color: var(--text);
+    font-family: var(--font-mono); font-size: 12px; line-height: 1.4;
+    outline: none; overflow-y: auto;
+  }
+  #shInput:focus { border-color: var(--brand); }
+  #shInput::placeholder { color: var(--muted); opacity: .7; }
+  #shRun {
+    flex: 0 0 auto; height: 34px; min-width: 48px;
+    border: none; border-radius: 10px; background: var(--brand);
+    color: #fff; font-size: 13px; font-weight: 600; padding: 0 12px; cursor: pointer;
+  }
+  #shRun:active { opacity: .85; }
+  #shRun:disabled { opacity: .4; cursor: default; }
+  /* 关闭状态：整块只剩空状态说明，头部/会话行/输入条都收起 */
+  #rbPaneShell.sh-off #shHead,
+  #rbPaneShell.sh-off #shSessRow,
+  #rbPaneShell.sh-off #shBar { display: none; }
+
   /* 窄屏 / 设置页：工具栏停靠会挤掉对话，改成从右侧滑出的抽屉 */
   @media (max-width: 1080px) {
     #rightbar {
@@ -2879,7 +2990,8 @@
   body.settings-mode.rb-collapsed #rbToggle { display: block; }
   body.settings-mode #rbToggle { display: block; }
   body.settings-mode.rb-collapsed #rbPaneFile,
-  body.settings-mode.rb-collapsed #rbPaneTerm { display: none !important; }
+  body.settings-mode.rb-collapsed #rbPaneTerm,
+  body.settings-mode.rb-collapsed #rbPaneShell { display: none !important; }
 
 </style>
 <!-- xterm.js：真终端模拟器，替换自研 ANSI 网格渲染。
@@ -3389,6 +3501,26 @@
             <div class="field-hint" id="riCfgState">当前状态：未接管</div>
           </div>
 
+          <!-- 远程终端总开关：默认关闭；关闭时远程终端面板显示空状态 -->
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title">远程终端</div>
+              <label class="switch" title="允许网页端 / 移动端执行命令">
+                <input id="cfgTermEnabled" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <p class="pane-desc" style="margin-top:0">
+              开启后，右侧栏「远程终端」面板可以自己敲命令，保持工作目录与环境变量，
+              输出实时滚动。关闭时所有终端接口返回 403，面板只显示「已在设置里关闭」。
+            </p>
+            <div class="field-hint" style="color:#e0a33a">
+              安全提示：远程终端以 Deck 当前用户身份直接执行命令。危险命令会先展示原文、
+              再要一次确认；默认关闭，只在可信网络里使用，用完及时关掉。
+            </div>
+            <div class="field-hint" id="termCfgState">当前状态：已关闭</div>
+          </div>
+
           <div class="card">
             <div class="card-head">
               <div class="card-title">Onebot 通道</div>
@@ -3885,7 +4017,8 @@
   <div id="rbHead">
     <div class="rb-seg">
       <button class="rb-tab on" id="rbTabFile" title="文件管理器">文件管理器</button>
-      <button class="rb-tab" id="rbTabTerm" title="终端">终端</button>
+      <button class="rb-tab" id="rbTabTerm" title="AI 执行的命令（只读）">终端</button>
+      <button class="rb-tab" id="rbTabShell" title="远程终端：自己敲命令">远程终端</button>
     </div>
     <button id="rbToggle" class="side-toggle" title="收起 / 展开">▶</button>
   </div>
@@ -3932,6 +4065,43 @@
         <input id="termCmd" type="text" placeholder="在这里直接敲命令" autocomplete="off" spellcheck="false">
       </div>
       <button id="termRun">运行</button>
+    </div>
+  </div>
+
+  <!-- 远程终端：真 shell 会话，自己敲命令。与上面 AI 只读条带互不影响 -->
+  <div class="rb-pane" id="rbPaneShell">
+    <div id="shHead">
+      <div id="shMeta">
+        <span id="shCwd" title="">未创建会话</span>
+        <span id="shExit">退出码 —</span>
+      </div>
+      <button id="shTerminate" type="button" title="终止当前会话">终止</button>
+    </div>
+    <div id="shSessRow">
+      <div id="shSessions"></div>
+      <button id="shNew" type="button" title="新建终端会话（最多 3 个）">新建</button>
+    </div>
+    <div id="shNotice" hidden></div>
+    <div id="shOut" tabindex="0"></div>
+    <div id="shBar">
+      <textarea id="shInput" rows="1" spellcheck="false" autocomplete="off"
+                placeholder="输入命令，回车执行；Shift+回车换行"></textarea>
+      <button id="shRun" type="button">运行</button>
+    </div>
+    <!-- 危险命令的二次确认：只在面板范围内遮罩，展示命令原文 -->
+    <div id="shConfirmMask" class="fb-confirm-mask">
+      <div class="fb-confirm">
+        <div class="txt">
+          <div id="shConfirmReason" style="margin-bottom:8px"></div>
+          <pre id="shConfirmCmd" style="font-family:var(--font-mono);font-size:12px;line-height:1.5;
+               white-space:pre-wrap;word-break:break-all;max-height:140px;overflow:auto;
+               background:var(--code-bg);padding:8px;border-radius:8px;margin:0"></pre>
+        </div>
+        <div class="btns">
+          <button id="shConfirmNo" type="button">取消</button>
+          <button id="shConfirmYes" type="button" class="danger">确认执行</button>
+        </div>
+      </div>
     </div>
   </div>
 </aside>
@@ -5484,14 +5654,17 @@
     RB.tab = tab;
     rbEl('rbTabFile').classList.toggle('on', tab === 'file');
     rbEl('rbTabTerm').classList.toggle('on', tab === 'term');
+    rbEl('rbTabShell').classList.toggle('on', tab === 'shell');
     rbEl('rbPaneFile').classList.toggle('on', tab === 'file');
     rbEl('rbPaneTerm').classList.toggle('on', tab === 'term');
+    rbEl('rbPaneShell').classList.toggle('on', tab === 'shell');
     if (tab === 'file' && !fb.path) fbLoad();
     if (tab === 'file') fbDropInit();
     if (tab === 'term') {
       var l = rbEl('termList');
       if (l) l.scrollTop = l.scrollHeight;
     }
+    if (tab === 'shell') shShow();
     rbApplyLayout();
   }
 
@@ -6687,6 +6860,7 @@
 
   rbEl('rbTabFile').addEventListener('click', function () { rbShowTab('file'); });
   rbEl('rbTabTerm').addEventListener('click', function () { rbShowTab('term'); });
+  rbEl('rbTabShell').addEventListener('click', function () { rbShowTab('shell'); });
   rbEl('sbToggle').addEventListener('click', function () { sbSetCollapsed(true); });
   rbEl('sbExpand').addEventListener('click', function () { sbSetCollapsed(false); });
   // 「会话」这两个字也是展开按钮，整条窄条宽度都能点
@@ -7610,6 +7784,808 @@
     if (e.key === 'Enter') { e.preventDefault(); termRunCmd(); }
   });
 
+  // ---------- 远程终端（可交互 shell） ----------
+  // 与上面的 AI 只读条带完全独立：会话走 /api/terminal/sessions，
+  // 输出走 /ws/terminal/{id}，断线用 /output 补历史。
+  var SH_MAX_CHARS = 300000;    // DOM 里最多保留的字符数，超了从头部裁
+  var SH_KEEP_CHARS = 200000;   // 裁剪后保留的尾部长度
+  var SH = {
+    enabled: null,          // null=未探测；false=已被设置页关闭
+    settings: {},
+    sessions: [],
+    current: '',
+    cursor: 0,
+    decoder: null,
+    ws: null,
+    wsTry: 0,
+    retryTimer: null,
+    pingTimer: null,
+    textLen: 0,
+    truncatedShown: false,
+    droppedShown: false,
+    ended: false,
+    execRunning: false,
+    execToken: '',
+    pollTimer: null,
+    lastExit: null,
+    pendingExec: null,
+    sizeTimer: null,
+    noticeTimer: null
+  };
+
+  function shEl(id) { return document.getElementById(id); }
+
+  function shApi(path, body) {
+    var opt = {};
+    if (body) {
+      opt.method = 'POST';
+      opt.headers = { 'Content-Type': 'application/json' };
+      opt.body = JSON.stringify(body);
+    }
+    return fetch(path, opt).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (r.status === 401) showAuth('登录已失效，请重新配对');
+        return { status: r.status, body: j || {} };
+      });
+    }).catch(function () {
+      return { status: 0, body: { reason: '连不上服务，请稍等几秒重试' } };
+    });
+  }
+
+  function shErrText(res) {
+    var b = (res && res.body) || {};
+    return b.reason || b.detail || ('请求失败（HTTP ' + res.status + '）');
+  }
+
+  function shFmtBytes(n) {
+    n = Number(n) || 0;
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    if (n >= 1024) return Math.round(n / 1024) + ' KB';
+    return n + ' B';
+  }
+
+  function shStateText(st) {
+    return ({
+      running: '运行中', exited: '已退出', terminated: '已终止',
+      timeout: '空闲回收', shutdown: '服务关闭', disabled: '已随开关关闭'
+    })[st] || (st || '未知');
+  }
+
+  function shFindSession(id) {
+    for (var i = 0; i < SH.sessions.length; i++) {
+      if (SH.sessions[i].id === id) return SH.sessions[i];
+    }
+    return null;
+  }
+
+  function shUpdateSession(s) {
+    if (!s || !s.id) return;
+    var found = false;
+    for (var i = 0; i < SH.sessions.length; i++) {
+      if (SH.sessions[i].id === s.id) { SH.sessions[i] = s; found = true; break; }
+    }
+    if (!found) SH.sessions.push(s);
+  }
+
+  function shNotice(text) {
+    var el = shEl('shNotice');
+    if (!el) return;
+    el.textContent = text || '';
+    el.hidden = !text;
+    clearTimeout(SH.noticeTimer);
+    if (text) SH.noticeTimer = setTimeout(function () { el.hidden = true; }, 7000);
+  }
+
+  // 空状态：标题 + 说明 + 可选按钮
+  function shEmptyBlock(title, desc, btnText, onClick) {
+    var out = shEl('shOut');
+    if (!out) return;
+    out.innerHTML = '';
+    var box = document.createElement('div');
+    box.className = 'sh-empty';
+    var t = document.createElement('div');
+    t.className = 't';
+    t.textContent = title;
+    box.appendChild(t);
+    if (desc) {
+      var d = document.createElement('div');
+      d.className = 'd';
+      d.textContent = desc;
+      box.appendChild(d);
+    }
+    if (btnText) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'sh-empty-btn';
+      b.textContent = btnText;
+      b.addEventListener('click', onClick);
+      box.appendChild(b);
+    }
+    out.appendChild(box);
+  }
+
+  // 设置页开关关闭时：面板只留一条明确说明，不当作网络错误
+  function shSetDisabled() {
+    SH.enabled = false;
+    SH.sessions = [];
+    SH.current = '';
+    SH.ended = false;
+    SH.execRunning = false;
+    shStopPoll();
+    shCloseWs();
+    shStopPing();
+    if (shEl('rbPaneShell')) shEl('rbPaneShell').classList.add('sh-off');
+    shRenderChips();
+    shEmptyBlock('远程终端已在设置里关闭',
+      '到「设置 → 远程连接 → 远程终端」把开关打开，保存后即可使用。',
+      '去设置开启',
+      function () {
+        openSettings();
+        showSetPane('remote');
+        setTimeout(function () {
+          var c = document.getElementById('cfgTermEnabled');
+          if (c && c.scrollIntoView) c.scrollIntoView({ block: 'center' });
+        }, 300);
+      });
+  }
+
+  function shShowLoadError(msg) {
+    // 已经有输出时不要用空状态清屏，只提示一次读取失败
+    if (SH.current && SH.textLen > 0) { shNotice('会话列表读取失败：' + msg); return; }
+    shEmptyBlock('会话列表读取失败', msg, '重试', function () { shLoadSessions(); });
+  }
+
+  function shRenderChips() {
+    var box = shEl('shSessions');
+    if (!box) return;
+    box.innerHTML = '';
+    if (!SH.sessions.length) {
+      var e = document.createElement('span');
+      e.className = 'sh-chip-empty';
+      e.textContent = SH.enabled === false ? '不可用' : '暂无会话';
+      box.appendChild(e);
+      return;
+    }
+    SH.sessions.forEach(function (s) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'sh-chip' + (s.id === SH.current ? ' on' : '');
+      var dot = document.createElement('span');
+      dot.className = 'dot' + (s.state === 'running' ? ' run' : '');
+      var nm = document.createElement('span');
+      nm.className = 'nm';
+      nm.textContent = '#' + String(s.id || '').slice(0, 6);
+      b.appendChild(dot);
+      b.appendChild(nm);
+      b.title = '#' + s.id + ' · ' + (s.cwd || '') + ' · ' + shStateText(s.state)
+        + (s.exit_code != null ? ' · 退出码 ' + s.exit_code : '');
+      b.addEventListener('click', function () {
+        if (SH.current !== s.id) shSelect(s.id, true);
+      });
+      box.appendChild(b);
+    });
+  }
+
+  function shRenderHead() {
+    var s = shFindSession(SH.current);
+    var cwd = shEl('shCwd');
+    var ex = shEl('shExit');
+    if (!cwd || !ex) return;
+    cwd.textContent = s ? (s.cwd || '—') : '未创建会话';
+    cwd.title = s ? (s.cwd || '') : '';
+    var code = SH.lastExit;
+    if (code == null && s && s.exit_code != null) code = s.exit_code;
+    var txt;
+    if (SH.execRunning) txt = '运行中 · 退出码 —';
+    else if (code != null) txt = '退出码 ' + code;
+    else txt = '退出码 —';
+    if (!SH.execRunning && s && s.state && s.state !== 'running' && code != null) {
+      txt = shStateText(s.state) + ' · ' + txt;
+    }
+    ex.textContent = txt;
+    ex.classList.toggle('bad', !SH.execRunning && code != null && code !== 0);
+    var termBtn = shEl('shTerminate');
+    if (termBtn) termBtn.disabled = !(s && s.state === 'running');
+  }
+
+  function shUpdateInputState() {
+    var has = !!SH.current;
+    var inp = shEl('shInput');
+    var run = shEl('shRun');
+    if (inp) {
+      inp.disabled = !has;
+      inp.placeholder = has ? '输入命令，回车执行；Shift+回车换行' : '先新建一个终端会话';
+    }
+    if (run) run.disabled = !has;
+    shEl('shNew').disabled = false;
+  }
+
+  function shPickSession() {
+    var pick = null;
+    for (var i = 0; i < SH.sessions.length; i++) {
+      if (SH.sessions[i].state === 'running') { pick = SH.sessions[i]; break; }
+    }
+    return pick || SH.sessions[0] || null;
+  }
+
+  function shLoadSessions() {
+    var btn = shEl('shNew');
+    if (btn) btn.disabled = true;
+    return shApi('/api/terminal/sessions').then(function (res) {
+      if (btn) btn.disabled = false;
+      var body = res.body || {};
+      if (res.status === 403 || body.error_code === 'remote_shell_disabled') {
+        shSetDisabled(body.reason);
+        return;
+      }
+      if (res.status === 401) return;
+      if (res.status === 0) { shShowLoadError(shErrText(res)); return; }
+      if (res.status !== 200 || body.ok === false) { shShowLoadError(shErrText(res)); return; }
+
+      SH.enabled = body.enabled !== false;
+      SH.settings = body.settings || {};
+      SH.sessions = body.sessions || [];
+      if (shEl('rbPaneShell')) shEl('rbPaneShell').classList.remove('sh-off');
+
+      if (SH.current && !shFindSession(SH.current)) {
+        SH.current = '';
+        SH.ended = true;       // 旧会话没了，别再重连
+        shCloseWs();
+        shStopPoll();
+      }
+      shRenderChips();
+      if (!SH.current) {
+        var pick = shPickSession();
+        if (pick) {
+          shSelect(pick.id, true);
+        } else {
+          shRenderHead();
+          shUpdateInputState();
+          shEl('shOut').innerHTML = '';
+          shEmptyBlock('还没有终端会话', '点右上角「新建」开一个 shell，就能在这里敲命令。');
+        }
+        return;
+      }
+      shRenderHead();
+      shUpdateInputState();
+      if (!SH.ws && !SH.ended && SH.current) shConnect(SH.current, SH.cursor);
+    });
+  }
+
+  function shSelect(id, reset) {
+    shStopPoll();
+    shCloseWs();
+    SH.current = id;
+    SH.execRunning = false;
+    SH.lastExit = null;
+    SH.ended = false;
+    var s = shFindSession(id);
+    if (reset !== false) {
+      SH.cursor = 0;
+      SH.textLen = 0;
+      SH.truncatedShown = false;
+      SH.droppedShown = false;
+      try { SH.decoder = new TextDecoder('utf-8'); } catch (e) { SH.decoder = null; }
+      shEl('shOut').innerHTML = '';
+    }
+    if (s && s.exit_code != null) SH.lastExit = s.exit_code;
+    shRenderChips();
+    shRenderHead();
+    shUpdateInputState();
+    shConnect(id, SH.cursor);
+    shSendResize();
+  }
+
+  function shCalcSize() {
+    var out = shEl('shOut');
+    var w = (out && out.clientWidth) || 280;
+    var h = (out && out.clientHeight) || 320;
+    var cols = Math.floor((w - 2) / 7.2);
+    var rows = Math.floor((h - 2) / 16.5);
+    return {
+      cols: Math.max(20, Math.min(500, cols)),
+      rows: Math.max(5, Math.min(300, rows))
+    };
+  }
+
+  // 尺寸只走 WS 的 resize 消息（后端没有 REST resize 路由）
+  function shSendResize() {
+    if (!SH.current) return;
+    if (!(SH.ws && SH.ws.readyState === 1)) return;
+    var sz = shCalcSize();
+    try { SH.ws.send(JSON.stringify({ type: 'resize', cols: sz.cols, rows: sz.rows })); } catch (e) {}
+  }
+
+  function shQueueResize() {
+    if (!SH.current) return;
+    clearTimeout(SH.sizeTimer);
+    SH.sizeTimer = setTimeout(shSendResize, 400);
+  }
+
+  function shStartPing() {
+    shStopPing();
+    SH.pingTimer = setInterval(function () {
+      if (SH.ws && SH.ws.readyState === 1) {
+        try { SH.ws.send(JSON.stringify({ type: 'ping' })); } catch (e) {}
+      }
+    }, 25000);
+  }
+
+  function shStopPing() {
+    if (SH.pingTimer) { clearInterval(SH.pingTimer); SH.pingTimer = null; }
+  }
+
+  function shStopPoll() {
+    if (SH.pollTimer) { clearTimeout(SH.pollTimer); SH.pollTimer = null; }
+  }
+
+  function shCloseWs() {
+    var w = SH.ws;
+    SH.ws = null;
+    if (w) {
+      w.onopen = w.onmessage = w.onclose = w.onerror = null;
+      try { w.close(); } catch (e) {}
+    }
+    shStopPing();
+  }
+
+  function shConnect(id, cursor) {
+    shCloseWs();
+    var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    var ws;
+    try {
+      ws = new WebSocket(proto + '://' + location.host
+        + '/ws/terminal/' + encodeURIComponent(id) + '?cursor=' + (cursor || 0));
+    } catch (e) {
+      shResumeLater(id);
+      return;
+    }
+    SH.ws = ws;
+    ws.onopen = function () {
+      if (SH.ws !== ws) return;
+      SH.wsTry = 0;
+      shStartPing();
+      shSendResize();
+    };
+    ws.onmessage = function (ev) {
+      if (SH.ws !== ws) return;
+      var d = null;
+      try { d = JSON.parse(ev.data); } catch (e) { return; }
+      shHandleEvent(d);
+    };
+    ws.onerror = function () { /* 统一在 onclose 处理 */ };
+    ws.onclose = function (ev) {
+      if (SH.ws !== ws) return;
+      SH.ws = null;
+      shStopPing();
+      if (ev.code === 4401) { showAuth('登录已失效，请重新配对'); return; }
+      if (ev.code === 4403) { shSetDisabled('远程终端已在设置里关闭'); return; }
+      if (ev.code === 4404) {
+        shNotice('会话不存在或已过期，已返回列表');
+        SH.current = '';
+        SH.ended = true;
+        shLoadSessions();
+        return;
+      }
+      if (SH.ended) return;              // 进程自己退出，不再重连
+      shResumeLater(id);
+    };
+  }
+
+  // 断线续读：先用 GET output 把 cursor 之后的历史补上，再重连 WS
+  function shResumeLater(id) {
+    if (!id || SH.current !== id || SH.ended) return;
+    if (SH.retryTimer) return;
+    var tries = SH.wsTry++;
+    if (tries > 8) {
+      shNotice('连接已断开，输出可能不完整；切换会话或新建会话可重试');
+      return;
+    }
+    var delay = Math.min(5000, 500 * Math.pow(2, tries));
+    SH.retryTimer = setTimeout(function () {
+      SH.retryTimer = null;
+      if (SH.current !== id || SH.ended) return;
+      shApi('/api/terminal/sessions/' + encodeURIComponent(id)
+        + '/output?cursor=' + SH.cursor + '&max_bytes=262144').then(function (res) {
+        if (SH.current !== id) return;
+        if (res.status === 200 && res.body.chunks) {
+          res.body.chunks.forEach(function (c) {
+            if (typeof c.seq === 'number' && c.seq < SH.cursor) return;
+            shAppendOutput(c.data);
+            if (typeof c.seq === 'number') SH.cursor = c.seq + 1;
+          });
+          if (res.body.dropped && !SH.droppedShown) {
+            SH.droppedShown = true;
+            shBanner('部分早期输出已被服务端丢弃，只能看到最近一段。');
+          }
+          if (res.body.next_cursor != null) SH.cursor = Math.max(SH.cursor, res.body.next_cursor);
+        } else if (res.status === 404 || res.status === 409) {
+          shNotice('会话已结束，已返回列表');
+          SH.ended = true;
+          SH.current = '';
+          shLoadSessions();
+          return;
+        }
+        if (SH.current === id && !SH.ended && !SH.ws) shConnect(id, SH.cursor);
+      });
+    }, delay);
+  }
+
+  function shHandleEvent(d) {
+    if (!d || !d.type) return;
+    if (d.type === 'output') {
+      if (typeof d.seq === 'number' && d.seq < SH.cursor) return;
+      shAppendOutput(d.data);
+      if (typeof d.seq === 'number') SH.cursor = d.seq + 1;
+      return;
+    }
+    if (d.type === 'hello') {
+      if (d.session) { shUpdateSession(d.session); shRenderChips(); shRenderHead(); }
+      return;
+    }
+    if (d.type === 'cursor') {
+      if (typeof d.next_cursor === 'number') SH.cursor = Math.max(SH.cursor, d.next_cursor);
+      if (d.dropped && !SH.droppedShown) {
+        SH.droppedShown = true;
+        shBanner('部分早期输出已被服务端丢弃，只能看到最近一段。');
+      }
+      return;
+    }
+    if (d.type === 'truncated') {
+      if (!SH.truncatedShown) {
+        SH.truncatedShown = true;
+        shBanner('输出已达单会话上限（' + shFmtBytes(d.total_bytes || (SH.settings && SH.settings.max_output_bytes))
+          + '），之后的内容不再保存，进程仍在运行。');
+      }
+      return;
+    }
+    if (d.type === 'exec_started') {
+      SH.execRunning = true;
+      SH.execToken = d.token || SH.execToken;
+      shRenderHead();
+      shPollAfter(1200);
+      return;
+    }
+    if (d.type === 'exited') {
+      SH.ended = true;
+      SH.execRunning = false;
+      if (d.exit_code != null) SH.lastExit = d.exit_code;
+      shRenderHead();
+      shLoadSessions();
+      return;
+    }
+    if (d.type === 'confirm_required') {
+      shAskConfirm({ command: d.command, level: d.level, rule: d.rule, reason: d.reason }, d.command);
+      return;
+    }
+    if (d.type === 'error') {
+      if (d.code === 'remote_shell_disabled') shSetDisabled(d.reason);
+      else shNotice(d.reason || d.code || '终端连接出错');
+      return;
+    }
+    // pong 等心跳事件不需要界面反馈
+  }
+
+  // 输出块：base64 → bytes → UTF-8，按块追加文本节点，不清屏重画
+  function shAppendOutput(data) {
+    if (!data) return;
+    var text = '';
+    try {
+      var bin = atob(data);
+      var u8 = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      text = SH.decoder ? SH.decoder.decode(u8, { stream: true })
+        : String.fromCharCode.apply(null, u8);
+    } catch (e) { return; }
+    if (!text) return;
+    shAppendText(shSanitize(text));
+  }
+
+  // 剥掉 ANSI CSI/OSC 与光标控制；CR 统一成 LF，避免进度条把整行字叠在一起
+  function shSanitize(t) {
+    return t
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '')
+      .replace(/\x1b[()][0-9A-Za-z]/g, '')
+      .replace(/\x1b[@-_]/g, '')
+      .replace(/\r\n?/g, '\n');
+  }
+
+  function shAtBottom(out) {
+    return out.scrollHeight - out.scrollTop - out.clientHeight < 24;
+  }
+
+  function shAppendText(text) {
+    var out = shEl('shOut');
+    if (!out || !text) return;
+    var stick = shAtBottom(out);
+    out.appendChild(document.createTextNode(text));
+    SH.textLen += text.length;
+    // 超长时从头部裁掉整块文本，只保留尾部，避免 DOM 无限膨胀
+    while (SH.textLen > SH_MAX_CHARS && out.firstChild) {
+      var n = out.firstChild;
+      if (n.nodeType === 3) {
+        var excess = SH.textLen - SH_KEEP_CHARS;
+        if (n.nodeValue.length <= excess) {
+          SH.textLen -= n.nodeValue.length;
+          out.removeChild(n);
+          continue;
+        }
+        n.nodeValue = n.nodeValue.slice(excess);
+        SH.textLen -= excess;
+        break;
+      }
+      out.removeChild(n);
+    }
+    if (stick) out.scrollTop = out.scrollHeight;
+  }
+
+  function shBanner(text) {
+    var out = shEl('shOut');
+    if (!out) return;
+    var b = document.createElement('div');
+    b.className = 'sh-banner';
+    b.textContent = text;
+    out.appendChild(b);
+    if (shAtBottom(out)) out.scrollTop = out.scrollHeight;
+  }
+
+  // 提交命令：确认=false 先试；428 就弹确认，用户点「确认执行」才带 confirm=true 重发
+  function shSubmit(command, confirmed) {
+    var id = SH.current;
+    if (!id) return;
+    var run = shEl('shRun');
+    if (run) run.disabled = true;
+    shApi('/api/terminal/sessions/' + encodeURIComponent(id) + '/exec', {
+      command: command, confirm: !!confirmed, source: 'web'
+    }).then(function (res) {
+      if (res.status === 200) {
+        SH.execRunning = true;
+        SH.execToken = res.body.token || '';
+        shEl('shInput').value = '';
+        shResizeInput();
+        shRenderHead();
+        shPollAfter(1000);
+        return;
+      }
+      if (res.status === 428 && res.body.need_confirm) {
+        shAskConfirm(res.body, command);
+        return;
+      }
+      if (res.status === 404) {
+        shNotice('会话不存在或已过期，已返回列表');
+        SH.current = '';
+        SH.ended = true;
+        shLoadSessions();
+        return;
+      }
+      if (res.status === 409) {
+        shNotice('会话已结束：' + shErrText(res));
+        shLoadSessions();
+        return;
+      }
+      shNotice(shErrText(res));
+    }).then(function () {
+      if (run) run.disabled = !SH.current;
+    });
+  }
+
+  function shAskConfirm(info, fallbackCmd) {
+    SH.pendingExec = {
+      command: (info && info.command) || fallbackCmd || '',
+      level: info && info.level,
+      rule: info && info.rule
+    };
+    shEl('shConfirmReason').textContent = ((info && info.reason) || '该命令命中危险规则，需要确认后再执行。')
+      + (info && info.rule ? '（规则：' + info.rule + '）' : '');
+    shEl('shConfirmCmd').textContent = SH.pendingExec.command;
+    shEl('shConfirmMask').classList.add('show');
+  }
+
+  function shCloseConfirm() {
+    SH.pendingExec = null;
+    var m = shEl('shConfirmMask');
+    if (m) m.classList.remove('show');
+  }
+
+  function shPollAfter(ms) {
+    shStopPoll();
+    SH.pollTimer = setTimeout(shPollStatus, ms || 1000);
+  }
+
+  // 命令是否结束只能从会话的 last_command 读到；轮询到退出码就停
+  function shPollStatus() {
+    SH.pollTimer = null;
+    var id = SH.current;
+    if (!id || !SH.execRunning) return;
+    shApi('/api/terminal/sessions/' + encodeURIComponent(id)).then(function (res) {
+      if (SH.current !== id) return;
+      if (res.status !== 200 || !res.body.session) {
+        if (res.status === 404 || res.status === 409) {
+          SH.execRunning = false;
+          SH.ended = true;
+          shRenderHead();
+          shLoadSessions();
+        } else {
+          shPollAfter(2500);
+        }
+        return;
+      }
+      var s = res.body.session;
+      shUpdateSession(s);
+      shRenderChips();
+      var lc = s.last_command;
+      if (lc && (!SH.execToken || lc.token === SH.execToken) && lc.exit_code != null) {
+        SH.execRunning = false;
+        SH.lastExit = lc.exit_code;
+        shRenderHead();
+        return;
+      }
+      shRenderHead();
+      shPollAfter(1800);
+    });
+  }
+
+  function shResizeInput() {
+    var inp = shEl('shInput');
+    if (!inp) return;
+    inp.style.height = 'auto';
+    inp.style.height = Math.min(120, Math.max(38, inp.scrollHeight)) + 'px';
+  }
+
+  function shDoExec() {
+    var inp = shEl('shInput');
+    if (!inp) return;
+    var cmd = inp.value;
+    if (!cmd || !cmd.trim()) return;
+    shSubmit(cmd, false);
+  }
+
+  function shSendInput(data) {
+    var id = SH.current;
+    if (!id) return;
+    shApi('/api/terminal/sessions/' + encodeURIComponent(id) + '/input', {
+      data: data, encoding: 'utf-8', confirm: false, source: 'web'
+    }).then(function (res) {
+      if (res.status === 200) return;
+      if (res.status === 428) { shAskConfirm(res.body, data); return; }
+      if (res.status === 404 || res.status === 409) { shNotice(shErrText(res)); shLoadSessions(); return; }
+      shNotice(shErrText(res));
+    });
+  }
+
+  function shTerminate() {
+    var id = SH.current;
+    if (!id) return;
+    var btn = shEl('shTerminate');
+    if (btn) btn.disabled = true;
+    shApi('/api/terminal/sessions/' + encodeURIComponent(id) + '/terminate').then(function (res) {
+      if (res.status === 200) {
+        shNotice(res.body.already_ended ? '会话已经结束' : '已终止会话');
+        if (res.body.session) shUpdateSession(res.body.session);
+        SH.execRunning = false;
+        if (res.body.session && res.body.session.exit_code != null) {
+          SH.lastExit = res.body.session.exit_code;
+        }
+        SH.ended = !!(res.body.session && res.body.session.state !== 'running');
+        shRenderHead();
+        shRenderChips();
+        shLoadSessions();
+        return;
+      }
+      if (res.status === 404) {
+        shNotice('会话不存在或已过期，已返回列表');
+        SH.current = '';
+        SH.ended = true;
+        shLoadSessions();
+        return;
+      }
+      if (res.status === 409) {
+        shNotice('会话已结束：' + shErrText(res));
+        shLoadSessions();
+        return;
+      }
+      shNotice(shErrText(res));
+      shRenderHead();
+    });
+  }
+
+  function shNewSession() {
+    var btn = shEl('shNew');
+    if (btn) btn.disabled = true;
+    var sz = shCalcSize();
+    shApi('/api/terminal/sessions', {
+      cols: sz.cols, rows: sz.rows, source: 'web'
+    }).then(function (res) {
+      if (btn) btn.disabled = false;
+      if (res.status === 200 && res.body.session) {
+        SH.enabled = true;
+        if (shEl('rbPaneShell')) shEl('rbPaneShell').classList.remove('sh-off');
+        shUpdateSession(res.body.session);
+        SH.sessions = res.body.sessions || SH.sessions;
+        shSelect(res.body.session.id, true);
+        return;
+      }
+      if (res.status === 403 || res.body.error_code === 'remote_shell_disabled') {
+        shSetDisabled(res.body.reason);
+        return;
+      }
+      if (res.status === 429 || res.body.error_code === 'too_many_sessions') {
+        var max = (SH.settings && SH.settings.max_sessions) || 3;
+        shNotice('会话数已达上限（最多 ' + max + ' 个），请先终止一个再新建');
+        return;
+      }
+      if (res.status === 400 && res.body.error_code === 'cwd_missing') {
+        shNotice('工作目录不存在，已取消新建');
+        return;
+      }
+      shNotice(shErrText(res) || '新建会话失败');
+    });
+  }
+
+  // 面板首次显示 / 切回来时拉一次列表；已有连接保持不动
+  function shShow() {
+    if (!shEl('shOut')) return;
+    shLoadSessions().then(function () {
+      shQueueResize();
+    });
+  }
+
+  // 设置页保存后：开关可能刚改过，重探一次面板状态
+  function shAfterCfgSave() {
+    SH.enabled = null;
+    if (RB.tab === 'shell') shLoadSessions();
+  }
+
+  function syncTermCfgState(pending) {
+    if (!termCfgState || !cfgTermEnabled) return;
+    termCfgState.textContent = '当前状态：' + (cfgTermEnabled.checked ? '已开启' : '已关闭')
+      + (pending ? '（点「保存」后生效）' : '');
+  }
+  if (cfgTermEnabled) {
+    cfgTermEnabled.addEventListener('change', function () { syncTermCfgState(true); });
+  }
+
+  shEl('shRun').addEventListener('click', shDoExec);
+  shEl('shInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      shDoExec();
+      return;
+    }
+    // 输入框为空时 Ctrl+C 当作给 shell 的 SIGINT（走 input 接口）
+    if (e.ctrlKey && (e.key === 'c' || e.key === 'C') && !e.shiftKey && !e.altKey
+        && !String(shEl('shInput').value || '').length) {
+      e.preventDefault();
+      shSendInput('\u0003');
+    }
+  });
+  shEl('shInput').addEventListener('input', shResizeInput);
+  shEl('shNew').addEventListener('click', shNewSession);
+  shEl('shTerminate').addEventListener('click', shTerminate);
+  shEl('shConfirmYes').addEventListener('click', function () {
+    var p = SH.pendingExec;
+    shCloseConfirm();
+    if (p && p.command) shSubmit(p.command, true);
+  });
+  shEl('shConfirmNo').addEventListener('click', shCloseConfirm);
+  shEl('shConfirmMask').addEventListener('click', function (e) {
+    if (e.target === shEl('shConfirmMask')) shCloseConfirm();
+  });
+  window.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    if (shConfirmOpen()) shCloseConfirm();
+  });
+  function shConfirmOpen() {
+    var m = shEl('shConfirmMask');
+    return !!(m && m.classList.contains('show'));
+  }
+  // 粘贴多行按整段命令提交（Enter 发送整段，Shift+回车留给换行编辑）
+  shEl('shInput').addEventListener('paste', function () {
+    setTimeout(shResizeInput, 0);
+  });
+
+
   // 恢复上次的布局 / 标签页
   try {
     var savedRb = JSON.parse(localStorage.getItem('deckmeido_rb') || '{}');
@@ -7618,7 +8594,7 @@
     var savedSb = JSON.parse(localStorage.getItem('deckmeido_sb') || '{}');
     SB.collapsed = !!savedSb.collapsed;
   } catch (e) {}
-  window.addEventListener('resize', function () { rbApplyLayout(); sbApplyLayout(); if (termBig) termRefreshBig(); fitTtsCredit(); });
+  window.addEventListener('resize', function () { rbApplyLayout(); sbApplyLayout(); if (termBig) termRefreshBig(); fitTtsCredit(); shQueueResize(); });
   sbApplyLayout();
   // 首屏只走 rbShowTab 这一条路：它里面按 tab 决定要不要 fbLoad。
   // 之前这里另起一次 fbLoad，两路并发后到的会把先到的列表覆盖成「加载中…」
@@ -10341,6 +11317,9 @@
   var cfgRiSens = document.getElementById('cfgRiSens');
   var cfgRiSensVal = document.getElementById('cfgRiSensVal');
   var cfgRiMax = document.getElementById('cfgRiMax');
+  // 远程终端总开关（[terminal].remote_shell，GET 字段 terminal_remote_shell）
+  var cfgTermEnabled = document.getElementById('cfgTermEnabled');
+  var termCfgState = document.getElementById('termCfgState');
   var riEnableCard = document.getElementById('riEnableCard');
   var riCfgState = document.getElementById('riCfgState');
   // Onebot 通道（远程连接页）：状态轮询 + 配置回填
@@ -11300,6 +12279,10 @@
         cfgRiSens.value = c.remote_input_sensitivity || 1.5;
         cfgRiSensVal.textContent = Number(cfgRiSens.value).toFixed(1) + '×';
         cfgRiMax.value = c.remote_input_max_minutes || 30;
+        if (cfgTermEnabled) {
+          cfgTermEnabled.checked = !!c.terminal_remote_shell;
+          syncTermCfgState();
+        }
         document.getElementById('cfgPersonaName').value = c.persona_name || '';
         document.getElementById('cfgPersonaTraits').value = c.persona_traits || '';
         document.getElementById('cfgPersonaExtra').value = c.persona_extra || '';
@@ -11719,6 +12702,8 @@
       remote_input_enabled: !!cfgRiEnabled.checked,
       remote_input_sensitivity: Number(cfgRiSens.value) || 1.5,
       remote_input_max_minutes: parseInt(cfgRiMax.value, 10) || 30,
+      // 远程终端总开关：关闭时后端会同时回收全部会话
+      terminal_enabled: !!(cfgTermEnabled && cfgTermEnabled.checked),
       // 局域网开关与端口：写入 [server]，绑定地址/端口需重启后端生效
       lan_enable: cfgLanEnable.value === 'on',
       port: port,
@@ -11756,6 +12741,9 @@
             : '未配置接口 —— 对话暂不可用';
         }
         riState.enabled = !!cfgRiEnabled.checked;
+        // 远程终端开关可能刚改过：面板状态与会话列表重新探一次
+        syncTermCfgState();
+        shAfterCfgSave();
         loadRemoteStatus();
         loadSttStatus(true);
         if (cfgDevMode) {
