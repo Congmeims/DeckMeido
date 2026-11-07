@@ -871,13 +871,19 @@ def provide_password(component: str, password: str) -> dict:
     if (job.get("component") != component or job.get("state") != "need_password"
             or not _pw_waiting):
         return {"ok": False, "reason": "not_waiting", "error": "当前没有等待授权的安装任务"}
-    ok, _out = _sudo_check(password)
+    ok, out = _sudo_check(password)
     if ok:
         with _pw_lock:
             _pw_value = password
             _pw_attempts = 0
             _pw_event.set()
         return {"ok": True}
+    if "not in the sudoers" in (out or "").lower():
+        # 不是密码错，是这个账号根本没有 sudo 权限，再试也没用
+        with _pw_lock:
+            _pw_fail = "当前用户不在 sudoers 中，无法用密码提权安装"
+            _pw_event.set()
+        return {"ok": False, "reason": "no_sudoers", "error": _pw_fail}
     with _pw_lock:
         _pw_attempts += 1
         left = PASSWORD_MAX_ATTEMPTS - _pw_attempts

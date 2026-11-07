@@ -519,6 +519,18 @@ class PackageInstallTest(SelfcheckBase):
             sc._verify_package(path, self.SPEC)
         self.assertEqual(ctx.exception.reason, "download_failed")
 
+    def test_没有sudo权限时给出真实原因(self):
+        sc._job = {"component": "ydotool", "state": "need_password"}
+        sc._pw_waiting = True
+        with mock.patch.object(sc, "_sudo_check",
+                               return_value=(False, "deck is not in the sudoers file")):
+            res = sc.provide_password("ydotool", "pw")
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reason"], "no_sudoers")
+        self.assertIn("sudoers", res["error"])
+        sc._pw_waiting = False
+        sc._job = None
+
     def test_密码错误三次终止(self):
         sc._job = {"component": "ydotool", "state": "need_password"}
         sc._pw_waiting = True
