@@ -203,9 +203,6 @@
     flex: 1 1 auto;
     overflow-y: auto;
     padding: 14px;
-    /* 末条消息的操作行用负 bottom 悬在气泡下方，滚动到底时要留出它的高度，
-       否则贴近输入框时那排「重试 分享 删除」会被容器下沿裁掉半截 */
-    padding-bottom: 40px;
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -217,14 +214,12 @@
     contain-intrinsic-size: auto 120px;
   }
   .msg {
-    position: relative;
+    position: relative;   /* 分享选择模式的勾选圈用绝对定位挂在气泡上 */
     max-width: 85%;
-    /* 上下内边距必须对称，字才真正居中。悬停操作行常驻的 20px 空隙放在气泡外面
-       （margin-bottom），放进 padding 会让每个气泡看起来字都偏上；
-       这段空隙不能靠 :hover 撑高，否则鼠标停在气泡下沿会触发
-       「撑高→指针移出→回缩→指针落回」的每帧循环抖动 */
+    /* 上下内边距必须对称，字才真正居中。气泡间距交给 #messages 的 gap，
+       不再为操作行额外预留 margin */
     padding: 10px 14px;
-    margin-bottom: 20px;
+    margin-bottom: 0;
     border-radius: 16px;
     line-height: 1.55;
     font-size: 15.5px;
@@ -250,14 +245,9 @@
     color: var(--muted);
     font-size: 12.5px;
     padding: 2px 8px;
-    /* 继承来的 margin-bottom:20px 是给对话气泡留悬停操作行的，
-       系统提示（「模型已切换为 …」）没有操作行，留着就是纯空白：
-       两条提示之间被撑出 40px，#messages 自己的 gap 又加 10px。
-       归零后由容器的 gap 统一控制间距 */
     margin-bottom: 0;
     line-height: 1.4;
   }
-  .msg .time { display: block; margin-top: 4px; font-size: 11px; opacity: .55; }
   /* 语音条：可点击播放的助手消息附件（QQ 语音回复本地回放） */
   .voice-bubble {
     display: flex; align-items: center; gap: 8px;
@@ -331,48 +321,32 @@
     background: rgba(255, 255, 255, .18);
     opacity: .8;
   }
-  /* 气泡底部：操作按钮在左，时间在右。
-     默认隐藏，鼠标移到这条消息上才出现——一排「重试 分享 删除 时间」
-     常驻显示太抢眼，压过了对话本身。
-     注意：必须用绝对定位脱离文档流。它一旦参与布局，即使高度为 0、
-     透明度为 0，那排按钮的宽度仍会被算进气泡的收缩宽度，
-     导致「继续」这种两个字的短句也被撑到近 200px 宽。 */
-  /* 操作行贴在气泡正下方：气泡的底部空隙已经移到 margin 里，所以这里要
-     用负的 bottom 把整行拉进那段 margin，而不是 top:100%（那会顶到气泡外框下） */
-  .msg-foot {
-    position: absolute;
-    left: 0; right: auto;
-    bottom: -18px;
-    display: flex; align-items: center; gap: 10px;
+  /* 消息操作只有右键 / 长按菜单这一个入口：气泡底部不再挂任何按钮，
+     也不用再为操作行留出被裁的区域 */
+  .ctx-menu {
+    position: fixed; z-index: 120; min-width: 148px;
+    padding: 4px; border-radius: 10px;
+    background: var(--surface-2); color: var(--text);
+    border: 1px solid var(--line);
+    box-shadow: 0 12px 32px rgba(0,0,0,.5);
+    font-size: 13px;
+  }
+  .ctx-head {
+    padding: 6px 10px 7px; margin-bottom: 2px;
+    color: var(--muted); font-size: 11.5px;
+    border-bottom: 1px solid var(--line);
     white-space: nowrap;
-    opacity: 0; visibility: hidden; pointer-events: none;
-    transition: opacity .16s ease, visibility .16s ease;
-    z-index: 6;
   }
-  /* 用户气泡贴着右边缘，操作行从右往左展开，避免短句时溢出到面板外 */
-  .msg.user .msg-foot { left: auto; right: 0; }
-  .msg:hover .msg-foot, .msg-foot:focus-within {
-    opacity: 1; visibility: visible; pointer-events: auto;
+  .ctx-item {
+    display: block; width: 100%; text-align: left;
+    padding: 8px 10px; border: none; border-radius: 7px;
+    background: transparent; color: var(--text); font-size: 13px;
+    font-family: inherit; cursor: pointer;
   }
-  /* 触屏（SteamOS 游戏模式没有 hover）拿不到鼠标悬停，就常显，否则按钮等于不存在。
-     但只在对话最末一条上常显：手机端每屏好几条，一排「重试 分享 删除 时间」
-     全亮着会盖满对话。往上翻看旧消息时照常点一下气泡把它们叫出来 */
-  @media (hover: none) {
-    .msg:last-child .msg-foot,
-    .events:last-child .msg-foot { opacity: 1; visibility: visible; pointer-events: auto; }
-    .msg.foot-on .msg-foot { opacity: 1; visibility: visible; pointer-events: auto; }
-  }
-  .msg-foot .time { margin-top: 0; }
-  .msg-acts { display: flex; gap: 2px; }
-  .msg-act {
-    border: none; background: transparent; color: var(--muted);
-    font-size: 12px; padding: 2px 6px; border-radius: 6px; cursor: pointer;
-  }
-  .msg-act:hover { background: var(--hover); color: var(--text); }
-  /* 用户气泡是蓝底，灰色按钮在上面几乎看不见，换成半透明白 */
-  .msg.user .msg-act { color: rgba(255, 255, 255, .78); }
-  .msg.user .msg-act:hover { background: rgba(255, 255, 255, .2); color: #fff; }
-  .msg.user .msg-foot .time { color: rgba(255, 255, 255, .7); }
+  .ctx-item:hover, .ctx-item:focus-visible { background: var(--hover); outline: none; }
+  .ctx-item.danger { color: #ff7a6a; }
+  .ctx-item[disabled] { color: var(--muted); opacity: .62; cursor: default; }
+  .ctx-item[disabled]:hover, .ctx-item[disabled]:focus-visible { background: transparent; }
 
   /* 分享选择模式：每条回合左侧出现对勾，选中后高亮 */
   #messages.share-pick .msg { padding-left: 30px; cursor: pointer; }
@@ -389,7 +363,6 @@
     width: 8px; height: 4px; border-left: 2px solid #fff; border-bottom: 2px solid #fff;
     transform: rotate(-45deg);
   }
-  #messages.share-pick .msg-act, #messages.share-pick .msg-foot { display: none; }
   #shareBar {
     display: none; position: sticky; bottom: 0; z-index: 30;
     padding: 10px 16px; gap: 10px; align-items: center;
@@ -611,12 +584,8 @@
   .typing i:nth-child(2) { animation-delay: .2s; }
   .typing i:nth-child(3) { animation-delay: .4s; }
   @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
-  /* 工具动态提示：文字在前，动态点跟在文字后面。
-     它同时带 .msg，所以会继承 margin-bottom:20px（那是给气泡悬停操作行留的空隙）。
-     作为列表最后一项时，这 20px 会和 #messages 的 padding 叠在一起，落得比左右
-     边距宽一大截。抵消掉，让它只留 padding，和左右留白对齐 */
+  /* 工具动态提示：文字在前，动态点跟在文字后面 */
   .typing-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  #messages > .typing-row:last-child { margin-bottom: 0; }
   .typing-label { color: var(--muted); font-size: 12.5px; line-height: 1.5; word-break: break-word; }
 
   /* 「回到底部」悬浮球：AI 正在输出时用户往上翻看旧内容，就不该再被拽回底部，
@@ -4448,7 +4417,7 @@
     scrollBottomSafe();
   }
 
-  // 用户气泡：来源角标 + 正文 + 随提问附带的画面缩略图 + 底部操作行。
+  // 用户气泡：来源角标 + 正文 + 随提问附带的画面缩略图。
   // 实时接收（user_message）和历史回放（history）走同一份，
   // 免得「刚发出去时有图、刷新后图又没了」这类两边不一致的怪现象
   function makeUserBubble(text, ts, client, device, events) {
@@ -4503,7 +4472,6 @@
       shot.addEventListener('click', function () { openShotViewer(shot.src); });
       el.appendChild(shot);
     });
-    addMsgFoot(el, ts, 'user');
     return el;
   }
 
@@ -4551,44 +4519,7 @@
     document.body.appendChild(mask);
   }
 
-  // 气泡底部：操作按钮在左，时间在右（鼠标移上去才显示，见 .msg-foot 样式）
-  function addMsgFoot(el, ts, role) {
-    var foot = document.createElement('div');
-    foot.className = 'msg-foot';
-    var acts = document.createElement('div');
-    acts.className = 'msg-acts';
-    if (role === 'user') {
-      // 主人自己的话：重试=把这句话再发一遍；删除=连它和下面那条回答一起撤掉
-      var rb = makeActBtn('重试', function () { retryUserMsg(el); });
-      rb.title = '重新发送这条消息';
-      acts.appendChild(rb);
-    } else {
-      acts.appendChild(makeActBtn('重试', function () { retryMsg(el); }));
-    }
-    acts.appendChild(makeActBtn('分享', function () { enterSharePick(el); }));
-    var db = makeActBtn('删除', function () { deleteMsg(el, db); });
-    db.title = '从会话里删除（再点一次确认）';
-    acts.appendChild(db);
-    foot.appendChild(acts);
-    var t = document.createElement('span');
-    t.className = 'time';
-    t.textContent = ts ? fmtTime(ts) : fmtTime();
-    foot.appendChild(t);
-    el.appendChild(foot);
-  }
-
-  // 气泡底部的小操作按钮（重试 / 分享）
-  function makeActBtn(label, onClick) {
-    var b = document.createElement('button');
-    b.className = 'msg-act';
-    b.textContent = label;
-    b.addEventListener('click', function (e) {
-      e.stopPropagation();
-      onClick();
-    });
-    return b;
-  }
-
+  // 气泡底部不再挂操作按钮：重试 / 复制 / 分享 / 删除 全走右键（触屏长按）菜单
   // 工具事件 → 时间线行文案（Trae 式：已读取/已编辑/已运行…）
   function toolRowInfo(ev) {
     var fname = ev.path ? (ev.path.split(/[\\/]/).pop() || ev.path) : '';
@@ -4701,7 +4632,7 @@
     } catch (e) {}
   }
 
-  // 正文气泡（回合内按时间顺序穿插用）：final=true 时带底部按钮与时间
+  // 正文气泡（回合内按时间顺序穿插用）
   function makeTextBubble(text, final, ts) {
     var el = document.createElement('div');
     el.className = 'msg assistant in-turn';
@@ -4710,7 +4641,6 @@
     body.className = 'stream-body';
     body.innerHTML = renderMd(text);
     el.appendChild(body);
-    if (final) addMsgFoot(el, ts, 'assistant');
     return el;
   }
 
@@ -7694,7 +7624,6 @@
               if (fb) fb.innerHTML = renderMd(msg.text);
               fillFileSizes(streamEl);
               if (msg.ts) streamEl.dataset.ts = String(msg.ts);
-              addMsgFoot(streamEl, msg.ts, 'assistant');
               promoted = true;
               finalBubble = streamEl;
               if (liveBox && streamEl.parentNode === liveBox) {
@@ -8848,16 +8777,151 @@
     });
   }
 
-  // 用户消息「重试」：把这句话重新发一遍。
-  // 必须等后端把老那条（连同它的回答）真正删掉之后再发，
-  // 否则历史里会短暂出现两条一模一样的提问，模型会当成主人重复说了两遍
-  function retryUserMsg(el) {
-    if (busy) { addSystem('等这一轮结束再重试'); return; }
-    var body = el.querySelector(':scope > div:not(.msg-foot)');
-    var text = (body ? body.innerText : el.textContent).trim();
-    if (!text) return;
-    doDeleteMsg(el).then(function (ok) { if (ok) doSend(text); });
+  // ---------- 右键 / 长按菜单：消息操作唯一入口 ----------
+  var msgMenu = null;
+  var menuTarget = null;
+
+  function closeMsgMenu() {
+    if (msgMenu && msgMenu.parentNode) msgMenu.parentNode.removeChild(msgMenu);
+    msgMenu = null;
+    menuTarget = null;
   }
+
+  // 只有最后一轮的 AI 回复可以重试：和 retryMsg 里的 isLast 判定保持一致
+  function canRetryMsg(el) {
+    if (busy || el.classList.contains('user')) return false;
+    var box = el.closest('.events');
+    return el === messages.lastElementChild
+           || (!!box && box === messages.lastElementChild);
+  }
+
+  function copyMsgText(text) {
+    function done() { addSystem('已复制到剪贴板'); }
+    function fallback() {
+      // 旧 WebKit / 非安全上下文没有 navigator.clipboard，退回选中复制
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed'; ta.style.top = '-1000px'; ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      ta.remove();
+      if (ok) done(); else addSystem('复制失败，请手动选中文字复制');
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  function menuItem(label, enabled, onClick, extraCls) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ctx-item' + (extraCls ? ' ' + extraCls : '');
+    b.setAttribute('role', 'menuitem');
+    b.textContent = label;
+    b.disabled = !enabled;
+    b.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (b.disabled) return;
+      onClick(b);
+    });
+    b.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    return b;
+  }
+
+  function openMsgMenu(el, x, y) {
+    closeMsgMenu();
+    if (!el) return;
+    menuTarget = el;
+    var menu = document.createElement('div');
+    menu.className = 'ctx-menu';
+    menu.setAttribute('role', 'menu');
+    // 抬头：谁说的 + 时间（气泡底部那行撤掉后，时间信息在这里保留）
+    var head = document.createElement('div');
+    head.className = 'ctx-head';
+    var who = el.classList.contains('user') ? '我' : 'AI';
+    var ts = el.dataset.ts ? parseFloat(el.dataset.ts) : null;
+    head.textContent = who + (ts ? ' · ' + fmtTime(ts) : '');
+    menu.appendChild(head);
+
+    var text = bubbleText(el);
+    var rBtn = menuItem('重试', canRetryMsg(el), function () { closeMsgMenu(); retryMsg(el); });
+    if (rBtn.disabled) rBtn.title = '只能重试最后一轮的 AI 回复';
+    menu.appendChild(rBtn);
+    var cBtn = menuItem('复制', !!text, function () { closeMsgMenu(); copyMsgText(text); });
+    if (cBtn.disabled) cBtn.title = '这条消息没有可复制的文字';
+    menu.appendChild(cBtn);
+    menu.appendChild(menuItem('分享', !messages.classList.contains('share-pick'), function () {
+      closeMsgMenu();
+      enterSharePick(el);
+    }));
+    // 删除沿用原来的两步确认：第一次点变「确认？」，菜单保持打开，再点才真删
+    menu.appendChild(menuItem('删除', !busy, function (btn) {
+      var confirmed = pendingDelete && pendingDelete.btn === btn;
+      deleteMsg(el, btn);
+      if (confirmed) closeMsgMenu();
+    }, 'danger'));
+
+    // 先按点击位置摆，再按实际尺寸翻转，保证贴着屏幕边缘也不被裁
+    menu.style.left = Math.round(x) + 'px';
+    menu.style.top = Math.round(y) + 'px';
+    document.body.appendChild(menu);
+    var r = menu.getBoundingClientRect();
+    var pad = 6, vw = window.innerWidth, vh = window.innerHeight;
+    if (x + r.width + pad > vw) menu.style.left = Math.max(pad, Math.round(x - r.width)) + 'px';
+    if (y + r.height + pad > vh) menu.style.top = Math.max(pad, Math.round(y - r.height)) + 'px';
+    msgMenu = menu;
+  }
+
+  // 鼠标右键（含客户端/手柄映射进来的右键）
+  messages.addEventListener('contextmenu', function (e) {
+    var el = e.target.closest('.msg');
+    if (!el || !(el.classList.contains('user') || el.classList.contains('assistant'))) return;
+    e.preventDefault();
+    if (msgMenu && menuTarget === el) return;   // 长按已经弹出同一份菜单
+    openMsgMenu(el, e.clientX, e.clientY);
+  });
+
+  // 触屏长按：SteamOS 游戏模式与手机没有 hover，这就是菜单入口
+  var lpTimer = null, lpX = 0, lpY = 0, lpEl = null;
+  function stopLongPress() {
+    if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+  }
+  messages.addEventListener('pointerdown', function (e) {
+    if (e.pointerType === 'mouse') return;   // 鼠标走右键
+    var el = e.target.closest('.msg');
+    if (!el || el.classList.contains('system')) return;
+    if (!(el.classList.contains('user') || el.classList.contains('assistant'))) return;
+    stopLongPress();
+    lpEl = el; lpX = e.clientX; lpY = e.clientY;
+    lpTimer = setTimeout(function () {
+      lpTimer = null;
+      var target = lpEl;
+      lpEl = null;
+      if (target) openMsgMenu(target, lpX, lpY);
+    }, 520);
+  });
+  messages.addEventListener('pointermove', function (e) {
+    if (!lpTimer) return;
+    if (Math.abs(e.clientX - lpX) > 10 || Math.abs(e.clientY - lpY) > 10) stopLongPress();
+  });
+  messages.addEventListener('pointerup', stopLongPress);
+  messages.addEventListener('pointercancel', stopLongPress);
+
+  // 点空白处、Esc、滚动都关闭菜单
+  document.addEventListener('pointerdown', function (e) {
+    if (!msgMenu) return;
+    if (msgMenu.contains(e.target)) return;
+    closeMsgMenu();
+  }, true);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && msgMenu) closeMsgMenu();
+  });
+  messages.addEventListener('scroll', closeMsgMenu, { passive: true });
+  window.addEventListener('scroll', function () { if (msgMenu) closeMsgMenu(); }, true);
 
   // 重试：撤掉这条 AI 回复并让模型重新回答
   function retryMsg(el) {
@@ -12250,9 +12314,9 @@
     shareOverlay.classList.remove('show');
   });
 
-  // 从气泡里只取正文，跳过思维链/事件/时间/操作按钮
+  // 从气泡里只取正文，跳过思维链/事件/语音条
   function bubbleText(el) {
-    var body = el.querySelector(':scope > div:not(.msg-foot)');
+    var body = el.querySelector(':scope > .stream-body') || el.querySelector(':scope > div');
     return (body ? body.innerText : el.textContent).trim();
   }
 
@@ -13054,9 +13118,7 @@
     if (navigator.clipboard) navigator.clipboard.writeText(t).catch(function () {});
   });
   // 事件委托：消息区里的图片与代码块
-  // 触屏没有 hover：只有最后一条常显操作按钮，往上的旧消息点一下气泡
-  // 才把「重试 分享 删除 时间」叫出来（CSS 里 `.msg.foot-on` 那个分支）
-  var NO_HOVER = window.matchMedia && window.matchMedia('(hover: none)').matches;
+  // 气泡操作已全部移到右键 / 长按菜单（见 openMsgMenu），这里只管图片与代码块
   messages.addEventListener('click', function (e) {
     var img = e.target.closest('img.shot, img.chat-img');
     if (img) { openImage(img.src); return; }
@@ -13065,15 +13127,6 @@
       codePre.textContent = pre.textContent;
       codeView.classList.add('show');
       return;
-    }
-    // 点按钮本身（重试/分享/删除）不要顺带把行收起来：只处理点到气泡正文的情况
-    var msg = e.target.closest('.msg');
-    if (NO_HOVER && msg && !e.target.closest('.msg-foot') && !e.target.closest('a')) {
-      var wasOn = msg.classList.contains('foot-on');
-      Array.prototype.forEach.call(messages.querySelectorAll('.msg.foot-on'), function (m) {
-        m.classList.remove('foot-on');
-      });
-      if (!wasOn) msg.classList.add('foot-on');
     }
   });
 
