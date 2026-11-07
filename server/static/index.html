@@ -2470,46 +2470,78 @@
     flex: 0 0 auto; font-size: 10px; color: var(--muted); opacity: .8;
   }
   .fb-item.broken .nm { color: var(--danger); text-decoration: line-through; }
-  /* 上传队列：每个文件一行，文件名 + 进度条 + 状态 + 关闭按钮。
-     传完后进度条收起、整行变矮淡出，几秒后自动清掉；失败的留着等人点 × */
-  #fbQueue { flex: 0 0 auto; margin: 0 6px; display: flex; flex-direction: column; gap: 5px; }
+  /* 上传任务卡：一次拖入 / 多选（含整个文件夹）合并成一张卡，
+     整批共用一个总进度；单文件失败收进卡内可展开的明细，不再各占一行。
+     区域有固定高度上限、内部滚动，绝不会把下面的文件列表挤下去 */
+  #fbQueue {
+    flex: 0 1 auto; min-height: 0; margin: 0 6px;
+    max-height: min(192px, 34vh);
+    overflow-y: auto; overscroll-behavior: contain;
+    display: flex; flex-direction: column; gap: 6px;
+    padding-right: 2px;
+  }
   #fbQueue:empty { display: none; }
-  .fbq-item {
-    display: flex; flex-direction: column; gap: 3px;
-    padding: 6px 8px; border-radius: 7px; background: var(--surface-2);
-    transition: opacity .4s ease, padding .25s ease;
+  .fbt-card {
+    flex: 0 0 auto; display: flex; flex-direction: column; gap: 5px;
+    padding: 7px 9px; border-radius: 9px;
+    background: var(--surface-2); border: 1px solid var(--line);
   }
-  .fbq-item.done { padding: 4px 8px; }
-  .fbq-item.fade { opacity: 0; }
-  .fbq-top { display: flex; align-items: center; gap: 7px; }
-  .fbq-name {
-    flex: 1; min-width: 0; font-size: 12px; color: var(--text);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  .fbt-card.running { border-color: rgba(26,159,255,.45); }
+  .fbt-card.fail { border-color: rgba(232,70,58,.45); }
+  .fbt-head { display: flex; align-items: center; gap: 6px; min-height: 20px; }
+  .fbt-title {
+    flex: 1 1 auto; min-width: 0; font-size: 12px; font-weight: 600;
+    color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .fbq-state { flex: 0 0 auto; font-size: 10.5px; color: var(--muted); }
-  .fbq-item.done .fbq-state { color: #2ecc71; }
-  .fbq-item.fail .fbq-state { color: var(--danger); }
-  .fbq-item.uploading .fbq-state { color: var(--brand); }
-  .fbq-item.wait .fbq-state { color: var(--muted); }
-  .fbq-bar { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
-  .fbq-item.done .fbq-bar { display: none; }
-  .fbq-fill {
-    height: 100%; width: 0; background: var(--brand);
-    transition: width .18s ease; border-radius: 2px;
+  .fbt-card.finished .fbt-title { font-weight: 500; font-size: 11.5px; }
+  .fbt-pct {
+    flex: 0 0 auto; font-size: 11px; color: var(--brand);
+    font-variant-numeric: tabular-nums;
   }
-  .fbq-item.done .fbq-fill { background: #2ecc71; }
-  .fbq-item.fail .fbq-fill { background: var(--danger); }
-  /* 失败原因直接显示在行内：只放进 tooltip 时界面上只剩一个「失败」 */
-  .fbq-err {
-    font-size: 11px; line-height: 1.45; color: var(--danger);
-    word-break: break-word;
+  .fbt-btn {
+    flex: 0 0 auto; border: 1px solid var(--line); border-radius: 7px;
+    background: transparent; color: var(--text); font-size: 10.5px;
+    padding: 2px 7px; cursor: pointer; white-space: nowrap;
   }
-  .fbq-x {
+  .fbt-btn:hover { border-color: var(--brand); color: var(--brand); }
+  .fbt-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+  .fbt-x {
     flex: 0 0 auto; width: 18px; height: 18px; line-height: 16px;
     border: none; border-radius: 50%; background: transparent;
     color: var(--muted); font-size: 13px; cursor: pointer; padding: 0;
   }
-  .fbq-x:hover { background: var(--hover, rgba(255,255,255,.1)); color: var(--text); }
+  .fbt-x:hover { background: var(--hover, rgba(255,255,255,.1)); color: var(--text); }
+  .fbt-bar { height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .fbt-fill {
+    height: 100%; width: 0; background: var(--brand);
+    border-radius: 3px; transition: width .18s linear;
+  }
+  .fbt-card.finished .fbt-fill { background: #2ecc71; }
+  .fbt-card.fail .fbt-fill { background: var(--danger); }
+  .fbt-sub { font-size: 10.5px; color: var(--muted); }
+  .fbt-now {
+    font-size: 10.5px; color: var(--brand); min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* 完成后自动收起：只留一行结果，进度条 / 明细先藏起来 */
+  .fbt-card.finished:not(.expanded) .fbt-bar,
+  .fbt-card.finished:not(.expanded) .fbt-sub,
+  .fbt-card.finished:not(.expanded) .fbt-now { display: none; }
+  .fbt-detail { display: none; }
+  .fbt-card.expanded .fbt-detail {
+    display: block; max-height: 112px; overflow-y: auto;
+    border-top: 1px dashed var(--line); padding-top: 4px;
+  }
+  .fbt-row { display: flex; flex-direction: column; gap: 1px; padding: 3px 0; }
+  .fbt-row + .fbt-row { border-top: 1px solid rgba(255,255,255,.05); }
+  .fbt-row-top { display: flex; align-items: center; gap: 6px; }
+  .fbt-row .nm {
+    flex: 1; min-width: 0; font-size: 10.5px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .fbt-row .why {
+    font-size: 10px; color: var(--danger); line-height: 1.4; word-break: break-word;
+  }
   #fbList { flex: 1 1 auto; overflow-y: auto; padding: 4px 6px 10px; }
   .fb-item {
     display: flex; align-items: center; gap: 7px;
@@ -6467,120 +6499,370 @@
   }
 
   // ---- 文件面板拖放上传：本地文件/文件夹直接传到当前浏览的目录 ----
-  // 队列 + 进度条。fetch 拿不到上传进度，这里改用 XHR 的 upload.onprogress。
-  // 一次串行传一个（避免并发把内存/网络打满），其余排队。
+  // 一次拖入 / 多选（含整个文件夹）合并成一张任务卡：
+  //   · 卡上只显示整批的总进度、已完成数、总字节/已传字节、当前文件名；
+  //   · 单文件失败收进卡内可展开的明细，不再各占一条把面板刷满；
+  //   · 任务级「取消 / 重试」，完成后自动收成一行结果。
+  // 上传走 /api/upload-stream（原始请求体直接落盘），进度用 XHR upload.onprogress。
   // 目录：dataTransfer.files 里目录只会退化成 0 字节同名 File，必须用
   // webkitGetAsEntry() 递归展开，每个文件连同相对路径入队，目录用 /api/fs mkdir 重建。
-  var fbUploadQueue = [];   // {id,name,size,status,progress,file,base,rel,parent,err}
+  var fbUploadTasks = [];   // {id,base,files[],status,finished,expanded,limit,xhr}
   var fbUploadSeq = 0;
   var fbUploadBusy = false;
   var fbMkdirCache = {};    // 绝对目录路径 -> true（已建）| {error}（建失败）
 
-  function fbQueueRender() {
+  // [FB-UPLOAD-HELPERS-BEGIN]
+  // 下面是纯函数：体积格式化 / 长路径中间省略 / 整批汇总，只做计算不碰 DOM，
+  // 便于 tests/test_upload_aggregate.py 抽取出来用 node 直接验证。
+  function fbFmtBytes(n) {
+    var v = Number(n) || 0;
+    if (v < 0) v = 0;
+    var units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    var i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? String(Math.round(v)) : v.toFixed(1)) + ' ' + units[i];
+  }
+
+  // 长路径中间省略：保留头尾，中间换成 …，前缀目录多留一点便于辨认
+  function fbMidPath(p, max) {
+    var s = String(p || '');
+    max = max || 44;
+    if (s.length <= max || max < 8) return s;
+    var keep = max - 1;
+    var head = Math.ceil(keep * 0.55);
+    var tail = keep - head;
+    return s.slice(0, head) + '…' + s.slice(s.length - tail);
+  }
+
+  // 整批汇总：文件数 / 成功数 / 失败数 / 总字节 / 已传字节 / 当前文件 / 百分比
+  function fbTaskStats(task) {
+    var files = (task && task.files) || [];
+    var out = { total: files.length, done: 0, failed: 0, cancelled: 0,
+                totalBytes: 0, sentBytes: 0, percent: 0, current: '' };
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i] || {};
+      var size = Number(f.size) || 0;
+      out.totalBytes += size;
+      if (f.status === 'done') {
+        out.done++;
+        out.sentBytes += size || (Number(f.loaded) || 0);
+      } else if (f.status === 'fail') {
+        out.failed++;
+        out.sentBytes += Number(f.loaded) || 0;
+      } else if (f.status === 'cancelled') {
+        out.cancelled++;
+      } else if (f.status === 'uploading') {
+        out.current = f.rel || f.name || '';
+        out.sentBytes += Number(f.loaded) || 0;
+      }
+    }
+    if (out.totalBytes > 0) {
+      // 四舍五入到 0.1%，避免浮点误差让 55 变成 55.00000000000001
+      out.percent = Math.min(100, Math.round(out.sentBytes / out.totalBytes * 1000) / 10);
+    } else if (out.total > 0 && out.done === out.total) {
+      out.percent = 100;
+    }
+    return out;
+  }
+
+  // 完成后的单行结果：38 个文件 · 1.2 GB · 37 成功 1 失败
+  function fbTaskSummary(task) {
+    var st = fbTaskStats(task);
+    var parts = [st.total + ' 个文件'];
+    if (st.totalBytes > 0) parts.push(fbFmtBytes(st.totalBytes));
+    if (task && task.status === 'cancelled') parts.push('已取消');
+    // 成功/失败放在同一段里，符合「37 成功 1 失败」的读法
+    var tail = st.done + ' 成功';
+    if (st.failed > 0) tail += ' ' + st.failed + ' 失败';
+    parts.push(tail);
+    return parts.join(' · ');
+  }
+  // [FB-UPLOAD-HELPERS-END]
+
+  function fbTaskById(id) {
+    id = String(id || '');
+    for (var i = 0; i < fbUploadTasks.length; i++) {
+      if (String(fbUploadTasks[i].id) === id) return fbUploadTasks[i];
+    }
+    return null;
+  }
+
+  function fbTaskBtn(label, act, cls, index) {
+    var b = document.createElement('button');
+    b.className = 'fbt-btn' + (cls ? ' ' + cls : '');
+    b.type = 'button';
+    b.textContent = label;
+    b.setAttribute('data-act', act);
+    if (index != null) b.setAttribute('data-item', String(index));
+    return b;
+  }
+
+  function fbTaskCard(task) {
+    var st = fbTaskStats(task);
+    var finished = !!task.finished;
+    var retryable = task.files.filter(function (f) {
+      return f.file && (f.status === 'fail' || f.status === 'cancelled');
+    }).length;
+    var problems = task.files.filter(function (f) {
+      return f.status === 'fail' || f.status === 'cancelled';
+    });
+    var card = document.createElement('div');
+    card.className = 'fbt-card ' +
+      (finished ? 'finished' : (task.status === 'running' ? 'running' : 'wait')) +
+      (st.failed ? ' fail' : '') + (task.expanded ? ' expanded' : '');
+    card.setAttribute('data-task', String(task.id));
+
+    var head = document.createElement('div');
+    head.className = 'fbt-head';
+    var title = document.createElement('span');
+    title.className = 'fbt-title';
+    title.textContent = finished ? fbTaskSummary(task)
+      : ('上传 ' + st.total + ' 个文件' + (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : ''));
+    title.title = title.textContent;
+    head.appendChild(title);
+
+    if (!finished) {
+      var pct = document.createElement('span');
+      pct.className = 'fbt-pct';
+      pct.textContent = Math.floor(st.percent) + '%';
+      head.appendChild(pct);
+      head.appendChild(fbTaskBtn('取消', 'cancel', 'danger'));
+    } else {
+      if (problems.length) {
+        head.appendChild(fbTaskBtn(task.expanded ? '收起' : '明细', 'toggle'));
+      }
+      if (retryable && !task.blocked) head.appendChild(fbTaskBtn('重试', 'retry'));
+      var x = document.createElement('button');
+      x.className = 'fbt-x';
+      x.type = 'button';
+      x.textContent = '×';
+      x.title = '关闭';
+      x.setAttribute('data-act', 'remove');
+      head.appendChild(x);
+    }
+    card.appendChild(head);
+
+    var bar = document.createElement('div');
+    bar.className = 'fbt-bar';
+    var fill = document.createElement('div');
+    fill.className = 'fbt-fill';
+    fill.style.width = (finished ? (st.failed ? st.percent : 100) : st.percent) + '%';
+    bar.appendChild(fill);
+    card.appendChild(bar);
+
+    var sub = document.createElement('div');
+    sub.className = 'fbt-sub';
+    sub.textContent = '已完成 ' + st.done + '/' + st.total + ' · 已传 ' +
+      fbFmtBytes(st.sentBytes) + (st.totalBytes ? ' / ' + fbFmtBytes(st.totalBytes) : '');
+    card.appendChild(sub);
+
+    var now = document.createElement('div');
+    now.className = 'fbt-now';
+    now.textContent = st.current ? ('正在上传：' + fbMidPath(st.current, 52)) : '准备中…';
+    card.appendChild(now);
+
+    var detail = document.createElement('div');
+    detail.className = 'fbt-detail';
+    problems.forEach(function (f) {
+      var row = document.createElement('div');
+      row.className = 'fbt-row';
+      var top = document.createElement('div');
+      top.className = 'fbt-row-top';
+      var nm = document.createElement('span');
+      nm.className = 'nm';
+      nm.textContent = fbMidPath(f.rel || f.name || '', 50);
+      nm.title = f.rel || f.name || '';
+      top.appendChild(nm);
+      if (f.file && !task.blocked) {
+        top.appendChild(fbTaskBtn('重试', 'retry-item', '', task.files.indexOf(f)));
+      }
+      row.appendChild(top);
+      var why = document.createElement('div');
+      why.className = 'why';
+      why.textContent = f.err || (f.status === 'cancelled' ? '已取消' : '失败');
+      row.appendChild(why);
+      detail.appendChild(row);
+    });
+    card.appendChild(detail);
+    return card;
+  }
+
+  function fbTaskRender() {
     var box = rbEl('fbQueue');
     if (!box) return;
     box.innerHTML = '';
-    fbUploadQueue.forEach(function (it, idx) {
-      var el = document.createElement('div');
-      el.className = 'fbq-item ' + it.status;
-      var top = document.createElement('div');
-      top.className = 'fbq-top';
-      var nm = document.createElement('span');
-      nm.className = 'fbq-name';
-      nm.textContent = it.name;
-      nm.title = it.err || it.name;
-      var st = document.createElement('span');
-      st.className = 'fbq-state';
-      st.textContent = it.status === 'wait' ? '排队中' :
-                       it.status === 'uploading' ? Math.round(it.progress) + '%' :
-                       it.status === 'done' ? '完成' : '失败';
-      top.appendChild(nm); top.appendChild(st);
-      // 正在上传的没有关闭按钮；排队/完成/失败都可以手动 × 清掉
-      if (it.status !== 'uploading') {
-        var x = document.createElement('button');
-        x.className = 'fbq-x';
-        x.type = 'button';
-        x.textContent = '×';
-        x.title = '移除';
-        x.onclick = function () {
-          fbUploadQueue.splice(idx, 1);
-          fbQueueRender();
-        };
-        top.appendChild(x);
-      }
-      el.appendChild(top);
-      // 失败原因行内可见；tooltip 只是补充，不能作为唯一出口
-      if (it.status === 'fail' && it.err) {
-        var why = document.createElement('div');
-        why.className = 'fbq-err';
-        why.textContent = it.err;
-        el.appendChild(why);
-      }
-      var bar = document.createElement('div');
-      bar.className = 'fbq-bar';
-      var fill = document.createElement('div');
-      fill.className = 'fbq-fill';
-      fill.style.width = (it.status === 'done' ? 100 : it.progress) + '%';
-      bar.appendChild(fill);
-      el.appendChild(bar);
-      box.appendChild(el);
-    });
-    // 有任务时拖放区提示当前目录，无任务恢复默认文案
+    fbUploadTasks.forEach(function (task) { box.appendChild(fbTaskCard(task)); });
+    fbDropHint();
+  }
+
+  // 进度刷新只改当前卡的几个数字，不重绘整张卡（展开明细时滚动位置不会被重置）
+  function fbTaskPaint(task) {
+    var card = document.querySelector('#fbQueue .fbt-card[data-task="' + task.id + '"]');
+    if (!card) return;
+    var st = fbTaskStats(task);
+    var pct = card.querySelector('.fbt-pct');
+    if (pct) pct.textContent = Math.floor(st.percent) + '%';
+    var fill = card.querySelector('.fbt-fill');
+    if (fill) fill.style.width = st.percent + '%';
+    var sub = card.querySelector('.fbt-sub');
+    if (sub) {
+      sub.textContent = '已完成 ' + st.done + '/' + st.total + ' · 已传 ' +
+        fbFmtBytes(st.sentBytes) + (st.totalBytes ? ' / ' + fbFmtBytes(st.totalBytes) : '');
+    }
+    var now = card.querySelector('.fbt-now');
+    if (now) {
+      now.textContent = st.current ? ('正在上传：' + fbMidPath(st.current, 52)) : '准备中…';
+    }
+  }
+
+  function fbDropHint() {
     var drop = rbEl('fbDrop');
-    if (drop && !drop.classList.contains('hot')) {
-      var act = fbUploadQueue.filter(function (x) { return x.status === 'uploading' || x.status === 'wait'; }).length;
-      drop.textContent = act ? '正在上传到当前目录…' : '拖文件/文件夹到这里上传到当前目录';
-    }
+    if (!drop || drop.classList.contains('hot')) return;
+    var active = fbUploadTasks.filter(function (t) {
+      return t.status === 'wait' || t.status === 'running';
+    }).length;
+    drop.textContent = active ? '正在上传到当前目录…' : '拖文件/文件夹到这里上传到当前目录';
   }
 
-  // 传完的行：先变矮淡出，1 秒后从队列里真正移除；失败的留着等人点 ×
-  function fbScheduleClear(it) {
-    setTimeout(function () {
-      var box = rbEl('fbQueue');
-      if (box) {
-        var idx = fbUploadQueue.indexOf(it);
-        if (idx >= 0 && box.children[idx]) box.children[idx].classList.add('fade');
+  // 点击全部走事件委托，重绘卡片不需要重新绑事件
+  function fbTaskBind() {
+    var box = rbEl('fbQueue');
+    if (!box || box._inited) return;
+    box._inited = true;
+    box.addEventListener('click', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
+      if (!btn) return;
+      var card = btn.closest('[data-task]');
+      var task = fbTaskById(card && card.getAttribute('data-task'));
+      if (!task) return;
+      var act = btn.getAttribute('data-act');
+      if (act === 'cancel') fbTaskCancel(task);
+      else if (act === 'retry') fbTaskRetry(task, null);
+      else if (act === 'retry-item') {
+        fbTaskRetry(task, parseInt(btn.getAttribute('data-item'), 10));
+      } else if (act === 'toggle') {
+        task.expanded = !task.expanded;
+        fbTaskRender();
+      } else if (act === 'remove') {
+        fbTaskRemove(task);
       }
-      setTimeout(function () {
-        var i = fbUploadQueue.indexOf(it);
-        if (i >= 0 && it.status === 'done') {
-          fbUploadQueue.splice(i, 1);
-          fbQueueRender();
-        }
-      }, 450);
-    }, 1600);
+    });
   }
 
-  function fbUploadPump() {
+  function fbTaskNextItem(task) {
+    for (var i = 0; i < task.files.length; i++) {
+      if (task.files[i].status === 'wait') return task.files[i];
+    }
+    return null;
+  }
+
+  function fbTaskFinish(task) {
+    task.status = task.cancelled ? 'cancelled' : 'done';
+    task.finished = true;
+    task.expanded = false;
+    fbMkdirCache = {};
+    fbTaskRender();
+    fbLoad(fb.path || '');
+  }
+
+  // 单任务串行：一卡里的文件一个接一个传，避免并发把内存/网络打满
+  function fbTaskPump() {
     if (fbUploadBusy) return;
-    var next = null;
-    for (var i = 0; i < fbUploadQueue.length; i++) {
-      if (fbUploadQueue[i].status === 'wait') { next = fbUploadQueue[i]; break; }
+    var task = null;
+    for (var i = 0; i < fbUploadTasks.length; i++) {
+      if (fbUploadTasks[i].status === 'wait' && !fbUploadTasks[i].finished) {
+        task = fbUploadTasks[i];
+        break;
+      }
     }
-    if (!next) {
-      // 全部结束：刷新列表，并清理已完成的条目
-      var fails = fbUploadQueue.filter(function (x) { return x.status === 'fail'; }).length;
-      fbMkdirCache = {};
-      fbLoad(fb.path || '');
-      if (!fails) fbUploadQueue = [];
-      return;
-    }
+    if (!task) return;
+    var item = fbTaskNextItem(task);
+    if (!item) { fbTaskFinish(task); fbTaskPump(); return; }
+    task.status = 'running';
     fbUploadBusy = true;
-    next.status = 'uploading';
-    next.progress = 0;
-    fbQueueRender();
-    // 先把这条文件所在的相对目录补齐；单条失败只标自己，后面的继续传
-    fbEnsureDir(next.base, next.parent, function (err) {
-      if (err) {
+    fbTaskRender();
+    fbTaskEnsureLimit(task, function () {
+      if (task.cancelled) { fbUploadBusy = false; return; }
+      // 本地先按同一口径挡一次：提示里同时给出「当前上限」和「该文件」
+      if (task.limit != null && item.size > task.limit) {
+        item.status = 'fail';
+        item.err = '单文件超过当前上限 ' + fbFmtBytes(task.limit) +
+                   '，该文件 ' + fbFmtBytes(item.size);
         fbUploadBusy = false;
-        next.status = 'fail';
-        next.err = '目录创建失败：' + err;
-        fbQueueRender();
-        fbUploadPump();
+        fbTaskRender();
+        fbTaskPump();
         return;
       }
-      fbUploadSend(next);
+      fbEnsureDir(task.base, item.parent, function (err) {
+        if (err) {
+          item.status = 'fail';
+          item.err = '目录创建失败：' + err;
+          fbUploadBusy = false;
+          fbTaskRender();
+          fbTaskPump();
+          return;
+        }
+        fbTaskSend(task, item);
+      });
     });
+  }
+
+  // 每次任务开始时查一次目标目录的单文件上限（磁盘剩余空间会变，重试时重查）
+  function fbTaskEnsureLimit(task, cb) {
+    if (task.limit !== undefined) { cb(); return; }
+    fetch('/api/upload-limit?dir=' + encodeURIComponent(task.base || ''))
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (j) {
+        task.limit = (j && typeof j.limit === 'number') ? j.limit : null;
+        cb();
+      })
+      .catch(function () { task.limit = null; cb(); });
+  }
+
+  function fbTaskCancel(task) {
+    if (task.finished) return;
+    task.cancelled = true;
+    task.files.forEach(function (f) {
+      if (f.status === 'wait' || f.status === 'uploading') f.status = 'cancelled';
+    });
+    var xhr = task.xhr;
+    task.xhr = null;
+    if (xhr) {
+      fbUploadBusy = false;
+      try { xhr.abort(); } catch (e) {}
+    }
+    fbTaskFinish(task);
+    fbTaskPump();
+  }
+
+  // onlyIndex 指定单项重试；null = 任务级重试（所有可重试的失败/取消项）
+  function fbTaskRetry(task, onlyIndex) {
+    if (task.blocked) return;
+    var any = false;
+    task.files.forEach(function (f, i) {
+      if (onlyIndex != null && i !== onlyIndex) return;
+      if (!f.file) return;   // 遍历阶段就失败的条目没有 File 对象，重试也拿不到
+      if (f.status === 'fail' || f.status === 'cancelled') {
+        f.status = 'wait';
+        f.loaded = 0;
+        f.err = '';
+        any = true;
+      }
+    });
+    if (!any) return;
+    task.status = 'wait';
+    task.finished = false;
+    task.expanded = false;
+    task.cancelled = false;
+    task.limit = undefined;
+    fbTaskRender();
+    fbTaskPump();
+  }
+
+  function fbTaskRemove(task) {
+    var i = fbUploadTasks.indexOf(task);
+    if (i >= 0) fbUploadTasks.splice(i, 1);
+    fbTaskRender();
   }
 
   function fbJoinPath(dir, rel) {
@@ -6628,99 +6910,128 @@
     })(null);
   }
 
-  function fbUploadSend(next) {
-    var fd = new FormData();
-    // 只把文件名交给后端（它也只认 basename），目录层级由上面的 mkdir 重建
-    fd.append('file', next.file, next.file.name);
+  function fbTaskSend(task, item) {
+    item.status = 'uploading';
+    item.loaded = 0;
+    item.err = '';
+    fbTaskPaint(task);
+    var full = fbJoinPath(task.base, item.parent);
     var xhr = new XMLHttpRequest();
-    var url = '/api/upload-to?dir=' + encodeURIComponent(fbJoinPath(next.base, next.parent));
-    xhr.open('POST', url);
+    task.xhr = xhr;
     var lastPaint = 0;
+    // 原始请求体就是文件本身，后端边收边写盘；文件名走查询参数（避免 multipart 临时文件）
+    xhr.open('POST', '/api/upload-stream?dir=' + encodeURIComponent(full) +
+             '&name=' + encodeURIComponent(item.name));
+    xhr.setRequestHeader('X-File-Size', String(item.size || 0));
     xhr.upload.onprogress = function (e) {
       if (!e.lengthComputable || e.total <= 0) return;
-      next.progress = e.loaded / e.total * 100;
-      // 队列可能有几百行，逐帧重绘整个列表会在 Deck 上明显卡顿，限到 ~7fps
+      item.loaded = e.loaded;
+      // 几百个文件时逐帧重绘会卡，限到 ~7fps，只刷新数字不重建卡片
       var now = Date.now();
       if (now - lastPaint < 150) return;
       lastPaint = now;
-      fbQueueRender();
+      fbTaskPaint(task);
     };
     xhr.onload = function () {
+      task.xhr = null;
+      if (task.cancelled) { fbUploadBusy = false; return; }
       fbUploadBusy = false;
       if (xhr.status >= 200 && xhr.status < 300) {
-        next.status = 'done';
-        next.progress = 100;
-        fbScheduleClear(next);
+        item.status = 'done';
+        item.loaded = item.size;
+        item.err = '';
       } else {
-        next.status = 'fail';
-        try {
-          var d = JSON.parse(xhr.responseText) || {};
-          // 403 只读拦截的文案在 error 里，普通 HTTPException 在 detail 里
-          next.err = d.detail || d.error || ('HTTP ' + xhr.status);
-        } catch (e2) { next.err = 'HTTP ' + xhr.status; }
+        item.status = 'fail';
+        var d = {};
+        try { d = JSON.parse(xhr.responseText) || {}; } catch (e2) { d = {}; }
+        // 403 只读拦截的文案在 error 里，普通 HTTPException 在 detail 里
+        item.err = d.detail || d.error || ('HTTP ' + xhr.status);
       }
-      fbQueueRender();
-      fbUploadPump();
+      fbTaskRender();
+      fbTaskPump();
     };
     xhr.onerror = function () {
+      task.xhr = null;
+      if (task.cancelled) { fbUploadBusy = false; return; }
       fbUploadBusy = false;
-      next.status = 'fail';
-      next.err = '网络错误：连不上后端服务';
-      fbQueueRender();
-      fbUploadPump();
+      item.status = 'fail';
+      item.err = '网络错误：连不上后端服务';
+      fbTaskRender();
+      fbTaskPump();
     };
-    xhr.send(fd);
+    xhr.onabort = function () {
+      task.xhr = null;
+      if (task.cancelled) { fbUploadBusy = false; return; }
+      fbUploadBusy = false;
+      item.status = 'fail';
+      item.err = '上传已中断';
+      fbTaskRender();
+      fbTaskPump();
+    };
+    xhr.send(item.file);
   }
 
   function fbUploadTo(files) {
     var list = Array.prototype.slice.call(files || []);
-    // 只读分区（危险区/只读挂载）：不发请求，把原因直接写进每一行
+    if (!list.length) return;
+    // 只读分区（危险区/只读挂载）：不发请求，整批标记失败，原因收进卡片明细
     if (fbWriteBlocked()) {
       var why = fbWriteBlockedText();
-      if (!list.length) return;
-      list.forEach(function (f) {
-        fbUploadQueue.push({
-          id: ++fbUploadSeq, name: f.name, size: f.size, file: f,
-          base: fb.path || '', rel: f.name, parent: '',
-          status: 'fail', progress: 0, err: why
-        });
-      });
-      fbQueueRender();
+      fbTaskPush(list.map(function (f) {
+        return { file: f, rel: f.name, parent: '', fail: why };
+      }), { blocked: true });
       fbToast(why, 'file', true);
       return;
     }
-    fbQueuePush(list.map(function (f) {
+    fbTaskPush(list.map(function (f) {
       return { file: f, rel: f.name, parent: '' };
     }));
   }
 
-  function fbQueuePush(items) {
+  // 一次拖入 / 多选的所有文件收进同一个任务（整个文件夹也只是一张卡）
+  function fbTaskPush(items, opts) {
     var base = fb.path || '';
-    (items || []).forEach(function (it) {
-      // 遍历阶段就失败（读不到文件/目录）的条目也要出现在队列里，原因可见
-      if (it.fail) {
-        fbUploadQueue.push({
-          id: ++fbUploadSeq, name: it.rel, size: 0, file: null,
-          base: base, rel: it.rel, parent: it.parent || '',
-          status: 'fail', progress: 0, err: it.fail
-        });
-        return;
-      }
-      fbUploadQueue.push({
-        id: ++fbUploadSeq, name: it.rel, size: it.file.size, file: it.file,
-        base: base, rel: it.rel, parent: it.parent || '',
-        status: 'wait', progress: 0, err: ''
-      });
+    var files = (items || []).map(function (it) {
+      var f = {
+        rel: it.rel,
+        name: (it.file && it.file.name) || (it.rel || '').split('/').pop(),
+        parent: it.parent || '',
+        file: it.file || null,
+        size: it.file ? it.file.size : 0,
+        status: 'wait',
+        loaded: 0,
+        err: ''
+      };
+      // 遍历阶段就失败（读不到文件/目录）的条目也留在明细里，原因可见
+      if (it.fail) { f.status = 'fail'; f.err = it.fail; }
+      return f;
     });
-    if (!fbUploadQueue.length) return;
-    fbQueueRender();
-    fbUploadPump();
+    if (!files.length) return null;
+    var task = {
+      id: ++fbUploadSeq, base: base, files: files,
+      status: 'wait', finished: false, expanded: false,
+      cancelled: false, limit: undefined, xhr: null,
+      blocked: !!(opts && opts.blocked)
+    };
+    fbUploadTasks.push(task);
+    // 已完成的任务卡最多留 4 张，再多就清掉最早的，避免一整天下来越堆越高
+    var done = fbUploadTasks.filter(function (t) { return t.finished; });
+    while (done.length > 4) {
+      var old = done.shift();
+      var i = fbUploadTasks.indexOf(old);
+      if (i >= 0) fbUploadTasks.splice(i, 1);
+    }
+    fbTaskBind();
+    fbTaskRender();
+    fbTaskPump();
+    return task;
   }
 
   function fbDropInit() {
     var drop = rbEl('fbDrop');
     if (!drop || drop._inited) return;
     drop._inited = true;
+    fbTaskBind();
     drop.addEventListener('dragenter', function (e) {
       e.preventDefault(); e.stopPropagation();
       drop.classList.add('hot');
@@ -6776,7 +7087,7 @@
       if (idx >= entries.length) {
         // 空文件夹：没有文件可传，也要说一声，不能看起来像什么都没发生
         if (!out.length) { fbToast('没有找到可上传的文件', 'file', true); return; }
-        fbQueuePush(out);
+        fbTaskPush(out);
         return;
       }
       fbWalkEntry(entries[idx++], '', out, next);

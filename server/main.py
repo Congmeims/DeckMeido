@@ -2206,6 +2206,63 @@ _TEXT_EXT = {".txt", ".md", ".py", ".js", ".ts", ".json", ".csv", ".log", ".sh",
 # 单个附件上限，防止一次拖进几个 G 的文件把服务拖死
 _UPLOAD_MAX = 20 * 1024 * 1024
 
+# 文件管理器搬运文件不再写死 500MB：上限 = 目标磁盘剩余空间 - 安全余量。
+# 余量默认 128MB；剩余不足 256MB 时改留一半，避免「还有 100MB 却完全不让传」。
+UPLOAD_FREE_RESERVE = 128 * 1024 * 1024
+
+
+def _fmt_bytes(n: int) -> str:
+    """人类可读体积（1024 进制，与前端 fbFmtBytes 同一口径）"""
+    value = float(max(0, int(n or 0)))
+    units = ("B", "KB", "MB", "GB", "TB", "PB")
+    idx = 0
+    while value >= 1024 and idx < len(units) - 1:
+        value /= 1024.0
+        idx += 1
+    if idx == 0:
+        return f"{int(value)} B"
+    return f"{value:.1f} {units[idx]}"
+
+
+def upload_limits(path) -> dict:
+    """目标目录所在磁盘的可用空间与单文件上限（唯一判定口径）。
+
+    limit = free - reserve；reserve 是留给系统/其它进程的安全余量。
+    拿不到磁盘信息（异常文件系统）时 free 记 0，宁可拒绝也不盲写。
+    """
+    try:
+        free = int(shutil.disk_usage(str(path)).free)
+    except OSError:
+        free = 0
+    free = max(0, free)
+    reserve = min(UPLOAD_FREE_RESERVE, free // 2)
+    return {"free": free, "reserve": reserve, "limit": max(0, free - reserve)}
+
+
+def _upload_limit_error(limit: int, size: int) -> dict:
+    """413 的统一结构：文案里同时给出「当前上限」和「该文件大小」"""
+    return {
+        "ok": False,
+        "detail": (f"单文件超过当前上限 {_fmt_bytes(limit)}，"
+                   f"该文件 {_fmt_bytes(size)}"),
+        "limit": int(limit),
+        "size": int(size),
+    }
+
+
+def _upload_target_dir(dir: str) -> Path:
+    """上传目标目录：展开 ~、转绝对路径、校验存在（三个上传接口共用）"""
+    target = Path(dir).expanduser() if (dir or "").strip() else tools.WORKSPACE
+    if not target.is_absolute():
+        target = tools.WORKSPACE / target
+    try:
+        target = target.resolve()
+    except OSError:
+        raise HTTPException(status_code=400, detail="目标目录无效")
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail="目标目录不存在")
+    return target
+
 
 async def _extract_text(raw: bytes, ext: str):
     """尽量把文档抽成纯文本；抽不出来返回 None（按二进制附件处理）"""
@@ -2283,21 +2340,13 @@ async def api_upload(file: UploadFile):
 
 @app.post("/api/upload-to", dependencies=[Depends(require_auth)])
 async def api_upload_to(file: UploadFile, dir: str = ""):
-    """文件管理器里的拖放上传：把文件原样写到指定目录（不是工作区附件）。
+    """文件管理器里的拖放上传（multipart 版，Android 客户端在用）。
 
-    和 /api/upload 不同，这里不做文本抽取、不塞进对话上下文，就是纯搬运，
-    给「从 Windows 把一个大文件拖到 Deck 某个目录」用。exe/zip 等大文件
-    也走这里，所以上限放宽到 500MB（分块流式写盘，不整块读进内存）。
+    和 /api/upload 不同，这里不做文本抽取、不塞进对话上下文，就是纯搬运。
+    上限按目标磁盘剩余空间动态判定（见 upload_limits），写入仍是分块流式的。
+    网页端改用 /api/upload-stream（原始请求体直接落盘，不经过 multipart 临时文件）。
     """
-    target_dir = Path(dir).expanduser() if (dir or "").strip() else tools.WORKSPACE
-    if not target_dir.is_absolute():
-        target_dir = tools.WORKSPACE / target_dir
-    try:
-        target_dir = target_dir.resolve()
-    except OSError:
-        raise HTTPException(status_code=400, detail="目标目录无效")
-    if not target_dir.is_dir():
-        raise HTTPException(status_code=400, detail="目标目录不存在")
+    target_dir = _upload_target_dir(dir)
     denied = _fs_denied_response(target_dir)
     if denied:
         return denied
@@ -2305,8 +2354,14 @@ async def api_upload_to(file: UploadFile, dir: str = ""):
     dest = target_dir / fn
     if dest.exists():
         raise HTTPException(status_code=409, detail=f"已存在同名文件：{fn}")
-    _UPLOAD_TO_MAX = 500 * 1024 * 1024
+    caps = upload_limits(target_dir)
+    limit = caps["limit"]
+    declared = int(file.size or 0)
+    if declared > 0 and declared > limit:
+        return JSONResponse(status_code=413,
+                            content=_upload_limit_error(limit, declared))
     written = 0
+    too_large = 0
     try:
         with open(dest, "wb") as out:
             while True:
@@ -2314,20 +2369,86 @@ async def api_upload_to(file: UploadFile, dir: str = ""):
                 if not chunk:
                     break
                 written += len(chunk)
-                if written > _UPLOAD_TO_MAX:
-                    out.close()
-                    dest.unlink(missing_ok=True)
-                    raise HTTPException(status_code=413, detail="文件超过 500MB")
+                if written > limit:
+                    too_large = max(declared, written)
+                    break
                 out.write(chunk)
-    except HTTPException:
-        raise
     except Exception as e:
         try:
             dest.unlink(missing_ok=True)
         except OSError:
             pass
         raise HTTPException(status_code=500, detail=f"写入失败：{e}") from e
-    return {"ok": True, "name": fn, "dir": str(target_dir)}
+    if too_large:
+        dest.unlink(missing_ok=True)
+        return JSONResponse(status_code=413,
+                            content=_upload_limit_error(limit, too_large))
+    return {"ok": True, "name": fn, "dir": str(target_dir), "size": written}
+
+
+@app.get("/api/upload-limit", dependencies=[Depends(require_auth)])
+async def api_upload_limit(dir: str = ""):
+    """上传前查询目标目录的单文件上限（前端据此给出「当前上限 X，该文件 Y」）。"""
+    target_dir = _upload_target_dir(dir)
+    denied = _fs_denied_response(target_dir)
+    if denied:
+        return denied
+    return {"ok": True, "dir": str(target_dir), **upload_limits(target_dir)}
+
+
+@app.post("/api/upload-stream", dependencies=[Depends(require_auth)])
+async def api_upload_stream(request: Request, dir: str = "", name: str = ""):
+    """原始流上传：请求体就是文件本身，边收边写盘。
+
+    网页文件管理器走这条路径。multipart 解析会把整份内容先落到临时文件，
+    大文件等于多占一份磁盘、也多了「先落整份拷贝」这一步；这里直接读
+    request.stream()，1MB 一块写进目标文件，内存占用恒定。
+    权限判定仍走 _fs_denied_response（危险区/只读挂载一律 403，不能绕过）。
+    """
+    target_dir = _upload_target_dir(dir)
+    denied = _fs_denied_response(target_dir)
+    if denied:
+        return denied
+    fn = Path(name or "file").name
+    if not fn or fn in (".", ".."):
+        raise HTTPException(status_code=400, detail="文件名为空")
+    dest = target_dir / fn
+    if dest.exists():
+        raise HTTPException(status_code=409, detail=f"已存在同名文件：{fn}")
+    caps = upload_limits(target_dir)
+    limit = caps["limit"]
+    try:
+        declared = int(request.headers.get("x-file-size") or 0)
+    except ValueError:
+        declared = 0
+    # 客户端声明的大小超限：先回 413，不必让对方把几个 G 传完再报错
+    if declared > 0 and declared > limit:
+        return JSONResponse(status_code=413,
+                            content=_upload_limit_error(limit, declared))
+    written = 0
+    too_large = 0
+    try:
+        with open(dest, "wb") as out:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                written += len(chunk)
+                # 写之前先判上限：写到一半发现超了就先停，落盘量不会超过 limit
+                if written > limit:
+                    too_large = max(declared, written)
+                    break
+                out.write(chunk)
+    except Exception as e:
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail=f"写入失败：{e}") from e
+    if too_large:
+        dest.unlink(missing_ok=True)
+        return JSONResponse(status_code=413,
+                            content=_upload_limit_error(limit, too_large))
+    return {"ok": True, "name": fn, "dir": str(target_dir), "size": written}
 
 
 @app.get("/api/files", dependencies=[Depends(require_auth)])
