@@ -3247,6 +3247,18 @@ class DeviceIdRequest(BaseModel):
     device_id: str
 
 
+class PairQrRequest(BaseModel):
+    """生成扫码配对二维码：host 可选，用于指定 Deck 在局域网/Tailscale 中的地址"""
+    host: str = ""
+
+
+class PairQrRedeemRequest(BaseModel):
+    """手机扫码后换取设备凭据；token 只出现在二维码里，一次性、短有效期"""
+    token: str
+    name: str = ""
+    remember: bool = True
+
+
 class OneBotConfigUpdate(BaseModel):
     """远程连接页的 QQ 通道配置：只改界面上能编辑的字段
 
@@ -3955,6 +3967,356 @@ async def api_pair_decision(req: PairDecisionRequest, request: Request):
             req.pair_id, bool(req.allow), _client_ip(request))}
     except pairing.PairError as exc:
         raise _pair_http(exc) from exc
+
+
+# ---------- 扫码配对 ----------
+# 二维码里只有「后端地址 + 一次性短 token」：
+#   - token 只存内存（内存里保留明文用于出图），落盘从不写，日志只记哈希前 8 位；
+#   - 默认 90 秒有效、只能换一次，换成功后立即置为 used；
+#   - 重新生成 / 显式撤销都会让旧 token 立刻作废；
+#   - 换到的设备凭据与 PIN 配对走同一张 devices 表、同一个 Cookie，权限完全一致。
+# PIN 配对流程保持不变，两条路径并存。
+
+QR_TTL_S = 90.0
+QR_KEEP_S = 300.0         # 失效后再留 5 分钟，用于区分「已使用 / 已过期 / 已撤销」
+QR_MAX_FAILS = 20         # 单个 IP 每分钟最多允许的失败次数（只用于挡无效猜测刷审计）
+
+_qr_lock = threading.RLock()
+_qr_tokens: dict[str, dict] = {}          # sha256(token) -> 记录
+_qr_fails: dict[str, tuple[float, int]] = {}
+
+
+def _qr_fingerprint(raw: str) -> str:
+    """日志里用的脱敏标识：token 哈希的前 8 位，绝不记录 token 明文。"""
+    return pairing.token_hash(raw)[:8] if raw else ""
+
+
+def _qr_cleanup(now: float) -> None:
+    for key, rec in list(_qr_tokens.items()):
+        if now >= rec["expires"] + QR_KEEP_S:
+            _qr_tokens.pop(key, None)
+
+
+def _qr_probe_ip() -> str:
+    """UDP connect 探测本机出口地址（不真发包）；拿不到就返回空串。"""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError:
+        return ""
+    try:
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0] or ""
+    except OSError:
+        return ""
+    finally:
+        sock.close()
+
+
+def _qr_request_port(request: Request) -> int:
+    raw = (request.headers.get("host") or "").strip()
+    try:
+        port = urllib.parse.urlsplit(f"//{raw}").port
+    except ValueError:
+        port = None
+    if port:
+        return int(port)
+    try:
+        return int(CFG["server"].get("port", 18765))
+    except (TypeError, ValueError):
+        return 18765
+
+
+def _qr_normalize(raw: str, request: Request) -> str:
+    """用户/调用方给的地址 → http(s)://host:port（只保留根地址，不带路径）。"""
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    if not re.match(r"^https?://", value, re.I):
+        value = "http://" + value
+    try:
+        parts = urllib.parse.urlsplit(value)
+        port = parts.port or _qr_request_port(request)
+    except ValueError:
+        return ""
+    host = parts.hostname or ""
+    if not host or any(ch in host for ch in " /?#"):
+        return ""
+    if ":" in host:                       # IPv6 还原成 [::1] 形式
+        host = f"[{host}]"
+    scheme = "https" if parts.scheme.lower() == "https" else "http"
+    return f"{scheme}://{host}:{port}"
+
+
+def _qr_address(request: Request, override: str) -> str:
+    """选一个手机连得上的地址：显式指定 > 请求 Host（非回环）> 局域网 IP > UDP 探测。
+
+    Deck 上没有公网直连，只保证局域网和 Tailscale/WireGuard；Tailscale 的
+    100.x 地址不走 RFC1918 枚举，需要用户在页面里手填（会原样写进二维码）。
+    """
+    fixed = _qr_normalize(override, request)
+    if fixed:
+        return fixed
+    host_header = (request.headers.get("host") or "").strip()
+    try:
+        hostname = urllib.parse.urlsplit(f"//{host_header}").hostname or ""
+    except ValueError:
+        hostname = ""
+    if hostname and not netcfg.is_loopback(hostname):
+        return _qr_normalize(hostname, request)
+    for ip in (_lan_ip(), _qr_probe_ip()):
+        if ip and not netcfg.is_loopback(ip):
+            return _qr_normalize(f"{ip}:{_qr_request_port(request)}", request)
+    return ""
+
+
+def _qr_fail(code: str, detail: str, status: int) -> JSONResponse:
+    return JSONResponse({"ok": False, "code": code, "detail": detail},
+                        status_code=status)
+
+
+def _qr_rate_limited(ip: str, now: float) -> bool:
+    start, count = _qr_fails.get(ip, (0.0, 0))
+    return now - start < 60 and count >= QR_MAX_FAILS
+
+
+def _qr_note_fail(ip: str, now: float) -> None:
+    start, count = _qr_fails.get(ip, (now, 0))
+    if now - start >= 60:
+        start, count = now, 0
+    _qr_fails[ip] = (start, count + 1)
+    if len(_qr_fails) > 200:
+        for key, (t0, _n) in list(_qr_fails.items()):
+            if now - t0 >= 60:
+                _qr_fails.pop(key, None)
+
+
+def _qr_png_cv2(payload: str) -> io.BytesIO | None:
+    """qrcode 未安装时的兜底：OpenCV 编码 + Pillow 放大加静区。"""
+    try:
+        import cv2
+        from PIL import Image
+    except Exception:
+        return None
+    try:
+        matrix = cv2.QRCodeEncoder_create().encode(payload)
+        scale, border = 8, 4
+        img = Image.fromarray(matrix).convert("L")
+        img = img.resize((img.width * scale, img.height * scale), Image.NEAREST)
+        canvas = Image.new("L", (img.width + border * 2 * scale,
+                                 img.height + border * 2 * scale), 255)
+        canvas.paste(img, (border * scale, border * scale))
+        buf = io.BytesIO()
+        canvas.save(buf, format="PNG")
+        return buf
+    except Exception:
+        return None
+
+
+def _qr_png(payload: str) -> str:
+    """后端出图（data URL）。网页端不引入任何联网库，二维码全部由服务端生成。"""
+    buf: io.BytesIO | None = None
+    try:
+        import qrcode
+        img = qrcode.make(payload)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+    except Exception:
+        buf = _qr_png_cv2(payload)
+    if buf is None:
+        raise HTTPException(
+            status_code=501,
+            detail="二维码生成失败：需要 qrcode 依赖（或 opencv + pillow）")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+@app.post("/api/pair/qr", dependencies=[Depends(require_auth)])
+async def api_pair_qr(request: Request, req: PairQrRequest | None = None):
+    """Deck 生成扫码配对二维码（鉴权；生成新的会立刻作废旧 token）。"""
+    address = _qr_address(request, req.host if req else "")
+    if not address:
+        raise HTTPException(
+            status_code=409,
+            detail="找不到可用的局域网地址：请在地址栏填写 Deck 的局域网 IP 或 Tailscale 名称")
+    now = time.time()
+    token = secrets.token_urlsafe(12)
+    payload = ("deckmeido://pair?v=1&u="
+               + urllib.parse.quote(address, safe="") + "&t=" + token)
+    with _qr_lock:
+        _qr_cleanup(now)
+        for rec in _qr_tokens.values():
+            if rec["state"] == "active":
+                rec["state"] = "revoked"
+        _qr_tokens[pairing.token_hash(token)] = {
+            "token": token,
+            "payload": payload,
+            "address": address,
+            "created": now,
+            "expires": now + QR_TTL_S,
+            "state": "active",
+            "used_at": 0.0,
+            "ip": _client_ip(request),
+        }
+    audit.record("pair", "qr", "ok", ip=_client_ip(request),
+                 detail=f"{_qr_fingerprint(token)} {address}")
+    return {"ok": True, "address": address, "expires_in": int(QR_TTL_S),
+            "payload": payload, "qr": _qr_png(payload)}
+
+
+@app.post("/api/pair/qr/redeem")
+async def api_pair_qr_redeem(req: PairQrRedeemRequest, request: Request,
+                             response: Response):
+    """手机扫码换取设备凭据：未鉴权，但必须过一次性的有效 token。
+
+    失败一律返回明确原因（invalid / used / expired / revoked / too_many），
+    与 PIN 配对成功后下发的 Cookie 完全同权。
+    """
+    ip = _client_ip(request)
+    now = time.time()
+    token = (req.token or "").strip()
+    if _qr_rate_limited(ip, now):
+        return _qr_fail("too_many", "尝试过于频繁，请稍后再试", 429)
+    rec = _qr_tokens.get(pairing.token_hash(token)) if token else None
+    if not rec:
+        _qr_note_fail(ip, now)
+        audit.record("pair", "qr_redeem", "fail", ip=ip, reason="invalid",
+                     detail=_qr_fingerprint(token))
+        return _qr_fail("invalid", "二维码无效或已被刷新，请在 Deck 上生成新的二维码", 400)
+    with _qr_lock:
+        state = rec["state"]
+        if state == "active" and now < rec["expires"]:
+            rec["state"] = "used"
+            rec["used_at"] = now
+            rec["used_ip"] = ip
+        elif state == "active":
+            state = "expired"
+    if state != "active":
+        _qr_note_fail(ip, now)
+        reason = {
+            "used": ("used", "二维码已被使用，请刷新后重新扫码", 409),
+            "revoked": ("revoked", "二维码已被 Deck 撤销，请刷新后重新扫码", 410),
+            "expired": ("expired", "二维码已过期，请刷新后重新扫码", 410),
+        }.get(state, ("invalid", "二维码无效或已被刷新，请在 Deck 上生成新的二维码", 400))
+        audit.record("pair", "qr_redeem", "fail", ip=ip, reason=reason[0],
+                     detail=_qr_fingerprint(token))
+        return _qr_fail(*reason)
+    name = (req.name or "").strip() or "扫码设备"
+    device, device_token = pairing.manager.devices.create(
+        name, ip, request.headers.get("user-agent", ""))
+    _set_device_cookie(response, request, device_token, bool(req.remember))
+    _qr_fails.pop(ip, None)
+    audit.record("pair", "qr_redeem", "ok", ip=ip,
+                 detail=f"{_qr_fingerprint(token)} {device.get('name', '')}")
+    return {"ok": True, "device": device, "remember": bool(req.remember),
+            "device_days": _device_days()}
+
+
+@app.post("/api/pair/qr/revoke", dependencies=[Depends(require_auth)])
+async def api_pair_qr_revoke(request: Request):
+    """Deck 主动撤销当前二维码（扫码后提示「已被撤销」）。"""
+    revoked = 0
+    with _qr_lock:
+        for rec in _qr_tokens.values():
+            if rec["state"] == "active":
+                rec["state"] = "revoked"
+                revoked += 1
+    if revoked:
+        audit.record("pair", "qr_revoke", "ok", ip=_client_ip(request),
+                     detail=str(revoked))
+    return {"ok": True, "revoked": revoked}
+
+
+# 独立的扫码配对页：index.html 属禁改范围，这里给 Deck 一个可直接打开的页面
+QR_PAGE_HTML = """<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DeckMeido 扫码配对</title>
+<style>
+:root{color-scheme:light dark}
+body{margin:0;padding:24px;font:15px/1.6 system-ui,-apple-system,"Noto Sans SC",sans-serif;
+     background:#0f1115;color:#e8eaed;display:flex;justify-content:center}
+.card{width:min(420px,100%);background:#171a21;border:1px solid #262b36;border-radius:16px;
+      padding:22px;box-shadow:0 10px 30px #0008}
+h1{font-size:18px;margin:0 0 6px}
+p.sub{margin:0 0 18px;color:#9aa0ab;font-size:13px}
+#qrbox{display:flex;align-items:center;justify-content:center;min-height:260px;
+       background:#0b0d11;border:1px solid #262b36;border-radius:12px}
+#qr{width:248px;height:248px;image-rendering:pixelated;display:none}
+#empty{color:#7d8494;font-size:13px;text-align:center;padding:16px}
+#addr{margin:14px 0 0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;
+      color:#cfd3da;word-break:break-all;text-align:center}
+#state{margin-top:8px;text-align:center;font-size:13px;color:#9aa0ab}
+.bar{display:flex;gap:8px;margin-top:14px}
+button{flex:1;padding:10px 12px;border-radius:10px;border:1px solid #2f3644;
+       background:#20242e;color:#e8eaed;font-size:14px;cursor:pointer}
+button.primary{background:#3b6ef6;border-color:#3b6ef6}
+button:disabled{opacity:.45;cursor:not-allowed}
+input{width:100%;box-sizing:border-box;margin-top:14px;padding:10px 12px;border-radius:10px;
+      border:1px solid #2f3644;background:#0b0d11;color:#e8eaed;font-size:13px}
+.hint{margin-top:8px;color:#7d8494;font-size:12px}
+</style></head><body>
+<div class="card">
+<h1>手机扫码配对</h1>
+<p class="sub">用 DeckMeido 安卓客户端扫描二维码即可配对，无需输入地址和 PIN。</p>
+<div id="qrbox"><img id="qr" alt="配对二维码"><div id="empty">正在生成…</div></div>
+<div id="addr"></div>
+<div id="state"></div>
+<input id="host" placeholder="可选：指定地址（如 100.101.102.103:18765 或 Tailscale 名称）">
+<div class="hint">二维码 90 秒有效，只能使用一次；刷新会让旧二维码立刻失效。</div>
+<div class="bar">
+  <button id="refresh" class="primary">刷新二维码</button>
+  <button id="revoke">撤销</button>
+</div>
+</div>
+<script>
+const img=document.getElementById('qr'),empty=document.getElementById('empty');
+const addr=document.getElementById('addr'),state=document.getElementById('state');
+let deadline=0,timer=null;
+function tick(){
+  const left=Math.max(0,Math.round((deadline-Date.now())/1000));
+  if(!left){state.textContent='已过期，请刷新二维码';clearInterval(timer);timer=null;
+            img.style.opacity=.35;return}
+  state.textContent='剩余 '+left+' 秒，等待手机扫描';
+}
+async function post(path,body){
+  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(body||{})});
+  let data={};try{data=await r.json()}catch(e){}
+  if(!r.ok)throw new Error(data.detail||('HTTP '+r.status));
+  return data;
+}
+async function refresh(){
+  state.textContent='正在生成…';img.style.display='none';empty.style.display='block';
+  empty.textContent='正在生成…';
+  try{
+    const host=document.getElementById('host').value.trim();
+    const data=await post('/api/pair/qr',{host});
+    img.src=data.qr;img.style.display='block';img.style.opacity=1;
+    empty.style.display='none';
+    addr.textContent=data.address;
+    deadline=Date.now()+data.expires_in*1000;
+    if(timer)clearInterval(timer);timer=setInterval(tick,1000);tick();
+  }catch(e){
+    img.style.display='none';empty.style.display='block';empty.textContent=e.message;
+    addr.textContent='';state.textContent='';
+  }
+}
+document.getElementById('refresh').onclick=refresh;
+document.getElementById('revoke').onclick=async()=>{
+  try{
+    await post('/api/pair/qr/revoke',{});
+    img.style.display='none';img.removeAttribute('src');empty.style.display='block';
+    empty.textContent='二维码已撤销';addr.textContent='';state.textContent='';
+    if(timer){clearInterval(timer);timer=null}
+  }catch(e){state.textContent=e.message}
+};
+refresh();
+</script></body></html>"""
+
+
+@app.get("/pair/qr", dependencies=[Depends(require_auth)], include_in_schema=False)
+async def pair_qr_page():
+    """Deck 本机可直接打开 http://127.0.0.1:<port>/pair/qr 查看二维码。"""
+    return HTMLResponse(QR_PAGE_HTML)
 
 
 # ---------- 已配对设备 ----------
