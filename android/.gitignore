@@ -1,0 +1,7 @@
+# Android 构建产物与本机路径，不进仓库
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.kotlin/

@@ -25,12 +25,13 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPExceptio
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from .llm import LLMClient
 from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, memory, menu, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, selfcheck, singleton, status_line, tools, updater, usage
 from .session_store import store
 from . import session_store
-from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, normalize_speaker,
+from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, TTSError, normalize_speaker,
                   speaker_from_legacy)
 from .stt import STT, STTError, record_supported
 from .tomlcfg import ConfigWriteError, write_config
@@ -906,6 +907,14 @@ def _turn_tag() -> dict:
 
 def _sess_path(sid: str) -> Path:
     return store.sess_path(sid)
+
+
+# 会话号只允许普通字符；新接口会把 sid 拼进文件路径，必须先挡住 `../`
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _valid_session_id(sid: str) -> bool:
+    return bool(sid) and _SESSION_ID_RE.fullmatch(sid) is not None
 
 
 def save_current_session(touch: bool = True):
@@ -3195,6 +3204,12 @@ class TTSPreviewRequest(BaseModel):
     text: str = ""
 
 
+class TTSSayRequest(BaseModel):
+    # 手机端要播报的文本；长度上限在接口里再夹一次
+    text: str
+    language: str = ""
+
+
 class RenderReport(BaseModel):
     """前端回报：本轮思考链实际渲染了多少字符、几段（仅 dev_mode 接收）"""
     sid: str = ""
@@ -4092,6 +4107,35 @@ async def api_tts_preview(req: TTSPreviewRequest):
         "speaker_label": SPEAKER_LABELS.get(tts.speaker, ""),
         "error": result.get("error", ""),
     }
+
+
+@app.post("/api/tts/say", dependencies=[Depends(require_auth)])
+async def api_tts_say(req: TTSSayRequest):
+    """给远程客户端（手机）合成语音，直接返回 WAV 字节。
+
+    和 /api/tts/preview 的区别：preview 在掌机本机播放，只回状态；这个接口
+    只合成、不播放，生成的文件随响应结束删除。鉴权和其它 API 一样走设备
+    Cookie，不额外开旁路。
+    """
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text 不能为空")
+    if len(text) > 2000:
+        raise HTTPException(status_code=400, detail="text 超过 2000 字上限")
+    lang = (req.language or "").strip()
+    if lang and lang not in LANGUAGES:
+        raise HTTPException(status_code=400, detail="不支持的 language")
+    try:
+        path = await asyncio.to_thread(tts.synth_wav, text, lang)
+    except TTSError as e:
+        raise HTTPException(status_code=503, detail=f"语音合成失败：{e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"语音合成失败：{e}") from e
+    return FileResponse(
+        path, media_type="audio/wav", filename="tts.wav",
+        headers={"Cache-Control": "no-store"},
+        background=BackgroundTask(lambda: path.unlink(missing_ok=True)),
+    )
 
 
 @app.get("/api/ask-template", dependencies=[Depends(require_auth)])
@@ -5256,6 +5300,41 @@ async def api_session_switch(req: SwitchReq):
                              "sid": store.current_sid})
     await manager.broadcast({"type": "session_changed", "current": store.current_sid})
     return {"ok": True}
+
+
+@app.get("/api/sessions/{sid}/history", dependencies=[Depends(require_auth)])
+async def api_session_history(sid: str):
+    """只读历史：给手机端预览会话，不改变服务端 current_sid。
+
+    网页控制台的「切换会话」是全局动作（会同时广播给掌机和其他客户端），
+    手机翻历史不该把别人正在看的会话切走。这里只读文件，不碰内存里的
+    current_sid / history / compact，也不触发 history 广播。
+    """
+    if not _valid_session_id(sid):
+        raise HTTPException(status_code=404, detail="session not found")
+    p = _sess_path(sid)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="session not found")
+    try:
+        body = await asyncio.to_thread(p.read_text, encoding="utf-8")
+        data = json.loads(body)
+    except Exception as e:
+        raise HTTPException(status_code=500,
+                            detail=f"会话文件读取失败：{e}") from e
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail="会话文件格式异常")
+    hist = data.get("history")
+    if not isinstance(hist, list):
+        hist = []
+    idx = store.index().get(sid) or {}
+    return {
+        "ok": True,
+        "id": data.get("id") or sid,
+        "title": data.get("title") or idx.get("title") or "",
+        "created": data.get("created"),
+        "updated": data.get("updated") or idx.get("updated") or 0,
+        "messages": hist,
+    }
 
 
 class MsgDeleteReq(BaseModel):
