@@ -1690,13 +1690,31 @@
     font-size: 12px; line-height: 1.55; opacity: .86;
     word-break: break-word;
   }
-  .qq-status-grid {
-    display: grid; grid-template-columns: auto minmax(0, 1fr);
-    gap: 2px 10px; font-size: 12px; line-height: 1.5;
+  /* Onebot 状态字段改成左右两栏：左 4 项 / 右 4 项，两栏等宽，
+     标签固定宽度、值左对齐；右栏左侧一条很淡的竖线分隔。
+     ≤720px 回落成单列，去掉竖线，避免标签与值挤成两行断字 */
+  .qq-status-cols {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2px 20px;
   }
-  .qq-status-grid > span { opacity: .7; }
-  .qq-status-grid > b {
+  .qq-status-col {
+    display: grid; grid-template-columns: 84px minmax(0, 1fr);
+    gap: 2px 8px; font-size: 12px; line-height: 1.5;
+    min-width: 0;
+  }
+  .qq-status-col > span { opacity: .7; }
+  .qq-status-col > b {
     font-weight: 500; min-width: 0; word-break: break-all;
+  }
+  .qq-status-col + .qq-status-col {
+    border-left: 1px solid rgba(120, 200, 255, .16);
+    padding-left: 14px;
+  }
+  @media (max-width: 720px) {
+    .qq-status-cols { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    .qq-status-col + .qq-status-col {
+      border-left: 0; padding-left: 0; margin-top: 6px;
+    }
   }
   /* 群友提示词：固定高度 + 内部滚动，别把整张卡撑长 */
   .qq-guest-prompt {
@@ -1783,7 +1801,7 @@
     flex: 0 0 auto; width: auto; min-height: 24px; padding: 0 8px; font-size: 11.5px;
   }
   .qq-logs-body {
-    height: 200px; overflow-y: auto; overflow-x: hidden; padding: 6px 0;
+    height: 180px; overflow-y: auto; overflow-x: hidden; padding: 6px 0;
     font-size: 12px; line-height: 1.55;
   }
   .qq-log-row { display: flex; gap: 6px; padding: 1px 0; word-break: break-word; }
@@ -13664,14 +13682,17 @@
     // 「已启用 · 未连接（等手动连接）」和顶部标题的状态重复，不再显示一遍；
     // 配置错误等其它说明照常保留
     if (state === 'stopped' && detail.indexOf('已启用 · 未连接') === 0) detail = '';
+    // 两栏布局：左栏前 4 项、右栏后 4 项（只改排版，字段含义不变）
+    var cell = function (r) {
+      return '<span>' + escapeHtml(r[0]) + '</span><b>' + escapeHtml(String(r[1])) + '</b>';
+    };
     qqStatusInfo.innerHTML = '<div class="qq-status-head">'
       + '<span class="' + dot + '"></span>'
       + '<span class="qq-state-text">' + escapeHtml(label) + '</span></div>'
       + (detail ? '<div class="qq-status-detail">' + escapeHtml(detail) + '</div>' : '')
-      + '<div class="qq-status-grid">'
-      + rows.map(function (r) {
-        return '<span>' + escapeHtml(r[0]) + '</span><b>' + escapeHtml(String(r[1])) + '</b>';
-      }).join('')
+      + '<div class="qq-status-cols">'
+      + '<div class="qq-status-col">' + rows.slice(0, 4).map(cell).join('') + '</div>'
+      + '<div class="qq-status-col">' + rows.slice(4).map(cell).join('') + '</div>'
       + '</div>';
     if (qqPrefixHint) qqPrefixHint.textContent = qqPrefixText(s.prefix, !!s.guest_prompt_custom);
   }
