@@ -2598,6 +2598,12 @@
   .tm-term .tm-term-in { width: 100%; min-height: 120px; }
   .tm-term .tm-term-in .xterm { padding: 4px 0; }
   .tm-term .tm-term-in .xterm-viewport { overflow-y: auto !important; }
+  /* 全盘扫描类命令的「可能较久」标记：执行前和执行中都留在标题上 */
+  .tm-head .tm-slow {
+    flex: 0 0 auto; font-size: 10.5px; line-height: 1; padding: 3px 7px;
+    border-radius: 5px; color: #e0a33a; border: 1px solid rgba(224,163,58,.4);
+    background: rgba(224,163,58,.12); white-space: nowrap;
+  }
   /* 顶部的放大按钮：行为跟文件预览一致，点开是全屏浮层 */
   .tm-head .zoom {
     flex: 0 0 auto; border: none; background: none; color: var(--muted);
@@ -5016,6 +5022,9 @@
   }
 
   function showTyping(label) {
+    // 记下当前动作文案：秒表每秒刷新时要和「已执行 N 秒」拼在一起，
+    // 不能把「AI 在做什么」整句覆盖掉
+    if (label) waitLabel = label;
     // 已有提示时只更新文字，避免每次工具事件都重排、闪动
     if (typingEl && label) {
       var lbl = typingEl.querySelector('.typing-label');
@@ -6630,8 +6639,20 @@
   // 那几条挤出视野，所以先静音等这么久；到点还没有任何输出就自己收成一行
   var TERM_QUIET_MS = 4000;
 
+  function termElapsedSec(it) {
+    var t0 = it.startedAt || (it.sent ? it.sent * 1000 : 0);
+    if (!t0) return -1;
+    return Math.max(0, Math.floor((Date.now() - t0) / 1000));
+  }
+
   function termStatusText(it) {
-    if (it.running) return '<span class="st run">执行中<span class="tm-dots"><i></i><i></i><i></i></span></span>';
+    if (it.running) {
+      // 秒级耗时：只靠 800ms 轮询的话，状态没变化就不会重画，
+      // 用户只能看到静态「执行中」，分不清是在干活还是卡死
+      var secs = termElapsedSec(it);
+      return '<span class="st run">执行中' + (secs >= 0 ? ' · ' + secs + 's' : '') +
+        '<span class="tm-dots"><i></i><i></i><i></i></span></span>';
+    }
     if (it.background) return '<span class="st ok">已转后台</span>';
     if (it.exit === 0 || it.exit === null || it.exit === undefined) return '<span class="st ok">完成</span>';
     return '<span class="st bad">退出 ' + it.exit + '</span>';
@@ -6671,9 +6692,22 @@
     cmd.textContent = it.cmdText || it.cmd;
     var st = document.createElement('span');
     st.innerHTML = termStatusText(it);
-    head.appendChild(who);
-    head.appendChild(cmd);
-    head.appendChild(st);
+    // 记下状态节点：每秒只改这一处的文字，避免整体重画打断 xterm
+    it._st = st;
+    if (it.slow) {
+      var slow = document.createElement('span');
+      slow.className = 'tm-slow';
+      slow.textContent = '可能较久';
+      slow.title = it.slow;
+      head.appendChild(who);
+      head.appendChild(cmd);
+      head.appendChild(slow);
+      head.appendChild(st);
+    } else {
+      head.appendChild(who);
+      head.appendChild(cmd);
+      head.appendChild(st);
+    }
     // 终止按钮：手动命令（it.xt）走 WS stop 帧；AI 命令走 /api/terminal/stop。
     // tracked 标志保留给 AI 命令（后端 CURRENT_CMD 指向它）
     var tracked = term.items[term.trackIdx] === it;
@@ -7044,9 +7078,13 @@
     if (termBig) termRefreshBig();
   }
 
-  function termAdd(who, cmd, reason, sentAt) {
+  function termAdd(who, cmd, reason, sentAt, slowHint) {
     var it = { id: ++term.seq, who: who, cmd: cmd, reason: reason || '',
-               sent: sentAt || 0, out: '', running: true, exit: null,
+               // 秒表用本地收到命令的时刻：服务端/客户端时钟可能有偏差，
+               // 用 ts_sent 会把耗时算成负数或凭空多出几十秒
+               sent: sentAt || 0, startedAt: Date.now(),
+               slow: slowHint || '',
+               out: '', running: true, exit: null,
                background: false, collapsed: false };
     // AI 自动插一条：先静音观察，确认它真的不出声且还在跑，才收成一行。
     // 手动敲的命令（who='me'）不动，用户就是要看自己那条的输出
@@ -7152,6 +7190,16 @@
     clearInterval(term.pollTimer);
     term.pollTimer = null;
   }
+
+  // 执行中的秒表：只刷新状态徽章，不重建整条（xterm 的 DOM 与终止按钮都保持原样）
+  setInterval(function () {
+    if (!term.items || !term.items.length) return;
+    for (var i = 0; i < term.items.length; i++) {
+      var it = term.items[i];
+      if (!it.running || !it._st || !it._st.parentNode) continue;
+      it._st.innerHTML = termStatusText(it);
+    }
+  }, 1000);
 
   setInterval(function () {
     if (!term.pollTimer) return;
@@ -7638,6 +7686,13 @@
           liveThought = null;
           break;
         case 'tool_done':
+          // 工具跑完就撤掉动作文案，别让命令早已结束、界面还写着「正在执行命令 …」；
+          // 计时仍继续显示本轮的「已执行 N 秒」
+          waitLabel = '';
+          if (typingEl) {
+            var _tlbl = typingEl.querySelector('.typing-label');
+            if (_tlbl) _tlbl.textContent = '';
+          }
           if (liveBox && msg.event) {
             renderEvent(msg.event, liveBox);
             liveToolCount++;
@@ -7823,7 +7878,8 @@
           if (msg.path) fbFocusAi(msg.path, msg.is_dir);
           break;
         case 'term_start':
-          if (msg.command) termAdd('ai', msg.command, msg.reason, msg.ts_sent || msg.ts || 0);
+          if (msg.command) termAdd('ai', msg.command, msg.reason,
+                                   msg.ts_sent || msg.ts || 0, msg.slow || '');
           break;
         case 'status':
           renderStatus(msg.data || {});
@@ -8792,6 +8848,7 @@
   // 这里把「已经等了多久」显示出来，至少能看出后端还在跑
   var waitTimer = null;
   var waitBase = 0;        // 本轮已等秒数（status 给的 running_since 优先）
+  var waitLabel = '';      // 当前动作文案（如「正在执行命令：find /」）
   function waitTick() {
     if (!typingEl) { stopWaitTimer(); return; }
     waitBase += 1;
@@ -8801,7 +8858,10 @@
       lbl.className = 'typing-label';
       typingEl.insertBefore(lbl, typingEl.firstChild);
     }
-    lbl.textContent = '已执行 ' + waitBase + ' 秒'
+    // 保留「正在做什么」，后面再追加秒数；否则工具事件一过就只剩读秒，
+    // 用户分不清是在跑哪条命令
+    lbl.textContent = (waitLabel ? waitLabel + ' · ' : '')
+      + '已执行 ' + waitBase + ' 秒'
       + (waitBase >= 45 ? '（还在跑，可以按终止停下）' : '');
   }
   function startWaitTimer(since) {
@@ -8813,6 +8873,7 @@
   function stopWaitTimer() {
     if (waitTimer) { clearInterval(waitTimer); waitTimer = null; }
     waitBase = 0;
+    waitLabel = '';
   }
 
   function updateSendBtn() {
@@ -12792,6 +12853,7 @@
     return cfgChain;
   }
 
+  var modelsErrShown = false;   // 模型列表失败只提示一次，成功后再重置
   function loadToolbar() {
     fetch('/api/config')
       .then(function (r) { return r.json(); })
@@ -12801,7 +12863,18 @@
         // 模型下拉：先用当前模型占位，再异步补上服务商真实模型列表
         fillModelSelect([c.model]);
         if (c.model) modelSelect.value = c.model;
-        fetchModels().then(function (list) { fillModelSelect(list, c.model); });
+        fetchModels().then(function (list) {
+          modelsErrShown = false;
+          fillModelSelect(list, c.model);
+        }).catch(function (err) {
+          // 顶栏只用当前模型占位；模型列表失败时至少说一次真实原因，
+          // 否则下拉框里只剩「当前模型」，会被误当成服务商没有别的模型
+          var msg = (err && err.message) ? err.message : '';
+          if (!modelsErrShown && msg) {
+            modelsErrShown = true;
+            addSystem('模型列表加载失败：' + msg);
+          }
+        });
         // 权限等 select 的 value 刚被恢复，同步刷新自绘下拉的 label，别显示成第一项
         ddRefreshAll();
       })
@@ -12830,14 +12903,31 @@
     if (modelSelect._dd && modelSelect._dd.refresh) modelSelect._dd.refresh();
   }
 
-  // 从服务商拉当前配置的模型列表：GET /models，OpenAI 兼容接口都支持
+  // 从服务商拉当前配置的模型列表：GET /models，OpenAI 兼容接口都支持。
+  // 非 2xx / 非 JSON 一律抛出真实状态与原因：以前吞成 []，界面看起来像
+  // 「服务商没有模型」，用户根本不知道是地址、Key 还是网络的问题。
   var modelsPromise = null;
   function fetchModels() {
     if (!modelsPromise) {
       modelsPromise = fetch('/api/models')
-        .then(function (r) { return r.json(); })
-        .then(function (d) { return d.models || []; })
-        .catch(function () { modelsPromise = null; return []; });
+        .then(function (r) {
+          return r.text().then(function (t) {
+            var d = null;
+            try { d = t ? JSON.parse(t) : null; } catch (e) {}
+            if (!r.ok) {
+              var detail = d && (d.detail || d.message || d.error);
+              throw new Error('HTTP ' + r.status + (detail ? '：' + detail : ''));
+            }
+            if (!d || !Array.isArray(d.models)) {
+              throw new Error('返回内容里没有模型列表（HTTP ' + r.status + '）');
+            }
+            return d.models;
+          });
+        })
+        .catch(function (err) {
+          modelsPromise = null;   // 允许下次重试，不要把错误缓存成空数组
+          throw err;
+        });
     }
     return modelsPromise;
   }
@@ -13387,12 +13477,30 @@
     row.textContent = text;
     sessList.appendChild(row);
   }
+  // 已有列表时刷新失败不会走占位文字，单独提示一次即可，避免每次广播都刷屏
+  var sessErrNotified = false;
   function loadSessions(retried) {
     if (!deviceSession) return;
     sessSkeleton('加载中…');
     fetch('/api/sessions')
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        // 非 2xx / 非 JSON 必须抛出：以前直接 r.json() 再取 d.items，
+        // 后端报错时拿到空数组，界面看起来像「一个会话都没有」
+        return r.text().then(function (t) {
+          var d = null;
+          try { d = t ? JSON.parse(t) : null; } catch (e) {}
+          if (!r.ok) {
+            var detail = d && (d.detail || d.message || d.error);
+            throw new Error('HTTP ' + r.status + (detail ? '：' + detail : ''));
+          }
+          if (!d || typeof d !== 'object') {
+            throw new Error('返回内容不是 JSON（HTTP ' + r.status + '）');
+          }
+          return d;
+        });
+      })
       .then(function (d) {
+        sessErrNotified = false;
         currentSid = d.current;
         syncQqSessButton();
         sessList.innerHTML = '';
@@ -13451,14 +13559,22 @@
         // 设置在开着的时候后台刷新了会话列表，别把「设置」俩字顶掉
         if (document.body.classList.contains('settings-mode')) setHdrTitle('设置');
       })
-      .catch(function () {
+      .catch(function (err) {
+        var why = (err && err.message) ? err.message : '';
+        var reason = why ? '（' + why + '）' : '';
         if (retried) {
-          sessSkeleton('会话列表加载失败，点这里重试');
+          sessSkeleton('会话列表加载失败' + reason + '，点这里重试');
           var ph = sessList.querySelector('.sess-placeholder');
           if (ph) ph.addEventListener('click', function () { loadSessions(); });
+          // 列表本来就有内容时 sessSkeleton 不会替换，另用一条系统消息
+          // 把真实原因说出来，别让人以为刷新成功、数据没变
+          if (!sessErrNotified && why) {
+            sessErrNotified = true;
+            addSystem('会话列表刷新失败：' + why);
+          }
           return;
         }
-        sessSkeleton('会话列表加载失败，正在重试…');
+        sessSkeleton('会话列表加载失败' + reason + '，正在重试…');
         setTimeout(function () { loadSessions(true); }, 800);
       });
   }
