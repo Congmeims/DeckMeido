@@ -72,6 +72,27 @@ class PresetsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             presets.upsert("1", "游戏", "   ")
 
+    def test_empty_appid_name_only_valid(self):
+        """没有 appid（非 Steam 游戏）时只靠游戏名也能存，appid 保持空串"""
+        item = presets.upsert("", "Steam 之外的程序", "只用名字绑定")
+        self.assertEqual(item["appid"], "")
+        self.assertEqual(item["title"], "Steam 之外的程序")
+
+    def test_appid_text_normalization(self):
+        """payload 里的 appid 统一成字符串；0/布尔/空白都算无效"""
+        self.assertEqual(presets.appid_text(2312770427), "2312770427")
+        self.assertEqual(presets.appid_text(" 123 "), "123")
+        for bad in ("0", 0, "", None, True, False, "abc"):
+            self.assertEqual(presets.appid_text(bad), "")
+
+    def test_write_failure_propagates(self):
+        """写盘失败向上抛 OSError，且旧文件内容不能被改坏"""
+        presets.upsert("1", "游戏", "原文")
+        with mock.patch.object(presets, "_write", side_effect=OSError("磁盘只读")):
+            with self.assertRaises(OSError):
+                presets.upsert("1", "游戏", "新文")
+        self.assertEqual(presets.list_presets()[0]["prompt"], "原文")
+
     # ---- appid / 名称回退 ----
     def test_appid_wins_over_same_name(self):
         a = presets.upsert("111", "同名游戏", "A 游戏提示词")

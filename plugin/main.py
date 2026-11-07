@@ -1866,8 +1866,19 @@ async def _core_http(port: int, method: str, path: str,
         except Exception:
             pass
     head, _, body = raw.partition(b"\r\n\r\n")
+    status_line = head.split(b"\r\n", 1)[0].decode("utf-8", "replace")
     if b" 200 " not in head.split(b"\r\n", 1)[0]:
-        return {"ok": False, "error": head.split(b"\r\n", 1)[0].decode("utf-8", "replace")[:60]}
+        # 非 200 时把后端 body 里的 detail 原文带上：前端 toast 只显示 code，
+        # 明细要能一眼看出「提示词不能为空 / 缺少游戏标识」这类真实原因
+        detail = ""
+        try:
+            data = json.loads(body)
+            if isinstance(data, dict):
+                detail = str(data.get("detail") or "").strip()
+        except Exception:
+            detail = ""
+        error = f"{status_line}：{detail}" if detail else status_line[:60]
+        return {"ok": False, "error": error}
     try:
         return {"ok": True, "data": json.loads(body)}
     except Exception:

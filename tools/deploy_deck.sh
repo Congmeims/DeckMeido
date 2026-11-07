@@ -117,19 +117,29 @@ if [ "$CODE" != "200" ]; then
 fi
 printf '  /api/status -> 200\n'
 
-# ---------- 4. 插件 dist 有变化才同步并重载 ----------
+# ---------- 4. 插件 dist / main.py 有变化才同步并重载 ----------
 LOCAL_SHA=$(sha256sum "$ROOT/plugin/dist/index.js" | cut -d' ' -f1)
 REMOTE_SHA=$(ssh "$HOST" "sha256sum $PLUGIN_REMOTE/dist/index.js 2>/dev/null | cut -d' ' -f1" || true)
+# 插件后端 main.py 也必须跟着走：只更新 dist 会出现「界面有按钮、插件后端没这个方法」
+# （save_preset 就是这么失败的），Decky 只会报 'Plugin' object has no attribute
+LOCAL_MAIN_SHA=$(sha256sum "$ROOT/plugin/main.py" | cut -d' ' -f1)
+REMOTE_MAIN_SHA=$(ssh "$HOST" "sha256sum $PLUGIN_REMOTE/main.py 2>/dev/null | cut -d' ' -f1" || true)
 
-if [ "$LOCAL_SHA" = "$REMOTE_SHA" ] && [ "${FORCE_PLUGIN:-0}" != "1" ]; then
-  log "4/5 插件 dist 未变化（$LOCAL_SHA），跳过重载"
+if [ "$LOCAL_SHA" = "$REMOTE_SHA" ] && [ "$LOCAL_MAIN_SHA" = "$REMOTE_MAIN_SHA" ] \
+   && [ "${FORCE_PLUGIN:-0}" != "1" ]; then
+  log "4/5 插件 dist / main.py 未变化（$LOCAL_SHA），跳过重载"
 else
-  log "4/5 同步插件 dist（本地 $LOCAL_SHA / 远端 ${REMOTE_SHA:-无}）"
+  log "4/5 同步插件 dist 与 main.py（dist 本地 $LOCAL_SHA / 远端 ${REMOTE_SHA:-无}）"
   scp -q "$ROOT/plugin/dist/index.js" "$HOST:/tmp/deckmeido-index.js" || die "上传插件失败"
   sudo_remote "cp /tmp/deckmeido-index.js $PLUGIN_REMOTE/dist/index.js" \
     || die "写入插件目录失败"
   sudo_remote "chown root:root $PLUGIN_REMOTE/dist/index.js" \
     || die "修正插件文件属主失败"
+  scp -q "$ROOT/plugin/main.py" "$HOST:/tmp/deckmeido-plugin-main.py" || die "上传插件后端失败"
+  sudo_remote "cp /tmp/deckmeido-plugin-main.py $PLUGIN_REMOTE/main.py" \
+    || die "写入插件后端失败"
+  sudo_remote "chown root:root $PLUGIN_REMOTE/main.py" \
+    || die "修正插件后端属主失败"
 
   log "5/5 重载 plugin_loader（QAM 会短暂关闭，游戏不受影响）"
   sudo_remote "systemctl restart plugin_loader" || die "重启 plugin_loader 失败"
@@ -154,6 +164,9 @@ else
   OUT_SHA=$(ssh "$HOST" "sha256sum $PLUGIN_REMOTE/dist/index.js | cut -d' ' -f1")
   [ "$OUT_SHA" = "$LOCAL_SHA" ] || die "部署后 dist 哈希不一致（$OUT_SHA）"
   printf '  插件 dist sha256 -> %s\n' "$OUT_SHA"
+  OUT_MAIN_SHA=$(ssh "$HOST" "sha256sum $PLUGIN_REMOTE/main.py | cut -d' ' -f1")
+  [ "$OUT_MAIN_SHA" = "$LOCAL_MAIN_SHA" ] || die "部署后插件后端哈希不一致（$OUT_MAIN_SHA）"
+  printf '  插件 main.py sha256 -> %s\n' "$OUT_MAIN_SHA"
 fi
 
 log "完成：后端已同步并重启，插件按需重载"
