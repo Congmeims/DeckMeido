@@ -601,15 +601,29 @@ class WakeService:
         if ack_changed and was and self._enabled and self._state != "disarmed":
             self._start_ack_prepare()
 
-    def _start_ack_prepare(self) -> None:
+    def _start_ack_prepare(self) -> asyncio.Task | None:
         """后台预合成「我在」；不阻塞 arm，也不允许失败冒到事件循环。"""
-        if self._ack_preparing:
-            return
+        if self._ack_preparing or self._ack_wav:
+            return None
         try:
             asyncio.get_running_loop()
         except RuntimeError:
+            return None
+        return asyncio.create_task(self._prepare_ack())
+
+    async def _warm_ack(self, timeout: float = 2.5) -> None:
+        """arm/重建时尽量让「我在」就绪，但不要卡住整个开关。
+
+        正常热启动合成通常不到 1 秒；如果模型需要冷加载或下载，就放后台继续，
+        这期间命中唤醒只显示屏幕字幕。
+        """
+        task = self._start_ack_prepare()
+        if task is None:
             return
-        asyncio.create_task(self._prepare_ack())
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
 
     async def _prepare_ack(self) -> None:
         """合成唤醒回应并缓存到内存。失败只记原因，唤醒流程照常可用。"""
@@ -654,7 +668,7 @@ class WakeService:
                 self._fail(str(exc))
                 return
             self._ready = True
-            self._start_ack_prepare()
+            await self._warm_ack()
             self._set_state("armed")
 
     def set_handlers(self, *, transcribe=None, chat=None, duck=None, restore=None,
@@ -735,7 +749,7 @@ class WakeService:
                 self._fail(str(exc))
                 raise
             self._ready = True
-            self._start_ack_prepare()
+            await self._warm_ack()
             self._set_state("armed")
             if self._power_hold:
                 try:
