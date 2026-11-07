@@ -3524,6 +3524,16 @@
               </label>
             </div>
             <div id="sttHint" class="field-hint"></div>
+            <div class="field field-row" id="r2PttRow" style="margin-top:2px">
+              <label style="margin:0">R2 按住说话（桌面客户端）</label>
+              <label class="switch">
+                <input id="cfgR2Ptt" type="checkbox" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field-hint" style="margin-top:0">
+              按住右扳机开始录音，松开自动识别并填入输入框；只在客户端窗口激活且语音输入可用时响应，关掉后 R2 不做任何处理。
+            </div>
           </div>
 
           <div class="card">
@@ -9124,6 +9134,8 @@
   var micState = 'idle';          // idle / recording / working
   var micStream = null, micCtx = null, micSrc = null, micProc = null;
   var micChunks = [], micRate = 48000, micTimer = null;
+  // 客户端 R2：按下时麦克风还没拿到就松手，要取消这次录音
+  var micStartPending = false, micR2Release = false;
 
   function micReset() {
     if (micTimer) { clearTimeout(micTimer); micTimer = null; }
@@ -9192,9 +9204,11 @@
     micBtn.classList.add('busy');
     try {
       var st = await (await fetch('/api/stt')).json();
-      if (!st.enable || !st.runtime || !st.model) {
+      sttReady = !!(st.enable !== false && st.runtime && st.model);
+      if (!sttReady) {
         fbToast('语音输入未启用或模型未下载：到设置 → 对话与语音里开启并下载模型', 'chat', true);
         micBtn.classList.remove('busy');
+        micStartPending = false;
         return;
       }
     } catch (e) { /* 状态读不到也继续试，真失败由下面提示 */ }
@@ -9204,14 +9218,22 @@
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
     } catch (e) {
+      micStartPending = false;
       fbToast('打不开麦克风：' + (e && e.message ? e.message : e), 'chat', true);
       return;
     } finally {
       micBtn.classList.remove('busy');
     }
+    // 按下 R2 后还没拿到麦克风就松手了：直接放弃这一次，不进入录音
+    if (micR2Release) {
+      try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+      micStartPending = false; micR2Release = false;
+      return;
+    }
     var Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) {
       try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+      micStartPending = false;
       fbToast('当前环境不支持录音', 'chat', true);
       return;
     }
@@ -9227,6 +9249,7 @@
     micSrc.connect(micProc);
     micProc.connect(micCtx.destination);
     duckOutput(true);
+    micStartPending = false; micR2Release = false;
     micState = 'recording';
     micBtn.classList.add('rec');
     micBtn.textContent = tr('停止');
@@ -9271,6 +9294,25 @@
       else if (micState === 'idle') micStart();
     });
   }
+
+  // 桌面客户端把手柄 R2 转成这两个调用：按住开始、松开结束。
+  // 开关与可用性都在这里判断，客户端只负责读扳机，不做拦截。
+  window.dmR2 = function (kind) {
+    if (!IS_NATIVE || !r2PttEnabled() || !sttReady) return false;
+    if (kind === 'start') {
+      if (micState !== 'idle' || micStartPending) return false;
+      micR2Release = false;
+      micStartPending = true;
+      micStart();
+      return true;
+    }
+    if (kind === 'stop') {
+      if (micState === 'recording') { micStop(); return true; }
+      if (micStartPending) micR2Release = true;
+      return micStartPending;
+    }
+    return false;
+  };
 
   sendBtn.addEventListener('click', send);
   input.addEventListener('keydown', function (e) {
@@ -9627,11 +9669,27 @@
   var cfgWithShot = document.getElementById('cfgWithShot');
   var cfgStt = document.getElementById('cfgStt');
   var cfgSttDuck = document.getElementById('cfgSttDuck');
+  var cfgR2Ptt = document.getElementById('cfgR2Ptt');
+  var r2PttRow = document.getElementById('r2PttRow');
+  var R2_PTT_KEY = 'deckmeido_r2_ptt';
+  function r2PttEnabled() {
+    try { return localStorage.getItem(R2_PTT_KEY) !== '0'; } catch (e) { return true; }
+  }
+  // R2 只有桌面客户端能拿到（SDL2 读虚拟手柄），网页端不显示这一项
+  if (r2PttRow && !IS_NATIVE) r2PttRow.style.display = 'none';
+  if (cfgR2Ptt) {
+    cfgR2Ptt.checked = r2PttEnabled();
+    cfgR2Ptt.addEventListener('change', function () {
+      try { localStorage.setItem(R2_PTT_KEY, cfgR2Ptt.checked ? '1' : '0'); } catch (e) {}
+    });
+  }
   var cfgLang = document.getElementById('cfgLang');
   var cfgAskTemplate = document.getElementById('cfgAskTemplate');
   var cfgTranslateTemplate = document.getElementById('cfgTranslateTemplate');
   var tplHint = document.getElementById('tplHint');
   var sttHint = document.getElementById('sttHint');
+  // R2 只在语音真正可用时响应：运行时、模型、开关三者都满足才置 true
+  var sttReady = false;
   var tplSave = document.getElementById('tplSave');
   // 默认模板只存后端下发的值，不在前端硬编码；「恢复默认」先把值填回文本框
   var askTplDefault = '';
@@ -10903,19 +10961,22 @@
     fetch('/api/stt')
       .then(function (r) { return r.json(); })
       .then(function (d) {
-        if (d && d.runtime && d.model) {
+        sttReady = !!(d && d.enable !== false && d.runtime && d.model);
+        if (d && d.enable !== false && d.runtime && d.model) {
           // 模型源按 [stt] model_source 显示：auto 是国内镜像优先、GitHub 兜底
           var src = d.model_source === 'mirror' ? 'hf-mirror 镜像'
             : d.model_source === 'github' ? 'GitHub'
             : d.model_source ? '自定义源' : '国内镜像优先';
           sttHint.textContent = '语音输入可用（下载源：' + src + '）';
+        } else if (d && d.enable === false) {
+          sttHint.textContent = '语音输入已在上面关闭，打开后才能识别';
         } else if (d && !d.runtime) {
           sttHint.textContent = '这台机器还没安装语音识别运行时（sherpa-onnx）：开关可以保存，但暂时识别不了';
         } else {
           sttHint.textContent = '语音识别模型还没下载（约 250MB，默认走国内镜像），在插件端点下载后才能用';
         }
       })
-      .catch(function () { sttHint.textContent = ''; });
+      .catch(function () { sttReady = false; sttHint.textContent = ''; });
   }
 
   // ---------- 语音回复（「女仆人格」下面的语音回复卡） ----------
