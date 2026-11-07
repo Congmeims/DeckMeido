@@ -3768,7 +3768,15 @@ async def api_usage(days: int = 14, api: str = ""):
     返回里的 api_profiles 带每组的名称与是否有 Key（只有掩码），给下拉框用。
     """
     selected = api or (API_STATE.get("current") or "")
-    data = await asyncio.to_thread(usage.snapshot, days, None, llm.base_url,
+    # 峰谷单价按「被统计的那一组」的地址判断：中转等非官方端点不能用官方标记，
+    # 「全部」时才沿用当前使用的地址
+    pricing_base = llm.base_url if selected == "all" else ""
+    if selected != "all":
+        for p in API_STATE.get("profiles") or []:
+            if p["id"] == selected:
+                pricing_base = p.get("base_url") or ""
+                break
+    data = await asyncio.to_thread(usage.snapshot, days, None, pricing_base,
                                    None if selected == "all" else selected)
     data["api"] = selected or "all"
     data["api_profiles"] = [{**row, "current": row["id"] == API_STATE.get("current")}
@@ -3789,6 +3797,11 @@ async def api_usage_balance(api: str = ""):
             if p["id"] == api:
                 target = p
                 break
+        # 指定了账户却找不到（例如下拉还停在被删掉的那条）时明确报错，
+        # 不能退回当前使用、把另一组的余额当成它的显示出来
+        if target is None:
+            return {"ok": False, "reason": "not_found",
+                    "error": "该账户已不在接口列表里", "api": api, "api_name": ""}
     if target is None:
         target = apicfg.active(API_STATE) or {}
     result = await usage.fetch_balance(str(target.get("base_url") or ""),
