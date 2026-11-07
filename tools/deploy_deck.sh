@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DeckMeido 一键部署：同步后端/客户端 → 重启后端 → 接口自检 → 插件 dist 有变化就重载 Decky
+# DeckMeido 一键部署：同步后端/客户端/install.sh → 重启后端 → 接口自检 → 插件 dist 有变化就重载 Decky
 #
 # 用法（在仓库根目录，Git Bash / WSL / Linux 均可）：
 #   DECK_SUDO_PASS=<deck 的 sudo 密码> tools/deploy_deck.sh
@@ -30,6 +30,7 @@ die() { printf '\n[失败] %s\n' "$*" >&2; exit 1; }
 
 # ---------- 前置检查 ----------
 [ -f "$ROOT/server/main.py" ] || die "请在仓库根目录运行：找不到 server/main.py"
+[ -f "$ROOT/install.sh" ] || die "找不到 install.sh，先确认仓库完整"
 [ -f "$ROOT/plugin/dist/index.js" ] || die "找不到 plugin/dist/index.js，先执行 cd plugin && npm run build"
 
 log "检查 ssh 与 sudo 权限"
@@ -44,16 +45,19 @@ sudo_remote() {
 }
 
 # ---------- 部署前备份 ----------
-# 每次部署前把 server/ client/ 和用户数据目录一起打包到 userdata/backups/deploy/。
+# 每次部署前把 server/ client/ install.sh 和用户数据目录一起打包到 userdata/backups/deploy/。
 # 代码与数据分成两类归档（DeckMeido-server-backup-* / DeckMeido-data-backup-*），
 # 数据再大也不会把 server 备份撑大；两类各自按「最近 N 份 + 单类总量上限」清理（见下方保留策略）。
-log "备份现有 server/ client/ 与数据目录到 $BACKUP_DIR"
+log "备份现有 server/ client/ install.sh 与数据目录到 $BACKUP_DIR"
 TS=$(date +%Y%m%d-%H%M%S)
 BACKUP_TAR="$BACKUP_DIR/DeckMeido-server-backup-$TS.tar.gz"
 ssh "$HOST" "mkdir -p $BACKUP_DIR" || die "创建备份目录失败"
 BACKUP_SRC="server client"
 if ssh "$HOST" "cd $REMOTE && [ -f VERSION ] && [ -f COMMIT ]"; then
-  BACKUP_SRC="server client VERSION COMMIT"
+  BACKUP_SRC="$BACKUP_SRC VERSION COMMIT"
+fi
+if ssh "$HOST" "cd $REMOTE && [ -f install.sh ]"; then
+  BACKUP_SRC="$BACKUP_SRC install.sh"
 fi
 ssh "$HOST" "cd $REMOTE && tar -czf $BACKUP_TAR $BACKUP_SRC" || die "备份失败"
 ssh "$HOST" "tar -tzf $BACKUP_TAR > /dev/null" || die "备份校验失败：归档不可读（$BACKUP_TAR）"
@@ -97,10 +101,18 @@ for prefix, files in sorted(groups.items()):
         print("  prune:", os.path.basename(p))
 PY
 
-# ---------- 1. 同步后端与客户端 ----------
-log "1/5 同步 server/ 与 client/ 到 $REMOTE"
-tar --exclude='__pycache__' --exclude='*.pyc' -czf - -C "$ROOT" server client \
+# ---------- 1. 同步后端、客户端与安装脚本 ----------
+log "1/5 同步 server/、client/ 与 install.sh 到 $REMOTE"
+tar --exclude='__pycache__' --exclude='*.pyc' -czf - -C "$ROOT" server client install.sh \
   | ssh "$HOST" "tar -xzf - -C $REMOTE" || die "同步后端失败"
+
+# 安装脚本也要校验：Deck 安装目录里的 install.sh 是旧版时，
+# 下次命令行安装/修复还会带过期文案和检查项；和插件 dist 一样用 sha256 对账
+LOCAL_INSTALL_SHA=$(sha256sum "$ROOT/install.sh" | cut -d' ' -f1)
+REMOTE_INSTALL_SHA=$(ssh "$HOST" "sha256sum $REMOTE/install.sh 2>/dev/null | cut -d' ' -f1" || true)
+[ "$REMOTE_INSTALL_SHA" = "$LOCAL_INSTALL_SHA" ] \
+  || die "install.sh 哈希不一致（本地 $LOCAL_INSTALL_SHA / 远端 ${REMOTE_INSTALL_SHA:-无}）"
+printf '  install.sh sha256 -> %s\n' "$REMOTE_INSTALL_SHA"
 
 # 构建标记：安装目录没有 .git（git archive 部署），把短提交号写进 COMMIT，
 # 后端据此把 /api/version 的 version_display 显示成 0.7.5-xxxxxxx
