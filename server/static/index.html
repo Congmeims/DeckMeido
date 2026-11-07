@@ -630,6 +630,9 @@
   /* 语音输入按钮：只有 Deck 桌面客户端（native=1）才显示，网页端不出现 */
   #micBtn { display: none; font-size: 13px; }
   body.native #micBtn { display: block; }
+  /* 原生客户端在按钮上标出按住说话用的键；录音/识别中不重复显示。
+     用伪元素而不是改按钮文字，脚本切换「停止/识别中」时不用跟着维护后缀 */
+  body.native #micBtn:not(.rec):not(.busy)::after { content: '（R1）'; }
   #micBtn.rec { background: var(--danger); color: #fff; }
   #micBtn.busy { opacity: .6; pointer-events: none; }
   /* 清空按钮：有内容才出现。用 :placeholder-shown 判断，
@@ -2102,6 +2105,8 @@
     .cb-btn { padding: 0 8px; }
     /* 窄屏把清空按钮收窄，优先保证「发送」不被挤出可视区 */
     #clearBtn { min-width: 30px; padding: 0 6px; font-size: 12px; }
+    /* 极窄的原生窗口里去掉「（R1）」后缀，按钮宽度给发送让位，避免换行错位 */
+    body.native #micBtn:not(.rec):not(.busy)::after { content: none; }
   }
   #ctrlBadge { cursor: pointer; }
   #ctrlBadge:active { opacity: .7; }
@@ -3000,7 +3005,7 @@
       <button id="send">发送</button>
       <!-- 语音输入：只有 Native 客户端显示（网页与大屏/QAM 不加），
            点击开始/停止录音，识别结果填进输入框不自动发送 -->
-      <button class="cb-btn" id="micBtn" title="语音输入（仅桌面客户端）">语音</button>
+      <button class="cb-btn" id="micBtn" title="语音输入（桌面客户端，按住 R1 说话）">语音</button>
       <!-- 清空输入框：只在有内容时出现，点它不会触发发送 -->
       <button class="cb-btn" id="clearBtn" type="button" title="清空输入框">清空</button>
     </div>
@@ -9569,7 +9574,7 @@
       micState = 'idle';
       micBtn.classList.remove('busy');
       micBtn.textContent = tr('语音');
-      micBtn.title = '语音输入（仅桌面客户端）';
+      micBtn.title = '语音输入（桌面客户端，按住 R1 说话）';
     }
   }
 
