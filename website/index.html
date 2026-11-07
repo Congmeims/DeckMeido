@@ -420,7 +420,7 @@ footer { border-top: 1px solid var(--line); padding: 48px 0 60px; margin-top: 40
       </details>
       <details>
         <summary>QQ 怎么接？</summary>
-        <div class="a">Deck 主动连 NapCat 的 OneBot 11 WebSocket，本机不开入站端口。在网页「远程连接」里填 <code>ws_url</code> 与 <code>access_token</code>，只有 <code>admin_qq</code> 列表里的号能下指令（私聊与任意群都可以，无需 @，危险操作仍要确认）；普通群成员的发言需要 @ 机器人且群在 <code>allow_groups</code> 里。</div>
+        <div class="a">Deck 主动连 NapCat 的 OneBot 11 WebSocket，本机不开入站端口。在网页「远程连接」里填 <code>ws_url</code> 与 <code>access_token</code>，只有 <code>admin_qq</code> 列表里的号能下指令（私聊与 <code>allow_groups</code> 白名单群内都可以，无需 @，危险操作仍要确认）；群聊只响应白名单里的群，白名单为空时全部不响应，主人身份也不构成豁免；普通群成员的发言需要 @ 机器人且群在 <code>allow_groups</code> 里。</div>
       </details>
       <details>
         <summary>语音模型要下多大？</summary>
