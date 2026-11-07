@@ -2196,15 +2196,28 @@
     font-family: var(--font-mono); font-size: 11.5px;
     white-space: pre-wrap; word-break: break-all; cursor: pointer;
   }
-  /* 管理员密码入口：只在后端任务 state=need_password 时展开 */
-  .sc-auth { display: none; align-items: center; gap: 6px; margin-top: 6px; }
-  .sc-auth.show { display: flex; }
+  /* 管理员密码入口：只在后端任务 state=need_password 时展开。
+     说明一行、控件一行；密码默认遮罩，眼睛按钮临时切换明文 */
+  .sc-auth { display: none; margin-top: 6px; }
+  .sc-auth.show { display: block; }
+  .sc-auth-tip { display: block; margin-bottom: 4px; font-size: 11.5px; color: var(--muted); }
+  .sc-auth-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .sc-pw {
-    flex: 1; min-width: 0; height: 28px; padding: 0 8px; box-sizing: border-box;
+    flex: 1 1 132px; min-width: 0; height: 30px; padding: 0 8px; box-sizing: border-box;
     border: 1px solid var(--line); border-radius: 8px;
     background: var(--surface); color: var(--text); font-size: 12px;
   }
-  .sc-auth-btn { flex: 0 0 auto; width: 84px; min-height: 28px; padding: 0 6px; font-size: 12px; }
+  .sc-eye {
+    flex: 0 0 auto; height: 30px; padding: 0 8px; font-size: 12px;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--surface-2); color: var(--muted); cursor: pointer;
+  }
+  .sc-auth-btn { flex: 0 0 auto; width: 84px; min-height: 30px; padding: 0 6px; font-size: 12px; }
+  .sc-auth-err {
+    margin-top: 4px; font-size: 11.5px; color: #d0492b; line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+  .sc-auth-err:empty { display: none; }
   .sc-progress { display: none; align-items: center; gap: 8px; margin-top: 6px; }
   .sc-progress.show { display: flex; }
   .sc-bar { flex: 1; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
@@ -2213,6 +2226,8 @@
   @media (max-width: 420px) {
     .sc-head { grid-template-columns: minmax(0, 1fr) 48px 56px 68px; gap: 6px; }
     .sc-btn, .sc-auth-btn { width: 68px; }
+    /* 360px 级窄屏：输入框独占一行，切换/确认换到下一行但保持一行对齐 */
+    .sc-pw { flex: 1 1 100%; }
   }
   @media (max-width: 720px) {
     .ctrl-cols { grid-template-columns: 1fr; }
@@ -8616,38 +8631,55 @@
   }
 
   // 提权安装：免密 sudo / polkit 都拿不到权限时，后端把任务停在 need_password，
-  // 这里只负责把密码交给后端；输入框内容提交后立即清空，不保存到任何地方
-  function submitPassword(key, input, btn) {
-    var pw = input.value;
-    if (!pw) { scHint.textContent = '请输入管理员密码'; input.focus(); return; }
+  // 这里只负责把密码交给后端。提交瞬间就清空输入，密码不进 DOM、localStorage 或日志；
+  // 验证失败只在该行内提示，不弹窗、不重建整行
+  function submitPassword(key, r) {
+    var pw = r.pw, btn = r.authBtn;
+    var value = pw.value;
+    if (!value) { r.authErr.textContent = '请输入管理员密码'; pw.focus(); return; }
+    pw.value = '';
+    r.authErr.textContent = '';
+    if (pw.type === 'text') { pw.type = 'password'; r.eye.textContent = '显示'; }
     btn.disabled = true;
-    input.disabled = true;
+    pw.disabled = true;
     scHint.textContent = '正在验证管理员密码…';
     fetch('/api/selfcheck/password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ component: key, password: pw })
-    }).then(function (r) {
-      return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; },
-                            function () { return { ok: false, status: r.status, j: null }; });
+      body: JSON.stringify({ component: key, password: value })
+    }).then(function (r2) {
+      return r2.json().then(function (j) { return { ok: r2.ok, status: r2.status, j: j }; },
+                            function () { return { ok: false, status: r2.status, j: null }; });
     }).then(function (x) {
-      input.value = '';
-      input.disabled = false;
+      value = '';
+      pw.disabled = false;
       btn.disabled = false;
       if (x.ok && x.j && x.j.ok) {
         scHint.textContent = '授权通过，正在安装…';
         return;
       }
-      scHint.textContent = (x.j && (x.j.error || x.j.reason))
+      // 密码不留在输入框里；错误放在授权行内，页面提示保持安静
+      r.authErr.textContent = (x.j && (x.j.error || x.j.reason))
         || ('授权失败 HTTP ' + x.status);
+      scHint.textContent = '';
       if (x.j && x.j.reason === 'not_waiting') loadSelfcheck();
-      else input.focus();
+      else pw.focus();
     }).catch(function () {
-      input.value = '';
-      input.disabled = false;
+      value = '';
+      pw.disabled = false;
       btn.disabled = false;
-      scHint.textContent = '授权请求失败（连接异常）';
+      r.authErr.textContent = '授权请求失败（连接异常）';
     });
+  }
+
+  // 收起授权行时把密码、明文状态、错误提示全部复位，避免残留在 DOM 里
+  function resetScAuth(r) {
+    if (!r) return;
+    r.pw.value = '';
+    r.pw.type = 'password';
+    r.eye.textContent = '显示';
+    r.eye.title = '显示密码';
+    r.authErr.textContent = '';
   }
 
   // 卸载：只允许我们自己管理的组件；确认框里写清删什么、多大，
@@ -8726,18 +8758,43 @@
         cmd.addEventListener('click', function () { copyCmd(it.command); });
       }
 
+      // 授权行：一句短说明 + 输入/显示切换/确认同一行；错误提示留在行内
       var auth = document.createElement('div');
       auth.className = 'sc-auth';
+      var authTip = document.createElement('div');
+      authTip.className = 'sc-auth-tip';
+      authTip.textContent = '安装系统包需要管理员密码';
+      var authLine = document.createElement('div');
+      authLine.className = 'sc-auth-line';
       var pw = document.createElement('input');
       pw.type = 'password'; pw.className = 'sc-pw';
-      pw.placeholder = '管理员密码'; pw.autocomplete = 'off';
+      pw.placeholder = '管理员密码'; pw.autocomplete = 'new-password';
+      pw.spellcheck = false; pw.autocapitalize = 'off';
+      var eye = document.createElement('button');
+      eye.className = 'sc-eye'; eye.type = 'button';
+      eye.textContent = '显示'; eye.title = '显示密码';
       var authBtn = document.createElement('button');
       authBtn.className = 'mini-btn sc-auth-btn'; authBtn.type = 'button';
       authBtn.textContent = '确认授权';
-      auth.append(pw, authBtn);
-      authBtn.addEventListener('click', function () { submitPassword(it.key, pw, authBtn); });
+      authLine.append(pw, eye, authBtn);
+      var authErr = document.createElement('div');
+      authErr.className = 'sc-auth-err';
+      auth.append(authTip, authLine, authErr);
+
+      var rowRef = {
+        detail: detail, prog: null, fill: null, pct: null,
+        auth: auth, pw: pw, eye: eye, authBtn: authBtn, authErr: authErr
+      };
+      eye.addEventListener('click', function () {
+        var plain = pw.type === 'password';
+        pw.type = plain ? 'text' : 'password';
+        eye.textContent = plain ? '隐藏' : '显示';
+        eye.title = plain ? '隐藏密码' : '显示密码';
+        pw.focus();
+      });
+      authBtn.addEventListener('click', function () { submitPassword(it.key, rowRef); });
       pw.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { e.preventDefault(); submitPassword(it.key, pw, authBtn); }
+        if (e.key === 'Enter') { e.preventDefault(); submitPassword(it.key, rowRef); }
       });
 
       if (it.status === 'ready' && it.can_uninstall) {
@@ -8762,10 +8819,8 @@
       if (cmd) row.appendChild(cmd);
       row.append(auth, prog);
       scList.appendChild(row);
-      scRows[it.key] = {
-        detail: detail, prog: prog, fill: fill, pct: pct,
-        auth: auth, pw: pw, authBtn: authBtn
-      };
+      rowRef.prog = prog; rowRef.fill = fill; rowRef.pct = pct;
+      scRows[it.key] = rowRef;
     });
     if (job && job.component && scRows[job.component]) {
       applyScProgress(job);
@@ -8785,18 +8840,28 @@
     else if (job.state === 'need_terminal') r.pct.textContent = '需终端';
     else if (waiting) r.pct.textContent = '需要授权';
     else r.pct.textContent = (job.phase_label || job.phase || '') + ' ' + pct.toFixed(0) + '%';
-    var msg = job.error || job.message || '';
-    if (msg) {
-      r.detail.textContent = msg;
-      r.detail.className = 'sc-detail' + (job.state === 'error' ? ' red' : '');
-    }
-    r.auth.classList.toggle('show', waiting);
     if (waiting) {
+      // 授权阶段：短说明已经在授权行里，只有 polkit / 免密 sudo 这类额外原因才写详情
+      var hintMsg = job.message || '';
+      r.detail.textContent = (hintMsg.indexOf('polkit') >= 0
+        || hintMsg.indexOf('免密') >= 0) ? hintMsg : '';
+      r.detail.className = 'sc-detail';
+      r.authErr.textContent = job.error || '';
+      r.auth.classList.add('show');
       r.pw.disabled = false;
       r.authBtn.disabled = false;
       if (!r.pw.value) setTimeout(function () {
         try { r.pw.focus(); } catch (e) {}
       }, 0);
+    } else {
+      // 收起授权行：清空密码、恢复遮罩、清掉行内错误
+      r.auth.classList.remove('show');
+      resetScAuth(r);
+      var msg = job.error || job.message || '';
+      if (msg) {
+        r.detail.textContent = msg;
+        r.detail.className = 'sc-detail' + (job.state === 'error' ? ' red' : '');
+      }
     }
   }
 

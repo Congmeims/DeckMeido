@@ -941,8 +941,8 @@ def provide_password(component: str, password: str) -> dict:
     if left <= 0:
         return {"ok": False, "reason": "too_many_attempts",
                 "error": "密码连续错误，安装已终止"}
-    _set(component, "auth", 50.0, f"管理员密码不正确，还可尝试 {left} 次",
-         state="need_password", error="密码不正确")
+    _set(component, "auth", 50.0, "需要管理员密码来安装系统包",
+         state="need_password", error=f"密码不正确，还可再试 {left} 次")
     return {"ok": False, "reason": "bad_password",
             "error": f"密码不正确，还可再试 {left} 次"}
 
