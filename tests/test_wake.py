@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from server import wake  # noqa: E402
+from server import media, wake  # noqa: E402
 
 
 class FakeDetector:
@@ -83,6 +83,11 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.ack_play_error = None
         self.ack_play_gate = None
         self.text = "把客厅灯打开"
+        # 音乐 duck / 固定动作：只记调用顺序，不碰真实 MPRIS
+        self.media_events = []
+        self.media_error = None
+        self.media_duck_result = True
+        self.states = []
 
         def duck():
             self.duck_calls += 1
@@ -110,6 +115,18 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
             if self.ack_play_error:
                 raise self.ack_play_error
 
+        def media_duck():
+            self.media_events.append("duck")
+            return self.media_duck_result
+
+        def media_restore():
+            self.media_events.append("restore")
+
+        def media_action(action):
+            self.media_events.append(f"action:{action}")
+            if self.media_error:
+                raise self.media_error
+
         self.chat_fn = chat
         self.service = wake.WakeService(
             model_root=Path(self.tmp.name),
@@ -121,9 +138,14 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
             restore=restore,
             ack_synth=ack_synth,
             ack_play=ack_play,
+            media_duck=media_duck,
+            media_restore=media_restore,
+            media_action=media_action,
         )
         self.service.set_tts_stop(self._tts_stop)
-        self.service.set_handlers(cancel_chat=self._cancel_chat)
+        self.service.set_handlers(
+            cancel_chat=self._cancel_chat,
+            on_state=lambda st: self.states.append(st["state"]))
         self.service.apply({"enable": True})
 
     def _tts_stop(self):
@@ -415,6 +437,121 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
     async def _wake_should_ignore(self):
         self.service.feed_frame(FRAME, now=0.0)
         self.assertEqual(self.transcribe_calls, [])
+
+    # ---- 音乐口令快速通道 ----
+
+    async def test_media_intent_runs_without_chat_or_thinking(self):
+        self.text = "下一首"
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.media_events.count("action:next"), 1)
+        self.assertEqual(self.chat_calls, [])
+        self.assertEqual(len(self.transcribe_calls), 1)
+        self.assertEqual(self.service.state, "armed")
+        self.assertNotIn("thinking", self.states)  # 不进思考态
+        self.assertIn("speaking", self.states)     # 但要有反馈播报
+        # 唤醒时压低一次，反馈播完恢复一次
+        self.assertEqual(self.media_events.count("duck"), 1)
+        self.assertEqual(self.media_events.count("restore"), 1)
+        # 反馈是模块内的短词，不是模型回答
+        self.assertEqual(self.ack_synth_calls[-1], "切了")
+
+    async def test_media_volume_action_restores_duck_first(self):
+        self.text = "音量调大"
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.media_events.count("action:volume_up"), 1)
+        events = self.media_events
+        # 必须先恢复原音量再执行加减，否则恢复动作会覆盖用户要求的音量
+        self.assertLess(events.index("restore"), events.index("action:volume_up"))
+        self.assertEqual(events.count("restore"), 1)
+
+    async def test_media_failure_degrades_and_next_round_works(self):
+        self.text = "暂停"
+        self.media_error = media.MediaError("没找到播放器", "没有播放器")
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.chat_calls, [])
+        self.assertEqual(self.service.state, "armed")
+        self.assertIn("没找到播放器", self.service.status()["last_error"])
+        self.assertEqual(self.ack_synth_calls[-1], "没有播放器")
+        self.assertEqual(self.media_events.count("restore"), 1)
+        # 播控失败不能影响下一轮主流程
+        self.text = "把客厅灯打开"
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.chat_calls, [("把客厅灯打开", True, "wake")])
+        self.assertEqual(self.service.state, "listening")
+
+    async def test_media_intent_miss_falls_back_to_chat(self):
+        self.text = "今天天气怎么样"
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.chat_calls, [("今天天气怎么样", True, "wake")])
+        self.assertEqual([e for e in self.media_events if e.startswith("action:")], [])
+
+    async def test_wake_timeout_restores_music(self):
+        await self._arm()
+        await self._wake()
+        self.service.feed_frame(FRAME, now=self.service._wait_until + 0.1)
+        self.assertEqual(self.service.state, "armed")
+        self.assertEqual(self.media_events.count("duck"), 1)
+        self.assertEqual(self.media_events.count("restore"), 1)
+
+    async def test_stop_during_ack_restores_music(self):
+        gate = asyncio.Event()
+        self.ack_play_gate = gate
+        await self._arm()
+        self.detector.hit = True
+        self.service.feed_frame(FRAME, now=self.service._clock())
+        self.detector.hit = False
+        self.assertEqual(self.service.state, "waking")
+        await self.service.stop()
+        await self._drain()
+        self.assertEqual(self.service.state, "armed")
+        self.assertEqual(self.media_events.count("restore"), 1)
+        gate.set()
+
+    async def test_music_duck_skipped_when_nothing_playing(self):
+        self.media_duck_result = False
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        # 没压成功就绝不能去「恢复」：那会把用户音量写成旧值
+        self.assertGreaterEqual(self.media_events.count("duck"), 1)
+        self.assertEqual(self.media_events.count("restore"), 0)
+
+    async def test_chat_round_keeps_music_ducked_until_answer_ends(self):
+        release = asyncio.Event()
+
+        async def chat(text, force_tts=False, client=""):
+            self.chat_calls.append((text, True, "wake"))
+            # 回答播报期间音乐必须仍是压低的
+            self.assertEqual(self.media_events.count("duck"), 1)
+            self.assertEqual(self.media_events.count("restore"), 0)
+            await release.wait()
+
+        self.service.set_handlers(chat=chat)
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        self.assertEqual(self.media_events.count("restore"), 0)
+        release.set()
+        await self._drain()
+        self.assertEqual(self.media_events.count("restore"), 1)
+        self.assertEqual(self.service.state, "listening")
 
     # ---- 配置/状态 ----
 

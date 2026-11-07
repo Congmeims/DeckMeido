@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from .llm import LLMClient
-from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, memory, menu, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, remote_terminal, selfcheck, singleton, status_line, sudo_auth, tools, updater, usage, wake
+from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, media, memory, menu, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, remote_terminal, selfcheck, singleton, status_line, sudo_auth, tools, updater, usage, wake
 from .session_store import store
 from . import session_store
 from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, TTSError, normalize_speaker,
@@ -787,6 +787,10 @@ wake_service = wake.WakeService(
     transcribe=stt.transcribe,
     duck=audiomute.duck,
     restore=audiomute.restore,
+    # 音乐走 Decky Music 自己的 MPRIS2 服务（server/media.py），只认固定动作
+    media_duck=media.duck,
+    media_restore=media.restore,
+    media_action=media.execute,
     power_hold=lambda: power.keeper.hold("wake_mode", "智能音箱模式"),
     power_release=lambda: power.keeper.release("wake_mode"),
 )
@@ -5385,6 +5389,11 @@ async def _wake_startup():
 async def _wake_shutdown():
     try:
         await wake_service.disarm()
+    except Exception:
+        pass
+    # 进程退出兜底：即使上面哪一步异常，也不能把用户的音乐音量停在压低状态
+    try:
+        media.restore()
     except Exception:
         pass
 
