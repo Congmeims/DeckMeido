@@ -570,6 +570,16 @@ def _short_error(exc: Exception) -> str:
     return f"{exc.__class__.__name__}: {text}" if text != exc.__class__.__name__ else text
 
 
+# 当前进程里最近构造的 TTS 实例。唤醒服务用它预合成「我在」并播放，
+# 这样不必让 main.py 再多传一条依赖；测试里直接注入假实现，不碰这里。
+_active: "TTS | None" = None
+
+
+def active() -> "TTS | None":
+    """返回当前 TTS 实例；没构造过（或纯单测）时返回 None。"""
+    return _active
+
+
 class TTS:
     """语音播报器：piper-plus 懒加载 + espeak-ng 兜底，可下载模型。"""
 
@@ -654,6 +664,8 @@ class TTS:
             "started_at": 0.0,
             "updated_at": 0.0,
         }
+        global _active
+        _active = self
 
     @property
     def engine(self) -> str:
@@ -1061,6 +1073,25 @@ class TTS:
             return self._synth_wav_espeak(cleaned, lang)
         return self._synth_wav(cleaned, lang)
 
+    def synth_bytes(self, text: str, language: str = "") -> bytes:
+        """合成到内存并返回 wav 字节。
+
+        唤醒回应必须在命中瞬间就能播，所以由唤醒服务在启动时预合成缓存。
+        合成过程仍会落一个临时文件（espeak-ng 的接口只收路径），这里读完后
+        立刻删除，磁盘上不留音频。
+        """
+        path = self.synth_wav(text, language)
+        try:
+            data = path.read_bytes()
+        finally:
+            path.unlink(missing_ok=True)
+        # 预热 sink 探测：命中唤醒词时不能再花几十毫秒跑一次 pactl
+        try:
+            self._pick_sink_cached()
+        except Exception:
+            pass
+        return data
+
     def _synth_wav_espeak(self, text: str, language: str = "") -> Path:
         """espeak-ng 直接写 wav（机器人发音的语音条）。"""
         binary = self._espeak_binary()
@@ -1193,6 +1224,35 @@ class TTS:
                 self._proc = None
         if code not in (0, -15) and not event.is_set():
             raise TTSError(f"播放器退出码 {code}", kind="player")
+
+    async def play_bytes(self, data: bytes, force: bool = True) -> bool:
+        """播放内存里的 wav 字节（唤醒回应「我在」）。
+
+        与 speak() 共用同一个播放进程句柄，所以 stop() 能立刻掐断它。
+        播放器只认文件路径，这里临时落一份、播完（含取消/失败）立即删除。
+        """
+        if not data:
+            return False
+        if not self.enable and not force:
+            return False
+        await self.stop()
+        event = threading.Event()
+        self._cancel = event
+        fd, name = tempfile.mkstemp(prefix="deckmeido-ack-", suffix=".wav")
+        os.close(fd)
+        path = Path(name)
+        try:
+            path.write_bytes(data)
+            await self._play(path, event)
+            return True
+        except asyncio.CancelledError:
+            # 被唤醒服务中止时 _play 还停在 proc.wait()，必须主动掐掉播放进程
+            await self.stop()
+            raise
+        finally:
+            path.unlink(missing_ok=True)
+            if self._cancel is event:
+                self._cancel = None
 
     def _pick_sink_cached(self) -> str | None:
         """探测默认 sink 是否可用；10 秒内复用结果，避免逐句都跑 pactl"""

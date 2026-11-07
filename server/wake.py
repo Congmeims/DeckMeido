@@ -10,8 +10,10 @@
   TTS 播放期间丢弃所有采集帧，避免自激。
 * **音频不落盘**：唤醒前后都只在内存里保留帧；转写用的 WAV 也是内存字节，
   交给 stt.transcribe，用完即丢。
-* **状态机**：disarmed → armed → listening → thinking → speaking → listening
-  （追问窗口）→ armed；任何异常都会回到 armed，并把原因放进 last_error。
+* **状态机**：disarmed → armed → waking（播「我在」）→ listening → thinking →
+  speaking → listening（追问窗口）→ armed；任何异常都会回到 armed，并把原因
+  放进 last_error。录音阶段如果一直没人说话，wake_timeout_sec 后自动回 armed，
+  眼睛状态同步退回。
 
 这个模块不导入 main.py，避免循环依赖；对话入口、广播和电源保持由 main.py
 在启动时通过 set_handlers() 注入。测试可以注入假的采集/检测/转写/对话实现。
@@ -39,6 +41,8 @@ SAMPLE_RATE = 16000
 FRAME_MS = 160
 FRAME_BYTES = SAMPLE_RATE * FRAME_MS // 1000 * 2  # 16k 单声道 16bit = 5120
 _MIN_FREE_BYTES = 200 * 1024**2
+# 没有可播的「我在」时，屏幕上的字幕至少停留这么久，避免状态一闪而过
+ACK_FALLBACK_HOLD_SEC = 0.6
 
 # KWS 模型（sherpa-onnx 官方 release）
 MODEL_URL = (
@@ -62,12 +66,17 @@ DEFAULTS = {
     "min_speech_ms": 600,
     "max_utterance_sec": 15,
     "followup_sec": 4,
-    "wake_timeout_sec": 2.0,
+    # 唤醒后如果一直没人说话，多久退回待机。取 8 秒：比「我在」播完后的
+    # 自然反应时间宽裕一点，又不至于长时间占着麦克风。
+    "wake_timeout_sec": 8.0,
     "silence_ms": 700,
     "eyes_display": "auto",
+    # 唤醒回应：必须在服务启动时预合成并缓存，命中瞬间只做播放。
+    "ack_text": "我在",
 }
 
-STATES = ("disarmed", "armed", "listening", "thinking", "speaking", "error")
+STATES = ("disarmed", "armed", "waking", "listening", "thinking", "speaking",
+          "error")
 
 _MESSAGES = {
     "no_capture": "缺少 parec / pw-record（PipeWire 录音工具），无法常驻监听",
@@ -482,13 +491,34 @@ class Capture:
 # ---------- 服务本体 ----------
 
 
+def _default_ack_synth(text: str) -> bytes:
+    """默认用进程里的 TTS 合成「我在」；没有 TTS 就抛错，由服务降级为屏幕显示。"""
+    from . import tts as tts_mod
+
+    engine = tts_mod.active()
+    if engine is None:
+        raise RuntimeError("TTS 未初始化")
+    return engine.synth_bytes(text)
+
+
+def _default_ack_play(data: bytes):
+    """默认用进程里的 TTS 播放缓存字节；返回协程，由调用方 await。"""
+    from . import tts as tts_mod
+
+    engine = tts_mod.active()
+    if engine is None:
+        raise RuntimeError("TTS 未初始化")
+    return engine.play_bytes(data)
+
+
 class WakeService:
     """状态机 + 三道闸 + 半双工。所有硬件交互都通过可注入的回调完成。"""
 
     def __init__(self, model_root: Path | None = None, *,
                  detector_factory=None, capture_factory=None,
                  transcribe=None, chat=None, duck=None, restore=None,
-                 power_hold=None, power_release=None):
+                 power_hold=None, power_release=None,
+                 ack_synth=None, ack_play=None):
         self._root = model_root or paths.wake_model_dir()
         self._detector_factory = detector_factory or (
             lambda root, cfg: SherpaDetector(
@@ -501,6 +531,13 @@ class WakeService:
         self._restore = restore
         self._power_hold = power_hold
         self._power_release = power_release
+        # 唤醒回应：合成只在启动/开关打开时做一次，命中时只播放缓存字节。
+        self._ack_synth = ack_synth or _default_ack_synth
+        self._ack_play = ack_play or _default_ack_play
+        self._ack_wav: bytes | None = None
+        self._ack_text = ""
+        self._ack_error = ""
+        self._ack_preparing = False
         self._cancel_chat = None
         self._state_cb = None
         self._cfg = _merge_cfg(None)
@@ -538,6 +575,11 @@ class WakeService:
         self._cfg = _merge_cfg(raw)
         was = self._enabled
         self._enabled = bool(self._cfg.get("enabled", False))
+        ack_changed = old.get("ack_text") != self._cfg.get("ack_text")
+        if ack_changed:
+            # 回应文本改了：旧缓存作废，重新预合成
+            self._ack_wav = None
+            self._ack_text = ""
         if was and not self._enabled:
             try:
                 asyncio.get_running_loop().create_task(self.disarm())
@@ -556,6 +598,42 @@ class WakeService:
                 asyncio.get_running_loop().create_task(self._rebuild())
             except RuntimeError:
                 pass
+        if ack_changed and was and self._enabled and self._state != "disarmed":
+            self._start_ack_prepare()
+
+    def _start_ack_prepare(self) -> None:
+        """后台预合成「我在」；不阻塞 arm，也不允许失败冒到事件循环。"""
+        if self._ack_preparing:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        asyncio.create_task(self._prepare_ack())
+
+    async def _prepare_ack(self) -> None:
+        """合成唤醒回应并缓存到内存。失败只记原因，唤醒流程照常可用。"""
+        text = str(self._cfg.get("ack_text") or "").strip() or "我在"
+        self._ack_text = text
+        self._ack_error = ""
+        self._ack_wav = None
+        self._ack_preparing = True
+        try:
+            data = await asyncio.to_thread(self._ack_synth, text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._ack_error = f"回应合成失败：{exc}"
+            devlog.log("wake.ack.synth.error", text=text, error=str(exc))
+        else:
+            if data:
+                self._ack_wav = bytes(data)
+                devlog.log("wake.ack.ready", text=text, bytes=len(self._ack_wav))
+            else:
+                self._ack_error = "回应合成结果为空"
+                devlog.log("wake.ack.synth.empty", text=text)
+        finally:
+            self._ack_preparing = False
 
     async def _arm_quiet(self) -> None:
         """后台自动进入待机：失败只落到 error + 日志，不让任务异常冒到事件循环"""
@@ -576,6 +654,7 @@ class WakeService:
                 self._fail(str(exc))
                 return
             self._ready = True
+            self._start_ack_prepare()
             self._set_state("armed")
 
     def set_handlers(self, *, transcribe=None, chat=None, duck=None, restore=None,
@@ -618,6 +697,12 @@ class WakeService:
             "input_device": self._cfg.get("input_device", "default"),
             "wake_words": list(self._cfg.get("wake_words") or []),
             "eyes_display": self._cfg.get("eyes_display", "auto"),
+            # 唤醒回应缓存是否就绪：眼睛页在合成失败时只显示「我在」，不出声
+            "ack": {
+                "text": self._ack_text or str(self._cfg.get("ack_text") or "我在"),
+                "ready": bool(self._ack_wav),
+                "error": self._ack_error,
+            },
             "gates": {
                 "kws_threshold": float(self._cfg.get("keywords_threshold", 0.25)),
                 "vad": self._detector is not None,
@@ -637,7 +722,7 @@ class WakeService:
         async with self._arm_lock:
             if not self._enabled:
                 raise WakeError("智能音箱模式总开关未打开")
-            if self._state in ("listening", "thinking", "speaking"):
+            if self._state in ("waking", "listening", "thinking", "speaking"):
                 return self.status()
             self._last_error = ""
             try:
@@ -650,6 +735,7 @@ class WakeService:
                 self._fail(str(exc))
                 raise
             self._ready = True
+            self._start_ack_prepare()
             self._set_state("armed")
             if self._power_hold:
                 try:
@@ -767,8 +853,8 @@ class WakeService:
         """处理一帧 PCM（16k/单声道/16bit）。测试直接调用它。"""
         # 电平给眼睛做反馈：TTS 期间虽然不入队，页面仍能拿到最近的音量
         self._level = pcm_level(frame)
-        if not self._enabled or self._state in ("disarmed", "error", "thinking",
-                                                "speaking"):
+        if not self._enabled or self._state in ("disarmed", "error", "waking",
+                                                "thinking", "speaking"):
             return
         now = self._clock() if now is None else now
         if self._state == "armed":
@@ -780,14 +866,52 @@ class WakeService:
             self._handle_listening(frame, now)
 
     def _begin_wake(self, word: str, now: float) -> None:
+        """命中唤醒词：先切「被叫醒」表情并播放预缓存的「我在」，播完再录音。"""
         self._wake_count += 1
         self._reset_audio()
         self._followup = False
-        self._wait_until = now + float(self._cfg.get("wake_timeout_sec", 2.0))
         if self._detector is not None:
             self._detector.reset()
+        self._set_state("waking")
+        devlog.log("wake.hit", word=word, count=self._wake_count,
+                   ack_ready=bool(self._ack_wav))
+        self._task = asyncio.create_task(self._run_ack())
+
+    async def _run_ack(self) -> None:
+        """播放缓存音频。没有缓存/合成失败/播放失败都静默降级，直接进录音。"""
+        self._round_cancelled = False
+        played = False
+        if self._ack_wav and self._ack_play:
+            try:
+                result = self._ack_play(self._ack_wav)
+                if asyncio.iscoroutine(result):
+                    await result
+                played = True
+                self._ack_error = ""
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # 播放失败不影响这一轮：屏幕上仍然显示「我在」
+                self._ack_error = f"回应播放失败：{exc}"
+                devlog.log("wake.ack.play.error", error=str(exc))
+        if self._round_cancelled or self._state != "waking":
+            return
+        if not played:
+            # 没有声音：让屏幕上的「我在」至少完整显示一次，再进录音
+            try:
+                await asyncio.sleep(ACK_FALLBACK_HOLD_SEC)
+            except asyncio.CancelledError:
+                raise
+            if self._round_cancelled or self._state != "waking":
+                return
+        self._enter_listen()
+
+    def _enter_listen(self) -> None:
+        """回应播完：开始录音，并重新计时「一直没人说话」的超时。"""
+        self._reset_audio()
+        self._wait_until = self._clock() + float(
+            self._cfg.get("wake_timeout_sec", 8.0))
         self._set_state("listening")
-        devlog.log("wake.hit", word=word, count=self._wake_count)
 
     def _handle_listening(self, frame: bytes, now: float) -> None:
         speech = self._detector.speech(frame) if self._detector else False
@@ -799,7 +923,7 @@ class WakeService:
                 self._pcm.extend(frame)
                 self._duck_now()
                 return
-            # 唤醒后没人说话：2 秒内直接退回待机，不转写、不发送
+            # 唤醒后没人说话：超时直接退回待机，不转写、不发送
             if not self._followup and now >= getattr(self, "_wait_until", now):
                 self._abort("没听到说话")
             elif self._followup and now >= self._followup_until:
@@ -884,10 +1008,10 @@ class WakeService:
         if self._state == state:
             return
         self._state = state
-        # 半双工：思考/播报期间暂停采集入队；回到待机/聆听时恢复
+        # 半双工：唤醒回应/思考/播报期间暂停采集入队；回到待机/聆听时恢复
         if self._capture is not None:
             try:
-                self._capture.set_paused(state in ("thinking", "speaking"))
+                self._capture.set_paused(state in ("waking", "thinking", "speaking"))
             except Exception:
                 pass
         cb = self._state_cb

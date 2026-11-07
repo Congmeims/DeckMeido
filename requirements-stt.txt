@@ -4,3 +4,5 @@ sherpa-onnx
 # 智能音箱模式（server/wake.py）用 sherpa-onnx-cli text2token 生成唤醒词，
 # 该命令内部依赖 sentencepiece；缺了会在启用唤醒时报「缺少 sentencepiece」
 sentencepiece
+# KWS 模型的中文唤醒词分词/拼音转换（text2token 的 phone+ppinyin 模式）
+pypinyin

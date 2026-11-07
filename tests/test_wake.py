@@ -45,6 +45,26 @@ class FakeDetector:
 FRAME = b"\x00\x00" * (wake.FRAME_BYTES // 2)
 
 
+class FakeCapture:
+    """只记录暂停状态；不产生真实音频。"""
+
+    def __init__(self):
+        self.paused = []
+        self.started = False
+
+    def start(self):
+        self.started = True
+
+    def read(self, timeout=0.2):
+        return b""
+
+    def set_paused(self, paused):
+        self.paused.append(bool(paused))
+
+    def stop(self):
+        self.started = False
+
+
 class WakeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -56,6 +76,12 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.chat_calls = []
         self.tts_stop_calls = 0
         self.cancel_calls = 0
+        self.ack_synth_calls = []
+        self.ack_play_calls = []
+        self.ack_data = b"RIFF-fake-ack"
+        self.ack_synth_error = None
+        self.ack_play_error = None
+        self.ack_play_gate = None
         self.text = "把客厅灯打开"
 
         def duck():
@@ -71,6 +97,19 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         async def chat(text, force_tts=False, client=""):
             self.chat_calls.append((text, force_tts, client))
 
+        def ack_synth(text):
+            self.ack_synth_calls.append(text)
+            if self.ack_synth_error:
+                raise self.ack_synth_error
+            return self.ack_data
+
+        async def ack_play(data):
+            self.ack_play_calls.append(data)
+            if self.ack_play_gate is not None:
+                await self.ack_play_gate.wait()
+            if self.ack_play_error:
+                raise self.ack_play_error
+
         self.chat_fn = chat
         self.service = wake.WakeService(
             model_root=Path(self.tmp.name),
@@ -80,6 +119,8 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
             chat=chat,
             duck=duck,
             restore=restore,
+            ack_synth=ack_synth,
+            ack_play=ack_play,
         )
         self.service.set_tts_stop(self._tts_stop)
         self.service.set_handlers(cancel_chat=self._cancel_chat)
@@ -97,10 +138,11 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         if task is not None and not task.done():
             task.cancel()
 
-    async def _drain(self):
+    async def _drain(self, svc=None):
+        svc = svc or self.service
         for _ in range(8):
             await asyncio.sleep(0)
-            task = self.service._task
+            task = svc._task
             if task is not None:
                 try:
                     await asyncio.wait_for(asyncio.shield(task), timeout=0.2)
@@ -111,12 +153,24 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         await self.service.arm()
         self.assertEqual(self.service.state, "armed")
         self.assertTrue(self.detector.loaded)
+        await self._wait_ack()
 
-    async def _wake(self):
+    async def _wait_ack(self):
+        """等后台预合成结束：成功或失败都算准备好，不能卡住测试。"""
+        for _ in range(200):
+            if self.service._ack_wav or self.service._ack_error:
+                return
+            await asyncio.sleep(0.01)
+        self.fail("唤醒回应预合成没有完成")
+
+    async def _wake(self, expect_listening: bool = True):
         self.detector.hit = True
-        self.service.feed_frame(FRAME, now=0.0)
+        self.service.feed_frame(FRAME, now=self.service._clock())
         self.detector.hit = False
-        self.assertEqual(self.service.state, "listening")
+        self.assertEqual(self.service.state, "waking")
+        await self._drain()
+        if expect_listening:
+            self.assertEqual(self.service.state, "listening")
 
     async def _speak_then_silence(self, speech_frames: int, silence_frames: int,
                                    start: float = 0.0):
@@ -153,8 +207,8 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
     async def test_gate_no_speech_is_not_transcribed_or_sent(self):
         await self._arm()
         await self._wake()
-        for i in range(14):  # 2.24s > wake_timeout_sec
-            self.service.feed_frame(FRAME, now=i * 0.16)
+        # 回应播完后重新计时：超过 wake_timeout_sec 没人说话就退回待机
+        self.service.feed_frame(FRAME, now=self.service._wait_until + 0.1)
         self.assertEqual(self.service.state, "armed")
         self.assertEqual(self.transcribe_calls, [])
         self.assertEqual(self.chat_calls, [])
@@ -189,7 +243,94 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.transcribe_calls, [])
         self.assertEqual(self.duck_calls, 0)
 
-    # ---- 状态与异常 ----
+    # ---- 唤醒回应「我在」 ----
+
+    async def test_ack_is_prepared_before_wake_and_not_synthesized_on_hit(self):
+        await self._arm()
+        self.assertEqual(self.ack_synth_calls, ["我在"])
+        self.assertTrue(self.service.status()["ack"]["ready"])
+        await self._wake()
+        # 命中瞬间只播放缓存，绝不能再去合成
+        self.assertEqual(self.ack_play_calls, [self.ack_data])
+        self.assertEqual(len(self.ack_synth_calls), 1)
+        self.assertEqual(self.service.state, "listening")
+
+    async def test_ack_synth_failure_degrades_to_screen_only(self):
+        self.ack_synth_error = RuntimeError("TTS 崩了")
+        await self._arm()
+        st = self.service.status()
+        self.assertFalse(st["ack"]["ready"])
+        self.assertIn("回应合成失败", st["ack"]["error"])
+        await self._wake()
+        self.assertEqual(self.ack_play_calls, [])
+        # 降级后整条对话链路必须照常可用
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.chat_calls, [(self.text, True, "wake")])
+        self.assertEqual(self.service.state, "listening")
+
+    async def test_ack_play_failure_still_enters_listening(self):
+        await self._arm()
+        self.ack_play_error = RuntimeError("播放器没起来")
+        await self._wake()
+        self.assertEqual(self.service.state, "listening")
+        self.assertIn("回应播放失败", self.service._ack_error)
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.chat_calls, [(self.text, True, "wake")])
+
+    async def test_listen_timeout_reverts_state_to_armed(self):
+        await self._arm()
+        await self._wake()
+        self.assertEqual(self.service.state, "listening")
+        self.service.feed_frame(FRAME, now=self.service._wait_until + 0.1)
+        # 屏幕状态必须跟着回待机，不能停在「在听」
+        self.assertEqual(self.service.state, "armed")
+        self.assertEqual(self.transcribe_calls, [])
+
+    async def test_stop_while_ack_playing_returns_to_armed(self):
+        gate = asyncio.Event()
+        self.ack_play_gate = gate
+        await self._arm()
+        self.detector.hit = True
+        self.service.feed_frame(FRAME, now=self.service._clock())
+        self.detector.hit = False
+        self.assertEqual(self.service.state, "waking")
+        await self.service.stop()
+        await self._drain()
+        self.assertEqual(self.service.state, "armed")
+        self.assertEqual(self.transcribe_calls, [])
+        gate.set()
+
+    async def test_ack_pauses_capture_until_listening(self):
+        cap = FakeCapture()
+
+        async def ack_play(data):
+            self.ack_play_calls.append(data)
+
+        svc = wake.WakeService(
+            model_root=Path(self.tmp.name),
+            detector_factory=lambda root, cfg: self.detector,
+            capture_factory=lambda: cap,
+            ack_synth=lambda text: self.ack_data,
+            ack_play=ack_play,
+        )
+        svc.apply({"enable": True})
+        await svc.arm()
+        for _ in range(200):
+            if svc._ack_wav:
+                break
+            await asyncio.sleep(0.01)
+        self.detector.hit = True
+        svc.feed_frame(FRAME, now=svc._clock())
+        self.detector.hit = False
+        self.assertEqual(svc.state, "waking")
+        # 播回应期间不能采集
+        self.assertTrue(cap.paused[-1])
+        await self._drain(svc)
+        self.assertEqual(svc.state, "listening")
+        self.assertFalse(cap.paused[-1])
+        await svc.disarm()
 
     async def test_tts_start_switches_to_speaking(self):
         release = asyncio.Event()

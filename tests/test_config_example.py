@@ -40,7 +40,7 @@ REQUIRED = {
     "wake": {
         "enable", "wake_words", "keywords_threshold", "input_device",
         "min_speech_ms", "max_utterance_sec", "silence_ms", "followup_sec",
-        "wake_timeout_sec", "eyes_display",
+        "wake_timeout_sec", "ack_text", "eyes_display",
     },
     "ui": {"language"},
     "workspace": {"dir"},
