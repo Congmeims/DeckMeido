@@ -64,6 +64,10 @@ device_days = 30
 #   full   = 完全访问，不再审批
 # 建议先保持 auto：读操作放行、写操作拦一道，兼顾流畅与安全。
 permission_mode = "auto"
+# sudo 授权密码在后端内存里的复用时长（秒，默认 600 = 10 分钟）。
+# 一次校验通过后，这段时间内的 sudo 命令都走 SUDO_ASKPASS 直接复用，不再询问。
+# 密码只存在内存，不落盘；设为 0 或负数会回落到默认值。
+sudo_ttl = 600
 
 [remote_input]
 # 跨屏键鼠接管：在电脑浏览器里点网页左下角的 DeckMeido logo，就把鼠标键盘

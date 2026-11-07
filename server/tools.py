@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from . import power
+from . import audit, power, sudo_auth
 
 HTTP = httpx.AsyncClient(timeout=20, follow_redirects=True)
 
@@ -143,14 +143,14 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": f"在设备上执行 bash 命令（通用能力：文件/进程/桌面操作 xdotool/截屏/软件管理等）。环境：SteamOS、桌面模式为 KDE Plasma Wayland（Xwayland 在 DISPLAY=:0）、家目录 {Path.home()}。避免交互式参数。启动浏览器/播放器/游戏这类常驻程序直接写命令即可，系统会自动判定已拉起并返回，不用加 nohup 或 &；需要拿到输出的命令才会等待执行完成",
+            "description": f"在设备上执行 bash 命令（通用能力：文件/进程/桌面操作 xdotool/截屏/软件管理等）。环境：SteamOS、桌面模式为 KDE Plasma Wayland（Xwayland 在 DISPLAY=:0）、家目录 {Path.home()}。避免交互式参数。启动浏览器/播放器/游戏这类常驻程序直接写命令即可，系统会自动判定已拉起并返回，不用加 nohup 或 &；需要拿到输出的命令才会等待执行完成。需要 sudo 时直接写 sudo 命令：系统会走 SUDO_ASKPASS 授权通道，没有可用授权时只提示一次并打开授权入口，绝对不要在命令里内联密码（不要写 echo 密码 | sudo -S）",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "要执行的 bash 命令"},
                     "reason": {"type": "string", "description": "一句话说明这条命令要干什么（用于审批展示）"},
                     "timeout": {"type": "integer", "description": "超时秒数，默认 60，最大 300"},
-                    "stdin": {"type": "string", "description": "可选，喂给命令标准输入的内容（用于 sudo -S 密码、交互确认 y 等）"},
+                    "stdin": {"type": "string", "description": "可选，喂给命令标准输入的内容（用于交互确认 y 等）。sudo 密码不要写在这里：系统会用 askpass 授权通道处理 sudo"},
                 },
                 "required": ["command", "reason"],
             },
@@ -1353,6 +1353,8 @@ def _push_cmd_output(chunks: list[bytes]) -> None:
         return
     if not text:
         return
+    # 面板回显脱敏：伪终端可能把输入/密码回显出来，进面板前统一打码
+    text = sudo_auth.redact_text(text)
     CURRENT_CMD["output"] = (CURRENT_CMD.get("output") or "") + text
     CURRENT_CMD["output"] = CURRENT_CMD["output"][-8000:]
 
@@ -1433,6 +1435,34 @@ async def _read_rest(proc: asyncio.subprocess.Process, budget: float) -> bytes:
         _push_cmd_output([chunk])
 
 
+async def _feed_stdin(proc: asyncio.subprocess.Process, feed: bytes | None,
+                      timeout: float) -> None:
+    """把 feed 真正写进子进程，写完立即关闭。
+
+    以前这里是 communicate()/写 PIPE 两套逻辑混着用，调用方给 stdin 时内容
+    并没有可靠送达（sudo -S 一直报「未提供密码」）。这里统一：
+    - 写和 drain 都有超时，子进程不读（例如已经退出）时不会挂死；
+    - 无论成功失败都在 finally 里 close，让读 stdin 的命令拿到 EOF；
+    - 子进程提前退出导致的 BrokenPipe 当作正常结束，不吞掉主流程的错误。
+    """
+    if proc.stdin is None:
+        return
+    try:
+        if feed:
+            try:
+                proc.stdin.write(feed)
+                await asyncio.wait_for(proc.stdin.drain(),
+                                       timeout=max(0.5, min(float(timeout), 10.0)))
+            except (asyncio.TimeoutError, BrokenPipeError, ConnectionResetError,
+                    ValueError, RuntimeError, OSError):
+                pass
+    finally:
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+
+
 async def _comm_bounded(proc: asyncio.subprocess.Process, feed: bytes | None,
                         timeout: float) -> bytes:
     """带 stdin 输入地等命令结束，但输出只留前 _OUT_KEEP 字节
@@ -1442,19 +1472,6 @@ async def _comm_bounded(proc: asyncio.subprocess.Process, feed: bytes | None,
     严重时整个后端被 OOM 杀掉（表现就是界面突然全断、重连后会话像是丢了）。
     这里边读边丢掉超出上限的部分，其余行为与 communicate 一致（同样等到进程退出）。
     """
-    async def _feed() -> None:
-        if feed and proc.stdin is not None:
-            try:
-                proc.stdin.write(feed)
-                await proc.stdin.drain()
-            except Exception:
-                pass
-        if proc.stdin is not None:
-            try:
-                proc.stdin.close()
-            except Exception:
-                pass
-
     async def _read() -> bytes:
         buf = bytearray()
         while True:
@@ -1464,14 +1481,20 @@ async def _comm_bounded(proc: asyncio.subprocess.Process, feed: bytes | None,
             if len(buf) < _OUT_KEEP:
                 buf += chunk
 
-    task = asyncio.ensure_future(_feed())
+    task = asyncio.ensure_future(_feed_stdin(proc, feed, timeout))
     try:
         out = await asyncio.wait_for(_read(), timeout)
         await asyncio.wait_for(proc.wait(), max(0.5, timeout))
         return out
     finally:
+        # 超时/取消时别留下一个还在 drain 的写任务，它不会影响主流程收尾
         if not task.done():
             task.cancel()
+        try:
+            if proc.stdin is not None:
+                proc.stdin.close()
+        except Exception:
+            pass
 
 
 # 一眼就能看出「自己会退出」的等待类命令。静默 3 秒不代表常驻：`sleep 6; tail log`
@@ -1587,6 +1610,23 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
     env = _command_env()
     _fix_display_env(env)
     _log_interpreter(env)
+    # sudo 命令统一走 askpass 授权通道：
+    # 有有效授权就把密码放进子进程环境（不进 argv），没有就先登记一次待授权请求并返回。
+    # 这样既不会反复执行注定失败的 `sudo -S`，也不需要模型在对话里索要密码。
+    uses_sudo = sudo_auth.command_uses_sudo(command)
+    if uses_sudo:
+        inline_pw = sudo_auth.inline_sudo_password(command)
+        if inline_pw:
+            return ("命令里检测到内联密码写法（echo/printf 管道喂给 sudo -S），已拒绝执行。"
+                    "请直接写 sudo 命令，系统会通过 SUDO_ASKPASS 授权通道取密码；"
+                    "不要把密码写进命令行或 stdin。")
+        command = sudo_auth.normalize_command(command)
+        prep = sudo_auth.prepare(command, source=reason or "run_command")
+        if not prep.get("ok"):
+            return prep.get("message") or "需要管理员授权"
+        if prep.get("password"):
+            env.update(sudo_auth.sudo_env(prep["password"]))
+    raw_command = command
     # 工作区边界对命令通道同样生效：manual / auto 下把 cwd 收进工作区，
     # 写入路径越界则直接拒绝。以前这里固定 cwd=家目录，等于「文件工具受管、
     # 一条 cat ~/.config/xxx 就能绕过」。
@@ -1605,7 +1645,6 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
     # 打开后要等遮罩真正让开，否则点击仍会打在还没隐藏的遮罩上
     await _set_overlay_passthrough(_pointer_click(command))
     feed = None
-    raw_command = command
     if stdin:
         # 用 script 包一层伪终端：/dev/tty 读取和交互菜单都能收到 stdin 输入。
         # -e 必须加：不加的话 script 不管子进程怎么退出都返回 0，退出码就丢了
@@ -1623,6 +1662,11 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
         # 这次调用要挂遮罩让用户能随时点停，后端就不能堵在这里等程序退出
         # （QQ 这种会一直开着）。改成 setsid 放后台，输出重定向到文件，
         # 立刻把控制权还给 agent，遮罩只亮这一小会儿。
+        if uses_sudo:
+            audit.record("sudo", "exec", "ok", reason="run_command",
+                         detail="sudo 命令转后台执行",
+                         extra={"command": sudo_auth.redact_command(raw_command),
+                                "exit": None, "source": "run_command", "background": True})
         return await _spawn_detached(command, env, cwd, reason=reason)
     proc = await asyncio.create_subprocess_shell(
         command,
@@ -1638,7 +1682,9 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
     _LIVE_PROCS.add(proc)
     # 终端面板看到的「当前命令」：在子进程起来之后登记，退出时统一收尾。
     # 用 id(proc) 区分，避免并发时旧命令的收尾把新命令的状态清掉
-    CURRENT_CMD = {"cmd": command, "command": command, "reason": reason, "cwd": cwd,
+    display_command = sudo_auth.redact_command(raw_command)
+    CURRENT_CMD = {"cmd": display_command, "command": display_command,
+                   "reason": reason, "cwd": cwd,
                    "started": time.time(), "running": True,
                    "output": "", "exit": None, "pid": proc.pid,
                    "background": False}
@@ -1745,7 +1791,21 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
             cur["running"] = False
             cur["exit"] = proc.returncode
             cur["ended"] = time.time()
+        # 每条以 sudo 执行的命令都留审计（时间/来源/脱敏命令/退出码），绝不含密码
+        if uses_sudo:
+            try:
+                audit.record("sudo", "exec", "ok" if proc.returncode == 0 else "fail",
+                             reason="run_command",
+                             detail=sudo_auth.redact_text(reason or "")[:120],
+                             extra={"command": display_command,
+                                    "exit": proc.returncode,
+                                    "source": "run_command",
+                                    "background": bool(cur.get("background"))})
+            except Exception:
+                pass
     text = out.decode("utf-8", "replace").strip()
+    # 防御性脱敏：命令输出里可能回显了密码（旧写法/伪终端回显）
+    text = sudo_auth.redact_text(text)
     if stdin:
         # 伪终端会回显输入，把疑似密码的行打码（短输入如菜单选项保留）
         for line in stdin.splitlines():
@@ -1796,7 +1856,7 @@ def summarize_tool(name: str, args: dict) -> str:
         q = str(args.get("question", ""))
         return q if len(q) <= 60 else q[:60] + "…"
     if name == "run_command":
-        cmd = str(args.get("command", ""))
+        cmd = sudo_auth.redact_command(str(args.get("command", "")))
         return cmd if len(cmd) <= 120 else cmd[:120] + "…"
     if name == "web_search":
         return f"「{args.get('query', '')}」"
@@ -3254,8 +3314,18 @@ async def execute(name: str, args: dict) -> str:
     # 但没按」）时分不清是模型没调、工具报错、还是调了但没效果。
     # 只记摘要不记全文：run_command 的输出可能有几千行。
     t0 = time.monotonic()
-    print(f"[DeckMeido] 工具调用 {name}：{summarize_tool(name, args) or '（无参数）'}"
-          f"  args={json.dumps(args, ensure_ascii=False)[:400]}")
+    # 日志脱敏：run_command 的 command/stdin 可能夹带密码（旧的内联写法），
+    # 进 backend.log 之前一律打码；密码本身不写任何日志、审计或界面
+    log_args = dict(args)
+    if name == "run_command":
+        if log_args.get("command"):
+            log_args["command"] = sudo_auth.redact_command(str(log_args["command"]))
+        if log_args.get("stdin"):
+            log_args["stdin"] = sudo_auth.redact_stdin(str(log_args["stdin"]))
+        if log_args.get("reason"):
+            log_args["reason"] = sudo_auth.redact_text(str(log_args["reason"]))
+    print(f"[DeckMeido] 工具调用 {name}：{summarize_tool(name, log_args) or '（无参数）'}"
+          f"  args={json.dumps(log_args, ensure_ascii=False)[:400]}")
     # 执行期间别让屏幕黑掉/机器睡着：run_command 可能跑几分钟，
     # 用户回来看到的应该是进度，而不是一个锁屏界面。
     # 桌面模式判断和非空原因计数都在 power 里，游戏模式/纯查询工具会自动跳过。
@@ -3280,7 +3350,7 @@ async def execute(name: str, args: dict) -> str:
                         f"换个方式继续（例如换更小的范围、别的命令，或让用户确认目标是否存在）")
         text = result if isinstance(result, str) else str(result)
         print(f"[DeckMeido] 工具完成 {name}（{time.monotonic() - t0:.2f}s，"
-              f"{len(text)} 字）：{text[:300]}")
+              f"{len(text)} 字）：{sudo_auth.redact_text(text)[:300]}")
         return result
     except OutsideWorkspace as e:
         # 单独给一句能看懂的：越界是权限策略而不是文件坏了，

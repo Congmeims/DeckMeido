@@ -569,8 +569,10 @@ class PackageInstallTest(SelfcheckBase):
     def test_没有sudo权限时给出真实原因(self):
         sc._job = {"component": "ydotool", "state": "need_password"}
         sc._pw_waiting = True
-        with mock.patch.object(sc, "_sudo_check",
-                               return_value=(False, "deck is not in the sudoers file")):
+        with mock.patch.object(
+                sc, "_sudo_check",
+                return_value=(False, "no_sudoers",
+                              "deck is not in the sudoers file")):
             res = sc.provide_password("ydotool", "pw")
         self.assertFalse(res["ok"])
         self.assertEqual(res["reason"], "no_sudoers")
@@ -581,7 +583,9 @@ class PackageInstallTest(SelfcheckBase):
     def test_密码错误三次终止(self):
         sc._job = {"component": "ydotool", "state": "need_password"}
         sc._pw_waiting = True
-        with mock.patch.object(sc, "_sudo_check", return_value=(False, "Sorry")):
+        with mock.patch.object(
+                sc, "_sudo_check",
+                return_value=(False, "bad_password", "Sorry")):
             r1 = sc.provide_password("ydotool", "bad")
             r2 = sc.provide_password("ydotool", "bad")
             r3 = sc.provide_password("ydotool", "bad")
@@ -678,9 +682,13 @@ class ExecInstallTest(SelfcheckBase):
         self.assertNotIn("stdout", kwargs)
         self.assertNotIn("stderr", kwargs)
         self.assertTrue(kwargs["capture_output"])
-        self.assertEqual(kwargs["input"], "pw\n")
+        # 密码模式统一走 askpass：密码只进子进程环境，不进 argv/stdin
+        self.assertNotIn("input", kwargs)
+        self.assertEqual(kwargs["stdin"], sc.subprocess.DEVNULL)
+        self.assertEqual(kwargs["env"]["SUDO_ASKPASS_REQUIRE"], "force")
+        self.assertEqual(kwargs["env"]["DECKMEIDO_SUDO_PASSWORD"], "pw")
         argv = run.call_args.args[0]
-        self.assertEqual(argv[:4], ["sudo", "-S", "-p", ""])
+        self.assertEqual(argv[:2], ["sudo", "-A"])
         self.assertNotIn("pw", " ".join(argv))
 
     def test_免密sudo与pkexec不传密码(self):

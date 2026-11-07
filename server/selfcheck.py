@@ -28,7 +28,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from . import depcheck, tools, tts as tts_mod
+from . import depcheck, sudo_auth, tools, tts as tts_mod
 
 # 后端把 stdout/stderr 落进 userdata/logs/backend.log；未知异常在这里留完整堆栈，
 # 界面只拿到脱敏后的一句话，不暴露 Python 原文。
@@ -841,7 +841,8 @@ def _exec_install(mode: str, password: str | None, path: Path, name: str,
                   timeout: float = 630.0) -> tuple[int, str]:
     """按授权方式执行「关只读 → pacman → 恢复只读」脚本。
 
-    密码通过 stdin 传给 `sudo -S`，不进 argv，也不会出现在任何日志/界面里。
+    password 模式统一走 SUDO_ASKPASS：密码只放进子进程环境变量，
+    不进 argv、不进 stdin、不落盘，也不会出现在任何日志/界面里。
     注意：subprocess 的 capture_output 与 stdout/stderr 互斥，这里只用前者，
     再在 Python 里把两路文本合并，避免 ValueError 把界面拖进「失败」。
     """
@@ -851,11 +852,11 @@ def _exec_install(mode: str, password: str | None, path: Path, name: str,
     elif mode == "pkexec":
         argv = ["pkexec"] + base
     else:
-        argv = ["sudo", "-S", "-p", ""] + base
+        argv = ["sudo", "-A"] + base
     kwargs = dict(capture_output=True, text=True, timeout=timeout,
-                  env={**os.environ})
+                  stdin=subprocess.DEVNULL, env={**os.environ})
     if mode == "password":
-        kwargs["input"] = (password or "") + "\n"
+        kwargs["env"] = {**os.environ, **sudo_auth.sudo_env(password or "")}
     try:
         proc = subprocess.run(argv, **kwargs)
         return proc.returncode, ((proc.stdout or "") + (proc.stderr or "")).strip()
@@ -867,19 +868,12 @@ def _exec_install(mode: str, password: str | None, path: Path, name: str,
         raise RuntimeError(f"调用安装命令失败：{exc}")
 
 
-def _sudo_check(password: str) -> tuple[bool, str]:
-    """用 `sudo -S -v` 验证密码（只验证，不执行任何命令）"""
-    try:
-        proc = subprocess.run(
-            ["sudo", "-S", "-p", "", "-v"], input=password + "\n",
-            capture_output=True, text=True, timeout=15.0, env={**os.environ})
-        return proc.returncode == 0, (proc.stdout + proc.stderr).strip()
-    except FileNotFoundError:
-        return False, "本机没有 sudo"
-    except subprocess.TimeoutExpired:
-        return False, "sudo 校验超时"
-    except OSError as exc:
-        return False, str(exc)
+def _sudo_check(password: str) -> tuple[bool, str, str]:
+    """用 `sudo -A -v` 校验密码（只刷新凭据，不执行任何命令）。
+
+    返回 (ok, reason, message)；密码只通过环境变量交给 askpass 助手。
+    """
+    return sudo_auth.verify(password)
 
 
 def _request_password(component: str, message: str,
@@ -919,17 +913,19 @@ def provide_password(component: str, password: str) -> dict:
     if (job.get("component") != component or job.get("state") != "need_password"
             or not _pw_waiting):
         return {"ok": False, "reason": "not_waiting", "error": "当前没有等待授权的安装任务"}
-    ok, out = _sudo_check(password)
+    ok, reason, out = _sudo_check(password)
     if ok:
         with _pw_lock:
             _pw_value = password
             _pw_attempts = 0
             _pw_event.set()
+        # 安装用过一次的授权在 TTL 内同样供 run_command 复用，避免再次索要密码
+        sudo_auth.store(password, source="selfcheck")
         return {"ok": True}
-    if "not in the sudoers" in (out or "").lower():
+    if reason == "no_sudoers":
         # 不是密码错，是这个账号根本没有 sudo 权限，再试也没用
         with _pw_lock:
-            _pw_fail = "当前用户不在 sudoers 中，无法用密码提权安装"
+            _pw_fail = out or "当前用户不在 sudoers 中，无法用密码提权安装"
             _pw_event.set()
         return {"ok": False, "reason": "no_sudoers", "error": _pw_fail}
     with _pw_lock:

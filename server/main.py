@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from .llm import LLMClient
-from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, memory, menu, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, remote_terminal, selfcheck, singleton, status_line, tools, updater, usage
+from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, memory, menu, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, remote_terminal, selfcheck, singleton, status_line, sudo_auth, tools, updater, usage
 from .session_store import store
 from . import session_store
 from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, TTSError, normalize_speaker,
@@ -136,6 +136,8 @@ def save_config(updates: dict):
 CFG = load_config()
 # 远程终端默认关闭；启动时把 [terminal] 段的限流/超时参数装进管理器
 remote_terminal.manager.configure(CFG)
+# [security].sudo_ttl：sudo 授权密码在内存里的复用时长（默认 10 分钟）
+sudo_auth.configure(CFG)
 
 # 开发者模式与统一脱敏：尽早装好，后面的启动日志、traceback、uvicorn 访问日志
 # 都会经过同一层脱敏；开关本身按 [runtime].dev_mode 决定是否记录细节。
@@ -786,6 +788,8 @@ def apply_config(cfg: dict):
     CFG = cfg
     # [terminal] 远程终端开关/限流参数热更新
     remote_terminal.manager.configure(cfg)
+    # [security].sudo_ttl 热更新：授权复用时长改完即生效
+    sudo_auth.configure(cfg)
     # [runtime].dev_mode 热更新：改完保存即生效，不用重启后端
     devlog.configure(cfg)
     devlog.log("config.reload", sections=sorted(cfg.keys()))
@@ -2542,10 +2546,14 @@ async def api_browse(path: str = ""):
                 if not is_dir:
                     # kind 给前端挑图标和预览方式用（image/video/audio/pdf/text/other）
                     item["kind"] = _file_kind(e.name)
-                    try:
-                        item["size"] = e.stat(follow_symlinks=False).st_size
-                    except OSError:
-                        pass
+                # 大小与修改时间：目录也带 mtime，条目一律显示「类型/大小/修改时间」
+                try:
+                    st = e.stat(follow_symlinks=False)
+                    item["mtime"] = st.st_mtime
+                    if not is_dir:
+                        item["size"] = st.st_size
+                except OSError:
+                    pass
                 entries.append(item)
     except PermissionError:
         return {"path": str(target), "parent": parent, "entries": [], **zone_fields,
@@ -4888,6 +4896,30 @@ async def api_selfcheck_password(req: SelfcheckPasswordBody):
     return res
 
 
+@app.get("/api/sudo/status", dependencies=[Depends(require_auth)])
+async def api_sudo_status():
+    """当前 sudo 授权状态：是否可用、还要多久失效、是否有待输入密码的请求"""
+    st = sudo_auth.cache_status()
+    return {"ok": True, **st, "pending": sudo_auth.pending_status(),
+            "ttl": int(sudo_auth.ttl())}
+
+
+class SudoPasswordBody(BaseModel):
+    password: str
+
+
+@app.post("/api/sudo/password", dependencies=[Depends(require_auth)])
+async def api_sudo_password(req: SudoPasswordBody):
+    """界面提交管理员密码：`sudo -A -v` 校验一次，通过后内存缓存 TTL 时长。
+
+    密码只在后端内存里流转，不落日志、不写配置、不在响应里回显。
+    """
+    res = await asyncio.to_thread(sudo_auth.provide_password, req.password, "ui")
+    if not res.get("ok"):
+        return JSONResponse(res, status_code=400)
+    return res
+
+
 @app.get("/api/selfcheck/progress", dependencies=[Depends(require_auth)])
 async def api_selfcheck_progress():
     return {"ok": True, "job": selfcheck.job_snapshot()}
@@ -5292,6 +5324,17 @@ async def _check_binding():
 
 @app.on_event("startup")
 async def _start_update_watch():
+    loop = asyncio.get_running_loop()
+
+    def hook(payload: dict) -> None:
+        # 授权请求可能来自工作线程，统一投递回事件循环里广播
+        try:
+            asyncio.run_coroutine_threadsafe(
+                manager.broadcast({"type": "sudo_auth", **payload}), loop)
+        except Exception:
+            pass
+
+    sudo_auth.set_hook(hook)
     asyncio.create_task(update_watch_loop())
 
 

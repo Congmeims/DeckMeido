@@ -625,6 +625,22 @@
     position: relative;   /* 供 ＋ 菜单 / 命令菜单 / 回到底部球定位 */
   }
   #composerBar { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  /* sudo 授权行：只在需要授权时占位，复用自检卡的输入/眼睛/确认样式 */
+  #sudoAuthBox {
+    display: none; padding: 8px 10px; box-sizing: border-box;
+    border: 1px solid var(--line); border-radius: 10px;
+    background: var(--surface-2);
+  }
+  #sudoAuthBox.show { display: block; }
+  .sd-auth-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 8px; margin-bottom: 6px;
+  }
+  .sd-auth-title { font-size: 12.5px; color: var(--text); }
+  .sd-auth-meta {
+    font-size: 11px; color: var(--muted); min-width: 0; text-align: right;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .cb-left { display: flex; gap: 8px; flex: 0 0 auto; min-width: 0; }
   .cb-right { display: flex; gap: 8px; align-items: center; margin-left: auto; min-width: 0; }
   /* 语音输入按钮：只有 Deck 桌面客户端（native=1）才显示，网页端不出现 */
@@ -3012,6 +3028,21 @@
   <div id="fileList"></div>
   <div id="attachBox"></div>
   <div id="queueBox"></div>
+  <!-- sudo 授权行：run_command 碰到需要提权的命令且没有可用授权时出现。
+       一次校验通过后密码只留在后端内存，TTL 内复用，不再反复索要 -->
+  <div id="sudoAuthBox" class="sudo-auth">
+    <div class="sd-auth-head">
+      <span class="sd-auth-title">需要授权</span>
+      <span class="sd-auth-meta" id="sudoAuthMeta"></span>
+    </div>
+    <div class="sc-auth-line">
+      <input id="sudoAuthPw" class="sc-pw" type="password" placeholder="管理员密码"
+             autocomplete="new-password" spellcheck="false" autocapitalize="off">
+      <button id="sudoAuthEye" class="sc-eye" type="button" title="显示密码">显示</button>
+      <button id="sudoAuthBtn" class="sc-auth-btn" type="button">确认授权</button>
+    </div>
+    <div id="sudoAuthErr" class="sc-auth-err"></div>
+  </div>
   <div id="inputWrap">
     <textarea id="input" rows="1" placeholder="@ 添加上下文，/ 使用命令" enterkeyhint="send"></textarea>
     <!-- 清空输入框：贴在输入框内右边缘的小图标按钮，只在有内容时出现，点它不会触发发送 -->
@@ -7709,6 +7740,7 @@
       startHeartbeat();
       // 重连后补拉接管状态：广播只在状态变化时发，断线期间可能错过
       if (typeof loadRemoteStatus === 'function') loadRemoteStatus();
+      if (typeof loadSudoAuth === 'function') loadSudoAuth();
     };
 
     ws.onmessage = function (ev) {
@@ -7729,6 +7761,10 @@
         case 'selfcheck_progress':
           // 可补装组件的后台安装进度：同一份快照也走 /api/selfcheck/progress 兜底
           onSelfcheckProgress(msg);
+          break;
+        case 'sudo_auth':
+          // sudo 授权状态：需要密码时打开输入行，成功后收起
+          onSudoAuth(msg);
           break;
         case 'history':
           if (msg.sid) currentSid = msg.sid;
@@ -8623,6 +8659,107 @@
   // 这两项会被设置页/WD 回调跨块调用，提前挂在 IIFE 作用域上
   var loadSelfcheck = function () {};
   var onSelfcheckProgress = function () {};
+  // sudo 授权行：run_command 需要提权时由后端 WS 广播打开，跨块调用所以提前挂作用域
+  var loadSudoAuth = function () {};
+  var onSudoAuth = function () {};
+  safeInit('sudo 授权行', function () {
+    var box = document.getElementById('sudoAuthBox');
+    var pw = document.getElementById('sudoAuthPw');
+    var eye = document.getElementById('sudoAuthEye');
+    var btn = document.getElementById('sudoAuthBtn');
+    var err = document.getElementById('sudoAuthErr');
+    var meta = document.getElementById('sudoAuthMeta');
+    if (!box || !pw || !eye || !btn || !err) return;
+
+    function reuseText(sec) {
+      var m = Math.max(1, Math.round((Number(sec) || 0) / 60));
+      return m + ' 分钟内 sudo 命令直接复用';
+    }
+    function reset() {
+      pw.value = '';
+      pw.type = 'password';
+      eye.textContent = '显示';
+      eye.title = '显示密码';
+      err.textContent = '';
+      meta.textContent = '';
+    }
+    function hide() { box.classList.remove('show'); reset(); }
+    function show(payload) {
+      payload = payload || {};
+      box.classList.add('show');
+      err.textContent = payload.error || '';
+      meta.textContent = payload.command ? ('命令：' + payload.command) : '';
+      setTimeout(function () { try { pw.focus(); } catch (e) {} }, 0);
+    }
+    eye.addEventListener('click', function () {
+      var masked = pw.type === 'password';
+      pw.type = masked ? 'text' : 'password';
+      eye.textContent = masked ? '隐藏' : '显示';
+      eye.title = masked ? '隐藏密码' : '显示密码';
+      if (masked) { try { pw.focus(); } catch (e) {} }
+    });
+    function submit() {
+      var value = pw.value;
+      if (!value) { err.textContent = '请输入管理员密码'; pw.focus(); return; }
+      // 提交瞬间清空输入，密码不进 DOM/localStorage，只发给后端内存
+      pw.value = '';
+      if (pw.type === 'text') { pw.type = 'password'; eye.textContent = '显示'; }
+      btn.disabled = true;
+      err.textContent = '正在验证管理员密码…';
+      fetch('/api/sudo/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: value })
+      }).then(function (r) {
+        return r.json().then(function (j) { return { ok: r.ok, j: j }; },
+                              function () { return { ok: false, j: null }; });
+      }).then(function (x) {
+        value = '';
+        btn.disabled = false;
+        if (x.ok && x.j && x.j.ok) {
+          hide();
+          fbToast('已授权：' + reuseText(x.j.expires_in));
+          return;
+        }
+        err.textContent = (x.j && (x.j.error || x.j.reason)) || '授权失败，请重试';
+        pw.focus();
+      }).catch(function () {
+        value = '';
+        btn.disabled = false;
+        err.textContent = '授权请求失败（连接异常）';
+      });
+    }
+    btn.addEventListener('click', submit);
+    pw.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') { ev.preventDefault(); submit(); }
+    });
+
+    onSudoAuth = function (payload) {
+      payload = payload || {};
+      if (payload.state === 'need_password') { show(payload); return; }
+      if (payload.state === 'ok') {
+        hide();
+        fbToast('已授权：' + reuseText(payload.expires_in));
+        return;
+      }
+      if (payload.state === 'expired' || payload.state === 'failed') {
+        err.textContent = payload.error || payload.message || '授权已失效，请重新输入密码';
+      }
+    };
+    loadSudoAuth = function () {
+      fetch('/api/sudo/status').then(function (r) { return r.json(); })
+        .then(function (res) {
+          if (!res || !res.ok) return;
+          var pending = res.pending;
+          if (pending && pending.created) {
+            show({ command: pending.command, error: pending.last_error });
+          } else if (res.available) {
+            hide();
+          }
+        }).catch(function () {});
+    };
+    loadSudoAuth();
+  });
   safeInit('自检组件面板', function () {
   var scList = rbEl('selfcheckList');
   var scHint = rbEl('selfcheckHint');
