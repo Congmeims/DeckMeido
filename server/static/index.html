@@ -11346,7 +11346,7 @@
         }
         riState.enabled = !!cfgRiEnabled.checked;
         loadRemoteStatus();
-        loadSttStatus();
+        loadSttStatus(true);
         if (cfgDevMode) {
           cfgDevMode.value = res.dev_mode ? 'on' : 'off';
         }
@@ -11381,9 +11381,13 @@
 
   // ---------- 插件设置（和 Decky 插件端共用同一份后端配置） ----------
   // 语音输入可用性：/api/stt 会把「运行时没装」和「模型没下」分开报，
-  // 开关本身照样能保存，这里只负责把不可用的原因说清楚
-  function loadSttStatus() {
-    fetch('/api/stt')
+  // 开关本身照样能保存，这里只负责把不可用的原因说清楚。
+  // 原生客户端启动时会先拉一次（R1 的判断依赖 sttReady），设置页打开时复用同一份结果，
+  // 不重复请求；只有保存配置这类明确要校准的场合才 force 重新拉。
+  var sttStatusPromise = null;
+  function loadSttStatus(force) {
+    if (sttStatusPromise && !force) return sttStatusPromise;
+    sttStatusPromise = fetch('/api/stt')
       .then(function (r) { return r.json(); })
       .then(function (d) {
         sttReady = !!(d && d.enable !== false && d.runtime && d.model);
@@ -11400,8 +11404,16 @@
         } else {
           sttHint.textContent = '语音识别模型还没下载（约 250MB，默认走国内镜像），在插件端点下载后才能用';
         }
+        return d;
       })
-      .catch(function () { sttReady = false; sttHint.textContent = ''; });
+      .catch(function () {
+        // 后端没起来 / 401 / 网络错：静默失败，sttReady 保持假，允许下次再试
+        sttReady = false;
+        sttStatusPromise = null;
+        sttHint.textContent = '';
+        return null;
+      });
+    return sttStatusPromise;
   }
 
   // ---------- 语音回复（「女仆人格」下面的语音回复卡） ----------
@@ -13909,6 +13921,10 @@
   });
 
   _xtLoad();   // 检测 xterm.js / FitAddon 是否就绪，就绪后放行排队里的会话创建
+  // 原生客户端启动即确认一次语音输入可用性：window.dmR2 依赖 sttReady，
+  // 只在设置页/语音按钮里拉的话，客户端重启后第一次按 R1 会被当成不可用直接忽略。
+  // 网页端不跑，免得白拉一个用不上的请求；失败静默、不阻塞下面的启动流程
+  if (IS_NATIVE) loadSttStatus();
   bootAuth();  // 先确认设备 Cookie / 令牌，再连主对话 WebSocket
 
   // 连上之后才知道有没有令牌；文件面板首屏在这里补加载一次
