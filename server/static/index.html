@@ -8682,6 +8682,10 @@
       } else if (Date.now() - lastSendAt > 3000) {
         hideTyping();
         stopWaitTimer();
+        // 状态明确说「没在跑」就得放开终止态。否则在别的会话里发起、
+        // 或者中途切走会话时，收尾的 assistant_message 会按 sid 被过滤掉，
+        // busy 永远停在 true，右键菜单里的「删除」就一直灰着点不了。
+        setBusy(false);
       }
     }
     if (s.mode) {
@@ -8942,6 +8946,11 @@
   var waitTimer = null;
   var waitBase = 0;        // 本轮已等秒数（status 给的 running_since 优先）
   var waitLabel = '';      // 当前动作文案（如「正在执行命令：find /」）
+  // 读秒期间「已经发生过什么」：一个字节都没收到时不能说「已执行」，
+  // 那会让人以为在跑命令；只有真的执行过工具才配这个词
+  var waitSeen = false;
+  var waitUsedTool = false;
+  var waitTurnTs = 0;      // 计时对应的轮次起点，用来识别「换了一轮」
   function waitTick() {
     if (!typingEl) { stopWaitTimer(); return; }
     waitBase += 1;
@@ -10382,6 +10391,11 @@
         // renderApiProfiles 会把统计范围重置到新的当前使用并刷新用量与余额
         if (res.api_profiles) renderApiProfiles(res);
         apiProfileHint.textContent = '已切换到「' + currentApiName() + '」，下一轮对话立即使用它';
+        // 模型列表按账户隔离：立刻丢掉上一家的列表并重拉；当前模型若
+        // 不在新账户里，fillModelSelect 会标注并提示重新选择
+        reloadModels().catch(function (e) {
+          addSystem('模型列表加载失败：' + ((e && e.message) || e));
+        });
       })
       .catch(function (e) {
         apiProfileHint.textContent = '切换失败：' + ((e && e.message) || e);
@@ -13007,34 +13021,57 @@
       .catch(function () {});
   }
 
+  var modelWarnKey = '';
   function fillModelSelect(list, current) {
     var cur = current || modelSelect.value;
+    var listed = list || [];
+    // 当前模型不在这家账户的列表里时，保留它但明确标注，别让它看起来
+    // 像这家服务商也提供；同一次「账户+模型」组合只提醒一次，避免刷屏
+    var missing = !!(cur && listed.length && listed.indexOf(cur) < 0);
     var seen = {};
     var opts = [];
-    [cur].concat(list || []).forEach(function (m) {
+    [cur].concat(listed).forEach(function (m) {
       if (!m || seen[m]) return;
       seen[m] = 1; opts.push(m);
     });
     // 按名字首字母排序，忽略大小写
     opts.sort(function (a, b) { return a.localeCompare(b, 'en', { sensitivity: 'base' }); });
+    var esc = function (m) {
+      return m.replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    };
     var html = '';
     opts.forEach(function (m) {
-      html += '<option value="' + m.replace(/[&<>"']/g, function (c) {
-        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-      }) + '">' + m + '</option>';
+      var label = (missing && m === cur) ? m + '（当前账户不可用）' : m;
+      html += '<option value="' + esc(m) + '">' + esc(label) + '</option>';
     });
     // 模型下拉：顶栏和设置页共用同一份列表
     modelSelect.innerHTML = html;
     if (cur) modelSelect.value = cur;
     if (modelSelect._dd && modelSelect._dd.refresh) modelSelect._dd.refresh();
+    if (missing) {
+      var key = (apiProfilesState.current || '') + '|' + cur;
+      if (modelWarnKey !== key) {
+        modelWarnKey = key;
+        addSystem('当前模型「' + cur + '」不在'
+          + (currentApiName() ? '「' + currentApiName() + '」' : '当前账户')
+          + '的可用列表里，请在模型下拉里重新选择');
+      }
+    }
   }
 
   // 从服务商拉当前配置的模型列表：GET /models，OpenAI 兼容接口都支持。
   // 非 2xx / 非 JSON 一律抛出真实状态与原因：以前吞成 []，界面看起来像
   // 「服务商没有模型」，用户根本不知道是地址、Key 还是网络的问题。
   var modelsPromise = null;
+  // 缓存按账户隔离：切换 current_api 后必须丢掉上一家的列表，
+  // 否则模型下拉会继续显示/合并另一家服务商的模型
+  var modelsPromiseApi = '';
   function fetchModels() {
-    if (!modelsPromise) {
+    var apiId = apiProfilesState.current || '';
+    if (!modelsPromise || modelsPromiseApi !== apiId) {
+      modelsPromiseApi = apiId;
       modelsPromise = fetch('/api/models')
         .then(function (r) {
           return r.text().then(function (t) {

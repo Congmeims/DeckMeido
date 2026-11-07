@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import zipfile
 from pathlib import Path
 
@@ -5959,6 +5960,44 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
     return reply
 
 
+def _llm_error_text(e: Exception) -> str:
+    """把服务商/中转的原始报错整理成一句主人能看懂的话。
+
+    httpx 抛出的 "Server error '503 Service Unavailable' for url ..." 后面
+    还跟着 MDN 文档链接，直接铺进聊天既吓人也没用。这里只保留三件事：
+    哪家账户、什么状态、下一步能做什么；没有状态码时（例如中转把错误塞进
+    200 的流里）再退回服务商自己的说明。
+    """
+    raw = re.sub(r"\s*For more information check:.*", "", str(e))
+    raw = re.sub(r"\s*Request url:.*", "", raw).strip()
+    code = getattr(getattr(e, "response", None), "status_code", None)
+    m = re.search(r"\b(401|402|403|404|408|409|429|500|502|503|504)\b", raw)
+    status = int(code) if code else (int(m.group(1)) if m else None)
+    name = getattr(llm, "api_name", "") or "当前接口"
+    try:
+        host = urllib.parse.urlsplit(str(getattr(llm, "base_url", "") or "")).hostname or ""
+    except ValueError:
+        host = ""
+    label = f"「{name}」" + (f"（{host}）" if host else "")
+    hints = {
+        401: "API Key 无效或已过期",
+        402: "账户余额不足",
+        403: "服务商拒绝了这次请求（权限或地区限制）",
+        404: "接口路径不存在，请检查 base_url",
+        429: "请求被限流，请稍后再试",
+        500: "服务商内部错误",
+        502: "网关错误，服务商暂时不可用",
+        503: "服务商暂时不可用（上游模型服务异常，或该模型暂无可用节点）",
+        504: "服务商响应超时",
+    }
+    if status:
+        msg = f"LLM 调用失败：{label} {hints.get(status, '服务商返回错误')}（HTTP {status}）"
+    else:
+        brief = raw[:240] + ("…" if len(raw) > 240 else "")
+        msg = f"LLM 调用失败：{label} {brief}"
+    return msg + "。可在设置页「接口账户」里切换账户，或换一个模型后重试"
+
+
 async def run_agent(events: list[dict], extra_system: str = "",
                    hist: list[dict] | None = None,
                    image_part: str | None = None,
@@ -6678,8 +6717,9 @@ async def run_agent(events: list[dict], extra_system: str = "",
     except Exception as e:
         # 把失败当正常回复返回，下一轮模型会在自己的历史里读到一句「LLM 调用失败」，
         # 于是把这句话当成它说过的话继续往下聊。明确标成中断，交给上层提示
-        print(f"[DeckMeido] LLM 调用失败：{e}", file=sys.stderr)
-        raise RuntimeError(f"LLM 调用失败：{e}") from e
+        friendly = _llm_error_text(e)
+        print(f"[DeckMeido] {friendly}", file=sys.stderr)
+        raise RuntimeError(friendly) from e
 
 
 @app.websocket("/ws")
