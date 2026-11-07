@@ -25,6 +25,33 @@ export DECKMEIDO_CLIENT_WRAPPER=1
 relaunch="${CLIENT_CRASH_RELAUNCH:-1}"
 delay=2
 
+# 显示环境是否真的可用。切模式后旧会话的 DISPLAY 可能还留在环境里，
+# 只判断变量存在会在「有 DISPLAY 但连不上」时误判可用，随后 Qt 平台
+# 初始化失败会 abort 并产生 coredump；这里对 X 也做一次真实探测。
+display_ready() {
+  if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    [ -e "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/$WAYLAND_DISPLAY" ]
+    return
+  fi
+  [ -n "${DISPLAY:-}" ] || return 1
+  case "${DISPLAY}" in
+    :*)
+      local num="${DISPLAY#:}"
+      num="${num%%.*}"
+      [ -e "/tmp/.X11-unix/X$num" ] || return 1
+      ;;
+  esac
+  # 有 socket 不代表 cookie 有效（切会话后常见 Invalid MIT-MAGIC-COOKIE）。
+  # 有探测工具就实际查一次；都没有时退回只看 socket。
+  if command -v xdpyinfo >/dev/null 2>&1; then
+    xdpyinfo >/dev/null 2>&1
+  elif command -v xset >/dev/null 2>&1; then
+    xset q >/dev/null 2>&1
+  else
+    return 0
+  fi
+}
+
 while :; do
   "$PY" "$MAIN"
   rc=$?
@@ -41,16 +68,20 @@ while :; do
   fi
   [ "$relaunch" = "1" ] || exit "$rc"
 
-  # 切模式时 Wayland 会消失几秒，等它回来再拉起，否则只会连环失败
+  # 切模式时显示服务会消失几秒，等它回来再拉起；等不到就明确退出，
+  # 不要无限重试——每次重试都会让 Qt 平台初始化失败并 abort，刷 coredump
+  ready=0
   for _ in $(seq 1 30); do
-    if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -e "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/$WAYLAND_DISPLAY" ]; then
-      break
-    fi
-    if [ -z "${WAYLAND_DISPLAY:-}" ] && [ -n "${DISPLAY:-}" ]; then
+    if display_ready; then
+      ready=1
       break
     fi
     sleep 1
   done
+  if [ "$ready" != "1" ]; then
+    echo "[launch] 显示环境不可用（WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-<空>} DISPLAY=${DISPLAY:-<空>}），已等待 30 秒，停止重试" >&2
+    exit 1
+  fi
 
   echo "[launch] 客户端异常退出（code $rc），${delay}s 后重启" >&2
   sleep "$delay"

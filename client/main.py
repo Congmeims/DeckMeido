@@ -183,6 +183,60 @@ def check_config() -> None:
         print(f"[DeckMeido] 读不到配置：{_config_error}（请检查数据目录）", file=sys.stderr)
 
 
+def display_unavailable_reason() -> str:
+    """返回显示环境不可用的原因；可用时返回空串。
+
+    切模式时环境里可能还留着上一个会话的 DISPLAY：gamescope 的 Xwayland
+    在切到桌面时会被拆掉，而 WAYLAND_DISPLAY 没有带过来，Qt 只能选 xcb，
+    平台初始化失败后直接 abort()（SIGABRT → coredump → DrKonqi 弹窗）。
+    在构造 QApplication 之前先把不可用的环境识别出来，写清楚原因后干净退出。
+    """
+    wayland = (os.environ.get("WAYLAND_DISPLAY") or "").strip()
+    display = (os.environ.get("DISPLAY") or "").strip()
+    runtime = (os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}").rstrip("/")
+    if wayland:
+        sock = f"{runtime}/{wayland}"
+        if not os.path.exists(sock):
+            return f"WAYLAND_DISPLAY={wayland} 指向的 socket 不存在：{sock}"
+        return ""
+    if not display:
+        return "WAYLAND_DISPLAY 与 DISPLAY 都未设置，没有可用的图形会话"
+    if display.startswith(":"):
+        num = display[1:].split(".")[0]
+        sock = f"/tmp/.X11-unix/X{num}"
+        if not os.path.exists(sock):
+            return f"DISPLAY={display} 不可达：{sock} 不存在（X 服务器未就绪）"
+    xauth = os.environ.get("XAUTHORITY") or os.path.expanduser("~/.Xauthority")
+    if os.path.exists(xauth):
+        auth_note = ""
+    elif os.environ.get("XAUTHORITY"):
+        auth_note = f"XAUTHORITY 指向的文件不存在：{xauth}"
+    else:
+        auth_note = "XAUTHORITY 未设置且默认的 ~/.Xauthority 不存在"
+    probe = None
+    probe_name = ""
+    for argv in (["xdpyinfo"], ["xset", "q"]):
+        try:
+            probe = subprocess.run(argv, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.PIPE, timeout=3)
+        except FileNotFoundError:
+            continue
+        except subprocess.TimeoutExpired:
+            return f"DISPLAY={display} 探测超时（{' '.join(argv)} 3 秒无响应）"
+        probe_name = " ".join(argv)
+        break
+    if probe is None:
+        # 没有探测工具：授权文件也缺失时直接判定不可用，否则交给 Qt 尝试
+        return f"DISPLAY={display} 无法探测（缺少 xdpyinfo / xset，且{auth_note}）" if auth_note else ""
+    if probe.returncode == 0:
+        return ""
+    detail = (probe.stderr or b"").decode("utf-8", "replace").strip()
+    detail = detail.splitlines()[0] if detail else ""
+    notes = [note for note in (auth_note, detail) if note]
+    reason = f"DISPLAY={display} 不可连（{probe_name} 失败）"
+    return reason + ("：" + "；".join(notes) if notes else "")
+
+
 def api_json(path: str, timeout: float = 5.0, post: bool = False) -> dict:
     """调后端接口，返回解析后的 JSON（空响应按空对象处理）"""
     url = f"{API}{path}"
@@ -927,6 +981,19 @@ def main() -> int:
                  "DECKMEIDO_DATA_DIR", "DECKMEIDO_PORT", "DISPLAY",
                  "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE")
                  if os.environ.get(k)})
+    reason = display_unavailable_reason()
+    if reason:
+        line = f"[display] 显示环境不可用：{reason}；不启动 Qt，避免 coredump 与崩溃弹窗"
+        print(f"[DeckMeido] {line}", file=sys.stderr)
+        _dev_log("client.display_unavailable", reason=reason)
+        try:
+            handle = globals().get("_crash_handle")
+            if handle:
+                handle.write(time.strftime("%Y-%m-%d %H:%M:%S") + " " + line + "\n")
+                handle.flush()
+        except Exception:
+            pass
+        return 1
     QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
     app.setApplicationName("DeckMeido")
