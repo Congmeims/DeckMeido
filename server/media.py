@@ -1,27 +1,40 @@
-"""媒体播控：直接调 Decky Music 的 MPRIS2 服务。
+"""媒体播控：Decky Music 的两个官方接口。
 
-Decky Music 的 `bin/player` 进程自己注册 MPRIS2（插件 README「系统媒体控制」一节：
-蓝牙耳机按键、桌面媒体控件都走 MPRIS2，外部动作由它上送内部 bridge 处理）。
-所以我们只调这个标准接口，不碰插件私有的 `player.sock` 帧协议——那是插件内部
-实现，socket 名字里还带实例号，随版本变化。
+有两个面，都只用公开、稳定的那一层：
+
+1. **MPRIS2**（`server/media.py` 原有部分）：Decky Music 的 `bin/player` 自己注册
+   MPRIS2（插件 README「系统媒体控制」一节：蓝牙耳机按键、桌面媒体控件都走它）。
+   切歌、暂停、停止、音量、duck 都走这里，不碰插件私有的 `player.sock` 帧协议。
+2. **Decky Loader 的本地 WS RPC**：点播要搜曲库、要读队列，MPRIS 不提供这些。
+   Decky Loader 在 `127.0.0.1:1337` 暴露 `loader/call_plugin_method`，可以按
+   `search_songs / get_playback / get_queue / play_queue / queue_insert_next /
+   queue_play` 调 Decky Music 自己声明的方法（插件 `main.py` 的 `__getattr__`
+   白名单只转发这几个）。注意：每建一条新 WS，Loader 会 close 掉前端原有的那条
+   （前端随后自动重连），所以点播时 QAM 可能闪一下。
 
 安全边界（不允许变成任意 shell）：
 
-* 只有一张固定动作白名单（`_METHODS` + `VOLUME_ACTIONS`），未知动作直接拒绝；
+* 动作只有一张固定白名单（`_METHODS` + `VOLUME_ACTIONS`），未知动作直接拒绝；
 * 动作不带任何外部参数：音量步进、duck 比例都是模块内常量；
-* 用户说的话只在 `match_intent()` 里做关键词匹配，匹配结果是动作名，
-  永远不会被拼进命令行。
+* RPC 方法名同样来自固定白名单（`_RPC_METHODS`），用户说的话永远不会被拼进
+  shell 命令或任意方法名；
+* 曲库搜索的关键词只作为 RPC 数据参数传递，且有长度上限。
 
-降级：没有 busctl / 没有播放器 / 命令失败都抛 `MediaError`，`reason` 是给人看
-的中文原因，`speech` 是一句可以直接念出来的短提示。`duck()` / `restore()`
-永远不抛异常：压不下音量就当作没压，不能影响唤醒主流程。
+降级：没有 busctl / 没有播放器 / 插件没登录 / 命令失败都抛 `MediaError`，
+`reason` 是给人看的中文原因，`speech` 是一句可以直接念出来的短提示。
+`duck()` / `restore()` 永远不抛异常：压不下音量就当作没压，不能影响唤醒主流程。
 """
 from __future__ import annotations
 
+import difflib
+import json
 import os
 import re
 import subprocess
 import threading
+import time
+import urllib.request
+from dataclasses import dataclass, field
 
 MPRIS_PREFIX = "org.mpris.MediaPlayer2."
 PLAYER_PATH = "/org/mpris/MediaPlayer2"
@@ -31,6 +44,22 @@ CMD_TIMEOUT = 3.0
 # 音量加减步进；duck 压到原来的这个比例
 VOLUME_STEP = 0.1
 DUCK_RATIO = 0.25
+
+# Decky Loader 本地 RPC
+LOADER_HOST = "127.0.0.1"
+LOADER_PORT = 1337
+RPC_TIMEOUT = 6.0
+RPC_ID = 1
+PLUGIN_NAME = "Decky Music"
+# 只允许调这几个方法：点播链路需要的最小集合，避免变成任意插件调用
+_RPC_METHODS = {
+    "search_songs",
+    "get_playback",
+    "get_queue",
+    "play_queue",
+    "queue_insert_next",
+    "queue_play",
+}
 
 # 会改动音量状态的动作：执行前必须先恢复 duck，否则「恢复原音量」会把
 # 用户刚要求的加减冲掉
@@ -60,6 +89,8 @@ FEEDBACK = {
 
 # 口头指令 → 动作。顺序决定优先级：先看「停止播放」，否则会被「播放」抢走；
 # 「取消静音」必须排在「静音」前面。
+# 「播放 / 继续」放在最后：它同时是点播的动词（「播放稻香」要走点播），
+# 只有当整句抽不出歌名时才落到这里。
 _RULES = (
     ("stop", ("停止播放", "停止", "停掉", "别放了", "stop")),
     ("pause", ("暂停", "停一下", "先停", "pause")),
@@ -74,16 +105,49 @@ _RULES = (
     ("play", ("继续播放", "继续", "接着放", "播放", "开始播放", "resume", "play")),
 )
 
+# 随机播放的口头说法
+_RANDOM_WORDS = ("随机放", "随机播放", "随机来", "随便放", "随便来", "随便点",
+                 "随便听", "随便播", "随便挑")
+
+# 点播动词 + 可选量词
+_SONG_LEAD = r"(?:放|播放|播|来|听|点歌|点)"
+_SONG_QTY = r"(?:一首|一曲|一首歌|首歌|首|曲|个|一个|点|点个|一下)?"
+# 抽出来的「关键词」若只是这些泛称，说明用户没点具体的歌，交给对话链路
+_SONG_STOP = {"歌", "歌曲", "歌儿", "音乐", "歌吧", "首歌", "首", "曲", "点", "一点",
+              "点歌", "一首", "一下", "那个", "这个", "什么", "什么歌", "啥",
+              "这首歌", "那首歌", "这首", "那首", "了", "的", "个",
+              "放", "播", "来", "听", "播放", "继续"}
+
 # 太长的句子不当作口令：避免「下一首歌唱的是什么」这类问题被误执行
 MAX_INTENT_CHARS = 20
+MAX_QUERY_CHARS = 24
 # 带疑问词的句子一律交给模型：口令是祈使句，问句不该被当成指令
-_QUESTION_RE = re.compile(r"什么|为什么|怎么|哪|吗|多少|谁|是不是")
+_QUESTION_RE = re.compile(r"什么|为什么|怎么|哪|吗|多少|谁|是不是|好不好")
 _PUNCT_RE = re.compile(r"[\s，。！？、,.!?；;：:~“”\"'（）()<>《》…\-]+")
+# 抽歌名时保留《》，只去空白与常见标点
+_SONG_STRIP_RE = re.compile(r"[\s，。！？、,.!?；;：:~“”\"'（）()<>…\-]+")
+_TRAIL_RE = re.compile(r"(?:吧|啊|呀|呢|呗|啦|哦|喔|嘛)$")
+
+# 匹配阈值：0.62 约等于「歌名相似度 78%」或「歌手完全一致」；
+# 前两名差距小于 0.06 视为歧义，先确认一次再放。
+MATCH_THRESHOLD = 0.62
+AMBIGUITY_GAP = 0.06
+
+_FIELD_WEIGHTS = {"name": 0.6, "singer": 0.25, "album": 0.15}
+
+_SEARCH_ERRORS = {
+    "not_login": "Decky Music 没登录",
+    "upstream_timeout": "曲库查询超时",
+}
+
+_YES_RE = re.compile(r"^(对|是|是的|嗯|好|可以|没错|就这个|就它|行|ok|yes)")
+_NO_RE = re.compile(r"^(不是|不对|不|错了|换|不要|no)")
 
 _lock = threading.RLock()
 _duck_prev: float | None = None
 _duck_value: float | None = None
 _muted_prev: float | None = None
+_py_cache: dict[str, str] = {}
 
 
 class MediaError(RuntimeError):
@@ -93,6 +157,46 @@ class MediaError(RuntimeError):
         super().__init__(reason)
         self.reason = reason
         self.speech = speech
+
+
+@dataclass(frozen=True)
+class Intent:
+    """本地口令的分流结果。
+
+    kind：
+    * ``transport`` —— 固定播控动作，`action` 是白名单里的动作名；
+    * ``song`` —— 点播，`query` 是抽出来的歌名/歌手/专辑关键词；
+    * ``random`` —— 随机放一首。
+    """
+
+    kind: str
+    action: str = ""
+    feedback: str = ""
+    query: str = ""
+
+
+@dataclass(frozen=True)
+class SongPlan:
+    """点播计划：搜到的歌 + 该怎么说。
+
+    status：
+    * ``ok`` —— 唯一高分候选，直接放；
+    * ``ask`` —— 前两名太接近，先问一次「是 XXX 那首吗」；
+    * ``miss`` —— 没找到，`speech` 直接念。
+    """
+
+    status: str
+    speech: str = ""
+    item: dict | None = field(default=None, compare=False)
+    name: str = ""
+    singer: str = ""
+
+    @property
+    def label(self) -> str:
+        return _label(self.name, self.singer)
+
+
+# ---------- MPRIS（原有播控面） ----------
 
 
 def _env() -> dict:
@@ -245,10 +349,351 @@ def restore() -> None:
             pass
 
 
-def match_intent(text: str) -> tuple[str, str] | None:
-    """本地口令匹配：命中返回 (动作, 反馈词)，否则 None。
+# ---------- Decky Loader 本地 RPC（点播面） ----------
 
-    只做关键词包含，不调模型；整句过长直接不认，交给对话链路。
+
+def _loader_token() -> str:
+    """`GET /auth/token` 返回纯文本 token；本地回环、无鉴权。"""
+    url = f"http://{LOADER_HOST}:{LOADER_PORT}/auth/token"
+    try:
+        with urllib.request.urlopen(url, timeout=2) as resp:
+            token = resp.read().decode("utf-8", "replace").strip()
+    except Exception as exc:
+        raise MediaError(f"连不上 Decky Loader：{exc}", "点播没准备好") from exc
+    if not token:
+        raise MediaError("Decky Loader 没给鉴权 token", "点播没准备好")
+    return token
+
+
+def _rpc(method: str, *args):
+    """调 Decky Music 的插件方法，返回它的原样结果。
+
+    只允许 `_RPC_METHODS` 里的方法；`args` 只能是字符串/数字/列表/字典这类
+    JSON 数据，永远不会进 shell。
+    """
+    method = str(method or "")
+    if method not in _RPC_METHODS:
+        raise MediaError(f"不允许的插件方法：{method}", "操作失败")
+    token = _loader_token()
+    try:
+        from websockets.sync.client import connect
+    except Exception as exc:
+        raise MediaError("缺少 websockets 库，无法调用 Decky Music",
+                         "点播没准备好") from exc
+    payload = json.dumps(
+        {"type": 0, "id": RPC_ID, "route": "loader/call_plugin_method",
+         "args": [PLUGIN_NAME, method, *args]},
+        ensure_ascii=False)
+    try:
+        with connect(f"ws://{LOADER_HOST}:{LOADER_PORT}/ws?auth={token}",
+                     open_timeout=RPC_TIMEOUT, close_timeout=1) as ws:
+            ws.send(payload)
+            deadline = time.monotonic() + RPC_TIMEOUT
+            while True:
+                remain = deadline - time.monotonic()
+                if remain <= 0:
+                    raise MediaError(f"Decky Music 没有响应（{method} 超时）", "没反应")
+                raw = ws.recv(timeout=remain)
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(msg, dict) or msg.get("id") != RPC_ID:
+                    continue
+                kind = msg.get("type")
+                if kind == 1:
+                    return msg.get("result")
+                if kind == 2:
+                    raise MediaError("Decky Music 插件已停止", "点播没准备好")
+                err = msg.get("error") or {}
+                text = (err.get("message") if isinstance(err, dict) else "") \
+                    or (err.get("name") if isinstance(err, dict) else "") \
+                    or "未知错误"
+                raise MediaError(f"Decky Music 调用失败（{method}）：{text}",
+                                 "查不到" if method == "search_songs" else "操作失败")
+    except MediaError:
+        raise
+    except TimeoutError as exc:
+        raise MediaError(f"Decky Music 没有响应（{method} 超时）", "没反应") from exc
+    except Exception as exc:
+        raise MediaError(f"调用 Decky Music 失败：{exc}", "点播没准备好") from exc
+
+
+def search_songs(keyword: str, page: int = 0) -> list[dict]:
+    """用插件自带的 provider 搜歌（没有本地曲库，Deck 上也没有音乐文件）。"""
+    keyword = (keyword or "").strip()
+    if len(keyword) < 2 or len(keyword) > 30:
+        raise MediaError("搜索关键词长度不合适", "没听清")
+    result = _rpc("search_songs", keyword, int(page))
+    if not isinstance(result, dict):
+        raise MediaError("曲库返回格式不对", "查不到")
+    if result.get("ok") is False:
+        code = str(result.get("error") or "")
+        raise MediaError(
+            f"曲库查询失败：{_SEARCH_ERRORS.get(code, code or '未知原因')}",
+            "查不到")
+    songs = result.get("songs") or []
+    return [s for s in songs if isinstance(s, dict)]
+
+
+# ---------- 打分：歌名 / 歌手 / 专辑 ----------
+
+
+def _norm(text: str) -> str:
+    return _PUNCT_RE.sub("", str(text or "")).lower()
+
+
+def _pinyin(text: str) -> str:
+    """懒加载 pypinyin；没装就只做字形比较，不抛异常。"""
+    key = text
+    if key in _py_cache:
+        return _py_cache[key]
+    try:
+        from pypinyin import lazy_pinyin
+        value = "".join(lazy_pinyin(text))
+    except Exception:
+        value = ""
+    _py_cache[key] = value
+    return value
+
+
+def _sim(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    # 包含关系直接算全中（单字太容易误伤，要求两边都不短于 2）
+    if len(a) >= 2 and len(b) >= 2 and (a in b or b in a):
+        return 1.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def _field_sim(query: str, value: str) -> float:
+    """同一段关键词与一个字段的相似度：字形 + 拼音取较大值。
+
+    拼音比较就是中文错别字/同音字的容错（「稻香 / 道香」「周杰伦 / 周杰论」），
+    英文因为统一转小写、去空格，也天然不敏感。
+    """
+    qn = _norm(query)
+    vn = _norm(value)
+    if not qn or not vn:
+        return 0.0
+    return max(_sim(qn, vn), _sim(_pinyin(qn), _pinyin(vn)))
+
+
+def score_song(query: str, song: dict) -> float:
+    """0–1 的匹配分：标题 0.6 / 歌手 0.25 / 专辑 0.15。
+
+    只报歌手名（「来点周杰伦」）时加权只有 0.25，永远够不到阈值，所以再加
+    一条「单字段置信度 × 0.8」的下限：任一个字段几乎完全命中就算 0.8。
+    """
+    sims = {
+        "name": _field_sim(query, song.get("name") or ""),
+        "singer": _field_sim(query, song.get("singer") or ""),
+        "album": _field_sim(query, song.get("album") or ""),
+    }
+    weighted = sum(_FIELD_WEIGHTS[k] * v for k, v in sims.items())
+    single = max(sims.values()) * 0.8
+    return round(max(weighted, single), 4)
+
+
+def _same_title(a: str, b: str) -> bool:
+    """同名/包含关系视为同一首歌的不同版本（翻唱、女声版、童声版）。"""
+    if not a or not b:
+        return False
+    return a == b or (len(a) >= 2 and len(b) >= 2 and (a in b or b in a))
+
+
+def _queue_item(song: dict) -> dict:
+    """搜索项 → 队列项。队列用 `id`，搜索用 `mid`，两者同源（数值字符串）。"""
+    sid = str(song.get("mid") or song.get("id") or "").strip()
+    if not sid:
+        raise MediaError("这首歌缺 id，放不了", "播放失败")
+    return {
+        "id": sid,
+        "media_mid": str(song.get("media_mid") or sid),
+        "name": str(song.get("name") or ""),
+        "singer": str(song.get("singer") or ""),
+        "cover": str(song.get("cover") or ""),
+        "duration": float(song.get("duration") or 0),
+        "max_quality": str(song.get("max_quality") or "none"),
+    }
+
+
+def _label(name: str, singer: str, limit: int = 18) -> str:
+    text = f"{singer}的{name}" if singer and name else (name or singer or "")
+    text = text.strip()
+    return text[:limit] if text else "这首歌"
+
+
+def _search_candidates(query: str) -> list[dict]:
+    """先整句搜；整句没结果再按「的」/空格拆开搜，合并去重。"""
+    songs = search_songs(query)
+    if songs:
+        return songs
+    merged: list[dict] = []
+    seen = set()
+    for token in re.split(r"[\s的]+", query):
+        token = token.strip()
+        if len(token) < 2 or token == query:
+            continue
+        try:
+            part = search_songs(token)
+        except MediaError:
+            continue
+        for song in part:
+            key = (str(song.get("name") or ""), str(song.get("singer") or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(song)
+    return merged
+
+
+def resolve_song(query: str) -> SongPlan:
+    """把一句点播关键词解析成可执行的计划（只搜不播）。"""
+    query = (query or "").strip()
+    if not query:
+        return SongPlan("miss", "没听清要放哪首")
+    candidates = _search_candidates(query)
+    if not candidates:
+        return SongPlan("miss", f"没找到{query[:12]}")
+    ranked: list[tuple[float, dict]] = []
+    seen = set()
+    for song in candidates:
+        key = (str(song.get("name") or ""), str(song.get("singer") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        ranked.append((score_song(query, song), song))
+    ranked.sort(key=lambda pair: pair[0], reverse=True)
+    top_score, top = ranked[0]
+    if top_score < MATCH_THRESHOLD:
+        return SongPlan("miss", f"没找到{query[:12]}")
+    name = str(top.get("name") or "")
+    singer = str(top.get("singer") or "")
+    item = _queue_item(top)
+    # 只有「不同歌名」才算真歧义；同名翻唱（多个「稻香」）直接取最高分，
+    # 反馈里带歌手名让用户听出来放的是哪一版，不反复追问。
+    top_key = _norm(name)
+    rival = 0.0
+    for score, song in ranked[1:]:
+        if not _same_title(top_key, _norm(str(song.get("name") or ""))):
+            rival = score
+            break
+    if rival >= MATCH_THRESHOLD and top_score - rival < AMBIGUITY_GAP:
+        return SongPlan("ask", f"是{_label(name, singer)}吗", item, name, singer)
+    return SongPlan("ok", f"放{_label(name, singer)}", item, name, singer)
+
+
+def resolve_random() -> SongPlan:
+    """从当前队列里随机挑一首（排除正在放的那首）。"""
+    playback = _rpc("get_playback")
+    if not isinstance(playback, dict):
+        playback = {}
+    index = playback.get("index")
+    queue = _rpc("get_queue")
+    items = (queue.get("items") if isinstance(queue, dict) else None) or []
+    pool = [it for i, it in enumerate(items)
+            if i != index and isinstance(it, dict) and str(it.get("id") or "")]
+    if not pool:
+        raise MediaError("曲库是空的（Decky Music 队列里没有可放的歌）", "曲库空的")
+    import random
+    chosen = random.choice(pool)
+    name = str(chosen.get("name") or "")
+    singer = str(chosen.get("singer") or "")
+    item = {
+        "id": str(chosen.get("id")),
+        "media_mid": str(chosen.get("media_mid") or chosen.get("id")),
+        "name": name,
+        "singer": singer,
+        "cover": str(chosen.get("cover") or ""),
+        "duration": float(chosen.get("duration") or 0),
+        "max_quality": str(chosen.get("max_quality") or "none"),
+    }
+    return SongPlan("ok", f"放{_label(name, singer)}", item, name, singer)
+
+
+def play_plan(item: dict | None) -> None:
+    """放一首歌。
+
+    队列是普通模式且当前有位置：插到当前下一首再跳过去，用户原来的队列保留；
+    电台模式（插入会被插件静默忽略）或空队列：直接用它开一个新队列。
+    """
+    if not isinstance(item, dict) or not str(item.get("id") or "").strip():
+        raise MediaError("点播计划不完整", "播放失败")
+    with _lock:
+        try:
+            playback = _rpc("get_playback")
+        except MediaError:
+            playback = {}
+        index = playback.get("index") if isinstance(playback, dict) else None
+        mode = str(playback.get("queue_mode") or "") if isinstance(playback, dict) else ""
+        if mode == "normal" and isinstance(index, int) and index >= 0:
+            try:
+                _rpc("queue_insert_next", item)
+                _rpc("queue_play", index + 1)
+                return
+            except MediaError:
+                pass
+        _rpc("play_queue", [item], 0)
+
+
+# ---------- 口令匹配 ----------
+
+
+def _song_intent(text: str) -> Intent | None:
+    """从「放一首 X / 放 X 的《Y》/ 来点 X」里抽关键词。"""
+    raw = _TRAIL_RE.sub("", _SONG_STRIP_RE.sub("", text or ""))
+    if not raw:
+        return None
+
+    def build(*parts: str) -> Intent | None:
+        words = [p.strip() for p in parts if p and p.strip()]
+        words = [w for w in words if w not in _SONG_STOP]
+        query = " ".join(words).strip()
+        if not query or query in _SONG_STOP:
+            return None
+        if len(query) > MAX_QUERY_CHARS:
+            return None
+        return Intent("song", feedback="好", query=query)
+
+    # 1) 放 X 的《Y》
+    m = re.search(_SONG_LEAD + r"[^《]+?的《([^》]+)》", raw)
+    if m:
+        got = build(m.group(1))
+        if got:
+            return got
+    # 2) 《Y》
+    m = re.search(r"《([^》]+)》", raw)
+    if m:
+        got = build(m.group(1))
+        if got:
+            return got
+    # 3) 放 X 的 Y
+    m = re.search(_SONG_LEAD + _SONG_QTY + r"([^的]+?)的(.+)$", raw)
+    if m:
+        got = build(m.group(1), m.group(2))
+        if got:
+            return got
+    # 4) 放 X
+    m = re.search(_SONG_LEAD + _SONG_QTY + r"(.+)$", raw)
+    if m:
+        got = build(m.group(1))
+        if got:
+            return got
+    # 5) X 的歌
+    m = re.search(r"(.+?)的歌$", raw)
+    if m:
+        got = build(m.group(1))
+        if got:
+            return got
+    return None
+
+
+def match_intent(text: str) -> Intent | None:
+    """本地口令匹配：命中返回 Intent，否则 None。
+
+    只做正则/关键词匹配，不调模型；整句过长或带疑问词直接不认，交给对话链路。
+    顺序：随机播放 → 点播 → 固定播控（「播放/继续」排最后，避免抢走「播放稻香」）。
     """
     raw = (text or "").strip()
     if not raw:
@@ -258,9 +703,35 @@ def match_intent(text: str) -> tuple[str, str] | None:
         return None
     if _QUESTION_RE.search(norm):
         return None
+    if any(word in norm for word in _RANDOM_WORDS):
+        return Intent("random", feedback="好")
+    # 先过「停止 / 暂停 / 切歌 / 音量」这类强口令，它们不会被点播动词抢走
     for action, words in _RULES:
+        if action == "play":
+            continue
         if any(word in norm for word in words):
-            return action, FEEDBACK[action]
+            return Intent("transport", action=action, feedback=FEEDBACK[action])
+    song = _song_intent(raw)
+    if song is not None:
+        return song
+    # 「播放 / 继续」最后：整句抽不出歌名才算播控
+    for action, words in _RULES:
+        if action != "play":
+            continue
+        if any(word in norm for word in words):
+            return Intent("transport", action=action, feedback=FEEDBACK[action])
+    return None
+
+
+def is_yes(text: str) -> bool | None:
+    """歧义确认的回答：True=对，False=不是，None=没听出来（按普通输入继续）。"""
+    norm = _PUNCT_RE.sub("", text or "").lower()
+    if not norm:
+        return None
+    if _NO_RE.match(norm):
+        return False
+    if _YES_RE.match(norm):
+        return True
     return None
 
 
@@ -269,3 +740,4 @@ def _reset() -> None:
     global _duck_prev, _duck_value, _muted_prev
     with _lock:
         _duck_prev = _duck_value = _muted_prev = None
+    _py_cache.clear()

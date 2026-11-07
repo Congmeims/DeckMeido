@@ -519,7 +519,8 @@ class WakeService:
                  transcribe=None, chat=None, duck=None, restore=None,
                  power_hold=None, power_release=None,
                  ack_synth=None, ack_play=None,
-                 media_duck=None, media_restore=None, media_action=None):
+                 media_duck=None, media_restore=None, media_action=None,
+                 media_resolve=None, media_random=None, media_play=None):
         self._root = model_root or paths.wake_model_dir()
         self._detector_factory = detector_factory or (
             lambda root, cfg: SherpaDetector(
@@ -544,6 +545,12 @@ class WakeService:
         self._media_duck = media_duck
         self._media_restore = media_restore
         self._media_action = media_action
+        # 点播：搜（纯查询）→ 随机挑 → 真正开播，三段分开注入，测试可各段造假
+        self._media_resolve = media_resolve
+        self._media_random = media_random
+        self._media_play = media_play
+        # 歧义确认只问一次：这里存待确认的计划，下一轮的第一句就回答它
+        self._pending_confirm = None
         self._music_ducked = False
         # 短反馈词的合成缓存：同一句「切了」只合成一次
         self._fb_wav: dict[str, bytes] = {}
@@ -685,6 +692,7 @@ class WakeService:
     def set_handlers(self, *, transcribe=None, chat=None, duck=None, restore=None,
                      power_hold=None, power_release=None, cancel_chat=None,
                      media_duck=None, media_restore=None, media_action=None,
+                     media_resolve=None, media_random=None, media_play=None,
                      on_state=None) -> None:
         if transcribe is not None:
             self._transcribe = transcribe
@@ -706,6 +714,12 @@ class WakeService:
             self._media_restore = media_restore
         if media_action is not None:
             self._media_action = media_action
+        if media_resolve is not None:
+            self._media_resolve = media_resolve
+        if media_random is not None:
+            self._media_random = media_random
+        if media_play is not None:
+            self._media_play = media_play
         if on_state is not None:
             self._state_cb = on_state
 
@@ -1010,11 +1024,31 @@ class WakeService:
                 self._abort("没有识别到文字")
                 return
             devlog.log("wake.transcribe", chars=len(text))
-            # 本地快速通道：命中固定口令就直接执行，不进对话、不进思考态
+            # 上一轮问过「是 XXX 那首吗」：这一句先当作回答，最多问一次
+            pending, self._pending_confirm = self._pending_confirm, None
+            if pending is not None:
+                answer = media.is_yes(text)
+                if answer is True:
+                    await self._play_and_ack(pending)
+                    return
+                if answer is False:
+                    await self._speak_short("那算了")
+                    if not self._round_cancelled:
+                        self._to_armed()
+                    return
+                # 既不是「对」也不是「不是」：按普通输入继续，绝不循环追问
+            # 本地快速通道：命中口令就直接执行，不进对话、不进思考态
             intent = media.match_intent(text)
-            if intent is not None and self._media_action:
-                await self._run_media(*intent)
-                return
+            if intent is not None:
+                if intent.kind == "random":
+                    await self._run_random()
+                    return
+                if intent.kind == "song":
+                    await self._run_song(intent.query)
+                    return
+                if self._media_action:
+                    await self._run_media(intent.action, intent.feedback)
+                    return
             self._set_state("thinking")
             if not self._chat:
                 raise WakeError("对话入口未就绪")
@@ -1053,6 +1087,93 @@ class WakeService:
             speech = getattr(exc, "speech", "") or "操作失败"
             self._last_error = getattr(exc, "reason", "") or str(exc) or "媒体控制失败"
             devlog.log("wake.media.error", action=action, error=str(exc))
+        if self._round_cancelled:
+            return
+        await self._speak_short(speech)
+        if self._round_cancelled:
+            return
+        self._turns += 1
+        self._to_armed()
+
+    async def _run_song(self, query: str) -> None:
+        """点播：搜曲库 → 唯一高分直接放；歧义问一次；没找到就直说。"""
+        if not self._media_resolve:
+            await self._speak_short("点播没准备好")
+            if not self._round_cancelled:
+                self._to_armed()
+            return
+        try:
+            plan = await asyncio.to_thread(self._media_resolve, query)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            speech = getattr(exc, "speech", "") or "没找到"
+            self._last_error = getattr(exc, "reason", "") or str(exc) or "点播失败"
+            devlog.log("wake.song.resolve.error", query=query, error=str(exc))
+            if not self._round_cancelled:
+                await self._speak_short(speech)
+            if not self._round_cancelled:
+                self._to_armed()
+            return
+        if self._round_cancelled:
+            return
+        if plan.status == "ask":
+            # 只问一次：下一轮的第一句话由 _run_round 当作回答处理
+            self._pending_confirm = plan
+            await self._speak_short(plan.speech)
+            if not self._round_cancelled:
+                self._turns += 1
+                self._enter_listen()
+            return
+        if plan.status != "ok":
+            await self._speak_short(plan.speech or "没找到")
+            if not self._round_cancelled:
+                self._to_armed()
+            return
+        await self._play_and_ack(plan)
+
+    async def _run_random(self) -> None:
+        """随机放一首：从当前队列里挑，排除正在放的那首。"""
+        if not self._media_random:
+            await self._speak_short("点播没准备好")
+            if not self._round_cancelled:
+                self._to_armed()
+            return
+        try:
+            plan = await asyncio.to_thread(self._media_random)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            speech = getattr(exc, "speech", "") or "播放失败"
+            self._last_error = getattr(exc, "reason", "") or str(exc) or "随机播放失败"
+            devlog.log("wake.song.random.error", error=str(exc))
+            if not self._round_cancelled:
+                await self._speak_short(speech)
+            if not self._round_cancelled:
+                self._to_armed()
+            return
+        if self._round_cancelled:
+            return
+        if plan.status != "ok":
+            await self._speak_short(plan.speech or "曲库空的")
+            if not self._round_cancelled:
+                self._to_armed()
+            return
+        await self._play_and_ack(plan)
+
+    async def _play_and_ack(self, plan) -> None:
+        """真正开播 + 一句短反馈。播放失败也念原因，然后照常回待机。"""
+        speech = plan.speech or f"放{plan.label}"
+        try:
+            if not self._media_play:
+                raise media.MediaError("点播入口未就绪", "播放失败")
+            await asyncio.to_thread(self._media_play, plan.item)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            speech = getattr(exc, "speech", "") or "播放失败"
+            self._last_error = getattr(exc, "reason", "") or str(exc) or "播放失败"
+            devlog.log("wake.song.play.error", name=plan.name, error=str(exc))
         if self._round_cancelled:
             return
         await self._speak_short(speech)
@@ -1130,6 +1251,7 @@ class WakeService:
                 pass
 
     def _abort(self, reason: str) -> None:
+        self._pending_confirm = None
         self._release_duck()
         self._release_music_duck()
         self._reset_audio()
@@ -1139,6 +1261,7 @@ class WakeService:
         self._set_state("armed")
 
     def _fail(self, reason: str) -> None:
+        self._pending_confirm = None
         self._release_duck()
         self._release_music_duck()
         self._reset_audio()
@@ -1161,6 +1284,7 @@ class WakeService:
             if self._state == "error" else None)
 
     def _to_armed(self) -> None:
+        self._pending_confirm = None
         self._release_duck()
         self._release_music_duck()
         self._reset_audio()
@@ -1220,6 +1344,7 @@ class WakeService:
 
     def _cancel_round(self) -> None:
         self._round_cancelled = True
+        self._pending_confirm = None
         task, self._task = self._task, None
         if task is not None and not task.done():
             task.cancel()

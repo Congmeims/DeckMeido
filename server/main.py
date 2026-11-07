@@ -791,6 +791,10 @@ wake_service = wake.WakeService(
     media_duck=media.duck,
     media_restore=media.restore,
     media_action=media.execute,
+    # 点播走 Decky Music 自带 provider 的搜索接口 + 它自己的队列
+    media_resolve=media.resolve_song,
+    media_random=media.resolve_random,
+    media_play=media.play_plan,
     power_hold=lambda: power.keeper.hold("wake_mode", "智能音箱模式"),
     power_release=lambda: power.keeper.release("wake_mode"),
 )

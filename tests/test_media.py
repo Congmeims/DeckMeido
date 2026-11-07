@@ -98,18 +98,19 @@ class MediaTests(unittest.TestCase):
             with self.subTest(text=text):
                 got = media.match_intent(text)
                 self.assertIsNotNone(got)
-                self.assertEqual(got[0], expect)
-                self.assertTrue(got[1])  # 反馈词不能为空
+                self.assertEqual(got.kind, "transport")
+                self.assertEqual(got.action, expect)
+                self.assertTrue(got.feedback)  # 反馈词不能为空
 
     def test_intent_priority(self):
         # 「停止播放」不能被「播放」抢走；「取消静音」必须优先于「静音」
-        self.assertEqual(media.match_intent("停止播放")[0], "stop")
-        self.assertEqual(media.match_intent("取消静音")[0], "unmute")
-        self.assertEqual(media.match_intent("解除静音")[0], "unmute")
+        self.assertEqual(media.match_intent("停止播放").action, "stop")
+        self.assertEqual(media.match_intent("取消静音").action, "unmute")
+        self.assertEqual(media.match_intent("解除静音").action, "unmute")
 
     def test_intent_with_punctuation_and_spaces(self):
-        self.assertEqual(media.match_intent(" 下一首！ ")[0], "next")
-        self.assertEqual(media.match_intent("音量，调大")[0], "volume_up")
+        self.assertEqual(media.match_intent(" 下一首！ ").action, "next")
+        self.assertEqual(media.match_intent("音量，调大").action, "volume_up")
 
     def test_intent_ignores_normal_sentences(self):
         for text in ("把客厅灯打开", "今天天气怎么样", "", "   "):
@@ -233,6 +234,234 @@ class MediaTests(unittest.TestCase):
         media._run = boom
         self.assertFalse(media.duck())
         media.restore()  # 不能抛
+
+
+class FakeLoader:
+    """按方法名回放的假 Decky Loader RPC，记录每次调用参数。"""
+
+    def __init__(self, handlers=None):
+        self.handlers = handlers or {}
+        self.calls = []
+
+    def __call__(self, method, *args):
+        self.calls.append((method, args))
+        value = self.handlers.get(method)
+        if isinstance(value, Exception):
+            raise value
+        if callable(value):
+            return value(*args)
+        if value is None:
+            return {}
+        return value
+
+    def methods(self):
+        return [m for m, _ in self.calls]
+
+
+SONGS = [
+    {"mid": "1001", "name": "稻香", "singer": "周杰伦", "album": "魔杰座",
+     "duration": 221, "cover": "c1", "media_mid": "1001", "max_quality": "lossless"},
+    {"mid": "1002", "name": "晴天", "singer": "周杰伦", "album": "叶惠美",
+     "duration": 269, "cover": "c2", "media_mid": "1002", "max_quality": "lossless"},
+    {"mid": "1003", "name": "Slam Dunk", "singer": "MerrinZephyr",
+     "album": "SLAPHOUSE", "duration": 180, "cover": "c3",
+     "media_mid": "1003", "max_quality": "none"},
+]
+
+
+def _search_all(*_args):
+    return {"ok": True, "songs": list(SONGS)}
+
+
+class SongTests(unittest.TestCase):
+    def setUp(self):
+        self._orig_rpc = media._rpc
+        self.loader = FakeLoader({"search_songs": _search_all,
+                                  "get_playback": {"index": 3, "queue_mode": "normal"},
+                                  "get_queue": {"items": [
+                                      {"id": "1", "name": "A", "singer": "甲"},
+                                      {"id": "2", "name": "B", "singer": "乙"},
+                                  ]}})
+        media._rpc = self.loader
+        media._reset()
+
+    def tearDown(self):
+        media._rpc = self._orig_rpc
+        media._reset()
+
+    # ---- 意图抽取：点播 ----
+
+    def test_song_intents_extract_query(self):
+        cases = {
+            "放一首周杰伦的稻香": ("周杰伦", "稻香"),
+            "放周杰伦的《稻香》": ("稻香",),
+            "放《稻香》": ("稻香",),
+            "播放稻香": ("稻香",),
+            "来点周杰伦": ("周杰伦",),
+            "放陈奕迅的歌": ("陈奕迅",),
+            "听首晴天吧": ("晴天",),
+        }
+        for text, expects in cases.items():
+            with self.subTest(text=text):
+                intent = media.match_intent(text)
+                self.assertIsNotNone(intent)
+                self.assertEqual(intent.kind, "song")
+                for word in expects:
+                    self.assertIn(word, intent.query)
+
+    def test_random_intents(self):
+        for text in ("随机放一首", "随便放点", "随便来一首", "随机播放"):
+            with self.subTest(text=text):
+                intent = media.match_intent(text)
+                self.assertIsNotNone(intent)
+                self.assertEqual(intent.kind, "random")
+
+    def test_song_intent_does_not_steal_transport(self):
+        # 「继续播放」不能被抽成歌名「放」
+        self.assertEqual(media.match_intent("继续播放").action, "play")
+        self.assertEqual(media.match_intent("播放").action, "play")
+        # 泛称不算点播，交给模型
+        for text in ("放音乐", "来点歌", "放一首歌", "随便"):
+            with self.subTest(text=text):
+                intent = media.match_intent(text)
+                self.assertTrue(intent is None or intent.kind != "song")
+
+    def test_song_questions_go_to_model(self):
+        for text in ("放的是哪首歌", "稻香是谁唱的", "下一首是什么歌"):
+            with self.subTest(text=text):
+                self.assertIsNone(media.match_intent(text))
+
+    # ---- 匹配分数 ----
+
+    def test_pinyin_tolerates_wrong_or_similar_chars(self):
+        # 错别字 / 同音字走拼音，分数必须过阈值
+        self.assertGreaterEqual(media.score_song("道香", SONGS[0]), media.MATCH_THRESHOLD)
+        self.assertGreaterEqual(media.score_song("周杰论", SONGS[0]), media.MATCH_THRESHOLD)
+
+    def test_english_is_case_and_space_insensitive(self):
+        self.assertGreaterEqual(media.score_song("slamdunk", SONGS[2]),
+                                media.MATCH_THRESHOLD)
+        self.assertGreaterEqual(media.score_song("SLAM DUNK", SONGS[2]),
+                                media.MATCH_THRESHOLD)
+
+    def test_unrelated_query_scores_low(self):
+        self.assertLess(media.score_song("晴天", {"name": "稻香", "singer": "周杰伦"}),
+                        media.MATCH_THRESHOLD)
+
+    # ---- 解析 ----
+
+    def test_resolve_unique_top_plays_directly(self):
+        plan = media.resolve_song("道香")
+        self.assertEqual(plan.status, "ok")
+        self.assertEqual(plan.name, "稻香")
+        self.assertIn("放", plan.speech)
+        self.assertIn("周杰伦", plan.speech)
+        self.assertEqual(plan.item["id"], "1001")
+
+    def test_resolve_close_scores_ask_once(self):
+        # 两个周杰伦的歌同分：不同歌名，不能随便挑，先确认
+        plan = media.resolve_song("周杰伦")
+        self.assertEqual(plan.status, "ask")
+        self.assertIn("吗", plan.speech)
+        self.assertIn(plan.name, plan.speech)
+
+    def test_same_title_covers_do_not_ask(self):
+        # 同名翻唱分数一样高，但歌名相同：直接放最高分，反馈带歌手名
+        covers = [
+            {"mid": "1", "name": "稻香", "singer": "甲", "album": ""},
+            {"mid": "2", "name": "稻香", "singer": "乙", "album": ""},
+            {"mid": "3", "name": "稻香 (女声版)", "singer": "丙", "album": ""},
+        ]
+        self.loader.handlers["search_songs"] = lambda *_: {"ok": True, "songs": covers}
+        plan = media.resolve_song("稻香")
+        self.assertEqual(plan.status, "ok")
+        self.assertIn(plan.singer, plan.speech)
+        self.assertEqual(plan.item["id"], "1")
+
+    def test_resolve_miss_is_spoken(self):
+        def only_unrelated(*_args):
+            return {"ok": True, "songs": [{"mid": "9", "name": "晴天",
+                                           "singer": "周杰伦", "album": "叶惠美"}]}
+        self.loader.handlers["search_songs"] = only_unrelated
+        plan = media.resolve_song("不存在的歌")
+        self.assertEqual(plan.status, "miss")
+        self.assertIn("没找到", plan.speech)
+
+    def test_resolve_falls_back_to_split_tokens(self):
+        def by_token(keyword, page=0):
+            if keyword == "周杰伦的稻香":
+                return {"ok": True, "songs": []}
+            if keyword == "稻香":
+                return {"ok": True, "songs": [SONGS[0]]}
+            return {"ok": True, "songs": []}
+        self.loader.handlers["search_songs"] = by_token
+        plan = media.resolve_song("周杰伦的稻香")
+        self.assertEqual(plan.status, "ok")
+        self.assertEqual(plan.name, "稻香")
+
+    def test_search_error_is_readable(self):
+        self.loader.handlers["search_songs"] = {"ok": False, "error": "not_login"}
+        with self.assertRaises(media.MediaError) as ctx:
+            media.search_songs("稻香")
+        self.assertIn("没登录", str(ctx.exception))
+        self.assertEqual(ctx.exception.speech, "查不到")
+
+    # ---- 随机 ----
+
+    def test_random_excludes_current_track(self):
+        self.loader.handlers["get_playback"] = {"index": 0, "queue_mode": "normal"}
+        plan = media.resolve_random()
+        self.assertEqual(plan.status, "ok")
+        self.assertEqual(plan.item["id"], "2")  # 当前是第 0 首，只能挑第 1 首
+
+    def test_random_empty_queue_is_readable(self):
+        self.loader.handlers["get_queue"] = {"items": []}
+        with self.assertRaises(media.MediaError) as ctx:
+            media.resolve_random()
+        self.assertIn("曲库是空的", str(ctx.exception))
+        self.assertEqual(ctx.exception.speech, "曲库空的")
+
+    # ---- 播放计划 ----
+
+    def test_play_plan_keeps_queue_in_normal_mode(self):
+        media.play_plan({"id": "1001", "name": "稻香"})
+        self.assertEqual(self.loader.methods(),
+                         ["get_playback", "queue_insert_next", "queue_play"])
+        self.assertEqual(self.loader.calls[2][1], (4,))
+
+    def test_play_plan_restarts_queue_in_radio_mode(self):
+        self.loader.handlers["get_playback"] = {"index": 0, "queue_mode": "radio"}
+        media.play_plan({"id": "1002", "name": "晴天"})
+        self.assertEqual(self.loader.methods(), ["get_playback", "play_queue"])
+        self.assertEqual(self.loader.calls[1][1][1], 0)
+
+    def test_play_plan_rejects_incomplete_item(self):
+        with self.assertRaises(media.MediaError):
+            media.play_plan({"name": "稻香"})
+        self.assertEqual(self.loader.calls, [])
+
+    # ---- RPC 白名单 ----
+
+    def test_rpc_method_whitelist(self):
+        # 用真实 _rpc 验证白名单：不该连 Loader，也不该执行任何东西
+        media._rpc = self._orig_rpc
+        with self.assertRaises(media.MediaError):
+            media._rpc("get_file_contents", "/etc/passwd")
+        with self.assertRaises(media.MediaError):
+            media._rpc("eval", "1+1")
+        self.assertEqual(self.loader.calls, [])
+        self.assertTrue(media._RPC_METHODS)
+
+    # ---- 确认回答 ----
+
+    def test_is_yes_parsing(self):
+        for text in ("对", "是的", "嗯", "没错", "就这个"):
+            with self.subTest(text=text):
+                self.assertIs(media.is_yes(text), True)
+        for text in ("不是", "不对", "换一个", "不要"):
+            with self.subTest(text=text):
+                self.assertIs(media.is_yes(text), False)
+        self.assertIsNone(media.is_yes("今天天气怎么样"))
 
 
 if __name__ == "__main__":

@@ -88,6 +88,16 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.media_error = None
         self.media_duck_result = True
         self.states = []
+        # 点播：假解析 / 假随机 / 假开播，全部只记调用
+        self.song_plan = media.SongPlan("ok", "放周杰伦的稻香",
+                                        {"id": "1001", "name": "稻香"},
+                                        "稻香", "周杰伦")
+        self.random_song_plan = media.SongPlan("ok", "放了",
+                                               {"id": "1002", "name": "晴天"},
+                                               "晴天", "周杰伦")
+        self.resolve_calls = []
+        self.played_items = []
+        self.play_error = None
 
         def duck():
             self.duck_calls += 1
@@ -127,6 +137,22 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
             if self.media_error:
                 raise self.media_error
 
+        def media_resolve(query):
+            self.resolve_calls.append(query)
+            if isinstance(self.song_plan, Exception):
+                raise self.song_plan
+            return self.song_plan
+
+        def media_random():
+            self.media_events.append("random")
+            return self.random_song_plan
+
+        def media_play(item):
+            self.media_events.append("play")
+            self.played_items.append(item)
+            if self.play_error:
+                raise self.play_error
+
         self.chat_fn = chat
         self.service = wake.WakeService(
             model_root=Path(self.tmp.name),
@@ -141,6 +167,9 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
             media_duck=media_duck,
             media_restore=media_restore,
             media_action=media_action,
+            media_resolve=media_resolve,
+            media_random=media_random,
+            media_play=media_play,
         )
         self.service.set_tts_stop(self._tts_stop)
         self.service.set_handlers(
@@ -552,6 +581,140 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         await self._drain()
         self.assertEqual(self.media_events.count("restore"), 1)
         self.assertEqual(self.service.state, "listening")
+
+    # ---- 声控点播 ----
+
+    async def test_song_intent_plays_without_chat(self):
+        self.text = "放一首稻香"
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.resolve_calls, ["稻香"])
+        self.assertEqual(self.played_items, [{"id": "1001", "name": "稻香"}])
+        self.assertEqual(self.chat_calls, [])
+        self.assertNotIn("thinking", self.states)
+        self.assertEqual(self.ack_synth_calls[-1], "放周杰伦的稻香")
+        self.assertEqual(self.service.state, "armed")
+        # 唤醒压一次、反馈念完恢复一次
+        self.assertEqual(self.media_events.count("duck"), 1)
+        self.assertEqual(self.media_events.count("restore"), 1)
+
+    async def test_random_song_intent(self):
+        self.text = "随机放一首"
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertIn("random", self.media_events)
+        self.assertEqual(self.played_items, [{"id": "1002", "name": "晴天"}])
+        self.assertEqual(self.chat_calls, [])
+        self.assertEqual(self.service.state, "armed")
+
+    async def test_song_miss_speaks_and_returns_to_armed(self):
+        self.song_plan = media.SongPlan("miss", "没找到那首歌")
+        self.text = "放一首稻香"
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.played_items, [])
+        self.assertEqual(self.chat_calls, [])  # 不落到模型硬猜
+        self.assertEqual(self.ack_synth_calls[-1], "没找到那首歌")
+        self.assertEqual(self.service.state, "armed")
+
+    async def test_song_ambiguous_asks_once_then_yes(self):
+        self.song_plan = media.SongPlan("ask", "是周杰伦的稻香吗",
+                                        {"id": "1001", "name": "稻香"},
+                                        "稻香", "周杰伦")
+        self.text = "来点周杰伦"
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        # 问完之后回监听等回答，不能先放着
+        self.assertEqual(self.service.state, "listening")
+        self.assertEqual(self.played_items, [])
+        self.assertEqual(self.ack_synth_calls[-1], "是周杰伦的稻香吗")
+        self.assertIsNotNone(self.service._pending_confirm)
+        # 回答「对」→ 直接放
+        self.text = "对"
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.played_items, [{"id": "1001", "name": "稻香"}])
+        self.assertIsNone(self.service._pending_confirm)
+        self.assertEqual(self.service.state, "armed")
+
+    async def test_song_ambiguous_no_cancels(self):
+        self.song_plan = media.SongPlan("ask", "是周杰伦的稻香吗",
+                                        {"id": "1001", "name": "稻香"},
+                                        "稻香", "周杰伦")
+        self.text = "来点周杰伦"
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.text = "不是"
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.played_items, [])
+        self.assertEqual(self.ack_synth_calls[-1], "那算了")
+        self.assertIsNone(self.service._pending_confirm)
+        self.assertEqual(self.service.state, "armed")
+
+    async def test_confirm_is_asked_at_most_once(self):
+        self.song_plan = media.SongPlan("ask", "是周杰伦的稻香吗",
+                                        {"id": "1001", "name": "稻香"},
+                                        "稻香", "周杰伦")
+        self.text = "来点周杰伦"
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        # 听不清的回答不能再追问一次，按普通输入交给模型
+        self.text = "今天天气怎么样"
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.chat_calls, [("今天天气怎么样", True, "wake")])
+        self.assertIsNone(self.service._pending_confirm)
+        self.assertEqual(self.resolve_calls, ["周杰伦"])
+
+    async def test_song_play_failure_speaks_reason(self):
+        self.play_error = media.MediaError("播放器报错", "没放出来")
+        self.text = "放一首稻香"
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.ack_synth_calls[-1], "没放出来")
+        self.assertIn("播放器报错", self.service.status()["last_error"])
+        self.assertEqual(self.service.state, "armed")
+
+    async def test_song_search_failure_speaks_reason(self):
+        self.song_plan = media.MediaError("曲库没登录", "查不到")
+        self.text = "放一首稻香"
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.played_items, [])
+        self.assertEqual(self.ack_synth_calls[-1], "查不到")
+        self.assertEqual(self.chat_calls, [])
+        self.assertEqual(self.service.state, "armed")
+
+    async def test_pending_confirm_cleared_on_listen_timeout(self):
+        self.song_plan = media.SongPlan("ask", "是周杰伦的稻香吗",
+                                        {"id": "1001", "name": "稻香"},
+                                        "稻香", "周杰伦")
+        self.text = "来点周杰伦"
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.service.feed_frame(FRAME, now=self.service._wait_until + 0.1)
+        self.assertEqual(self.service.state, "armed")
+        self.assertIsNone(self.service._pending_confirm)
+        self.assertEqual(self.media_events.count("restore"), 1)  # 本轮唤醒压过一次
 
     # ---- 配置/状态 ----
 
