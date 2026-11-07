@@ -635,10 +635,24 @@
   body.native #micBtn:not(.rec):not(.busy)::after { content: '（R1）'; }
   #micBtn.rec { background: var(--danger); color: #fff; }
   #micBtn.busy { opacity: .6; pointer-events: none; }
-  /* 清空按钮：有内容才出现。用 :placeholder-shown 判断，
-     脚本直接改输入框时也不会出现「按钮还亮着但框已经空了」的状态漂移 */
-  #clearBtn { display: none; font-size: 13px; }
-  #input:not(:placeholder-shown) + #composerBar #clearBtn { display: block; }
+  /* 清空按钮：做成输入框内右边缘的小图标按钮，只在有内容时出现。
+     用 :placeholder-shown 判断，脚本直接改输入框时也不会出现
+     「按钮还亮着但框已经空了」的状态漂移 */
+  #inputWrap { position: relative; display: block; }
+  #inputWrap #input { display: block; }
+  #clearBtn {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    width: 30px; height: 30px; min-width: 30px; padding: 0;
+    display: none; align-items: center; justify-content: center;
+    border: none; border-radius: 50%;
+    background: transparent; color: var(--muted);
+    font-size: 17px; line-height: 1; cursor: pointer; z-index: 1;
+  }
+  #clearBtn:hover { background: rgba(127,127,127,.18); color: var(--text); }
+  #clearBtn:active { opacity: .7; }
+  #input:not(:placeholder-shown) ~ #clearBtn { display: flex; }
+  /* 按钮出现时才给文本让出右侧空间，空框时文本仍占满整行 */
+  #input:not(:placeholder-shown) { padding-right: 42px; }
   .cb-btn {
     min-width: 34px; padding: 0 10px; height: 34px; border: none; border-radius: 10px;
     background: var(--surface-2); color: var(--muted);
@@ -2103,8 +2117,8 @@
     #permSelect { max-width: 88px; font-size: 12px; padding: 0 6px; }
     #send { min-width: 48px; padding: 0 12px; font-size: 14px; }
     .cb-btn { padding: 0 8px; }
-    /* 窄屏把清空按钮收窄，优先保证「发送」不被挤出可视区 */
-    #clearBtn { min-width: 30px; padding: 0 6px; font-size: 12px; }
+    /* 清空按钮在输入框内，窄屏只收到 28px，不占工具栏宽度、也不挤「发送」 */
+    #clearBtn { width: 28px; height: 28px; min-width: 28px; right: 5px; }
     /* 极窄的原生窗口里去掉「（R1）」后缀，按钮宽度给发送让位，避免换行错位 */
     body.native #micBtn:not(.rec):not(.busy)::after { content: none; }
   }
@@ -2998,7 +3012,11 @@
   <div id="fileList"></div>
   <div id="attachBox"></div>
   <div id="queueBox"></div>
-  <textarea id="input" rows="1" placeholder="@ 添加上下文，/ 使用命令" enterkeyhint="send"></textarea>
+  <div id="inputWrap">
+    <textarea id="input" rows="1" placeholder="@ 添加上下文，/ 使用命令" enterkeyhint="send"></textarea>
+    <!-- 清空输入框：贴在输入框内右边缘的小图标按钮，只在有内容时出现，点它不会触发发送 -->
+    <button id="clearBtn" type="button" title="清空输入框" aria-label="清空输入框">×</button>
+  </div>
   <div id="composerBar">
     <div class="cb-left">
       <button class="cb-btn" id="btnPlus" title="添加附件/引用" style="font-size:16px">＋</button>
@@ -3026,8 +3044,6 @@
       <!-- 语音输入：只有 Native 客户端显示（网页与大屏/QAM 不加），
            点击开始/停止录音，识别结果填进输入框不自动发送 -->
       <button class="cb-btn" id="micBtn" title="语音输入（桌面客户端，按住 R1 说话）">语音</button>
-      <!-- 清空输入框：只在有内容时出现，点它不会触发发送 -->
-      <button class="cb-btn" id="clearBtn" type="button" title="清空输入框">清空</button>
     </div>
   </div>
 </div>
