@@ -1666,6 +1666,25 @@
   #qqGuestCount { flex: 0 0 auto; }
   /* Onebot 高级设置分组：细分割线 + 两列数字项，窄视口收成一列 */
   .qq-group { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--ri-line); }
+  /* 收图 / 存图：常驻展开，字段之间用细线 + 留白分开，标题加粗不再挤成一片 */
+  .qq-image-group .field {
+    margin: 0; padding: 14px 0;
+    border-top: 1px solid var(--line);
+  }
+  .qq-image-group .field:first-child { border-top: 0; padding-top: 2px; }
+  .qq-image-group .field label {
+    font-weight: 600; color: var(--text); font-size: 13px; margin-bottom: 8px;
+  }
+  .qq-group-title .qq-key {
+    margin-left: 6px; font-size: 11px; font-weight: 400; opacity: .6;
+  }
+  .qq-image-notes {
+    padding-top: 12px; border-top: 1px solid var(--line);
+  }
+  .qq-image-notes .field-hint {
+    margin-top: 0; font-size: 11.5px; line-height: 1.6;
+  }
+  .qq-image-notes .field-hint + .field-hint { margin-top: 8px; }
   .qq-group-title {
     font-size: 12px; font-weight: 600; letter-spacing: .3px;
     opacity: .8; margin-bottom: 10px;
@@ -3479,37 +3498,43 @@
                 转码失败、NapCat 拒收时一律自动改发文字，不会既没语音也没文字。
               </div>
             </div>
-            <div class="field field-row">
-              <label style="margin:0">收图 / 存图（allow_image）</label>
-              <label class="switch">
-                <input id="cfgQqAllowImage" type="checkbox">
-                <span class="slider"></span>
-              </label>
-            </div>
-            <div class="field">
-              <label>图片大小上限（MB，max_image_mb）</label>
-              <input id="cfgQqMaxImage" type="number" min="0.1" max="50" step="0.1"
-                     value="8" spellcheck="false">
-              <label style="margin-top:10px">聊天附图有效期（分钟，image_recent_minutes）</label>
-              <input id="cfgQqImageRecent" type="number" min="0" max="60" step="0.5"
-                     value="2" spellcheck="false">
-              <div class="field-hint">
-                管理员最近发过的图会作为下一轮的视觉输入；普通群成员发的图不解析、不落盘。
+            <div class="qq-group qq-image-group">
+              <div class="qq-group-head">
+                <div class="qq-group-title">收图 / 存图<span class="qq-key">allow_image</span></div>
+                <label class="switch" title="收图 / 存图">
+                  <input id="cfgQqAllowImage" type="checkbox">
+                  <span class="slider"></span>
+                </label>
               </div>
-            </div>
-            <div class="field">
-              <label>图片保存目录（image_save_dir，留空 = 数据根下的 meidobot/images）</label>
-              <input id="cfgQqImageDir" type="text"
-                     placeholder="留空则用默认归档目录" autocomplete="off" spellcheck="false">
-            </div>
-            <div class="field">
-              <label>文本存档文件（text_log_path，留空 = 数据根下的 meidobot/text_log.txt）</label>
-              <input id="cfgQqTextLog" type="text"
-                     placeholder="留空则用默认归档目录" autocomplete="off" spellcheck="false">
-              <div class="field-hint">
-                QQ 归档放在数据根下的 <b>userdata/meidobot/</b>（图片、inbox_index.jsonl、text_log.txt）。
-                <b>卸载不删</b>；数据根不可写时直接报错，不会换到别的目录。
-                这里填路径可覆盖默认位置。
+              <div class="field">
+                <label>图片大小上限（MB，max_image_mb）</label>
+                <input id="cfgQqMaxImage" type="number" min="0.1" max="50" step="0.1"
+                       value="8" spellcheck="false">
+              </div>
+              <div class="field">
+                <label>聊天附图有效期（分钟，image_recent_minutes）</label>
+                <input id="cfgQqImageRecent" type="number" min="0" max="60" step="0.5"
+                       value="2" spellcheck="false">
+              </div>
+              <div class="field">
+                <label>图片保存目录（image_save_dir，留空 = 数据根下的 meidobot/images）</label>
+                <input id="cfgQqImageDir" type="text"
+                       placeholder="留空则用默认归档目录" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="field">
+                <label>文本存档文件（text_log_path，留空 = 数据根下的 meidobot/text_log.txt）</label>
+                <input id="cfgQqTextLog" type="text"
+                       placeholder="留空则用默认归档目录" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="qq-image-notes">
+                <div class="field-hint">
+                  管理员最近发过的图会作为下一轮的视觉输入；普通群成员发的图不解析、不落盘。
+                </div>
+                <div class="field-hint">
+                  QQ 归档放在数据根下的 <b>userdata/meidobot/</b>（图片、inbox_index.jsonl、text_log.txt）。
+                  <b>卸载不删</b>；数据根不可写时直接报错，不会换到别的目录。
+                  这里填路径可覆盖默认位置。
+                </div>
               </div>
             </div>
             <div class="field field-row">
