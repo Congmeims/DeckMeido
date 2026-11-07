@@ -22,7 +22,8 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QLibraryInfo, QObject, Qt, QThread, QTimer, QTranslator, QUrl, Signal
 from PySide6.QtGui import QAction, QFont, QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
+from PySide6.QtWidgets import (QApplication, QLabel, QMenu, QMessageBox, QSystemTrayIcon,
+                               QVBoxLayout, QWidget)
 
 # 安装目录：默认取本文件的两级上层（client/main.py → 仓库根），
 # 这样装到任意路径都能用；DECKMEIDO_DIR 可显式覆盖
@@ -628,6 +629,102 @@ class R2Trigger(QObject):
         self._down = False
 
 
+# 重启预算：等旧核心退出最多 8 秒（_stop_for_restart 的 80×0.1），
+# 再给客户端退出/拉起留 1 秒，倒计时提示按 9 秒走。
+RESTART_BUDGET_SEC = 9
+
+
+class RestartToast(QWidget):
+    """重启倒计时提示（无边框、置顶）
+
+    Qt 托盘气泡不能显示剩余秒数、也不会按预算自动消失，所以自己画一块：
+    - 成功：倒计时到点前就切换成「重启成功」，0.9 秒后关闭，随后退出进程；
+    - 超时/失败：停掉倒计时并显示「仍在重启」或失败原因，不再假装成功。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(
+            "RestartToast { background: rgba(16,18,26,0.96);"
+            " border: 1px solid rgba(120,200,255,0.85); border-radius: 12px; }"
+            "QLabel { color: #eaf4ff; font-size: 13px; }")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 14, 18, 14)
+        self._label = QLabel("", self)
+        self._label.setWordWrap(True)
+        lay.addWidget(self._label)
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._tick)
+        self._mode = "idle"
+        self._left = 0
+        self._fail_text = ""
+
+    def _place(self) -> None:
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        geo = screen.availableGeometry()
+        self.adjustSize()
+        self.move(geo.center().x() - self.width() // 2,
+                  geo.top() + max(24, geo.height() // 5))
+
+    def _refresh(self) -> None:
+        if self._mode == "running":
+            text = f"正在重启客户端与核心…\n剩余 {self._left} 秒，完成后自动关闭"
+            self._label.setStyleSheet("")
+        elif self._mode == "overdue":
+            text = "仍在重启客户端与核心…\n已超过预计时间，正在等待结果，请稍候"
+            self._label.setStyleSheet("")
+        elif self._mode == "success":
+            text = "重启成功，正在拉起新客户端…"
+            self._label.setStyleSheet("")
+        else:
+            text = self._fail_text or "重启失败"
+            self._label.setStyleSheet("color: #ff8f86;")
+        self._label.setText(text)
+        self._place()
+
+    def _tick(self) -> None:
+        if self._mode != "running":
+            return
+        self._left -= 1
+        if self._left <= 0:
+            # 到达预算还没结果：停下来等人看，不自动消失伪装成功
+            self._mode = "overdue"
+            self._timer.stop()
+        self._refresh()
+
+    def start(self, budget: int = RESTART_BUDGET_SEC) -> None:
+        self._mode = "running"
+        self._left = max(1, int(budget))
+        self._refresh()
+        self.show()
+        self.raise_()
+        self._timer.start()
+
+    def finish_success(self) -> None:
+        self._mode = "success"
+        self._timer.stop()
+        self._refresh()
+        self.show()
+        QTimer.singleShot(900, self.close)
+
+    def finish_failure(self, message: str) -> None:
+        self._mode = "failure"
+        self._timer.stop()
+        self._fail_text = "重启失败：" + str(message)
+        self._refresh()
+        self.show()
+        self.raise_()
+        # 失败结果要看得见：独立停留时间，与成功倒计时无关
+        QTimer.singleShot(12000, self.close)
+
+
 def main() -> int:
     _enable_crash_log()
     _dev_log("client.start", argv=sys.argv, cwd=os.getcwd(), pid=os.getpid(),
@@ -851,6 +948,9 @@ def main() -> int:
         finally:
             restart_state["running"] = False
 
+    restart_toast = RestartToast()
+    app.aboutToQuit.connect(restart_toast.close)
+
     def report_restart(result) -> None:
         global _STARTED_BACKEND
         if isinstance(result, Exception):
@@ -908,27 +1008,30 @@ def main() -> int:
         act_restart.setText("重启")
         # 用户在这几秒里又点了「退出」：以退出为准，不再拉起任何新实例
         if _quitting:
+            restart_toast.close()
             return
         if isinstance(result, Exception):
             act_restart.setEnabled(True)
-            tray.showMessage("DeckMeido", f"重启失败：{result}", icon, 5000)
+            restart_toast.finish_failure(str(result))
             return
         try:
             _schedule_relaunch()
         except Exception as exc:
             act_restart.setEnabled(True)
-            tray.showMessage("DeckMeido", f"重启失败：{exc}", icon, 5000)
+            restart_toast.finish_failure(str(exc))
             return
         _restart_requested = True
-        tray.showMessage("DeckMeido", "正在重启客户端与核心…", icon, 2500)
-        # 留一点时间给托盘提示，再走正常退出路径（on_quit 会收尾资源）
-        QTimer.singleShot(400, app.quit)
+        # 成功路径：倒计时提示转成结果并自动关闭，再走正常退出流程
+        restart_toast.finish_success()
+        QTimer.singleShot(1100, app.quit)
 
     def restart_client() -> None:
         if restart_state["running"] or _quitting:
             return
         act_restart.setEnabled(False)
         act_restart.setText("重启中…")
+        # 倒计时从真正开始重启时起算：预算 = 等核心退出 8s + 退出/拉起 1s
+        restart_toast.start(RESTART_BUDGET_SEC)
         run_worker(_restart_client_work, report_restart_client, app)
 
     # 托盘菜单顺序固定：终止 → 显示 → 重启 → 退出
