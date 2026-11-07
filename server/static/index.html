@@ -414,6 +414,24 @@
   .msg.user pre code { background: none; color: #fff; }
   .msg.user h3, .msg.user h4, .msg.user a { color: #fff; }
   .msg h3, .msg h4 { margin: 8px 0 4px; color: var(--brand); }
+  /* markdown 表格：气泡内自适应；列太多/单元格太长时整表横向滚动，不撑破气泡 */
+  .md-table {
+    max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    margin: 6px 0; white-space: normal; border-radius: 8px;
+  }
+  .md-table table { border-collapse: collapse; width: 100%; font-size: 14px; line-height: 1.5; }
+  .md-table th, .md-table td {
+    border: 1px solid var(--line); padding: 5px 8px;
+    text-align: left; vertical-align: top;
+    /* 中文/全角字符按正常宽度换行，不把表格撑成一条长线 */
+    white-space: normal; word-break: break-word; overflow-wrap: anywhere;
+  }
+  .md-table th { background: rgba(127,127,127,.16); font-weight: 600; }
+  .md-table td code { white-space: nowrap; }
+  @media (max-width: 380px) {
+    .md-table table { font-size: 13px; }
+    .md-table th, .md-table td { padding: 4px 6px; }
+  }
   .msg ul { padding-left: 20px; margin: 4px 0; }
   .msg a { color: var(--brand); }
 
@@ -3966,21 +3984,156 @@
     host.appendChild(a);
   }
 
-  // 轻量 markdown 渲染（代码块/行内码/加粗/标题/列表/链接）
+  // 轻量 markdown 渲染（代码块/行内码/加粗/标题/列表/链接/表格）
+  // 代码块与表格先抽成占位符，最后统一还原：这样代码里的 | 和 tab 不会被当成表格，
+  // 表格里的粗体/链接/行内代码又能照常渲染
+  var MD_HOLD_TEST = /\u0001[a-z]\d+\u0001/;
+
+  function mdHold(stash, kind, html) {
+    stash.push(html);
+    return '\u0001' + kind + (stash.length - 1) + '\u0001';
+  }
+
+  // 按「未被转义的 |」切单元格；首尾竖线可有可无，行尾缺 | 也认
+  function mdSplitCells(line) {
+    var s = String(line || '').trim();
+    if (s.charAt(0) === '|') s = s.slice(1);
+    if (s.slice(-1) === '|' && s.slice(-2, -1) !== '\\') s = s.slice(0, -1);
+    var cells = [], cur = '';
+    for (var i = 0; i < s.length; i++) {
+      var ch = s.charAt(i);
+      if (ch === '\\' && s.charAt(i + 1) === '|') { cur += '|'; i++; continue; }
+      if (ch === '|') { cells.push(cur); cur = ''; continue; }
+      cur += ch;
+    }
+    cells.push(cur);
+    return cells.map(function (c) { return c.trim(); });
+  }
+
+  // 分隔行：||---、| --- |、:---: 都算；每个单元格只能是 - 加可选冒号。
+  // 没有竖线的 --- 不当表格（那更可能是正文里的分隔线），宁可不渲染也不硬套
+  function mdSepAligns(line) {
+    var s = String(line || '').trim();
+    if (!s || s.indexOf('|') < 0) return null;
+    var cells = mdSplitCells(s);
+    if (!cells.length) return null;
+    var aligns = [];
+    for (var i = 0; i < cells.length; i++) {
+      var t = cells[i].replace(/\s+/g, '');
+      if (!/^:?-{1,}:?$/.test(t)) return null;
+      var left = t.charAt(0) === ':';
+      var right = t.charAt(t.length - 1) === ':';
+      aligns.push(left && right ? 'center' : (right ? 'right' : (left ? 'left' : '')));
+    }
+    return aligns;
+  }
+
+  function mdCellHtml(text, align, tag) {
+    return '<' + tag + (align ? ' style="text-align:' + align + '"' : '') + '>' +
+           (text || '') + '</' + tag + '>';
+  }
+
+  function mdTableHtml(header, aligns, rows) {
+    var cols = header.length;
+    var h = '<div class="md-table"><table><thead><tr>';
+    for (var i = 0; i < cols; i++) h += mdCellHtml(header[i], aligns[i], 'th');
+    h += '</tr></thead><tbody>';
+    rows.forEach(function (r) {
+      h += '<tr>';
+      for (var j = 0; j < cols; j++) h += mdCellHtml(r[j], aligns[j], 'td');
+      h += '</tr>';
+    });
+    return h + '</tbody></table></div>';
+  }
+
+  // 数据行与表头列数相差 1 也接受：少的补空，多的并进最后一格，不丢内容
+  function mdFitRow(row, cols) {
+    if (row.length > cols) {
+      var keep = row.slice(0, cols - 1);
+      keep.push(row.slice(cols - 1).join(' | '));
+      return keep;
+    }
+    while (row.length < cols) row.push('');
+    return row;
+  }
+
+  // 两种表格来源：
+  //  1) 竖线表格：表头行 + 分隔行 + 连续数据行（至少 1 行，分隔行失败就保持原文）
+  //  2) 制表符表格：连续 ≥2 行、每行 ≥2 个 tab、列数一致；孤立 tab 不动
+  function mdTables(s, stash) {
+    var lines = s.split('\n');
+    var out = [];
+    function hasPipe(line) { return line.indexOf('|') >= 0; }
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (hasPipe(line) && i + 1 < lines.length) {
+        var aligns = mdSepAligns(lines[i + 1]);
+        var header = mdSplitCells(line);
+        if (aligns && header.length && Math.abs(aligns.length - header.length) <= 1
+            && header.join('').trim()) {
+          var cols = header.length;
+          var rowAligns = [];
+          for (var a = 0; a < cols; a++) rowAligns.push(aligns[a] || '');
+          var rows = [];
+          var j = i + 2;
+          while (j < lines.length) {
+            var rl = lines[j];
+            if (!rl.trim() || !hasPipe(rl) || mdSepAligns(rl)) break;
+            rows.push(mdFitRow(mdSplitCells(rl), cols));
+            j++;
+          }
+          out.push(mdHold(stash, 't', mdTableHtml(header, rowAligns, rows)));
+          i = j - 1;
+          continue;
+        }
+      }
+      if (line.indexOf('\t') >= 0 && !hasPipe(line)) {
+        var first = line.split('\t').map(function (c) { return c.trim(); });
+        if (first.length >= 3 && first.join('').trim()) {
+          var tabRows = [first];
+          var k = i + 1;
+          while (k < lines.length && lines[k].indexOf('\t') >= 0 && !hasPipe(lines[k])) {
+            var more = lines[k].split('\t').map(function (c) { return c.trim(); });
+            if (more.length !== first.length) break;
+            tabRows.push(more);
+            k++;
+          }
+          if (tabRows.length >= 2) {
+            out.push(mdHold(stash, 't', mdTableHtml(first, [], tabRows.slice(1))));
+            i = k - 1;
+            continue;
+          }
+        }
+      }
+      out.push(line);
+    }
+    return out.join('\n');
+  }
+
+  // 占位符可能嵌套（表格里还有行内代码），要多还原几轮
+  function mdRestore(s, stash) {
+    for (var pass = 0; pass < 6; pass++) {
+      if (!MD_HOLD_TEST.test(s)) break;
+      s = s.replace(/\u0001[a-z](\d+)\u0001/g, function (m, idx) {
+        return stash[Number(idx)] != null ? stash[Number(idx)] : '';
+      });
+    }
+    return s;
+  }
+
   function renderMd(t) {
     var s = escapeHtml(t);
+    var stash = [];
+    // 1) 围栏代码块优先抽出：里面的 | 与 tab 不参与表格识别
     s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, function (m, l, c) {
-      return '<pre><code>' + c.replace(/\n$/, '') + '</code></pre>';
+      return mdHold(stash, 'c', '<pre><code>' + c.replace(/\n$/, '') + '</code></pre>');
     });
-    s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+    // 2) 行内代码也抽出：里面的 | 不触发分列，还能原样进表格单元格
+    s = s.replace(/`([^`\n]+)`/g, function (m, c) {
+      return mdHold(stash, 'c', '<code>' + c + '</code>');
+    });
+    // 3) 单元格里允许粗体 / 链接 / 文件卡片：先做行内替换，再切表格
     s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
-    s = s.replace(/^#{1,4}\s+(.+)$/gm, '<h4>$1</h4>');
-    s = s.replace(/(^|\n)((?:\s*[-*] .+(?:\n|$))+)/g, function (m, p, block) {
-      var items = block.trim().split('\n').map(function (l) {
-        return '<li>' + l.replace(/^\s*[-*] /, '') + '</li>';
-      }).join('');
-      return p + '<ul>' + items + '</ul>';
-    });
     s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
     // 工作区里的文件：渲染成下载卡片（必须在普通链接替换之后，否则先被吃掉）
     s = s.replace(/\[([^\]\n]*)\]\((\/files\/[^)\s]+)\)/g, function (m, label, href) {
@@ -3990,12 +4143,26 @@
       // 上传的图在 /uploads/ 下，鉴权由同源 Cookie（已配对设备）完成
       return '<img class="chat-img" alt="' + alt + '" src="' + href + '">';
     });
+    // 4) 表格（此时代码块已经抽走，不会被误判）
+    s = mdTables(s, stash);
+    // 5) 标题与列表
+    s = s.replace(/^#{1,4}\s+(.+)$/gm, '<h4>$1</h4>');
+    s = s.replace(/(^|\n)((?:\s*[-*] .+(?:\n|$))+)/g, function (m, p, block) {
+      var items = block.trim().split('\n').map(function (l) {
+        return '<li>' + l.replace(/^\s*[-*] /, '') + '</li>';
+      }).join('');
+      return p + '<ul>' + items + '</ul>';
+    });
+    // 6) 换行；表格是块级元素，前后的 <br> 去掉，免得白空一整行
     s = s.replace(/\n{2,}/g, '<br><br>').replace(/\n/g, '<br>');
+    s = s.replace(/<br>(\u0001t\d+\u0001)/g, '$1')
+         .replace(/(\u0001t\d+\u0001)<br>/g, '$1');
     // 行首缩进用不换行空格占位，避免连续半角空格被浏览器折叠/当作换行
     s = s.replace(/(^|<br>)([ \t]+)/g, function (m, pre, sp) {
       return pre + new Array(sp.length + 1).join('&nbsp;');
     });
-    return s;
+    // 7) 还原代码块 / 行内代码 / 表格
+    return mdRestore(s, stash);
   }
 
   // 原生客户端标记：URL 带 native=1 时由 Deck 桌面版打开，图片等交互走系统工具。
