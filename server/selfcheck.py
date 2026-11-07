@@ -25,6 +25,7 @@ import time
 import urllib.parse
 import urllib.request
 import zipfile
+from pathlib import Path
 
 from . import depcheck, tts as tts_mod
 
@@ -383,7 +384,6 @@ def _run_uninstall(component: str) -> None:
             low = (out or "").lower()
             if rc != 0 and "not loaded" not in low and "not found" not in low:
                 raise RuntimeError(f"停用失败：{out.splitlines()[-1][:80] if out else '无输出'}")
-        invalidate()
         _set(component, "done", 100.0, "已卸载，可在本页重新安装", state="done")
     except Exception as exc:
         _set(component, "error", 0.0, "卸载失败", state="error",

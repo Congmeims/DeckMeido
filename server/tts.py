@@ -1153,6 +1153,9 @@ class TTS:
         # 默认 sink 的活动端口可能不可用；换一个可用 sink 播（只读探测，不改系统设置）
         sink = await asyncio.to_thread(self._pick_sink_cached)
         args, env = self._player_args(player, sink)
+        # 三个播放器（pw-play / paplay / aplay）都要把音频文件作为位置参数传进去，
+        # 少了它只会打印用法后退出，piper 这一路会被误判成"播放器失败"而降级
+        args = [*args, str(wav)]
         devlog.log("tts.play", player=os.path.basename(player),
                    sink=sink or "default")
         proc = await asyncio.create_subprocess_exec(
