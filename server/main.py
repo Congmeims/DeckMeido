@@ -3479,8 +3479,9 @@ def _norm_base_url(url: str) -> str:
 
     地址原样保存，不擅自补 /v1：DeepSeek 官方两种写法都认，OpenAI 必须带 /v1，
     本地推理服务多半不能带 —— 统一改写只会在界面上留下和用户填的不一样的值。
+    误粘的完整端点（.../chat/completions）会被剥掉，避免拼成双重后缀后 404。
     """
-    return (url or "").strip().rstrip("/")
+    return apicfg.norm_base(url)
 
 
 async def _pick_model(base_url: str, api_key: str) -> str:
@@ -6551,7 +6552,12 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     if p:
                         event["path"] = p
                         event["is_dir"] = os.path.isdir(p)
+                # 全盘扫描类命令执行前就把「可能较久」说出来，别让人以为卡住了
+                slow_hint = (tools.slow_scan_hint(str(args.get("command") or ""))
+                             if name == "run_command" else "")
                 activity = f"正在{label}：{summary}" if summary else f"正在{label}"
+                if slow_hint:
+                    activity += f"（{slow_hint}）"
                 # 工具卡片要插在正文后面：先把手头攒的 delta 推出去，
                 # 否则这批字会晚于工具卡片到达，前端顺序就是乱的
                 flush_delta_now(turn_sid)
@@ -6564,6 +6570,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     await manager.broadcast({"type": "term_start",
                                              "command": str(args.get("command")),
                                              "reason": str(args.get("reason") or ""),
+                                             "slow": slow_hint,
                                              "cwd": (claim or {}).get("cwd", ""),
                                              "track": bool(claim and claim.get("command") == args["command"]),
                                              # 面板记下推送时刻，用来对齐轮询拿到的 started：

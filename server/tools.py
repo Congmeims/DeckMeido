@@ -1519,10 +1519,71 @@ def _has_bounded_child(pid: int | None) -> bool:
     return False
 
 
+# 全盘/大范围扫描类命令：会持续刷大量 IO、经常跑不完，用户看到的只有「执行中」。
+# 给这类命令一条更短的默认预算，并把「可能较久」的原因带到界面上。
+SLOW_SCAN_TIMEOUT = 30
+_SLOW_SCAN_PROGRAMS = {
+    "find", "du", "grep", "egrep", "fgrep", "rg", "fd", "fdfind",
+    "tree", "ncdu", "locate", "clamscan",
+}
+_SLOW_SCAN_ROOTS = {"/", "/home", "/home/deck", "/usr", "/var", "/etc", "/opt",
+                    "~", "$HOME", "${HOME}"}
+# find/du/tree 这类默认就会递归；grep 必须显式带 -r/-R 才算
+_SLOW_SCAN_RECURSIVE = {"find", "du", "tree", "ncdu", "locate", "clamscan",
+                        "rg", "fd", "fdfind"}
+
+
+def slow_scan_hint(command: str) -> str:
+    """像「全盘/大范围递归扫描」时返回给用户看的原因，否则返回空串
+
+    只看每条子命令的首个程序（cd/赋值/sudo 这类包装先剥掉），再要求目标
+    落在根目录级路径上。`find ~/Downloads` 这种有范围限制的写法不算。
+    """
+    for seg in re.split(r"[;|&]+", command or ""):
+        words = seg.strip().split()
+        while words and (words[0] in ("sudo", "env", "nohup", "nice", "time")
+                         or re.match(r"^[A-Za-z_]\w*=", words[0])):
+            words = words[1:]
+        if not words:
+            continue
+        prog = os.path.basename(words[0])
+        if prog not in _SLOW_SCAN_PROGRAMS:
+            continue
+        rest = words[1:]
+        recursive = prog in _SLOW_SCAN_RECURSIVE or any(
+            w.startswith("-") and any(ch in w for ch in "rR") for w in rest)
+        if not recursive:
+            continue
+        for raw in rest:
+            if raw.startswith("-"):
+                continue
+            token = raw.strip("'\"").rstrip("/") or "/"
+            if token in _SLOW_SCAN_ROOTS:
+                return "全盘/大范围递归扫描，可能较久"
+            # /var/log、/usr/lib 这类系统根目录的下一级同样是大范围扫描
+            parts = [p for p in token.split("/") if p]
+            if len(parts) == 2 and ("/" + parts[0]) in _SLOW_SCAN_ROOTS:
+                return "全盘/大范围递归扫描，可能较久"
+    return ""
+
+
+def command_budget(command: str, timeout: int | None) -> tuple[int, str]:
+    """返回（实际超时秒数, 慢命令原因）
+
+    显式要求更长时间（timeout > 60）时尊重调用方：用户可以主动延长；
+    默认预算内则压到 SLOW_SCAN_TIMEOUT，避免一直读秒。
+    """
+    budget = max(1, min(int(timeout or 60), 300))
+    hint = slow_scan_hint(command)
+    if hint and budget <= 60:
+        budget = min(budget, SLOW_SCAN_TIMEOUT)
+    return budget, hint
+
+
 async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin: str = "",
                        detach: bool = False) -> str:
     global CURRENT_CMD
-    timeout = max(1, min(int(timeout or 60), 300))
+    timeout, slow_hint = command_budget(command, timeout)
     env = _command_env()
     _fix_display_env(env)
     _log_interpreter(env)
@@ -1640,6 +1701,14 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
                 out2 = await _read_rest(proc, max(0.5, timeout - launch_wait))
                 out = out + out2
     except asyncio.TimeoutError:
+        # 全盘扫描不按「常驻程序」放后台：先停掉，并说明是按短超时终止的，
+        # 否则 find / 会一直跑，用户看到的只有不停读秒
+        if slow_hint:
+            await _kill_tree(proc)
+            return (f"命令超时（{timeout}s），已按全盘/大范围扫描的短超时终止。\n"
+                    f"这条命令可能扫很久（{slow_hint}），先停下以免一直卡住。\n"
+                    "需要继续可以让我延长超时（例如 timeout=180），"
+                    "或改成带范围限制的写法（例如 find ~/Documents -maxdepth 3）。")
         # 超时不等于命令出错。还活着且撑满整个超时的，基本都是常驻程序。
         alive = proc.returncode is None
         if alive:
