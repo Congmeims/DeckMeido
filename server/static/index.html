@@ -1434,11 +1434,45 @@
     scrollbar-width: thin;
   }
   #ttsCredit .tts-credit-line { white-space: nowrap; line-height: 1.65; }
-  /* 语音回复卡的状态行：空着的时候不要占位。上一行的 field margin、空行的
-     min-height/margin 叠加，会在「发音人」说明和模型状态之间空出一大段 */
+  /* ---------- 语音回复卡：标题+开关 / 发音人+状态+试听 / 合并状态区 ---------- */
+  .tts-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  .tts-head .card-title { margin: 0; }
+  /* 发音人一行：窄屏放不下时「状态+试听」整体换到下一行右对齐 */
+  .tts-row2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .tts-label { flex: 0 0 auto; font-size: 13px; color: var(--muted); }
+  .tts-row2 .speaker-row { flex: 1 1 160px; min-width: 118px; }
+  /* 两个发音人按钮收矮一点：原先 min-height 42px 比旁边的试听高出一截 */
+  .tts-row2 .speaker-btn { min-height: 32px; padding: 0 12px; font-size: 12.5px; }
+  .tts-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+  .tts-preview { min-height: 32px; padding: 0 12px; font-size: 12.5px; }
+  /* 模型状态胶囊：已就绪绿色、未就绪黄色（可点下载）、下载中蓝色（可点取消） */
+  .tts-pill {
+    flex: none; padding: 0 10px; min-height: 24px; border-radius: 999px;
+    border: 1px solid var(--line); background: transparent; color: var(--muted);
+    font-size: 11.5px; line-height: 22px; white-space: nowrap; cursor: default;
+  }
+  .tts-pill.ready {
+    color: #2ecc71; border-color: rgba(46,204,113,.5); background: rgba(46,204,113,.12);
+  }
+  .tts-pill.missing {
+    color: #e0a33a; border-color: rgba(224,163,58,.5); background: rgba(224,163,58,.1); cursor: pointer;
+  }
+  .tts-pill.busy {
+    color: #6fc3ff; border-color: rgba(26,159,255,.5); background: rgba(26,159,255,.12); cursor: pointer;
+  }
+  .tts-pill.off { opacity: .65; }
+  .tts-pill:disabled { cursor: default; }
+  /* 合并后的状态区：说明 + 模型状态/进度，空行不占位 */
+  .tts-status { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
+  .tts-status .tts-note { font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .tts-model-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  /* 路径按中间省略显示，完整值放 title；窄屏也不会把卡片撑开 */
+  .tts-model-text {
+    flex: 1; min-width: 0; font-size: 12px; color: var(--muted); line-height: 1.5;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .tts-bytes { flex: 0 0 auto; margin-top: 0; white-space: nowrap; }
   #ttsEngineHint:empty, #ttsModelHint:empty { display: none; }
-  /* 「已就绪」带完整模型路径，长串没有空格；窄屏按任意位置折行，别撑宽卡片 */
-  #ttsModelHint { overflow-wrap: anywhere; }
   /* 设置页里的下拉框：和输入框同一套外观，别再各写一份内联样式 */
   .cfg-select {
     width: 100%; padding: 12px 14px;
@@ -2953,28 +2987,31 @@
             </div>
           </div>
           <div class="card">
-            <div class="card-title">语音回复</div>
-            <div class="field field-row">
-              <label style="margin:0">回复时用语音播报</label>
-              <label class="switch">
+            <div class="tts-head">
+              <div class="card-title">语音回复</div>
+              <label class="switch" title="回复时用语音播报">
                 <input id="cfgTts" type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
-            <div class="field">
-              <label>发音人</label>
+            <div class="tts-row2">
+              <label class="tts-label">发音人</label>
               <div class="speaker-row" id="ttsSpeakerRow">
                 <button class="mini-btn speaker-btn" type="button" data-speaker="robot">机器人</button>
                 <button class="mini-btn speaker-btn" type="button" data-speaker="maid">月读酱</button>
               </div>
-              <div class="field-hint">机器人：Deck 自带语音；月读酱：つくよみちゃん（本地模型）。</div>
+              <div class="tts-actions">
+                <button id="ttsPill" class="tts-pill" type="button" disabled>未就绪</button>
+                <button id="ttsPreview" class="mini-btn tts-preview" type="button">试听</button>
+              </div>
             </div>
-            <div class="field-hint" id="ttsEngineHint"></div>
-            <div class="field-hint" id="ttsModelHint"></div>
-            <div class="mem-foot">
-              <span class="field-hint" id="ttsDownloadHint"></span>
-              <button id="ttsDownload" class="mini-btn" type="button">下载模型</button>
-              <button id="ttsPreview" class="mini-btn" type="button">试听</button>
+            <div class="tts-status">
+              <div class="tts-note">机器人：Deck 自带语音；月读酱：つくよみちゃん（本地模型）。</div>
+              <div class="tts-model-line">
+                <span class="tts-model-text" id="ttsModelHint"></span>
+                <span class="field-hint tts-bytes" id="ttsDownloadHint"></span>
+              </div>
+              <div class="field-hint" id="ttsEngineHint"></div>
             </div>
             <!-- つくよみちゃんコーパス利用規約第③类（音声つき会話AIソフト）要求在使用者
                  能看到的位置署名。下面两行照抄官方模板与模型卡，不要改写：
@@ -8808,7 +8845,7 @@
   var ttsEngineHint = document.getElementById('ttsEngineHint');
   var ttsModelHint = document.getElementById('ttsModelHint');
   var ttsDownloadHint = document.getElementById('ttsDownloadHint');
-  var ttsDownload = document.getElementById('ttsDownload');
+  var ttsPill = document.getElementById('ttsPill');
   var ttsPreview = document.getElementById('ttsPreview');
   var ttsAttribution = document.getElementById('ttsAttribution');
   // 素材署名的两行都要整行显示，不允许在句子中间折行：先按可用宽度把字号
@@ -10391,6 +10428,13 @@
     }
   }
 
+  // 长路径中间省略：首尾各留几段，完整值放 title 里随时可看
+  function midEllipsis(text, head, tail) {
+    text = String(text || '');
+    if (text.length <= head + tail + 1) return text;
+    return text.slice(0, head) + '…' + text.slice(-tail);
+  }
+
   function renderTtsState() {
     if (!ttsState) return;
     if (ttsState.attribution && ttsAttribution) {
@@ -10398,31 +10442,45 @@
       if (ttsState.attribution_url) ttsAttribution.href = ttsState.attribution_url;
     }
     var dl = ttsState.download || {};
+    // 胶囊只反映一个真实状态，不要「已下载」和「未就绪」同时出现
     if (ttsState.model) {
-      ttsModelHint.textContent = '月读酱语音模型已就绪：' + (ttsState.model_root || '');
-      ttsDownload.textContent = '已下载';
-      ttsDownload.disabled = true;
+      ttsPill.className = 'tts-pill ready';
+      ttsPill.textContent = '已就绪';
+      ttsPill.disabled = true;
+      ttsPill.title = '月读酱语音模型已就绪';
+      var root = ttsState.model_root || '';
+      ttsModelHint.textContent = '模型：' + midEllipsis(root, 18, 22);
+      ttsModelHint.title = root;
       ttsDownloadHint.textContent = ttsState.loaded
         ? '模型已加载到内存' : '首次播报时加载，空闲后自动释放';
     } else if (!ttsState.runtime) {
+      ttsPill.className = 'tts-pill off';
+      ttsPill.textContent = '不可用';
+      ttsPill.disabled = true;
+      ttsPill.title = '本机没装模型运行时';
       ttsModelHint.textContent = '月读酱语音暂不可用（本机没装模型运行时），可先选「机器人」。';
-      ttsDownload.textContent = '下载模型';
-      ttsDownload.disabled = true;
+      ttsModelHint.title = '';
       ttsDownloadHint.textContent = '';
     } else if (dl.state === 'downloading' || dl.phase === 'cancelling') {
-      ttsModelHint.textContent = '正在下载月读酱语音模型：' + (dl.percent || 0).toFixed(1) + '%'
+      ttsPill.className = 'tts-pill busy';
+      ttsPill.textContent = '下载中 ' + (dl.percent || 0).toFixed(0) + '%';
+      ttsPill.disabled = false;
+      ttsPill.title = '点击取消下载';
+      ttsModelHint.textContent = '月读酱语音模型下载中'
         + (dl.file ? '（' + escapeHtml(dl.file) + '）' : '')
         + (dl.source_name ? '　来源：' + escapeHtml(dl.source_name) : '');
-      ttsDownload.textContent = '取消下载';
-      ttsDownload.disabled = false;
+      ttsModelHint.title = '';
       ttsDownloadHint.textContent = dl.done > 0
         ? (dl.done / 1048576).toFixed(1) + ' MB'
           + (dl.total > 0 ? ' / ' + (dl.total / 1048576).toFixed(1) + ' MB' : '')
         : '';
     } else {
+      ttsPill.className = 'tts-pill missing';
+      ttsPill.textContent = '未就绪 · 下载';
+      ttsPill.disabled = false;
+      ttsPill.title = '点击下载月读酱语音模型（约 38MB）';
       ttsModelHint.textContent = ttsState.reason || '月读酱语音模型还没下载（约 38MB，默认走国内镜像）。';
-      ttsDownload.textContent = '下载模型';
-      ttsDownload.disabled = false;
+      ttsModelHint.title = '';
       ttsDownloadHint.textContent = dl.state === 'error'
         ? '下载失败：' + escapeHtml(dl.error || '')
         : dl.state === 'cancelled' ? '已取消下载' : '';
@@ -10479,16 +10537,16 @@
     });
   }
 
-  ttsDownload.addEventListener('click', function () {
+  ttsPill.addEventListener('click', function () {
     var dl = ttsState && ttsState.download;
     var running = dl && (dl.state === 'downloading' || dl.phase === 'cancelling');
     var url = running ? '/api/tts/download/cancel' : '/api/tts/download';
-    ttsDownload.disabled = true;
+    ttsPill.disabled = true;
     fetch(url, { method: 'POST' })
       .then(function (r) { return r.json(); })
       .then(function () { loadTtsStatus(); })
       .catch(function () {
-        ttsDownload.disabled = false;
+        ttsPill.disabled = false;
         ttsDownloadHint.textContent = '下载请求失败，请稍后重试';
       });
   });
