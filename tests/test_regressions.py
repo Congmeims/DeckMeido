@@ -244,5 +244,116 @@ class GameBoundaryTest(unittest.TestCase):
         self.assertEqual(game["source"], "none")
 
 
+class DeletePolicyTest(unittest.TestCase):
+    """删除硬约束：只认本轮明确点名的单个对象，批量/通配/范围/递归一律拒绝"""
+
+    def setUp(self):
+        import json
+        import os
+        from unittest import mock
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"DECKMEIDO_DATA_DIR": self.tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        sd = Path(self.tmp.name) / "sessions"
+        sd.mkdir(parents=True, exist_ok=True)
+        for sid, title in (("old-project", "旧项目"), ("new-project", "新项目")):
+            (sd / f"{sid}.json").write_text(
+                json.dumps({"title": title}, ensure_ascii=False), encoding="utf-8")
+
+    def ctx(self, text: str, sid: str = "new-project") -> policy.TurnContext:
+        return policy.TurnContext(sid=sid, turn_id="t-del", user_text=text,
+                                  client="bigscreen", device="dev1", boot_id="boot-a")
+
+    def deny(self, cmd: str, text: str, sid: str = "new-project") -> policy.PolicyDecision:
+        decision = policy.check("run_command", {"command": cmd}, self.ctx(text, sid))
+        self.assertFalse(decision.allowed, cmd)
+        self.assertEqual(decision.code, "delete_blocked", cmd)
+        return decision
+
+    def test_batch_delete_denied(self):
+        self.deny("rm /home/deck/a.txt /home/deck/b.txt", "把这两个文件都删了")
+        self.deny("curl -X DELETE http://127.0.0.1:18765/api/sessions/old-project "
+                  "http://127.0.0.1:18765/api/sessions/new-project", "把两个会话都删了")
+        self.deny("curl -X DELETE http://127.0.0.1:18765/api/sessions/all", "删掉所有会话")
+
+    def test_wildcard_delete_denied(self):
+        self.deny("rm /home/deck/*.log", "把这些日志都删了")
+        self.deny("curl -X DELETE 'http://127.0.0.1:18765/api/sessions/*'", "删掉所有会话")
+
+    def test_unnamed_session_denied(self):
+        """没点名的会话（这里是旧项目）不能因为「没用的都删了」被顺手删掉"""
+        self.deny("curl -X DELETE http://127.0.0.1:18765/api/sessions/old-project",
+                  "把没用的会话都删了")
+
+    def test_vague_instruction_denied(self):
+        """「清理一下」不是明确删除指令，必须先列清单确认"""
+        self.deny("curl -X DELETE http://127.0.0.1:18765/api/sessions/old-project",
+                  "清理一下会话列表")
+
+    def test_explicit_single_session_allowed(self):
+        for text in ("把「旧项目」这个会话删了",
+                     "删掉 old-project 这个会话"):
+            decision = policy.check(
+                "run_command",
+                {"command": "curl -X DELETE http://127.0.0.1:18765/api/sessions/old-project"},
+                self.ctx(text))
+            self.assertTrue(decision.allowed, text)
+        # 当前会话被明确指代时也放行
+        decision = policy.check(
+            "run_command",
+            {"command": "curl -X DELETE http://127.0.0.1:18765/api/sessions/new-project"},
+            self.ctx("把这个会话删了"))
+        self.assertTrue(decision.allowed)
+
+    def test_explicit_single_file_allowed(self):
+        decision = policy.check(
+            "run_command", {"command": "rm /home/deck/foo.txt"},
+            self.ctx("删掉 /home/deck/foo.txt"))
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.code, "not_power")
+
+    def test_relative_and_escape_path_denied(self):
+        self.deny("rm foo.txt", "删掉 foo.txt")
+        self.deny("rm /home/deck/../etc/passwd", "删掉那个文件")
+
+    def test_recursive_delete_denied(self):
+        self.deny("rm -rf /home/deck/tmp", "删掉临时目录")
+        self.deny("bash -c 'rm -rf /home/deck/tmp'", "删掉临时目录")
+        self.deny("find /home/deck -name '*.tmp' -delete", "清理临时文件")
+        self.deny("rmdir /home/deck/tmp", "删掉空目录")
+
+    def test_non_delete_command_untouched(self):
+        decision = policy.check("run_command", {"command": "ls /home/deck"},
+                                self.ctx("看看家目录有什么"))
+        self.assertTrue(decision.allowed)
+        decision = policy.check("run_command",
+                                {"command": "systemctl restart deckmeido.service"},
+                                self.ctx("把后端日志清一下"))
+        self.assertTrue(decision.allowed)
+
+    def test_blocked_delete_writes_audit_line(self):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            self.deny("rm /home/deck/*.log", "删掉日志")
+        self.assertIn("delete.blocked reason=wildcard", buf.getvalue())
+
+
+class SystemPromptFormatTest(unittest.TestCase):
+    """system.md 是 str.format 模板：正文里的花括号必须写 {{ }}，
+    否则拼系统提示时直接 KeyError，后端起不来（改动提示词时最容易踩）。"""
+
+    def test_system_template_formats(self):
+        from server import prompts
+        text = prompts.system_template().format(
+            name="Meido", traits="t", root="r", home="h",
+            mode_desc="m", vision_note="v")
+        self.assertNotIn("{name}", text)
+        self.assertIn("删除类操作", text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,10 +14,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
+import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+from . import audit, paths
 
 # pending_intent 默认有效期：过期后旧密码 / 旧确认不再构成授权
 INTENT_TTL = 600.0
@@ -252,6 +258,299 @@ def steamosctl_action(cmd: str, depth: int = 0) -> str | None:
         if act:
             return act
     return None
+
+
+# ---------- 删除类操作的硬约束（不能只靠提示词） ----------
+# 模型会在「清一下 / 整理整理 / 相关的也删了」这类模糊指令里自行扩大范围。
+# 这里做真实拦截：只认本轮消息里明确指名的那一个对象；批量、通配、范围、
+# 递归、路径越界一律拒绝，并写一行审计。
+
+_DELETE_TEXT_RE = re.compile(r"删|移除|清除|清掉|delete|remove|erase", re.IGNORECASE)
+_CURRENT_SESS_RE = re.compile(
+    r"当前会话|当前对话|这个会话|这个对话|本会话|本条会话|该会话|这条会话")
+_GENERIC_TITLES = {"会话", "新会话", "对话", "聊天", "未命名会话"}
+_GLOB_CHARS = set("*?[]{}")
+_DELETE_PROGS = {"rm", "unlink", "shred"}
+_SID_BULK_WORDS = {"all", "全部", "所有", "any", "everything"}
+
+
+@dataclass(frozen=True)
+class _DeleteHit:
+    code: str
+    target: str
+    reason: str
+
+
+def _session_paths() -> tuple[str, str]:
+    """会话目录与回收站目录的真实路径；取不到时退回空串（不影响其它规则）"""
+    try:
+        return (os.path.realpath(paths.sessions_dir()),
+                os.path.realpath(paths.trash_dir()))
+    except Exception:
+        return "", ""
+
+
+def _session_title(sid: str) -> str:
+    try:
+        p = paths.sessions_dir() / f"{sid}.json"
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return str(data.get("title") or "").strip()
+    except Exception:
+        return ""
+
+
+def _sid_problem(sid: str) -> str:
+    """sid 必须是单个明确标识；批量、通配、范围、路径字符直接拒绝"""
+    s = str(sid or "").strip().strip("'\"")
+    if not s:
+        return "missing_target"
+    low = s.lower()
+    if low in _SID_BULK_WORDS:
+        return "batch_delete"
+    if any(ch in s for ch in _GLOB_CHARS) or "," in s or ".." in s:
+        return "batch_delete"
+    if any(ch in s for ch in " \t\r\n/\\$`"):
+        return "batch_delete"
+    return ""
+
+
+def _session_named(sid: str, ctx: TurnContext) -> bool:
+    """本轮用户消息里明确点名了这个会话（sid 或标题原样出现）"""
+    text = (ctx.user_text or "").strip()
+    if not text or not _DELETE_TEXT_RE.search(text):
+        return False
+    if sid and sid.lower() in text.lower():
+        return True
+    title = _session_title(sid)
+    if title and title not in _GENERIC_TITLES and len(title) >= 2 and title in text:
+        return True
+    # 用户说「把这个会话删了」：当前会话本身算明确指定
+    return bool(sid and sid == ctx.sid and _CURRENT_SESS_RE.search(text))
+
+
+def _check_session_target(sid: str, ctx: TurnContext) -> _DeleteHit | None:
+    bad = _sid_problem(sid)
+    if bad:
+        return _DeleteHit(bad, sid, "会话删除只接受单个明确的 sid，不接受批量/通配/范围")
+    if not _session_named(sid, ctx):
+        return _DeleteHit("not_explicitly_named", sid,
+                          "用户本轮没有明确点名这个会话，不能删除；先列出清单让用户确认")
+    if sid != ctx.sid:
+        try:
+            if not (paths.sessions_dir() / f"{sid}.json").exists():
+                return _DeleteHit("unknown_target", sid,
+                                  "没有找到这个会话，不要猜 sid；请先确认要删的是哪一条")
+        except Exception:
+            pass
+    return None
+
+
+def _check_file_target(target: str, ctx: TurnContext) -> _DeleteHit | None:
+    t = str(target or "").strip().strip("'\"")
+    if not t:
+        return _DeleteHit("missing_target", "", "没有给出要删除的具体文件")
+    if any(ch in t for ch in _GLOB_CHARS):
+        return _DeleteHit("wildcard", t, "不接受通配符删除；请给出单个明确的绝对路径")
+    if "$" in t or "`" in t or "~" in t:
+        return _DeleteHit("dynamic_path", t, "不接受变量/家目录简写；请给出展开后的绝对路径")
+    if not t.startswith("/"):
+        return _DeleteHit("relative_path", t, "删除文件必须使用绝对路径")
+    parts = Path(t).parts
+    if ".." in parts:
+        return _DeleteHit("path_escape", t, "路径里不能包含 ..，不允许越出目标目录")
+    real = os.path.realpath(t)
+    root, _trash = _session_paths()
+    if root and os.path.dirname(real) == root and real.endswith(".json"):
+        return _check_session_target(Path(real).stem, ctx)
+    if os.path.isdir(t):
+        return _DeleteHit("directory_delete", t, "不接受目录删除；只能删除单个明确文件")
+    return None
+
+
+def _parse_rm(rest: list[str]) -> tuple[bool, list[str]]:
+    recursive = False
+    targets: list[str] = []
+    end_opts = False
+    for a in rest:
+        if end_opts:
+            targets.append(a)
+            continue
+        if a == "--":
+            end_opts = True
+        elif a.startswith("--"):
+            if a in ("--recursive",):
+                recursive = True
+        elif a.startswith("-") and len(a) > 1:
+            if "r" in a or "R" in a:
+                recursive = True
+        else:
+            targets.append(a)
+    return recursive, targets
+
+
+def _check_file_delete(prog: str, rest: list[str], ctx: TurnContext) -> _DeleteHit | None:
+    if prog == "rmdir":
+        t = next((a for a in rest if not a.startswith("-")), "")
+        return _DeleteHit("directory_delete", t, "不接受目录删除（rmdir）")
+    if prog == "unlink":
+        targets = [a for a in rest if not a.startswith("-")]
+        recursive = False
+    elif prog == "shred":
+        # shred 的 -n/-s 后面跟数值，别把数值当成第二个文件
+        targets = []
+        skip = False
+        for a in rest:
+            if skip:
+                skip = False
+                continue
+            if a in ("-n", "--iterations", "-s", "--size"):
+                skip = True
+                continue
+            if a.startswith("-"):
+                continue
+            targets.append(a)
+        recursive = False
+    else:
+        recursive, targets = _parse_rm(rest)
+    if recursive:
+        t = targets[0] if targets else ""
+        return _DeleteHit("recursive_delete", t, "不接受递归删除（rm -r / rm -rf）")
+    if not targets:
+        return None
+    if len(targets) > 1:
+        return _DeleteHit("batch_delete", ", ".join(targets)[:120],
+                          "一次只能删除一个明确对象，不接受批量删除")
+    return _check_file_target(targets[0], ctx)
+
+
+def _check_find_delete(rest: list[str], ctx: TurnContext) -> _DeleteHit | None:
+    if "-delete" in rest:
+        return _DeleteHit("recursive_delete", "find -delete",
+                          "不接受 find -delete 这类递归/批量删除")
+    for flag in ("-exec", "-execdir", "-ok", "-okdir"):
+        if flag in rest:
+            idx = rest.index(flag)
+            if idx + 1 < len(rest):
+                sub = rest[idx + 1].strip("\"'").replace("\\", "").rsplit("/", 1)[-1]
+                if sub in _DELETE_PROGS or sub == "rmdir":
+                    return _DeleteHit("recursive_delete", f"find {flag} {sub}",
+                                      "不接受 find 批量执行删除命令")
+                if sub in _SHELL_PROGS and "-c" in rest[idx + 2:]:
+                    ci = rest.index("-c", idx + 2)
+                    if ci + 1 < len(rest):
+                        hit = _scan_delete(rest[ci + 1], ctx, 1)
+                        if hit:
+                            return hit
+    return None
+
+
+_CURL_VALUE_OPTS = {
+    "-H", "--header", "-d", "--data", "--data-raw", "--data-binary", "-F", "--form",
+    "-u", "--user", "-o", "--output", "-A", "--user-agent", "-e", "--referer",
+    "-b", "--cookie", "-c", "--cookie-jar", "-T", "--upload-file", "-m", "--max-time",
+    "--connect-timeout", "-x", "--proxy", "-w", "--write-out",
+}
+
+
+def _check_curl_session(rest: list[str], ctx: TurnContext) -> _DeleteHit | None:
+    """curl -X DELETE .../api/sessions/<sid>：只允许单个明确 sid"""
+    method = ""
+    urls: list[str] = []
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        ua = a.upper()
+        if ua in ("-X", "--REQUEST") and i + 1 < len(rest):
+            method = rest[i + 1].upper()
+            i += 2
+            continue
+        if ua.startswith("-X") and len(a) > 2:
+            method = a[2:].upper()
+        elif ua.startswith("--REQUEST="):
+            method = a.split("=", 1)[1].upper()
+        elif a in _CURL_VALUE_OPTS:
+            i += 2
+            continue
+        elif not a.startswith("-"):
+            urls.append(a)
+        i += 1
+    if method != "DELETE":
+        return None
+    if not urls:
+        return _DeleteHit("missing_target", "", "会话删除没有给出 sid")
+    sids: list[str] = []
+    for u in urls:
+        path = urlparse(u).path.rstrip("/")
+        if path.endswith("/api/sessions"):
+            return _DeleteHit("batch_delete", u, "会话删除必须带单个明确 sid")
+        m = re.search(r"/api/sessions/([^/]+)$", path)
+        if m:
+            sids.append(unquote(m.group(1)))
+    if not sids:
+        return None
+    if len(sids) > 1:
+        return _DeleteHit("batch_delete", ",".join(sids), "一次只能删一个会话")
+    return _check_session_target(sids[0], ctx)
+
+
+def _scan_delete(cmd: str, ctx: TurnContext, depth: int = 0) -> _DeleteHit | None:
+    if depth > 3:
+        return None
+    for seg in _segments(cmd):
+        toks = _strip_prefixes(_tokens(seg))
+        if not toks:
+            continue
+        prog = toks[0].strip("\"'").replace("\\", "").rsplit("/", 1)[-1]
+        rest = toks[1:]
+        if prog in _SHELL_PROGS and "-c" in rest:
+            idx = rest.index("-c")
+            if idx + 1 < len(rest):
+                hit = _scan_delete(rest[idx + 1], ctx, depth + 1)
+                if hit:
+                    return hit
+            continue
+        if prog == "eval" and rest:
+            hit = _scan_delete(" ".join(rest), ctx, depth + 1)
+            if hit:
+                return hit
+            continue
+        if prog in _DELETE_PROGS or prog == "rmdir":
+            hit = _check_file_delete(prog, rest, ctx)
+        elif prog == "find":
+            hit = _check_find_delete(rest, ctx)
+        elif prog == "curl":
+            hit = _check_curl_session(rest, ctx)
+        elif prog.startswith("python") and "shutil.rmtree" in seg:
+            hit = _DeleteHit("recursive_delete", "shutil.rmtree",
+                             "不接受脚本里的递归删除；请改用单条 rm 明确绝对路径")
+        else:
+            hit = None
+        if hit:
+            return hit
+    return None
+
+
+def _delete_blocked(hit: _DeleteHit) -> PolicyDecision:
+    target = " ".join(str(hit.target or "").split())[:160]
+    try:
+        audit.record("delete", "blocked", "fail", reason=hit.code, detail=target)
+    except Exception:
+        pass
+    print(f"[DeckMeido][policy] delete.blocked reason={hit.code} target={target}",
+          file=sys.stderr)
+    return PolicyDecision(False, code="delete_blocked",
+                          reason=f"{hit.reason}（目标：{target or '未提供'}）")
+
+
+def check_delete(name: str, args: dict, ctx: TurnContext) -> PolicyDecision | None:
+    """删除类工具调用的硬约束入口（不通过则不执行工具）"""
+    if name != "run_command":
+        return None
+    cmd = str((args or {}).get("command") or "")
+    if not cmd:
+        return None
+    hit = _scan_delete(cmd, ctx)
+    return _delete_blocked(hit) if hit else None
 
 
 def risky_action(name: str, args: dict) -> str | None:
@@ -675,6 +974,11 @@ def check(name: str, args: dict, ctx: TurnContext | None = None,
             False, code="readonly", action=risky_action(name, args),
             reason="这个会话只能聊天（QQ 群里的普通成员），不能执行设备操作。",
         )
+    # 删除类操作是硬约束：即使用户点了确认、即使模型很自信，也不允许
+    # 批量/通配/递归/越界，或删除本轮没点名的对象
+    delete_denied = check_delete(name, args, ctx)
+    if delete_denied:
+        return delete_denied
     action = risky_action(name, args)
     if not action:
         return PolicyDecision(True, code="not_power")
