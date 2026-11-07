@@ -3635,15 +3635,15 @@
             </div>
             <div id="sttHint" class="field-hint"></div>
             <div class="field field-row" id="r2PttRow" style="margin-top:2px">
-              <label style="margin:0">R2 按住说话（桌面客户端）</label>
+              <label style="margin:0">R1 按住说话（桌面客户端）</label>
               <label class="switch">
                 <input id="cfgR2Ptt" type="checkbox" checked>
                 <span class="slider"></span>
               </label>
             </div>
             <div class="field-hint" style="margin-top:0">
-              按住右扳机开始录音，松开后把识别文字填入输入框，不自动发送。
-              只在客户端窗口激活且语音输入可用时响应，关掉后 R2 不做任何处理。
+              按住右肩键（R1）开始录音，松开后把识别文字填入输入框，不自动发送。
+              只在客户端窗口激活且语音输入可用时响应，关掉后 R1 不做任何处理。
             </div>
           </div>
 
@@ -9413,7 +9413,7 @@
   var micState = 'idle';          // idle / recording / working
   var micStream = null, micCtx = null, micSrc = null, micProc = null;
   var micChunks = [], micRate = 48000, micTimer = null;
-  // 客户端 R2：按下时麦克风还没拿到就松手，要取消这次录音
+  // 客户端 R1：按下时麦克风还没拿到就松手，要取消这次录音
   var micStartPending = false, micR2Release = false;
 
   function micReset() {
@@ -9509,7 +9509,7 @@
     } finally {
       micBtn.classList.remove('busy');
     }
-    // 按下 R2 后还没拿到麦克风就松手了：直接放弃这一次，不进入录音
+    // 按下 R1 后还没拿到麦克风就松手了：直接放弃这一次，不进入录音
     if (micR2Release) {
       try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
       micStartPending = false; micR2Release = false;
@@ -9580,8 +9580,9 @@
     });
   }
 
-  // 桌面客户端把手柄 R2 转成这两个调用：按住开始、松开结束。
-  // 开关与可用性都在这里判断，客户端只负责读扳机，不做拦截。
+  // 桌面客户端把手柄 R1 转成这两个调用：按住开始、松开结束。
+  // 对外入口名沿用 dmR2，客户端侧无需跟着改名。
+  // 开关与可用性都在这里判断，客户端只负责读肩键，不做拦截。
   window.dmR2 = function (kind) {
     if (!IS_NATIVE || !r2PttEnabled() || !sttReady) return false;
     if (kind === 'start') {
@@ -10012,6 +10013,7 @@
   var cfgChatVoice = document.getElementById('cfgChatVoice');
   var chatVoiceCard = document.getElementById('chatVoiceCard');
   var chatVoiceOn = true;
+  // 存储键沿用旧的 r2 名字：桌面端改读 R1 后，老用户之前设置的开关状态不丢
   var R2_PTT_KEY = 'deckmeido_r2_ptt';
   function r2PttEnabled() {
     if (!chatVoiceOn) return false;
@@ -10026,7 +10028,7 @@
     });
   }
   if (cfgChatVoice) cfgChatVoice.addEventListener('change', syncChatVoiceGate);
-  // R2 只有桌面客户端能拿到（SDL2 读虚拟手柄），网页端不显示这一项
+  // 桌面客户端的 R1 只有 native 能拿到（SDL2 读虚拟手柄），网页端不显示这一项
   if (r2PttRow && !IS_NATIVE) r2PttRow.style.display = 'none';
   if (cfgR2Ptt) {
     cfgR2Ptt.checked = r2PttEnabled();
@@ -10039,7 +10041,7 @@
   var cfgTranslateTemplate = document.getElementById('cfgTranslateTemplate');
   var tplHint = document.getElementById('tplHint');
   var sttHint = document.getElementById('sttHint');
-  // R2 只在语音真正可用时响应：运行时、模型、开关三者都满足才置 true
+  // R1 只在语音真正可用时响应：运行时、模型、开关三者都满足才置 true
   var sttReady = false;
   var tplSave = document.getElementById('tplSave');
   // 默认模板只存后端下发的值，不在前端硬编码；「恢复默认」先把值填回文本框
