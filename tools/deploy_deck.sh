@@ -44,9 +44,10 @@ sudo_remote() {
 }
 
 # ---------- 部署前备份 ----------
-# 每次部署前把当前 server/ client/ 打包一份到 userdata/backups/deploy/，
-# 备份完成后校验归档可读；再按「每类最近 N 份 + 单类总量上限」清理最旧的。
-log "备份现有 server/ client/ 到 $BACKUP_DIR"
+# 每次部署前把 server/ client/ 和用户数据目录一起打包到 userdata/backups/deploy/。
+# 代码与数据分成两类归档（DeckMeido-server-backup-* / DeckMeido-data-backup-*），
+# 数据再大也不会把 server 备份撑大；两类各自按「最近 N 份 + 单类总量上限」清理（见下方保留策略）。
+log "备份现有 server/ client/ 与数据目录到 $BACKUP_DIR"
 TS=$(date +%Y%m%d-%H%M%S)
 BACKUP_TAR="$BACKUP_DIR/DeckMeido-server-backup-$TS.tar.gz"
 ssh "$HOST" "mkdir -p $BACKUP_DIR" || die "创建备份目录失败"
@@ -58,6 +59,19 @@ ssh "$HOST" "cd $REMOTE && tar -czf $BACKUP_TAR $BACKUP_SRC" || die "备份失�
 ssh "$HOST" "tar -tzf $BACKUP_TAR > /dev/null" || die "备份校验失败：归档不可读（$BACKUP_TAR）"
 BACKUP_SIZE=$(ssh "$HOST" "stat -c %s $BACKUP_TAR" || echo 0)
 printf '  %s（%s 字节，归档可读）\n' "$(basename "$BACKUP_TAR")" "$BACKUP_SIZE"
+
+# 数据目录：会话、预设、配置。此前只备份代码，会话被误删时没有任何恢复点。
+# 路径不存在就跳过（全新安装可能还没有 presets/）。
+DATA_TAR="$BACKUP_DIR/DeckMeido-data-backup-$TS.tar.gz"
+DATA_SRC=$(ssh "$HOST" "cd $REMOTE && for p in userdata/sessions userdata/presets userdata/config.toml; do [ -e \"\$p\" ] && printf '%s ' \"\$p\"; done" || true)
+if [ -n "$DATA_SRC" ]; then
+  ssh "$HOST" "cd $REMOTE && tar -czf $DATA_TAR $DATA_SRC" || die "数据目录备份失败"
+  ssh "$HOST" "tar -tzf $DATA_TAR > /dev/null" || die "数据目录备份校验失败：归档不可读（$DATA_TAR）"
+  DATA_SIZE=$(ssh "$HOST" "stat -c %s $DATA_TAR" || echo 0)
+  printf '  %s（%s 字节，归档可读）\n' "$(basename "$DATA_TAR")" "$DATA_SIZE"
+else
+  printf '  跳过数据目录备份（sessions/presets/config.toml 均不存在）\n'
+fi
 
 # 保留策略：按 DeckMeido-<类>-backup-<时间戳>.tar.gz 分组，每组只留最近 N 份，
 # 总量超过上限就继续删最旧；永远保留每组最新的一份。
@@ -110,6 +124,15 @@ log "2/5 重启 $UNIT"
 ssh "$HOST" "systemctl --user restart $UNIT" || die "重启 $UNIT 失败"
 
 # ---------- 3. 最小自检 ----------
+# 接口 200 / 文件哈希一致 ≠ 页面可用：曾出现 index.html 顶层 JS 报错，
+# 页面能画出来但 8187 行之后的全部初始化都没执行，表现成“客户端连不上、网页掉线”。
+# 冒烟约定（人工或自动化都必须遵守）：
+#   1) 必须在浏览器里加载页面并检查控制台：零 ReferenceError / Uncaught 才算过；
+#   2) 自动化冒烟禁止操作会话列表的删除类控件，也不要在列表里“清理空会话”——
+#      一次误触就会真删 userdata/sessions（删除接口只要设备鉴权通过就立即生效，
+#      没有二次确认，也没有回收站）；
+#   3) 需要发消息只用专用会话；先确认设备配对状态（未配对时
+#      POST /api/sessions/create 返回 401），否则只能证明 UI 提交，不能证明端到端落盘。
 log "3/5 等待后端就绪并自检 /api/status"
 CODE=""
 for _ in $(seq 1 20); do
