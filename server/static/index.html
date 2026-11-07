@@ -2444,6 +2444,11 @@
   }
   .fbq-item.done .fbq-fill { background: #2ecc71; }
   .fbq-item.fail .fbq-fill { background: var(--danger); }
+  /* 失败原因直接显示在行内：只放进 tooltip 时界面上只剩一个「失败」 */
+  .fbq-err {
+    font-size: 11px; line-height: 1.45; color: var(--danger);
+    word-break: break-word;
+  }
   .fbq-x {
     flex: 0 0 auto; width: 18px; height: 18px; line-height: 16px;
     border: none; border-radius: 50%; background: transparent;
@@ -3833,11 +3838,11 @@
     <div id="fbQueue"></div>
     <div id="fbList"><div class="fb-note">加载中…</div></div>
     <div id="fbDropBar">
-      <div id="fbDrop" title="把本地文件拖到这里，或点右侧按钮选择文件，直接上传到当前目录">拖入文件上传</div>
+      <div id="fbDrop" title="把本地文件或文件夹拖到这里，或点右侧按钮选择文件，直接上传到当前目录">拖入文件/文件夹</div>
       <button id="fbUploadBtn">上传</button>
       <input type="file" id="fbFileInput" multiple hidden>
     </div>
-    <div id="dropFb">松手上传到当前目录</div>
+    <div id="dropFb">松手把文件/文件夹上传到当前目录</div>
     <div id="ctxMenu"></div>
     <div id="toastFile" class="toast"></div>
     <div id="fbConfirmMask" class="fb-confirm-mask">
@@ -5997,9 +6002,9 @@
     if (drop) {
       drop.classList.toggle('ro', fbWriteBlocked());
       drop.title = fbWriteBlocked() ? fbWriteBlockedText()
-                                    : '把本地文件拖到这里，或点右侧按钮选择文件，直接上传到当前目录';
+                                    : '把本地文件或文件夹拖到这里，或点右侧按钮选择文件，直接上传到当前目录';
       if (fbWriteBlocked() && !drop.classList.contains('hot')) drop.textContent = '当前目录只读，不能上传';
-      else if (!fbWriteBlocked() && drop.textContent === '当前目录只读，不能上传') drop.textContent = '拖入文件上传';
+      else if (!fbWriteBlocked() && drop.textContent === '当前目录只读，不能上传') drop.textContent = '拖入文件/文件夹';
     }
   }
 
@@ -6207,12 +6212,15 @@
     });
   }
 
-  // ---- 文件面板拖放上传：本地文件直接传到当前浏览的目录 ----
+  // ---- 文件面板拖放上传：本地文件/文件夹直接传到当前浏览的目录 ----
   // 队列 + 进度条。fetch 拿不到上传进度，这里改用 XHR 的 upload.onprogress。
   // 一次串行传一个（避免并发把内存/网络打满），其余排队。
-  var fbUploadQueue = [];   // {id, name, size, status: wait|uploading|done|fail, progress, dir, err}
+  // 目录：dataTransfer.files 里目录只会退化成 0 字节同名 File，必须用
+  // webkitGetAsEntry() 递归展开，每个文件连同相对路径入队，目录用 /api/fs mkdir 重建。
+  var fbUploadQueue = [];   // {id,name,size,status,progress,file,base,rel,parent,err}
   var fbUploadSeq = 0;
   var fbUploadBusy = false;
+  var fbMkdirCache = {};    // 绝对目录路径 -> true（已建）| {error}（建失败）
 
   function fbQueueRender() {
     var box = rbEl('fbQueue');
@@ -6247,6 +6255,13 @@
         top.appendChild(x);
       }
       el.appendChild(top);
+      // 失败原因行内可见；tooltip 只是补充，不能作为唯一出口
+      if (it.status === 'fail' && it.err) {
+        var why = document.createElement('div');
+        why.className = 'fbq-err';
+        why.textContent = it.err;
+        el.appendChild(why);
+      }
       var bar = document.createElement('div');
       bar.className = 'fbq-bar';
       var fill = document.createElement('div');
@@ -6260,7 +6275,7 @@
     var drop = rbEl('fbDrop');
     if (drop && !drop.classList.contains('hot')) {
       var act = fbUploadQueue.filter(function (x) { return x.status === 'uploading' || x.status === 'wait'; }).length;
-      drop.textContent = act ? '正在上传到当前目录…' : '拖文件到这里上传到当前目录';
+      drop.textContent = act ? '正在上传到当前目录…' : '拖文件/文件夹到这里上传到当前目录';
     }
   }
 
@@ -6291,6 +6306,7 @@
     if (!next) {
       // 全部结束：刷新列表，并清理已完成的条目
       var fails = fbUploadQueue.filter(function (x) { return x.status === 'fail'; }).length;
+      fbMkdirCache = {};
       fbLoad(fb.path || '');
       if (!fails) fbUploadQueue = [];
       return;
@@ -6299,16 +6315,81 @@
     next.status = 'uploading';
     next.progress = 0;
     fbQueueRender();
-    var fd = new FormData();
-    fd.append('file', next.file, next.name);
-    var xhr = new XMLHttpRequest();
-    var url = '/api/upload-to?dir=' + encodeURIComponent(next.dir);
-    xhr.open('POST', url);
-    xhr.upload.onprogress = function (e) {
-      if (e.lengthComputable && e.total > 0) {
-        next.progress = e.loaded / e.total * 100;
+    // 先把这条文件所在的相对目录补齐；单条失败只标自己，后面的继续传
+    fbEnsureDir(next.base, next.parent, function (err) {
+      if (err) {
+        fbUploadBusy = false;
+        next.status = 'fail';
+        next.err = '目录创建失败：' + err;
         fbQueueRender();
+        fbUploadPump();
+        return;
       }
+      fbUploadSend(next);
+    });
+  }
+
+  function fbJoinPath(dir, rel) {
+    if (!rel) return dir || '';
+    var head = (dir || '').replace(/\/+$/, '');
+    return head + '/' + rel.replace(/^\/+/, '');
+  }
+
+  // 逐段重建拖进来的相对目录：/api/fs mkdir 的 path 是父目录、path2 是目录名。
+  // 「目标已存在」按成功算（重复拖同一个文件夹很常见），其余错误原样带给该文件。
+  function fbEnsureDir(base, rel, cb) {
+    var segs = (rel || '').split('/').filter(function (s) { return s && s !== '.'; });
+    if (!segs.length) { cb(null); return; }
+    if (!base) { cb('目标目录还没加载完成，请稍后再试'); return; }
+    var cur = base, i = 0;
+    (function step(err) {
+      if (err) { cb(err); return; }
+      if (i >= segs.length) { cb(null); return; }
+      var seg = segs[i++];
+      var full = fbJoinPath(cur, seg);
+      var hit = fbMkdirCache[full];
+      if (hit === true) { cur = full; step(null); return; }
+      if (hit && hit.error) { cb(hit.error); return; }
+      fetch('/api/fs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ op: 'mkdir', path: cur, path2: seg })
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          return { status: r.status, data: j || {} };
+        });
+      }).then(function (res) {
+        var d = res.data;
+        if (d.ok || d.error === '目标已存在') {
+          fbMkdirCache[full] = true;
+          cur = full;
+          step(null);
+          return;
+        }
+        // 403 只读区也走这里：后端下发的 error 就是给用户看的原因
+        var msg = d.detail || d.error || ('HTTP ' + res.status);
+        fbMkdirCache[full] = { error: msg };
+        cb(msg);
+      }).catch(function () { cb('网络错误'); });
+    })(null);
+  }
+
+  function fbUploadSend(next) {
+    var fd = new FormData();
+    // 只把文件名交给后端（它也只认 basename），目录层级由上面的 mkdir 重建
+    fd.append('file', next.file, next.file.name);
+    var xhr = new XMLHttpRequest();
+    var url = '/api/upload-to?dir=' + encodeURIComponent(fbJoinPath(next.base, next.parent));
+    xhr.open('POST', url);
+    var lastPaint = 0;
+    xhr.upload.onprogress = function (e) {
+      if (!e.lengthComputable || e.total <= 0) return;
+      next.progress = e.loaded / e.total * 100;
+      // 队列可能有几百行，逐帧重绘整个列表会在 Deck 上明显卡顿，限到 ~7fps
+      var now = Date.now();
+      if (now - lastPaint < 150) return;
+      lastPaint = now;
+      fbQueueRender();
     };
     xhr.onload = function () {
       fbUploadBusy = false;
@@ -6318,8 +6399,11 @@
         fbScheduleClear(next);
       } else {
         next.status = 'fail';
-        try { next.err = (JSON.parse(xhr.responseText) || {}).detail || ('HTTP ' + xhr.status); }
-        catch (e) { next.err = 'HTTP ' + xhr.status; }
+        try {
+          var d = JSON.parse(xhr.responseText) || {};
+          // 403 只读拦截的文案在 error 里，普通 HTTPException 在 detail 里
+          next.err = d.detail || d.error || ('HTTP ' + xhr.status);
+        } catch (e2) { next.err = 'HTTP ' + xhr.status; }
       }
       fbQueueRender();
       fbUploadPump();
@@ -6327,7 +6411,7 @@
     xhr.onerror = function () {
       fbUploadBusy = false;
       next.status = 'fail';
-      next.err = '网络错误';
+      next.err = '网络错误：连不上后端服务';
       fbQueueRender();
       fbUploadPump();
     };
@@ -6335,19 +6419,46 @@
   }
 
   function fbUploadTo(files) {
-    // 只读分区（危险区/只读挂载）：不发请求，就地说明原因
+    var list = Array.prototype.slice.call(files || []);
+    // 只读分区（危险区/只读挂载）：不发请求，把原因直接写进每一行
     if (fbWriteBlocked()) {
-      fbToast(fbWriteBlockedText(), 'file', true);
+      var why = fbWriteBlockedText();
+      if (!list.length) return;
+      list.forEach(function (f) {
+        fbUploadQueue.push({
+          id: ++fbUploadSeq, name: f.name, size: f.size, file: f,
+          base: fb.path || '', rel: f.name, parent: '',
+          status: 'fail', progress: 0, err: why
+        });
+      });
+      fbQueueRender();
+      fbToast(why, 'file', true);
       return;
     }
-    var dir = fb.path || '';
-    var list = Array.prototype.slice.call(files);
-    list.forEach(function (f) {
+    fbQueuePush(list.map(function (f) {
+      return { file: f, rel: f.name, parent: '' };
+    }));
+  }
+
+  function fbQueuePush(items) {
+    var base = fb.path || '';
+    (items || []).forEach(function (it) {
+      // 遍历阶段就失败（读不到文件/目录）的条目也要出现在队列里，原因可见
+      if (it.fail) {
+        fbUploadQueue.push({
+          id: ++fbUploadSeq, name: it.rel, size: 0, file: null,
+          base: base, rel: it.rel, parent: it.parent || '',
+          status: 'fail', progress: 0, err: it.fail
+        });
+        return;
+      }
       fbUploadQueue.push({
-        id: ++fbUploadSeq, name: f.name, size: f.size,
-        file: f, dir: dir, status: 'wait', progress: 0, err: ''
+        id: ++fbUploadSeq, name: it.rel, size: it.file.size, file: it.file,
+        base: base, rel: it.rel, parent: it.parent || '',
+        status: 'wait', progress: 0, err: ''
       });
     });
+    if (!fbUploadQueue.length) return;
     fbQueueRender();
     fbUploadPump();
   }
@@ -6372,10 +6483,91 @@
     drop.addEventListener('drop', function (e) {
       e.preventDefault(); e.stopPropagation();
       drop.classList.remove('hot');
-      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
-        fbUploadTo(Array.prototype.slice.call(e.dataTransfer.files));
+      if (!e.dataTransfer) return;
+      // 只读区不展开目录（可能几千个文件），直接把文件列成失败并说明原因
+      if (fbWriteBlocked()) {
+        fbUploadTo(Array.prototype.slice.call(e.dataTransfer.files || []));
+        return;
       }
+      fbUploadDataTransfer(e.dataTransfer);
     });
+  }
+
+  // 拖放数据 → 递归展开：webkitGetAsEntry() 是浏览器里唯一能识别目录的入口，
+  // 拿不到（被裁剪的 WebEngine）就退回 files —— 这时目录只能当 0 字节文件，无法保留层级。
+  function fbUploadDataTransfer(dt) {
+    // 只读分区：不展开目录，直接把文件列成失败并说明原因
+    if (fbWriteBlocked()) {
+      fbUploadTo(Array.prototype.slice.call((dt && dt.files) || []));
+      return;
+    }
+    var entries = [];
+    try {
+      var items = dt && dt.items ? Array.prototype.slice.call(dt.items) : [];
+      for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        if (item && item.kind === 'file' && typeof item.webkitGetAsEntry === 'function') {
+          var en = item.webkitGetAsEntry();
+          if (en) entries.push(en);
+        }
+      }
+    } catch (e) { entries = []; }
+    if (!entries.length) {
+      fbUploadTo(Array.prototype.slice.call((dt && dt.files) || []));
+      return;
+    }
+    var out = [];
+    var idx = 0;
+    (function next() {
+      if (idx >= entries.length) {
+        // 空文件夹：没有文件可传，也要说一声，不能看起来像什么都没发生
+        if (!out.length) { fbToast('没有找到可上传的文件', 'file', true); return; }
+        fbQueuePush(out);
+        return;
+      }
+      fbWalkEntry(entries[idx++], '', out, next);
+    })();
+  }
+
+  // 递归读目录：DirectoryReader 一次只返回一批，必须反复读到空数组为止。
+  // 每个文件带上相对路径（如 素材/a.png）入队，父级目录由 fbEnsureDir 逐段重建。
+  function fbWalkEntry(entry, relDir, out, done) {
+    if (!entry) { done(); return; }
+    if (entry.isFile) {
+      entry.file(function (f) {
+        out.push({ file: f, rel: relDir ? relDir + '/' + f.name : f.name,
+                   parent: relDir || '' });
+        done();
+      }, function () {
+        // 读不到具体文件也要留一行失败明细，不能静默跳过
+        out.push({ rel: relDir ? relDir + '/' + entry.name : entry.name,
+                   parent: relDir || '', fail: '无法读取该文件（权限不足或已被移动）' });
+        done();
+      });
+      return;
+    }
+    if (!entry.isDirectory) { done(); return; }
+    var reader = entry.createReader();
+    var kids = [];
+    (function readMore() {
+      reader.readEntries(function (batch) {
+        if (!batch || !batch.length) {
+          var nextDir = relDir ? relDir + '/' + entry.name : entry.name;
+          var i = 0;
+          (function walkNext() {
+            if (i >= kids.length) { done(); return; }
+            fbWalkEntry(kids[i++], nextDir, out, walkNext);
+          })();
+          return;
+        }
+        kids = kids.concat(Array.prototype.slice.call(batch));
+        readMore();
+      }, function () {
+        out.push({ rel: relDir ? relDir + '/' + entry.name : entry.name,
+                   parent: relDir || '', fail: '无法读取该文件夹（权限不足）' });
+        done();
+      });
+    })();
   }
 
   function fbStopFollow() {
@@ -13490,14 +13682,16 @@
       return;
     }
     var files = e.dataTransfer.files;
-    if (!files || !files.length) return;
+    var items = e.dataTransfer.items;
+    // 目录拖放时 files 可能为空或只有 0 字节占位，能识别目录的是 items
+    if ((!files || !files.length) && (!items || !items.length)) return;
     e.preventDefault();
     var toFb = dragOverFbPane(e);
     dragDepth = 0;
     dragHintHide();
-    // 落点在文件面板 → 上传到面板当前目录；否则作为聊天附件
-    if (toFb) fbUploadTo(files);
-    else uploadFiles(files);
+    // 落点在文件面板 → 递归上传到面板当前目录；否则作为聊天附件
+    if (toFb) fbUploadDataTransfer(e.dataTransfer);
+    else if (files && files.length) uploadFiles(files);
   });
 
   // 引用工作区文件：@{路径}
