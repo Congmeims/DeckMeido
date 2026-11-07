@@ -777,18 +777,112 @@ def main() -> int:
         )
         return 1
 
-    class WebPage(QWebEnginePage):
-        """自动授予麦克风权限，让语音输入在客户端里可用"""
+    # Qt 6.8 起权限对象改由 QWebEnginePermission 承载；更早的版本没有这个类
+    try:
+        from PySide6.QtWebEngineCore import QWebEnginePermission
+    except ImportError:
+        QWebEnginePermission = None
 
-        def permissionRequested(self, permission):
-            if permission.feature() in (
-                QWebEnginePage.Feature.MediaAudioCapture,
-                QWebEnginePage.Feature.MediaAudioVideoCapture,
-                QWebEnginePage.Feature.ClipboardReadWrite,
-            ):
-                permission.grant()
+    def _enum_member(owner, attr: str):
+        """按 Qt 版本查枚举：新版权限在 QWebEnginePermission.PermissionType，
+        旧版仍在 QWebEnginePage.Feature / PermissionPolicy 上"""
+        holders = (
+            owner,
+            getattr(owner, "PermissionType", None),
+            getattr(owner, "Feature", None),
+            getattr(owner, "PermissionPolicy", None),
+        )
+        for holder in holders:
+            if holder is None:
+                continue
+            value = getattr(holder, attr, None)
+            if value is not None:
+                return value
+        return None
+
+    def _permission_type(name: str):
+        value = _enum_member(QWebEnginePermission, name) if QWebEnginePermission else None
+        return value if value is not None else _enum_member(QWebEnginePage, name)
+
+    def _permission_policy(allow: bool):
+        return _enum_member(
+            QWebEnginePage,
+            "PermissionGrantedByUser" if allow else "PermissionDeniedByUser",
+        )
+
+    class WebPage(QWebEnginePage):
+        """自动授予麦克风权限，让语音输入在客户端里可用
+
+        权限回调的接口随 Qt 版本变过一次：Qt 6.8 起是 permissionRequested
+        信号，参数 QWebEnginePermission（用 permissionType() 判断、
+        grant()/deny() 答复）；6.8 以前只有 featurePermissionRequested 信号，
+        要用 setFeaturePermission() 答复。
+
+        旧实现把 permissionRequested 写成了同名方法——在 6.8 上这只是遮蔽了
+        信号（Qt 内部照样拒绝权限）、并且调用的是 QWebEnginePermission 上
+        不存在的 feature()；在更老的 Qt 上则完全没有接 featurePermissionRequested。
+        两种版本都没能把麦克风授权出去，桌面模式里的 getUserMedia 因此一直被拒。
+        这里按版本分别接信号，只做授权，不碰页面加载与 R2 的任何逻辑。
+        """
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._allowed = tuple(
+                t for t in (
+                    _permission_type("MediaAudioCapture"),
+                    _permission_type("MediaAudioVideoCapture"),
+                    _permission_type("ClipboardReadWrite"),
+                ) if t is not None
+            )
+            # Qt >= 6.8：permissionRequested(QWebEnginePermission)
+            signal = getattr(self, "permissionRequested", None)
+            if signal is not None:
+                try:
+                    signal.connect(self._answer)
+                except Exception as exc:
+                    _dev_log("web.permission.connect", api="permissionRequested", error=exc)
             else:
-                permission.deny()
+                # Qt < 6.8：featurePermissionRequested(QUrl, QWebEnginePage.Feature)
+                # 6.8 起旧信号仍可能被发出，但两套枚举不通用；新版在就用新版，
+                # 避免旧分支把已经 grant 的请求再按旧枚举判成 deny
+                signal = getattr(self, "featurePermissionRequested", None)
+                if signal is not None:
+                    try:
+                        signal.connect(self._answer_feature)
+                    except Exception as exc:
+                        _dev_log("web.permission.connect", api="featurePermissionRequested", error=exc)
+
+        def _answer(self, permission) -> None:
+            """Qt 6.8+：用 QWebEnginePermission 的 grant()/deny() 直接答复"""
+            try:
+                ptype = permission.permissionType()
+            except Exception as exc:
+                _dev_log("web.permission.error", api="permissionRequested", error=exc)
+                return
+            allow = ptype in self._allowed
+            try:
+                if allow:
+                    permission.grant()
+                else:
+                    permission.deny()
+                _dev_log("web.permission", qt="6.8+", type=ptype, granted=allow)
+            except Exception as exc:
+                _dev_log("web.permission.error", api="permissionRequested", type=ptype, error=exc)
+
+        def _answer_feature(self, origin, feature) -> None:
+            """Qt < 6.8：setFeaturePermission(url, feature, policy) 答复"""
+            allow = feature in self._allowed
+            policy = _permission_policy(allow)
+            if policy is None:
+                _dev_log("web.permission.error", api="featurePermissionRequested",
+                         feature=feature, error="缺少 PermissionPolicy 枚举")
+                return
+            try:
+                self.setFeaturePermission(origin, feature, policy)
+                _dev_log("web.permission", qt="<6.8", feature=feature, granted=allow)
+            except Exception as exc:
+                _dev_log("web.permission.error", api="featurePermissionRequested",
+                         feature=feature, error=exc)
 
     if not ensure_backend():
         QMessageBox.critical(None, "DeckMeido", f"后端核心启动失败，请检查 {DECKMEIDO_DIR} 是否完整（可重跑 install.sh）。")

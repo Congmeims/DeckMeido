@@ -9480,7 +9480,13 @@
       });
     } catch (e) {
       micStartPending = false;
-      fbToast('打不开麦克风：' + (e && e.message ? e.message : e), 'chat', true);
+      var name = e && e.name ? String(e.name) : '';
+      // 桌面客户端里最常见的失败是被拒绝授权（NotAllowedError），Chromium 只给
+      // 一句 "Permission denied"，用户看不出该做什么，这里换成可操作的说明
+      var why = (name === 'NotAllowedError' || name === 'SecurityError')
+        ? '客户端没有被授予麦克风权限，请重启客户端后重试；仍不行就检查系统声音设置里是否有输入设备'
+        : (e && e.message ? e.message : e);
+      fbToast('打不开麦克风：' + why, 'chat', true);
       return;
     } finally {
       micBtn.classList.remove('busy');
