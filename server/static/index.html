@@ -2965,12 +2965,8 @@
             <div class="field-hint" id="usageTier"></div>
             <div class="usage-tables">
               <div>
-                <div class="usage-caption">按日（近 14 天）</div>
-                <div id="usageDays" class="usage-empty">暂无记录——先发起一次对话</div>
-              </div>
-              <div>
-                <div class="usage-caption">按模型（近 14 天）</div>
-                <div id="usageModels" class="usage-empty">暂无记录</div>
+                <div class="usage-caption">按账户（近 14 天）</div>
+                <div id="usageAccounts" class="usage-empty">暂无记录——先发起一次对话</div>
               </div>
             </div>
             <div class="mem-foot" style="margin-top:10px;flex-wrap:wrap">
@@ -10256,8 +10252,7 @@
   // ---------- 用量与余额（设置 → 模型接入） ----------
   // 后端 /api/usage 只读本地聚合（userdata/usage/*.json），/api/usage/balance
   // 才发起一次官方余额查询；两者分开，打开设置页不依赖网络。
-  var usageDaysEl = document.getElementById('usageDays');
-  var usageModelsEl = document.getElementById('usageModels');
+  var usageAccountsEl = document.getElementById('usageAccounts');
   var usageBalanceEl = document.getElementById('usageBalance');
   var usageBalanceHint = document.getElementById('usageBalanceHint');
   var usageTierEl = document.getElementById('usageTier');
@@ -10319,6 +10314,54 @@
     return html + '</tbody></table>';
   }
 
+  // 按「已添加的账户」分组：名称与顺序来自配置层 api_profiles（改名后立即是
+  // 新名字），数字来自 usage.snapshot 的 apis（按稳定 api_id 聚合）。不在配置里的
+  // id（已删除的账户、升级前的空桶）合并成一行「未标记/历史」，不冒充现有账户。
+  function usageAccountRows(d) {
+    var profiles = d.api_profiles || apiProfilesState.profiles || [];
+    var scope = d.api || 'all';
+    var byId = {};
+    (d.apis || []).forEach(function (a) { byId[a.id] = a; });
+    var rows = [];
+    profiles.forEach(function (p) {
+      if (scope !== 'all' && p.id !== scope) return;
+      var s = byId[p.id] || {};
+      rows.push([
+        (p.name || '未命名') + (p.current ? '（当前使用）' : ''),
+        Number(s.requests) || 0,
+        usageTokens(s.prompt_tokens),
+        (Number(s.cache_hit_rate) || 0).toFixed(1) + '%',
+        usageTokens(s.completion_tokens),
+        usageMoney(s.priced === false ? null : s.cost_cny)
+      ]);
+    });
+    var hist = null;
+    (d.apis || []).forEach(function (a) {
+      if (profiles.some(function (p) { return p.id === a.id; })) return;
+      if (!hist) {
+        hist = { requests: 0, prompt_tokens: 0, completion_tokens: 0,
+                 cache_hit_tokens: 0, cost_cny: 0, has_cost: false };
+      }
+      hist.requests += Number(a.requests) || 0;
+      hist.prompt_tokens += Number(a.prompt_tokens) || 0;
+      hist.completion_tokens += Number(a.completion_tokens) || 0;
+      hist.cache_hit_tokens += Number(a.cache_hit_tokens) || 0;
+      if (a.priced !== false && a.cost_cny !== null
+          && typeof a.cost_cny !== 'undefined') {
+        hist.has_cost = true;
+        hist.cost_cny += Number(a.cost_cny) || 0;
+      }
+    });
+    if (hist) {
+      rows.push(['未标记/历史', hist.requests, usageTokens(hist.prompt_tokens),
+                 (hist.prompt_tokens
+                   ? hist.cache_hit_tokens / hist.prompt_tokens * 100 : 0).toFixed(1) + '%',
+                 usageTokens(hist.completion_tokens),
+                 usageMoney(hist.has_cost ? hist.cost_cny : null)]);
+    }
+    return rows;
+  }
+
   function renderUsageStats(d) {
     if (!d) return;
     if (d.api_profiles) syncUsageApiOptions(d.api_profiles, d.api);
@@ -10327,36 +10370,16 @@
       + '　高峰：' + d.peak_windows
       + '　官方单价生效：' + d.pricing_effective
       + (d.official_endpoint ? '' : '　当前接口不是 DeepSeek 官方端点，估算仅供参考');
-    var days = d.days || [];
-    if (!days.length) {
-      usageDaysEl.className = 'usage-empty';
-      usageDaysEl.textContent = '暂无记录——先发起一次对话';
+    var rows = usageAccountRows(d);
+    if (!rows.length) {
+      usageAccountsEl.className = 'usage-empty';
+      usageAccountsEl.textContent = (d.api_profiles || []).length
+        ? '暂无记录——先发起一次对话'
+        : '未配置接口账户——先在上方「接口账户」里添加';
     } else {
-      usageDaysEl.className = '';
-      var rows = days.map(function (x) {
-        return [String(x.date).slice(5), x.requests, usageTokens(x.prompt_tokens),
-                (Number(x.cache_hit_rate) || 0).toFixed(1) + '%',
-                usageTokens(x.completion_tokens), usageMoney(x.cost_cny)];
-      });
-      var t = d.totals || {};
-      rows.push(['合计', t.requests || 0, usageTokens(t.prompt_tokens),
-                (Number(t.cache_hit_rate) || 0).toFixed(1) + '%',
-                usageTokens(t.completion_tokens), usageMoney(t.cost_cny)]);
-      usageDaysEl.innerHTML = usageTable(['日期', '请求', '输入', '命中率', '输出', '估算'], rows);
-    }
-    var models = d.models || [];
-    if (!models.length) {
-      usageModelsEl.className = 'usage-empty';
-      usageModelsEl.textContent = '暂无记录';
-    } else {
-      usageModelsEl.className = '';
-      usageModelsEl.innerHTML = usageTable(
-        ['模型', '请求', '输入', '命中率', '输出', '估算'],
-        models.map(function (m) {
-          return [m.model, m.requests, usageTokens(m.prompt_tokens),
-                  (Number(m.cache_hit_rate) || 0).toFixed(1) + '%',
-                  usageTokens(m.completion_tokens), usageMoney(m.cost_cny)];
-        }));
+      usageAccountsEl.className = '';
+      usageAccountsEl.innerHTML = usageTable(
+        ['账户', '请求', '输入', '命中率', '输出', '估算'], rows);
     }
     var note = d.note || '费用按官方单价估算，以官方账单为准。';
     if ((d.unpriced_models || []).length) {
@@ -10380,10 +10403,8 @@
       })
       .then(renderUsageStats)
       .catch(function (e) {
-        usageDaysEl.className = 'usage-empty';
-        usageDaysEl.textContent = '用量读取失败：' + ((e && e.message) || e);
-        usageModelsEl.className = 'usage-empty';
-        usageModelsEl.textContent = '';
+        usageAccountsEl.className = 'usage-empty';
+        usageAccountsEl.textContent = '用量读取失败：' + ((e && e.message) || e);
       });
   }
 
