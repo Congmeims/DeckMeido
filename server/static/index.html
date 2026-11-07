@@ -1431,26 +1431,31 @@
     resize: vertical;
   }
   .field-hint { font-size: 12px; color: var(--muted); margin-top: 6px; min-height: 16px; }
-  /* 素材署名（女仆人设 → 语音回复）：按语义分成两块硬换行，块内 nowrap。
+  /* 素材署名（女仆人设 → 语音回复）：压成单行 nowrap，放不下时横向滚动。
      日文句子从中间折行会读不通，所以先缩字号；缩到下限仍放不下时由横向滚动兜底。
-     字号由 fitTtsCredit() 按实际可用宽度算，这里只给默认 12px（继承 .field-hint） */
+     字号由 fitTtsCredit() 按实际可用宽度算，默认 11px 见下方 #ttsCredit 规则 */
   #ttsCredit {
     min-height: 0;
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: thin;
   }
-  #ttsCredit .tts-credit-line { white-space: nowrap; line-height: 1.65; }
-  /* ---------- 语音回复卡：标题+开关 / 发音人+状态+试听 / 合并状态区 ---------- */
-  .tts-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  #ttsCredit .tts-credit-line { white-space: nowrap; line-height: 1.45; }
+  /* ---------- 语音回复卡：标题+开关 / 发音人+状态+试听 / 一行模型状态 ---------- */
+  /* 这张卡只用三层：比其它卡片更矮，内边距和行距都收紧 */
+  .tts-card { padding: 12px 16px 10px; margin-bottom: 12px; }
+  .tts-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
   .tts-head .card-title { margin: 0; }
   /* 发音人一行：窄屏放不下时「状态+试听」整体换到下一行右对齐 */
-  .tts-row2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .tts-row2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
   .tts-label { flex: 0 0 auto; font-size: 13px; color: var(--muted); }
   .tts-row2 .speaker-row { flex: 1 1 160px; min-width: 118px; }
   /* 两个发音人按钮收矮一点：原先 min-height 42px 比旁边的试听高出一截 */
   .tts-row2 .speaker-btn { min-height: 32px; padding: 0 12px; font-size: 12.5px; }
-  .tts-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+  .tts-actions {
+    margin-left: auto; display: flex; align-items: center; justify-content: flex-end;
+    gap: 8px; flex: 0 1 auto; flex-wrap: wrap;
+  }
   .tts-preview { min-height: 32px; padding: 0 12px; font-size: 12.5px; }
   /* 模型状态胶囊：已就绪绿色、未就绪黄色（可点下载）、下载中蓝色（可点取消） */
   .tts-pill {
@@ -1469,17 +1474,17 @@
   }
   .tts-pill.off { opacity: .65; }
   .tts-pill:disabled { cursor: default; }
-  /* 合并后的状态区：说明 + 模型状态/进度，空行不占位 */
-  .tts-status { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
-  .tts-status .tts-note { font-size: 12px; color: var(--muted); line-height: 1.5; }
-  .tts-model-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-  /* 路径按中间省略显示，完整值放 title；窄屏也不会把卡片撑开 */
+  /* 模型状态并进发音人这一行：只显示模型名，完整路径放 title；空则完全不占位 */
   .tts-model-text {
-    flex: 1; min-width: 0; font-size: 12px; color: var(--muted); line-height: 1.5;
+    flex: 0 1 auto; min-width: 0; max-width: 210px;
+    font-size: 11.5px; color: var(--muted); line-height: 1.4;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .tts-bytes { flex: 0 0 auto; margin-top: 0; white-space: nowrap; }
-  #ttsEngineHint:empty, #ttsModelHint:empty { display: none; }
+  .tts-bytes { flex: 0 0 auto; margin-top: 0; white-space: nowrap; font-size: 11.5px; }
+  #ttsEngineHint { margin-top: 4px; }
+  #ttsEngineHint:empty, #ttsModelHint:empty, #ttsDownloadHint:empty { display: none; }
+  /* 署名压成一行 11px 小字，超出横向滚动，不占第二行 */
+  #ttsCredit { font-size: 11px; }
   /* 设置页里的下拉框：和输入框同一套外观，别再各写一份内联样式 */
   .cfg-select {
     width: 100%; padding: 12px 14px;
@@ -3041,7 +3046,7 @@
               <div class="field-hint">整段追加到系统提示词末尾，适合写上面表单装不下的规矩。</div>
             </div>
           </div>
-          <div class="card">
+          <div class="card tts-card">
             <div class="tts-head">
               <div class="card-title">语音回复</div>
               <label class="switch" title="回复时用语音播报">
@@ -3056,25 +3061,19 @@
                 <button class="mini-btn speaker-btn" type="button" data-speaker="maid">月读酱</button>
               </div>
               <div class="tts-actions">
+                <span class="tts-model-text" id="ttsModelHint"></span>
+                <span class="field-hint tts-bytes" id="ttsDownloadHint"></span>
                 <button id="ttsPill" class="tts-pill" type="button" disabled>未就绪</button>
                 <button id="ttsPreview" class="mini-btn tts-preview" type="button">试听</button>
               </div>
             </div>
-            <div class="tts-status">
-              <div class="tts-note">机器人：Deck 自带语音；月读酱：つくよみちゃん（本地模型）。</div>
-              <div class="tts-model-line">
-                <span class="tts-model-text" id="ttsModelHint"></span>
-                <span class="field-hint tts-bytes" id="ttsDownloadHint"></span>
-              </div>
-              <div class="field-hint" id="ttsEngineHint"></div>
-            </div>
+            <div class="field-hint" id="ttsEngineHint"></div>
             <!-- つくよみちゃんコーパス利用規約第③类（音声つき会話AIソフト）要求在使用者
-                 能看到的位置署名。下面两行照抄官方模板与模型卡，不要改写：
+                 能看到的位置署名。下面内容照抄官方模板与模型卡，不要改写：
                  模型卡「クレジット表記について（必須）」= ■Piper Plus:つくよみちゃん；
                  语料署名 = ■つくよみちゃんコーパス（CV.夢前黎）。 -->
             <div class="field-hint" id="ttsCredit">
-              <div class="tts-credit-line">本ソフトウェアの音声合成には、フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）が無料公開している音声データを使用しています。</div>
-              <div class="tts-credit-line"><a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener" style="color:inherit">■つくよみちゃんコーパス（CV.夢前黎）</a>　<a href="https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan" target="_blank" rel="noopener" style="color:inherit">■Piper Plus:つくよみちゃん</a>　禁止用于人身攻击。</div>
+              <div class="tts-credit-line">本ソフトウェアの音声合成には、フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）が無料公開している音声データを使用しています。　<a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener" style="color:inherit">■つくよみちゃんコーパス（CV.夢前黎）</a>　<a href="https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan" target="_blank" rel="noopener" style="color:inherit">■Piper Plus:つくよみちゃん</a>　禁止用于人身攻击。</div>
             </div>
           </div>
           <!-- 长期记忆并入这里：记的是「她记得你什么」，本来就是人设的一部分，
@@ -11112,13 +11111,6 @@
     }
   }
 
-  // 长路径中间省略：首尾各留几段，完整值放 title 里随时可看
-  function midEllipsis(text, head, tail) {
-    text = String(text || '');
-    if (text.length <= head + tail + 1) return text;
-    return text.slice(0, head) + '…' + text.slice(-tail);
-  }
-
   function renderTtsState() {
     if (!ttsState) return;
     if (ttsState.attribution && ttsAttribution) {
@@ -11126,34 +11118,33 @@
       if (ttsState.attribution_url) ttsAttribution.href = ttsState.attribution_url;
     }
     var dl = ttsState.download || {};
+    var root = ttsState.model_root || '';
+    // 只取路径末段当模型名，完整路径放 title，不再让长路径占一行
+    var modelName = root.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'tsukuyomi';
     // 胶囊只反映一个真实状态，不要「已下载」和「未就绪」同时出现
     if (ttsState.model) {
       ttsPill.className = 'tts-pill ready';
       ttsPill.textContent = '已就绪';
       ttsPill.disabled = true;
       ttsPill.title = '月读酱语音模型已就绪';
-      var root = ttsState.model_root || '';
-      ttsModelHint.textContent = '模型：' + midEllipsis(root, 18, 22);
+      ttsModelHint.textContent = '模型：' + modelName;
       ttsModelHint.title = root;
-      ttsDownloadHint.textContent = ttsState.loaded
-        ? '模型已加载到内存' : '首次播报时加载，空闲后自动释放';
+      ttsDownloadHint.textContent = ttsState.loaded ? '已加载' : '首次播报时加载';
     } else if (!ttsState.runtime) {
       ttsPill.className = 'tts-pill off';
       ttsPill.textContent = '不可用';
       ttsPill.disabled = true;
       ttsPill.title = '本机没装模型运行时';
-      ttsModelHint.textContent = '月读酱语音暂不可用（本机没装模型运行时），可先选「机器人」。';
-      ttsModelHint.title = '';
+      ttsModelHint.textContent = '月读酱语音暂不可用';
+      ttsModelHint.title = '本机没装模型运行时，可先选「机器人」';
       ttsDownloadHint.textContent = '';
     } else if (dl.state === 'downloading' || dl.phase === 'cancelling') {
       ttsPill.className = 'tts-pill busy';
       ttsPill.textContent = '下载中 ' + (dl.percent || 0).toFixed(0) + '%';
       ttsPill.disabled = false;
       ttsPill.title = '点击取消下载';
-      ttsModelHint.textContent = '月读酱语音模型下载中'
-        + (dl.file ? '（' + escapeHtml(dl.file) + '）' : '')
-        + (dl.source_name ? '　来源：' + escapeHtml(dl.source_name) : '');
-      ttsModelHint.title = '';
+      ttsModelHint.textContent = '模型下载中';
+      ttsModelHint.title = dl.file ? dl.file + (dl.source_name ? '　来源：' + dl.source_name : '') : '';
       ttsDownloadHint.textContent = dl.done > 0
         ? (dl.done / 1048576).toFixed(1) + ' MB'
           + (dl.total > 0 ? ' / ' + (dl.total / 1048576).toFixed(1) + ' MB' : '')
@@ -11163,11 +11154,10 @@
       ttsPill.textContent = '未就绪 · 下载';
       ttsPill.disabled = false;
       ttsPill.title = '点击下载月读酱语音模型（约 38MB）';
-      ttsModelHint.textContent = ttsState.reason || '月读酱语音模型还没下载（约 38MB，默认走国内镜像）。';
-      ttsModelHint.title = '';
+      ttsModelHint.textContent = '月读酱语音模型未下载';
+      ttsModelHint.title = ttsState.reason || '约 38MB，默认走国内镜像';
       ttsDownloadHint.textContent = dl.state === 'error'
-        ? '下载失败：' + escapeHtml(dl.error || '')
-        : dl.state === 'cancelled' ? '已取消下载' : '';
+        ? '下载失败' : dl.state === 'cancelled' ? '已取消' : '';
     }
   }
 
