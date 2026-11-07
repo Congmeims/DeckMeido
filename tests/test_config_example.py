@@ -35,6 +35,13 @@ REQUIRED = {
     "update": {"github_enable", "mirror", "github_repo"},
     "tts": {"enable", "engine", "voice", "speed", "max_chars"},
     "stt": {"enable", "duck_output"},
+    # 智能音箱模式：默认关闭；三道闸参数必须出现在模板里，否则新装用户
+    # 打开开关后只能拿到代码里的隐式默认值，出问题难排查
+    "wake": {
+        "enable", "wake_words", "keywords_threshold", "input_device",
+        "min_speech_ms", "max_utterance_sec", "silence_ms", "followup_sec",
+        "wake_timeout_sec", "eyes_display",
+    },
     "ui": {"language"},
     "workspace": {"dir"},
     "qq": {

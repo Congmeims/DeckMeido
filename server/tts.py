@@ -626,6 +626,8 @@ class TTS:
         # 播报状态
         self._proc: asyncio.subprocess.Process | None = None
         self._cancel: threading.Event | None = None
+        self._state_listener = None
+        self._announced = False
         self._last_engine = ""
         self._last_error = ""
         self._last_failed_segments = 0
@@ -892,6 +894,19 @@ class TTS:
 
     # ---------- 播报 ----------
 
+    def set_state_listener(self, fn) -> None:
+        """注册播放状态回调（start / end）；智能音箱模式用它驱动眼睛状态。"""
+        self._state_listener = fn
+
+    def _announce_state(self, kind: str) -> None:
+        cb = self._state_listener
+        if not cb:
+            return
+        try:
+            cb(kind)
+        except Exception:
+            pass
+
     async def speak(self, text: str, force: bool = False):
         """异步播报；新的一次调用会先掐断上一次。失败只降级，不抛给对话流程。"""
         if not self.enable and not force:
@@ -905,11 +920,14 @@ class TTS:
         self._last_error = ""
         self._last_failed_segments = 0
         self._last_degraded_segments = 0
+        self._announced = False
         try:
             segments = route_segments(cleaned, self.language, self.max_chars,
                                       self.ja_terms)
             if not segments:
                 return
+            self._announced = True
+            self._announce_state("start")
             devlog.log("tts.speak", chars=len(cleaned), segments=len(segments),
                        engine=self.engine, language=self.language,
                        max_chars=self.max_chars,
@@ -954,6 +972,9 @@ class TTS:
         finally:
             if self._cancel is event:
                 self._cancel = None
+            if self._announced:
+                self._announced = False
+                self._announce_state("end")
 
     async def preview(self, text: str = ""):
         """试听：不受 enable 开关限制；传了文本就用传入的，否则按发音人取默认句。

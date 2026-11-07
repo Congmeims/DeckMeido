@@ -1,3 +1,6 @@
 # 语音输入（可选）：只有要用语音识别时才装，缺了不影响后端启动
 # 对应 server/stt.py；装好后首次使用时另下模型（约 1GB，见 /api/stt/download）
 sherpa-onnx
+# 智能音箱模式（server/wake.py）用 sherpa-onnx-cli text2token 生成唤醒词，
+# 该命令内部依赖 sentencepiece；缺了会在启用唤醒时报「缺少 sentencepiece」
+sentencepiece

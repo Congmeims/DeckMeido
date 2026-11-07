@@ -214,6 +214,33 @@ model_source = "auto"
 # 录完立刻恢复；机器上没有 wpctl / pactl 时自动跳过，不影响录音本身。
 duck_output = true
 
+[wake]
+# 智能音箱模式（声控唤醒）：默认关闭。打开后后端用 sherpa-onnx KWS + silero VAD
+# 常驻监听，命中「你好梅朵」后进入一轮「听→想→说」。唤醒与识别全在本机，
+# 音频不落盘、不上传；只有识别出的文字会进入现有对话链路（LLM 仍在远端）。
+# 首次启用会下载约 38MB 的 KWS 模型到 <数据根>/models/wake。
+enable = false
+# 调试要点：唤醒词改这里后需要重新生成 keywords.txt（后端会自动重新加载）。
+# 中文词零训练，数组里可以写多个；默认只保留一个，避免误触发。
+wake_words = ["你好梅朵"]
+# KWS 置信度阈值（第一道闸）：越大越不容易误触发，但更容易漏唤醒。
+keywords_threshold = 0.25
+# 唤醒后的采集设备：default = 系统默认输入；也可填 PipeWire 节点名（如
+# 底座上的 USB 麦）。Deck 自带双麦在底座/TV 场景距离远、易收风扇噪声。
+input_device = "default"
+# 第二道闸：唤醒后必须有 silero VAD 判定的真人声，且持续至少 min_speech_ms
+# 才转写、才发送；不满足就退回待机，不做任何上传。
+min_speech_ms = 600
+# 单轮最长录音与「说完」的静音判定；超时按当前内容收尾。
+max_utterance_sec = 15
+silence_ms = 700
+# 播报结束后继续聆听的追问窗口（秒）；期间说话不需要再喊唤醒词。
+followup_sec = 4
+# 唤醒后如果一直没人说话，多久退回待机（秒）。
+wake_timeout_sec = 2.0
+# 眼睛界面放到哪块屏：auto（有外接屏优先外接，否则当前屏）/ internal / external。
+eyes_display = "auto"
+
 [ui]
 # 界面语言：zh（默认，中文）/ en（英文，机翻）
 # 影响网页与桌面客户端文案，以及内置的截屏询问/翻译提示词默认值；

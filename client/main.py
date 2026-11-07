@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 import tomllib
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -1444,8 +1445,90 @@ def main() -> int:
             restart_toast.start(RESTART_BUDGET_SEC)
         run_worker(_restart_client_work, report_restart_client, app)
 
+    # ---- 智能音箱模式：全屏眼睛页由本客户端承载 ----
+    # 不新建独立 overlay 进程：进入时切到 /eyes 并 showFullScreen，退出时回到主界面。
+    # 后端负责唤醒/录制/对话，这里只做状态呈现与停止/退出入口。
+    eyes_state = {"active": False}
+
+    def _wake_api(path: str, timeout: float = 15.0) -> dict:
+        try:
+            return api_json(path, timeout=timeout, post=True)
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = json.loads(exc.read().decode("utf-8", "replace")).get("detail")
+            except Exception:
+                detail = ""
+            raise RuntimeError(detail or f"HTTP {exc.code}") from exc
+
+    def _enter_eyes() -> None:
+        eyes_state["active"] = True
+        act_wake.setText("退出智能音箱模式")
+        view.load(QUrl(f"{API}/eyes.html?native=1"))
+        view.showFullScreen()
+
+    def _leave_eyes() -> None:
+        eyes_state["active"] = False
+        act_wake.setText("智能音箱模式")
+        view.showNormal()
+        if "/eyes" in view.url().path():
+            view.load(QUrl(f"{API}/?native=1"))
+
+    def _wake_enter_work():
+        # 首次进入可能要下载唤醒模型（约 38MB），给足超时
+        return _wake_api("/api/wake/toggle?on=true", timeout=120)
+
+    def _wake_enter_done(result) -> None:
+        if isinstance(result, Exception):
+            tray.showMessage("DeckMeido", f"进入智能音箱模式失败：{result}", icon, 6000)
+            return
+        if result.get("state") == "error":
+            tray.showMessage(
+                "DeckMeido",
+                f"智能音箱模式不可用：{result.get('last_error') or '未知原因'}",
+                icon, 6000)
+            return
+        _enter_eyes()
+
+    def _wake_exit_work():
+        return _wake_api("/api/wake/exit")
+
+    def _wake_exit_done(result) -> None:
+        if isinstance(result, Exception):
+            tray.showMessage("DeckMeido", f"退出智能音箱模式失败：{result}", icon, 5000)
+            return
+        _leave_eyes()
+
+    def _wake_stop_work():
+        return _wake_api("/api/wake/stop")
+
+    def _wake_stop_done(result) -> None:
+        if isinstance(result, Exception):
+            tray.showMessage("DeckMeido", f"停止失败：{result}", icon, 5000)
+
+    def toggle_wake() -> None:
+        if eyes_state["active"]:
+            run_worker(_wake_exit_work, _wake_exit_done, app)
+        else:
+            run_worker(_wake_enter_work, _wake_enter_done, app)
+
+    def stop_wake() -> None:
+        run_worker(_wake_stop_work, _wake_stop_done, app)
+
+    def on_view_url(url) -> None:
+        # 页面自己用 Esc/退出按钮回到主界面时，把全屏一起收回来
+        if eyes_state["active"] and "/eyes" not in url.path():
+            eyes_state["active"] = False
+            act_wake.setText("智能音箱模式")
+            view.showNormal()
+
+    view.urlChanged.connect(on_view_url)
+
     # 托盘菜单顺序固定：终止 → 显示 → 重启 → 退出
     menu = QMenu()
+    act_wake = QAction("智能音箱模式", menu)
+    act_wake.triggered.connect(toggle_wake)
+    act_wake_stop = QAction("停止聆听/播报", menu)
+    act_wake_stop.triggered.connect(stop_wake)
     act_terminate = QAction("终止", menu)
     act_terminate.triggered.connect(terminate_ops)
     act_show = QAction("显示", menu)
@@ -1460,6 +1543,9 @@ def main() -> int:
     act_quit = QAction("退出", menu)
     act_quit.triggered.connect(app.quit)
     menu.addAction(act_terminate)
+    menu.addSeparator()
+    menu.addAction(act_wake)
+    menu.addAction(act_wake_stop)
     menu.addSeparator()
     menu.addAction(act_show)
     menu.addAction(act_restart)

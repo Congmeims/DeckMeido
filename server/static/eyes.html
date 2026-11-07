@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>DeckMeido · 智能音箱</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { cursor: none; -webkit-user-select: none; user-select: none; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #hint {
+    position: fixed; left: 0; right: 0; bottom: 26px; display: flex; gap: 14px;
+    justify-content: center; align-items: center; opacity: 0; pointer-events: none;
+    transition: opacity .25s ease; font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  #hint.on { opacity: 1; pointer-events: auto; }
+  #hint button {
+    background: rgba(255,255,255,.08); color: #cfe9ee; border: 1px solid rgba(255,255,255,.16);
+    border-radius: 999px; padding: 7px 16px; font: inherit; letter-spacing: .04em;
+    backdrop-filter: blur(6px); cursor: pointer;
+  }
+  #hint button:hover { background: rgba(255,255,255,.14); }
+  #hint span { color: rgba(207,233,238,.45); font-size: 12px; }
+  #notice {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    color: #9fb4b8; font: 14px/1.6 system-ui, sans-serif; text-align: center;
+    opacity: 0; transition: opacity .3s ease; pointer-events: none; max-width: 80vw;
+  }
+  #notice.on { opacity: 1; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="notice"></div>
+<div id="hint">
+  <button id="stop">停止</button>
+  <button id="exit">退出</button>
+  <span>Esc 停止 · 空闲时 Esc 退出</span>
+</div>
+<script>
+(() => {
+  "use strict";
+  const cv = document.getElementById("stage");
+  const ctx = cv.getContext("2d");
+  const hint = document.getElementById("hint");
+  const notice = document.getElementById("notice");
+  const STOP = document.getElementById("stop");
+  const EXIT = document.getElementById("exit");
+
+  let W = 0, H = 0, DPR = 1;
+  function resize() {
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.floor(W * DPR); cv.height = Math.floor(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  const state = {
+    name: "disarmed", level: 0, levelSmooth: 0, error: "",
+    last: 0, offline: false, blinkAt: 0, blinkUntil: 0, nextBlink: 0,
+    glow: 0, pulse: 0
+  };
+
+  const COLORS = {
+    armed: ["#7fe7ff", "#2b7f92"],
+    listening: ["#8ff6ff", "#1f9cb5"],
+    thinking: ["#ffd28a", "#8a6a2f"],
+    speaking: ["#a8f0ff", "#2d8fa8"],
+    error: ["#ff9a86", "#7d3a32"],
+    disarmed: ["#3d4a4e", "#1d2426"]
+  };
+
+  // ---- 状态轮询：只读，不含音频 ----
+  async function poll() {
+    try {
+      const r = await fetch("/api/wake/state", { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const d = await r.json();
+      state.name = d.state || "disarmed";
+      state.level = Number(d.level) || 0;
+      state.error = d.last_error || "";
+      state.offline = false;
+    } catch (e) {
+      state.offline = true;
+    }
+    setTimeout(poll, state.offline ? 1500 : 400);
+  }
+  poll();
+
+  // ---- 交互：鼠标/触摸移动才显示按钮 ----
+  let hintTimer = 0;
+  function reveal() {
+    hint.classList.add("on");
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => hint.classList.remove("on"), 3500);
+  }
+  window.addEventListener("mousemove", reveal);
+  window.addEventListener("touchstart", reveal, { passive: true });
+
+  async function post(path) {
+    try {
+      const r = await fetch(path, { method: "POST", cache: "no-store" });
+      return r.ok;
+    } catch (e) { return false; }
+  }
+  STOP.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    await post("/api/wake/stop");
+    reveal();
+  });
+  EXIT.addEventListener("click", (e) => {
+    e.stopPropagation();
+    leave();
+  });
+  async function leave() {
+    await post("/api/wake/exit");
+    // 由客户端 urlChanged 收回全屏；浏览器里则直接回主控制台
+    location.replace("/?native=1");
+  }
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    // 有正在进行的轮次先停；已经空闲就退出模式
+    if (state.name === "listening" || state.name === "thinking" || state.name === "speaking") {
+      post("/api/wake/stop");
+    } else {
+      leave();
+    }
+  });
+  // 双击空白处也可以退出，作为手柄/触屏的兜底入口
+  window.addEventListener("dblclick", leave);
+
+  // ---- 眼睛绘制 ----
+  function eyePath(cx, cy, rx, ry) {
+    ctx.beginPath();
+    ctx.moveTo(cx - rx, cy);
+    ctx.quadraticCurveTo(cx - rx * 0.45, cy - ry, cx, cy - ry);
+    ctx.quadraticCurveTo(cx + rx * 0.45, cy - ry, cx + rx, cy);
+    ctx.quadraticCurveTo(cx + rx * 0.45, cy + ry * 0.62, cx, cy + ry * 0.62);
+    ctx.quadraticCurveTo(cx - rx * 0.45, cy + ry * 0.62, cx - rx, cy);
+    ctx.closePath();
+  }
+
+  function drawEye(cx, cy, rx, ry, open, pupilX, pupilY, colors, alpha, t) {
+    const h = Math.max(0.02, open);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+
+    // 外发光
+    ctx.shadowColor = colors[0];
+    ctx.shadowBlur = 26 + 18 * (1 - h);
+    ctx.fillStyle = "rgba(8, 20, 24, .92)";
+    eyePath(cx, cy, rx, ry * h);
+    ctx.fill();
+
+    // 眼缘
+    ctx.lineWidth = 2.2;
+    ctx.strokeStyle = colors[0];
+    ctx.globalAlpha = alpha * (0.55 + 0.35 * h);
+    ctx.stroke();
+
+    // 虹膜（随开合裁切在眼形内）
+    if (h > 0.12) {
+      ctx.save();
+      eyePath(cx, cy, rx, ry * h);
+      ctx.clip();
+      ctx.globalAlpha = alpha;
+      const ir = Math.min(rx * 0.42, ry * 0.95);
+      const ix = cx + pupilX * rx * 0.32;
+      const iy = cy + pupilY * ry * 0.45;
+      const g = ctx.createRadialGradient(ix, iy, 1, ix, iy, ir);
+      g.addColorStop(0, "#eafcff");
+      g.addColorStop(0.28, colors[0]);
+      g.addColorStop(1, colors[1]);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(ix, iy, ir, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 瞳孔
+      ctx.fillStyle = "#04131a";
+      ctx.beginPath();
+      ctx.arc(ix, iy, Math.max(2, ir * 0.46), 0, Math.PI * 2);
+      ctx.fill();
+
+      // 高光
+      ctx.fillStyle = "rgba(255,255,255,.85)";
+      ctx.beginPath();
+      ctx.arc(ix - ir * 0.34, iy - ir * 0.38, Math.max(1.5, ir * 0.16), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  function blinkAt(t) {
+    if (t > state.nextBlink) {
+      state.blinkUntil = t + 130;
+      state.nextBlink = t + 4200 + Math.random() * 4200;
+    }
+    return t < state.blinkUntil;
+  }
+
+  let lastFrame = 0;
+  function frame(tms) {
+    requestAnimationFrame(frame);
+    const t = tms / 1000;
+    const dt = Math.min(0.05, t - (lastFrame || t));
+    lastFrame = t;
+    state.levelSmooth += (state.level - state.levelSmooth) * Math.min(1, dt * 8);
+    const lv = state.levelSmooth;
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, W, H);
+
+    const colors = COLORS[state.name] || COLORS.disarmed;
+    const cx = W / 2, cy = H / 2 - H * 0.03;
+    const gap = Math.min(W * 0.13, H * 0.21);
+    const rx = Math.min(W * 0.16, H * 0.16);
+    const ry = Math.min(H * 0.12, rx * 0.8);
+    const project = Math.min(1, (W / H) / 1.6); // 宽屏时略微压扁
+    const erx = rx * (0.86 + 0.14 * project);
+
+    let open = 0.72, px = 0, py = 0, alpha = 1;
+    const blink = blinkAt(t);
+    switch (state.name) {
+      case "armed":
+        open = blink ? 0.06 : 0.72 + 0.02 * Math.sin(t * 1.1);
+        px = Math.sin(t * 0.35) * 0.25;
+        py = Math.cos(t * 0.27) * 0.12;
+        alpha = 0.86;
+        break;
+      case "listening":
+        open = 0.98 + 0.03 * Math.sin(t * 2.2);
+        px = Math.sin(t * 1.4) * 0.18;
+        py = -0.05 + lv * 0.12;
+        alpha = 1;
+        break;
+      case "thinking":
+        open = 0.58 + 0.06 * Math.sin(t * 2.8);
+        px = Math.sin(t * 0.9) * 0.42;
+        py = -0.36 + Math.cos(t * 0.9) * 0.12;
+        alpha = 0.94;
+        break;
+      case "speaking":
+        open = 0.9 - 0.06 * Math.min(1, lv * 3) + 0.03 * Math.sin(t * 9);
+        px = Math.sin(t * 0.6) * 0.12;
+        py = 0.02;
+        alpha = 1;
+        break;
+      case "error":
+        open = 0.32 + 0.04 * Math.sin(t * 3.2);
+        px = 0, py = 0.06;
+        alpha = 0.9;
+        break;
+      default:
+        open = 0.04;
+        alpha = 0.5;
+    }
+    if (blink && state.name !== "disarmed" && state.name !== "error") open = 0.06;
+
+    // 呼吸光环：聆听时轻微外扩，说话时随音量脉动
+    const auraGain = state.name === "listening" ? 0.16
+      : state.name === "speaking" ? 0.10 + lv * 0.25 : 0.05;
+    const rg = Math.max(W, H) * (0.30 + auraGain * 0.08);
+    ctx.save();
+    ctx.globalAlpha = 0.06 + auraGain * 0.22;
+    ctx.fillStyle = colors[1];
+    ctx.beginPath();
+    ctx.arc(cx, cy, rg, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    drawEye(cx - gap, cy, erx, ry, open, px, py, colors, alpha, t);
+    drawEye(cx + gap, cy, erx, ry, open, px, py, colors, alpha, t);
+
+    // 说话时底部随音量起伏的细线，给“正在出声”一个非文字反馈
+    if (state.name === "speaking") {
+      const bars = 17, bw = 4, span = Math.min(W * 0.22, 220);
+      const baseY = cy + ry * 2.1;
+      ctx.save();
+      ctx.globalAlpha = 0.55;
+      ctx.fillStyle = colors[0];
+      for (let i = 0; i < bars; i++) {
+        const phase = Math.sin(t * 11 + i * 0.9) * 0.5 + 0.5;
+        const hgt = 3 + phase * 18 * (0.35 + lv * 2.2);
+        const x = cx - span / 2 + i * (span / (bars - 1));
+        ctx.fillRect(x - bw / 2, baseY - hgt / 2, bw, hgt);
+      }
+      ctx.restore();
+    }
+
+    // 状态文字：只在出错/离线时出现，正常状态保持纯黑沉浸
+    const showError = state.name === "error" && !state.offline;
+    notice.classList.toggle("on", state.offline || showError);
+    if (state.offline) {
+      notice.textContent = "与后端断开，正在重连…";
+    } else if (showError) {
+      notice.textContent = state.error || "唤醒服务异常";
+    }
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

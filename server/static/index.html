@@ -1353,6 +1353,27 @@
   .api-profile .field input { width: 100%; min-width: 0; }
   .api-profile .field-hint { word-break: break-all; font-size: 11.5px; }
   .api-empty { color: var(--muted); font-size: 12px; padding: 4px 0 8px; }
+  /* 接口卡底栏：状态说明在左、操作按钮在右。右内边距 10px 与 .api-profile
+     的行内右内边距一致，两个按钮的右边缘落在同一条竖线上。
+     不设 flex-wrap：窄屏只让说明文字换行，按钮 flex:none 永远留在右侧 */
+  .api-foot {
+    display: flex; align-items: center; gap: 10px;
+    margin-top: 10px; padding-right: 10px;
+  }
+  .api-foot .field-hint {
+    flex: 1 1 auto; min-width: 0;
+    margin: 0; text-align: left; line-height: 1.4;
+  }
+  /* 「新增一组」与行内「设为使用中」是同一级次要按钮：同高 24 / 圆角 999 /
+     字号 11.5 / 内边距 0 9；「使用中」的实心胶囊是状态标记，不并入这套 */
+  .api-foot .mini-btn {
+    flex: none; display: inline-flex; align-items: center; justify-content: center;
+    height: 24px; min-height: 24px; padding: 0 9px; border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--line) 80%, var(--muted) 20%);
+    background: transparent; color: var(--muted);
+    font-size: 11.5px; white-space: nowrap;
+  }
+  .api-foot .mini-btn:hover { border-color: var(--brand); color: var(--brand); }
   /* 底栏的垂直尺寸要和侧栏那条 .sb-foot 完全一样（上 8 / 下 10 / 按钮 34），
      两个分隔线才会落在同一条水平线上，不然左右各画一条、高低差一截 */
   .set-foot {
@@ -2161,33 +2182,49 @@
   }
   #ctrlBadge { cursor: pointer; }
   #ctrlBadge:active { opacity: .7; }
-  .ctrl-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; }
-  .ctrl-row {
-    display: flex; align-items: center; gap: 10px;
-    padding: 9px 2px;
-    border-bottom: 1px solid var(--line);
-    font-size: 14px;
-  }
-  .ctrl-row:last-child { border-bottom: none; }
+  /* ---------- 桌面控件自检：整卡统一行样式 ----------
+     一行 = 状态灯 + 名称 + 次要信息 + 右侧操作；行与行之间只有一条淡分隔线，
+     左右两栏不再用不同的方块/底色区分 */
+  .ctrl-list { display: flex; flex-direction: column; margin-bottom: 12px; }
+  .ctrl-item { padding: 9px 2px; border-bottom: 1px solid var(--line); }
+  .ctrl-item:last-child { border-bottom: none; }
+  .ctrl-row { display: flex; align-items: center; gap: 10px; font-size: 14px; }
   .ctrl-row .lamp {
     width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
     background: var(--muted);
     box-shadow: 0 0 0 1px rgba(0,0,0,.18) inset;
   }
   .ctrl-row.ok .lamp { background: #2ecc71; }
+  /* 缺失 / 可补装：两栏共用同一种提示色，不再一边红一边黄 */
+  .ctrl-row.warn .lamp { background: #e0a33a; }
   .ctrl-row.bad .lamp { background: #e04a4a; }
-  /* 不适用：灰色空心灯，明确区别于「坏了的红灯」 */
+  /* 不适用：灰色空心灯，明确区别于「坏了」 */
   .ctrl-row.na .lamp { background: transparent; box-shadow: 0 0 0 1.5px var(--muted) inset; }
-  .ctrl-row .nm { flex: 0 0 auto; min-width: 62px; }
-  .ctrl-row .ds { flex: 1; min-width: 0; color: var(--muted); font-size: 12.5px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ctrl-row .nm {
+    flex: 0 1 auto; min-width: 0; max-width: 58%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* 版本 / 大小 / 说明：两栏同一层级的小号灰字 */
+  .ctrl-row .ds {
+    flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: 12.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .ctrl-row.bad .ds { color: #d0492b; }
+  /* 右侧操作位：固定宽度、统一右对齐；未就绪给按钮，已就绪给静态文字 */
+  .ctrl-row .act {
+    flex: 0 0 auto; min-width: 84px;
+    display: flex; align-items: center; justify-content: flex-end;
+  }
+  .ctrl-row .act .mini-btn {
+    width: 84px; height: 26px; min-height: 26px; padding: 0 6px; font-size: 12px;
+  }
+  .ctrl-row .act .sc-state { font-size: 12px; color: var(--muted); text-align: right; }
+  /* 底部说明统一成同一种注释样式：不描边、不加底、不做粗体强调 */
   .ctrl-yd {
     font-size: 12.5px; color: var(--muted);
-    background: var(--surface-2); border-radius: 10px;
-    padding: 10px 12px; line-height: 1.6; margin-bottom: 12px;
+    line-height: 1.55; margin-bottom: 12px;
   }
-  .ctrl-yd b { color: var(--text); font-weight: 600; }
+  .ctrl-card .upd-note { font-size: 12.5px; margin-top: 8px; }
   .ctrl-actions { display: flex; gap: 10px; }
   /* 主操作（修复守护进程）撑满剩余宽度，次要操作（重新实测）按内容宽度；
      两者都用 .mini-btn，保证和设置页其它按钮同一套外观 */
@@ -2211,26 +2248,12 @@
   /* ---------- 桌面控件自检：两栏（左自检 / 右可补装组件） ---------- */
   .ctrl-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
   .ctrl-col { min-width: 0; }
+  /* 分区标题只做子标题，不带容器边框或底色 */
   .ctrl-sub { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
-  .sc-list { display: flex; flex-direction: column; gap: 6px; }
-  /* 每行统一结构：名称 / 体积 / 操作按钮三列固定，子行说明单独占一行。
-     状态不再单独占一列徽章：就绪与否由按钮文案和下方说明承担，避免「已就绪」重复两遍 */
-  .sc-row {
-    border: 1px solid var(--line); border-radius: 10px;
-    padding: 8px 10px; background: var(--surface-2); box-sizing: border-box;
-  }
-  .sc-head {
-    display: grid; grid-template-columns: minmax(0, 1fr) 64px 84px;
-    align-items: center; gap: 8px; min-height: 28px;
-  }
-  .sc-name { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sc-size {
-    font-size: 11px; color: var(--muted); text-align: center;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .sc-btn { width: 84px; min-height: 28px; padding: 0 6px; font-size: 12px; }
+  /* 右栏行内的附属内容（安装进度 / 密码授权 / 命令）与名称左对齐 */
+  .sc-detail, .sc-cmd, .sc-auth, .sc-progress { margin-left: 19px; }
   .sc-detail {
-    margin-top: 4px; font-size: 11.5px; color: var(--muted);
+    margin-top: 4px; font-size: 12px; color: var(--muted);
     line-height: 1.5; overflow-wrap: anywhere;
   }
   .sc-detail:empty { display: none; }
@@ -2245,7 +2268,7 @@
      说明一行、控件一行；密码默认遮罩，眼睛按钮临时切换明文 */
   .sc-auth { display: none; margin-top: 6px; }
   .sc-auth.show { display: block; }
-  .sc-auth-tip { display: block; margin-bottom: 4px; font-size: 11.5px; color: var(--muted); }
+  .sc-auth-tip { display: block; margin-bottom: 4px; font-size: 12px; color: var(--muted); }
   .sc-auth-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .sc-pw {
     flex: 1 1 132px; min-width: 0; height: 30px; padding: 0 8px; box-sizing: border-box;
@@ -2269,8 +2292,10 @@
   .sc-bar i { display: block; height: 100%; width: 0; background: #2ecc71; transition: width .25s; }
   .sc-pct { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
   @media (max-width: 420px) {
-    .sc-head { grid-template-columns: minmax(0, 1fr) 48px 68px; gap: 6px; }
-    .sc-btn, .sc-auth-btn { width: 68px; }
+    .ctrl-row { gap: 8px; font-size: 13.5px; }
+    .ctrl-row .act { min-width: 68px; }
+    .ctrl-row .act .mini-btn { width: 68px; }
+    .sc-auth-btn { width: 68px; }
     /* 360px 级窄屏：输入框独占一行，切换/确认换到下一行但保持一行对齐 */
     .sc-pw { flex: 1 1 100%; }
   }
@@ -3272,8 +3297,10 @@
           <div class="card">
             <div class="card-title">接口</div>
             <div id="apiProfileList"></div>
-            <div id="apiProfileHint" class="field-hint">同一时间只有一条生效；切换后立即使用新的那组。</div>
-            <div class="mem-foot" style="margin-top:10px">
+            <!-- 底栏：左侧只放状态说明，右侧「新增一组」；按钮右边缘和上面每行
+                 的「使用中 / 删除」对齐（行内右内边距 10px） -->
+            <div class="api-foot">
+              <div id="apiProfileHint" class="field-hint">同一时间只有一条生效；切换后立即使用新的那组。</div>
               <button id="apiProfileAdd" class="mini-btn" type="button">新增一组</button>
             </div>
           </div>
@@ -3508,6 +3535,7 @@
             <div class="card-title">桌面控件自检</div>
             <div class="ctrl-cols">
               <div class="ctrl-col">
+                <div class="ctrl-sub">控件实测</div>
                 <div class="ctrl-list" id="ctrlList"></div>
                 <div class="ctrl-yd" id="ctrlYd"></div>
                 <div class="ctrl-actions">
@@ -3519,7 +3547,7 @@
               </div>
               <div class="ctrl-col">
                 <div class="ctrl-sub">可补装组件</div>
-                <div id="selfcheckList" class="sc-list"></div>
+                <div class="ctrl-list" id="selfcheckList"></div>
                 <div id="selfcheckHint" class="upd-note"></div>
               </div>
             </div>
@@ -3905,6 +3933,16 @@
               </label>
             </div>
             <div id="sttHint" class="field-hint"></div>
+            <div class="field field-row" style="margin-top:6px">
+              <label style="margin:0">智能音箱模式（声控唤醒「你好梅朵」）</label>
+              <label class="switch">
+                <input id="cfgWake" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field-hint" style="margin-top:0">
+              默认关闭。打开后后端常驻监听唤醒词，命中后进入一轮「听 → 想 → 说」，直接发送并朗读；支持 Esc / 托盘 / 屏幕按钮随时停止。唤醒与识别全在本机，音频不落盘、不上传，只有识别出的文字会进入现有对话链路（LLM 仍在远端）。首次启用会下载约 38MB 的唤醒模型；游戏模式不保证全屏覆盖，v1 只面向桌面模式。
+            </div>
             <div class="field field-row" id="r2PttRow" style="margin-top:2px">
               <label style="margin:0">R1 按住说话（桌面客户端）</label>
               <label class="switch">
@@ -9893,27 +9931,24 @@
     if (!c || !c.items) return;
     ctrlList.replaceChildren();
     (c.items || []).forEach(function (it) {
+      var item = document.createElement('div'); item.className = 'ctrl-item';
       var row = document.createElement('div');
-      // 三态：可用（绿）/ 不可用（红）/ 环境不适用（灰，比如游戏模式下没有 KWin）
-      row.className = 'ctrl-row ' + (it.na ? 'na' : (it.ok ? 'ok' : 'bad'));
+      // 三态：可用（绿）/ 缺失（黄，与右栏可补装同色）/ 环境不适用（灰空心）
+      row.className = 'ctrl-row ' + (it.na ? 'na' : (it.ok ? 'ok' : 'warn'));
       var lamp = document.createElement('span'); lamp.className = 'lamp';
       var nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = it.label;
       var ds = document.createElement('span'); ds.className = 'ds';
       ds.textContent = it.na ? (it.detail || '当前环境不适用')
-                             : (it.ok ? '可用' : (it.detail || '不可用'));
+                             : (it.ok ? '可用' : (it.detail || '缺失'));
       if (!it.ok && it.detail) ds.title = it.detail;
       row.append(lamp, nm, ds);
-      ctrlList.appendChild(row);
+      item.appendChild(row);
+      ctrlList.appendChild(item);
     });
 
     var yd = c.ydotoold || {};
-    ctrlYd.replaceChildren();
-    var b1 = document.createElement('b');
-    b1.textContent = 'ydotoold：';
-    var s1 = document.createElement('span');
-    s1.textContent = (yd.active ? '运行中' : '未运行')
+    ctrlYd.textContent = 'ydotoold：' + (yd.active ? '运行中' : '未运行')
       + (yd.enabled ? '，已设开机自启（重启后自动恢复）' : '，未设开机自启（重启后会失效）');
-    ctrlYd.append(b1, s1);
 
     // 网页端只修不需要 root 的部分（ydotoold 托管）；装系统包要 sudo 密码，
     // 后台进程接不了终端输入，一律引导到终端，由 sudo 自己提示
@@ -10105,8 +10140,8 @@
       if (job.state === 'running') return '进行中…';
       if (job.state === 'need_password') return '等待授权';
     }
-    if (it.status === 'ready') return it.can_uninstall ? '卸载' : '已就绪';
-    if (!it.can_install) return it.command ? '复制命令' : '已就绪';
+    if (it.status === 'ready') return it.can_uninstall ? '卸载' : '可用';
+    if (!it.can_install) return it.command ? '复制命令' : '安装';
     return it.key === 'ydotoold' ? '修复' : '安装';
   }
 
@@ -10215,26 +10250,42 @@
     scList.replaceChildren();
     scRows = {};
     (data.components || []).forEach(function (it) {
+      var item = document.createElement('div');
+      item.className = 'ctrl-item';
       var row = document.createElement('div');
-      row.className = 'sc-row';
-      var head = document.createElement('div');
-      head.className = 'sc-head';
+      // 与左栏同一套三态：可用绿 / 缺失提示色 / 任务失败红
+      row.className = 'ctrl-row ' + (it.status === 'ready' ? 'ok' : 'warn');
+      var lamp = document.createElement('span');
+      lamp.className = 'lamp';
       var nm = document.createElement('span');
-      nm.className = 'sc-name'; nm.textContent = it.name; nm.title = it.name;
-      var sz = document.createElement('span');
-      sz.className = 'sc-size'; sz.textContent = it.size || ''; sz.title = it.size || '';
-      var btn = document.createElement('button');
-      btn.className = 'mini-btn sc-btn'; btn.type = 'button';
-      btn.textContent = scBtnLabel(it, job);
-      btn.disabled = (it.status === 'ready' && !it.can_uninstall)
-        || (job && job.component === it.key
-            && (job.state === 'running' || job.state === 'need_password'));
-      head.append(nm, sz, btn);
+      nm.className = 'nm'; nm.textContent = it.name; nm.title = it.name;
+      // 次要信息：已就绪给体积，未就绪优先给缺失原因；同一层级的小号灰字
+      var ds = document.createElement('span');
+      ds.className = 'ds';
+      var sub = it.status === 'ready' ? (it.size || '')
+                                      : (it.detail || it.size || '缺失');
+      ds.textContent = sub; ds.title = sub;
+      // 右侧操作位固定宽度：未就绪给安装按钮，已就绪给统一静态文字
+      var act = document.createElement('span');
+      act.className = 'act';
+      var btn = null;
+      if (it.status === 'ready' && !it.can_uninstall) {
+        var st = document.createElement('span');
+        st.className = 'sc-state'; st.textContent = '可用';
+        act.appendChild(st);
+      } else {
+        btn = document.createElement('button');
+        btn.className = 'mini-btn'; btn.type = 'button';
+        btn.textContent = scBtnLabel(it, job);
+        btn.disabled = !!(job && job.component === it.key
+          && (job.state === 'running' || job.state === 'need_password'));
+        act.appendChild(btn);
+      }
+      row.append(lamp, nm, ds, act);
 
-      // 补充说明独立一行；为空时 CSS :empty 自动收掉，不与名称混排
+      // 进度/失败说明：只在有任务或错误时出现，与名称左对齐
       var detail = document.createElement('div');
       detail.className = 'sc-detail';
-      detail.textContent = it.detail || '';
 
       var cmd = null;
       if (!it.can_install && it.action !== 'package' && it.command) {
@@ -10270,7 +10321,7 @@
       auth.append(authTip, authLine, authErr);
 
       var rowRef = {
-        detail: detail, prog: null, fill: null, pct: null,
+        row: row, detail: detail, prog: null, fill: null, pct: null,
         auth: auth, pw: pw, eye: eye, authBtn: authBtn, authErr: authErr
       };
       eye.addEventListener('click', function () {
@@ -10285,12 +10336,14 @@
         if (e.key === 'Enter') { e.preventDefault(); submitPassword(it.key, rowRef); }
       });
 
-      if (it.status === 'ready' && it.can_uninstall) {
-        btn.addEventListener('click', function () { uninstallComponent(it, btn); });
-      } else if (!it.can_install && it.command) {
-        btn.addEventListener('click', function () { copyCmd(it.command); });
-      } else {
-        btn.addEventListener('click', function () { installComponent(it.key); });
+      if (btn) {
+        if (it.status === 'ready' && it.can_uninstall) {
+          btn.addEventListener('click', function () { uninstallComponent(it, btn); });
+        } else if (!it.can_install && it.command) {
+          btn.addEventListener('click', function () { copyCmd(it.command); });
+        } else {
+          btn.addEventListener('click', function () { installComponent(it.key); });
+        }
       }
 
       var prog = document.createElement('div');
@@ -10303,10 +10356,10 @@
       pct.className = 'sc-pct';
       prog.append(bar, pct);
 
-      row.append(head, detail);
-      if (cmd) row.appendChild(cmd);
-      row.append(auth, prog);
-      scList.appendChild(row);
+      item.append(row, detail);
+      if (cmd) item.appendChild(cmd);
+      item.append(auth, prog);
+      scList.appendChild(item);
       rowRef.prog = prog; rowRef.fill = fill; rowRef.pct = pct;
       scRows[it.key] = rowRef;
     });
@@ -10318,6 +10371,9 @@
   function applyScProgress(job) {
     var r = scRows[job.component];
     if (!r) return;
+    // 任务失败时把该行状态灯切成红色；其余状态沿用渲染时的绿/黄
+    r.row.classList.remove('bad');
+    if (job.state === 'error') r.row.classList.add('bad');
     r.prog.classList.add('show');
     var pct = Math.max(0, Math.min(100, job.percent || 0));
     r.fill.style.width = pct + '%';
@@ -10359,7 +10415,7 @@
       .then(function (d) {
         if (!d || !d.components) { scHint.textContent = '读取组件清单失败'; return; }
         renderSelfcheck(d);
-        scHint.textContent = '已就绪 ' + d.ready + '/' + d.total
+        scHint.textContent = '可用 ' + d.ready + '/' + d.total
           + '。缺失的系统包会在本页自动下载安装，需要时按提示输入管理员密码。';
         if (d.job && (d.job.state === 'running' || d.job.state === 'need_password')) {
           startScPoll();
@@ -11760,6 +11816,7 @@
   var cfgWithShot = document.getElementById('cfgWithShot');
   var cfgStt = document.getElementById('cfgStt');
   var cfgSttDuck = document.getElementById('cfgSttDuck');
+  var cfgWake = document.getElementById('cfgWake');
   var cfgR2Ptt = document.getElementById('cfgR2Ptt');
   var r2PttRow = document.getElementById('r2PttRow');
   // 「对话与语音」整组总开关：关闭后分项整体停用（后端也按 chat_voice 生效）
@@ -12623,6 +12680,8 @@
         cfgStt.checked = (c.stt_enable_pref != null ? c.stt_enable_pref : c.stt_enable) !== false;
         // 录音时静音外放：老配置没有这项，后端缺省即开
         cfgSttDuck.checked = c.stt_duck_output !== false;
+        // 智能音箱模式：默认关闭，只有后端明确开启才勾上
+        if (cfgWake) cfgWake.checked = c.wake_enabled === true;
         if (cfgChatVoice) cfgChatVoice.checked = c.chat_voice !== false;
         syncChatVoiceGate();
         // [ui] language：以服务端为准（老配置没有这一项就是 zh）
@@ -13044,6 +13103,7 @@
       chat_voice: cfgChatVoice ? !!cfgChatVoice.checked : true,
       stt_enable: !!cfgStt.checked,
       stt_duck_output: !!cfgSttDuck.checked,
+      wake_enabled: cfgWake ? !!cfgWake.checked : false,
       // [ui] language：切到 en 后整页重载，让 i18n 表重新拉取并替换静态文案
       ui_language: cfgLang ? cfgLang.value : 'zh',
       permission_mode: cfgPerm.value,

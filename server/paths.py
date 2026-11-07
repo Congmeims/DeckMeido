@@ -166,3 +166,8 @@ def stt_model_dir() -> Path:
 def tts_model_dir() -> Path:
     """语音合成模型目录：<data>/models/tts/tsukuyomi（首次下载时才创建）"""
     return data_dir() / "models" / "tts" / "tsukuyomi"
+
+
+def wake_model_dir() -> Path:
+    """唤醒词模型目录：<data>/models/wake（首次启用时才创建）"""
+    return data_dir() / "models" / "wake"

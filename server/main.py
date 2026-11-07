@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from .llm import LLMClient
-from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, memory, menu, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, remote_terminal, selfcheck, singleton, status_line, sudo_auth, tools, updater, usage
+from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, memory, menu, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, remote_terminal, selfcheck, singleton, status_line, sudo_auth, tools, updater, usage, wake
 from .session_store import store
 from . import session_store
 from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, TTSError, normalize_speaker,
@@ -780,6 +780,20 @@ stt = STT(
 # 设置里可关；工具缺失时 audiomute 自己静默降级，不影响录音
 audiomute.set_enabled(bool(_stt_cfg.get("duck_output", True)))
 
+# 智能音箱模式：常驻唤醒检测在后台跑，默认关闭（[wake] enabled=false）。
+# 只复用现有 STT/TTS/对话入口，不新起独立进程；状态通过 /api/wake/state 与 WS 广播。
+wake_service = wake.WakeService(
+    model_root=paths.wake_model_dir(),
+    transcribe=stt.transcribe,
+    duck=audiomute.duck,
+    restore=audiomute.restore,
+    power_hold=lambda: power.keeper.hold("wake_mode", "智能音箱模式"),
+    power_release=lambda: power.keeper.release("wake_mode"),
+)
+wake_service.apply(CFG.get("wake") or {})
+tts.set_state_listener(wake_service.note_tts)
+wake_service.set_tts_stop(tts.stop)
+
 
 def apply_config(cfg: dict):
     """热更新运行配置（LLM / TTS / 权限模式 / 界面语言），无需重启"""
@@ -836,6 +850,8 @@ def apply_config(cfg: dict):
         stt.unload()
     # 录音时静音外放：热更新；关掉时把可能还静着的输出立刻恢复
     audiomute.set_enabled(bool(s.get("duck_output", True)))
+    # 智能音箱模式：开关 / 唤醒词 / 阈值热更新；关掉时 wake 服务自己退出监听
+    wake_service.apply(cfg.get("wake") or {})
     PERMISSION_MODE = cfg.get("security", {}).get("permission_mode", "auto")
     # 文件工具的边界跟着权限模式走：full 不设限（与 run_command 一致），
     # 其余模式只能碰工作区。这里同步一份，热更新后立刻生效
@@ -1671,6 +1687,14 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+def _wake_notify(status: dict):
+    """唤醒状态机变化：广播给所有页面（眼睛页/设置页都靠它即时刷新）"""
+    return manager.broadcast({"type": "wake_state", "data": status})
+
+
+wake_service.set_handlers(on_state=_wake_notify)
 
 
 async def _broadcast_remote_input(state: dict):
@@ -3616,6 +3640,17 @@ async def start_chat(text: str, announce: bool = True, **kwargs):
             pass
 
 
+def _wake_cancel_chat() -> None:
+    """唤醒轮次的终止：start_chat 内部的 handle_chat 任务不会被外层取消连带，
+    这里显式取消登记在案的 current_task。"""
+    task = current_task
+    if task is not None and not task.done():
+        task.cancel()
+
+
+wake_service.set_handlers(chat=start_chat, cancel_chat=_wake_cancel_chat)
+
+
 @app.post("/api/cancel", dependencies=[Depends(require_auth)])
 async def api_cancel(request: Request, client: str = "", device: str = ""):
     """终止当前这一轮，并把「谁点的」记进日志。
@@ -3681,6 +3716,8 @@ class ConfigUpdate(BaseModel):
     stt_enable: bool | None = None
     # 录音期间静音外放：写入 [stt] duck_output
     stt_duck_output: bool | None = None
+    # 智能音箱模式总开关：写入 [wake] enabled，打开后后端自动进入待机监听
+    wake_enabled: bool | None = None
     # 界面语言："zh"（默认）/ "en"；写 [ui] language
     ui_language: str | None = None
     # 发送时是否附带给游戏画面（面板上的「画面：开/关」）
@@ -3928,6 +3965,9 @@ async def api_get_config():
         # 设置页据此提示「这台机器不支持静音」，但开关仍可保存
         "stt_duck_output": audiomute.enabled(),
         "stt_duck": audiomute.status(),
+        # 智能音箱模式：设置页的开关/状态；默认 false，唤醒后直接发送
+        "wake_enabled": wake_service.enabled,
+        "wake_state": wake_service.status(),
         # [ui] language：网页/客户端据此显示语言下拉，切换后整页重载
         "ui_language": UI_LANG,
         "permission_mode": PERMISSION_MODE,
@@ -4191,6 +4231,9 @@ async def api_set_config(req: ConfigUpdate, request: Request):
     if req.stt_duck_output is not None:
         # 和 stt_enable 写同一段，用 setdefault 合并，避免后一项覆盖前一项
         updates.setdefault("stt", {})["duck_output"] = bool(req.stt_duck_output)
+    if req.wake_enabled is not None:
+        # 智能音箱模式：apply_config 里 wake_service.apply 会负责进入/退出监听
+        updates["wake"] = {"enable": bool(req.wake_enabled)}
     if req.ui_language is not None:
         updates["ui"] = {"language": ui_language({"ui": {"language": req.ui_language}})}
     if req.with_shot is not None:
@@ -5271,6 +5314,81 @@ async def api_stt_transcribe(req: Request):
     return {"ok": True, "text": text}
 
 
+# ---------- 智能音箱模式（声控唤醒） ----------
+# 这些接口只允许本机回环访问：唤醒/录音涉及麦克风与家庭对话，即使开了局域网
+# 配对也不能让别的设备开关它、更不能读走音频（这里本来也没有取音频的接口）。
+
+
+def _wake_local_only(request: Request) -> None:
+    ip = request.client.host if request.client else ""
+    if not netcfg.is_loopback(ip):
+        raise HTTPException(status_code=403, detail="智能音箱模式只允许本机访问")
+
+
+@app.get("/api/wake/state", dependencies=[Depends(require_auth)])
+async def api_wake_state(request: Request):
+    _wake_local_only(request)
+    return {"ok": True, **wake_service.status()}
+
+
+@app.post("/api/wake/toggle", dependencies=[Depends(require_auth)])
+async def api_wake_toggle(request: Request, on: bool | None = Query(default=None)):
+    """开关常驻监听；打开时写 [wake] enabled=true，关闭时同时退出监听。"""
+    _wake_local_only(request)
+    target = (not wake_service.enabled) if on is None else bool(on)
+    save_config({"wake": {"enable": target}})
+    try:
+        status = await (wake_service.arm() if target else wake_service.disarm())
+    except wake.WakeError as exc:
+        # 起不来就把开关退回关闭：否则设置页显示「已开」、眼睛显示错误，
+        # 而后端每次重启都会白试一次（缺模型/缺 sherpa/麦克风被占都属于这种）。
+        if target:
+            try:
+                save_config({"wake": {"enable": False}})
+            except HTTPException:
+                pass
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, **status}
+
+
+@app.post("/api/wake/stop", dependencies=[Depends(require_auth)])
+async def api_wake_stop(request: Request):
+    """中止当前一轮（思考/播报），回到待机；不退出模式。"""
+    _wake_local_only(request)
+    return {"ok": True, **await wake_service.stop()}
+
+
+@app.post("/api/wake/exit", dependencies=[Depends(require_auth)])
+async def api_wake_exit(request: Request):
+    """退出智能音箱模式：关总开关并释放麦克风/电源保持。"""
+    _wake_local_only(request)
+    save_config({"wake": {"enable": False}})
+    return {"ok": True, **await wake_service.disarm()}
+
+
+@app.on_event("startup")
+async def _wake_startup():
+    """配置里 enabled=true 时，后端起来后自动进入待机监听（失败只记状态）。"""
+    if not wake_service.enabled:
+        return
+
+    async def _boot():
+        try:
+            await wake_service.arm()
+        except Exception:
+            pass
+
+    asyncio.create_task(_boot())
+
+
+@app.on_event("shutdown")
+async def _wake_shutdown():
+    try:
+        await wake_service.disarm()
+    except Exception:
+        pass
+
+
 # ---------- 版本与升级 ----------
 
 # 不校验配对：鉴权页在登录前就要显示版本号
@@ -5562,6 +5680,7 @@ async def handle_chat(text: str, announce: bool = True,
                       readonly: bool = False,
                       force_confirm: bool = False,
                       guest: bool = False,
+                      force_tts: bool = False,
                       guest_prompt_text: str = "") -> dict:
     """brief 是给界面看的短文案（可选）：截屏询问那套提示词有一百多字，
    插件面板长显会把整个面板撑开。它只随消息存下来供各端显示，
@@ -5817,9 +5936,14 @@ async def handle_chat(text: str, announce: bool = True,
         await manager.broadcast({"type": "assistant_message", "text": reply, "ts": asst_ts,
                                  "events": events, **sid_tag, **src_tag})
         # 语音播报：只播报最终回复，不播报思维链/工具过程（后台进行，不阻塞）。
-        # QQ 通道的回答不在本机播报：那是别人在手机上说的话，不该从 Deck 的喇叭里出来
+        # QQ 通道的回答不在本机播报：那是别人在手机上说的话，不该从 Deck 的喇叭里出来。
+        # 智能音箱模式（force_tts）必须等这一句读完再收尾，否则唤醒轮次会在
+        # 播放结束前就把状态切回监听，眼睛与半双工都会错位。
         if (client or "") != "qq":
-            asyncio.create_task(tts.speak(reply))
+            if force_tts:
+                await tts.speak(reply, force=True)
+            else:
+                asyncio.create_task(tts.speak(reply))
     return {"reply": reply, "events": events}
 
 
