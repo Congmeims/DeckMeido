@@ -6,7 +6,7 @@ import {
   Navigation,
   showModal,
 } from "@decky/ui";
-import { ACCENT, DIM, ERR_COLOR, ImeTextArea, ImeTextField, Md, MessageContent, TEXT } from "./ui";
+import { ACCENT, DIM, ERR_COLOR, ImeTextArea, ImeTextField, Md, MessageContent, TEXT, ThoughtRow } from "./ui";
 import { statusLineFor } from "./statusLine";
 import { bumpOnce, stepTab } from "./tabNav";
 import { Item, useSession } from "./useSession";
@@ -215,11 +215,15 @@ function MessageBubble({
   item,
   text,
   streaming,
+  busy,
+  onAnswer,
 }: {
   mine?: boolean;
   item?: Item;
   text?: string;
   streaming?: boolean;
+  busy?: boolean;
+  onAnswer?: (text: string) => void;
 }) {
   const system = item?.role === "system";
   return (
@@ -267,7 +271,13 @@ function MessageBubble({
         }}
       >
         {item ? (
-          <MessageContent item={item} size={CHAT_FONT} align={mine ? "right" : "left"} />
+          <MessageContent
+            item={item}
+            size={CHAT_FONT}
+            align={mine ? "right" : "left"}
+            busy={busy}
+            onAnswer={onAnswer}
+          />
         ) : (
           <Md text={text ?? ""} align={mine ? "right" : "left"} size={CHAT_FONT} />
         )}
@@ -363,15 +373,22 @@ function SectionCard({
 function ChatLog({
   items,
   streaming,
+  thought,
   busy,
   elapsed,
   scrollRef,
+  answerBusy,
+  onAnswer,
 }: {
   items: Item[];
   streaming: string;
+  /** 实时思考增量（已按 100ms 节流），渲染在正文气泡之前 */
+  thought?: string;
   busy: boolean;
   elapsed: number;
   scrollRef: React.RefObject<HTMLDivElement | null>;
+  answerBusy?: boolean;
+  onAnswer?: (text: string) => void;
 }) {
   return (
     <Focusable
@@ -389,11 +406,32 @@ function ChatLog({
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
         {items.map((m, i) => (
-          <MessageBubble key={`${m.ts}-${i}`} mine={m.role === "user"} item={m} />
+          <MessageBubble
+            key={`${m.ts}-${i}`}
+            mine={m.role === "user"}
+            item={m}
+            busy={answerBusy}
+            onAnswer={onAnswer}
+          />
         ))}
+        {!!thought && (
+          <div
+            style={{
+              maxWidth: "100%",
+              minWidth: 0,
+              boxSizing: "border-box",
+              padding: "8px 10px",
+              borderRadius: 6,
+              background: "rgba(255,255,255,.06)",
+              borderLeft: `2px solid ${ACCENT}`,
+            }}
+          >
+            <ThoughtRow text={thought} size={CHAT_FONT} defaultOpen />
+          </div>
+        )}
         {streaming && <MessageBubble text={streaming} streaming />}
-        {busy && !streaming && <MessageBubble text={`思考中…（${elapsed}s）`} />}
-        {!items.length && !streaming && !busy && (
+        {busy && !streaming && !thought && <MessageBubble text={`思考中…（${elapsed}s）`} />}
+        {!items.length && !streaming && !busy && !thought && (
           <div style={{ color: DIM, textAlign: "center", fontSize: 13, padding: "28px 0" }}>
             还没有对话，先截个图或直接问吧
           </div>
@@ -671,11 +709,14 @@ export default function BigScreen() {
     <ChatLog
       items={s.items}
       streaming={s.streaming}
+      thought={s.thought}
       // 只有聊天页自己发起的那轮才显示「思考中」占位；
       // 询问页发起的（ask/translate）在这个页签下不显示
       busy={s.busy && s.runningAction === "send"}
       elapsed={s.elapsed}
       scrollRef={scrollRef}
+      answerBusy={s.busy}
+      onAnswer={(t) => void s.send(t)}
     />
   );
 

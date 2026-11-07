@@ -1880,7 +1880,16 @@ async def _read_loop(bk: _Backend):
         if not mine:
             # 别的会话的流式过程与本端这一轮无关，正文已由 assistant_message 收下
             continue
-        if typ == "delta":
+        if typ == "thought_start":
+            _emit({"kind": "thought", "op": "start"})
+        elif typ == "thought_delta":
+            # 逐字增量：前端自己按 ~100ms 节流刷新，这里不攒、不合并
+            text = str(msg.get("text") or "")
+            if text:
+                _emit({"kind": "thought", "op": "delta", "text": text})
+        elif typ == "thought_end":
+            _emit({"kind": "thought", "op": "end"})
+        elif typ == "delta":
             text = str(msg.get("text") or "")
             if text:
                 _ACC += text
@@ -2254,6 +2263,34 @@ class Plugin:
         if not r.get("ok"):
             return {}
         return (r.get("data") or {}).get("current") or {}
+
+    async def play_voice(self, url: str) -> dict:
+        """面板里 <audio> 播不了时的降级：请后端用本机播放器播这条语音
+
+        只接受本机后端的 /api/voice/<文件名>，不把回环接口当通用代理用。
+        参数与网页端 POST /api/voice/play 一致：{"url": "/api/voice/xxx.wav"}。
+        """
+        raw = str(url or "").strip()
+        try:
+            parts = urlsplit(raw)
+        except Exception:
+            return {"ok": False, "error": "语音地址不合法"}
+        if parts.scheme and (parts.hostname or "").lower() not in _LOCAL_HOSTS:
+            return {"ok": False, "error": "语音地址不合法"}
+        path = parts.path
+        if not path.startswith("/api/voice/") or "/" in path[len("/api/voice/"):]:
+            return {"ok": False, "error": "语音地址不合法"}
+        cfg = _load_server_cfg()
+        if not cfg:
+            return {"ok": False, "error": _cfg_error_text()}
+        port = int(cfg.get("port", 18765))
+        r = await _core_http(port, "POST", "/api/voice/play", timeout=8.0,
+                             body={"url": path})
+        if not r.get("ok"):
+            return {"ok": False,
+                    "error": str(r.get("error") or "本机播放失败")}
+        decky.logger.info(f"语音已交给本机播放器：{path}")
+        return {"ok": True}
 
     async def save_preset(self) -> dict:
         """把当前生效的提示词保存成当前游戏的预设

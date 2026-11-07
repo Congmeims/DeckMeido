@@ -10,7 +10,7 @@ import {
   TextField,
   ToggleField,
 } from "@decky/ui";
-import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, MessageContent, TEXT, copyText } from "./ui";
+import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, MessageContent, TEXT, ThoughtRow, copyText } from "./ui";
 import { statusLineFor } from "./statusLine";
 import { bumpOnce, stepTab } from "./tabNav";
 import { applyPadOrder, steamClient } from "./padOrder";
@@ -241,11 +241,15 @@ function Bubble({
   item,
   text,
   streaming,
+  busy,
+  onAnswer,
 }: {
   mine?: boolean;
   item?: Item;
   text?: string;
   streaming?: boolean;
+  busy?: boolean;
+  onAnswer?: (text: string) => void;
 }) {
   const system = item?.role === "system";
   return (
@@ -291,7 +295,13 @@ function Bubble({
         }}
       >
         {item ? (
-          <MessageContent item={item} size={12} align={mine ? "right" : "left"} />
+          <MessageContent
+            item={item}
+            size={12}
+            align={mine ? "right" : "left"}
+            busy={busy}
+            onAnswer={onAnswer}
+          />
         ) : (
           <Md text={text ?? ""} align={mine ? "right" : "left"} size={12} />
         )}
@@ -305,17 +315,25 @@ function Bubble({
 function ChatLog({
   items,
   streaming,
+  thought,
   busy,
   elapsed,
   emptyText,
   scrollRef,
+  answerBusy,
+  onAnswer,
 }: {
   items: Item[];
   streaming: string;
+  /** 实时思考增量（已按 100ms 节流），渲染在正文气泡之前 */
+  thought?: string;
   busy: boolean;
   elapsed: number;
   emptyText?: string;
   scrollRef: React.RefObject<HTMLDivElement | null>;
+  /** 有任何一轮在跑（询问/翻译也算）：选项按钮要一起锁住 */
+  answerBusy?: boolean;
+  onAnswer?: (text: string) => void;
 }) {
   return (
     <Focusable
@@ -336,11 +354,32 @@ function ChatLog({
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
         {items.map((m, i) => (
-          <Bubble key={`${m.ts}-${i}`} mine={m.role === "user"} item={m} />
+          <Bubble
+            key={`${m.ts}-${i}`}
+            mine={m.role === "user"}
+            item={m}
+            busy={answerBusy}
+            onAnswer={onAnswer}
+          />
         ))}
+        {!!thought && (
+          <div
+            style={{
+              maxWidth: "100%",
+              minWidth: 0,
+              boxSizing: "border-box",
+              padding: "6px 8px",
+              borderRadius: 4,
+              background: "rgba(255,255,255,.06)",
+              borderLeft: `2px solid ${ACCENT}`,
+            }}
+          >
+            <ThoughtRow text={thought} size={12} defaultOpen />
+          </div>
+        )}
         {streaming && <Bubble text={streaming} streaming />}
-        {busy && !streaming && <Bubble text={`思考中…（${elapsed}s）`} />}
-        {!items.length && !streaming && !busy && emptyText && (
+        {busy && !streaming && !thought && <Bubble text={`思考中…（${elapsed}s）`} />}
+        {!items.length && !streaming && !busy && !thought && emptyText && (
           <div style={{ color: DIM, textAlign: "center", fontSize: 11, padding: "24px 0" }}>
             {emptyText}
           </div>
@@ -363,6 +402,7 @@ function useQamSession() {
   const [error, setError] = useState("");
   const [items, setItems] = useState<Item[]>([]);
   const [streaming, setStreaming] = useState("");
+  const [thought, setThought] = useState("");
   const [busy, setBusy] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [activity, setActivity] = useState("");
@@ -402,6 +442,8 @@ function useQamSession() {
   const pairFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const curRef = useRef("");
+  const thoughtBuf = useRef("");
+  const thoughtTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const busyRef = useRef(false);
 
   const setRunningAction = (a: ActionKind) => {
@@ -429,8 +471,33 @@ function useQamSession() {
     setStreaming(curRef.current);
   };
 
+  /** 实时思考按 ~100ms 节流：增量先攒 ref，定时器到点再 setState */
+  const flushThoughtNow = () => {
+    if (thoughtTimer.current !== null) {
+      clearTimeout(thoughtTimer.current);
+      thoughtTimer.current = null;
+    }
+    setThought(thoughtBuf.current);
+  };
+  const queueThought = () => {
+    if (thoughtTimer.current !== null) return;
+    thoughtTimer.current = setTimeout(() => {
+      thoughtTimer.current = null;
+      setThought(thoughtBuf.current);
+    }, 100);
+  };
+  const resetThought = () => {
+    thoughtBuf.current = "";
+    if (thoughtTimer.current !== null) {
+      clearTimeout(thoughtTimer.current);
+      thoughtTimer.current = null;
+    }
+    setThought("");
+  };
+
   const finishTurn = (cancelled?: boolean) => {
     setStreaming("");
+    resetThought();
     setBusyBoth(false);
     setRunningAction("");
     setActivity("");
@@ -684,6 +751,7 @@ function useQamSession() {
     setActivity("");
     setPendingPoke(null);
     curRef.current = "";
+    resetThought();
     setStreaming("");
     setRunningAction(action);
     setBusyBoth(true);
@@ -1105,6 +1173,17 @@ function useQamSession() {
         return;
       }
       if (!busyRef.current) return;
+      if (msg.kind === "thought") {
+        if (msg.op === "start") {
+          resetThought();
+        } else if (msg.op === "delta") {
+          thoughtBuf.current += msg.text || "";
+          queueThought();
+        } else {
+          flushThoughtNow();
+        }
+        return;
+      }
       if (msg.kind === "tool") {
         setActivity(msg.text);
         return;
@@ -1118,7 +1197,10 @@ function useQamSession() {
       }
     };
     addEventListener<[Delta]>("deckmeido_delta", onDelta);
-    return () => removeEventListener("deckmeido_delta", onDelta);
+    return () => {
+      removeEventListener("deckmeido_delta", onDelta);
+      if (thoughtTimer.current !== null) clearTimeout(thoughtTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -1134,6 +1216,7 @@ function useQamSession() {
     error,
     items,
     streaming,
+    thought,
     busy,
     runningAction,
     elapsed,
@@ -1618,11 +1701,14 @@ export default function QamScreen() {
           <ChatLog
             items={s.items}
             streaming={s.streaming}
+            thought={s.thought}
             // 只有聊天页发起的那轮才显示思考占位；询问/翻译由上面的按钮反馈
             busy={s.busy && s.runningAction === "send"}
             elapsed={s.elapsed}
             emptyText="还没有对话，先截个图或去聊天页提问吧"
             scrollRef={scrollRef}
+            answerBusy={s.busy}
+            onAnswer={(t) => void s.send(t)}
           />
         </div>
       )}
@@ -1792,9 +1878,12 @@ export default function QamScreen() {
           <ChatLog
             items={s.items}
             streaming={s.streaming}
+            thought={s.thought}
             busy={s.busy && s.runningAction === "send"}
             elapsed={s.elapsed}
             scrollRef={scrollRef}
+            answerBusy={s.busy}
+            onAnswer={(t) => void s.send(t)}
           />
         </div>
       )}

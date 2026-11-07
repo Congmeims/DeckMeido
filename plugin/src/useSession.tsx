@@ -146,6 +146,7 @@ export type Item = {
 
 export type Delta =
   | { kind: "delta"; text: string }
+  | { kind: "thought"; op: "start" | "delta" | "end"; text?: string }
   | { kind: "final"; text: string; cancelled?: boolean }
   | { kind: "tool"; text: string }
   | { kind: "status"; running: boolean; since?: number }
@@ -221,7 +222,10 @@ export function useSession() {
   const [pairDevices, setPairDevices] = useState<PairedDevice[]>([]);
   const [pairError, setPairError] = useState("");
 
+  const [thought, setThought] = useState("");
   const curRef = useRef("");
+  const thoughtBuf = useRef("");
+  const thoughtTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const busyRef = useRef(false);
   // 最近一次「用户主动终止」的时间（秒）。用来过滤后端迟到的旧 running=true
   const cancelAtRef = useRef(0);
@@ -253,8 +257,36 @@ export function useSession() {
     setStreaming(curRef.current);
   };
 
+  /**
+   * 实时思考节流：后端每 ~40ms 推一个增量，面板按 ~100ms 刷一次就够了。
+   * 攒在 ref 里，定时器到点才 setState，QAM 和大屏都不会被逐字重渲染拖卡。
+   */
+  const flushThoughtNow = () => {
+    if (thoughtTimer.current !== null) {
+      clearTimeout(thoughtTimer.current);
+      thoughtTimer.current = null;
+    }
+    setThought(thoughtBuf.current);
+  };
+  const queueThought = () => {
+    if (thoughtTimer.current !== null) return;
+    thoughtTimer.current = setTimeout(() => {
+      thoughtTimer.current = null;
+      setThought(thoughtBuf.current);
+    }, 100);
+  };
+  const resetThought = () => {
+    thoughtBuf.current = "";
+    if (thoughtTimer.current !== null) {
+      clearTimeout(thoughtTimer.current);
+      thoughtTimer.current = null;
+    }
+    setThought("");
+  };
+
   const finishTurn = (cancelled?: boolean) => {
     setStreaming("");
+    resetThought();
     setBusyBoth(false);
     setRunningAction("");
     setActivity("");
@@ -411,6 +443,7 @@ export function useSession() {
     setActivity("");
     setPendingPoke(null);
     curRef.current = "";
+    resetThought();
     setStreaming("");
     setRunningAction(action);
     setBusyBoth(true);
@@ -602,6 +635,7 @@ export function useSession() {
       }
       setItems([]);
       setStreaming("");
+      resetThought();
       setActivity("");
       curRef.current = "";
       pushLog("SESSION_NEW", "已开始新会话");
@@ -876,6 +910,18 @@ export function useSession() {
         return;
       }
       if (!busyRef.current) return;
+      if (msg.kind === "thought") {
+        if (msg.op === "start") {
+          resetThought();
+        } else if (msg.op === "delta") {
+          thoughtBuf.current += msg.text || "";
+          queueThought();
+        } else {
+          // end：把最后攒的一批立刻刷出来，别让收尾那截卡在 100ms 定时器里
+          flushThoughtNow();
+        }
+        return;
+      }
       if (msg.kind === "tool") {
         setActivity(msg.text);
         return;
@@ -889,7 +935,10 @@ export function useSession() {
       }
     };
     addEventListener<[Delta]>("deckmeido_delta", onDelta);
-    return () => removeEventListener("deckmeido_delta", onDelta);
+    return () => {
+      removeEventListener("deckmeido_delta", onDelta);
+      if (thoughtTimer.current !== null) clearTimeout(thoughtTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -905,6 +954,7 @@ export function useSession() {
     error,
     items,
     streaming,
+    thought,
     busy,
     runningAction,
     elapsed,

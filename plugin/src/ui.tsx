@@ -7,6 +7,7 @@ import type {
   TextareaHTMLAttributes,
 } from "react";
 import { useEffect, useRef, useState } from "react";
+import { call } from "@decky/api";
 import { CommonUIModule, TextField } from "@decky/ui";
 import type { ChatEvent, ChatVoice, Item } from "./useSession";
 
@@ -792,8 +793,17 @@ function ShotThumb({
 }
 
 /** 思考块：默认收起（与网页历史回放一致），放在正文之前 */
-function ThoughtRow({ text, size }: { text: string; size: number }) {
-  const [open, setOpen] = useState(false);
+export function ThoughtRow({
+  text,
+  size,
+  defaultOpen,
+}: {
+  text: string;
+  size: number;
+  /** 实时流式思考用展开态，落定进历史后仍可手动收起 */
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(!!defaultOpen);
   return (
     <div
       style={{
@@ -998,42 +1008,69 @@ function ToolRow({
   );
 }
 
-/** 主动提问：问题正文 + 候选按钮（插件内只展示，点选仍在网页/客户端做） */
+/**
+ * 主动提问：问题正文 + 候选按钮。
+ *
+ * 点击后按网页端同样的流程把选项文本当作一条用户消息发出去（触发新一轮）；
+ * 已选中的选项打勾，同一张卡上的其余选项一起禁用，避免重复提交。
+ * 发送失败由面板自己的错误条显示（send 内部会置错），这里不再叠一层。
+ */
 function AskCard({
   question,
   options,
   size,
   base,
+  busy,
+  onAnswer,
 }: {
   question: string;
   options?: string[];
   size: number;
   base: string;
+  busy?: boolean;
+  onAnswer?: (text: string) => void;
 }) {
+  const [picked, setPicked] = useState<number | null>(null);
+  const locked = !!picked || !!busy || !onAnswer;
   return (
     <div style={{ margin: "4px 0", minWidth: 0 }}>
       {!!question.trim() && <Md text={question} size={size} base={base} />}
       {!!options?.length && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
-          {options.map((o, i) => (
-            <span
-              key={i}
-              style={{
-                maxWidth: "100%",
-                padding: "1px 6px",
-                border: "1px solid rgba(255,255,255,.16)",
-                borderRadius: 3,
-                background: "rgba(255,255,255,.07)",
-                color: TEXT,
-                fontSize: size * 0.9,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {o}
-            </span>
-          ))}
+          {options.map((o, i) => {
+            const selected = picked === i;
+            return (
+              <button
+                key={i}
+                type="button"
+                disabled={locked}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (locked) return;
+                  setPicked(i);
+                  onAnswer?.(o);
+                }}
+                style={{
+                  maxWidth: "100%",
+                  padding: "1px 6px",
+                  border: `1px solid ${selected ? ACCENT : "rgba(255,255,255,.16)"}`,
+                  borderRadius: 3,
+                  background: selected ? "rgba(90,169,230,.22)" : "rgba(255,255,255,.07)",
+                  color: selected ? "#fff" : TEXT,
+                  opacity: locked && !selected ? 0.45 : 1,
+                  cursor: locked ? "default" : "pointer",
+                  fontSize: size * 0.9,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  fontFamily: "inherit",
+                }}
+              >
+                {selected ? "✓ " : ""}
+                {o}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1047,6 +1084,9 @@ function VoiceBar({ voice, base, size }: { voice: ChatVoice; base: string; size:
   const [playing, setPlaying] = useState(false);
   const [pct, setPct] = useState(0);
   const [err, setErr] = useState("");
+  const [fallback, setFallback] = useState<"" | "trying" | "ok">("");
+  // 播放失败与 onError 可能先后触发，兜底只认第一次，避免叠着播两遍
+  const fallbackBusy = useRef(false);
   if (!src) {
     return (
       <div style={{ marginTop: 5, color: DIM, fontSize: 11 }}>
@@ -1054,6 +1094,30 @@ function VoiceBar({ voice, base, size }: { voice: ChatVoice; base: string; size:
       </div>
     );
   }
+  /** 与网页端 voiceFallback 一致：<audio> 播不了就请后端本机播放，再失败才报错 */
+  const playOnHost = async (reason: string) => {
+    if (fallbackBusy.current) return;
+    fallbackBusy.current = true;
+    setFallback("trying");
+    try {
+      const r = (await call<[string], { ok: boolean; error?: string }>(
+        "play_voice",
+        src
+      )) as { ok: boolean; error?: string };
+      if (r?.ok) {
+        setFallback("ok");
+        setErr("");
+      } else {
+        setFallback("");
+        setErr(`语音播放失败：${r?.error || reason}`);
+      }
+    } catch (e: any) {
+      setFallback("");
+      setErr(`语音播放失败：${String(e?.message ?? e)}`);
+    } finally {
+      fallbackBusy.current = false;
+    }
+  };
   const toggle = async () => {
     const el = audioRef.current;
     if (!el) return;
@@ -1062,10 +1126,11 @@ function VoiceBar({ voice, base, size }: { voice: ChatVoice; base: string; size:
       return;
     }
     setErr("");
+    setFallback("");
     try {
       await el.play();
     } catch {
-      setErr("语音播放失败：插件内播放器不可用，请到网页端收听");
+      void playOnHost("插件内播放器不可用");
     }
   };
   return (
@@ -1133,7 +1198,10 @@ function VoiceBar({ voice, base, size }: { voice: ChatVoice; base: string; size:
           ref={audioRef}
           src={src}
           preload="none"
-          onPlay={() => setPlaying(true)}
+          onPlay={() => {
+            setPlaying(true);
+            setFallback("");
+          }}
           onPause={() => setPlaying(false)}
           onEnded={() => {
             setPlaying(false);
@@ -1144,12 +1212,16 @@ function VoiceBar({ voice, base, size }: { voice: ChatVoice; base: string; size:
             const d = a.duration || Number(voice.seconds) || 0;
             setPct(d ? Math.min(100, (a.currentTime / d) * 100) : 0);
           }}
-          onError={() => setErr("语音播放失败：插件内播放器不可用，请到网页端收听")}
+          onError={() => void playOnHost("插件内播放器不可用")}
         />
       </div>
-      {err && (
+      {err ? (
         <div style={{ marginTop: 3, color: ERR_COLOR, fontSize: size * 0.88 }}>{err}</div>
-      )}
+      ) : fallback ? (
+        <div style={{ marginTop: 3, color: DIM, fontSize: size * 0.88 }}>
+          {fallback === "trying" ? "正在改用本机播放…" : "已交给本机播放器"}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1170,10 +1242,14 @@ export function MessageContent({
   item,
   size,
   align,
+  busy,
+  onAnswer,
 }: {
   item: Item;
   size: number;
   align?: "left" | "right";
+  busy?: boolean;
+  onAnswer?: (text: string) => void;
 }) {
   const base = item.base || "";
   const body = String(item.text || "").trim();
@@ -1210,6 +1286,8 @@ export function MessageContent({
               options={ev.options}
               size={size}
               base={base}
+              busy={busy}
+              onAnswer={onAnswer}
             />
           );
         }
