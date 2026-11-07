@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .llm import LLMClient
-from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, memory, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, singleton, status_line, tools, updater, usage
+from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, memory, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, selfcheck, singleton, status_line, tools, updater, usage
 from .session_store import store
 from . import session_store
 from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, normalize_speaker,
@@ -749,7 +749,8 @@ tts = TTS(
     # 可选日文汉字词表："石川由依,東京大学" —— 中文句里的日文专名按 ja 读
     ja_terms=str(_tts_cfg.get("ja_terms", "") or ""),
 )
-
+# 自检页的补装组件要用同一个语音引擎实例（模型状态、下载进度都从它取）
+selfcheck.set_tts(tts)
 # 语音识别：模型放在数据根（<data>/models/sensevoice），不进插件包也不进 venv。
 # 懒加载，第一次识别才建 recognizer
 _stt_cfg = CFG.get("stt", {})
@@ -3950,6 +3951,32 @@ async def api_tts_download():
 @app.post("/api/tts/download/cancel", dependencies=[Depends(require_auth)])
 async def api_tts_download_cancel():
     return {"ok": True, **tts.request_cancel()}
+
+
+@app.get("/api/selfcheck", dependencies=[Depends(require_auth)])
+async def api_selfcheck():
+    """桌面控件自检的可补装组件清单 + 当前安装任务"""
+    return {"ok": True, **selfcheck.snapshot()}
+
+
+@app.post("/api/selfcheck/install", dependencies=[Depends(require_auth)])
+async def api_selfcheck_install(component: str = Query(...)):
+    """后台线程安装单个组件；同一时间只允许一个任务（重复点击返回 busy）"""
+    loop = asyncio.get_running_loop()
+
+    def hook(payload: dict) -> None:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                manager.broadcast({"type": "selfcheck_progress", **payload}), loop)
+        except Exception:
+            pass
+
+    return selfcheck.start(component, hook)
+
+
+@app.get("/api/selfcheck/progress", dependencies=[Depends(require_auth)])
+async def api_selfcheck_progress():
+    return {"ok": True, "job": selfcheck.job_snapshot()}
 
 
 @app.post("/api/tts/preview", dependencies=[Depends(require_auth)])

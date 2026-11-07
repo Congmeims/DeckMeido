@@ -2085,6 +2085,42 @@
     color: var(--muted); white-space: pre-wrap; word-break: break-word;
     max-height: 160px; overflow: auto;
   }
+  /* ---------- 桌面控件自检：两栏（左自检 / 右可补装组件） ---------- */
+  .ctrl-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+  .ctrl-col { min-width: 0; }
+  .ctrl-sub { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+  .sc-list { display: flex; flex-direction: column; gap: 6px; }
+  .sc-row {
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 8px 10px; background: var(--surface-2);
+  }
+  .sc-head { display: flex; align-items: center; gap: 8px; }
+  .sc-name { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sc-size { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
+  .sc-badge {
+    flex: 0 0 auto; margin-left: auto; font-size: 11px; padding: 1px 7px;
+    border-radius: 999px; border: 1px solid var(--line); white-space: nowrap;
+  }
+  .sc-badge.ready { color: #2ecc71; border-color: rgba(46,204,113,.5); background: rgba(46,204,113,.1); }
+  .sc-badge.missing { color: #e0a33a; border-color: rgba(224,163,58,.5); background: rgba(224,163,58,.1); }
+  .sc-badge.mismatch { color: #d0492b; border-color: rgba(208,73,43,.5); background: rgba(208,73,43,.1); }
+  .sc-btn { flex: 0 0 auto; min-height: 28px; padding: 0 10px; font-size: 12px; }
+  .sc-detail { margin-top: 3px; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+  .sc-detail.red { color: #d0492b; }
+  .sc-cmd {
+    margin-top: 4px; padding: 6px 8px; border-radius: 8px;
+    background: var(--code-bg); color: var(--code-text);
+    font-family: var(--font-mono); font-size: 11.5px;
+    white-space: pre-wrap; word-break: break-all; cursor: pointer;
+  }
+  .sc-progress { display: none; align-items: center; gap: 8px; margin-top: 6px; }
+  .sc-progress.show { display: flex; }
+  .sc-bar { flex: 1; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .sc-bar i { display: block; height: 100%; width: 0; background: #2ecc71; transition: width .25s; }
+  .sc-pct { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
+  @media (max-width: 720px) {
+    .ctrl-cols { grid-template-columns: 1fr; }
+  }
   /* 代码块全屏查看 */
   #codeView { display: none; position: fixed; inset: 0; z-index: 45; background: var(--overlay); align-items: center; justify-content: center; }
   #codeView.show { display: flex; }
@@ -3136,14 +3172,23 @@
 
           <div class="card">
             <div class="card-title">桌面控件自检</div>
-            <div class="ctrl-list" id="ctrlList"></div>
-            <div class="ctrl-yd" id="ctrlYd"></div>
-            <div class="ctrl-actions">
-              <button id="ctrlFix" class="mini-btn" type="button">修复守护进程</button>
-              <button id="ctrlReflash" class="mini-btn" type="button">重新实测</button>
+            <div class="ctrl-cols">
+              <div class="ctrl-col">
+                <div class="ctrl-list" id="ctrlList"></div>
+                <div class="ctrl-yd" id="ctrlYd"></div>
+                <div class="ctrl-actions">
+                  <button id="ctrlFix" class="mini-btn" type="button">修复守护进程</button>
+                  <button id="ctrlReflash" class="mini-btn" type="button">重新实测</button>
+                </div>
+                <div id="ctrlHint" class="upd-note"></div>
+                <div id="ctrlLog" class="ctrl-log"></div>
+              </div>
+              <div class="ctrl-col">
+                <div class="ctrl-sub">可补装组件</div>
+                <div id="selfcheckList" class="sc-list"></div>
+                <div id="selfcheckHint" class="upd-note"></div>
+              </div>
             </div>
-            <div id="ctrlHint" class="upd-note"></div>
-            <div id="ctrlLog" class="ctrl-log"></div>
           </div>
         </section>
 
@@ -7166,6 +7211,10 @@
           // 跨屏接管状态广播：远程控制端和 Deck 客户端都要显示同一条横幅
           onRemoteInputBroadcast(msg);
           break;
+        case 'selfcheck_progress':
+          // 可补装组件的后台安装进度：同一份快照也走 /api/selfcheck/progress 兜底
+          onSelfcheckProgress(msg);
+          break;
         case 'history':
           if (msg.sid) currentSid = msg.sid;
           syncQqSessButton();
@@ -8020,6 +8069,163 @@
     // 只修守护进程；装系统包走终端（后端会回一条提示）
     runCtrlFix();
   });
+
+  // ---------- 右栏：可补装组件 ----------
+  // 组件清单由后端注册表实测得出；安装是后台单任务，进度走 WS selfcheck_progress，
+  // 1 秒轮询只是 WS 断线时的兜底，不重复触发安装
+  var scList = el('selfcheckList');
+  var scHint = el('selfcheckHint');
+  var scRows = {};
+  var scPollTimer = null;
+
+  function scBtnLabel(it, job) {
+    if (job && job.component === it.key && job.state === 'running') return '进行中…';
+    if (it.status === 'ready') return '已就绪';
+    if (!it.can_install) return '复制命令';
+    return it.key === 'ydotoold' ? '修复' : '安装';
+  }
+
+  function copyCmd(text) {
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        scHint.textContent = '命令已复制，到终端执行即可';
+      }).catch(function () { scHint.textContent = '复制失败：' + text; });
+    } else {
+      scHint.textContent = '请手动复制：' + text;
+    }
+  }
+
+  function renderSelfcheck(data) {
+    var job = data.job;
+    scList.replaceChildren();
+    scRows = {};
+    (data.components || []).forEach(function (it) {
+      var row = document.createElement('div');
+      row.className = 'sc-row';
+      var head = document.createElement('div');
+      head.className = 'sc-head';
+      var nm = document.createElement('span');
+      nm.className = 'sc-name'; nm.textContent = it.name; nm.title = it.name;
+      var sz = document.createElement('span');
+      sz.className = 'sc-size'; sz.textContent = it.size || '';
+      var badge = document.createElement('span');
+      badge.className = 'sc-badge ' + (it.status || 'missing');
+      badge.textContent = it.status_label || it.status || '';
+      var btn = document.createElement('button');
+      btn.className = 'mini-btn sc-btn'; btn.type = 'button';
+      btn.textContent = scBtnLabel(it, job);
+      btn.disabled = it.status === 'ready'
+        || (job && job.component === it.key && job.state === 'running');
+      head.append(nm, sz, badge, btn);
+
+      var detail = document.createElement('div');
+      detail.className = 'sc-detail';
+      detail.textContent = it.detail || '';
+      var cmd = null;
+      if (!it.can_install && it.command) {
+        cmd = document.createElement('div');
+        cmd.className = 'sc-cmd';
+        cmd.textContent = it.command;
+        cmd.title = '点击复制';
+        cmd.addEventListener('click', function () { copyCmd(it.command); });
+        btn.addEventListener('click', function () { copyCmd(it.command); });
+      } else {
+        btn.addEventListener('click', function () { installComponent(it.key); });
+      }
+
+      var prog = document.createElement('div');
+      prog.className = 'sc-progress';
+      var bar = document.createElement('div');
+      bar.className = 'sc-bar';
+      var fill = document.createElement('i');
+      bar.appendChild(fill);
+      var pct = document.createElement('span');
+      pct.className = 'sc-pct';
+      prog.append(bar, pct);
+
+      row.append(head, detail);
+      if (cmd) row.appendChild(cmd);
+      row.appendChild(prog);
+      scList.appendChild(row);
+      scRows[it.key] = { detail: detail, prog: prog, fill: fill, pct: pct };
+    });
+    if (job && job.component && scRows[job.component]) {
+      applyScProgress(job);
+    }
+  }
+
+  function applyScProgress(job) {
+    var r = scRows[job.component];
+    if (!r) return;
+    r.prog.classList.add('show');
+    var pct = Math.max(0, Math.min(100, job.percent || 0));
+    r.fill.style.width = pct + '%';
+    r.fill.style.background = job.state === 'error' ? '#e04a4a'
+      : (job.state === 'need_terminal' ? '#e0a33a' : '#2ecc71');
+    r.pct.textContent = job.state === 'error' ? '失败'
+      : (job.state === 'need_terminal' ? '需终端' : (job.phase || '') + ' ' + pct.toFixed(0) + '%');
+    var msg = job.error || job.message || '';
+    if (msg) {
+      r.detail.textContent = msg;
+      r.detail.className = 'sc-detail' + (job.state === 'error' ? ' red' : '');
+    }
+  }
+
+  function loadSelfcheck() {
+    return fetch('/api/selfcheck')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || !d.components) { scHint.textContent = '读取组件清单失败'; return; }
+        renderSelfcheck(d);
+        scHint.textContent = '已就绪 ' + d.ready + '/' + d.total
+          + '。需要 root 的项会在终端补装，网页不会假装成功。';
+        if (d.job && d.job.state === 'running') startScPoll();
+      })
+      .catch(function () { scHint.textContent = '读取组件清单失败（连接异常）'; });
+  }
+
+  function startScPoll() {
+    if (scPollTimer) return;
+    scPollTimer = setInterval(function () {
+      fetch('/api/selfcheck/progress')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          var job = d && d.job;
+          if (!job) return;
+          applyScProgress(job);
+          if (job.state === 'running') return;
+          clearInterval(scPollTimer); scPollTimer = null;
+          loadSelfcheck();
+        })
+        .catch(function () {});
+    }, 1000);
+  }
+
+  function installComponent(key) {
+    scHint.textContent = '正在启动安装…';
+    fetch('/api/selfcheck/install?component=' + encodeURIComponent(key), { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (!res || !res.ok) {
+          scHint.textContent = res && res.reason === 'busy'
+            ? '已有安装任务在进行，请等它完成' : '安装请求失败';
+          if (res && res.job) applyScProgress(res.job);
+          return;
+        }
+        scHint.textContent = '安装已开始，进度会实时更新';
+        if (res.job) applyScProgress(res.job);
+        startScPoll();
+      })
+      .catch(function () { scHint.textContent = '安装请求失败（连接异常）'; });
+  }
+
+  function onSelfcheckProgress(msg) {
+    applyScProgress(msg);
+    if (msg.state && msg.state !== 'running' && scPollTimer === null) {
+      setTimeout(loadSelfcheck, 600);
+    }
+  }
 
   function renderStatus(s) {
     // 版本：运行中的进程 vs 磁盘上的 VERSION。装完没重启后端时两者不一致，
@@ -9845,6 +10051,7 @@
     loadQqStatus();
     loadQqLogs();
     startQqStatusPolling();
+    loadSelfcheck();
     loadSttStatus();
     loadUsage();
     startPairPoll();
