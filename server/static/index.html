@@ -3587,27 +3587,24 @@
             </div>
           </div>
           <div class="card">
-            <div class="card-title">版本</div>
+            <div class="card-title">版本与更新源</div>
             <div class="about-row">
               <span class="ver-tag" id="verTag">版本 …</span>
               <span class="ver-summary" id="verSummary">正在读取版本信息…</span>
               <button id="updCheck" class="mini-btn" type="button">检查更新</button>
             </div>
-            <div class="upd-note" id="updNote"></div>
-            <button id="updApply" type="button">立即升级到最新版</button>
-          </div>
-          <div class="card">
-            <div class="card-title">更新源</div>
-            <div class="field field-row">
+            <div class="field field-row" style="margin-top:10px">
               <label style="margin:0">同时探测 GitHub（关掉只用国内镜像）</label>
               <label class="switch">
                 <input id="cfgUpdGithub" type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
-            <div class="field">
+            <div class="field" style="margin-top:2px">
               <div class="field-hint" id="updSourceHint"></div>
             </div>
+            <div class="upd-note" id="updNote"></div>
+            <button id="updApply" type="button">立即升级到最新版</button>
           </div>
           <!-- 排查/维护区放页尾：卡片内容与绑定都在全局，不依赖所在页 -->
           <div class="card">
@@ -10911,11 +10908,11 @@
           var src = d.model_source === 'mirror' ? 'hf-mirror 镜像'
             : d.model_source === 'github' ? 'GitHub'
             : d.model_source ? '自定义源' : '国内镜像优先';
-          sttHint.textContent = '语音输入可用（下载源：' + src + '）。';
+          sttHint.textContent = '语音输入可用（下载源：' + src + '）';
         } else if (d && !d.runtime) {
-          sttHint.textContent = '这台机器还没安装语音识别运行时（sherpa-onnx）：开关可以保存，但暂时识别不了。';
+          sttHint.textContent = '这台机器还没安装语音识别运行时（sherpa-onnx）：开关可以保存，但暂时识别不了';
         } else {
-          sttHint.textContent = '语音识别模型还没下载（约 250MB，默认走国内镜像），在插件端点下载后才能用。';
+          sttHint.textContent = '语音识别模型还没下载（约 250MB，默认走国内镜像），在插件端点下载后才能用';
         }
       })
       .catch(function () { sttHint.textContent = ''; });
