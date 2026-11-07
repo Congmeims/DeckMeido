@@ -310,6 +310,8 @@ def _rotate_one(path: Path, keep: int = BACKUP_COUNT,
 
     已有 .1 → .2、.2 → .3 … 逐级后移，最旧的丢弃；然后把当前内容拷成 .1，
     最后原地截断。拷贝而不是 rename，是为了兼容还被客户端进程持有句柄的文件。
+    轮转完再扫一遍同名前缀，把序号大于 keep 的旧文件删掉——逐级后移只会覆盖
+    .1…keep，更早版本留下的 .3/.4… 否则永远不会被回收，份数就不再固定。
     """
     try:
         if path.stat().st_size <= max_bytes:
@@ -325,9 +327,28 @@ def _rotate_one(path: Path, keep: int = BACKUP_COUNT,
         shutil.copyfile(path, path.with_name(f"{path.name}.1"))
         with open(path, "r+b") as f:
             f.truncate(0)
+        _drop_extra_generations(path, keep)
         return True
     except Exception:
         return False
+
+
+def _drop_extra_generations(path: Path, keep: int) -> None:
+    """删除序号大于 keep 的轮转文件（.3/.4…），它们不会被任何逻辑再引用"""
+    prefix = f"{path.name}."
+    try:
+        entries = list(path.parent.iterdir())
+    except OSError:
+        return
+    for item in entries:
+        if not item.name.startswith(prefix):
+            continue
+        suffix = item.name[len(prefix):]
+        if suffix.isdigit() and int(suffix) > keep:
+            try:
+                item.unlink()
+            except OSError:
+                pass
 
 
 def rotate_logs() -> list[str]:
