@@ -1486,8 +1486,9 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .tts-bytes { flex: 0 0 auto; margin-top: 0; white-space: nowrap; font-size: 11.5px; }
+  /* 引擎/模型提示不再预置空节点：需要时由脚本创建，没有内容时直接从 DOM 移除 */
   #ttsEngineHint { margin-top: 4px; }
-  #ttsEngineHint:empty, #ttsModelHint:empty, #ttsDownloadHint:empty { display: none; }
+  #ttsDownloadHint:empty { display: none; }
   /* 署名压成一行 11px 小字，超出横向滚动，不占第二行 */
   #ttsCredit { font-size: 11px; }
   /* 设置页里的下拉框：和输入框同一套外观，别再各写一份内联样式 */
@@ -1529,6 +1530,10 @@
   .switch input:checked + .slider::before { transform: translateX(20px); background: #fff; }
   /* 键盘/引导聚焦到开关时给出可见的高亮，否则透明 checkbox 聚焦了也看不出来 */
   .switch input:focus-visible + .slider { box-shadow: 0 0 0 2px rgba(26,159,255,.85); }
+  /* 整组总开关关闭：分项开关置灰且不可点，避免看起来还能单独打开 */
+  .switch input:disabled { cursor: not-allowed; }
+  .switch input:disabled + .slider { opacity: .4; cursor: not-allowed; }
+  .chat-voice-card.group-off .field-row { opacity: .55; }
   #cfgHint { text-align: center; font-size: 13px; color: var(--muted); margin-top: 10px; min-height: 18px; }
 
   /* 长期记忆：新增行 = 下拉 + 输入框 + 按钮，三者同高同圆角，
@@ -3119,13 +3124,11 @@
                 <button class="mini-btn speaker-btn" type="button" data-speaker="maid">月读酱</button>
               </div>
               <div class="tts-actions">
-                <span class="tts-model-text" id="ttsModelHint"></span>
                 <span class="field-hint tts-bytes" id="ttsDownloadHint"></span>
                 <button id="ttsPill" class="tts-pill" type="button" disabled>未就绪</button>
                 <button id="ttsPreview" class="mini-btn tts-preview" type="button">试听</button>
               </div>
             </div>
-            <div class="field-hint" id="ttsEngineHint"></div>
             <!-- つくよみちゃんコーパス利用規約第③类（音声つき会話AIソフト）要求在使用者
                  能看到的位置署名。下面内容照抄官方模板与模型卡，不要改写：
                  模型卡「クレジット表記について（必須）」= ■Piper Plus:つくよみちゃん；
@@ -3590,8 +3593,14 @@
             插件端改完回到这里也会显示新值。页面底部的「保存」管开关和表单，提示词模板在卡片里单独保存。
           </p>
 
-          <div class="card">
-            <div class="card-title">对话与语音</div>
+          <div class="card chat-voice-card" id="chatVoiceCard">
+            <div class="card-head">
+              <div class="card-title">对话与语音</div>
+              <label class="switch" title="关闭后这一组功能整体停用">
+                <input id="cfgChatVoice" type="checkbox" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
             <div class="field field-row">
               <label style="margin:0">带画面询问（截图随消息一起发）</label>
               <label class="switch">
@@ -3625,7 +3634,8 @@
               </label>
             </div>
             <div class="field-hint" style="margin-top:0">
-              按住右扳机开始录音，松开自动识别并填入输入框；只在客户端窗口激活且语音输入可用时响应，关掉后 R2 不做任何处理。
+              按住右扳机开始录音，松开自动识别并直接发送这条消息；识别为空则不发送。
+              只在客户端窗口激活且语音输入可用时响应，关掉后 R2 不做任何处理。
             </div>
           </div>
 
@@ -9397,6 +9407,8 @@
   var micChunks = [], micRate = 48000, micTimer = null;
   // 客户端 R2：按下时麦克风还没拿到就松手，要取消这次录音
   var micStartPending = false, micR2Release = false;
+  // 这次录音是 R2 触发的：识别出文字后直接发送（点麦克风按钮仍只填输入框）
+  var micR2Send = false;
 
   function micReset() {
     if (micTimer) { clearTimeout(micTimer); micTimer = null; }
@@ -9470,6 +9482,7 @@
         fbToast('语音输入未启用或模型未下载：到设置 → 对话与语音里开启并下载模型', 'chat', true);
         micBtn.classList.remove('busy');
         micStartPending = false;
+        micR2Send = false;
         return;
       }
     } catch (e) { /* 状态读不到也继续试，真失败由下面提示 */ }
@@ -9480,6 +9493,7 @@
       });
     } catch (e) {
       micStartPending = false;
+      micR2Send = false;
       var name = e && e.name ? String(e.name) : '';
       // 桌面客户端里最常见的失败是被拒绝授权（NotAllowedError），Chromium 只给
       // 一句 "Permission denied"，用户看不出该做什么，这里换成可操作的说明
@@ -9494,13 +9508,14 @@
     // 按下 R2 后还没拿到麦克风就松手了：直接放弃这一次，不进入录音
     if (micR2Release) {
       try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
-      micStartPending = false; micR2Release = false;
+      micStartPending = false; micR2Release = false; micR2Send = false;
       return;
     }
     var Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) {
       try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
       micStartPending = false;
+      micR2Send = false;
       fbToast('当前环境不支持录音', 'chat', true);
       return;
     }
@@ -9543,12 +9558,21 @@
       try { d = await res.json(); } catch (e) {}
       if (!res.ok || !d.ok) throw new Error(d.detail || d.error || ('HTTP ' + res.status));
       var text = String(d.text || '').trim();
-      if (text) insertVoiceText(text);
-      else fbToast('没有识别到内容，靠近麦克风再说一次', 'chat', true);
+      if (text) {
+        insertVoiceText(text);
+        // R2 按住说话：松手识别到文字就直接发出去；点麦克风按钮仍只填输入框
+        if (micR2Send) submitInput();
+      } else if (micR2Send) {
+        // 空识别不发送，给一次轻提示（不弹错误框，不打断输入）
+        fbToast('没有识别到内容，靠近麦克风再说一次', 'chat', false);
+      } else {
+        fbToast('没有识别到内容，靠近麦克风再说一次', 'chat', true);
+      }
     } catch (e) {
       fbToast('语音识别失败：' + (e && e.message ? e.message : e), 'chat', true);
     } finally {
       micState = 'idle';
+      micR2Send = false;
       micBtn.classList.remove('busy');
       micBtn.textContent = tr('语音');
       micBtn.title = '语音输入（仅桌面客户端）';
@@ -9569,13 +9593,17 @@
     if (kind === 'start') {
       if (micState !== 'idle' || micStartPending) return false;
       micR2Release = false;
+      micR2Send = true;
       micStartPending = true;
       micStart();
       return true;
     }
     if (kind === 'stop') {
       if (micState === 'recording') { micStop(); return true; }
-      if (micStartPending) micR2Release = true;
+      if (micStartPending) {
+        micR2Release = true;
+        micR2Send = false;
+      }
       return micStartPending;
     }
     return false;
@@ -9669,11 +9697,54 @@
   var ttsSpeakerRow = document.getElementById('ttsSpeakerRow');
   var ttsSpeakerBtns = ttsSpeakerRow ? Array.prototype.slice.call(
     ttsSpeakerRow.querySelectorAll('.speaker-btn')) : [];
-  var ttsEngineHint = document.getElementById('ttsEngineHint');
-  var ttsModelHint = document.getElementById('ttsModelHint');
+  // 引擎/模型提示不预置空节点：有内容时才创建，清空时直接从 DOM 移除
+  var ttsEngineHint = null;
+  var ttsModelHint = null;
   var ttsDownloadHint = document.getElementById('ttsDownloadHint');
   var ttsPill = document.getElementById('ttsPill');
   var ttsPreview = document.getElementById('ttsPreview');
+
+  // 模型状态挂在发音人行的操作区里，插在下载进度前面
+  function setTtsModelHint(text, title) {
+    if (!text) {
+      if (ttsModelHint && ttsModelHint.parentNode) {
+        ttsModelHint.parentNode.removeChild(ttsModelHint);
+      }
+      ttsModelHint = null;
+      return;
+    }
+    if (!ttsModelHint) {
+      ttsModelHint = document.createElement('span');
+      ttsModelHint.id = 'ttsModelHint';
+      ttsModelHint.className = 'tts-model-text';
+      if (ttsDownloadHint && ttsDownloadHint.parentNode) {
+        ttsDownloadHint.parentNode.insertBefore(ttsModelHint, ttsDownloadHint);
+      }
+    }
+    ttsModelHint.textContent = text;
+    ttsModelHint.title = title || '';
+  }
+
+  // 提示挂在发音人一行之后、素材署名之前
+  function setTtsEngineHint(text) {
+    if (!text) {
+      if (ttsEngineHint && ttsEngineHint.parentNode) {
+        ttsEngineHint.parentNode.removeChild(ttsEngineHint);
+      }
+      ttsEngineHint = null;
+      return;
+    }
+    if (!ttsEngineHint) {
+      ttsEngineHint = document.createElement('div');
+      ttsEngineHint.id = 'ttsEngineHint';
+      ttsEngineHint.className = 'field-hint';
+      if (ttsCredit && ttsCredit.parentNode) {
+        ttsCredit.parentNode.insertBefore(ttsEngineHint, ttsCredit);
+      }
+    }
+    ttsEngineHint.textContent = text;
+    ttsEngineHint.style.color = '#e06c75';
+  }
   // 试听请求序号：超时/失败后重试时，旧请求的迟到回调不许覆盖新一轮的按钮状态
   var ttsPreviewSeq = 0;
   var ttsAttribution = document.getElementById('ttsAttribution');
@@ -9940,10 +10011,24 @@
   var cfgSttDuck = document.getElementById('cfgSttDuck');
   var cfgR2Ptt = document.getElementById('cfgR2Ptt');
   var r2PttRow = document.getElementById('r2PttRow');
+  // 「对话与语音」整组总开关：关闭后分项整体停用（后端也按 chat_voice 生效）
+  var cfgChatVoice = document.getElementById('cfgChatVoice');
+  var chatVoiceCard = document.getElementById('chatVoiceCard');
+  var chatVoiceOn = true;
   var R2_PTT_KEY = 'deckmeido_r2_ptt';
   function r2PttEnabled() {
+    if (!chatVoiceOn) return false;
     try { return localStorage.getItem(R2_PTT_KEY) !== '0'; } catch (e) { return true; }
   }
+  function syncChatVoiceGate() {
+    chatVoiceOn = cfgChatVoice ? !!cfgChatVoice.checked : true;
+    if (chatVoiceCard) chatVoiceCard.classList.toggle('group-off', !chatVoiceOn);
+    // 总开关关闭时只置灰分项，不把用户原来的分项选择改成 false
+    [cfgWithShot, cfgStt, cfgSttDuck, cfgR2Ptt].forEach(function (el) {
+      if (el) el.disabled = !chatVoiceOn;
+    });
+  }
+  if (cfgChatVoice) cfgChatVoice.addEventListener('change', syncChatVoiceGate);
   // R2 只有桌面客户端能拿到（SDL2 读虚拟手柄），网页端不显示这一项
   if (r2PttRow && !IS_NATIVE) r2PttRow.style.display = 'none';
   if (cfgR2Ptt) {
@@ -10780,11 +10865,14 @@
           || (c.tts_engine === 'espeak-ng' ? 'robot' : 'maid'));
         syncTtsFields();
         loadTtsStatus();
-        // 插件设置：与插件端同一个 GET /api/config 来源，开关和模板都按后端值回填
-        cfgWithShot.checked = c.with_shot !== false;
-        cfgStt.checked = !!c.stt_enable;
+        // 插件设置：与插件端同一个 GET /api/config 来源，开关和模板都按后端值回填。
+        // 带画面 / 语音输入回显用「分项原始值」，总开关关闭时不被有效值覆盖
+        cfgWithShot.checked = (c.with_shot_pref != null ? c.with_shot_pref : c.with_shot) !== false;
+        cfgStt.checked = (c.stt_enable_pref != null ? c.stt_enable_pref : c.stt_enable) !== false;
         // 录音时静音外放：老配置没有这项，后端缺省即开
         cfgSttDuck.checked = c.stt_duck_output !== false;
+        if (cfgChatVoice) cfgChatVoice.checked = c.chat_voice !== false;
+        syncChatVoiceGate();
         // [ui] language：以服务端为准（老配置没有这一项就是 zh）
         if (cfgLang) cfgLang.value = c.ui_language === 'en' ? 'en' : 'zh';
         cfgAskTemplate.value = c.ask_template || '';
@@ -11197,6 +11285,7 @@
       tts_enable: cfgTts.checked,
       tts_speaker: ttsSpeaker,
       with_shot: !!cfgWithShot.checked,
+      chat_voice: cfgChatVoice ? !!cfgChatVoice.checked : true,
       stt_enable: !!cfgStt.checked,
       stt_duck_output: !!cfgSttDuck.checked,
       // [ui] language：切到 en 后整页重载，让 i18n 表重新拉取并替换静态文案
@@ -11327,19 +11416,16 @@
   // 选中女仆但本机模型不可用时，提示会先用机器人的声音兜底
   function syncTtsFields() {
     if (ttsSpeaker !== 'maid') {
-      ttsEngineHint.textContent = '';
-      ttsEngineHint.style.color = '';
+      setTtsEngineHint('');
       return;
     }
     // 只看「女仆是否就绪」：active_engine 是当前选中发音人实际用的引擎
     // （选机器人时它本来就是 espeak-ng），拿它判断会把装好的女仆误报成不可用
     if (ttsState && !ttsState.maid_ready) {
-      ttsEngineHint.textContent = '月读酱语音暂时不可用，会先用机器人的声音朗读：'
-        + (ttsState.maid_reason || ttsState.reason || '原因未知');
-      ttsEngineHint.style.color = '#e06c75';
+      setTtsEngineHint('月读酱语音暂时不可用，会先用机器人的声音朗读：'
+        + (ttsState.maid_reason || ttsState.reason || '原因未知'));
     } else {
-      ttsEngineHint.textContent = '';
-      ttsEngineHint.style.color = '';
+      setTtsEngineHint('');
     }
   }
 
@@ -11359,24 +11445,22 @@
       ttsPill.textContent = '已就绪';
       ttsPill.disabled = true;
       ttsPill.title = '月读酱语音模型已就绪';
-      ttsModelHint.textContent = '模型：' + modelName;
-      ttsModelHint.title = root;
+      setTtsModelHint('模型：' + modelName, root);
       ttsDownloadHint.textContent = ttsState.loaded ? '已加载' : '首次播报时加载';
     } else if (!ttsState.runtime) {
       ttsPill.className = 'tts-pill off';
       ttsPill.textContent = '不可用';
       ttsPill.disabled = true;
       ttsPill.title = '本机没装模型运行时';
-      ttsModelHint.textContent = '月读酱语音暂不可用';
-      ttsModelHint.title = '本机没装模型运行时，可先选「机器人」';
+      setTtsModelHint('月读酱语音暂不可用', '本机没装模型运行时，可先选「机器人」');
       ttsDownloadHint.textContent = '';
     } else if (dl.state === 'downloading' || dl.phase === 'cancelling') {
       ttsPill.className = 'tts-pill busy';
       ttsPill.textContent = '下载中 ' + (dl.percent || 0).toFixed(0) + '%';
       ttsPill.disabled = false;
       ttsPill.title = '点击取消下载';
-      ttsModelHint.textContent = '模型下载中';
-      ttsModelHint.title = dl.file ? dl.file + (dl.source_name ? '　来源：' + dl.source_name : '') : '';
+      setTtsModelHint('模型下载中',
+        dl.file ? dl.file + (dl.source_name ? '　来源：' + dl.source_name : '') : '');
       ttsDownloadHint.textContent = dl.done > 0
         ? (dl.done / 1048576).toFixed(1) + ' MB'
           + (dl.total > 0 ? ' / ' + (dl.total / 1048576).toFixed(1) + ' MB' : '')
@@ -11386,8 +11470,7 @@
       ttsPill.textContent = '未就绪 · 下载';
       ttsPill.disabled = false;
       ttsPill.title = '点击下载月读酱语音模型（约 38MB）';
-      ttsModelHint.textContent = '月读酱语音模型未下载';
-      ttsModelHint.title = ttsState.reason || '约 38MB，默认走国内镜像';
+      setTtsModelHint('月读酱语音模型未下载', ttsState.reason || '约 38MB，默认走国内镜像');
       ttsDownloadHint.textContent = dl.state === 'error'
         ? '下载失败' : dl.state === 'cancelled' ? '已取消' : '';
     }
@@ -11406,7 +11489,7 @@
         scheduleTtsPoll();
       })
       .catch(function () {
-        ttsModelHint.textContent = '读取语音合成状态失败（服务可能正在重启）';
+        setTtsModelHint('读取语音合成状态失败（服务可能正在重启）');
       });
   }
 

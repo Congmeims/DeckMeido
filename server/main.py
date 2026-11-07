@@ -108,6 +108,15 @@ def load_config() -> dict:
     return cfg
 
 
+def chat_voice_enabled(cfg: dict | None = None) -> bool:
+    """「对话与语音」整组总开关（[agent] chat_voice，默认开）。
+
+    关闭后带画面询问、语音输入、R2 按住说话一并停用；分项配置本身保留，
+    重新打开总开关就恢复到原来的分项选择，不会被总开关覆盖成 false。
+    """
+    return bool((cfg if cfg is not None else CFG).get("agent", {}).get("chat_voice", True))
+
+
 def update_config(updates: dict):
     """把 {section: {key: value}} 写回 config.toml（保留注释），并重载运行配置"""
     write_config(CONFIG_PATH, updates, apply=apply_config)
@@ -757,7 +766,8 @@ selfcheck.set_tts(tts)
 _stt_cfg = CFG.get("stt", {})
 stt = STT(
     model_root=paths.stt_model_dir(),
-    enable=bool(_stt_cfg.get("enable", True)),
+    # 总开关关闭时语音输入整组停用（[stt] enable 本身保持用户原来的选择）
+    enable=bool(_stt_cfg.get("enable", True)) and chat_voice_enabled(),
     # 下载源：auto（默认，国内镜像→GitHub）/ mirror / github / 自定义 URL
     model_source=str(_stt_cfg.get("model_source", "auto") or "auto"),
 )
@@ -808,9 +818,10 @@ def apply_config(cfg: dict):
             asyncio.get_running_loop().create_task(tts.stop())
         except RuntimeError:
             pass
-    # 语音输入开关热更新；关掉时顺手把已加载的模型释放掉，别让它白占内存
+    # 语音输入开关热更新；关掉时顺手把已加载的模型释放掉，别让它白占内存。
+    # 总开关关闭时即使 [stt] enable 仍为 true，运行时也按停用处理
     s = cfg.get("stt", {})
-    stt.enable = bool(s.get("enable", True))
+    stt.enable = bool(s.get("enable", True)) and chat_voice_enabled(cfg)
     stt.model_source = str(s.get("model_source", "auto") or "auto")
     if not stt.enable:
         stt.unload()
@@ -3145,6 +3156,8 @@ class ConfigUpdate(BaseModel):
     ui_language: str | None = None
     # 发送时是否附带给游戏画面（面板上的「画面：开/关」）
     with_shot: bool | None = None
+    # 「对话与语音」整组总开关：写入 [agent] chat_voice；关闭后该组功能整体停用
+    chat_voice: bool | None = None
     permission_mode: str | None = None
     # 深度思考档位：空串 / low / medium / high（前端滑条的「无 / 低 / 中 / 高」）
     reasoning_effort: str | None = None
@@ -3347,10 +3360,17 @@ async def api_get_config():
         "tts_speed": tts.speed,
         "tts_speed_scale": tts.speed_scale,
         "tts_noise_scale": tts.noise_scale,
-        # 带画面询问的开关：面板重开后按它恢复，不能只存在前端内存里
-        "with_shot": bool((CFG.get("agent") or {}).get("with_shot", True)),
-        # 语音输入开关：和语音播报一样，面板上要能显示和切换
+        # 带画面询问的开关：面板重开后按它恢复，不能只存在前端内存里。
+        # 对外给「有效值」：总开关关闭时插件端据此不再附加截图；
+        # 分项原始值另给 with_shot_pref，设置页回显不被总开关污染
+        "with_shot": chat_voice_enabled()
+        and bool((CFG.get("agent") or {}).get("with_shot", True)),
+        "with_shot_pref": bool((CFG.get("agent") or {}).get("with_shot", True)),
+        # 语音输入开关：和语音播报一样，面板上要能显示和切换（stt.enable 已是有效值）
         "stt_enable": stt.enable,
+        "stt_enable_pref": bool((CFG.get("stt") or {}).get("enable", True)),
+        # 整组总开关：设置页标题行的开关与分项置灰都看它
+        "chat_voice": chat_voice_enabled(),
         # 录音期间静音外放（[stt] duck_output，默认开）；duck 里带工具可用性，
         # 设置页据此提示「这台机器不支持静音」，但开关仍可保存
         "stt_duck_output": audiomute.enabled(),
@@ -3616,6 +3636,10 @@ async def api_set_config(req: ConfigUpdate, request: Request):
     if req.with_shot is not None:
         # 带画面开关落盘到 [agent]：面板关掉再打开要还是上次选的那个
         updates.setdefault("agent", {})["with_shot"] = bool(req.with_shot)
+    if req.chat_voice is not None:
+        # 整组总开关：只写 [agent] chat_voice，分项（with_shot / [stt] enable）原样保留，
+        # 重新打开总开关时按原来的分项选择恢复
+        updates.setdefault("agent", {})["chat_voice"] = bool(req.chat_voice)
     if req.reasoning_effort is not None and req.reasoning_effort in ("", "low", "medium", "high"):
         # 深度思考滑条：空串 = 不带参数（不思考），其余原样写进 [llm]。
         # 空串要显式落盘，不能当作「没传」忽略，否则关掉之后再打开还是旧的档位
@@ -3695,7 +3719,10 @@ async def api_set_config(req: ConfigUpdate, request: Request):
             "workspace_error": WORKSPACE_ERROR,
             # 回传归一之后的实值：前端滑条按它落位（比如 DeepSeek 上的「中」实际是 high）
             "reasoning_effort": llm.reasoning_effort,
-            "with_shot": bool((CFG.get("agent") or {}).get("with_shot", True)),
+            "with_shot": chat_voice_enabled()
+            and bool((CFG.get("agent") or {}).get("with_shot", True)),
+            "with_shot_pref": bool((CFG.get("agent") or {}).get("with_shot", True)),
+            "chat_voice": chat_voice_enabled(),
             "model": llm.model,
             # 绑定地址与端口都只在后端启动时读取，改完必须重启核心
             "port": CFG["server"].get("port", 18765),
