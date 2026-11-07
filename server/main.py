@@ -3983,6 +3983,28 @@ async def api_selfcheck_install(component: str = Query(...)):
     return selfcheck.start(component, hook)
 
 
+@app.post("/api/selfcheck/uninstall", dependencies=[Depends(require_auth)])
+async def api_selfcheck_uninstall(component: str = Query(...)):
+    """后台卸载我们自己管理的组件（模型 / nltk 数据 / 守护进程托管）。
+
+    系统包不在可卸载范围内：包由 pacman 管理，卸载要用户自己决定。
+    """
+    loop = asyncio.get_running_loop()
+
+    def hook(payload: dict) -> None:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                manager.broadcast({"type": "selfcheck_progress", **payload}), loop)
+        except Exception:
+            pass
+
+    res = selfcheck.start_uninstall(component, hook)
+    if not res.get("ok"):
+        code = 409 if res.get("reason") == "busy" else 400
+        return JSONResponse(res, status_code=code)
+    return res
+
+
 @app.get("/api/selfcheck/progress", dependencies=[Depends(require_auth)])
 async def api_selfcheck_progress():
     return {"ok": True, "job": selfcheck.job_snapshot()}
@@ -5268,7 +5290,7 @@ async def api_message_delete(req: MsgDeleteReq):
 
 
 @app.delete("/api/sessions/{sid}", dependencies=[Depends(require_auth)])
-async def api_session_delete(sid: str):
+async def api_session_delete(sid: str, request: Request):
     # pending_action 在本函数里既读又写（下面要清掉指向被删会话的挂起操作），
     # 没有 global 声明时 Python 会把它当局部变量，读到第 4570 行就 UnboundLocalError
     global _ctx_used, pending_action
@@ -5308,10 +5330,20 @@ async def api_session_delete(sid: str):
     p = _sess_path(sid)
     if p.exists():
         try:
-            await asyncio.to_thread(session_store.io_submit(p.unlink).result)
+            # 软删除：移进 userdata/trash/ 而不是直接 unlink。误删（含自动化脚本
+            # 连点两次确认）还能从回收站找回，列表则因为索引已摘除而不再返回
+            await asyncio.to_thread(
+                session_store.io_submit(session_store.trash_session, sid).result)
         except OSError as e:
             store.deleted_sids.discard(sid)
+            audit.record("session", "delete", "fail",
+                         ip=_client_ip(request), detail=f"{sid}: {e}")
             raise HTTPException(status_code=500, detail=f"删除失败：{e}")
+        audit.record("session", "delete", "ok",
+                     ip=_client_ip(request), detail=f"{sid} -> trash/")
+    else:
+        audit.record("session", "delete", "ok",
+                     ip=_client_ip(request), detail=f"{sid} (文件已不存在)")
     # 流式副档案跟着一起删：留着的话下次启动会把它当「被中断的回答」恢复出来，
     # 删掉的会话就凭空冒出一条消息
     await asyncio.to_thread(session_store.io_submit(store.drop_stream_side, sid).result)
@@ -7121,6 +7153,24 @@ async def _stop_onebot():
 async def api_qq_status():
     """QQ 通道的连接状态与统计（令牌不回显），供远程连接页用"""
     return onebot_client.state()
+
+
+@app.get("/api/qq/group-names", dependencies=[Depends(require_auth)])
+async def api_qq_group_names(ids: str = Query(default="")):
+    """群号 -> 群名，仅用于设置页辅助展示。
+
+    通道未连接直接返回空，前端回退显示号码；单次最多 50 个，接口失败也不报错。
+    """
+    if not onebot_client.state().get("connected"):
+        return {"names": {}, "connected": False}
+    items = [x.strip() for x in ids.split(",") if x.strip()][:50]
+    if not items:
+        return {"names": {}, "connected": True}
+    try:
+        names = await asyncio.wait_for(onebot_client.group_names(items), timeout=8.0)
+    except Exception:
+        names = {}
+    return {"names": names, "connected": True}
 
 
 @app.get("/api/qq/logs", dependencies=[Depends(require_auth)])

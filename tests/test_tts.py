@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -821,6 +822,77 @@ class PreviewTextTest(unittest.TestCase):
     def test_传入文本优先(self):
         self.assertEqual(self._capture("robot", "自定义试听句"), "自定义试听句")
         self.assertEqual(self._capture("maid", "自定义试听句"), "自定义试听句")
+
+
+class SinkFallbackTest(unittest.TestCase):
+    """默认 sink 的端口不可用时，换一个可用输出播，但不改系统默认设置"""
+
+    HEADPHONES = (
+        "Sink #47\n"
+        "\tState: SUSPENDED\n"
+        "\tName: alsa_output.headphones\n"
+        "\tDescription: Headphones\n"
+        "\tPorts:\n"
+        "\t\tanalog-output-headphones: Headphones (priority 9000, latency offset 0 usec, available: no)\n"
+        "\tActive Port: analog-output-headphones\n"
+    )
+    SPEAKER = (
+        "Sink #48\n"
+        "\tState: IDLE\n"
+        "\tName: alsa_output.speaker\n"
+        "\tDescription: Built-in Audio Analog Stereo\n"
+        "\tPorts:\n"
+        "\t\tanalog-output-speaker: Speakers (priority 10000, latency offset 0 usec, available: yes)\n"
+        "\tActive Port: analog-output-speaker\n"
+    )
+
+    def test_解析活动端口可用性(self):
+        sinks = ttsmod.parse_sinks(self.HEADPHONES + self.SPEAKER)
+        self.assertEqual([s["name"] for s in sinks],
+                         ["alsa_output.headphones", "alsa_output.speaker"])
+        self.assertFalse(ttsmod.sink_available(sinks[0]))
+        self.assertTrue(ttsmod.sink_available(sinks[1]))
+
+    def _pick(self, default, text):
+        def fake(*args):
+            return default if args[0] == "get-default-sink" else text
+        with mock.patch.object(ttsmod.shutil, "which", return_value="/usr/bin/pactl"), \
+             mock.patch.object(ttsmod, "_pactl_output", side_effect=fake):
+            return ttsmod.pick_sink()
+
+    def test_默认不可用时优先内置扬声器(self):
+        self.assertEqual(self._pick(
+            "alsa_output.headphones", self.HEADPHONES + self.SPEAKER),
+            "alsa_output.speaker")
+
+    def test_默认可用时不做任何定向(self):
+        self.assertIsNone(self._pick(
+            "alsa_output.speaker", self.HEADPHONES + self.SPEAKER))
+
+    def test_没有任何可用输出时明确报错(self):
+        with self.assertRaises(ttsmod.TTSError) as ctx:
+            self._pick("alsa_output.headphones", self.HEADPHONES)
+        self.assertEqual(ctx.exception.kind, "no_sink")
+        self.assertIn("no_sink", str(ctx.exception))
+
+    def test_解析失败时保持默认行为(self):
+        self.assertIsNone(self._pick("alsa_output.headphones", ""))
+
+    def test_播放器参数定向(self):
+        args, env = ttsmod.TTS._player_args("/usr/bin/paplay", "sink-a")
+        self.assertEqual(args, ["/usr/bin/paplay", "--device=sink-a"])
+        self.assertEqual(env["PULSE_SINK"], "sink-a")
+
+        args, env = ttsmod.TTS._player_args("/usr/bin/pw-play", "sink-a")
+        self.assertEqual(args, ["/usr/bin/pw-play", "--target=sink-a"])
+
+        args, env = ttsmod.TTS._player_args("/usr/bin/aplay", "sink-a")
+        self.assertEqual(args, ["/usr/bin/aplay"])
+        self.assertEqual(env["PULSE_SINK"], "sink-a")
+
+        args, env = ttsmod.TTS._player_args("/usr/bin/paplay", None)
+        self.assertEqual(args, ["/usr/bin/paplay"])
+        self.assertIsNone(env)
 
 
 class PreviewTimeoutTest(unittest.TestCase):

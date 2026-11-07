@@ -203,6 +203,85 @@ class TTSError(RuntimeError):
         self.kind = kind
 
 
+# ---------- 输出设备兜底 ----------
+# 默认 sink 的端口可能变成 "not available"（例如 Headphones 没插），此时
+# 播放会直接失败。下面只做「换一个可用 sink 播」，绝不改系统默认 sink /
+# 端口 / mute，避免产生系统级副作用。
+_SINK_CACHE_TTL = 10.0
+
+
+def _pactl_output(*args: str) -> str:
+    if not shutil.which("pactl"):
+        return ""
+    try:
+        proc = subprocess.run(["pactl", *args], capture_output=True, text=True,
+                              timeout=3.0)
+    except Exception:
+        return ""
+    return (proc.stdout or "").strip()
+
+
+def parse_sinks(text: str) -> list[dict]:
+    """解析 `pactl list sinks`：每个 sink 的 Name / Description / Active Port
+    以及各端口是否 available。解析不了就返回空列表，调用方保持默认行为。"""
+    sinks: list[dict] = []
+    cur: dict | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("Sink #"):
+            cur = {"name": "", "desc": "", "active_port": "", "ports": {}}
+            sinks.append(cur)
+            continue
+        if cur is None:
+            continue
+        if line.startswith("Name:"):
+            cur["name"] = line.split(":", 1)[1].strip()
+        elif line.startswith("Description:"):
+            cur["desc"] = line.split(":", 1)[1].strip()
+        elif line.startswith("Active Port:"):
+            cur["active_port"] = line.split(":", 1)[1].strip()
+        elif "available:" in line and ":" in line:
+            port, rest = line.split(":", 1)
+            avail = rest.rsplit("available:", 1)[-1].strip().lower()
+            if port.strip() and avail.startswith(("yes", "no")):
+                cur["ports"][port.strip()] = avail.startswith("yes")
+    return sinks
+
+
+def sink_available(sink: dict) -> bool:
+    """活动端口明确不可用才算不可用；没解析到端口信息时按可用处理"""
+    port = sink.get("active_port") or ""
+    ports = sink.get("ports") or {}
+    if port and port in ports:
+        return bool(ports[port])
+    return True
+
+
+def pick_sink() -> str | None:
+    """返回需要定向播放的 sink；None = 默认 sink 可用，按默认走。
+
+    探测不到 pactl / 解析失败时返回 None，不改变既有行为。
+    """
+    if not shutil.which("pactl"):
+        return None
+    default = _pactl_output("get-default-sink")
+    sinks = parse_sinks(_pactl_output("list", "sinks"))
+    if not sinks:
+        return None
+    by_name = {s["name"]: s for s in sinks if s.get("name")}
+    if not default or default not in by_name or sink_available(by_name[default]):
+        return None
+    usable = [s for s in sinks if s.get("name") and sink_available(s)]
+    if not usable:
+        raise TTSError("默认音频输出不可用，也没有其它可用输出（no_sink）",
+                       kind="no_sink")
+    keys = ("speaker", "扬声器", "内置")
+    prefer = [s for s in usable
+              if any(k in (s.get("desc", "") + " " + s.get("active_port", "")).lower()
+                     for k in keys)]
+    return (prefer or usable)[0]["name"]
+
+
 def normalize_engine(raw: str | None) -> str:
     """内部兼容：把旧配置里的引擎值归一成 piper-plus / espeak-ng。"""
     value = str(raw or "").strip().lower()
@@ -1071,10 +1150,16 @@ class TTS:
         player = self._player()
         if not player:
             raise TTSError("没有可用的播放器（pw-play / paplay / aplay 都找不到）", kind="player")
+        # 默认 sink 的活动端口可能不可用；换一个可用 sink 播（只读探测，不改系统设置）
+        sink = await asyncio.to_thread(self._pick_sink_cached)
+        args, env = self._player_args(player, sink)
+        devlog.log("tts.play", player=os.path.basename(player),
+                   sink=sink or "default")
         proc = await asyncio.create_subprocess_exec(
-            player, str(wav),
+            *args,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            **({"env": env} if env else {}),
         )
         self._proc = proc
         try:
@@ -1084,6 +1169,31 @@ class TTS:
                 self._proc = None
         if code not in (0, -15) and not event.is_set():
             raise TTSError(f"播放器退出码 {code}", kind="player")
+
+    def _pick_sink_cached(self) -> str | None:
+        """探测默认 sink 是否可用；10 秒内复用结果，避免逐句都跑 pactl"""
+        now = time.monotonic()
+        cache = getattr(self, "_sink_cache", None)
+        if cache and now - cache[0] < _SINK_CACHE_TTL:
+            return cache[1]
+        sink = pick_sink()
+        self._sink_cache = (now, sink)
+        return sink
+
+    @staticmethod
+    def _player_args(player: str, sink: str | None) -> tuple[list[str], dict | None]:
+        """按播放器能力把目标 sink 传下去；aplay 只能靠 PULSE_SINK 环境变量"""
+        if not sink:
+            return [player], None
+        name = os.path.basename(player)
+        env = dict(os.environ)
+        env["PULSE_SINK"] = sink
+        if name.startswith("paplay"):
+            return [player, "--device=" + sink], env
+        if name.startswith("pw-play"):
+            return [player, "--target=" + sink], env
+        return [player], env
+
 
     async def _speak_espeak(self, text: str, event: threading.Event,
                             voice: str | None = None,

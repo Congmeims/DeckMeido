@@ -121,6 +121,13 @@ def sessions_dir() -> Path:
     return path
 
 
+def trash_dir() -> Path:
+    """会话回收站：软删除的会话文件挪到这里，保留最近若干份便于手工恢复"""
+    path = data_dir() / "trash"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def uploads_dir() -> Path:
     path = data_dir() / "uploads"
     path.mkdir(parents=True, exist_ok=True)

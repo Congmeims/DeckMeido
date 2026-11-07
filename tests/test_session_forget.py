@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -69,6 +70,52 @@ class ForgetSessionTests(unittest.TestCase):
 
     def test_unrelated_session_is_not_revived(self):
         self.assertFalse(self.store.allow_fresh("s-local", ""))
+
+
+class SessionTrashTests(unittest.TestCase):
+    """软删除：会话文件移进 userdata/trash/，列表不再可见，回收站只留最近 N 份"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.install = Path(self.tmp.name)
+        (self.install / "userdata").mkdir()
+        self.env = mock.patch.dict(os.environ, {"DECKMEIDO_DATA_DIR": str(self.install / "userdata")})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def _write(self, sid: str) -> Path:
+        p = paths.sessions_dir() / f"{sid}.json"
+        p.write_text(json.dumps({"id": sid, "history": []}, ensure_ascii=False), encoding="utf-8")
+        return p
+
+    def test_移到回收站且原文件消失(self):
+        sid = "local-abc"
+        src = self._write(sid)
+        target = session_store.trash_session(sid)
+        self.assertIsNotNone(target)
+        self.assertTrue(target.exists())
+        self.assertFalse(src.exists())
+        self.assertEqual(target.parent, paths.trash_dir())
+        # 文件名带上原 sid，便于人工找回
+        self.assertIn(sid, target.name)
+
+    def test_文件不存在时返回_None(self):
+        self.assertIsNone(session_store.trash_session("nope"))
+
+    def test_回收站只保留最近_N_份(self):
+        d = paths.trash_dir()
+        for i in range(session_store.TRASH_KEEP + 5):
+            p = d / f"s-{i:02d}.json"
+            p.write_text("{}", encoding="utf-8")
+            # mtime 越大越新：i=0 最旧
+            os.utime(p, (time.time() - 100 + i, time.time() - 100 + i))
+        removed = session_store.prune_trash()
+        self.assertEqual(len(removed), 5)
+        left = sorted(d.glob("*.json"))
+        self.assertEqual(len(left), session_store.TRASH_KEEP)
+        self.assertFalse((d / "s-00.json").exists())
+        self.assertTrue((d / f"s-{session_store.TRASH_KEEP + 4:02d}.json").exists())
 
 
 class OneBotDropSessionTests(unittest.TestCase):

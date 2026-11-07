@@ -161,6 +161,72 @@ COMPONENTS = [
 _BY_KEY = {c["key"]: c for c in COMPONENTS}
 STATUS_LABELS = {"ready": "已就绪", "missing": "缺失", "mismatch": "版本不符"}
 
+# 允许网页自己卸载的组件：只限我们写入/启用过的东西。
+# 系统包（pacman）一律不在这里出现——卸载包要用户自己决定，后端不代劳。
+UNINSTALLABLE = {"tts_model", "nltk_data", "ydotoold"}
+
+
+def _path_size(paths) -> int:
+    total = 0
+    for p in paths:
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+            elif p.is_dir():
+                for f in p.rglob("*"):
+                    if f.is_file():
+                        total += f.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def _fmt_size(n: int) -> str:
+    if n <= 0:
+        return "0"
+    if n < 1024:
+        return f"{n}B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.0f}KB"
+    return f"{n / 1024 / 1024:.1f}MB"
+
+
+def _uninstall_spec(key: str) -> tuple[list[Path], str, str]:
+    """(要删的精确路径, 额外动作, 说明)。
+
+    只列我们自己写下的路径，绝不整目录删除用户可能放了别的东西的目录。
+    """
+    if key == "tts_model":
+        root = Path(_engine().model_root)
+        paths = [root / tts_mod.ONNX_NAME, root / tts_mod.CONFIG_NAME]
+        return ([p for p in paths if p.exists()], "",
+                f"删除模型文件（{root} 下的 {tts_mod.ONNX_NAME} 与 {tts_mod.CONFIG_NAME}）")
+    if key == "nltk_data":
+        root = tts_mod.nltk_data_dir()
+        paths = [root / sub / pkg for sub, pkg in NLTK_PACKAGES]
+        return ([p for p in paths if p.exists()], "",
+                f"删除 {root} 下由本程序下载的 {len(NLTK_PACKAGES)} 个 nltk 包，"
+                "目录里的其它文件不动")
+    if key == "ydotoold":
+        # unit 文件由系统包提供，删它等于改系统；只撤销我们做的 enable/start
+        return ([], "service",
+                "停用并关闭开机自启 systemd 用户单元 ydotool.service；"
+                "包文件属于系统，不执行卸载")
+    return ([], "", "")
+
+
+def uninstall_plan(key: str) -> dict:
+    """给前端确认框用的卸载预览：删什么、多大、是否允许"""
+    if key not in UNINSTALLABLE:
+        return {"allowed": False, "reason": "该组件不支持卸载"}
+    try:
+        paths, action, desc = _uninstall_spec(key)
+    except Exception as exc:
+        return {"allowed": False, "reason": str(exc) or "无法读取卸载目标"}
+    size = 0 if action == "service" else _path_size(paths)
+    return {"allowed": bool(paths or action), "paths": [str(p) for p in paths],
+            "size": _fmt_size(size), "target": desc}
+
 
 def _public(item: dict) -> dict:
     status, detail = item["status_fn"]()
@@ -171,12 +237,18 @@ def _public(item: dict) -> dict:
         can_install = sudo_silent()
         if not command:
             command = "bash install.sh check --fix"
-    return {
+    out = {
         "key": item["key"], "name": item["name"], "size": item["size"],
         "status": status, "status_label": STATUS_LABELS.get(status, status),
         "detail": detail, "action": action,
         "can_install": bool(can_install), "command": command,
+        "can_uninstall": False, "uninstall": None,
     }
+    if status == "ready" and item["key"] in UNINSTALLABLE:
+        plan = uninstall_plan(item["key"])
+        out["can_uninstall"] = bool(plan.get("allowed"))
+        out["uninstall"] = plan if plan.get("allowed") else None
+    return out
 
 
 def snapshot() -> dict:
@@ -266,6 +338,56 @@ def _run_job(item: dict) -> None:
 
 class _NeedTerminal(Exception):
     pass
+
+
+def start_uninstall(component: str, hook=None) -> dict:
+    """后台卸载单个组件；与安装共用同一个单任务锁，杜绝并发重复点击"""
+    global _job_thread
+    if component not in UNINSTALLABLE:
+        return {"ok": False, "error": "该组件不支持卸载", "reason": "not_allowed"}
+    plan = uninstall_plan(component)
+    if not plan.get("allowed"):
+        return {"ok": False, "error": plan.get("reason") or "没有可卸载的内容",
+                "reason": "not_allowed"}
+    with _job_lock:
+        if _job_thread and _job_thread.is_alive():
+            return {"ok": False, "error": "已有任务在进行", "reason": "busy",
+                    "job": dict(_job or {})}
+        if hook:
+            set_progress_hook(hook)
+        _job_thread = threading.Thread(
+            target=_run_uninstall, args=(component,),
+            name=f"selfcheck-uninstall-{component}", daemon=True)
+        _job_thread.start()
+    return {"ok": True, "job": job_snapshot()}
+
+
+def _run_uninstall(component: str) -> None:
+    try:
+        _set(component, "prepare", 1.0, "准备卸载…")
+        paths, action, _desc = _uninstall_spec(component)
+        _set(component, "remove", 30.0, "正在删除…")
+        for p in paths:
+            try:
+                if p.is_dir():
+                    shutil.rmtree(p)
+                else:
+                    p.unlink(missing_ok=True)
+            except OSError as exc:
+                raise RuntimeError(f"删除 {p} 失败：{exc}") from exc
+        if action == "service":
+            _set(component, "remove", 60.0, "停用 systemd 用户单元…")
+            rc, out = _run(["systemctl", "--user", "disable", "--now",
+                            "ydotool.service"], timeout=15.0)
+            # 未启用/未运行时 disable 会报 not loaded，这本来就是目标状态
+            low = (out or "").lower()
+            if rc != 0 and "not loaded" not in low and "not found" not in low:
+                raise RuntimeError(f"停用失败：{out.splitlines()[-1][:80] if out else '无输出'}")
+        invalidate()
+        _set(component, "done", 100.0, "已卸载，可在本页重新安装", state="done")
+    except Exception as exc:
+        _set(component, "error", 0.0, "卸载失败", state="error",
+             error=str(exc) or "未知错误")
 
 
 def _poll_sleep(stop_check=None) -> None:

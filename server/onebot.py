@@ -997,6 +997,8 @@ class OneBotClient:
         self._connected_at = 0.0
         self._last_heartbeat = 0.0
         self._last_message_at = 0.0
+        # 群号 -> (时间, 群名)：只给设置页展示用，最终写回配置的仍是号码
+        self._group_name_cache: dict[str, tuple[float, str]] = {}
 
         self._gate = RateGate(self._cfg.rate_per_minute,
                               self._cfg.group_rate_per_minute)
@@ -2240,6 +2242,30 @@ class OneBotClient:
         self._log("info", "存图成功",
                   f"{target} 来源={item.get('source') or '未知'} message_id={mid}")
         await self._send_text(ev, f"已存好：{target}")
+
+    async def group_names(self, group_ids: list[str]) -> dict[str, str]:
+        """按群号批量取群名，仅供设置页辅助展示。
+
+        未连接直接返回空；单项失败也返回空串，调用方回退显示号码。
+        成功结果内存缓存 10 分钟，列表反复刷新不会每次都打 OneBot。
+        """
+        if not self.state().get("connected"):
+            return {}
+        now = self._clock()
+        out: dict[str, str] = {}
+        for raw in group_ids[:50]:
+            gid = str(raw or "").strip()
+            if not gid.isdigit():
+                continue
+            hit = self._group_name_cache.get(gid)
+            if hit and now - hit[0] < 600:
+                out[gid] = hit[1]
+                continue
+            name = await self._group_name(gid)
+            out[gid] = name
+            if name:
+                self._group_name_cache[gid] = (now, name)
+        return out
 
     async def _group_name(self, group_id: str) -> str:
         try:

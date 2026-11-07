@@ -63,6 +63,48 @@ def all_session_files() -> list[Path]:
     return sorted(seen.values(), key=lambda p: p.stat().st_mtime, reverse=True)
 
 
+# 软删除保留份数：误删后还能从 userdata/trash/ 里找回最近这些会话。
+# 超出的按 mtime 从旧到新清掉，避免回收站无限增长。
+TRASH_KEEP = 20
+
+
+def trash_session(sid: str) -> Path | None:
+    """把会话主文件移进 userdata/trash/（软删除），返回落点。
+
+    只在同一数据根内 os.replace，原子且不复制内容；会话文件不存在时返回 None。
+    """
+    src = sessions_dir() / f"{sid}.json"
+    if not src.exists():
+        return None
+    target_dir = paths.trash_dir()
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+    target = target_dir / f"{sid}-{stamp}.json"
+    n = 1
+    while target.exists():
+        target = target_dir / f"{sid}-{stamp}-{n}.json"
+        n += 1
+    os.replace(src, target)
+    prune_trash(target_dir)
+    return target
+
+
+def prune_trash(target_dir: Path | None = None) -> list[str]:
+    """只保留最近 TRASH_KEEP 份回收站会话，返回被清掉的文件名"""
+    d = target_dir or paths.trash_dir()
+    try:
+        files = sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return []
+    removed: list[str] = []
+    for old in files[TRASH_KEEP:]:
+        try:
+            old.unlink()
+            removed.append(old.name)
+        except OSError:
+            pass
+    return removed
+
+
 def _atomic_write(p: Path, body: str) -> None:
     """原子写：先写临时文件再 replace，进程中途被杀也不会留下半个 JSON"""
     tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")

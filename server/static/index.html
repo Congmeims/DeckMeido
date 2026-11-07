@@ -1166,6 +1166,21 @@
     padding-top: calc(22px + env(safe-area-inset-top));
   }
   .set-inner { max-width: 760px; margin: 0 auto; }
+  /* 女仆人设页：宽屏把长期记忆这块（最长的列表）挪到右栏并排，
+     整页纵向高度不再被它单方面拉长；窄屏自动退回上下堆叠 */
+  .set-inner:has(.set-pane.on[data-pane="persona"]) { max-width: 1060px; }
+  .persona-cols {
+    display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    gap: 16px; align-items: start;
+  }
+  .persona-col { min-width: 0; }
+  .persona-col .card:last-child { margin-bottom: 0; }
+  /* 已记住的内容是页内最长的滚动区，限高后右栏不会被它撑得比左栏长太多 */
+  .persona-col .mem-list { max-height: 320px; overflow: auto; }
+  @media (max-width: 900px) {
+    .persona-cols { grid-template-columns: minmax(0, 1fr); }
+    .persona-col .mem-list { max-height: 260px; }
+  }
   /* 分区标题：进页时只有当前分区可见 */
   .set-pane { display: none; }
   .set-pane.on { display: block; }
@@ -1666,6 +1681,9 @@
     font-size: 14px; line-height: 1; padding: 2px 4px; cursor: pointer;
   }
   .chip button:hover { opacity: 1; color: #e05555; }
+  /* 群名只作辅助：名字在前、号码弱化显示，复制/提交的仍是号码 */
+  .chip-name { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip-id { color: var(--muted); font-size: 11px; }
   .chip-empty { font-size: 12px; color: var(--muted); }
   /* QQ 事件日志：固定高度滚动，级别色区分 */
   .qq-logs {
@@ -2072,7 +2090,20 @@
     color: var(--muted); white-space: pre-wrap; word-break: break-word;
     max-height: 160px; overflow: auto;
   }
+  /* 跨屏鼠标：灵敏度 4 : 1 接管上限同一行，标签/控件按底对齐；
+     窄屏自动上下堆叠，避免数字框被压到没法输入 */
+  .ri-io-row {
+    display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 1fr);
+    gap: 14px; align-items: end;
+  }
+  .ri-io-row > .field { margin-bottom: 0; min-width: 0; }
+  @media (max-width: 720px) {
+    .ri-io-row { grid-template-columns: minmax(0, 1fr); }
+  }
   /* ---------- 桌面控件自检：两栏（左自检 / 右可补装组件） ---------- */
+  /* 这块内容比同页其它卡片稀疏，收窄卡片本身；360px 窄屏仍占满整宽 */
+  .ctrl-card { max-width: 560px; }
+  @media (max-width: 640px) { .ctrl-card { max-width: none; } }
   .ctrl-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
   .ctrl-col { min-width: 0; }
   .ctrl-sub { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
@@ -2956,6 +2987,8 @@
         <section class="set-pane" data-pane="persona">
           <h3>女仆人设</h3>
           <p class="pane-desc">决定她是谁、怎么称呼你、用什么语气说话。改完保存立即生效，新会话也保持一致。</p>
+          <div class="persona-cols">
+            <div class="persona-col">
           <div class="card">
             <div class="card-title">身份</div>
             <div class="field">
@@ -3009,6 +3042,8 @@
               <div class="field-hint">整段追加到系统提示词末尾，适合写上面表单装不下的规矩。</div>
             </div>
           </div>
+            </div>
+            <div class="persona-col">
           <div class="card">
             <div class="tts-head">
               <div class="card-title">语音回复</div>
@@ -3084,6 +3119,8 @@
               <input id="soulFile" type="file" accept=".json,application/json" hidden>
             </div>
           </div>
+            </div>
+          </div>
         </section>
 
         <section class="set-pane" data-pane="device">
@@ -3157,7 +3194,7 @@
             </div>
           </div>
 
-          <div class="card">
+          <div class="card ctrl-card">
             <div class="card-title">桌面控件自检</div>
             <div class="ctrl-cols">
               <div class="ctrl-col">
@@ -3200,14 +3237,16 @@
                 <span class="slider"></span>
               </label>
             </div>
-            <div class="field">
-              <label>指针灵敏度 <span id="cfgRiSensVal" class="field-hint">1.5×</span></label>
-              <input id="cfgRiSens" type="range" min="0.5" max="3" step="0.1" value="1.5"
-                     style="width:100%">
-            </div>
-            <div class="field">
-              <label>单次接管上限（分钟）</label>
-              <input id="cfgRiMax" type="number" min="1" max="120" step="1" value="30">
+            <div class="ri-io-row">
+              <div class="field">
+                <label>指针灵敏度 <span id="cfgRiSensVal" class="field-hint">1.5×</span></label>
+                <input id="cfgRiSens" type="range" min="0.5" max="3" step="0.1" value="1.5"
+                       style="width:100%">
+              </div>
+              <div class="field">
+                <label>单次接管上限（分钟）</label>
+                <input id="cfgRiMax" type="number" min="1" max="120" step="1" value="30">
+              </div>
             </div>
             <div class="field-hint" style="color:#e0a33a">
               安全提示：这个开关同时就是「允许局域网设备接管」。开启后，局域网内任何已配对设备
@@ -3569,9 +3608,11 @@
               游戏开始运行时自动套用对应预设，退出后恢复默认。预设只覆盖运行时的状态栏提示词，
               不会改动上面的全局配置。当前：<span id="presetNow">—</span>
             </p>
-            <div id="presetList" class="preset-list">
-              <div class="field-hint">读取中…</div>
+            <div class="field">
+              <label>选择预设</label>
+              <select id="presetSelect" class="cfg-select"></select>
             </div>
+            <div id="presetEditor" class="preset-list"></div>
             <div class="mem-foot">
               <span class="field-hint" id="presetHint"></span>
               <button id="presetRefresh" class="mini-btn" type="button">刷新</button>
@@ -8226,7 +8267,7 @@
 
   function scBtnLabel(it, job) {
     if (job && job.component === it.key && job.state === 'running') return '进行中…';
-    if (it.status === 'ready') return '已就绪';
+    if (it.status === 'ready') return it.can_uninstall ? '卸载' : '已就绪';
     if (!it.can_install && it.action === 'package') return '下载';
     if (!it.can_install) return '复制命令';
     return it.key === 'ydotoold' ? '修复' : '安装';
@@ -8267,8 +8308,7 @@
         a.href = url; a.download = x.name;
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-        scHint.textContent = '已下载 ' + x.name
-          + '，可双击安装，或执行 sudo pacman -U ' + x.name;
+        scHint.textContent = '已下载 ' + x.name;
         btn.textContent = '重新下载';
         btn.disabled = false;
       })
@@ -8276,6 +8316,43 @@
         scHint.textContent = '下载失败：' + (e && e.message ? e.message : '连接异常');
         btn.textContent = oldLabel;
         btn.disabled = false;
+      });
+  }
+
+  // 卸载：只允许我们自己管理的组件；确认框里写清删什么、多大，
+  // 卸完状态立刻刷新成缺失，按钮变成「下载 / 安装 / 修复」，原地就能装回来
+  function uninstallComponent(it, btn) {
+    var plan = it.uninstall || {};
+    var lines = ['确认卸载「' + it.name + '」？', ''];
+    if (plan.target) lines.push(plan.target);
+    if (plan.size && plan.size !== '0') lines.push('占用约 ' + plan.size + '。');
+    lines.push('卸载后可随时在本页重新安装。');
+    if (!window.confirm(lines.join('\n'))) return;
+    btn.disabled = true;
+    btn.textContent = '卸载中…';
+    scHint.textContent = '正在卸载 ' + it.name + '…';
+    fetch('/api/selfcheck/uninstall?component=' + encodeURIComponent(it.key),
+          { method: 'POST' })
+      .then(function (r) {
+        return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; },
+                              function () { return { ok: false, status: r.status, j: null }; });
+      })
+      .then(function (x) {
+        if (!x.ok || !x.j || !x.j.ok) {
+          scHint.textContent = '卸载失败：'
+            + ((x.j && (x.j.error || x.j.reason)) || ('HTTP ' + x.status));
+          btn.disabled = false;
+          btn.textContent = '卸载';
+          return;
+        }
+        scHint.textContent = '卸载已开始，完成后可直接在本页重新安装';
+        if (x.j.job) applyScProgress(x.j.job);
+        startScPoll();
+      })
+      .catch(function () {
+        scHint.textContent = '卸载失败（连接异常）';
+        btn.disabled = false;
+        btn.textContent = '卸载';
       });
   }
 
@@ -8298,7 +8375,7 @@
       var btn = document.createElement('button');
       btn.className = 'mini-btn sc-btn'; btn.type = 'button';
       btn.textContent = scBtnLabel(it, job);
-      btn.disabled = it.status === 'ready'
+      btn.disabled = (it.status === 'ready' && !it.can_uninstall)
         || (job && job.component === it.key && job.state === 'running');
       head.append(nm, sz, badge, btn);
 
@@ -8306,7 +8383,9 @@
       detail.className = 'sc-detail';
       detail.textContent = it.detail || '';
       var cmd = null;
-      if (!it.can_install && it.action === 'package') {
+      if (it.status === 'ready' && it.can_uninstall) {
+        btn.addEventListener('click', function () { uninstallComponent(it, btn); });
+      } else if (!it.can_install && it.action === 'package') {
         btn.addEventListener('click', function () { downloadComponent(it, btn); });
       } else if (!it.can_install && it.command) {
         // 兜底：非系统包的非静默项仍可按旧方式复制命令
@@ -11242,7 +11321,15 @@
         return;
       }
       opts.box.innerHTML = items.map(function (value, i) {
-        return '<span class="chip">' + escapeHtml(value)
+        // nameOf 只做辅助展示：名字有就显示名字 + 号码，没有就退回号码；
+        // 写回配置的始终是 items 里的号码，不受这里影响
+        var nm = opts.nameOf ? String(opts.nameOf(value) || '') : '';
+        var head = nm
+          ? '<span class="chip-name">' + escapeHtml(nm) + '</span>'
+            + '<span class="chip-id">' + escapeHtml(value) + '</span>'
+          : escapeHtml(value);
+        return '<span class="chip"' + (nm ? ' title="' + escapeHtml(nm + '（' + value + '）') + '"' : '')
+          + '>' + head
           + '<button type="button" data-chip-index="' + i
           + '" aria-label="删除">×</button></span>';
       }).join('');
@@ -11259,6 +11346,7 @@
       opts.input.value = '';
       if (opts.hint) opts.hint.textContent = '';
       render();
+      if (opts.onAdd) opts.onAdd(raw);
     }
     if (opts.addBtn) opts.addBtn.addEventListener('click', add);
     if (opts.input) {
@@ -11298,9 +11386,30 @@
     return '';
   }
 
+  // 群号 -> 群名（只做辅助展示）：内存缓存一份，接口/通道失败一律回退号码
+  var qqGroupNames = {};
+  var qqGroupNamesSeq = 0;
+  function refreshQqGroupNames() {
+    var ids = (qqGroups ? qqGroups.get() : []).filter(function (v) {
+      return /^\d{5,15}$/.test(v);
+    });
+    if (!ids.length) { qqGroupNames = {}; return; }
+    var seq = ++qqGroupNamesSeq;
+    fetch('/api/qq/group-names?ids=' + encodeURIComponent(ids.join(',')))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (seq !== qqGroupNamesSeq) return;
+        qqGroupNames = (d && d.names) || {};
+        if (qqGroups) qqGroups.set(qqGroups.get());
+      })
+      .catch(function () { /* 取不到名字就继续显示号码，不弹错误 */ });
+  }
+
   qqGroups = makeChipList({
     input: cfgQqGroupInput, addBtn: cfgQqGroupAdd, box: qqGroupChipsBox,
-    hint: qqGroupHint, empty: '未添加群号，群里指令不生效', check: qqGroupIdError
+    hint: qqGroupHint, empty: '未添加群号，群里指令不生效', check: qqGroupIdError,
+    nameOf: function (v) { return qqGroupNames[v] || ''; },
+    onAdd: function () { refreshQqGroupNames(); }
   });
   qqRedactWords = makeChipList({
     input: cfgQqRedactInput, addBtn: cfgQqRedactAdd, box: qqRedactChipsBox,
@@ -11623,6 +11732,7 @@
       qqAdminExtras = admins.slice(1);
       renderAdminHint();
       if (qqGroups) qqGroups.set(c.allow_groups || []);
+      refreshQqGroupNames();
       if (cfgQqAllowImage) cfgQqAllowImage.checked = !!c.allow_image;
       if (cfgQqMaxImage) cfgQqMaxImage.value = c.max_image_mb != null ? c.max_image_mb : 8;
       if (cfgQqImageRecent) cfgQqImageRecent.value =
@@ -11763,6 +11873,7 @@
         renderAdminHint();
         if (cfgQqAutoConnect) cfgQqAutoConnect.checked = !!res.config.auto_connect;
         if (qqGroups) qqGroups.set(res.config.allow_groups || []);
+        refreshQqGroupNames();
         if (qqRedactWords) qqRedactWords.set(res.config.redact_words || []);
         applyQqVoiceConfig(res.config);
         if (cfgQqVoiceSeconds) cfgQqVoiceSeconds.value =
@@ -11958,11 +12069,22 @@
   // ---------- 按游戏提示词预设 ----------
   // 预设存在后端 userdata/presets/presets.json；网页与客户端共用这一份，
   // 插件端只负责在游戏开始/退出时上报，不保存业务数据。
-  var presetListEl = document.getElementById('presetList');
+  // 预设改成一个下拉：一次只显示一个编辑区，避免整页被多个预设卡片撑长
+  var presetSelectEl = document.getElementById('presetSelect');
+  var presetEditorEl = document.getElementById('presetEditor');
   var presetNowEl = document.getElementById('presetNow');
   var presetHintEl = document.getElementById('presetHint');
   var presetRefreshBtn = document.getElementById('presetRefresh');
   var presetsLoading = false;
+  var presetItems = [];
+  var presetCur = {};
+  var presetEditing = '';
+  // 当前编辑区「有未保存修改」的判定；切换下拉前先问一句，避免静默丢弃
+  var presetDirtyCheck = null;
+
+  function presetDirty() {
+    return !!(presetDirtyCheck && presetDirtyCheck());
+  }
 
   function setPresetHint(text) {
     if (presetHintEl) presetHintEl.textContent = text || '';
@@ -11973,14 +12095,18 @@
     return item.appid ? ('Steam AppID ' + item.appid) : '按游戏名匹配';
   }
 
-  function buildPresetItem(item, cur) {
+  function presetLabel(item) {
+    return '《' + (item.game_name || ('appid ' + item.appid)) + '》';
+  }
+
+  function buildPresetEditor(item, cur) {
     var wrap = document.createElement('div');
     wrap.className = 'preset-item';
 
     var head = document.createElement('div');
     head.className = 'preset-head';
     var name = document.createElement('b');
-    name.textContent = '《' + (item.game_name || ('appid ' + item.appid)) + '》';
+    name.textContent = presetLabel(item);
     head.appendChild(name);
     var meta = document.createElement('span');
     meta.className = 'preset-meta';
@@ -12016,6 +12142,12 @@
     promptField.appendChild(promptLab);
     promptField.appendChild(promptTa);
     wrap.appendChild(promptField);
+
+    var baseTitle = item.title || '';
+    var basePrompt = item.prompt || '';
+    presetDirtyCheck = function () {
+      return titleIn.value !== baseTitle || promptTa.value !== basePrompt;
+    };
 
     var foot = document.createElement('div');
     foot.className = 'mem-foot';
@@ -12074,28 +12206,65 @@
   }
 
   function renderPresets(data) {
-    if (!presetListEl) return;
+    if (!presetSelectEl || !presetEditorEl) return;
     var cur = (data && data.current) || {};
+    presetCur = cur;
+    presetItems = (data && data.presets) || [];
     if (presetNowEl) {
       presetNowEl.textContent = cur.applied
         ? ('《' + (cur.game_name || '当前游戏') + '》· ' + (cur.title || '已套用'))
         : (cur.game_name ? ('《' + cur.game_name + '》暂无预设，使用默认提示词')
           : '未检测到运行中的游戏');
     }
-    presetListEl.textContent = '';
-    var items = (data && data.presets) || [];
-    if (!items.length) {
+    presetSelectEl.replaceChildren();
+    presetEditorEl.replaceChildren();
+    presetDirtyCheck = null;
+    if (!presetItems.length) {
+      presetEditing = '';
+      var opt0 = document.createElement('option');
+      opt0.disabled = true;
+      opt0.textContent = '还没有预设';
+      presetSelectEl.appendChild(opt0);
       var empty = document.createElement('div');
       empty.className = 'field-hint';
       empty.textContent = '还没有预设：在 Deck 上运行游戏后，用插件端的「存为预设」保存当前提示词。';
-      presetListEl.appendChild(empty);
+      presetEditorEl.appendChild(empty);
       return;
     }
-    items.forEach(function (item) { presetListEl.appendChild(buildPresetItem(item, cur)); });
+    presetItems.forEach(function (item) {
+      var opt = document.createElement('option');
+      opt.value = item.id;
+      opt.textContent = presetLabel(item) + ' · ' + presetBindingText(item)
+        + (cur.preset_id && cur.preset_id === item.id ? ' · 使用中' : '');
+      presetSelectEl.appendChild(opt);
+    });
+    // 刷新后尽量留在原来的预设上；它被删掉了才退回第一条
+    var exists = presetItems.some(function (item) { return item.id === presetEditing; });
+    if (!exists) presetEditing = presetItems[0].id;
+    presetSelectEl.value = presetEditing;
+    var editing = presetItems.filter(function (item) { return item.id === presetEditing; })[0];
+    if (editing) presetEditorEl.appendChild(buildPresetEditor(editing, cur));
+  }
+
+  if (presetSelectEl) {
+    presetSelectEl.addEventListener('change', function () {
+      var next = presetSelectEl.value;
+      if (!next || next === presetEditing) return;
+      if (presetDirty()
+          && !window.confirm('当前预设还有未保存的修改，切换后会丢失。继续切换吗？')) {
+        presetSelectEl.value = presetEditing;
+        return;
+      }
+      presetEditing = next;
+      presetEditorEl.replaceChildren();
+      presetDirtyCheck = null;
+      var item = presetItems.filter(function (it) { return it.id === next; })[0];
+      if (item) presetEditorEl.appendChild(buildPresetEditor(item, presetCur));
+    });
   }
 
   function loadPresets() {
-    if (!presetListEl || presetsLoading) return;
+    if (!presetEditorEl || presetsLoading) return;
     presetsLoading = true;
     memFetch('/api/presets').then(function (data) {
       renderPresets(data || {});
@@ -13244,7 +13413,11 @@
               .then(function (r) {
                 // 失败也要有反馈：以前不管成没成都刷新列表，删除被服务端拒绝时
                 // 界面上什么都没变，看起来像「点了没反应」
-                if (!r.ok) { addSystem('删除会话失败（HTTP ' + r.status + '）'); }
+                if (!r.ok) {
+                  addSystem('删除会话失败（HTTP ' + r.status + '）');
+                } else {
+                  addSystem('会话已移入回收站（userdata/trash），需要时可手工找回');
+                }
                 loadSessions();
               })
               .catch(function () { addSystem('删除会话失败：连不上后端'); });
