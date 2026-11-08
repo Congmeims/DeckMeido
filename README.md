@@ -294,11 +294,11 @@ bash install.sh uninstall --purge    # 卸载并删除安装器创建的配置�
 4. 建 `.venv` 并安装依赖；默认装 PySide6，`DECKMEIDO_SKIP_GUI=1` 可跳过。
 5. 从 `server/config.example.toml` 生成 `userdata/config.toml`，权限 `600`。
 6. 写桌面快捷方式与 `uninstall.sh`；除 `ydotool` 包自带的用户级 `ydotoold` 服务外，**不生成、不安装任何 systemd 单元**，后端只由客户端与插件拉起。
-7. 检测到 Decky Loader 时询问是否安装 QAM 插件，然后启动客户端。
+7. 检测到 Decky Loader 时询问是否安装 QAM 插件，然后启动客户端。没装 Decky Loader 时这一步自动跳过，插件 zip 留在工作区。
 
 ### Decky 插件与桌面客户端
 
-安装器发现 Decky 会询问，同意后把 `deploy/deckmeido-plugin.zip` 解到 `~/homebrew/plugins/DeckMeido`，并打印「插件已安装 v…」。到 **设置 → Decky Loader → 重新载入** 即可在 QAM 看到。没装 Decky 会整段跳过；之后想装可先装 Decky 再执行 `bash install.sh upgrade`，或运行 `bash ~/DeckMeido/plugin/deploy.sh`。
+安装器发现 Decky 会询问，同意后把 `deploy/deckmeido-plugin.zip` 解到 `~/homebrew/plugins/DeckMeido`，并打印「插件已安装 v…」。到 **设置 → Decky Loader → 重新载入** 即可在 QAM 看到。没装 Decky 会整段跳过，QAM 里没有入口属预期；之后想装可先装 Decky 再执行 `bash install.sh upgrade`，或运行 `bash ~/DeckMeido/plugin/deploy.sh`。
 
 装完会自动打开一次客户端，同时拉起后端。之后双击桌面上的 DeckMeido 图标即可；窗口最小化驻留托盘，右键菜单可退出。
 
@@ -357,6 +357,7 @@ bash ~/DeckMeido/uninstall.sh --purge    # 额外删安装器创建的配置备�
 | 现象 | 排查 |
 | --- | --- |
 | 插件版本没变 | 看安装日志里是否有「插件已安装 v…」；到 设置 → Decky Loader 点「重新载入」，或运行 `bash ~/DeckMeido/plugin/deploy.sh` |
+| QAM 里没有入口 | 先确认装没装 Decky Loader：没装时插件整段跳过、QAM 不会有入口，属预期；装好 Decky 后运行 `bash ~/DeckMeido/plugin/deploy.sh`（或 `bash ~/DeckMeido/install.sh upgrade`），再到 设置 → Decky Loader 点「重新载入」 |
 | 后端没起来 | 看 `~/DeckMeido/userdata/logs/backend.log`（轮转备份 `backend.log.1/.2`，只在后端运行时产生）；确认 `18765` 没被别的进程占用 |
 | 配置写坏了 | 删除 `userdata/config.toml` 后重启，会按模板重新生成（自定义项会丢）；人设 JSON 坏了会自动回落默认人设 |
 | 模型连不上 | 先看离线模式是否打开；本地端点连接超时约 2 秒，读超时按配置。`/api/net/probe` 可判断当前只通局域网还是能到公网 |
