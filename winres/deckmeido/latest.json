@@ -1,10 +1,10 @@
 {
   "tag": "0.7.8",
   "name": "DeckMeido 0.7.8",
-  "notes": "# DeckMeido 0.7.8\n\n- chore: 版本号升到 0.7.8\n- install: 删除旧版本兼容与失效注释\n- install: 自定义安装项默认全装，卸载系统包默认删除\n- install: 语音模型缺失不再被静默吞掉，安装期下载统一重试 3 次\n- Release: ship 0.7.7 artifacts\n- Release: bump to 0.7.7\n- Uninstall: trash-only cleanup driven by install manifest\n- Release: ship 0.7.6 artifacts\n- Release: bump to 0.7.6\n- Settings: regroup into six panes with global search and tighter density\n- Fix: keep pairing results, index QQ sessions at once, accept CGNAT in release audit\n- Installer: add minimal/standard/full profiles; fix exit key and box width\n- Config: mark eyes_display reserved for future versions\n- Docs: document smart speaker, music, and remaining features\n- Docs: refresh test count\n- Policy: two scene presets and guest history window\n- Memory: cap injection budget; share persona style with guests\n- Memory: scope-aware store and /memory command\n- Offline: offline mode v1 with fast-fail and banner\n- Media: fix Decky RPC id mixups, verify playback, boost speech volume\n",
-  "published_at": "2026-11-08T21:12:11+08:00",
+  "notes": "# DeckMeido 0.7.8\n\n- uninstall: move userdata to MeidoSpace before deleting, verify every step\n- Release: ship 0.7.8 artifacts\n- chore: 版本号升到 0.7.8\n- install: 删除旧版本兼容与失效注释\n- install: 自定义安装项默认全装，卸载系统包默认删除\n- install: 语音模型缺失不再被静默吞掉，安装期下载统一重试 3 次\n- Release: ship 0.7.7 artifacts\n- Release: bump to 0.7.7\n- Uninstall: trash-only cleanup driven by install manifest\n- Release: ship 0.7.6 artifacts\n- Release: bump to 0.7.6\n- Settings: regroup into six panes with global search and tighter density\n- Fix: keep pairing results, index QQ sessions at once, accept CGNAT in release audit\n- Installer: add minimal/standard/full profiles; fix exit key and box width\n- Config: mark eyes_display reserved for future versions\n- Docs: document smart speaker, music, and remaining features\n- Docs: refresh test count\n- Policy: two scene presets and guest history window\n- Memory: cap injection budget; share persona style with guests\n- Memory: scope-aware store and /memory command\n",
+  "published_at": "2026-11-08T21:37:23+08:00",
   "files": {
     "tarball": "deckmeido-0.7.8.tar.gz",
-    "sha256": "d56982a7aa8e0b25093fb86afe81610c6ebb2c2c1f7a33a148a194de939f1ed6"
+    "sha256": "21cdb73d72f5a3b845e4251eb1a5387a1d1f8421eec8a8777dc3c4c55b5a69b2"
   }
 }
