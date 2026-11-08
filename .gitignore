@@ -66,3 +66,8 @@ server/*.bak*
 server/static/*.bak*
 server/backup*.log*
 server/static/_logo_prev.png
+
+# 本地临时产物：抓包/解包/一次性的设计参考复刻页（eyes.html 的校准来源，运行时不加载）
+.scratch/
+.apk_extract/
+ouo-face.html
