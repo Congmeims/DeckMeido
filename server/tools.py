@@ -3264,15 +3264,19 @@ async def _remember(text: str, kind: str = "note") -> str:
     text = str(text or "").strip()
     if not text:
         return "没有提供要记住的内容。"
-    existed = any(memory.norm(it["text"]) == memory.norm(text)
+    # 归属跟随当前回合：群聊写本群记忆，私聊写私聊记忆。
+    # 这样群里记住的事不会被带进私聊，也不会反过来把主人的私事注入群聊。
+    scope = memory.current_write_scope()
+    existed = any(it["scope"] == scope and memory.norm(it["text"]) == memory.norm(text)
                   for it in memory.load()["items"])
-    item = memory.add(kind, text)
+    item = memory.add(kind, text, scope=scope)
     if not item:
         return "没有提供要记住的内容。"
     label = memory.KINDS[item["kind"]]
+    where = "本群长期记忆" if scope.startswith(memory.SCOPE_GROUP_PREFIX) else "长期记忆"
     if existed:
-        return f"这条已经在长期记忆里了（{label}）：{item['text']}"
-    return f"已记入长期记忆（{label}）：{item['text']}"
+        return f"这条已经在{where}里了（{label}）：{item['text']}"
+    return f"已记入{where}（{label}）：{item['text']}"
 
 
 EXECUTORS = {

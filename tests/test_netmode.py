@@ -9,6 +9,9 @@ import time
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import httpx
 
 from server import netmode, tools, updater, usage
 from server.llm import LLMClient
@@ -109,6 +112,86 @@ class NetmodeTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["reason"], "offline")
         self.assertIn("离线模式已开启", result["error"])
+
+    # ---------- 公网 / 假内网探测 ----------
+
+    def test_probe_online(self):
+        netmode._probe_cache["result"] = None
+
+        def fake_fetch(url, timeout, box):
+            box["ok"] = True
+
+        with mock.patch.object(netmode, "_fetch", side_effect=fake_fetch):
+            result = netmode.probe(force=True)
+        self.assertEqual(result["state"], "online")
+        self.assertFalse(result["cached"])
+
+    def test_probe_lan_only_with_portal(self):
+        netmode._probe_cache["result"] = None
+
+        def fake_fetch(url, timeout, box):
+            box["redirect"] = True
+
+        with mock.patch.object(netmode, "_fetch", side_effect=fake_fetch), \
+                mock.patch.object(netmode, "_has_default_route", return_value=True):
+            result = netmode.probe(force=True)
+        self.assertEqual(result["state"], "lan_only")
+        self.assertTrue(result["portal"])
+        self.assertIn("假内网", result["detail"])
+
+    def test_probe_offline_without_route(self):
+        netmode._probe_cache["result"] = None
+        with mock.patch.object(netmode, "_fetch", side_effect=lambda *a: None), \
+                mock.patch.object(netmode, "_has_default_route", return_value=False):
+            result = netmode.probe(force=True)
+        self.assertEqual(result["state"], "offline")
+        self.assertFalse(result["portal"])
+
+    def test_probe_cache_avoids_repeat_requests(self):
+        netmode._probe_cache["result"] = None
+        with mock.patch.object(netmode, "_fetch",
+                               side_effect=lambda u, t, b: b.update(ok=True)):
+            first = netmode.probe(force=True)
+        with mock.patch.object(netmode, "_probe_now",
+                               side_effect=AssertionError("不应重新探测")):
+            second = netmode.probe()
+        self.assertEqual(first["state"], second["state"])
+        self.assertTrue(second["cached"])
+
+    def test_probe_never_touches_offline_switch(self):
+        netmode.set_enabled(False)
+        netmode._probe_cache["result"] = None
+        with mock.patch.object(netmode, "_fetch", side_effect=lambda *a: None), \
+                mock.patch.object(netmode, "_has_default_route", return_value=False):
+            netmode.probe(force=True)
+        self.assertFalse(netmode.enabled())
+
+    # ---------- 局域网端点连接超时 ----------
+
+    def test_local_client_only_tightens_connect_timeout(self):
+        client = LLMClient(base_url="http://192.168.1.10:1234/v1",
+                           api_key="sk-test", model="local", max_tokens=None,
+                           timeout=60.0)
+        try:
+            self.assertTrue(client._local)
+            self.assertEqual(client._client.timeout.connect, 2.0)
+            # 读超时不能被一起砍：模型生成慢是正常现象
+            self.assertEqual(client._client.timeout.read, 60.0)
+            self.assertFalse(client._should_retry(httpx.ConnectTimeout("connect")))
+            self.assertTrue(client._should_retry(httpx.ReadTimeout("read")))
+        finally:
+            asyncio.run(client.close())
+
+    def test_public_client_keeps_default_timeout(self):
+        client = LLMClient(base_url="https://api.deepseek.com",
+                           api_key="sk-test", model="deepseek-chat",
+                           max_tokens=None, timeout=60.0)
+        try:
+            self.assertFalse(client._local)
+            self.assertEqual(client._client.timeout.connect, 60.0)
+            self.assertTrue(client._should_retry(httpx.ConnectTimeout("connect")))
+        finally:
+            asyncio.run(client.close())
 
     def test_outbound_tool_fails_fast_local_tools_stay(self):
         netmode.set_enabled(True)

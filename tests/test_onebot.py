@@ -60,6 +60,51 @@ class PrefixTest(unittest.TestCase):
         self.assertIsNone(onebot.parse_command("", "DeckMeido"))
 
 
+class MemoryCommandScopeTest(unittest.TestCase):
+    """/memory 的 scope 解析：群 / 人 / 私聊 / all，以及群内不碰私聊。"""
+
+    def svc(self):
+        return object.__new__(onebot.OneBotClient)
+
+    def test_group_defaults_to_group_scope(self):
+        svc = self.svc()
+        ev = onebot.MessageEvent(uin="456", text="", group_id="123")
+        self.assertEqual(svc._memory_scope(ev, ""), ("group:123", "本群"))
+        self.assertEqual(svc._memory_scope(ev, "group"), ("group:123", "本群"))
+        self.assertEqual(svc._memory_scope(ev, "人"), ("person:456", "个人"))
+        self.assertEqual(svc._memory_targets(ev, "all"),
+                         (("group:123", "person:456"), "当前会话相关"))
+
+    def test_private_defaults_to_private_scope(self):
+        svc = self.svc()
+        ev = onebot.MessageEvent(uin="456", text="")
+        self.assertEqual(svc._memory_scope(ev, ""), ("private", "私聊"))
+        self.assertEqual(svc._memory_targets(ev, "all"),
+                         (("private", "person:456"), "当前会话相关"))
+
+    def test_group_rejects_private_scope(self):
+        svc = self.svc()
+        ev = onebot.MessageEvent(uin="456", text="", group_id="123")
+        scope, reason = svc._memory_scope(ev, "private")
+        self.assertIsNone(scope)
+        self.assertIn("私聊", reason)
+        self.assertIsNone(svc._memory_targets(ev, "private")[0])
+
+    def test_private_rejects_group_scope(self):
+        svc = self.svc()
+        ev = onebot.MessageEvent(uin="456", text="")
+        scope, reason = svc._memory_scope(ev, "group")
+        self.assertIsNone(scope)
+        self.assertIn("群记忆", reason)
+
+    def test_unknown_scope_rejected(self):
+        svc = self.svc()
+        ev = onebot.MessageEvent(uin="456", text="", group_id="123")
+        scope, reason = svc._memory_scope(ev, "elsewhere")
+        self.assertIsNone(scope)
+        self.assertIn("scope", reason)
+
+
 class ImageUrlGuardTest(unittest.TestCase):
     """QQ 图片链接的协议 / 地址 / 重定向校验。"""
 

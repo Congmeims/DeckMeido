@@ -8,13 +8,13 @@
 |---|---|---|---|---|---|---|---|
 | A1 | OneBot 固定命令菜单 | `server/menu.py` 已有命令表（help/status/shot/cancel/save_image/save_text/deps/memo_clear）、斜杠+口语别名匹配、`authorize` 权限、危险动作两级确认；`onebot.py` 已接入路由与动作回调。按设计不提供「安装依赖」，聊天窗口不能改设备环境 | — | P0 | 已投入 | `tests/test_menu.py`、`tests/test_onebot.py` 菜单/确认用例 | 已实现 |
 | A2 | 记录清洗 | `onebot.py` 分发入口调用 `memory.clean_text(..., names=(昵称, 发送者))`，@机器人 与「昵称：」标签在进群缓存/长期记忆前被剥掉 | — | P0 | 小 | 单测：含 @ 与昵称前缀的文本落记忆后无残留 | 已实现 |
-| A3 | 轻量条目记忆 + scope | `memory.py` 仍是单文件全局条目（add/update/remove/clear/block/stats），无 private/group/person 维度；`onebot.py` 未按会话 scope 读写 | 记录清洗（已完成） | P1 | 中 | 单测：私聊/群/人三类 scope 隔离与清理 | 未实现 |
+| A3 | 轻量条目记忆 + scope | `memory.py` 按 `private` / `group:<群号>` / `person:<QQ>` 存；群回合注入「群 + 发言人」，私聊回合注入「私聊 + 对方」，网页默认私聊；自动写入跟随当前会话，旧条目无 scope 时归 private 继续可读；与 `groupmemo.py` 的只读群常识保持独立 | 记录清洗（已完成） | P1 | 中 | `tests/test_memory_scope.py`：三类 scope 隔离、写入归属、清理边界、旧数据迁移 | 已实现（第一版） |
 | A4 | 群常识 | `server/groupmemo.py`：内存 TTL（默认 300s）、按群隔离、只读提示块、管理员 `/memo` 清除 | — | P1 | 已投入 | `tests/test_group_memo.py` | 已实现 |
 | A5 | 群聊限频与分段 | `onebot.py`：`rate_per_minute=6`（每人/分钟）、`group_rate_per_minute=10`（每群/分钟）、`reply_chunk_chars=300`、`max_reply_chunks=3`，白名单外群先拦再限流 | — | P1 | 已投入 | `tests/test_qq_turn_gate.py`、限流/分段用例 | 已实现 |
 | A6 | 可配置输出敏感词 | `redact_words` / `redact_mask` 写入配置，`redact.Redactor` 替换输出；网页设置页有多值控件 | — | P1 | 已投入 | `server/redact.py` 相关用例、设置保存校验用例 | 已实现 |
 | A7 | 每会话排队 1 条 | 当前是「忙就拒」：`_busy()` 为真时直接回「上一件事还在处理」，没有队列缓冲 | — | P2 | 中 | 并发两条消息的排队顺序与超时用例 | 未实现 |
 | A8 | 昵称触发 | 群里非管理员必须 @ 机器人才处理，没有「提到昵称即触发」模式与开关 | — | P2 | 小 | 关闭/开启两态的消息路由用例 | 未实现 |
-| A9 | `/memory` 管理命令 | 菜单只有 `memo_clear`（清本群缓存），没有按 scope 查看/清空记忆的指令 | A3 scope | P2 | 小 | 指令解析 + 清理生效用例 | 未实现 |
+| A9 | `/memory` 管理命令 | `/memory` 查看当前 scope 条目，`/memory clear [group\|person\|private\|all]` 清空指定 scope；仅管理员可用，清空走危险命令确认，群聊里拒绝查看/清空 private；`memo_clear` 只清群常识缓存 | A3 scope | P2 | 小 | `tests/test_menu.py` 解析/权限用例 + `tests/test_memory_scope.py` 清理生效用例 | 已实现 |
 | B1 | 语音模型三层兜底 | 已有手动补下载（`/api/tts/download`、自检卡 `tts_model` 组件调用 `tts.start_download`），状态区分引擎缺失（runtime）与模型缺失（model）；缺安装期自动下载、缺启动时自愈（无 `auto_download` 配置，`install.sh` 只校验不下载）、缺独立「本地模型」卡片 | — | P0 | 中 | Deck 上断网安装、删除模型目录后重启、网页手动补下载 | 部分 |
 | C1 | 离线 / 受限模式 | 已实现第一版：`[runtime] offline_mode`（默认 false，设置页可切换、保存即生效）；`server/netmode.py` 统一快速失败模型对话、在线模型列表、更新检查、余额、联网搜索/天气、TTS/STT/唤醒模型下载；顶部离线横幅与状态接口 `offline_mode` 已接入；回环/局域网地址放行，本地模型仅留可选插座，不做硬依赖；本地命令、文件、日志、已装好的 STT/TTS 不受影响 | — | P1 | 中 | 关/开开关各跑一轮对话、模型列表、更新、余额与下载；断网后确认本地功能可用 | 已实现（第一版） |
 | D1 | OneBot 语音消息 | `_send_voice_file` 发 `record` 段 `base64://`；默认 WAV 交给 NapCat 转码，预留 `_voice_convert` 钩子但未接入 graiax-silkcoder（仓库无该依赖）；`voice_reply=false`、`voice_group_members=true`（群友默认允许，与原计划的「群友不给」相反）；真机 6 项（record 接受、base64、WAV/SILK、60s、群私差异、限速/`can_send_record`）未验证 | NapCat 真机 | P3 | 中 | 真机逐项记录（群聊 + 私聊） | 部分 |
@@ -26,6 +26,6 @@
 
 ## 备注
 
-- 已由近期拉取的改动完成、无需再做：A1、A2、A4、A5、A6、G2。
-- 仍需按代码补齐的重点：B1（安装期下载 + 启动自愈 + 独立模型卡）、A3/A9（记忆 scope 与 `/memory`）、A7（会话排队）、A8（昵称触发）。
+- 已由近期拉取的改动完成、无需再做：A1、A2、A3、A4、A5、A6、A9、G2。
+- 仍需按代码补齐的重点：B1（安装期下载 + 启动自愈 + 独立模型卡）、A7（会话排队）、A8（昵称触发）。
 - D1 的默认值与原计划有出入：`voice_group_members` 当前默认 true（群友可触发语音），如要「群友不给」需改默认值并同步设置页文案。

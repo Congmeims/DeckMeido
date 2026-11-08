@@ -1741,6 +1741,9 @@ class OneBotClient:
             if menu.needs_confirm(spec):
                 self._menu_conf[device] = {
                     "kind": route.kind,
+                    # 带上参数（例如 /memory clear group 的 group），
+                    # 确认后 handler 才知道要清哪个 scope
+                    "text": route.text,
                     "expires_at": self._clock() + max(0.0, cfg.confirm_timeout),
                 }
                 self._log("warn", "危险命令待确认", route.kind)
@@ -1770,6 +1773,8 @@ class OneBotClient:
             "save_text": self._do_save_text,
             "deps": self._do_deps,
             "memo_clear": self._do_memo_clear,
+            "memory": self._do_memory,
+            "memory_clear": self._do_memory_clear,
         }.get(kind)
 
     async def _consume_menu_confirm(self, ev: MessageEvent, device: str) -> bool:
@@ -1803,6 +1808,8 @@ class OneBotClient:
             await self._send_text(ev, "已取消，这次操作没有执行。")
             return True
         self._log("info", "危险命令执行", kind)
+        # 待确认时暂存的参数挂回事件上，供 /memory clear group 这类命令使用
+        ev.menu_arg = str(pending.get("text") or "")
         await handler(ev)
         return True
 
@@ -1893,11 +1900,18 @@ class OneBotClient:
         # 授权标记必须在 create_task 之前写入：子任务复制当前 context，
         # 工具层就能看到「这一轮的来源是否被允许」
         token_auth = _TURN_AUTHORIZED.set(True)
+        # 记忆 scope 也在这里定好：群聊注入「本群 + 发言人」，私聊注入「私聊 + 对方」；
+        # 写入归属同步设好，工具里的 remember 才知道该写进群记忆还是私聊记忆。
+        token_mem = memory.set_context(
+            memory.scopes_for(ev.group_id, ev.uin),
+            memory.write_scope(ev.group_id),
+        )
         try:
             task = asyncio.create_task(
                 self._runner(text, sid=sid, device=device,
                              readonly=route.readonly, turn_id=turn_id, image=image))
         finally:
+            memory.reset_context(token_mem)
             _TURN_AUTHORIZED.reset(token_auth)
             if token is not None:
                 _TURN_GROUP_CONTEXT.reset(token)
@@ -1987,6 +2001,83 @@ class OneBotClient:
         n = self._memo.clear(ev.group_id)
         self._log("info", "群缓存清除", f"group={ev.group_id} 条数={n}")
         await self._send_text(ev, f"已清除本群缓存（{n} 条）。" if n else "本群没有缓存。")
+
+    # ---------- 长期记忆 scope（与 groupmemo 的群常识缓存无关） ----------
+
+    def _memory_scope(self, ev: MessageEvent, arg: str) -> tuple[str | None, str]:
+        """把 /memory 后面的词解析成 (scope, 中文标签)；不合法时返回 (None, 原因)
+
+        私聊 scope 在群里一律拒绝查看/清空：群消息里回一句「已清空私聊记忆」
+        都会让群友知道主人有多少条私聊记忆，更不该把内容念出来。
+        """
+        word = (arg or "").strip().lower()
+        primary = memory.write_scope(ev.group_id)
+        if word in ("", "current", "当前", "自己", "我"):
+            return primary, "本群" if ev.group_id else "私聊"
+        if word in ("group", "群", "本群", "群记忆"):
+            if not ev.group_id:
+                return None, "私聊里没有群记忆；回群里查看或清空。"
+            return memory.scope_group(ev.group_id), "本群"
+        if word in ("person", "人", "个人", "对方", "发言人"):
+            if not str(ev.uin or "").strip():
+                return None, "拿不到发言人 QQ，无法定位个人记忆。"
+            return memory.scope_person(ev.uin), "个人"
+        if word in ("private", "私聊", "主人"):
+            if ev.group_id:
+                return None, "私聊记忆只能在私聊里查看或清空，避免在群里泄露。"
+            return memory.SCOPE_PRIVATE, "私聊"
+        return None, "scope 只认：群 / 人 / 私聊 / all。"
+
+    def _memory_targets(self, ev: MessageEvent,
+                        arg: str) -> tuple[tuple[str, ...] | None, str]:
+        """查看/清空的 scope 集合；all = 当前会话的组合 scope（不跨群、不碰别人）"""
+        word = (arg or "").strip().lower()
+        if word in ("all", "全部", "所有", "当前全部"):
+            return memory.scopes_for(ev.group_id, ev.uin), "当前会话相关"
+        scope, label = self._memory_scope(ev, arg)
+        if scope is None:
+            return None, label
+        return (scope,), label
+
+    async def _do_memory(self, ev: MessageEvent) -> None:
+        """查看当前会话的长期记忆（群常识缓存走 /memo，两者不混）"""
+        arg = str(getattr(ev, "menu_arg", "") or "").strip()
+        scopes, label = self._memory_targets(ev, arg)
+        if scopes is None:
+            await self._send_text(ev, label)
+            return
+        items: list[dict] = []
+        for scope in scopes:
+            items += memory.list_scope(scope)
+        items.sort(key=lambda x: (list(memory.KINDS).index(x["kind"]), x["created"]))
+        if not items:
+            await self._send_text(ev, f"{label}还没有长期记忆。")
+            return
+        lines = [f"{label}的长期记忆（{len(items)} 条）："]
+        for i, it in enumerate(items[:10], 1):
+            text = it["text"]
+            if len(text) > 80:
+                text = text[:80] + "…"
+            lines.append(f"{i}. [{memory.KINDS[it['kind']]}] {text}")
+        if len(items) > 10:
+            lines.append(f"只显示前 10 条，共 {len(items)} 条。")
+        lines.append("清空：/memory clear [群/人/私聊/all]，需管理员确认。")
+        await self._send_text(ev, "\n".join(lines))
+
+    async def _do_memory_clear(self, ev: MessageEvent) -> None:
+        """清空当前或指定 scope 的长期记忆（危险操作，前面的确认流程已过）"""
+        arg = str(getattr(ev, "menu_arg", "") or "").strip()
+        scopes, label = self._memory_targets(ev, arg)
+        if scopes is None:
+            await self._send_text(ev, label)
+            return
+        n = memory.clear_scopes(scopes)
+        self._log("info", "长期记忆清除",
+                  f"scopes={','.join(scopes)} 条数={n}")
+        if n:
+            await self._send_text(ev, f"已清空{label}记忆（{n} 条）。")
+        else:
+            await self._send_text(ev, f"{label}没有可清空的记忆。")
 
     async def _do_deps(self, ev: MessageEvent) -> None:
         """检查依赖：只回报状态，不安装、不改环境"""

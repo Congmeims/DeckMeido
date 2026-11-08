@@ -21,6 +21,8 @@ import zipfile
 from pathlib import Path
 
 import tomllib
+
+import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Depends, UploadFile, Response, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -3617,6 +3619,16 @@ async def api_status():
     return get_status(await asyncio.to_thread(tools.mode_is_gaming))
 
 
+@app.get("/api/net/probe", dependencies=[Depends(require_auth)])
+async def api_net_probe(force: bool = False):
+    """公网连通性：online / lan_only / offline
+
+    按需探测、结果缓存；总预算 2 秒，不会拖住启动或设置页。界面拿到非 online
+    时只提示「可以切到离线模式」，绝不自动改开关。
+    """
+    return await asyncio.to_thread(netmode.probe, bool(force))
+
+
 @app.get("/api/status/line", dependencies=[Depends(require_auth)])
 async def api_status_line(state: str = Query(default=""),
                           game: str = Query(default=""),
@@ -3920,10 +3932,15 @@ class ActiveGameBody(BaseModel):
 
 
 class MemoryItem(BaseModel):
-    """设置页手工教学用的记忆条目（text 为空 = 删除这条）"""
+    """设置页手工教学用的记忆条目（text 为空 = 删除这条）
+
+    scope 决定归属：private（默认）/ group:<群号> / person:<QQ>。
+    网页没有会话上下文，新增时默认写私聊；从群聊页面带过来时显式传 scope。
+    """
     id: str | None = None
     kind: str = "note"
     text: str = ""
+    scope: str = memory.SCOPE_PRIVATE
 
 
 class SoulImport(BaseModel):
@@ -4054,12 +4071,20 @@ async def api_get_config():
 
 
 @app.get("/api/memory", dependencies=[Depends(require_auth)])
-async def api_get_memory():
-    """全部长期记忆，按「类别 + 创建时间」排好，和注入顺序一致"""
-    items = memory.load()["items"]
-    order = list(memory.KINDS)
-    items = sorted(items, key=lambda x: (order.index(x["kind"]), x["created"]))
-    return {"items": items, "kinds": [{"id": k, "name": v} for k, v in memory.KINDS.items()]}
+async def api_get_memory(scope: str | None = None):
+    """长期记忆，按「类别 + 创建时间」排好，和注入顺序一致
+
+    scope 不传 = 返回全部（兼容现有网页）；传了只返回该 scope，
+    设置页按当前会话查看群 / 人 / 私聊记忆都走这一条。
+    """
+    if scope:
+        items = memory.list_scope(scope)
+    else:
+        items = memory.load()["items"]
+        order = list(memory.KINDS)
+        items = sorted(items, key=lambda x: (order.index(x["kind"]), x["created"]))
+    return {"items": items, "scope": memory.norm_scope(scope) if scope else "",
+            "kinds": [{"id": k, "name": v} for k, v in memory.KINDS.items()]}
 
 
 @app.post("/api/memory", dependencies=[Depends(require_auth)])
@@ -4069,7 +4094,7 @@ async def api_save_memory(req: MemoryItem):
     带 id 且 text 为空 = 删除；带 id 且 text 非空 = 修改；不带 id = 新增。
     """
     if not req.id:
-        item = memory.add(req.kind, req.text)
+        item = memory.add(req.kind, req.text, scope=req.scope)
         if not item:
             raise HTTPException(status_code=400, detail="内容不能为空")
         return {"ok": True, "item": item}
@@ -4086,9 +4111,13 @@ async def api_delete_memory(mid: str):
 
 
 @app.delete("/api/memory", dependencies=[Depends(require_auth)])
-async def api_clear_memory():
+async def api_clear_memory(scope: str | None = None):
+    """清空全部，或只清空指定 scope（网页设置页的批量删除）"""
+    if scope:
+        removed = memory.clear_scope(scope)
+        return {"ok": True, "removed": removed, "scope": memory.norm_scope(scope)}
     memory.clear()
-    return {"ok": True}
+    return {"ok": True, "removed": -1, "scope": ""}
 
 
 # ---------- 人设 + 记忆的导出 / 导入 ----------
@@ -4123,8 +4152,11 @@ async def api_import_soul(req: SoulImport):
         # 逐条走 memory.add：它自己会去重、截断、按上限淘汰，
         # 备份文件里就算有脏数据也不会把记忆撑坏
         for it in req.memory:
+            # 备份里的 scope 原样带回来（旧备份没有这个字段 → private），
+            # 否则导入一次就把群记忆 / 个人记忆全并进私聊了
             if isinstance(it, dict) and memory.add(str(it.get("kind") or "note"),
-                                                   str(it.get("text") or "")):
+                                                   str(it.get("text") or ""),
+                                                   scope=memory.norm_scope(it.get("scope"))):
                 added += 1
     return {"ok": True, "added": added, "memory": memory.stats()}
 
@@ -7228,6 +7260,16 @@ def _llm_error_text(e: Exception) -> str:
     except ValueError:
         host = ""
     label = f"「{name}」" + (f"（{host}）" if host else "")
+    # 先分辨「连不上」和「连上了但服务慢」：两者都可能是超时，但下一步完全不同。
+    # 局域网端点连接阶段只等 2 秒（见 LLMClient），这里照实说出来。
+    if isinstance(e, (httpx.ConnectTimeout, httpx.ConnectError)):
+        wait = "2 秒内连不上" if netmode.is_local_url(str(getattr(llm, "base_url", "") or "")) \
+            else "连接失败"
+        return (f"LLM 调用失败：{label} {wait}。请确认模型服务已启动、地址与端口可访问；"
+                "如果这是局域网模型，检查设备是否还在同一网络")
+    if isinstance(e, httpx.ReadTimeout):
+        return (f"LLM 调用失败：{label} 已连上，但等待生成响应超时；"
+                "服务可能正在计算或负载较高，稍后再试，或在设置里调大超时")
     hints = {
         401: "API Key 无效或已过期",
         402: "账户余额不足",

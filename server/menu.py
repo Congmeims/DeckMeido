@@ -18,6 +18,10 @@ MAX_ALIAS_CHARS = 12
 
 # 前缀与斜杠指令解析
 _SLASH_RE = re.compile(r"^/([A-Za-z]+)(?:\s+([\s\S]+))?$")
+# /memory 后面跟这些词时按「清空」处理（英文要求词边界，中文直接前缀）
+_MEMORY_CLEAR_RE = re.compile(
+    r"^(?:(?:clear|forget|reset)(?:\s+|$)|(?:清空|清除|删除|删掉)\s*)([\s\S]*)$",
+    re.IGNORECASE)
 # 「像斜杠指令」的宽匹配：只用来给未登记的指令一句明确提示，不参与执行
 _SLASH_LIKE_RE = re.compile(r"^/([A-Za-z]+)(?:\s+[\s\S]*)?$")
 _ALIAS_LEAD_RE = re.compile(r"^(麻烦|帮我|给我|请)+")
@@ -85,6 +89,13 @@ SPECS: tuple[Spec, ...] = (
     Spec("memo_clear", ("memo", "memoclear"),
          ("清除本群缓存", "清空本群缓存", "忘掉群聊", "忘掉群聊内容"),
          "清除本群常识缓存（仅管理员）"),
+    Spec("memory", ("memory", "mem"),
+         ("记忆", "查看记忆", "记忆列表", "我的记忆", "群记忆"),
+         "查看当前会话的长期记忆（/memory clear 清空）"),
+    Spec("memory_clear", ("memclear",),
+         ("清空记忆", "清除记忆", "清空群记忆"),
+         "清空当前或指定 scope 的长期记忆（/memory clear，仅管理员）",
+         dangerous=True),
 )
 
 SPEC_BY_KEY: dict[str, Spec] = {s.key: s for s in SPECS}
@@ -113,7 +124,14 @@ def match_slash(text: str) -> Parsed | None:
     kind = SLASH_MAP.get(m.group(1).lower())
     if not kind:
         return None
-    return Parsed(kind, (m.group(2) or "").strip())
+    arg = (m.group(2) or "").strip()
+    # /memory clear ... 是破坏性操作，单独走 memory_clear 的确认流程；
+    # 不能把查看记忆也标成危险命令，否则每次 /memory 都要回一句「确认」。
+    if kind == "memory":
+        cm = _MEMORY_CLEAR_RE.match(arg)
+        if cm:
+            return Parsed("memory_clear", (cm.group(1) or "").strip())
+    return Parsed(kind, arg)
 
 
 def unknown_slash(text: str) -> str:

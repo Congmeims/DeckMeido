@@ -1,4 +1,4 @@
-"""DeckMeido 长期记忆：跨会话保留的「关于主人」的条目
+"""DeckMeido 长期记忆：跨会话保留的「要记住的事」
 
 和会话历史是两回事：history 是「这次聊了什么」，这里存的是「以后都要知道的」。
 按用途分三类，写进同一个 JSON（memory.json，容易被用户直接打开看/备份）：
@@ -7,12 +7,21 @@
   env      环境与操作经验   「启动这个游戏要先开兼容层」
   note     项目与知识条目   「d:/proj 用的是 uv 而不是 pip」
 
+条目还带 scope，决定它属于谁、在哪种对话里被注入：
+  private       主人私聊 / 本机网页（旧数据没有 scope 时一律归到这里）
+  group:<群号>  某个群的记忆，只在该群注入，不带到私聊或别的群
+  person:<QQ>   关于某个人的记忆，在私聊或他发言的群里与主 scope 一起注入
+
+和 groupmemo 的分界：groupmemo 是群聊里最近消息的只读短缓存（TTL、随时过期），
+本模块是明确写入、长期保留、可增删改查的条目；两者不互相写入。
+
 注入方式见 main.py 里的 _memory_block()：拼在 system prompt 的**最末尾**。
 记忆会随使用变化，放在开头会让每次改动把后面整段前缀缓存打掉；放在末尾
 时受影响的最多只是记忆这一小段。
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
@@ -34,6 +43,79 @@ KINDS = {"profile": "用户画像", "env": "环境经验", "note": "知识条目
 MAX_ITEM_CHARS = 300
 # 总条数上限：超过就按「最近使用的靠前」截断，避免无限膨胀
 MAX_ITEMS = 120
+
+# scope：三个前缀。private 是旧数据的默认归属，group/person 后面跟稳定 id。
+SCOPE_PRIVATE = "private"
+SCOPE_GROUP_PREFIX = "group:"
+SCOPE_PERSON_PREFIX = "person:"
+
+# 当前回合的注入范围与写入归属：由 onebot 在创建回合子任务前设置，
+# 网页 / 插件等本地回合没有设置时按私聊处理。
+_CURRENT_SCOPES: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "deckmeido_memory_scopes", default=(SCOPE_PRIVATE,))
+_CURRENT_WRITE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "deckmeido_memory_write_scope", default=SCOPE_PRIVATE)
+
+
+def norm_scope(value: str | None) -> str:
+    """把 scope 归一成可存的键；空 / 认不出的一律回落到 private
+
+    这样旧 memory.json（没有 scope 字段）读进来仍然全部算私聊记忆，
+    升级后既不会丢条目，也不会把主人的私聊内容误注入到群里。
+    """
+    s = str(value or "").strip()
+    if s == SCOPE_PRIVATE:
+        return s
+    for prefix in (SCOPE_GROUP_PREFIX, SCOPE_PERSON_PREFIX):
+        if s.startswith(prefix) and s[len(prefix):].strip():
+            return prefix + s[len(prefix):].strip()
+    return SCOPE_PRIVATE
+
+
+def scope_group(group_id: str | int | None) -> str:
+    gid = str(group_id or "").strip()
+    return SCOPE_GROUP_PREFIX + gid if gid else SCOPE_PRIVATE
+
+
+def scope_person(uin: str | int | None) -> str:
+    u = str(uin or "").strip()
+    return SCOPE_PERSON_PREFIX + u if u else SCOPE_PRIVATE
+
+
+def scopes_for(group_id: str | int | None = None,
+               uin: str | int | None = None) -> tuple[str, ...]:
+    """当前会话该注入哪些 scope：群 + 发言人，或私聊 + 对方"""
+    out = [scope_group(group_id) if str(group_id or "").strip() else SCOPE_PRIVATE]
+    person = scope_person(uin)
+    if person != SCOPE_PRIVATE:
+        out.append(person)
+    return tuple(out)
+
+
+def write_scope(group_id: str | int | None = None) -> str:
+    """自动写入的归属：群聊进群记忆，私聊进私聊记忆（person 走显式指令）"""
+    return scope_group(group_id)
+
+
+def set_context(scopes=None, write: str | None = None):
+    """设置当前回合的注入范围与写入归属，返回供 reset_context 用的令牌"""
+    tok_scopes = _CURRENT_SCOPES.set(tuple(scopes or (SCOPE_PRIVATE,)))
+    tok_write = _CURRENT_WRITE.set(norm_scope(write))
+    return tok_scopes, tok_write
+
+
+def reset_context(tokens) -> None:
+    tok_scopes, tok_write = tokens
+    _CURRENT_WRITE.reset(tok_write)
+    _CURRENT_SCOPES.reset(tok_scopes)
+
+
+def current_scopes() -> tuple[str, ...]:
+    return tuple(_CURRENT_SCOPES.get() or (SCOPE_PRIVATE,))
+
+
+def current_write_scope() -> str:
+    return norm_scope(_CURRENT_WRITE.get())
 
 _lock = threading.Lock()
 # 内存里的「最近注入时间」：只为淘汰时留个依据，不参与每轮写盘
@@ -87,6 +169,8 @@ def load() -> dict:
             "id": str(it.get("id") or ""),
             "kind": it.get("kind") if it.get("kind") in KINDS else "note",
             "text": text[:MAX_ITEM_CHARS],
+            # 旧数据没有 scope：归到 private，保证升级后还能照常注入私聊
+            "scope": norm_scope(it.get("scope")),
             "created": float(it.get("created") or 0),
             "used": float(it.get("used") or 0),
         })
@@ -146,9 +230,10 @@ def clean_text(text: str, names=()) -> str:
     return out.strip()
 
 
-def add(kind: str, text: str, names=()) -> dict:
-    """新增一条记忆；内容重复时直接返回已有的那条（不重复存）"""
+def add(kind: str, text: str, names=(), scope: str | None = None) -> dict:
+    """新增一条记忆；同 scope 内内容重复时直接返回已有的那条"""
     kind = kind if kind in KINDS else "note"
+    scope = norm_scope(scope) if scope is not None else current_write_scope()
     text = clean_text(text, names)[:MAX_ITEM_CHARS]
     if not text:
         return {}
@@ -156,9 +241,11 @@ def add(kind: str, text: str, names=()) -> dict:
         data = load()
         key = norm(text)
         for it in data["items"]:
-            if norm(it["text"]) == key:
+            # 去重只看同一 scope：私聊和群里各记一条同样的话是合理的，
+            # 不该因为「别的 scope 里有」就把这一条吞掉。
+            if it["scope"] == scope and norm(it["text"]) == key:
                 return it
-        item = {"id": _new_id(), "kind": kind, "text": text,
+        item = {"id": _new_id(), "kind": kind, "text": text, "scope": scope,
                 "created": time.time(), "used": 0.0}
         data["items"].append(item)
         # 先合入内存里记的「最近注入时间」，再按它淘汰 —— 否则排序键全是 0，
@@ -213,6 +300,38 @@ def clear() -> None:
         _USED.clear()
 
 
+def list_scope(scope: str, limit: int | None = None) -> list[dict]:
+    """某个 scope 的条目，按注入顺序（类别 + 创建时间）排好"""
+    scope = norm_scope(scope)
+    items = [x for x in load()["items"] if x["scope"] == scope]
+    items.sort(key=lambda x: (list(KINDS).index(x["kind"]), x["created"]))
+    return items[:limit] if limit else items
+
+
+def clear_scopes(scopes) -> int:
+    """清空给定 scope 的条目，返回删除条数（单次加锁、单次写盘）"""
+    wanted = {norm_scope(s) for s in (scopes or ())}
+    if not wanted:
+        return 0
+    with _lock:
+        data = load()
+        keep = [x for x in data["items"] if x["scope"] not in wanted]
+        removed = [x for x in data["items"] if x["scope"] in wanted]
+        if removed:
+            data["items"] = keep
+            _save(data)
+    if removed:
+        with _used_lock:
+            for x in removed:
+                _USED.pop(x.get("id") or "", None)
+    return len(removed)
+
+
+def clear_scope(scope: str) -> int:
+    """清空一个 scope（/memory clear 与网页批量删除共用）"""
+    return clear_scopes((scope,))
+
+
 def mark_used(ids: list[str]) -> None:
     """记一次「被注入过」，用于上限淘汰时保留常用的那些
 
@@ -225,19 +344,30 @@ def mark_used(ids: list[str]) -> None:
         _USED.update((i, time.time()) for i in ids)
 
 
-def block(limit: int = 60) -> tuple[str, list[str]]:
+def block(limit: int = 60, scopes=None) -> tuple[str, list[str]]:
     """拼成要注入 system prompt 的文本，返回 (文本, 用到的 id 列表)
 
     排序固定为「先按类别、再按创建时间」，同一份记忆每次展开结果都一样 —— 
     随机顺序会让每轮前缀都变，缓存命中率直接归零。
+    scopes 不传时跟随当前回合（网页 / 插件默认 private，QQ 群回合由 onebot 设置）。
     """
+    wanted = tuple(scopes) if scopes is not None else current_scopes()
+    wanted = {norm_scope(s) for s in wanted} or {SCOPE_PRIVATE}
     data = load()
-    items = sorted(data["items"], key=lambda x: (list(KINDS).index(x["kind"]), x["created"]))
+    items = [x for x in data["items"] if x["scope"] in wanted]
+    items.sort(key=lambda x: (list(KINDS).index(x["kind"]), x["created"]))
     items = items[:limit]
     if not items:
         return "", []
-    lines = ["【关于主人的长期记忆】以下是之前明确要求过要记住的内容，"
-             "在相关时遵守，无关时不要强行提起："]
+    # 私聊沿用原来的开头（老用户的提示词前缀不变）；群 / 人记忆用中性说法，
+    # 避免把群里的内容说成「关于主人」。
+    if wanted == {SCOPE_PRIVATE}:
+        head = ("【关于主人的长期记忆】以下是之前明确要求过要记住的内容，"
+                "在相关时遵守，无关时不要强行提起：")
+    else:
+        head = ("【已记住的内容】以下是当前会话相关的长期记忆，"
+                "在相关时遵守，无关时不要强行提起：")
+    lines = [head]
     for kind in KINDS:
         group = [x for x in items if x["kind"] == kind]
         if not group:

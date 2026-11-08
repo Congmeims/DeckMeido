@@ -115,7 +115,15 @@ class LLMClient:
         # 实测 deepseek-v4.1-flash 等服务商默认不产出 reasoning_content，
         # 必须显式传 reasoning_effort 才会返回思维链
         self.reasoning_effort = reasoning_effort
-        self._client = httpx.AsyncClient(timeout=timeout)
+        # 局域网端点（LM Studio / Ollama / 自建网关）只压连接阶段：
+        # 假内网里 TCP connect 可能挂很久，2 秒连不上就明确失败；
+        # 读超时保持配置值，模型真的在算、只是慢，不该被当成网络故障。
+        self._local = netmode.is_local_url(base_url)
+        if self._local:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(timeout, connect=min(2.0, float(timeout))))
+        else:
+            self._client = httpx.AsyncClient(timeout=timeout)
 
     @property
     def configured(self) -> bool:
@@ -253,7 +261,7 @@ class LLMClient:
                 return await self._stream_once(messages, tools, _delta, _thought, max_tokens,
                                                temperature=temperature)
             except Exception as exc:
-                if started or not _retryable(exc) or delay is None:
+                if started or not self._should_retry(exc) or delay is None:
                     raise
                 print(f"[DeckMeido] LLM 调用失败（{exc}），{delay:g}s 后重试", flush=True)
                 devlog.log("llm.retry", delay=delay, error=repr(exc))
@@ -417,6 +425,13 @@ class LLMClient:
             content=msg.get("content"),
         )
         return msg
+
+    def _should_retry(self, exc: Exception) -> bool:
+        """局域网端点的「连不上」不重试：2 秒连接超时后立刻报错，
+        而不是再等 1+2+4 秒的退避。读超时仍按原策略重试（服务在算但慢）。"""
+        if self._local and isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError)):
+            return False
+        return _retryable(exc)
 
     async def close(self):
         await self._client.aclose()

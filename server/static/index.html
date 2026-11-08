@@ -133,6 +133,16 @@
     width: 6px; height: 6px; border-radius: 50%;
     background: #e6b422; flex: 0 0 auto;
   }
+  /* 网络探测建议条：只在探测到公网不可达且离线模式未开时出现，绝不自动切换 */
+  .net-hint .net-hint-actions { margin-left: auto; display: flex; gap: 8px; flex: 0 0 auto; }
+  .net-hint .net-hint-btn {
+    font: inherit; font-size: 12px; cursor: pointer;
+    padding: 3px 10px; border-radius: 6px;
+    color: #e6b422; background: transparent;
+    border: 1px solid rgba(230,180,34,.45);
+  }
+  .net-hint .net-hint-btn:hover { background: rgba(230,180,34,.16); }
+  .net-hint .net-hint-btn.primary { background: rgba(230,180,34,.22); }
   /* 控件自检徽章：小灯 + 「x/x」计数，位置在电量徽章左侧 */
   .badge.ctrl {
     display: inline-flex; align-items: center; gap: 6px;
@@ -3225,6 +3235,17 @@
 <div id="offlineBanner" class="offline-banner" hidden>
   <span class="dot"></span>
   <span>离线模式：对话、更新、联网搜索与模型下载已停用；截图、文件、状态日志、本地命令和本地语音可用。</span>
+</div>
+
+<!-- 网络建议条：探测到公网不可达（含假内网 / 门户）时出现。只是建议，
+     不会自动切离线模式；用户点「暂不」就收起，手动开关始终保留 -->
+<div id="netHintBanner" class="offline-banner net-hint" hidden>
+  <span class="dot"></span>
+  <span id="netHintText"></span>
+  <span class="net-hint-actions">
+    <button type="button" class="net-hint-btn primary" id="netHintEnable">切到离线模式</button>
+    <button type="button" class="net-hint-btn" id="netHintDismiss">暂不</button>
+  </span>
 </div>
 
 <!-- 对话视图：消息 + 输入栏。进设置时这块藏起来，#main 换成一页设置 -->
@@ -10690,6 +10711,12 @@
     serverDevMode = !!s.dev_mode;
     // 离线横幅：状态接口每轮都带 offline_mode，别的设备切换后这边也能跟上
     if (offlineBanner) offlineBanner.hidden = !s.offline_mode;
+    // 网络建议：每页只探一次；已开离线模式或用户拒绝后不再打扰
+    if (netHintBanner && s.offline_mode) netHintBanner.hidden = true;
+    if (!s.offline_mode && !netHintChecked) {
+      netHintChecked = true;
+      checkNetworkHint();
+    }
     connInfo.runningVersion = s.running_version || s.version || '';
     connInfo.diskVersion = s.disk_version || '';
     connInfo.versionMatch = (typeof s.version_match === 'boolean') ? s.version_match : null;
@@ -11818,6 +11845,14 @@
   // 离线模式开关与顶部横幅：横幅在两种视图下都存在，开关在「关于更新」里
   var cfgOfflineMode = document.getElementById('cfgOfflineMode');
   var offlineBanner = document.getElementById('offlineBanner');
+  // 网络探测建议条：只在公网不可达时提示「可以切离线模式」，不自动切换
+  var netHintBanner = document.getElementById('netHintBanner');
+  var netHintText = document.getElementById('netHintText');
+  var netHintEnable = document.getElementById('netHintEnable');
+  var netHintDismiss = document.getElementById('netHintDismiss');
+  var netHintChecked = false;
+  var netHintDismissed = false;
+  try { netHintDismissed = sessionStorage.getItem('deckmeido.netHintDismissed') === '1'; } catch (e) {}
   var devLogUsage = document.getElementById('devLogUsage');
   var logClearDebug = document.getElementById('logClearDebug');
   var logClearRun = document.getElementById('logClearRun');
@@ -11840,6 +11875,53 @@
       return { ok: r.ok, status: r.status, data: null, text: raw };
     });
   }
+
+  // 公网连通性探测：只用来给建议，不替用户改开关。
+  // 结果由后端缓存（约 2 秒上限），所以这里不需要再设超时。
+  function checkNetworkHint() {
+    if (!netHintBanner) return;
+    fetch('/api/net/probe').then(readApiResponse).then(function (res) {
+      var d = res && res.data;
+      if (!d || !res.ok || d.state === 'online') return;
+      if (netHintDismissed) return;
+      if ((cfgOfflineMode && cfgOfflineMode.checked)
+        || (offlineBanner && !offlineBanner.hidden)) return;
+      var reason = d.detail || (d.state === 'lan_only' ? '只能连到局域网' : '网络不通');
+      if (netHintText) {
+        netHintText.textContent = '网络探测：' + reason
+          + '。要不要切到离线模式？联网功能会直接跳过，不再等待超时。';
+      }
+      netHintBanner.hidden = false;
+    }).catch(function () {});
+  }
+
+  function enableOfflineFromHint() {
+    if (netHintText) netHintText.textContent = '正在切换…';
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ offline_mode: true })
+    }).then(readApiResponse).then(function (res) {
+      if (!res.ok) {
+        throw new Error((res.data && res.data.detail) || ('HTTP ' + res.status));
+      }
+      if (cfgOfflineMode) cfgOfflineMode.checked = true;
+      if (offlineBanner) offlineBanner.hidden = false;
+      if (netHintBanner) netHintBanner.hidden = true;
+      addSystem('已切到离线模式：联网功能会直接跳过，本地功能照常可用。');
+    }).catch(function (e) {
+      if (netHintText) netHintText.textContent = '切换失败：' + ((e && e.message) || e);
+    });
+  }
+
+  function dismissNetworkHint() {
+    netHintDismissed = true;
+    if (netHintBanner) netHintBanner.hidden = true;
+    try { sessionStorage.setItem('deckmeido.netHintDismissed', '1'); } catch (e) {}
+  }
+
+  if (netHintEnable) netHintEnable.addEventListener('click', enableOfflineFromHint);
+  if (netHintDismiss) netHintDismiss.addEventListener('click', dismissNetworkHint);
 
   // 日志占用文案：总占用 / debug 轮转上限 + 悬停看分项
   function applyLogUsage(u) {

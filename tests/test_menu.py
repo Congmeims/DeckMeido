@@ -67,6 +67,26 @@ class PermissionTest(unittest.TestCase):
     def test_unknown_kind_rejected(self):
         self.assertFalse(menu.authorize("no_such", is_admin=True))
 
+    def test_memory_slash_and_clear(self):
+        self.assertEqual(menu.match_slash("/memory").kind, "memory")
+        self.assertEqual(menu.match_slash("/mem group").kind, "memory")
+        # /memory clear 是危险动作，参数要原样带给确认后的 handler
+        got = menu.match_slash("/memory clear group")
+        self.assertEqual((got.kind, got.text), ("memory_clear", "group"))
+        got = menu.match_slash("/memory 清空 人")
+        self.assertEqual((got.kind, got.text), ("memory_clear", "人"))
+        # 只是查看某个 scope，不能误判成清空
+        self.assertEqual(menu.match_slash("/memory 群").kind, "memory")
+        self.assertEqual(menu.match_slash("/memory private").kind, "memory")
+
+    def test_memory_clear_permission_and_danger(self):
+        self.assertTrue(menu.authorize("memory", is_admin=True))
+        self.assertTrue(menu.authorize("memory_clear", is_admin=True))
+        # 群友不能查看/清空群记忆：权限体系和其它固定命令一致
+        self.assertFalse(menu.authorize("memory", is_admin=False))
+        self.assertFalse(menu.authorize("memory_clear", is_admin=False))
+        self.assertTrue(menu.needs_confirm(menu.spec_for("memory_clear")))
+
     def test_unknown_slash_detected(self):
         self.assertEqual(menu.unknown_slash("/nope"), "/nope")
         self.assertEqual(menu.unknown_slash("meido /nope a b"), "")
