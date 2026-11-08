@@ -28,7 +28,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from . import depcheck, sudo_auth, tools, tts as tts_mod
+from . import depcheck, netmode, sudo_auth, tools, tts as tts_mod
 
 # 后端把 stdout/stderr 落进 userdata/logs/backend.log；未知异常在这里留完整堆栈，
 # 界面只拿到脱敏后的一句话，不暴露 Python 原文。
@@ -425,6 +425,9 @@ def _poll_sleep(stop_check=None) -> None:
 
 def _install_tts() -> None:
     """下载模型：0–90% 跟 tts 自己的进度，最后 10% 是加载校验"""
+    # 离线模式：语音模型必须联网下载，直接给出可读原因，不进下载线程干等
+    if netmode.enabled():
+        raise RuntimeError(netmode.reason("语音模型下载"))
     engine = _engine()
     if not engine.status().get("runtime"):
         raise RuntimeError("piper-plus 运行时未安装，网页无法静默装；"
@@ -452,6 +455,8 @@ def _install_tts() -> None:
 
 
 def _http_get(url: str, timeout: float = 30.0) -> bytes:
+    # 离线模式：组件数据（nltk 等）在外网，直接给出可读原因（本地源照常放行）
+    netmode.check(url, "组件数据下载")
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
@@ -746,6 +751,8 @@ def _net_error_text(exc: Exception) -> str:
 
 def _download_to(spec: dict, path: Path, component: str) -> None:
     """下载安装包到临时文件；进度 3%→43%，不完整直接判失败"""
+    # 离线模式：外网安装包直接拒绝；本地 / 局域网镜像仍可用
+    netmode.check(spec["url"], f"{component} 安装包下载")
     req = urllib.request.Request(spec["url"], headers={"User-Agent": UA})
     try:
         with urllib.request.urlopen(req, timeout=30.0) as resp:

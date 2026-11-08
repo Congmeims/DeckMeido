@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from . import audit, power, sudo_auth
+from . import audit, netmode, power, sudo_auth
 
 HTTP = httpx.AsyncClient(timeout=20, follow_redirects=True)
 
@@ -3295,6 +3295,10 @@ EXECUTORS = {
     "remember": _remember,
 }
 
+# 真正要出网的工具：离线模式下直接返回可读原因，不发起请求。
+# 截图、文件、命令、游戏库、安装这类本地动作不在此列，保持可用。
+_OUTBOUND_TOOLS = {"get_weather", "web_search", "find_game", "self_update"}
+
 
 # 不需要「保持常亮」的工具：查天气、联网搜索、读写文件这类不碰屏幕也不动
 # 设备状态的动作，几毫秒就结束，挂抑制反而是白折腾（每次都 fork 两个外部命令）
@@ -3325,6 +3329,9 @@ async def execute(name: str, args: dict) -> str:
     if not fn:
         print(f"[DeckMeido] 工具调用失败：未知工具 {name}", file=sys.stderr)
         return f"未知工具：{name}"
+    # 离线模式：联网类工具在本地直接拒绝，让模型拿到明确原因、换本地策略
+    if name in _OUTBOUND_TOOLS and netmode.enabled():
+        return netmode.reason(TOOL_CN.get(name, name))
     args = dict(args)
     # 统一在这里记一笔：模型的每次工具调用、参数、耗时、结果长短都留在
     # backend.log 里。之前只有个别工具自己打日志，出问题（比如「AI 说按了

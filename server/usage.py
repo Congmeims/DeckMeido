@@ -41,7 +41,7 @@ from pathlib import Path
 
 import httpx
 
-from . import devlog, paths
+from . import devlog, netmode, paths
 
 CN_TZ = timezone(timedelta(hours=8))
 
@@ -526,6 +526,11 @@ async def fetch_balance(base_url: str, api_key: str, timeout: float = 8.0,
     """查询官方余额；未配置 Key 直接返回原因，不发起网络请求"""
     if not (api_key or "").strip():
         return {"ok": False, "reason": "unconfigured", "error": "未配置 API Key"}
+    # 离线模式：外网余额接口快捷返回原因；本地模型地址放行（不支持时按 404 提示）
+    try:
+        netmode.check(base_url or "", "余额查询")
+    except netmode.OfflineError as exc:
+        return {"ok": False, "reason": "offline", "error": str(exc)}
     headers = {"Authorization": f"Bearer {api_key.strip()}", "Accept": "application/json"}
     own = client is None
     cli = client or httpx.AsyncClient(timeout=timeout)

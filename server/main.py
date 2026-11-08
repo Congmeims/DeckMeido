@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from .llm import LLMClient
-from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, media, memory, menu, netcfg, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, remote_terminal, selfcheck, singleton, status_line, sudo_auth, tools, updater, usage, wake
+from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, media, memory, menu, netcfg, netmode, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, remote_terminal, selfcheck, singleton, status_line, sudo_auth, tools, updater, usage, wake
 from .session_store import store
 from . import session_store
 from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, TTSError, normalize_speaker,
@@ -138,6 +138,10 @@ CFG = load_config()
 remote_terminal.manager.configure(CFG)
 # [security].sudo_ttl：sudo 授权密码在内存里的复用时长（默认 10 分钟）
 sudo_auth.configure(CFG)
+
+# 离线模式：[runtime].offline_mode。尽早装好，后面的 LLM / 更新 / 下载
+# 都会在经过 netmode 时快速失败。默认关闭，关闭时行为与没有这个开关时一致。
+netmode.configure(CFG)
 
 # 开发者模式与统一脱敏：尽早装好，后面的启动日志、traceback、uvicorn 访问日志
 # 都会经过同一层脱敏；开关本身按 [runtime].dev_mode 决定是否记录细节。
@@ -810,6 +814,8 @@ def apply_config(cfg: dict):
     global CFG, PERMISSION_MODE, PERSONA, SYSTEM_PROMPT, MAX_TOOL_ROUNDS, ASK_TEMPLATE
     global TRANSLATE_TEMPLATE, UI_LANG, API_STATE
     CFG = cfg
+    # [runtime].offline_mode 热更新：保存即生效，所有出网入口下一次调用就走新值
+    netmode.configure(cfg)
     # [terminal] 远程终端开关/限流参数热更新
     remote_terminal.manager.configure(cfg)
     # [security].sudo_ttl 热更新：授权复用时长改完即生效
@@ -1920,6 +1926,8 @@ def get_status(gaming: bool | None = None) -> dict:
         **version_state(),
         # 前端据此决定要不要回报思考链实际渲染长度（仅 dev_mode 有意义）
         "dev_mode": devlog.enabled(),
+        # [runtime].offline_mode：前端顶部横幅据此显示/隐藏
+        "offline_mode": netmode.enabled(),
         # 最近一次清日志的结果：有清不掉的文件时前端透出「N 个未能删除」
         "log_clear": devlog.last_clear(),
         # 控制类控件（点击输入/窗口聚焦/原生打字/构建依赖）的实测结果，
@@ -3766,6 +3774,8 @@ class ConfigUpdate(BaseModel):
     port: int | None = None
     # 开发者模式：写入 [runtime]，保存即生效（日志级别与细节记录不需要重启）
     dev_mode: bool | None = None
+    # 离线模式：写入 [runtime]，保存即生效，所有出网入口立即快速失败
+    offline_mode: bool | None = None
     # 远程终端：默认关闭的高危能力，写入 [terminal]，保存即生效
     terminal_enabled: bool | None = None
     terminal_idle_timeout: int | None = None
@@ -3990,6 +4000,8 @@ async def api_get_config():
         "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
         # [runtime].dev_mode：网页设置页的开发者模式开关；保存后立即生效
         "dev_mode": devlog.enabled(),
+        # [runtime].offline_mode：设置页开关与界面横幅都读它
+        "offline_mode": netmode.enabled(),
         # 局域网访问地址：掌机 / 大屏 / 客户端设置页直接展示，别的设备照这个连
         "lan_url": f"http://{_lan_ip()}:{CFG['server'].get('port', 18765)}",
         "device_days": _device_days(),
@@ -4323,6 +4335,10 @@ async def api_set_config(req: ConfigUpdate, request: Request):
         updates.setdefault("runtime", {})["dev_mode"] = bool(req.dev_mode)
         audit.record("config", "dev_mode", "ok", ip=_client_ip(request),
                      detail="on" if req.dev_mode else "off")
+    if req.offline_mode is not None:
+        # 写 [runtime]；apply_config 里 netmode.configure 立即切换，
+        # 之后所有出网入口（模型、更新、余额、下载、联网工具）直接返回原因
+        updates.setdefault("runtime", {})["offline_mode"] = bool(req.offline_mode)
     term = {}
     if req.terminal_enabled is not None:
         term["remote_shell"] = bool(req.terminal_enabled)
@@ -4373,6 +4389,8 @@ async def api_set_config(req: ConfigUpdate, request: Request):
             "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
             # dev_mode 保存即生效，不需要重启；重启项只算绑定地址与端口
             "dev_mode": devlog.enabled(),
+            # 离线模式保存即生效
+            "offline_mode": netmode.enabled(),
             # 远程终端开关回传实值，设置页不用再拉一次
             "terminal_remote_shell": _terminal_settings().enabled,
             "terminal_idle_timeout": _terminal_settings().idle_timeout_s,
@@ -5005,6 +5023,9 @@ async def api_tts_status():
 @app.post("/api/tts/download", dependencies=[Depends(require_auth)])
 async def api_tts_download():
     """后台下载语音模型（约 38MB）；重复点击不会开第二个线程。"""
+    # 离线模式：模型必须联网下载，直接返回原因，不启动下载线程
+    if netmode.enabled():
+        raise HTTPException(status_code=503, detail=netmode.reason("语音模型下载"))
     return {"ok": True, **tts.start_download()}
 
 
@@ -5277,6 +5298,9 @@ async def api_stt_download():
     超时后前端只能看到失败，模型其实还在下；下完了也得等下一次重启才认。
     现在秒回状态快照，进度由 /api/stt 里的 download 字段给出。
     """
+    # 离线模式：模型必须联网下载，直接返回原因，不启动下载线程
+    if netmode.enabled():
+        raise HTTPException(status_code=503, detail=netmode.reason("语音识别模型下载"))
     return {"ok": True, **stt.start_download()}
 
 
@@ -5619,6 +5643,9 @@ async def api_models(base_url: str = "", api_key: str = ""):
                 await probe.close()
         else:
             names = await llm.list_models()
+    except netmode.OfflineError as exc:
+        # 离线模式：不是服务商出错，别包成 502 的「拉取失败」；直接给原因
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"拉取模型列表失败：{exc}")
     return {"models": names}

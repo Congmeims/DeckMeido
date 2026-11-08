@@ -32,7 +32,7 @@ import urllib.request
 import wave
 from pathlib import Path
 
-from . import devlog
+from . import devlog, netmode
 
 # 模型署名：Apache-2.0 要求保留，界面上展示「语音识别」的地方一并显示
 ATTRIBUTION = "SenseVoice-Small (FunAudioLLM) · sherpa-onnx · Apache-2.0"
@@ -202,6 +202,12 @@ class STT:
         3 秒短超时：镜像正常一两秒就回；GitHub 没有代理时是直接超时。
         个别服务不支持 HEAD，再用 Range: bytes=0-0 的 GET 补一次探测。
         """
+        # 离线模式：外网源直接判失败，连 HEAD 都不发（本地自定义源仍放行）
+        try:
+            netmode.check(url, "语音识别模型下载")
+        except netmode.OfflineError as exc:
+            return False, -1, str(exc)
+
         def attempt(method: str) -> tuple[int, int]:
             headers = {"User-Agent": UA}
             if method == "GET":
@@ -505,6 +511,8 @@ class STT:
 
     def _fetch(self, url: str, part: Path, cancelled, on_bytes):
         """把 url 写进 part，part 已有内容时用 Range 续传"""
+        # 离线模式：探测被放过（例如本地自定义源）时，真正下载这一层再兜一次
+        netmode.check(url, "语音识别模型下载")
         resume = part.stat().st_size if part.is_file() else 0
         headers = {"User-Agent": UA}
         if resume:

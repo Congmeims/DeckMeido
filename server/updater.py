@@ -36,7 +36,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import paths
+from . import netmode, paths
 
 INSTALL_DIR = Path(__file__).resolve().parent.parent
 
@@ -324,6 +324,8 @@ def mirror_release(mirror: str | None = None) -> dict:
        "files": {"tarball": "deckmeido-0.2.0.tar.gz", "sha256": "..."}}
     """
     base = (mirror or update_cfg()["mirror"]).rstrip("/")
+    # 离线模式：镜像站一律快捷拒绝，不发起连接、也不等超时
+    netmode.check(base, "检查更新")
     host = urllib.parse.urlsplit(base).hostname or ""
     ctx = _source_ssl_context(host)
     try:
@@ -366,6 +368,7 @@ def github_release(repo: str | None = None) -> dict:
     拿不到时留空，由下载环节改验包内 SHA256SUMS。
     """
     repo = repo or update_cfg()["github_repo"]
+    netmode.check(GITHUB_API, "检查更新")
     host = urllib.parse.urlsplit(GITHUB_API).hostname or ""
     ctx = _source_ssl_context(host)
     try:
@@ -489,6 +492,7 @@ def notes_summary(text) -> str:
 
 async def check() -> dict:
     """比对当前版本与最新 release"""
+    netmode.check(feature="检查更新")
     latest = await asyncio.to_thread(latest_release)
     current = current_version()
     cfg = update_cfg()
@@ -546,6 +550,8 @@ def _apply_mirror(info: dict, log_path: Path) -> str:
     if not url:
         raise RuntimeError("更新源没有给出安装包地址（latest.json 缺 files.tarball）")
     _append_log(log_path, f"下载安装包：{url}\n")
+    # 离线模式：apply() 已经拦过一次，这里按实际下载地址再兜一次（本地镜像放行）
+    netmode.check(url, "下载安装包")
     host = urllib.parse.urlsplit(url).hostname or ""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "DeckMeido"})
@@ -952,6 +958,8 @@ def apply(restart_service: bool = True, tag: str = "") -> dict:
       失败一律回滚到原 commit，并把回滚命令写进日志
     """
     log_path = INSTALL_DIR / "update.log"
+    # 离线模式：升级必须联网，直接给可读原因，不先跑一轮探测
+    netmode.check(feature="检查更新")
     cfg = update_cfg()
     probe = probe_sources(cfg)
     target = (tag or "").lstrip("v")

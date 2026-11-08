@@ -40,7 +40,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from . import groupmemo, menu, memory, paths, redact
+from . import groupmemo, menu, memory, netmode, paths, redact
 
 # ---------- 图片链接安全校验 ----------
 # NapCat 传来的图片地址是外部输入：必须挡住 file:// 等本地协议、
@@ -2039,6 +2039,11 @@ class OneBotClient:
 
     async def _download_image(self, url: str) -> tuple[bytes | None, str]:
         """下载 NapCat 给的图片链接；返回 (字节, 扩展名)，失败返回 (None, 原因)"""
+        # 离线模式：图片在公网上，直接给出原因，不发起 15 秒的下载
+        try:
+            netmode.check(url, "QQ 图片下载")
+        except netmode.OfflineError as exc:
+            return None, str(exc)
         max_bytes = int(max(0.1, self._cfg.max_image_mb) * 1024 * 1024)
 
         def _fetch():

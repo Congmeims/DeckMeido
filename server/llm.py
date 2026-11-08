@@ -9,7 +9,7 @@ import time
 
 import httpx
 
-from . import devlog, usage as usage_stats
+from . import devlog, netmode, usage as usage_stats
 
 # 图片按 base64 内联进请求体，一张图就能到千万字符级。这里在发车前量一次
 # 请求体大小并记下来：出问题时能分清「体积大」和「真的花掉这么多 token」，
@@ -197,6 +197,8 @@ class LLMClient:
 
     async def list_models(self) -> list[str]:
         """拉取服务商的模型列表（OpenAI 兼容的 GET /models）"""
+        # 离线模式：外网服务商直接拒绝；回环 / 局域网的本地模型照常可用
+        netmode.check(self.base_url, "在线模型列表")
         resp = await self._client.get(
             f"{self.base_url}/models",
             headers={"Authorization": f"Bearer {self.api_key}"},
@@ -229,6 +231,9 @@ class LLMClient:
         指数退避 1s / 2s / 4s，仍失败就抛出最后一次的异常。
         on_retry 在每次重试前调用：让上层把「上一次尝试留下的半截状态」清掉。
         """
+        # 离线模式必须在重试循环之前判：否则本地会白等 1+2+4 秒再报网络错误。
+        # 本地模型（回环 / 局域网）不受影响。
+        netmode.check(self.base_url, "模型对话")
         for delay in _RETRY_DELAYS + (None,):
             started = False
 

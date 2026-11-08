@@ -17,7 +17,7 @@ EXAMPLE = ROOT / "server" / "config.example.toml"
 # 以及 install.sh 读取的键名保持一致，少一个都算回归。
 REQUIRED = {
     "server": {"lan_enable", "port"},
-    "runtime": {"dev_mode"},
+    "runtime": {"dev_mode", "offline_mode"},
     "security": {"device_days", "permission_mode"},
     "remote_input": {"enabled", "sensitivity", "max_minutes"},
     # 多组接口：current_api 指向 apis 里的某一条 id；旧版 base_url/api_key

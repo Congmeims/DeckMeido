@@ -120,6 +120,19 @@
   }
   .badge.warn { color: #b8860b; }
   .badge.danger { color: #d0492b; }
+  /* 离线横幅：顶栏下方一条，对话页与设置页共用。只讲「能用 / 不能用」两类 */
+  .offline-banner {
+    display: flex; align-items: center; gap: 8px;
+    flex: 0 0 auto; padding: 8px 16px;
+    font-size: 12px; line-height: 1.55;
+    color: #e6b422; background: rgba(230,180,34,.10);
+    border-bottom: 1px solid rgba(230,180,34,.28);
+  }
+  .offline-banner[hidden] { display: none; }
+  .offline-banner .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #e6b422; flex: 0 0 auto;
+  }
   /* 控件自检徽章：小灯 + 「x/x」计数，位置在电量徽章左侧 */
   .badge.ctrl {
     display: inline-flex; align-items: center; gap: 6px;
@@ -3207,6 +3220,13 @@
   </div>
 </header>
 
+<!-- 离线横幅：开关开启时显示在顶栏下方，对话页与设置页共用同一份。
+     文案只分清「还能用什么 / 什么停了」，不铺长清单；状态接口回报后自动显示 -->
+<div id="offlineBanner" class="offline-banner" hidden>
+  <span class="dot"></span>
+  <span>离线模式：对话、更新、联网搜索与模型下载已停用；截图、文件、状态日志、本地命令和本地语音可用。</span>
+</div>
+
 <!-- 对话视图：消息 + 输入栏。进设置时这块藏起来，#main 换成一页设置 -->
 <div id="chatView">
 
@@ -4038,6 +4058,20 @@
               <div class="field-hint">
                 网页与客户端的文案跟着切换；插件面板当前仍是中文。保存后立即生效，等同于 config.toml 的 [ui] language。
               </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">离线模式</div>
+            <div class="field field-row">
+              <label style="margin:0">只在本机运行，不发起外网请求</label>
+              <label class="switch">
+                <input id="cfgOfflineMode" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field-hint">
+              开启后模型对话、在线模型列表、更新检查、余额、联网搜索和模型下载会在本地直接返回原因，不再等待超时；
+              截图、文件管理、状态日志、固定命令菜单和已装好的本地语音照常可用。保存即生效。
             </div>
           </div>
           <div class="card">
@@ -10654,6 +10688,8 @@
     // 版本：运行中的进程 vs 磁盘上的 VERSION。装完没重启后端时两者不一致，
     // 状态点面板里给一句人话 + 重启入口，别让用户对着「0.7.0」干瞪眼
     serverDevMode = !!s.dev_mode;
+    // 离线横幅：状态接口每轮都带 offline_mode，别的设备切换后这边也能跟上
+    if (offlineBanner) offlineBanner.hidden = !s.offline_mode;
     connInfo.runningVersion = s.running_version || s.version || '';
     connInfo.diskVersion = s.disk_version || '';
     connInfo.versionMatch = (typeof s.version_match === 'boolean') ? s.version_match : null;
@@ -11779,6 +11815,9 @@
   var saveCfg = document.getElementById('saveCfg');
   var cfgHint = document.getElementById('cfgHint');
   var cfgDevMode = document.getElementById('cfgDevMode');
+  // 离线模式开关与顶部横幅：横幅在两种视图下都存在，开关在「关于更新」里
+  var cfgOfflineMode = document.getElementById('cfgOfflineMode');
+  var offlineBanner = document.getElementById('offlineBanner');
   var devLogUsage = document.getElementById('devLogUsage');
   var logClearDebug = document.getElementById('logClearDebug');
   var logClearRun = document.getElementById('logClearRun');
@@ -12909,6 +12948,13 @@
         if (cfgDevMode) {
           cfgDevMode.value = c.dev_mode ? 'on' : 'off';
         }
+        // [runtime].offline_mode：开关与顶部横幅按接口回传的真实状态走
+        if (cfgOfflineMode) {
+          cfgOfflineMode.checked = !!c.offline_mode;
+        }
+        if (offlineBanner) {
+          offlineBanner.hidden = !c.offline_mode;
+        }
         refreshLogUsage();
         // 更新源：双源探测，这里只控制是否同时查 GitHub
         cfgUpdGithub.checked = c.update_github_enable !== false;
@@ -13311,7 +13357,9 @@
       lan_enable: cfgLanEnable.value === 'on',
       port: port,
       // 开发者模式：写入 [runtime]，保存即生效（日志级别与细节记录不用重启）
-      dev_mode: cfgDevMode ? (cfgDevMode.value === 'on') : false
+      dev_mode: cfgDevMode ? (cfgDevMode.value === 'on') : false,
+      // 离线模式：写入 [runtime]，保存即生效；所有出网入口下一次调用就快速失败
+      offline_mode: cfgOfflineMode ? !!cfgOfflineMode.checked : false
     };
     fetch('/api/config', {
       method: 'POST',
@@ -13351,6 +13399,13 @@
         loadSttStatus(true);
         if (cfgDevMode) {
           cfgDevMode.value = res.dev_mode ? 'on' : 'off';
+        }
+        // 离线模式刚切换：不等下一次状态轮询，横幅立刻跟着变
+        if (cfgOfflineMode) {
+          cfgOfflineMode.checked = !!res.offline_mode;
+        }
+        if (offlineBanner) {
+          offlineBanner.hidden = !res.offline_mode;
         }
         refreshLogUsage();
         // 用量与余额已由上面的 renderApiProfiles 按新的当前使用刷新过

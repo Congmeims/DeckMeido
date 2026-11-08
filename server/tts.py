@@ -37,7 +37,7 @@ import urllib.request
 import wave
 from pathlib import Path
 
-from . import devlog, paths
+from . import devlog, netmode, paths
 
 # ---------- 发音人 ----------
 # 只保留两个发音人，界面与配置都以这两个 id 为准：
@@ -1513,6 +1513,11 @@ class TTS:
 
     @staticmethod
     def _probe_url(url: str) -> tuple[bool, int, str]:
+        # 离线模式：外网源直接判失败，连 HEAD 都不发（本地自定义源仍放行）
+        try:
+            netmode.check(url, "语音模型下载")
+        except netmode.OfflineError as exc:
+            return False, -1, str(exc)
         headers = {"User-Agent": UA}
         try:
             req = urllib.request.Request(url, headers=headers, method="HEAD")
@@ -1656,6 +1661,8 @@ class TTS:
         return root
 
     def _fetch(self, url: str, part: Path, cancelled, on_bytes):
+        # 离线模式：探测被放过（例如本地自定义源）时，真正下载这一层再兜一次
+        netmode.check(url, "语音模型下载")
         resume = part.stat().st_size if part.is_file() else 0
         headers = {"User-Agent": UA}
         if resume:

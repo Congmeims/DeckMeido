@@ -35,7 +35,7 @@ import wave
 from array import array
 from pathlib import Path
 
-from . import devlog, media, paths
+from . import devlog, media, netmode, paths
 
 SAMPLE_RATE = 16000
 FRAME_MS = 160
@@ -150,6 +150,8 @@ def model_dir(root: Path) -> Path:
 
 
 def _download(url: str, dest: Path, timeout: float = 60.0) -> None:
+    # 离线模式：唤醒模型首次启用要联网下载，直接给出原因，不发起连接
+    netmode.check(url, "唤醒模型下载")
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     req = urllib.request.Request(url, headers={"User-Agent": "DeckMeido"})
