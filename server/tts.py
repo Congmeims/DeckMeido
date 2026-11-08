@@ -67,13 +67,18 @@ CONFIG_NAME = "config.json"
 MODEL_FILES = (ONNX_NAME, CONFIG_NAME)
 # 完整模型约 38MB；少于 30MB 基本就是没下全
 MIN_ONNX_BYTES = 30 * 1024 * 1024
-# 上游 LFS 对象的 sha256 与字节数（hf 仓库 ayousanz/piper-plus-tsukuyomi-chan）。
-# 只校验 onnx；config.json 很小且随上游更新，只做 JSON 解析校验。
-ONNX_SHA256 = "929abef34cc13c143b9d634cd475ef5c964c6c594cee9fcdc7938110cda50228"
-ONNX_BYTES = 39652717
 MODEL_REPO = "ayousanz/piper-plus-tsukuyomi-chan"
-MIRROR_BASE = f"https://hf-mirror.com/{MODEL_REPO}/resolve/main"
-HF_BASE = f"https://huggingface.co/{MODEL_REPO}/resolve/main"
+# 钉死到具体 commit，不用 resolve/main：上游换过文件（2026-11-04 重新上传），
+# main 一挪，本地校验就会突然失败，而且用户完全无从判断。
+MODEL_REVISION = "619ad26fcbd5635b3d70a27eac919f4c2ce892b1"
+# 模型文件的真实 sha256，即 HF API 里该文件的 lfs.oid（响应头 x-linked-etag）。
+# ⚠️ 不要用 xetHash（HF 的 Xet 存储哈希）：算法和粒度都不同，值也长得像 sha256，
+#    之前就是把它当成了文件 sha256，导致每次下载都判「校验失败」。
+# 只校验 onnx；config.json 很小且随上游更新，只做 JSON 解析校验。
+ONNX_SHA256 = "5289e9b6eaf21080803b7fe1c4dc85b5491d4c216121207a41df18dd5f68e5d7"
+ONNX_BYTES = 39652717
+MIRROR_BASE = f"https://hf-mirror.com/{MODEL_REPO}/resolve/{MODEL_REVISION}"
+HF_BASE = f"https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REVISION}"
 
 # 署名照抄官方模板与模型卡，不要翻译/改写：
 #   模型卡「クレジット表記について（必須）」= ■Piper Plus:つくよみちゃん

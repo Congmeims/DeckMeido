@@ -1099,5 +1099,38 @@ class BoostVolumeTest(unittest.TestCase):
         self.assertEqual(self.mixer.volume, 20)
 
 
+class ModelPinTest(unittest.TestCase):
+    """模型哈希常量与下载地址必须和上游的 LFS 对象对齐。
+
+    0.7.8 的事故：ONNX_SHA256 里存的是 HF API 的 xetHash，不是文件真实 sha256。
+    xetHash 同样是 64 位十六进制、长得跟 sha256 一模一样，肉眼无从分辨，
+    结果下载三次、三次都判「校验失败」并被删掉，用户装完没声音。
+    这里把期望值写死，并说明它对标的是 lfs.oid（响应头 x-linked-etag），
+    以后改这个常量必须先去上游核对该文件的 oid，不能拿 xetHash 顶替。
+    """
+
+    # 上游 ayousanz/piper-plus-tsukuyomi-chan 的 tsukuyomi-chan-6lang-fp16.onnx：
+    # 文件真实 sha256 = HF API tree 里该文件的 lfs.oid = 下载响应头 x-linked-etag。
+    EXPECTED_SHA256 = "5289e9b6eaf21080803b7fe1c4dc85b5491d4c216121207a41df18dd5f68e5d7"
+    # 反例：这个值也是 64 位十六进制，但它是 xetHash（Xet 存储哈希），
+    # 不是文件内容摘要；拿它比对，无论下载多完整都会 100% 失败。
+    WRONG_XET_HASH = "929abef34cc13c143b9d634cd475ef5c964c6c594cee9fcdc7938110cda50228"
+
+    def test_onnx_sha256_必须是文件真实_sha256(self):
+        self.assertEqual(ttsmod.ONNX_SHA256, self.EXPECTED_SHA256)
+        self.assertNotEqual(
+            ttsmod.ONNX_SHA256, self.WRONG_XET_HASH,
+            "ONNX_SHA256 又变回了 xetHash：它不是文件 sha256，会让人人装完都校验失败",
+        )
+
+    def test_下载地址钉在具体_commit_而不是_main(self):
+        # main 会随上游重新上传而移动（该仓库 2026-11-04 换过文件），
+        # 钉 commit 才能保证常量、字节数、文件三者长期一致。
+        self.assertRegex(ttsmod.MODEL_REVISION, r"^[0-9a-f]{40}$")
+        for base in (ttsmod.MIRROR_BASE, ttsmod.HF_BASE):
+            self.assertIn(f"/resolve/{ttsmod.MODEL_REVISION}", base)
+            self.assertNotIn("/resolve/main", base)
+
+
 if __name__ == "__main__":
     unittest.main()
