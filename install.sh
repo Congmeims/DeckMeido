@@ -8,7 +8,12 @@
 #   bash install.sh install --gui       只补装桌面客户端（PySide6），不动别的
 #   bash install.sh install --stt       只补装语音输入依赖（sherpa-onnx，可选）
 #   bash install.sh install --tts       只补装语音合成依赖（piper-plus，可选）
-#   bash install.sh upgrade        升级代码与依赖，保留配置
+#   bash install.sh install --minimal   最小安装：后端 + Decky 插件 + 桌面客户端，不装语音/系统依赖，不下载模型
+#   bash install.sh install --standard  标准安装（默认）：最小 + STT/TTS 引擎与所需模型
+#   bash install.sh install --full      完整安装：标准 + 系统依赖 + 唤醒词模型 + 音箱模式所需组件
+#   bash install.sh install --custom    自定义：逐项询问（和原来的可选依赖流程一致）
+#   bash install.sh upgrade        升级代码与依赖，保留配置（默认逐项询问）
+#   bash install.sh upgrade --minimal|--standard|--full   升级并按对应档位补齐组件
 #   bash install.sh upgrade --deps      升级后顺带检查并安装控制类插件
 #   bash install.sh check          自检：逐个实测控制类控件是否真的能用
 #   bash install.sh uninstall     卸载（删代码与依赖，保留人设/记忆，下次安装自动恢复）
@@ -45,6 +50,7 @@
 #   DECKMEIDO_PIP_INDEX  pip 源；留空则实测各源下载速率，自动用最快的那个
 #   DECKMEIDO_SKIP_GUI   设为 1 则跳过 PySide6（只要网页版 / 后端时用）
 #   DECKMEIDO_INSTALL_STT 语音依赖：1 装 / 0 跳过；不设时交互询问、非交互跳过
+#   DECKMEIDO_PROFILE     安装档位：minimal / standard / full / custom（同命令行 --minimal 等）
 #
 # 注意：不要用 sudo 执行。脚本会把程序装到当前用户家目录、注册用户级桌面项，
 #       用 root 装会装到 /root 下，桌面会话里起不来；也不注册开机自启服务。
@@ -615,29 +621,53 @@ purge_config_dir() {
 # ---------- 文本宽度 ----------
 # 终端里中文占 2 列，按字符数排版框线一定会歪，这里按显示宽度算。
 # 只覆盖中日韩 + 全角标点，够本脚本用了（纯 bash，不依赖 wc -L）
+char_cols() {
+  local cp
+  printf -v cp '%d' "'$1"
+  # 制表/框线字符（U+2500–U+257F）在终端是单宽；其余非 ASCII 一律按双宽。
+  # 宁可多算一列（留白多一点），也不让框线被顶出终端。
+  if [ "$cp" -ge 9472 ] && [ "$cp" -le 9599 ]; then
+    printf 1
+  elif [ "$cp" -ge 128 ]; then
+    printf 2
+  else
+    printf 1
+  fi
+}
 disp_len() {
-  local s="$1" i cp w=0
+  local s="$1" i w=0
   for ((i = 0; i < ${#s}; i++)); do
-    printf -v cp '%d' "'${s:i:1}"
-    # UTF-8 首字节之外的位置 "'x" 拿到的是字节值，汉字会 >127，按 2 列处理
-    if [ "$cp" -ge 9472 ] || { [ "$cp" -ge 128 ] && [ "$cp" -lt 256 ]; }; then
-      w=$((w + 2))
-    else
-      w=$((w + 1))
-    fi
+    w=$((w + $(char_cols "${s:i:1}")))
   done
   printf '%s' "$w"
 }
 
-# 终端够不够宽：中文按 2 列算，banner 最宽约 70 列
+# 终端实际宽度：优先 $COLUMNS，其次直接问 /dev/tty。
+# 安装过程中 stdout 会被 tee 接走，这时 tput 读不到真实行宽、会退回 80，
+# 窄终端上框线就会越界，所以 stty 走 /dev/tty 而不是 stdout。
 term_cols() {
-  local c="${COLUMNS:-}"
-  [ -n "$c" ] || c=$(tput cols 2>/dev/null || echo 80)
+  local c="${COLUMNS:-}" sz
+  if [ -z "$c" ] || ! [[ "$c" =~ ^[0-9]+$ ]]; then
+    sz=$(stty size < /dev/tty 2>/dev/null | awk '{print $2}')
+    c="${sz:-}"
+  fi
+  [ -n "$c" ] || c=$(tput cols < /dev/tty 2>/dev/null || echo 80)
   printf '%s' "${c:-80}"
 }
+# 开场大字/分区标题需要 72 列；结果卡片窄一点也能画（>=44 列）
 ui_fits() { [ "$OUT_IS_TTY" = 1 ] && [ "$(term_cols)" -ge 72 ]; }
+card_fits() { [ "$OUT_IS_TTY" = 1 ] && [ "$(term_cols)" -ge 44 ]; }
 
-HRULE="────────────────────────────────────────────────────────────"
+# 卡片内文字可用列数：外框总宽 = 内宽 + 3（左框 + 空格 + 右框）。
+# 宽屏上限 59（总宽 62，沿用旧版视觉宽度），窄终端按实际宽度收窄。
+card_inner() {
+  local c inner
+  c=$(term_cols)
+  inner=$((c - 5))
+  [ "$inner" -gt 59 ] && inner=59
+  [ "$inner" -lt 24 ] && inner=24
+  printf '%s' "$inner"
+}
 
 # 分区标题：┌─ 名称 ───────
 # 六步版式下（STEP_QUIET=1）不再插分区标题，避免把「每步一行结果」冲散。
@@ -664,31 +694,71 @@ table_row() {
 }
 
 # 完成卡片：带边框的结果汇总
+# 宽度跟着终端走；单行超过内宽时按显示宽度折行，右边的 │ 不会再被顶出屏幕。
 card() {
-  if ui_fits; then printf '\n%s┌%s┐%s\n' "$C_C" "$HRULE" "$C_END"; else echo; fi
-}
-card_line() {
-  local text="$1" pad
-  if ui_fits; then
-    pad=$((58 - $(disp_len "$text")))
-    [ "$pad" -lt 0 ] && pad=0
-    printf '%s│%s %s%*s%s│%s\n' "$C_C" "$C_END" "$text" "$pad" "" "$C_C" "$C_END"
+  if card_fits; then
+    local inner n
+    inner=$(card_inner); n=$((inner + 1))
+    printf '\n%s┌%s┐%s\n' "$C_C" "$(printf '─%.0s' $(seq 1 "$n"))" "$C_END"
   else
-    printf '  %s\n' "$text"
+    echo
   fi
 }
-card_title() {
-  local text="$1" pad
-  if ui_fits; then
-    pad=$((58 - $(disp_len "$text")))
-    [ "$pad" -lt 0 ] && pad=0
-    printf '%s│%s %s%s%s%*s%s│%s\n' "$C_C" "$C_END" "$C_B" "$text" "$C_END" "$pad" "" "$C_C" "$C_END"
+card_row() {
+  # $1=文本 $2=内宽 $3=是否加粗
+  local text="$1" inner="$2" bold="${3:-0}" pad
+  pad=$((inner - $(disp_len "$text")))
+  [ "$pad" -lt 0 ] && pad=0
+  if [ "$bold" = 1 ]; then
+    printf '%s│%s %s%s%s%*s%s│%s\n' \
+      "$C_C" "$C_END" "$C_B" "$text" "$C_END" "$pad" "" "$C_C" "$C_END"
   else
-    printf '%s\n' "$text"
+    printf '%s│%s %s%*s%s│%s\n' \
+      "$C_C" "$C_END" "$text" "$pad" "" "$C_C" "$C_END"
   fi
 }
+card_text() {
+  local text="$1" bold="${2:-0}" inner i ch w cur="" cw=0 box=1
+  if card_fits; then
+    inner=$(card_inner)
+  elif [ "$OUT_IS_TTY" = 1 ]; then
+    # 太窄画不了框，但长行仍要折行，否则纯文本也会冲出终端
+    box=0
+    inner=$(term_cols); inner=$((inner - 3))
+    [ "$inner" -lt 12 ] && inner=12
+  else
+    # 写日志/管道：保持原样一行，不额外插入换行
+    if [ "$bold" = 1 ]; then printf '%s\n' "$text"; else printf '  %s\n' "$text"; fi
+    return 0
+  fi
+  for ((i = 0; i < ${#text}; i++)); do
+    ch="${text:i:1}"
+    w=$(char_cols "$ch")
+    if [ $((cw + w)) -gt "$inner" ] && [ -n "$cur" ]; then
+      if [ "$box" = 1 ]; then
+        card_row "$cur" "$inner" "$bold"
+      else
+        printf '  %s\n' "$cur"
+      fi
+      cur="$ch"; cw=$w
+    else
+      cur+="$ch"; cw=$((cw + w))
+    fi
+  done
+  if [ "$box" = 1 ]; then
+    card_row "$cur" "$inner" "$bold"
+  else
+    printf '  %s\n' "$cur"
+  fi
+}
+card_line() { card_text "$1" 0; }
+card_title() { card_text "$1" 1; }
 card_end() {
-  if ui_fits; then printf '%s└%s┘%s\n' "$C_C" "$HRULE" "$C_END"; fi
+  if card_fits; then
+    local inner n
+    inner=$(card_inner); n=$((inner + 1))
+    printf '%s└%s┘%s\n' "$C_C" "$(printf '─%.0s' $(seq 1 "$n"))" "$C_END"
+  fi
 }
 
 # 开场：DeckMeido 大字（figlet "Big" 字体），下面接标题与简介
@@ -967,20 +1037,27 @@ ask_yn() {
   case "$ans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
-# 「按 A（回车）继续」：所有需要停一下看结果的地方都走这里。
+# 「按 A 或回车继续」：所有需要停一下看结果的地方都走这里。
+# 按键语义（只是暂停，不承担选择）：
+#   按 A / 回车 / 其它任意键 —— 都结束等待，继续往下；
+#   Ctrl-C —— 照常中断脚本；stdin 已到 EOF（管道）—— 也直接继续。
+# 以前用 `read -r _` 读整行，只按 A 没有回车就会一直卡着，这正是
+# 「按 A 无法退出」的原因；这里改成 -n1，读到一个字符就返回。
 # 非交互（管道/日志）不能停住等人，直接说明「自动继续」。
 press_continue() {
-  local hint="${1:-按 A（回车）继续}"
+  local hint="${1:-按 A 或回车继续}" key=""
   if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ]; then
     dim "非交互，自动继续"
     return 0
   fi
   if [ -t 0 ]; then
     printf '%s[·]%s %s ' "$C_DIM" "$C_END" "$hint"
-    read -r _ || true
+    IFS= read -r -n 1 -s key || true
+    printf '\n'
   elif { exec 3<>/dev/tty; } 2>/dev/null; then
     printf '%s[·]%s %s ' "$C_DIM" "$C_END" "$hint" >&3
-    read -r _ <&3 2>/dev/null || true
+    IFS= read -r -n 1 -s key <&3 2>/dev/null || true
+    printf '\n' >&3
     exec 3<&- 3>&-
   else
     dim "非交互，自动继续"
@@ -1019,6 +1096,62 @@ opt_download() {
   return 1
 }
 
+# ---------- 安装档位 ----------
+# 三档：minimal（最小）/ standard（标准）/ full（完整），外加 custom（逐项询问）。
+# 命令行 --minimal / --standard / --full / --custom（或 --profile=xxx）直接指定。
+# 没指定时：全新安装弹一次菜单（默认标准）；升级默认自定义（沿用原来的逐项询问，
+# 不会因为一次升级就把用户从没装过的语音组件悄悄装上）。
+# 非交互模式（管道安装、无 tty）绝不询问，直接按传入的默认值继续。
+choose_install_profile() {
+  local def="${1:-standard}" cur="${DECKMEIDO_PROFILE:-}"
+  case "$cur" in
+    ""|minimal|standard|full|custom) ;;
+    *) die "未知安装档位：$cur（可选 minimal / standard / full / custom）" ;;
+  esac
+  if [ -n "$cur" ]; then
+    return 0
+  fi
+
+  local dflt
+  case "$def" in
+    minimal) dflt=1 ;; standard) dflt=2 ;; full) dflt=3 ;; *) dflt=4 ;;
+  esac
+  if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
+    DECKMEIDO_PROFILE="$def"
+    export DECKMEIDO_PROFILE
+    dim "非交互模式，按默认档位继续：$def"
+    return 0
+  fi
+
+  echo
+  echo "  请选择安装档位："
+  echo "  ${C_B}1${C_END}  最小安装  ${C_DIM}后端 + Decky 插件 + 桌面客户端；不装语音、不下载模型、不装系统依赖${C_END}"
+  echo "  ${C_B}2${C_END}  标准安装  ${C_DIM}最小内容 + STT/TTS 引擎与所需模型（不含音箱模式）${C_END}"
+  echo "  ${C_B}3${C_END}  完整安装  ${C_DIM}标准内容 + 系统依赖 + 唤醒词模型 + 音箱模式所需组件${C_END}"
+  echo "  ${C_B}4${C_END}  自定义    ${C_DIM}逐项询问服务端 / 桌面客户端 / 语音 / 系统依赖${C_END}"
+  echo
+  local choice=""
+  case "$dflt" in
+    1) printf '%s[?]%s 请输入序号 [1]（最小）' "$C_WARN" "$C_END" ;;
+    2) printf '%s[?]%s 请输入序号 [2]（标准，直接回车即可）' "$C_WARN" "$C_END" ;;
+    3) printf '%s[?]%s 请输入序号 [3]（完整）' "$C_WARN" "$C_END" ;;
+    *) printf '%s[?]%s 请输入序号 [4]（自定义）' "$C_WARN" "$C_END" ;;
+  esac
+  if [ -t 0 ]; then
+    read -r choice || choice=""
+  else
+    read -r choice < /dev/tty || choice=""
+  fi
+  case "${choice:-$dflt}" in
+    1) DECKMEIDO_PROFILE=minimal ;;
+    2) DECKMEIDO_PROFILE=standard ;;
+    3) DECKMEIDO_PROFILE=full ;;
+    4) DECKMEIDO_PROFILE=custom ;;
+    *) warn "无效选择：$choice，按默认档位继续"; DECKMEIDO_PROFILE="$def" ;;
+  esac
+  export DECKMEIDO_PROFILE
+}
+
 optional_downloads() {
   local py="$INSTALL_DIR/.venv/bin/python" nonint=0
   if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
@@ -1027,6 +1160,50 @@ optional_downloads() {
   section "可选下载"
   dim "下面每一项都会单独确认；已有内容会跳过，不会重复下载。"
   [ "$nonint" = 1 ] && dim "当前是非交互模式：按默认值自动继续/跳过。"
+
+  # 三档安装：档位给定后不再逐项询问。已有依赖 / 模型照旧跳过，不会重复下载；
+  # 升级时也不会因为选了 minimal 就卸载已经装好的组件。
+  #
+  #   最小：后端 + Decky 插件 + 桌面客户端；不装 STT/TTS、不下载语音模型、
+  #         不装系统依赖，不含音箱模式（智能音响）组件
+  #   标准：最小 + STT/TTS 引擎与所需模型（SenseVoice、つくよみちゃん）；仍不含音箱模式
+  #   完整：标准 + 系统依赖 + 唤醒词模型 + 音箱模式所需组件
+  case "${DECKMEIDO_PROFILE:-}" in
+    minimal|standard|full)
+      export DECKMEIDO_SKIP_SERVER=0
+      export DECKMEIDO_INSTALL_STT=0 DECKMEIDO_INSTALL_TTS=0 DECKMEIDO_INSTALL_DEPS=0
+      # 桌面客户端三档都装；已经装好就不重装，用户显式 DECKMEIDO_SKIP_GUI=1 也照办
+      if have_py_module "$py" "PySide6" || [ "${DECKMEIDO_SKIP_GUI:-}" = "1" ]; then
+        export DECKMEIDO_SKIP_GUI=1
+      else
+        unset DECKMEIDO_SKIP_GUI
+      fi
+      if [ "$DECKMEIDO_PROFILE" = "minimal" ]; then
+        dim "最小安装：后端 + Decky 插件 + 桌面客户端；不装语音组件、不下载模型、不装系统依赖（不含音箱模式）"
+      else
+        export DECKMEIDO_INSTALL_STT=1 DECKMEIDO_INSTALL_TTS=1
+        # 已经装好模块和模型就不再重装，避免每次升级都白跑一遍
+        if have_py_module "$py" "sherpa_onnx" && [ -f "$DATA_MODELS/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx" ]; then
+          export DECKMEIDO_INSTALL_STT=0
+        fi
+        if have_py_module "$py" "piper_plus" && [ -f "$DATA_MODELS/tts/tsukuyomi/tsukuyomi-chan-6lang-fp16.onnx" ]; then
+          export DECKMEIDO_INSTALL_TTS=0
+        fi
+        if [ "$DECKMEIDO_PROFILE" = "full" ]; then
+          export DECKMEIDO_INSTALL_DEPS=1
+          dim "完整安装：标准内容 + 系统依赖 + 唤醒词模型 + 音箱模式所需组件"
+        else
+          dim "标准安装：最小内容 + STT/TTS 引擎与所需模型（不含音箱模式）"
+        fi
+      fi
+      if decky_ready 2>/dev/null; then
+        export DECKMEIDO_INSTALL_PLUGIN=1
+      else
+        export DECKMEIDO_INSTALL_PLUGIN=0
+      fi
+      return 0
+      ;;
+  esac
 
   # 1. 服务端运行依赖（必装，但允许用户明确取消）
   if have_py_module "$py" "fastapi"; then
@@ -1546,7 +1723,9 @@ install_deps() {
 CODE_DIRS=(server client assets deploy tools plugin)
 # deploy/deps/ 里的离线依赖包也必须放过：它们不在源码目录里，照常删的话
 # 每次升级都会把 Release 自带的离线包清空，下次断网就装不上依赖了。
-USER_DATA_RE='\.log$|(^|/)VERSION$|(^|/)__pycache__(/|$)|^deploy/deps/'
+# 旧布局（0.7.3 之前）的配置、人设、记忆、会话也放在 server/ 下：
+# 它们同样不在源码包里，但绝不能当废弃代码删掉，否则升级即丢账户与历史。
+USER_DATA_RE='\.log$|(^|/)VERSION$|(^|/)__pycache__(/|$)|^deploy/deps/|(^|/)config\.toml(\.bak[^/]*)?$|(^|/)meidosoul\.json$|(^|/)memory\.json$|(^|/)sessions/[^/]+$|(^|/)uploads/[^/]+$|(^|/)static/shots/[^/]+$'
 
 prune_stale() {
   [ -d "$INSTALL_DIR" ] || return 0
@@ -1600,8 +1779,10 @@ sync_files() {
   for it in "${items[@]}"; do
     [ -e "$HERE/$it" ] || continue
     if [ -d "$HERE/$it" ]; then
-      # userdata/ 是用户数据根，永远不从源码包覆盖
+      # userdata/ 是用户数据根，永远不从源码包覆盖；旧布局下 server/ 里的
+      # 配置也属于用户数据，同样不覆盖
       rsync -a --exclude 'userdata' --exclude '__pycache__' --exclude '*.log' \
+            --exclude 'config.toml' --exclude 'config.toml.bak*' \
             "$HERE/$it/" "$INSTALL_DIR/$it/" 2>/dev/null ||
         cp -r "$HERE/$it/." "$INSTALL_DIR/$it/"
     else
@@ -1718,6 +1899,25 @@ human_size() {
   else
     printf '%dB' "$b"
   fi
+}
+
+# 唤醒词生成（sherpa-onnx-cli text2token）在 sherpa-onnx 之外还要
+# sentencepiece / pypinyin，只有完整档需要：缺了就补上，失败只警告。
+install_wake_text_deps() {
+  local py="$1" start="${2:-0}"
+  [ "${DECKMEIDO_PROFILE:-}" = "full" ] || return 0
+  [ -x "$py" ] || return 0
+  if have_py_module "$py" "sentencepiece" && have_py_module "$py" "pypinyin"; then
+    return 0
+  fi
+  dim "补齐唤醒词分词依赖（sentencepiece / pypinyin）"
+  if "$py" -m pip install -q sentencepiece pypinyin -i "${PIP_INDEXES[$start]}" >/dev/null 2>&1 ||
+     "$py" -m pip install -q sentencepiece pypinyin >/dev/null 2>&1; then
+    dim "唤醒词分词依赖已就绪"
+  else
+    warn "sentencepiece / pypinyin 没装上：生成唤醒词会失败，可手动 pip 补装"
+  fi
+  return 0
 }
 
 # 语音输入依赖（可选安装项）。$1 python，$2 起始源下标
@@ -2068,6 +2268,125 @@ venv_install() {
   return 0
 }
 
+# 标准 / 完整档在安装阶段就把语音模型下好，省得第一次录音、播报还要再等。
+# 已经存在的跳过；下载失败只警告，不影响安装完成，运行时仍会按原来的懒加载重试。
+prefetch_voice_models() {
+  local profile="${DECKMEIDO_PROFILE:-}"
+  case "$profile" in
+    standard|full) ;;
+    *) return 0 ;;
+  esac
+  local py="$INSTALL_DIR/.venv/bin/python"
+  [ -x "$py" ] || return 0
+  mkdir -p "$DATA_MODELS" 2>/dev/null || true
+
+  # 语音识别模型（SenseVoice，约 250MB）
+  if have_py_module "$py" "sherpa_onnx" &&
+     [ ! -f "$DATA_MODELS/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx" ]; then
+    section "语音识别模型（SenseVoice）"
+    dim "正在下载约 250MB，可能需要几分钟；失败不影响安装，之后首次录音会再试"
+    if ( cd "$INSTALL_DIR" && "$py" - <<'PY'
+from server import paths
+from server.stt import STT
+
+last = [-1]
+
+def progress(done, total, phase, file):
+    if not total or total <= 0:
+        return
+    pct = int(done * 100 / total)
+    if pct // 10 != last[0] // 10:
+        last[0] = pct
+        print(f"    {phase} {pct}%", flush=True)
+
+STT(paths.stt_model_dir()).download_model(progress=progress)
+PY
+    ); then
+      dim "语音识别模型已就绪"
+    else
+      warn "语音识别模型没下完：首次录音会再试，也可重跑 install --stt"
+    fi
+  fi
+
+  # 语音合成模型（つくよみちゃん，约 40MB）
+  if have_py_module "$py" "piper_plus" &&
+     [ ! -f "$DATA_MODELS/tts/tsukuyomi/tsukuyomi-chan-6lang-fp16.onnx" ]; then
+    section "语音合成模型（つくよみちゃん）"
+    dim "正在下载约 40MB"
+    if ( cd "$INSTALL_DIR" && "$py" - <<'PY'
+from server import paths
+from server.tts import TTS
+
+TTS(enable=False, model_root=paths.tts_model_dir()).download_model()
+PY
+    ); then
+      dim "语音合成模型已就绪"
+    else
+      warn "语音合成模型没下完：首次播报会再试，也可重跑 install --tts"
+    fi
+  fi
+
+  # 唤醒词模型（智能音响模式）只有完整档预下载
+  if [ "$profile" = "full" ]; then
+    # 唤醒词生成还要 sentencepiece / pypinyin（text2token 依赖）
+    install_wake_text_deps "$py" 0
+    section "唤醒词模型（智能音响模式）"
+    if ( cd "$INSTALL_DIR" && "$py" - <<'PY'
+from server import paths, wake
+
+wake.ensure_model(paths.wake_model_dir())
+PY
+    ); then
+      dim "唤醒词模型已就绪"
+    else
+      warn "唤醒词模型没下完：首次启用智能音响模式会再试"
+    fi
+  fi
+  return 0
+}
+
+# ---------- 音箱模式（智能音响）前置检查 ----------
+# 该模式只在完整档预置（唤醒词模型 + 录音工具 + busctl + Decky Music）。
+# 其它档位不预置，但安装结尾会明确列出缺什么，避免用户在设置页打开开关后
+# 只看到「起不来」却不知道原因。
+wake_mode_notes() {
+  local profile="${DECKMEIDO_PROFILE:-}" py="$INSTALL_DIR/.venv/bin/python" miss=() m
+  have_py_module "$py" "sherpa_onnx" || miss+=("sherpa-onnx 运行时（唤醒检测）")
+  [ -n "$(find "$DATA_MODELS/wake" -maxdepth 3 -name 'encoder*.onnx' -print -quit 2>/dev/null || true)" ] ||
+    miss+=("唤醒词模型（KWS + silero VAD，约 38MB）")
+  { need_cmd parec || need_cmd pw-record; } || miss+=("parec / pw-record（常驻录音工具）")
+  need_cmd busctl || miss+=("busctl（systemd，音量与媒体控制）")
+
+  if [ ${#miss[@]} -eq 0 ]; then
+    dim "智能音响模式所需组件齐全（唤醒词模型、录音工具、busctl）"
+  else
+    if [ "$profile" = "full" ]; then
+      warn "智能音响模式组件仍缺以下项，启用时会提示原因："
+    else
+      dim "智能音响模式未预置（${profile:-自定义}档不含音箱模式组件），缺少："
+    fi
+    for m in "${miss[@]}"; do dim "  - $m"; done
+    dim "补齐方式：bash install.sh install --full（完整档）"
+  fi
+
+  # Decky Music 是独立插件，安装器不打它；只做提示，不影响唤醒与问答
+  if [ "$profile" = "full" ]; then
+    local found_music=0 root d
+    for root in "${DECKY_PLUGINS_DIR:-}" "$HOME/homebrew/plugins"; do
+      [ -n "$root" ] || continue
+      for d in "$root"/*usic*; do
+        if [ -d "$d" ]; then found_music=1; break; fi
+      done
+    done
+    if [ "$found_music" = 1 ]; then
+      dim "Decky Music 插件已检测到（音乐播控 / 点歌可用）"
+    else
+      dim "音乐播控 / 点歌还需 Decky Music 插件（到 Decky 商店安装并登录，不影响唤醒问答）"
+    fi
+  fi
+  return 0
+}
+
 # 带进度条与换源的 pip install。
 #   $1 python，$2 requirements 文件名，$3 起始源下标（默认 0）
 # 为什么要包一层：pip 下大包时很久不吐一行输出，以前又用了 -q，用户看到的
@@ -2211,6 +2530,32 @@ progress_bar() {
 ensure_data_layout() {
   ( umask 077; mkdir -p "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" "$DATA_LOGS" "$DATA_MODELS" ) 2>/dev/null || true
   chmod 700 "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" "$DATA_LOGS" "$DATA_MODELS" 2>/dev/null || true
+}
+
+# 旧布局（0.7.3 之前）的配置在 <安装目录>/server/config.toml。新版只认数据根
+# （userdata/config.toml），所以升级时必须先把它复制过去；不复制的话，后端会
+# 因为找不到配置而拿 config.example.toml 生成一份空模板，设置页里的模型账户
+# 就变成「未配置」（0.7.5 用户反馈的「升级后模型接口变空」）。
+# 规则：只复制、不删除；目标已存在一律跳过，绝不用旧文件覆盖用户现有账户。
+migrate_legacy_config() {
+  local src="$INSTALL_DIR/server" f dst
+  [ -d "$src" ] || return 0
+  mkdir -p "$(dirname "$DATA_CONFIG")" 2>/dev/null || true
+  if [ ! -e "$DATA_CONFIG" ] && [ -f "$src/config.toml" ]; then
+    if cp -p -- "$src/config.toml" "$DATA_CONFIG" 2>/dev/null; then
+      dim "已迁移旧配置 $src/config.toml → $DATA_CONFIG（原文件保留）"
+    fi
+  fi
+  # 旧版安装器留下的 config.toml.bak-* 一并带到数据根，留给用户回滚
+  for f in "$src"/config.toml.bak*; do
+    [ -f "$f" ] || continue
+    dst="$DATA_DIR/$(basename "$f")"
+    [ -e "$dst" ] && continue
+    if cp -p -- "$f" "$dst" 2>/dev/null; then
+      dim "已迁移旧配置备份 $(basename "$f")"
+    fi
+  done
+  return 0
 }
 
 # 工作区：安装/升级都保证它存在，幂等；已存在时一律不动里面内容。
@@ -3280,7 +3625,7 @@ print_done() {
   card_line "             （只删安装器文件；userdata/ 永远保留）"
   card_end
   echo
-  press_continue "按 A（回车）结束"
+  press_continue "按 A 或回车结束"
 }
 
 # ---------- 子命令 ----------
@@ -3295,14 +3640,24 @@ do_install() {
       --gui)  gui_only=1 ;;   # 只补装桌面客户端（PySide6），不动别的
       --stt)  stt_only=1 ;;   # 只补装语音输入依赖（sherpa-onnx）
       --tts)  tts_only=1 ;;   # 只补装语音合成依赖（piper-plus）
+      # 安装档位：三档 + 自定义（逐项询问）
+      --minimal|--standard|--full)  DECKMEIDO_PROFILE="${a#--}" ;;
+      --custom|--advanced)          DECKMEIDO_PROFILE=custom ;;
+      --profile=*)                  DECKMEIDO_PROFILE="${a#--profile=}" ;;
     esac
   done
+  case "${DECKMEIDO_PROFILE:-}" in
+    ""|minimal|standard|full|custom) ;;
+    *) die "未知安装档位：$DECKMEIDO_PROFILE（可选 minimal / standard / full / custom）" ;;
+  esac
+  export DECKMEIDO_PROFILE="${DECKMEIDO_PROFILE:-}"
   # 只补装某一项依赖：不换代码、不停机，走原来的轻量路径
   check_user
   legacy_prompt
   if [ "$tts_only" = 1 ] || [ "$stt_only" = 1 ] || [ "$gui_only" = 1 ]; then
     check_user
     start_install_log
+    migrate_legacy_config
     sync_files
     ensure_data_layout
     ensure_workspace || true
@@ -3320,6 +3675,8 @@ do_install() {
   check_user
   print_banner
   start_install_log
+  # 全新安装：交互时弹三档菜单（默认标准）；命令行/环境变量给了档位就不再问
+  choose_install_profile standard
   STEP_QUIET=1
   reset_steps
   local disk_ver="" had_old=0
@@ -3348,6 +3705,8 @@ do_install() {
 
   # [3/6] 下载并校验主程序（本地源码安装就是同步文件）
   step "下载并校验主程序"
+  # 旧布局的配置必须先搬进数据根，否则 prune_stale 会把它当废弃文件删掉
+  migrate_legacy_config
   sync_files
   disk_ver="$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
   step_ok "程序文件已就位：$INSTALL_DIR（v${disk_ver:-未知}）"
@@ -3367,6 +3726,8 @@ do_install() {
   else
     step_note "运行依赖没装全，可重跑：bash $INSTALL_DIR/install.sh upgrade"
   fi
+  # 标准 / 完整档：把语音模型一起下好（最小档什么都不下）
+  prefetch_voice_models
   if [ "$deps" = "--deps" ] || [ "${DECKMEIDO_INSTALL_DEPS:-0}" = "1" ]; then
     deps_intro
     maybe_autorepair_after_image_update
@@ -3376,6 +3737,8 @@ do_install() {
     system_notes
     step_skip "系统控件依赖（之后想装：bash install.sh install --deps）"
   fi
+  # 音箱模式（智能音响）只在完整档预置；其它档位把缺的组件列清楚
+  wake_mode_notes
 
   # [5/6] 部署插件与桌面入口
   step "部署插件与桌面入口"
@@ -3426,9 +3789,23 @@ stop_client() {
 }
 
 do_upgrade() {
-  local deps="${1:-}" gui_only=0
+  local deps="" gui_only=0
+  for a in "$@"; do
+    case "$a" in
+      --deps) deps="--deps" ;;
+      --gui)  gui_only=1 ;;
+      --minimal|--standard|--full)  DECKMEIDO_PROFILE="${a#--}" ;;
+      --custom|--advanced)          DECKMEIDO_PROFILE=custom ;;
+      --profile=*)                  DECKMEIDO_PROFILE="${a#--profile=}" ;;
+    esac
+  done
+  if [ "$gui_only" = 1 ]; then deps=""; fi
+  case "${DECKMEIDO_PROFILE:-}" in
+    ""|minimal|standard|full|custom) ;;
+    *) die "未知安装档位：$DECKMEIDO_PROFILE（可选 minimal / standard / full / custom）" ;;
+  esac
+  export DECKMEIDO_PROFILE="${DECKMEIDO_PROFILE:-}"
   [ -d "$INSTALL_DIR" ] || die "$INSTALL_DIR 不存在，请先执行安装"
-  if [ "$deps" = "--gui" ]; then gui_only=1; deps=""; fi
   check_user
   print_banner
   legacy_prompt
@@ -3436,6 +3813,9 @@ do_upgrade() {
   dim "升级会保留：userdata/ 下的配置、人设、长期记忆、会话与上传文件，"
   dim "以及工作区；Decky 插件已装过会自动替换为新版本。"
   start_install_log
+  # 升级默认沿用原来的逐项询问（自定义），不会把用户没装过的语音组件装上；
+  # 显式给了 --minimal / --standard / --full 才按档位执行
+  [ "$gui_only" = 1 ] || choose_install_profile custom
   STEP_QUIET=1
   reset_steps
   local disk_ver="" had_old=0
@@ -3464,6 +3844,7 @@ do_upgrade() {
 
   # [3/6] 下载并校验主程序
   step "下载并校验主程序"
+  migrate_legacy_config
   sync_files
   disk_ver="$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
   step_ok "程序文件已就位：$INSTALL_DIR（v${disk_ver:-未知}）"
@@ -3482,7 +3863,9 @@ do_upgrade() {
     else
       step_note "运行依赖没装全，可重跑：bash $INSTALL_DIR/install.sh upgrade"
     fi
-    if [ "$deps" = "--deps" ]; then
+    # 标准 / 完整档在升级时也补齐语音模型（已有就跳过；自定义档不下载）
+    prefetch_voice_models
+    if [ "$deps" = "--deps" ] || [ "${DECKMEIDO_INSTALL_DEPS:-0}" = "1" ]; then
       maybe_autorepair_after_image_update
       install_deps || true
       step_ok "系统控件依赖已处理"
@@ -3490,6 +3873,8 @@ do_upgrade() {
       system_notes
       step_skip "系统控件依赖（之后想装：bash install.sh upgrade --deps）"
     fi
+    # 音箱模式（智能音响）只在完整档预置；其它档位把缺的组件列清楚
+    wake_mode_notes
   fi
 
   # [5/6] 部署插件与桌面入口
@@ -3728,16 +4113,21 @@ do_from_mirror() {
   local tag; tag="$(mirror_latest_tag || true)"
   [ -n "$tag" ] || die "读不到镜像站的版本信息（$MIRROR/latest.json），请检查网络或稍后再试"
   info "最新版本：v$tag"
-  local tmp; tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
+  # 临时目录用脚本级变量：trap 要等脚本退出才执行，那时函数里的 local
+  # 已经出栈，set -u 下展开 $tmp 会报「tmp: 未绑定的变量」（用户看到的
+  # 就是按 A 结束后闪出的一条 bash 报错）。改用全局变量 + :- 兜底。
+  PIPED_TMP="$(mktemp -d)"
+  local tmp="$PIPED_TMP"
+  trap 'rm -rf "${PIPED_TMP:-}"' EXIT
   fetch_pkg "$MIRROR" "$tag" "$tmp" 0 || die "下载失败：$MIRROR/deckmeido-$tag.tar.gz"
   tar -xzf "$tmp/pkg.tar.gz" -C "$tmp" || die "解压失败"
   local src; src="$(find "$tmp" -maxdepth 2 -name install.sh -printf '%h\n' | head -n1)"
   [ -n "$src" ] || die "安装包结构不对：里面没有 install.sh"
   info "开始执行：$REMOTE_ACTION（来源：$src）"
   # 让子进程沿用这次用的镜像地址，写进配置的就是它。
-  # 子命令明确传下去：上面已经问过「升级还是卸载」，不能让子脚本再猜一次
-  DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" "$REMOTE_ACTION"
+  # 子命令明确传下去：上面已经问过「升级还是卸载」，不能让子脚本再猜一次；
+  # 额外的档位参数（--minimal / --full 等）也一并转发
+  DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" "$REMOTE_ACTION" "$@"
 }
 
 # 管道执行 / 一行命令自举：先镜像，镜像不可用再 GitHub。
@@ -3746,8 +4136,12 @@ do_from_piped() {
   remote_action_or_exit
 
   print_banner
-  local tmp; tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
+  # 临时目录用脚本级变量：trap 要等脚本退出才执行，那时函数里的 local
+  # 已经出栈，set -u 下展开 $tmp 会报「tmp: 未绑定的变量」（用户看到的
+  # 就是按 A 结束后闪出的一条 bash 报错）。改用全局变量 + :- 兜底。
+  PIPED_TMP="$(mktemp -d)"
+  local tmp="$PIPED_TMP"
+  trap 'rm -rf "${PIPED_TMP:-}"' EXIT
 
   local tag="" origin=""
   # 1) 镜像主路径：沿用原有 latest.json + tar.gz + sha256 逻辑
@@ -3783,7 +4177,8 @@ do_from_piped() {
   [ -n "$src" ] || die "安装包结构不对：里面没有 install.sh"
   info "开始执行：$REMOTE_ACTION（来源：$src，包来自$origin）"
   # 镜像地址仍写进配置，供软件内更新作为兜底源；本次安装包来源由 origin 决定。
-  DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" "$REMOTE_ACTION"
+  # 额外参数（--minimal / --standard / --full 等）一并转发给子脚本
+  DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" "$REMOTE_ACTION" "$@"
 }
 
 # 正在跑的任务要先取消：卸载时把后端直接杀掉，正在执行的命令会变成孤儿进程
@@ -4287,17 +4682,17 @@ smart_default() {
 # 下载最新发布包到临时目录再交给正常的 install 流程。这样用户记住一行命令，
 # 不管全新安装还是之后升级，都能用同一条命令反复跑。
 if _is_piped; then
-  do_from_piped "${1:-}"
+  do_from_piped "$@"
   exit $?
 fi
 
 case "${1:-}" in
   "")            smart_default ;;
   menu)          show_menu ;;
-  install)       do_install "${2:-}" ;;
-  upgrade|update) do_upgrade "${2:-}" ;;
+  install)       do_install "${@:2}" ;;
+  upgrade|update) do_upgrade "${@:2}" ;;
   migrate)      do_migrate ;;
-  from-mirror)  do_from_mirror "${2:-}" ;;
+  from-mirror)  do_from_mirror "${@:2}" ;;
   speedtest|mirror-test)
                 # 只测速不安装：看各个 pip 源实打实的下载速率
                 check_user
