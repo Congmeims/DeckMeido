@@ -43,6 +43,10 @@ KINDS = {"profile": "用户画像", "env": "环境经验", "note": "知识条目
 MAX_ITEM_CHARS = 300
 # 总条数上限：超过就按「最近使用的靠前」截断，避免无限膨胀
 MAX_ITEMS = 120
+# 单轮注入的字数预算：条目再多也不能把上下文吃光。超预算时按
+# 「知识条目 → 环境经验 → 用户画像」的顺序丢，同类里先丢最久没用的；
+# 只是不注入这一轮，磁盘上的条目一条都不删。
+BLOCK_MAX_CHARS = 2500
 
 # scope：三个前缀。private 是旧数据的默认归属，group/person 后面跟稳定 id。
 SCOPE_PRIVATE = "private"
@@ -344,19 +348,8 @@ def mark_used(ids: list[str]) -> None:
         _USED.update((i, time.time()) for i in ids)
 
 
-def block(limit: int = 60, scopes=None) -> tuple[str, list[str]]:
-    """拼成要注入 system prompt 的文本，返回 (文本, 用到的 id 列表)
-
-    排序固定为「先按类别、再按创建时间」，同一份记忆每次展开结果都一样 —— 
-    随机顺序会让每轮前缀都变，缓存命中率直接归零。
-    scopes 不传时跟随当前回合（网页 / 插件默认 private，QQ 群回合由 onebot 设置）。
-    """
-    wanted = tuple(scopes) if scopes is not None else current_scopes()
-    wanted = {norm_scope(s) for s in wanted} or {SCOPE_PRIVATE}
-    data = load()
-    items = [x for x in data["items"] if x["scope"] in wanted]
-    items.sort(key=lambda x: (list(KINDS).index(x["kind"]), x["created"]))
-    items = items[:limit]
+def _render_block(items: list[dict], wanted: set[str]) -> tuple[str, list[str]]:
+    """把条目展开成注入文本：同一个 items 每次结果完全一致"""
     if not items:
         return "", []
     # 私聊沿用原来的开头（老用户的提示词前缀不变）；群 / 人记忆用中性说法，
@@ -375,6 +368,38 @@ def block(limit: int = 60, scopes=None) -> tuple[str, list[str]]:
         lines.append(f"{KINDS[kind]}：")
         lines += [f"- {x['text']}" for x in group]
     return "\n".join(lines), [x["id"] for x in items]
+
+
+def block(limit: int = 60, scopes=None,
+          max_chars: int | None = BLOCK_MAX_CHARS) -> tuple[str, list[str]]:
+    """拼成要注入 system prompt 的文本，返回 (文本, 用到的 id 列表)
+
+    排序固定为「先按类别、再按创建时间」，同一份记忆每次展开结果都一样 —— 
+    随机顺序会让每轮前缀都变，缓存命中率直接归零。
+    scopes 不传时跟随当前回合（网页 / 插件默认 private，QQ 群回合由 onebot 设置）。
+    max_chars：单轮注入的字数上限；超出时优先丢知识条目、再环境经验，
+    最后才动用户画像，同类里先丢「最久没被注入 / 最早创建」的条目。
+    """
+    wanted = tuple(scopes) if scopes is not None else current_scopes()
+    wanted = {norm_scope(s) for s in wanted} or {SCOPE_PRIVATE}
+    data = load()
+    items = [x for x in data["items"] if x["scope"] in wanted]
+    items.sort(key=lambda x: (list(KINDS).index(x["kind"]), x["created"]))
+    items = items[:limit]
+    text, ids = _render_block(items, wanted)
+    if not max_chars or len(text) <= max_chars:
+        return text, ids
+    # 参考分层记忆的「注入预算」思路，但不做摘要/召回：只是按重要性
+    # 从低到高裁剪本次注入，磁盘上的记忆保持完整，下一轮条件变了还能再进来。
+    for kind in ("note", "env", "profile"):
+        while len(text) > max_chars:
+            group = [x for x in items if x["kind"] == kind]
+            if not group:
+                break
+            victim = min(group, key=lambda x: (_used_of(x), x["created"]))
+            items.remove(victim)
+            text, ids = _render_block(items, wanted)
+    return text, ids
 
 
 def stats() -> dict:

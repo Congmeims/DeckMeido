@@ -663,7 +663,7 @@ def _split_usage(usage: dict) -> int:
 
 
 
-def _persona_style_block() -> str:
+def _persona_style_block(include_traits: bool = False) -> str:
     """把「人设」设置项拼成一段语气约束，挂在系统提示最后
 
     语气单独成段、放在最后，是因为前面几十行都是 SteamOS/工具/审批规则，
@@ -678,8 +678,14 @@ def _persona_style_block() -> str:
     ending = str(style.get("ending") or "").strip()
     suffix = str(style.get("suffix") or "").strip()
     forbid = [str(x).strip() for x in (style.get("forbid") or []) if str(x).strip()]
-    lines = [prompts.part("persona_style_head"),
-             f"- 你的名字是「{name}」，始终用「{address}」称呼用户，不要换成别的称呼。"]
+    lines = [prompts.part("persona_style_head")]
+    if include_traits:
+        # 群档默认只有提示词里那句「保持和主人设一致」，模型其实不知道人设是什么。
+        # 这里只共享公开的人设描述，不共享 extra（可能写了主人的私事）。
+        traits = str(PERSONA.get("traits") or "").strip()
+        if traits:
+            lines.append(f"- 人设：{traits}")
+    lines.append(f"- 你的名字是「{name}」，始终用「{address}」称呼用户，不要换成别的称呼。")
     if tone:
         lines.append(f"- 语气：{tone}")
     if ending:
@@ -5742,7 +5748,9 @@ async def _guest_reply(hist: list[dict], sys_prompt: str, text: str) -> str:
     out, changed = onebot.redact_output(str(out or ""))
     if changed:
         _qq_log("info", "output_redacted", "群友回复命中脱敏规则")
-    return out.strip() or "嗯，我在。"
+    # 回复长度是群档策略的一部分，必须在代码层兜底，不能只靠提示词
+    out = onebot.clip_guest_reply(out)
+    return out or "嗯，我在。"
 
 
 async def handle_chat(text: str, announce: bool = True,
@@ -8332,8 +8340,10 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
     image_part = _qq_image_data_url(image)
     turn_started = time.time()
     qq_cfg = CFG.get("qq") or {}
-    guest_text = (onebot.guest_prompt(qq_cfg.get("guest_prompt"), _qq_nickname())
-                  if readonly else "")
+    guest_text = (onebot.guest_prompt(
+        qq_cfg.get("guest_prompt"), _qq_nickname(),
+        style_block=_persona_style_block(include_traits=True))
+        if readonly else "")
     try:
         result = await handle_chat(text, client="qq", device=device,
                                    turn_id=turn_id, surface=policy.SURFACE_CHAT,

@@ -121,6 +121,9 @@ MAX_ALIAS_CHARS = 12           # 去掉标点后的整句长度上限，超过�
 MAX_GUEST_PROMPT = 2000        # 群友提示词硬上限（字符）
 DEFAULT_IMAGE_RECENT_MINUTES = 2.0
 DEFAULT_AUTO_LAUNCH_WAIT = 6.0
+# 群友回复硬上限：模型偶尔会无视「短一点」的提示写长文。代码层截断，
+# 不指望提示词能守住回复长度这条策略。
+MAX_GUEST_REPLY_CHARS = 400
 IMAGE_SEND_MAX_BASE64 = 3 * 1024 * 1024   # 单条图文里 base64 的上限
 LOG_MAXLEN = 400
 
@@ -512,16 +515,39 @@ def log_tool_blocked(tool: str) -> None:
                tool=str(tool)[:120])
 
 
-def guest_prompt(configured: str | None, name: str = "") -> str:
-    """群友提示词的最终文案：空则用内置默认，{name} 换成软件昵称"""
-    text = (configured or "").strip() or DEFAULT_GUEST_PROMPT
+def guest_prompt(configured: str | None, name: str = "",
+                 style_block: str = "") -> str:
+    """群友提示词的最终文案：空则用内置默认，{name} 换成软件昵称
+
+    style_block 是主人人设里可公开的「语气 / 称呼 / 人设」片段，由 main 注入。
+    只在用内置默认提示词时追加：自定义提示词保持不变，避免主人写好的规则
+    被通用人设段盖掉。
+    """
+    configured = (configured or "").strip()
+    text = configured or DEFAULT_GUEST_PROMPT
     nick = (name or "").strip() or DEFAULT_PREFIX
     text = text.replace("{name}", nick)
-    # 本轮若有群聊片段，作为带标签的引用附在提示词末尾（只读、零工具轮次）
+    # 本轮若有群聊片段，作为带标签的引用附在提示词里（只读、零工具轮次）
     context = _TURN_GROUP_CONTEXT.get()
     if context:
         text = f"{text}\n\n{context}"
+    # 语气约束放最后：和主人档一样，越靠近用户消息权重越高
+    if style_block and not configured:
+        text = f"{text}\n\n{style_block.strip()}"
     return text
+
+
+def clip_guest_reply(text: str, limit: int = MAX_GUEST_REPLY_CHARS) -> str:
+    """群友回复长度硬限制：尽量在句末断开，避免把一句话切成两半"""
+    out = (text or "").strip()
+    if limit <= 0 or len(out) <= limit:
+        return out
+    cut = out[:limit]
+    mark = max(cut.rfind(p) for p in "。！？!?.\n")
+    if mark >= limit // 2:
+        # 能在句末收住就干净收尾，不再加省略号
+        return cut[:mark + 1].strip()
+    return cut.rstrip() + "……"
 
 
 def normalize_guest_prompt(value: str | None) -> str:

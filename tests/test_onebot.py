@@ -105,6 +105,33 @@ class MemoryCommandScopeTest(unittest.TestCase):
         self.assertIn("scope", reason)
 
 
+class GuestPersonaPolicyTest(unittest.TestCase):
+    """群档默认提示词共用主人人设；自定义提示词不被覆盖；回复长度有硬上限。"""
+
+    def test_default_prompt_gets_shared_persona(self):
+        text = onebot.guest_prompt("", "Meido", style_block="【人设与语气】简洁")
+        self.assertIn("Meido", text)          # {name} 照旧替换
+        self.assertTrue(text.endswith("【人设与语气】简洁"))
+
+    def test_custom_prompt_not_overridden(self):
+        text = onebot.guest_prompt("只聊游戏", "Meido", style_block="【人设与语气】简洁")
+        self.assertIn("只聊游戏", text)
+        self.assertNotIn("简洁", text)
+
+    def test_clip_short_untouched(self):
+        self.assertEqual(onebot.clip_guest_reply("嗯，我在。"), "嗯，我在。")
+
+    def test_clip_long_at_sentence_end(self):
+        out = onebot.clip_guest_reply("好。" * 300)
+        self.assertLessEqual(len(out), onebot.MAX_GUEST_REPLY_CHARS + 2)
+        self.assertTrue(out.endswith("。"))
+
+    def test_clip_long_without_punctuation(self):
+        out = onebot.clip_guest_reply("x" * 600)
+        self.assertEqual(out[:400], "x" * 400)
+        self.assertTrue(out.endswith("……"))
+
+
 class ImageUrlGuardTest(unittest.TestCase):
     """QQ 图片链接的协议 / 地址 / 重定向校验。"""
 

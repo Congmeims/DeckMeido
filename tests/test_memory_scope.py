@@ -115,6 +115,23 @@ class ScopeTest(unittest.TestCase):
         self.assertIn("小明怕辣", text)
         self.assertNotIn("本群周五活动", text)
 
+    def test_block_budget_drops_old_notes_first(self):
+        for i in range(20):
+            memory.add("note", f"n{i:02d}" + "x" * 290, scope="private")
+        text, ids = memory.block(scopes=("private",), max_chars=1000)
+        self.assertLessEqual(len(text), 1000)
+        # 新的留下、旧的先丢；磁盘上一条都没删
+        self.assertIn("n19", text)
+        self.assertNotIn("n00", text)
+        self.assertEqual(len(memory.load()["items"]), 20)
+
+    def test_block_budget_keeps_profile_over_notes(self):
+        memory.add("profile", "称呼我主人", scope="private")
+        for i in range(10):
+            memory.add("note", f"n{i}" + "x" * 290, scope="private")
+        text, _ = memory.block(scopes=("private",), max_chars=400)
+        self.assertIn("称呼我主人", text)
+
     def test_list_scope_sorted_and_limited(self):
         memory.add("note", "b", scope="group:123")
         memory.add("profile", "a", scope="group:123")
