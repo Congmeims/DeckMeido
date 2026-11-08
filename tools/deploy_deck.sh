@@ -183,21 +183,81 @@ else
   sudo_remote "chown root:root $PLUGIN_REMOTE/main.py" \
     || die "修正插件后端属主失败"
 
-  log "5/5 重载 plugin_loader（QAM 会短暂关闭，游戏不受影响）"
-  sudo_remote "systemctl restart plugin_loader" || die "重启 plugin_loader 失败"
+  # 绝不 systemctl restart：Decky 的 unit 是 KillMode=process + Restart=always，
+  # restart 只杀主进程，旧子进程继续占着 127.0.0.1:1337，新实例绑不上就退出又被拉起，
+  # 直接进无限重启循环（2026-11-08 实测 271 次）。这里走 install.sh 同一套：
+  # 体检 → stop → 等残留退出 → 有残留就放弃 → 无残留才 start → 回读 NRestarts/1337。
+  log "5/5 安全重载 Decky（stop → 等残留退出 → start，QAM 会短暂关闭，游戏不受影响）"
+  DECKY_UNIT="$(ssh "$HOST" "systemctl list-unit-files 2>/dev/null | sed -nE 's/^((decky|plugin_loader)[^[:space:]]*\.service).*/\1/p' | head -n1" || true)"
+  [ -n "$DECKY_UNIT" ] || die "没检测到 Decky 服务（decky / plugin_loader 都没有）"
 
+  # ---- 体检：已经卡在循环里就不动手 ----
+  STATE="$(ssh "$HOST" "systemctl is-active $DECKY_UNIT 2>/dev/null" || true)"
+  BIND_HITS="$(ssh "$HOST" "journalctl -u $DECKY_UNIT --since '2 minutes ago' --no-pager 2>/dev/null | grep -c '1337.*address already in use' || true" || true)"
+  case "$BIND_HITS" in ''|*[!0-9]*) BIND_HITS=0 ;; esac
+  PROBE="$(ssh "$HOST" "curl -s -o /dev/null -m 3 -w '%{http_code}' http://127.0.0.1:1337/ 2>/dev/null" || true)"
+  case "$PROBE" in ''|000|0000) PORT_OK=0 ;; *) PORT_OK=1 ;; esac
+  if [ "$STATE" = "active" ] && { [ "$BIND_HITS" -gt 0 ] || [ "$PORT_OK" = 0 ]; }; then
+    die "Decky 当前异常（state=$STATE，近 2 分钟 1337 bind 失败 $BIND_HITS 次，1337 探测=${PROBE:-无应答}）：已放弃重载，请先重启 Deck 再部署"
+  fi
+  printf '  Decky 体检：state=%s，bind 失败=%s，1337=%s\n' "${STATE:-unknown}" "$BIND_HITS" "${PROBE:-无应答}"
+
+  # ---- stop → 等残留退出（有残留就放弃，绝不 start）----
+  if [ "$STATE" = "active" ]; then
+    sudo_remote "systemctl stop $DECKY_UNIT" || die "停止 Decky 失败（$DECKY_UNIT）"
+    TMO="$(ssh "$HOST" "systemctl show -p TimeoutStopSec --value $DECKY_UNIT 2>/dev/null" || true)"
+    TMO="${TMO%s}"
+    case "$TMO" in ''|*[!0-9]*) TMO=15 ;; esac
+    [ "$TMO" -gt 20 ] && TMO=20
+    [ "$TMO" -lt 3 ] && TMO=3
+    MPID="1"; RESIDUAL=""
+    for _ in $(seq 1 $((TMO * 2))); do
+      MPID="$(ssh "$HOST" "systemctl show -p MainPID --value $DECKY_UNIT 2>/dev/null" || true)"
+      RESIDUAL="$(ssh "$HOST" "pgrep -f '[P]luginLoader|[p]lugin_loader' 2>/dev/null | tr '\n' ' '" || true)"
+      if { [ -z "$MPID" ] || [ "$MPID" = "0" ]; } && [ -z "$RESIDUAL" ]; then break; fi
+      sleep 0.5
+    done
+    if ! { { [ -z "$MPID" ] || [ "$MPID" = "0" ]; } && [ -z "$RESIDUAL" ]; }; then
+      die "停止 Decky 后仍有残留进程（MainPID=$MPID，PID: ${RESIDUAL:-无}）占着 1337；已放弃重载，请重启 Deck 后再部署"
+    fi
+  else
+    # 服务本来就没在跑：不用 stop，但必须先确认没有残留子进程占着 1337，
+    # 否则 start 一上来就撞端口，直接进重启循环
+    RESIDUAL="$(ssh "$HOST" "pgrep -f '[P]luginLoader|[p]lugin_loader' 2>/dev/null | tr '\n' ' '" || true)"
+    [ -z "$RESIDUAL" ] || die "Decky 服务已停止，但仍有残留进程（$RESIDUAL）占着 1337；已放弃重载，请重启 Deck 后再部署"
+  fi
+
+  # ---- start → 回读 ----
+  sudo_remote "systemctl start $DECKY_UNIT" || die "启动 Decky 失败（$DECKY_UNIT）"
   ACTIVE=""
   for _ in $(seq 1 20); do
-    ACTIVE=$(ssh "$HOST" "systemctl is-active plugin_loader" || true)
+    ACTIVE=$(ssh "$HOST" "systemctl is-active $DECKY_UNIT" || true)
     [ "$ACTIVE" = "active" ] && break
-    sleep 1
+    sleep 0.5
   done
-  [ "$ACTIVE" = "active" ] || die "plugin_loader 没有回到 active（当前 $ACTIVE）"
-  printf '  plugin_loader -> active\n'
+  [ "$ACTIVE" = "active" ] || die "Decky 启动后不是 active（当前 ${ACTIVE:-unknown}）"
+
+  NR_BEFORE="$(ssh "$HOST" "systemctl show -p NRestarts --value $DECKY_UNIT 2>/dev/null" || true)"
+  sleep 15
+  NR_AFTER="$(ssh "$HOST" "systemctl show -p NRestarts --value $DECKY_UNIT 2>/dev/null" || true)"
+  BIND_HITS="$(ssh "$HOST" "journalctl -u $DECKY_UNIT --since '30 seconds ago' --no-pager 2>/dev/null | grep -c '1337.*address already in use' || true" || true)"
+  case "$BIND_HITS" in ''|*[!0-9]*) BIND_HITS=0 ;; esac
+  LOOP_WHY=""
+  case "${NR_BEFORE}${NR_AFTER}" in
+    *[!0-9]*|'') ;;   # 取不到数字就不比较，交给下面的 1337 探测兜底
+    *) [ "$NR_AFTER" -gt "$NR_BEFORE" ] && LOOP_WHY="NRestarts ${NR_BEFORE} → ${NR_AFTER}" ;;
+  esac
+  [ "$BIND_HITS" -gt 0 ] && LOOP_WHY="${LOOP_WHY:+$LOOP_WHY，}近 30 秒 bind 1337 失败 ${BIND_HITS} 次"
+  [ -z "$LOOP_WHY" ] || die "Decky 卡在重启循环（$LOOP_WHY）：请重启 Deck 后再部署"
+  PROBE="$(ssh "$HOST" "curl -s -o /dev/null -m 3 -w '%{http_code}' http://127.0.0.1:1337/ 2>/dev/null" || true)"
+  case "$PROBE" in
+    ''|000|0000) die "Decky 已启动但 1337 不应答（探测：${PROBE:-无应答}）：插件没加载，请重启 Deck 后再部署" ;;
+  esac
+  printf '  Decky 已安全重载：NRestarts %s → %s，1337 探测 %s\n' "${NR_BEFORE:-?}" "${NR_AFTER:-?}" "$PROBE"
 
   # Decky 日志里确认插件确实被加载；有明确错误就打印出来
   sleep 3
-  LOADLOG=$(ssh "$HOST" "journalctl -u plugin_loader --since '90 seconds ago' --no-pager | tail -80" || true)
+  LOADLOG=$(ssh "$HOST" "journalctl -u $DECKY_UNIT --since '90 seconds ago' --no-pager | tail -80" || true)
   if printf '%s\n' "$LOADLOG" | grep -qiE 'error loading|failed to load|traceback'; then
     printf '%s\n' "$LOADLOG"
     die "Decky 日志里出现加载错误（见上）"

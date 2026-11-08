@@ -59,9 +59,12 @@ decky_status() {
     done
   fi
   # 3. systemd 里有 decky 相关单元
+  # decky-loader 的 unit 实际叫 plugin_loader.service（不是 decky*.service），
+  # 只匹配 '^decky' 会漏掉这个最常见的情况：~/homebrew/plugins 还没建出来、
+  # 服务又不在跑时，整机明明装了 Decky 却被判成「没装」，插件静默跳过。
   if [ "$hit" != 0 ] && command -v systemctl >/dev/null 2>&1; then
-    if systemctl list-unit-files 2>/dev/null | grep -qi '^decky'; then
-      hit=0; why="systemd 里有 decky 单元"
+    if systemctl list-unit-files 2>/dev/null | grep -qiE '^(decky|plugin_loader)'; then
+      hit=0; why="systemd 里有 decky / plugin_loader 单元"
     fi
   fi
   [ "$hit" = 0 ] && { DECKY_WHY="$why"; return 0; }
