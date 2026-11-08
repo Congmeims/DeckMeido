@@ -308,13 +308,18 @@ class PairingManager:
                 raise PairError("not_found", "配对请求不存在或已失效", 404)
             return self._public_session(s)
 
-    def pending(self) -> list[dict]:
-        """掌机设置页用：带 PIN、按创建时间升序。"""
+    def pending(self, include_finished: bool = False) -> list[dict]:
+        """掌机设置页用：带 PIN、按创建时间升序。
+
+        include_finished=True 时把刚结束（已拒绝 / 已过期 / 已作废 / 已配对）
+        的会话也带回来：设置页点完「允许 / 拒绝」后要把结果留在原地，
+        不能点完就从列表里消失（用户反馈「点完毫无变化」）。
+        """
         with self._lock:
             self._expire_locked()
             return [self._public_session(s, with_pin=True)
                     for s in sorted(self._sessions.values(), key=lambda x: x["created_at"])
-                    if s["state"] in _ACTIVE]
+                    if include_finished or s["state"] in _ACTIVE]
 
     def refresh(self, pair_id: str) -> dict:
         with self._lock:

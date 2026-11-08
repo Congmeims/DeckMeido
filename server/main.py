@@ -4637,9 +4637,13 @@ async def api_pair_confirm(req: PairConfirmRequest, request: Request,
 
 
 @app.get("/api/pair/pending", dependencies=[Depends(require_auth)])
-async def api_pair_pending():
-    """掌机设置页：待配对设备 + PIN + 倒计时。"""
-    sessions = pairing.manager.pending()
+async def api_pair_pending(history: bool = Query(False)):
+    """掌机设置页：待配对设备 + PIN + 倒计时。
+
+    history=1 时连同最近 5 分钟内已结束的会话一起返回，让设置页能显示
+    「已允许 / 已拒绝」而不是点完就消失。插件与计数仍用默认的进行中列表。
+    """
+    sessions = pairing.manager.pending(include_finished=bool(history))
     return {"ok": True, "sessions": sessions, "device_days": _device_days()}
 
 
@@ -8457,6 +8461,13 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
         # handle_chat 会把本轮的 token 用量写进全局估算值，那是给本地会话看的；
         # QQ 这轮结束后归零，让本地/status 下次重新按自己的历史估算
         _ctx_used = 0
+    # 排障：QQ 会话到底有没有写进索引。dev_mode 打开时这条会落到
+    # userdata/logs/debug-<时间>.log，搜 qq.session 即可；平时不写文件
+    try:
+        devlog.log("qq.session", sid=sid, readonly=bool(readonly),
+                   messages=int(store.index().get(sid, {}).get("messages") or 0))
+    except Exception:
+        pass
     out = {"reply": str(result.get("reply") or "")}
     p = pending_action
     if (isinstance(p, dict) and (p.get("client") or "") == "qq"

@@ -1366,6 +1366,10 @@ class DeckMeidoViewModel(app: Application) : AndroidViewModel(app) {
                     thoughtText = ""
                     toolNote = ""
                 }
+                // 后台通道（OneBot 群聊 / 私聊）会新建会话，但它们不会切换
+                // currentSid，也不会推 history。只靠连接时拉一次列表的话，
+                // 停留在会话页时永远看不到新出现的群会话，所以这里跟着刷新。
+                refreshSessions()
             }
 
             "system" -> {

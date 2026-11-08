@@ -57,13 +57,14 @@ def looks_like_secret(val: str) -> bool:
 
 
 def is_doc_ip(val: str) -> bool:
-    """示例/回环/私有网段保留地址不算泄露（文档里常写 127.0.0.1、192.168.x.x）"""
+    """示例/回环/私有网段/CGNAT 保留地址不算泄露（文档里常写 127.0.0.1、192.168.x.x、Tailscale 100.x）"""
     try:
         a, b, _c, _d = (int(x) for x in val.split("."))
     except ValueError:
         return False
     return (
         a in (0, 127, 10) or (a == 192 and b == 168) or (a == 172 and 16 <= b <= 31)
+        or (a == 100 and 64 <= b <= 127)  # CGNAT（RFC 6598），Tailscale 等使用，非公网
         or a >= 224 or val in ("255.255.255.255",)
     )
 
