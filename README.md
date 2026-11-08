@@ -319,7 +319,7 @@ DeckMeido/
 ```
 
 ```bash
-python -m unittest discover -s tests   # 当前 905 项
+python -m unittest discover -s tests   # 当前 907 项
 cd plugin && npm run build              # 构建插件前端到 plugin/dist
 python tools/release.py 0.7.1           # 构建 dist/：tar.gz + 插件 zip + latest.json
 ```
