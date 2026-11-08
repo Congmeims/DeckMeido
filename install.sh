@@ -93,6 +93,19 @@ SKIPPED_ITEMS=()
 # Decky 重启后被判定卡在重启循环时的说明（decky_restart_loop_note 写入）。
 # 必须单列进收尾汇总：否则「已重载」会让用户以为插件已生效，实际上一轮都没加载成功。
 DECKY_LOOP_NOTE=""
+# 动手前的 Decky 体检结果：ok / broken / unknown（decky_health 写入）
+DECKY_HEALTH="unknown"
+DECKY_HEALTH_NOTE=""
+DECKY_UNIT=""
+# 安全重载结果：ok / failed / pending（decky_safe_reload 写入）
+DECKY_SAFE_STATE=""
+DECKY_SAFE_NOTE=""
+# 安装侧插件状态：ok / pending / failed，收尾卡片据此说明「到底生没生效」
+PLUGIN_RELOAD_STATE=""
+# 卸载侧三项关键状态：后端真停了吗 / 插件进程真没了吗 / Decky 还健康吗
+UN_BACKEND_STATE=""
+UN_PLUGIN_STATE=""
+UN_DECKY_STATE=""
 
 # 可执行位自愈：Windows/NTFS 打的包或 git 导出常把脚本记成 0644，用 bash 调用
 # 不受影响，但桌面快捷方式是直接执行 client/launch.sh 的——缺可执行位时 Steam
@@ -3255,6 +3268,14 @@ install_plugin() {
     [ -n "$PLUGIN_SKIP_REASON" ] || dim "想用游戏模式面板，先装 Decky Loader，再跑：bash $INSTALL_DIR/plugin/deploy.sh"
     return 0
   fi
+  # 动手之前先体检 Decky。已经卡在重启循环时再去重启它，只会把循环坐实，
+  # 而这一步完全可以在复制文件之前就判断出来——先提示，用户可以先重启 Deck。
+  if ! decky_health; then
+    warn "Decky 当前异常：$DECKY_HEALTH_NOTE"
+    warn "本次不会重启 Decky；插件文件仍会正常部署，装完请先重启 Deck，再到 设置 → Decky Loader 点「重新载入」"
+  else
+    dim "Decky 状态正常（$DECKY_HEALTH_NOTE）"
+  fi
   # 已经装过插件就是升级：直接替换，不再问。以前这里走 ask_yes（默认 N），
   # 用户在终端按回车就把插件跳过了，升级后插件一直停在旧版本（0.6.11 就是这么来的）。
   local installed=""
@@ -3317,6 +3338,9 @@ install_plugin() {
     if plugin_install_zip; then
       local ver
       ver="$(plugin_installed_version)" && info "插件已安装 v${ver}"
+      # 首次安装不主动重启 Decky（游戏模式里正开着，重启会打断用户），
+      # 但状态要记成「待重载」，收尾卡片不能写成「已生效」
+      PLUGIN_RELOAD_STATE="${PLUGIN_RELOAD_STATE:-pending}"
       dim "插件已就绪，到 设置 → Decky Loader 点「重新载入」即可在 QAM 里看到"
     else
       warn "插件安装失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
@@ -3350,9 +3374,54 @@ plugin_install_zip() {
   sudo mkdir -p "$target" || return 1
   sudo unzip -oq "$src" -d "$root" || return 1
   # zip 顶层目录名是 DeckMeido，解到 $root 下正好生成 $target
-  if [ ! -f "$target/dist/index.js" ] || [ ! -f "$target/plugin.json" ]; then
-    dim "解包结果不完整（$target）"
+  if ! plugin_verify_layout "$target"; then
+    dim "插件目录校验失败：$PLUGIN_LAYOUT_ERROR"
     return 1
+  fi
+  return 0
+}
+
+# 插件目录自检：dist/index.js（前端产物）、plugin.json（Decky 清单）、
+# package.json（版本）三者必须齐全且版本一致。
+# 为什么要查版本一致性：release.py 分开更新这两个文件，只要漏一个，Decky 面板
+# 显示的版本和实际跑的代码就对不上，用户报障时完全没法判断装的是哪一版。
+PLUGIN_LAYOUT_ERROR=""
+plugin_verify_layout() {
+  local dir="${1:-${DECKY_PLUGINS_DIR:-$HOME/homebrew/plugins}/DeckMeido}"
+  local pj="$dir/plugin.json" pkg="$dir/package.json" dist="$dir/dist/index.js"
+  local vj vp mode
+  PLUGIN_LAYOUT_ERROR=""
+  if [ ! -d "$dir" ]; then
+    PLUGIN_LAYOUT_ERROR="插件目录不存在：$dir"
+    return 1
+  fi
+  if [ ! -f "$pj" ]; then
+    PLUGIN_LAYOUT_ERROR="缺少 Decky 清单 plugin.json：$pj"
+    return 1
+  fi
+  if [ ! -f "$dist" ]; then
+    PLUGIN_LAYOUT_ERROR="缺少前端产物 dist/index.js：$dist（zip 不完整或打包时没编译前端）"
+    return 1
+  fi
+  if [ ! -f "$pkg" ]; then
+    PLUGIN_LAYOUT_ERROR="缺少 package.json：$pkg"
+    return 1
+  fi
+  vj="$(sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$pj" | head -n1)"
+  vp="$(sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$pkg" | head -n1)"
+  if [ -z "$vj" ]; then
+    PLUGIN_LAYOUT_ERROR="plugin.json 里没有 version 字段：$pj"
+    return 1
+  fi
+  if [ -n "$vp" ] && [ "$vj" != "$vp" ]; then
+    PLUGIN_LAYOUT_ERROR="版本不一致：plugin.json=$vj，package.json=$vp（打包漏更新了一个）"
+    return 1
+  fi
+  # 权限：Decky 以 root 加载，用户读不到也不影响运行，但说明文件被人改成了 0600，
+  # 顺手报出来，免得以后排查时又多一层迷雾
+  if [ ! -r "$pj" ] || [ ! -r "$dist" ]; then
+    mode="$(stat -c '%a' "$pj" 2>/dev/null || echo '?')"
+    dim "提示：插件文件当前用户不可读（plugin.json 权限 $mode）；Decky 以 root 运行通常仍能加载"
   fi
   return 0
 }
@@ -3362,6 +3431,118 @@ plugin_installed_version() {
   local p="${DECKY_PLUGINS_DIR:-$HOME/homebrew/plugins}/DeckMeido/package.json"
   [ -f "$p" ] || return 1
   sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$p" | head -n1
+}
+
+# Decky 的 systemd unit 名（decky / plugin_loader 两种命名都可能）
+decky_service_unit() {
+  systemctl list-unit-files 2>/dev/null |
+    sed -nE 's/^((decky|plugin_loader)[^[:space:]]*\.service).*/\1/p' | head -n1 || true
+}
+
+# 1337 是否「真的能用」：不是看 LISTEN，而是真发一次请求。
+# 为什么必须真连：卡在重启循环时，旧子进程一直占着 1337，LISTEN 永远正常，
+# 但新实例早就绑不上退出了——只看 LISTEN 会得出「Decky 好好的」这个错误结论。
+decky_port_probe() {
+  local code
+  if need_cmd curl; then
+    code="$(curl -s -o /dev/null -m 3 -w '%{http_code}' 'http://127.0.0.1:1337/' 2>/dev/null || true)"
+    case "$code" in ''|000|0000) ;; *) return 0 ;; esac
+  fi
+  if need_cmd timeout; then
+    timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/1337' 2>/dev/null && return 0
+  else
+    ( exec 3<>/dev/tcp/127.0.0.1/1337 ) 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+decky_nrestarts() {
+  local unit="$1" nr
+  nr="$(systemctl show -p NRestarts --value "$unit" 2>/dev/null || true)"
+  case "$nr" in ''|*[!0-9]*) nr="" ;; esac
+  printf '%s' "$nr"
+}
+
+# journal 里「1337 已被占用」的次数：重启循环唯一留下来的硬证据
+decky_bind_fail_hits() {
+  local unit="$1" since="$2" n
+  command -v journalctl >/dev/null 2>&1 || { printf '0'; return 0; }
+  n="$(journalctl -u "$unit" --since "$since" --no-pager 2>/dev/null |
+    grep -c '1337.*address already in use' 2>/dev/null || true)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s' "$n"
+}
+
+# stop 之后还活着的 Decky 进程。KillMode=process 下这正是死循环的来源：
+# 主进程被杀，子进程继续持有 1337，所以必须在 start 之前确认它们真的没了。
+decky_residual_procs() {
+  local pid cmd out=""
+  command -v pgrep >/dev/null 2>&1 || return 0
+  for pid in $(pgrep -f 'PluginLoader|plugin_loader' 2>/dev/null || true); do
+    [ "$pid" = "$$" ] && continue
+    cmd="$( { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null || true )"
+    # 我们自己的探针命令（pgrep/systemctl 的命令行里也带这些字样）不算残留
+    case "$cmd" in
+      *pgrep*|*systemctl*|*install.sh*|*uninstall.sh*) continue ;;
+    esac
+    out="$out $pid"
+  done
+  printf '%s' "${out# }"
+}
+
+# 等到「主进程退出 + 没有残留子进程」，最多等 timeout 秒；返回 1 表示还有残留
+decky_wait_stopped() {
+  local unit="$1" tmo="$2" i pid res
+  for i in $(seq 1 $((tmo * 2))); do
+    pid="$(systemctl show -p MainPID --value "$unit" 2>/dev/null || true)"
+    res="$(decky_residual_procs)"
+    if { [ -z "$pid" ] || [ "$pid" = "0" ]; } && [ -z "$res" ]; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+# 动手前给 Decky 体检。返回 0 = 可用；1 = 已异常（绝不能再去重启它）；
+# 2 = 查不了（没有 systemctl / 没装 Decky，不算故障）。
+# 判据三条一起看：is-active 是不是 active、journal 近 2 分钟有没有 1337 bind 失败、
+# 1337 是否真的能连上。只看第一条会被重启循环骗过去（那期间 is-active 一直是 active）。
+decky_health() {
+  local unit state nr hits
+  DECKY_HEALTH="unknown"
+  DECKY_HEALTH_NOTE=""
+  if ! need_cmd systemctl; then
+    DECKY_HEALTH_NOTE="没有 systemctl，无法检查 Decky"
+    return 2
+  fi
+  unit="$(decky_service_unit)"
+  if [ -z "$unit" ]; then
+    DECKY_HEALTH_NOTE="没检测到 Decky 服务（decky/plugin_loader）"
+    return 2
+  fi
+  DECKY_UNIT="$unit"
+  state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+  nr="$(decky_nrestarts "$unit")"
+  hits="$(decky_bind_fail_hits "$unit" '2 minutes ago')"
+  if [ "$state" != "active" ]; then
+    DECKY_HEALTH="broken"
+    DECKY_HEALTH_NOTE="服务不是 active（${state:-unknown}）"
+    return 1
+  fi
+  if [ "$hits" -gt 0 ]; then
+    DECKY_HEALTH="broken"
+    DECKY_HEALTH_NOTE="近 2 分钟 bind 1337 失败 ${hits} 次（NRestarts=${nr:-未知}），正卡在重启循环"
+    return 1
+  fi
+  if ! decky_port_probe; then
+    DECKY_HEALTH="broken"
+    DECKY_HEALTH_NOTE="服务显示 active，但 127.0.0.1:1337 不应答（NRestarts=${nr:-未知}），疑似卡在重启循环"
+    return 1
+  fi
+  DECKY_HEALTH="ok"
+  DECKY_HEALTH_NOTE="active，1337 可连，NRestarts=${nr:-未知}"
+  return 0
 }
 
 # Decky 重启循环探测（安装与卸载共用）：重启后必须回读 NRestarts，不能只看 is-active。
@@ -3400,26 +3581,126 @@ decky_restart_loop_note() {
   return 1
 }
 
-# 重载 Decky：插件是启动时一次性 import 的，换了磁盘上的文件不重载还是旧代码
-plugin_reload() {
-  if ! command -v systemctl >/dev/null 2>&1; then
-    dim "没有 systemctl，重启游戏模式后插件才会用上新版本"
+# 安全重载 Decky：stop → 等残留退出 → start → 回读验证。
+#
+# 为什么不用 systemctl restart：unit 是 KillMode=process，restart 只杀 PyInstaller
+# 主进程，十几个子进程还留在旧 cgroup 里继续持有 1337；systemd 立刻拉起新实例，
+# 新实例绑不上端口就退出，Restart=always 再拉起来 —— 直接进入无限重启循环
+# （2026-11-08 实测 271 次，Decky 全挂、Decky Music 涨到 10GB）。
+# 所以必须 stop（让 systemd 按自己的 TimeoutStopSec 收尾）→ 确认残留真的没了
+# → 才 start。残留没清干净就绝不再 start，宁可让用户重启 Deck。
+decky_safe_reload() {
+  local unit tmo state i
+  DECKY_SAFE_STATE=""
+  DECKY_SAFE_NOTE=""
+  DECKY_LOOP_NOTE=""
+  if ! need_cmd systemctl; then
+    DECKY_SAFE_NOTE="没有 systemctl，重启游戏模式后插件才会用上新版本"
     return 1
   fi
-  local unit
-  unit="$(systemctl list-unit-files 2>/dev/null |
-    sed -nE 's/^((decky|plugin_loader)[^[:space:]]*\.service).*/\1/p' | head -n1)"
-  if [ -n "$unit" ] && { sudo -n systemctl restart "$unit" 2>/dev/null ||
-      systemctl restart "$unit" 2>/dev/null; }; then
-    # 重启命令成功不代表插件生效：Decky 可能正卡在重启循环，必须回读再下结论
-    if decky_restart_loop_note "$unit"; then
-      info "已重载 Decky（$unit），新插件版本已生效"
+  [ -n "${DECKY_UNIT:-}" ] || DECKY_UNIT="$(decky_service_unit)"
+  unit="$DECKY_UNIT"
+  if [ -z "$unit" ]; then
+    DECKY_SAFE_NOTE="没检测到 Decky 服务（decky/plugin_loader），无法自动重载"
+    return 1
+  fi
+  # 先确认拿得到 root 再停：停得下来却起不来，会把 Decky 直接留在停止状态
+  if ! run_root systemctl is-active "$unit" >/dev/null 2>&1; then
+    DECKY_SAFE_STATE="pending"
+    DECKY_SAFE_NOTE="没有 root 权限，无法安全重载；请到 设置 → Decky Loader 点「重新载入」"
+    return 1
+  fi
+  if ! run_root systemctl stop "$unit" >/dev/null 2>&1; then
+    DECKY_SAFE_STATE="failed"
+    DECKY_SAFE_NOTE="停止 Decky 失败（$unit）：sudo 被拒绝或服务不存在"
+    return 1
+  fi
+  # 等它真正停干净。上限取服务自己的 TimeoutStopSec（15s），再长也没意义
+  tmo="$(systemctl show -p TimeoutStopSec --value "$unit" 2>/dev/null || true)"
+  tmo="${tmo%s}"
+  case "$tmo" in ''|*[!0-9]*) tmo=15 ;; esac
+  [ "$tmo" -gt 20 ] && tmo=20
+  [ "$tmo" -lt 3 ] && tmo=3
+  if ! decky_wait_stopped "$unit" "$tmo"; then
+    DECKY_SAFE_STATE="failed"
+    DECKY_SAFE_NOTE="停止 Decky 后仍有残留进程（PID: $(decky_residual_procs)）占着 1337；已放弃重载，避免触发重启循环。请重启 Deck 后再继续"
+    return 1
+  fi
+  if ! run_root systemctl start "$unit" >/dev/null 2>&1; then
+    DECKY_SAFE_STATE="failed"
+    DECKY_SAFE_NOTE="启动 Decky 失败（$unit）：请重启 Deck 后在 设置 → Decky Loader 点「重新载入」"
+    return 1
+  fi
+  state=""
+  for i in $(seq 1 20); do
+    state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    [ "$state" = "active" ] && break
+    sleep 0.5
+  done
+  if [ "$state" != "active" ]; then
+    DECKY_SAFE_STATE="failed"
+    DECKY_SAFE_NOTE="Decky 启动后状态是「${state:-unknown}」，不是 active；请重启 Deck"
+    return 1
+  fi
+  # 回读一：NRestarts 15 秒内不得增长，journal 不能有新的 1337 bind 失败
+  if ! decky_restart_loop_note "$unit"; then
+    DECKY_SAFE_STATE="failed"
+    DECKY_SAFE_NOTE="$DECKY_LOOP_NOTE"
+    return 1
+  fi
+  # 回读二：1337 必须真的应答（不是「有 LISTEN」就算数）
+  for i in $(seq 1 6); do
+    decky_port_probe && { DECKY_SAFE_STATE="ok"; break; }
+    sleep 0.5
+  done
+  if [ "$DECKY_SAFE_STATE" != "ok" ]; then
+    DECKY_SAFE_STATE="failed"
+    DECKY_SAFE_NOTE="Decky 已启动但 127.0.0.1:1337 不应答：插件加载失败，请重启 Deck 后再试"
+    return 1
+  fi
+  DECKY_SAFE_NOTE="Decky 已安全重载（$unit：stop→start，1337 可连）"
+  return 0
+}
+
+# Decky 的 journal 里有没有加载到本插件（只在「可读」时作为辅助证据）
+decky_plugin_logged() {
+  local unit="${DECKY_UNIT:-}" n
+  [ -n "$unit" ] && need_cmd journalctl || return 1
+  n="$(journalctl -u "$unit" --since '60 seconds ago' --no-pager 2>/dev/null |
+    grep -ci 'deckmeido' 2>/dev/null || true)"
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$n" -gt 0 ]
+}
+
+# 重载 Decky：插件是启动时一次性 import 的，换了磁盘上的文件不重载还是旧代码
+plugin_reload() {
+  DECKY_LOOP_NOTE=""
+  DECKY_SAFE_STATE=""
+  DECKY_SAFE_NOTE=""
+  # 动手前先体检：已经卡在循环里还去重启它，只会把循环坐实
+  if ! decky_health; then
+    # 只有「确实坏了」才写进收尾告警；查不了（没有 systemctl）只算待重载
+    if [ "$DECKY_HEALTH" = "broken" ]; then
+      DECKY_LOOP_NOTE="$DECKY_HEALTH_NOTE"
+    fi
+    PLUGIN_RELOAD_STATE="pending"
+    warn "Decky 当前异常：$DECKY_HEALTH_NOTE"
+    warn "为避免把 Decky 弄坏，本次不重启它；插件文件已部署，请先重启 Deck，再到 设置 → Decky Loader 点「重新载入」"
+    return 1
+  fi
+  if decky_safe_reload; then
+    PLUGIN_RELOAD_STATE="ok"
+    info "$DECKY_SAFE_NOTE"
+    if decky_plugin_logged; then
+      info "Decky 日志里已看到 DeckMeido，插件已加载"
     else
-      warn "[!] $DECKY_LOOP_NOTE"
+      dim "Decky 日志里暂时没有 DeckMeido 的加载记录，进 QAM 确认一下是否出现"
     fi
     return 0
   fi
-  dim "请在 设置 → Decky Loader 点「重新载入」使新插件生效"
+  PLUGIN_RELOAD_STATE="failed"
+  DECKY_LOOP_NOTE="$DECKY_SAFE_NOTE"
+  warn "[!] $DECKY_SAFE_NOTE"
   return 1
 }
 
@@ -3596,12 +3877,13 @@ PY
 }
 
 print_done() {
-  local ip ve rv skipped
+  local ip ve rv skipped pv
   ip=$(lan_ip)
   [ -n "$ip" ] || ip=$(hostname -I 2>/dev/null | awk '{print $1}')
   [ -n "$ip" ] || ip="<deck-ip>"
   ve=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '未知')
   rv="$(running_version)"
+  pv="$(plugin_installed_version 2>/dev/null || true)"
   card
   card_title "DeckMeido 已就绪  ·  v$ve"
   card_line ""
@@ -3625,6 +3907,13 @@ print_done() {
   if [ -n "$DECKY_LOOP_NOTE" ]; then
     card_line "⚠ Decky     $DECKY_LOOP_NOTE"
   fi
+  # 插件到底有没有真的生效，必须在这里说清楚：「已安装」不等于「已加载」
+  case "${PLUGIN_RELOAD_STATE:-}" in
+    ok)      card_line "Decky 插件   v${pv:-?} 已重载，游戏模式面板可用" ;;
+    pending) card_line "Decky 插件   v${pv:-?} 已部署，待重载（请先重启 Deck，再到 Decky 设置点「重新载入」）" ;;
+    failed)  card_line "Decky 插件   v${pv:-?} 已部署，但重载失败（请重启 Deck 后再重新载入）" ;;
+    *)       [ -n "$pv" ] && card_line "Decky 插件   v${pv} 已部署" ;;
+  esac
   card_line "本机控制台   http://127.0.0.1:$PORT/"
   card_line "局域网访问   http://$ip:$PORT/（新设备点「配对新设备」，按掌机上的 PIN 配对一次）"
   card_line "配置文件     $DATA_CONFIG"
@@ -4971,15 +5260,80 @@ plugin_pids() {
   pgrep -f "$PLUGIN_MAIN_PAT" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true
 }
 
+# 全机的后端进程（不限安装目录、不限用户）。为什么不能用安装目录匹配：
+# 上次卸载日志写「已停止」，但 uvicorn 其实是 root 从旧目录拉起的，
+# 命令行里根本没有当前 $INSTALL_DIR，按目录匹配就漏了，端口一直被占到卸载结束。
+# 模式写成 [s]erver.main:app 是为了让 pkill 自己的命令行不匹配自己。
+_all_backend_pids() {
+  command -v pgrep >/dev/null 2>&1 || return 0
+  pgrep -f '[s]erver\.main:app' 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true
+}
+
+# 卸载时真正停掉后端：pkill → pgrep 回读 → 提权再杀 → 再回读（含端口持有者）。
+# 任何一步没杀干净都必须记失败，不能写「已停止」糊过去。
+un_stop_backend() {
+  local i left port_left
+  UN_BACKEND_STATE=""
+  cancel_running_turn
+  stop_client
+  # 杀不到进程时 pkill 返回 1、没有 pgrep/pkill 的系统返回 127：
+  # 这些都不是「卸载失败」，不能让 set -e 把流程打断，结果由下面的回读判定
+  if need_cmd pkill; then
+    pkill -f "$INSTALL_DIR/client/launch.sh" 2>/dev/null || true
+    pkill -f "$INSTALL_DIR/client/main.py" 2>/dev/null || true
+    pkill -f "$INSTALL_DIR/server/main.py" 2>/dev/null || true
+    pkill -f "$INSTALL_DIR/server/overlay.py" 2>/dev/null || true
+    pkill -f '[s]erver\.main:app' 2>/dev/null || true
+  fi
+  left="$(_all_backend_pids)"
+  for i in $(seq 1 10); do
+    [ -z "$left" ] && break
+    sleep 0.3
+    left="$(_all_backend_pids)"
+  done
+  # 还有残留（典型是 root 拉起的那份）就提权再杀一轮
+  if [ -n "$left" ]; then
+    un_note "仍有后端进程（$left），提权结束"
+    run_root pkill -TERM -f '[s]erver\.main:app' >/dev/null 2>&1 || true
+    for i in $(seq 1 10); do
+      left="$(_all_backend_pids)"
+      [ -z "$left" ] && break
+      sleep 0.3
+    done
+  fi
+  if [ -n "$left" ]; then
+    run_root pkill -KILL -f '[s]erver\.main:app' >/dev/null 2>&1 || true
+    sleep 0.5
+    left="$(_all_backend_pids)"
+  fi
+  # 端口回读：进程退了但端口还 LISTEN，说明还有别的持有者（可能是 root）
+  port_left=0
+  _port_has_listener "$PORT" && port_left=1
+  if [ -n "$left" ] || [ "$port_left" = 1 ]; then
+    if [ -z "$left" ]; then
+      un_note "端口 $PORT 仍被监听，查不到持有者 pid（可能属于其他用户）"
+      _port_holder_report "$PORT"
+    fi
+    un_fail "后端仍在运行：${left:-端口 $PORT 被占用}（无法结束，重装会撞端口）"
+    UN_BACKEND_STATE="仍在运行（${left:-端口 $PORT 被占用}）"
+    return 1
+  fi
+  un_ok "客户端与后端已停止（pgrep + 端口回读确认）"
+  UN_BACKEND_STATE="已停止（pgrep + 端口回读确认）"
+  return 0
+}
+
 kill_plugin_process() {
   local pids i
   pids="$(plugin_pids)"
   if [ -z "$pids" ]; then
     un_skip "没有发现 Decky 插件进程"
+    UN_PLUGIN_STATE="已确认无进程"
     return 0
   fi
   if [ "$DRY_RUN" = 1 ]; then
     printf '[计划] 结束插件进程（需要 root）：%s\n' "$pids"
+    UN_PLUGIN_STATE="计划结束（$pids）"
     return 0
   fi
   un_note "结束插件进程（需要 root）：$pids"
@@ -5001,54 +5355,58 @@ kill_plugin_process() {
   fi
   if [ -n "$(plugin_pids)" ]; then
     un_fail "插件进程仍在运行（$(plugin_pids)）：sudo 被拒绝或权限不足"
+    UN_PLUGIN_STATE="仍在运行（$(plugin_pids)）"
     return 1
   fi
-  un_ok "已结束插件进程"
+  un_ok "已结束插件进程（回读确认）"
+  UN_PLUGIN_STATE="已结束（回读确认）"
   return 0
 }
 
-decky_service_unit() {
-  systemctl list-unit-files 2>/dev/null |
-    sed -nE 's/^((decky|plugin_loader)[^[:space:]]*\.service).*/\1/p' | head -n1 || true
-}
-
-# 重启 Decky 并回读 is-active；失败要明确报出来，不能像上次那样静默没重启。
+# 卸载时的 Decky 重载：绝不用 systemctl restart（KillMode=process 会把 Decky
+# 打进重启循环，就是 2026-11-08 那次事故），一律走 stop → 等残留退出 → start。
+# 而且先体检：卸载过程中 Decky 若已经卡在循环里，直接跳过重载并提示，
+# 不能让卸载成为压垮 Decky 的最后一根稻草。
 restart_decky() {
-  local unit state i
+  local unit
+  UN_DECKY_STATE=""
   if ! need_cmd systemctl; then
-    un_skip "没有 systemctl，跳过 Decky 重启"
+    un_skip "没有 systemctl，跳过 Decky 重载"
+    UN_DECKY_STATE="未检查（没有 systemctl）"
     return 0
   fi
   unit="$(decky_service_unit)"
   if [ -z "$unit" ]; then
-    un_skip "没检测到 Decky 服务（decky/plugin_loader），跳过重启"
+    un_skip "没检测到 Decky 服务（decky/plugin_loader），跳过重载"
+    UN_DECKY_STATE="未检查（没装 Decky）"
     return 0
   fi
+  DECKY_UNIT="$unit"
   if [ "$DRY_RUN" = 1 ]; then
-    printf '[计划] sudo systemctl restart %s，然后回读 is-active\n' "$unit"
+    printf '[计划] 安全重载 %s：stop → 等残留退出 → start → 回读 NRestarts/1337/插件列表\n' "$unit"
+    un_skip "dry-run：不执行 Decky 重载"
     return 0
   fi
-  if ! run_root systemctl restart "$unit"; then
-    un_fail "重启 Decky 失败（$unit）：sudo 被拒绝或服务不存在"
-    return 1
+  if ! decky_health; then
+    un_note "Decky 当前异常：$DECKY_HEALTH_NOTE"
+    un_note "跳过重载，避免把 Decky 弄得更坏；请先重启 Deck"
+    DECKY_LOOP_NOTE="$DECKY_HEALTH_NOTE"
+    UN_DECKY_STATE="异常，已跳过重载（$DECKY_HEALTH_NOTE）"
+    return 0
   fi
-  state=""
-  for i in $(seq 1 20); do
-    state="$(systemctl is-active "$unit" 2>/dev/null || true)"
-    [ "$state" = "active" ] && break
-    sleep 0.5
-  done
-  if [ "$state" != "active" ]; then
-    un_fail "Decky 重启后状态是「${state:-unknown}」，不是 active"
-    return 1
-  fi
-  un_ok "Decky 已重启（$unit：active）"
-  # active 不代表真的起来了：Decky 可能正卡在重启循环（见 decky_restart_loop_note）。
-  # 命中只记失败并继续，卸载已经做了一半，绝不能在这里半途停下。
-  if ! decky_restart_loop_note "$unit"; then
-    warn "[!] $DECKY_LOOP_NOTE"
-    un_fail "$DECKY_LOOP_NOTE"
-  fi
+  decky_safe_reload
+  case "$DECKY_SAFE_STATE" in
+    ok)
+      un_ok "$DECKY_SAFE_NOTE"
+      UN_DECKY_STATE="健康（已安全重载，1337 可连）" ;;
+    pending)
+      un_skip "$DECKY_SAFE_NOTE"
+      UN_DECKY_STATE="未重载（$DECKY_SAFE_NOTE）" ;;
+    *)
+      warn "[!] $DECKY_SAFE_NOTE"
+      un_fail "Decky 重载失败：$DECKY_SAFE_NOTE"
+      UN_DECKY_STATE="异常（$DECKY_SAFE_NOTE）" ;;
+  esac
   return 0
 }
 
@@ -5103,6 +5461,11 @@ sys_kept_pkgs() {
 uninstall_summary() {
   local aborted="${1:-0}" l title="卸载完成"
   [ "$aborted" = 1 ] && title="卸载中止"
+  # 「卸载完成」绝不能覆盖「关键进程还在跑」：标题里直接标失败项数量，
+  # 避免又出现上次那种「日志说完成、uvicorn 还在占 18765」的假象
+  if [ "$aborted" = 0 ] && [ ${#UNINSTALL_FAILS[@]} -gt 0 ]; then
+    title="卸载完成（有 ${#UNINSTALL_FAILS[@]} 项失败）"
+  fi
   echo
   if [ "$DRY_RUN" = 1 ]; then
     if ui_fits; then
@@ -5125,6 +5488,10 @@ uninstall_summary() {
     if [ ${#UNINSTALL_FAILS[@]} -gt 0 ]; then
       for l in "${UNINSTALL_FAILS[@]}"; do card_line "✗ $l"; done
     fi
+    # 三项关键状态必须单列：它们决定「卸载到底干不干净」，不能埋在上面的 ✓/✗ 里
+    [ -n "$UN_BACKEND_STATE" ] && card_line "后端进程     $UN_BACKEND_STATE"
+    [ -n "$UN_PLUGIN_STATE" ] && card_line "插件进程     $UN_PLUGIN_STATE"
+    [ -n "$UN_DECKY_STATE" ] && card_line "Decky        $UN_DECKY_STATE"
     [ -n "$DATA_AT" ] && card_line "用户数据：$DATA_AT"
     [ -n "${UNINSTALL_KEPT_PKGS:-}" ] && card_line "按你的选择保留的包：$UNINSTALL_KEPT_PKGS"
     card_line "系统原有包未动：$(sys_kept_pkgs)"
@@ -5140,6 +5507,9 @@ uninstall_summary() {
     if [ ${#UNINSTALL_FAILS[@]} -gt 0 ]; then
       for l in "${UNINSTALL_FAILS[@]}"; do warn "$l"; done
     fi
+    [ -n "$UN_BACKEND_STATE" ] && info "后端进程：$UN_BACKEND_STATE"
+    [ -n "$UN_PLUGIN_STATE" ] && info "插件进程：$UN_PLUGIN_STATE"
+    [ -n "$UN_DECKY_STATE" ] && info "Decky：$UN_DECKY_STATE"
     [ -n "$DATA_AT" ] && info "用户数据：$DATA_AT"
     [ -n "${UNINSTALL_KEPT_PKGS:-}" ] && info "按你的选择保留的包：$UNINSTALL_KEPT_PKGS"
     info "系统原有包未动：$(sys_kept_pkgs)"
@@ -5167,16 +5537,17 @@ do_uninstall() {
               （默认模式会先把 userdata 搬到 ~/MeidoSpace/userdata-<时间> 再删代码）
 
 默认卸载顺序：
-  1. 停客户端与后端
+  1. 停客户端与后端（pkill → pgrep + 端口回读确认，杀不干净明确报失败）
   2. 结束 root 插件进程（提权，回读确认）
   3. userdata 搬到 ~/MeidoSpace/userdata-<时间>，校验文件数与字节数
   4. 卸载安装器装过的系统包（回车=卸载，输入 n 才保留）
   5. 安装目录整目录、Decky 四个目录、~/.config/deckmeido、~/.cache/DeckMeido、
      桌面快捷方式 → 回收站
-  6. 重启 Decky 并回读 is-active
+  6. 安全重载 Decky：先体检，异常则跳过；正常则 stop → 等残留退出 → start
+     → 回读 NRestarts / 1337（绝不 systemctl restart，会触发重启循环）
   7. 清理 /tmp 残留
   8. 恢复 SteamOS 只读层为 enabled
-  9. 汇总
+  9. 汇总（含后端是否真停、插件进程是否真没了、Decky 是否健康）
 
 所有文件只进回收站（gio trash / 提权 mv 到回收站），不永久删除。
 EOF
@@ -5263,42 +5634,17 @@ EOF
   # ---------- 1 停客户端/后端 ----------
   un_step "停止客户端与后端"
   if [ "$DRY_RUN" = 1 ]; then
-    printf '[计划] 关闭客户端、后端、overlay 进程\n'
+    printf '[计划] 关闭客户端、后端、overlay 进程，并用 pgrep + 端口回读确认真的没了\n'
   else
-    cancel_running_turn
-    stop_client
-    # 杀不到进程时 pkill 返回 1、没有 pgrep/pkill 的系统返回 127：
-    # 这些都不是「卸载失败」，不能让 set -e 把流程打断，结果由下面的回读判定
-    if need_cmd pkill; then
-      pkill -f "$INSTALL_DIR/client/launch.sh" 2>/dev/null || true
-      pkill -f "$INSTALL_DIR/client/main.py" 2>/dev/null || true
-      pkill -f "$INSTALL_DIR/server/main.py" 2>/dev/null || true
-      pkill -f "$INSTALL_DIR/server/overlay.py" 2>/dev/null || true
-    fi
-    left=""
-    if need_cmd pgrep; then
-      for i in $(seq 1 10); do
-        left="$(pgrep -f "$INSTALL_DIR/server/main.py" 2>/dev/null || true)$(pgrep -f "$INSTALL_DIR/server/overlay.py" 2>/dev/null || true)"
-        [ -z "$left" ] && break
-        sleep 0.3
-      done
-      if [ -n "$left" ] && need_cmd pkill; then
-        pkill -9 -f "$INSTALL_DIR/server/main.py" 2>/dev/null || true
-        pkill -9 -f "$INSTALL_DIR/server/overlay.py" 2>/dev/null || true
-        sleep 0.5
-        left="$(pgrep -f "$INSTALL_DIR/server/main.py" 2>/dev/null || true)$(pgrep -f "$INSTALL_DIR/server/overlay.py" 2>/dev/null || true)"
-      fi
-    fi
-    if [ -n "$left" ]; then
-      un_fail "后端/overlay 进程仍在运行：$left"
-    else
-      un_ok "客户端与后端已停止"
-    fi
+    # 上次的教训：这里打「已停止」，实际 uvicorn（root+deck 两份）还在跑并占着 18765。
+    # 所以全部判决都交给 un_stop_backend 的回读结果，它说不干净就是失败。
+    un_stop_backend || true
   fi
 
   # ---------- 2 结束 root 插件进程 ----------
   un_step "结束 Decky 插件进程"
-  kill_plugin_process
+  # 失败也要继续：用户可能已经删了一半，半途停下比继续更糟；失败会记进汇总
+  kill_plugin_process || true
 
   # ---------- 3 先保数据 ----------
   un_step "保留用户数据"
