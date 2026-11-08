@@ -23,6 +23,7 @@ https://tyc.rei-yumesaki.net/material/corpus/#terms3
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import os
@@ -66,6 +67,10 @@ CONFIG_NAME = "config.json"
 MODEL_FILES = (ONNX_NAME, CONFIG_NAME)
 # 完整模型约 38MB；少于 30MB 基本就是没下全
 MIN_ONNX_BYTES = 30 * 1024 * 1024
+# 上游 LFS 对象的 sha256 与字节数（hf 仓库 ayousanz/piper-plus-tsukuyomi-chan）。
+# 只校验 onnx；config.json 很小且随上游更新，只做 JSON 解析校验。
+ONNX_SHA256 = "929abef34cc13c143b9d634cd475ef5c964c6c594cee9fcdc7938110cda50228"
+ONNX_BYTES = 39652717
 MODEL_REPO = "ayousanz/piper-plus-tsukuyomi-chan"
 MIRROR_BASE = f"https://hf-mirror.com/{MODEL_REPO}/resolve/main"
 HF_BASE = f"https://huggingface.co/{MODEL_REPO}/resolve/main"
@@ -688,6 +693,14 @@ def route_segments(text: str, language: str = "auto",
         if segment:
             trimmed.append((lang, segment))
     return trimmed
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _short_error(exc: Exception) -> str:
@@ -1711,6 +1724,8 @@ class TTS:
                     if cancelled and cancelled():
                         raise TTSError("已取消", kind="cancelled")
                     time.sleep(0.1)
+        # 重试次数用完：删掉半成品，让下一次尝试从头开始而不是接着坏文件续传
+        part.unlink(missing_ok=True)
         raise TTSError(f"下载中断（已重试 {RETRIES_PER_SOURCE} 次）：{last}", kind="network")
 
     def _download_files(self, src: dict, lengths: dict, progress=None, cancelled=None):
@@ -1721,6 +1736,7 @@ class TTS:
             dest = root / name
             part = dest.with_name(dest.name + ".part")
             minimum = MIN_ONNX_BYTES if name == ONNX_NAME else 1
+            # 已有文件必须「大小对且能过校验」才算数：半成品/旧版本一律重下
             if dest.is_file() and dest.stat().st_size >= minimum:
                 base += dest.stat().st_size
                 continue
@@ -1731,9 +1747,13 @@ class TTS:
 
             self._fetch_resumable(src["files"][name], part, cancelled, on_bytes)
             size = part.stat().st_size
-            if size < minimum:
+            expected = ONNX_BYTES if name == ONNX_NAME else -1
+            if size < minimum or (expected > 0 and size != expected):
                 part.unlink(missing_ok=True)
-                raise TTSError(f"下载的 {name} 不完整（{size} 字节）", kind="network")
+                raise TTSError(
+                    f"下载的 {name} 不完整（{size} 字节"
+                    + (f"，应为 {expected}" if expected > 0 else "")
+                    + "）", kind="network")
             part.replace(dest)
             base += size
         self._validate_files(root)
@@ -1749,6 +1769,13 @@ class TTS:
             raise TTSError(
                 f"模型文件大小异常：{size / 1024**2:.1f} MB（完整模型约 38 MB），可能没下全",
                 kind="network")
+        digest = _sha256_file(onnx)
+        if digest != ONNX_SHA256:
+            # 坏文件留着只会每次都加载失败，删掉让下次下载能重来
+            onnx.unlink(missing_ok=True)
+            raise TTSError(
+                f"模型文件校验失败（sha256 {digest[:12]}…，应为 {ONNX_SHA256[:12]}…），"
+                "已删除损坏文件，重新下载即可", kind="model")
         try:
             data = json.loads(config.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:

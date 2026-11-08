@@ -87,6 +87,16 @@ DESKTOP_FOLDER="$(command -v xdg-user-dir >/dev/null 2>&1 && xdg-user-dir DESKTO
 [ -n "$DESKTOP_FOLDER" ] && [ "$DESKTOP_FOLDER" != "$HOME" ] || DESKTOP_FOLDER="$HOME/Desktop"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
+# 月读酱模型状态：unknown / ready / missing / failed / broken。
+# verify_tts / prefetch_voice_models 会写入，安装收尾汇总按它单列一行——避免
+# 「语音依赖已就绪」被误读成「音色可用」，上次装完才发现模型根本没下载就栽在这。
+TTS_MODEL_STATE="unknown"
+# 三次下载都失败时的最后一次原因，写进收尾汇总
+TTS_MODEL_ERROR=""
+# 通用下载重试：最近一次失败的次数与原因（由 _retry_download 写入）
+DOWNLOAD_ATTEMPTS=0
+DOWNLOAD_ERR=""
+
 # 可执行位自愈：Windows/NTFS 打的包或 git 导出常把脚本记成 0644，用 bash 调用
 # 不受影响，但桌面快捷方式是直接执行 client/launch.sh 的——缺可执行位时 Steam
 # 会弹「缺少运行权限」，表现为热更新之后点图标起不来。每次运行先补一遍，
@@ -2267,7 +2277,10 @@ install_tts_deps() {
   if "$py" -c "import piper_plus" >/dev/null 2>&1; then
     dim "语音合成依赖已存在（piper-plus）"
     install_tts_nltk_data "$py"
-    verify_tts "$py" || true
+    if ! verify_tts "$py"; then
+      [ "$TTS_MODEL_STATE" = "missing" ] ||
+        warn "语音合成自检未通过（原因见上一条）；不影响其他功能"
+    fi
     return 0
   fi
   # 版本不够时硬装只会得到「找不到匹配版本」的报错，先判断再决定
@@ -2298,9 +2311,17 @@ install_tts_deps() {
   esac
   section "语音合成依赖（可选）"
   if pip_install_with_switch "$py" requirements-tts.txt "$start"; then
-    dim "语音合成依赖已就绪（首次播报会按需下载约 38MB 模型）"
+    # 依赖装上 ≠ 音色可用：模型不随包分发，这里必须如实说清楚缺什么
+    if tts_model_present; then
+      dim "语音合成依赖已就绪（月读酱模型已存在）"
+    else
+      warn "语音合成依赖已就绪，但月读酱模型未下载（约 38MB，可在设置页「下载模型」）"
+    fi
     install_tts_nltk_data "$py"
-    verify_tts "$py" || true
+    if ! verify_tts "$py"; then
+      [ "$TTS_MODEL_STATE" = "missing" ] ||
+        warn "语音合成自检未通过（原因见上一条）；不影响其他功能"
+    fi
     return 0
   fi
   warn "语音合成依赖没装上：不影响其他功能，稍后重跑 install --tts 即可"
@@ -2323,6 +2344,18 @@ install_tts_nltk_data() {
     dim "英文语音数据已就绪（$dir）"
     return 0
   fi
+  if _retry_download "英文语音数据" _install_tts_nltk_once "$py"; then
+    dim "英文语音数据已就绪（$dir）"
+  else
+    warn "英文语音数据下载失败（已尝试 ${DOWNLOAD_ATTEMPTS} 次）：${DOWNLOAD_ERR}"
+    warn "英文段会用 espeak-ng 兜底（中文/日文播报不受影响），重跑 install --tts 可再试"
+  fi
+  return 0
+}
+
+# 单次尝试：先试 nltk 官方下载器，失败再按包 curl 直取。返回 0 表示数据已齐。
+_install_tts_nltk_once() {
+  local py="$1" dir="$DATA_MODELS/nltk_data"
   mkdir -p "$dir/corpora" "$dir/taggers" 2>/dev/null || {
     warn "无法创建 $dir，英文段只能用 espeak-ng 兜底"
     return 0
@@ -2366,11 +2399,36 @@ PY
       dim "手动补：curl -L https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages/$sub/$pkg.zip -o /tmp/$pkg.zip && unzip -o /tmp/$pkg.zip -d $dir/$sub"
     fi
   done
-  if nltk_data_ok "$dir"; then
-    dim "英文语音数据已就绪（$dir）"
-  else
-    warn "英文语音数据仍缺失：英文段会用 espeak-ng 兜底（不再整段没声），重跑 install --tts 可再试"
-  fi
+  nltk_data_ok "$dir" && return 0
+  echo "英文语音数据未齐（cmudict / averaged_perceptron_tagger_eng 缺文件）"
+  return 1
+}
+
+# 安装期所有下载都走这里：最多 3 次，间隔 2s / 4s，逐次打印第几次和失败原因。
+# 不静默：最后一次失败的原因留在 DOWNLOAD_ERR，供调用方写进收尾汇总。
+# 用法：_retry_download "月读酱模型" <命令> [参数...]
+_retry_download() {
+  local label="$1"; shift
+  local attempt=1 delay=2 out
+  DOWNLOAD_ATTEMPTS=0
+  DOWNLOAD_ERR=""
+  while [ "$attempt" -le 3 ]; do
+    DOWNLOAD_ATTEMPTS=$attempt
+    if out=$("$@" 2>&1); then
+      [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/    /'
+      return 0
+    fi
+    DOWNLOAD_ERR=$(printf '%s\n' "$out" | tail -n 2 | tr '\n' ' ' | cut -c1-120)
+    [ -n "$DOWNLOAD_ERR" ] || DOWNLOAD_ERR="退出码非 0，无输出"
+    warn "$label 第 $attempt/3 次尝试失败：$DOWNLOAD_ERR"
+    if [ "$attempt" -lt 3 ]; then
+      dim "${delay}s 后重试"
+      sleep "$delay"
+      delay=$((delay * 2))
+    fi
+    attempt=$((attempt + 1))
+  done
+  return 1
 }
 
 # 英文数据是否齐（只看目录，与 server/tts.py 的 english_data_ready 同一判据）
@@ -2402,6 +2460,12 @@ PY
   return 1
 }
 
+# 月读酱模型（onnx + config）是否都已落盘。只查存在性，内容校验交给 tts.py。
+tts_model_present() {
+  local root="$DATA_MODELS/tts/tsukuyomi"
+  [ -f "$root/tsukuyomi-chan-6lang-fp16.onnx" ] && [ -f "$root/config.json" ]
+}
+
 # 真正合成一小段中文 + 一小段英文来判定「已就绪」，不再只看包在不在。
 # 模型未下载时无法自检，如实说明，不算失败。
 verify_tts() {
@@ -2410,7 +2474,8 @@ verify_tts() {
   local onnx="$root/tsukuyomi-chan-6lang-fp16.onnx" cfg="$root/config.json"
   [ -x "$py" ] || return 1
   if [ ! -f "$onnx" ] || [ ! -f "$cfg" ]; then
-    dim "语音合成自检：模型未下载，无法试合成（设置页可下载后再试听）"
+    warn "语音合成自检：月读酱模型未下载（约 38MB），无法试合成；设置页「下载模型」后可试听"
+    TTS_MODEL_STATE="missing"
     return 1
   fi
   local out
@@ -2467,10 +2532,12 @@ PY
     warn "语音合成自检未通过："
     printf '%s\n' "$out" | sed 's/^/    /'
     dim "中文可用的前提下，英文失败通常是 nltk 数据缺失；重跑 install --tts 可修复"
+    TTS_MODEL_STATE="broken"
     return 1
   }
   printf '%s\n' "$out" | sed 's/^/    /'
   dim "语音合成自检通过（中文 + 英文）"
+  TTS_MODEL_STATE="ready"
   return 0
 }
 
@@ -2559,24 +2626,11 @@ venv_install() {
   return 0
 }
 
-# 标准 / 完整档在安装阶段就把语音模型下好，省得第一次录音、播报还要再等。
-# 已经存在的跳过；下载失败只警告，不影响安装完成，运行时仍会按原来的懒加载重试。
-prefetch_voice_models() {
-  local profile="${DECKMEIDO_PROFILE:-}"
-  case "$profile" in
-    standard|full) ;;
-    *) return 0 ;;
-  esac
+# 安装阶段的语音模型预取。月读酱模型所有档位都会尝试下载（含 custom），
+# 每个下载最多 3 次；三次都失败只警告并写进收尾汇总，不影响安装完成。
+_prefetch_stt_once() {
   local py="$INSTALL_DIR/.venv/bin/python"
-  [ -x "$py" ] || return 0
-  mkdir -p "$DATA_MODELS" 2>/dev/null || true
-
-  # 语音识别模型（SenseVoice，约 250MB）
-  if have_py_module "$py" "sherpa_onnx" &&
-     [ ! -f "$DATA_MODELS/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx" ]; then
-    section "语音识别模型（SenseVoice）"
-    dim "正在下载约 250MB，可能需要几分钟；失败不影响安装，之后首次录音会再试"
-    if ( cd "$INSTALL_DIR" && "$py" - <<'PY'
+  ( cd "$INSTALL_DIR" && "$py" - <<'PY'
 from server import paths
 from server.stt import STT
 
@@ -2592,28 +2646,55 @@ def progress(done, total, phase, file):
 
 STT(paths.stt_model_dir()).download_model(progress=progress)
 PY
-    ); then
-      dim "语音识别模型已就绪"
-    else
-      warn "语音识别模型没下完：首次录音会再试，也可重跑 install --stt"
-    fi
-  fi
+  )
+}
 
-  # 语音合成模型（つくよみちゃん，约 40MB）
-  if have_py_module "$py" "piper_plus" &&
-     [ ! -f "$DATA_MODELS/tts/tsukuyomi/tsukuyomi-chan-6lang-fp16.onnx" ]; then
-    section "语音合成模型（つくよみちゃん）"
-    dim "正在下载约 40MB"
-    if ( cd "$INSTALL_DIR" && "$py" - <<'PY'
+_prefetch_tts_once() {
+  local py="$INSTALL_DIR/.venv/bin/python"
+  ( cd "$INSTALL_DIR" && "$py" - <<'PY'
 from server import paths
 from server.tts import TTS
 
 TTS(enable=False, model_root=paths.tts_model_dir()).download_model()
 PY
-    ); then
-      dim "语音合成模型已就绪"
+  )
+}
+
+prefetch_voice_models() {
+  local profile="${DECKMEIDO_PROFILE:-}" py="$INSTALL_DIR/.venv/bin/python"
+  case "$profile" in
+    standard|full|custom) ;;
+    *) return 0 ;;
+  esac
+  [ -x "$py" ] || return 0
+  mkdir -p "$DATA_MODELS" 2>/dev/null || true
+
+  # 语音识别模型（SenseVoice，约 250MB）：音量太大，仍只在标准/完整档预取
+  if [ "$profile" != "custom" ] && have_py_module "$py" "sherpa_onnx" &&
+     [ ! -f "$DATA_MODELS/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx" ]; then
+    section "语音识别模型（SenseVoice）"
+    dim "正在下载约 250MB，可能需要几分钟（最多尝试 3 次）"
+    if _retry_download "语音识别模型" _prefetch_stt_once; then
+      dim "语音识别模型已就绪"
     else
-      warn "语音合成模型没下完：首次播报会再试，也可重跑 install --tts"
+      warn "语音识别模型下载失败（已尝试 ${DOWNLOAD_ATTEMPTS} 次）：${DOWNLOAD_ERR}"
+      dim "首次录音会再试，也可重跑 install --stt"
+    fi
+  fi
+
+  # 语音合成模型（つくよみちゃん，约 40MB）：所有档位都下，装完就能听到女仆音
+  local tts_onnx="$DATA_MODELS/tts/tsukuyomi/tsukuyomi-chan-6lang-fp16.onnx"
+  if have_py_module "$py" "piper_plus" && [ ! -f "$tts_onnx" ]; then
+    section "语音合成模型（つくよみちゃん）"
+    dim "正在下载约 40MB（最多尝试 3 次）"
+    if _retry_download "月读酱模型" _prefetch_tts_once; then
+      dim "语音合成模型已就绪"
+      TTS_MODEL_STATE="ready"
+    else
+      warn "语音合成模型下载失败（已尝试 ${DOWNLOAD_ATTEMPTS} 次）：${DOWNLOAD_ERR}"
+      dim "不影响安装；稍后可在设置页「下载模型」重试"
+      TTS_MODEL_STATE="failed"
+      TTS_MODEL_ERROR="$DOWNLOAD_ERR"
     fi
   fi
 
@@ -2622,18 +2703,24 @@ PY
     # 唤醒词生成还要 sentencepiece / pypinyin（text2token 依赖）
     install_wake_text_deps "$py" 0
     section "唤醒词模型（智能音响模式）"
-    if ( cd "$INSTALL_DIR" && "$py" - <<'PY'
+    if _retry_download "唤醒词模型" _prefetch_wake_once; then
+      dim "唤醒词模型已就绪"
+    else
+      warn "唤醒词模型下载失败（已尝试 ${DOWNLOAD_ATTEMPTS} 次）：${DOWNLOAD_ERR}"
+      dim "首次启用智能音响模式会再试"
+    fi
+  fi
+  return 0
+}
+
+_prefetch_wake_once() {
+  local py="$INSTALL_DIR/.venv/bin/python"
+  ( cd "$INSTALL_DIR" && "$py" - <<'PY'
 from server import paths, wake
 
 wake.ensure_model(paths.wake_model_dir())
 PY
-    ); then
-      dim "唤醒词模型已就绪"
-    else
-      warn "唤醒词模型没下完：首次启用智能音响模式会再试"
-    fi
-  fi
-  return 0
+  )
 }
 
 # ---------- 音箱模式（智能音响）前置检查 ----------
@@ -3604,6 +3691,15 @@ print_done() {
   card_title "DeckMeido 已就绪  ·  v$ve"
   card_line ""
   card_line "运行版本     v${rv:-$ve}"
+  if [ "$TTS_MODEL_STATE" = "unknown" ]; then
+    if tts_model_present; then TTS_MODEL_STATE="ready"; else TTS_MODEL_STATE="missing"; fi
+  fi
+  case "$TTS_MODEL_STATE" in
+    ready)  card_line "语音模型     已就绪（月读酱）" ;;
+    failed) card_line "语音模型     下载失败（已尝试 3 次，原因：$(printf '%s' "${TTS_MODEL_ERROR:-未知}" | cut -c1-60)）" ;;
+    broken) card_line "语音模型     校验失败（设置页可重新下载）" ;;
+    *)      card_line "语音模型     未下载（约 38MB，设置页「下载模型」）" ;;
+  esac
   card_line "本机控制台   http://127.0.0.1:$PORT/"
   card_line "局域网访问   http://$ip:$PORT/（新设备点「配对新设备」，按掌机上的 PIN 配对一次）"
   card_line "配置文件     $DATA_CONFIG"

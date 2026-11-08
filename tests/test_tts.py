@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import subprocess
 import sys
@@ -86,9 +87,14 @@ class FallbackTest(unittest.TestCase):
         self.root = Path(self._td.name)
         self._min = ttsmod.MIN_ONNX_BYTES
         ttsmod.MIN_ONNX_BYTES = 10
+        # 测试用假模型不是真 onnx，把期望哈希换成「32 个 0 字节」的摘要，
+        # 校验逻辑本身仍真实执行；专门验证哈希分支的用例会写不同的内容。
+        self._sha = ttsmod.ONNX_SHA256
+        ttsmod.ONNX_SHA256 = hashlib.sha256(b"\0" * 32).hexdigest()
 
     def tearDown(self):
         ttsmod.MIN_ONNX_BYTES = self._min
+        ttsmod.ONNX_SHA256 = self._sha
         self._td.cleanup()
 
     def _make_model(self, onnx_size=32):
@@ -155,6 +161,37 @@ class FallbackTest(unittest.TestCase):
             t._validate_files(self.root)
         self.assertEqual(ctx.exception.kind, "model")
         self.assertIn("config.json", str(ctx.exception))
+
+    def test_模型哈希不符时删除坏文件并报可读错误(self):
+        # 大小过关但内容不对（模拟 404 页面/半成品被改名成 onnx）
+        (self.root / ttsmod.ONNX_NAME).write_bytes(b"\1" * 32)
+        (self.root / ttsmod.CONFIG_NAME).write_text(json.dumps({"a": 1}), encoding="utf-8")
+        t = ttsmod.TTS(model_root=self.root)
+        with self.assertRaises(ttsmod.TTSError) as ctx:
+            t._validate_files(self.root)
+        self.assertEqual(ctx.exception.kind, "model")
+        self.assertIn("校验失败", str(ctx.exception))
+        self.assertIn("已删除", str(ctx.exception))
+        # 坏模型不能留着，删掉才可能重下
+        self.assertFalse((self.root / ttsmod.ONNX_NAME).exists())
+        self.assertTrue((self.root / ttsmod.CONFIG_NAME).exists())
+
+    def test_下载大小不符时删掉半成品并判失败(self):
+        t = ttsmod.TTS(model_root=self.root)
+        part_size = 32
+
+        def fake_fetch(url, part, cancelled, on_bytes):
+            part.write_bytes(b"\0" * part_size)
+            on_bytes(part_size, part_size)
+
+        t._fetch_resumable = fake_fetch
+        src = {"files": {name: "http://example.invalid/" + name for name in ttsmod.MODEL_FILES}}
+        with self.assertRaises(ttsmod.TTSError) as ctx:
+            t._download_files(src, {})
+        self.assertEqual(ctx.exception.kind, "network")
+        self.assertIn("不完整", str(ctx.exception))
+        self.assertFalse((self.root / (ttsmod.ONNX_NAME + ".part")).exists())
+        self.assertFalse((self.root / ttsmod.ONNX_NAME).exists())
 
     def test_下载源顺序与自定义地址(self):
         auto = ttsmod.TTS(model_root=self.root, model_source="auto")
