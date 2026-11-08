@@ -128,6 +128,84 @@ class TurnGateTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, [True])
 
 
+class GuestPolicyEngineTest(unittest.IsolatedAsyncioTestCase):
+    """群友档走统一引擎：零工具、不注入长期记忆、只给公开人设"""
+
+    def setUp(self):
+        self._old_pending = main.pending_action
+        main.pending_action = None
+
+    def tearDown(self):
+        main.pending_action = self._old_pending
+
+    async def test_guest_turn_gets_zero_tools_and_no_memory(self):
+        seen = {}
+
+        async def fake_stream(msgs, tools, **kwargs):
+            seen["tools"] = list(tools)
+            seen["msgs"] = list(msgs)
+            return {"role": "assistant", "content": "好。" * 300,
+                    "finish_reason": "stop"}
+
+        hist = [{"role": "user", "content": "在吗"}]
+        # get_status 会同步探测游戏模式（SteamOS 专用，Windows 上没 pwd），
+        # 这里只关心引擎传了什么给模型，状态广播直接给个静态值
+        with mock.patch.object(main.llm, "chat_with_tools_stream",
+                               new=fake_stream), \
+                mock.patch.object(main, "_memory_block",
+                                  side_effect=AssertionError("群友档不该注入记忆")), \
+                mock.patch.object(main, "_guest_system_prompt",
+                                  return_value="群友提示词"), \
+                mock.patch.object(main, "get_status",
+                                  return_value={"mode": "desktop"}):
+            reply = await main.run_agent(
+                [], hist=hist, from_client="qq", surface="chat",
+                turn_policy=main.policy.GUEST_POLICY)
+        # 系统提示只有公开人设那一份；消息里没有记忆段
+        self.assertIn("群友提示词", seen["msgs"][0]["content"])
+        self.assertEqual(seen["tools"], [])
+        self.assertGreaterEqual(len(seen["msgs"]), 2)
+        # 截断在 handle_chat 的收尾（_apply_reply_policy），引擎本身不截
+        self.assertEqual(len(reply), 600)
+
+    def test_reply_policy_clips_and_redacts(self):
+        raw = "sk-abcdefghijklmnop " + "好。" * 300
+        out = main._apply_reply_policy(raw, main.policy.GUEST_POLICY)
+        self.assertIn("[令牌已隐藏]", out)
+        self.assertLessEqual(len(out), 402)
+        self.assertEqual(
+            main._apply_reply_policy(raw, main.policy.OWNER_POLICY), raw)
+
+
+class HistoryWindowTest(unittest.TestCase):
+    """群友档只带最近 20 条、每条 40 字；主人档上下文原样不动"""
+
+    @staticmethod
+    def _hist(n: int) -> list[dict]:
+        return [{"role": "user", "content": f"第{i}句" + "好" * 60}
+                for i in range(n)]
+
+    def test_guest_window_trims_and_clips(self):
+        msgs = main._build_llm_msgs(
+            self._hist(30), "系统", sid="window-guest",
+            hist_max=main.policy.GUEST_POLICY.history_max_messages,
+            item_max_chars=main.policy.GUEST_POLICY.history_item_max_chars)
+        users = [m for m in msgs if m["role"] == "user"]
+        self.assertEqual(len(users), 20)
+        # 最后 20 条从第 10 句开始（越早的直接不带）
+        self.assertIn("第10句", users[0]["content"])
+        # 每条 40 字 + 省略号
+        self.assertTrue(all(len(m["content"]) == 41 for m in users))
+        self.assertTrue(all(m["content"].endswith("…") for m in users))
+
+    def test_owner_window_keeps_everything(self):
+        hist = self._hist(30)
+        msgs = main._build_llm_msgs(hist, "系统", sid="window-owner")
+        users = [m for m in msgs if m["role"] == "user"]
+        self.assertEqual(len(users), 30)
+        self.assertEqual(users[0]["content"], hist[0]["content"])
+
+
 class StartupBehaviorTest(unittest.IsolatedAsyncioTestCase):
     """冷启动与保存配置都不能顺手建连"""
 

@@ -1,26 +1,25 @@
 <p align="center">
-  <img src="assets/logo.png" width="160" alt="DeckMeido">
+  <img src="assets/logo.png" width="140" alt="DeckMeido">
 </p>
 
 <h1 align="center">DeckMeido</h1>
 
 <p align="center">
   <b>住在 Steam Deck 里的 AI 女仆</b><br>
-  手柄优先，QAM 与大屏两种形态，还能从 QQ 远程使唤她
+  手柄优先，QAM 与大屏两种形态，也能从 QQ 远程使唤她
 </p>
 
 <p align="center">
-  <a href="https://github.com/Congmeims/DeckMeido/releases"><img src="https://img.shields.io/github/v/release/Congmeims/DeckMeido?style=flat-square&color=1f6feb" alt="Release"></a>
-  <a href="https://github.com/Congmeims/DeckMeido/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-2ea44f?style=flat-square" alt="License"></a>
-  <img src="https://img.shields.io/badge/platform-SteamOS%20%7C%20Linux-1f6feb?style=flat-square" alt="Platform">
-  <img src="https://img.shields.io/badge/python-3.11+-3776ab?style=flat-square" alt="Python">
+  SteamOS / Linux · Python 3.11+ · CC BY-NC 4.0
 </p>
 
 <p align="center">
-  <a href="#安装">安装</a> ·
-  <a href="#功能">功能</a> ·
-  <a href="#首次配置">配置</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#能力总览">能力</a> ·
+  <a href="#最近新增">新增</a> ·
+  <a href="#配置">配置</a> ·
   <a href="#qq-用法">QQ</a> ·
+  <a href="#安全与权限">安全</a> ·
   <a href="#故障排查">排查</a>
 </p>
 
@@ -28,28 +27,70 @@
 
 ## 这是什么
 
-跑在掌机本机上的 AI Agent。她不只会聊天——能截当前画面看图答问、按坐标点击、注入手柄、装游戏、执行命令，也能在 QQ 里接受远程指令。
+跑在掌机本机上的 AI Agent。她不只会聊天：能截当前画面看图答问、按坐标点击、注入手柄、装游戏、执行命令，也能在 QQ 里接受远程指令。
 
-**核心亮点**
+三种使用方式，同一套引擎：
 
-- **手柄优先**：QAM 面板里 LB/RB 翻页，X 翻译、Y 截图询问、R2 按住说话；大屏页同样用手柄操作。
-- **两种形态**：游戏内 QAM + 大屏路由，桌面模式有原生客户端（可驻留托盘）与网页控制台。
-- **离线语音**：识别在本机跑，不联网；回复可用 Deck 内置 TTS 念出来。
-- **QQ 远程**：NapCat OneBot 11 接入，管理员私聊或白名单群里 @ 她就能下指令，高危操作有独立风险档位。
-- **真的能动手**：Steam 库、商店、截图、窗口聚焦、虚拟手柄、文件读写、终端都在工具层。
+| 场景 | 你能做什么 |
+| --- | --- |
+| 游戏内 QAM | X 翻译画面、Y 截图询问、按住 R2 说话；LB/RB 翻页 |
+| 大屏 / 桌面 | 完整聊天、设置、文件与终端；手柄和键鼠都能操作 |
+| QQ 远程 | 管理员下指令、群友只读聊天；高危操作有独立风险档位 |
 
-## 功能
+## 快速开始
+
+```bash
+git clone https://github.com/Congmeims/DeckMeido.git && cd DeckMeido
+bash install.sh
+```
+
+GitHub 连不上时走国内镜像：
+
+```bash
+curl -fsSL -o /tmp/dm.sh https://meido.meagames.cn/deckmeido/install.sh
+bash /tmp/dm.sh from-mirror
+```
+
+装完打开网页或桌面客户端，进「设置」填模型地址与 Key 即可对话。数据默认在 `<安装目录>/userdata/`。
+
+## 能力总览
+
+| 能力 | 说明 | 边界 |
+| --- | --- | --- |
+| 对话与画面 | 单轮询问、多轮聊天、流式输出、思维链、上下文自动压缩、长期记忆 | 看图需要模型支持 vision，不支持时退化为纯文字 |
+| 截图询问 / 翻译 | 抓当前画面 + 游戏名，按可改模板回答或逐句翻译 | 不剧透；模板可改，保存即时生效 |
+| 语音 | 离线识别（sherpa-onnx + SenseVoice）、本地播报（piper-plus / espeak-ng） | 模型首次按需下载，不进发布包 |
+| 设备操作 | 命令、截图、窗口聚焦、点击/输入、虚拟手柄、Steam 库与安装、文件与终端 | 受 `[security] permission_mode` 与远程风险档位约束 |
+| QQ 远程 | NapCat OneBot 11；私聊指令、群内 @、固定命令菜单、归档 | 群白名单为空时全部不响应；群友只读 |
+| 跨屏键鼠 | 浏览器接管 Deck 的鼠标键盘 | 仅已配对设备；建议只在可信局域网开 |
 
 ### 多入口
 
 | 入口 | 说明 |
 | --- | --- |
-| QAM 面板 | 三个页签「询问 / 聊天 / 设置」，窄屏纵向布局，L1/R1 翻页（页签两侧有 `‹ L1` / `R1 ›` 提示） |
-| 大屏页 | 注册到 GamepadUI 路由，三个页签「询问 / 聊天 / 设置」；L1/R1 翻页，X 翻译、Y 截图询问，聊天页按住 R2 说话 |
-| 桌面客户端 | PySide6 + QWebEngineView，加载与网页版同一个界面；最小化进托盘，双击桌面图标启动 |
-| 网页控制台 | 浏览器打开 `http://<deck-ip>:18765/`，单文件前端，功能与客户端一致；首次打开点「配对新设备」，按掌机上的 PIN 配对一次 |
+| QAM 面板 | Decky 插件，游戏内三页签「询问 / 聊天 / 设置」，L1/R1 翻页 |
+| 大屏页 | 注册到 GamepadUI 路由，功能同 QAM；X 翻译、Y 截图询问、R2 说话 |
+| 桌面客户端 | PySide6 + QWebEngineView，加载与网页版同一界面；最小化进托盘 |
+| 网页控制台 | 浏览器打开 `http://<deck-ip>:18765/`；首次打开按掌机 PIN 配对新设备 |
+| QQ | NapCat WebSocket；Deck 主动外连，本机不开入站端口 |
 
-QAM 面板由 Decky 插件提供；插件以 root 运行，走本机回环免鉴权，不再需要令牌。大屏页从 QAM 直接跳转。
+QAM 面板由 Decky 插件提供，以 root 运行、走本机回环免鉴权；大屏页从 QAM 直接跳转。
+
+## 最近新增
+
+| 功能 | 行为 |
+| --- | --- |
+| **离线模式** | 设置页手动开关 `[runtime] offline_mode`；顶部横幅提示当前状态。开启后所有已知出网入口（模型对话与列表、更新与安装包、余额、组件/语音/唤醒模型下载、QQ 图片下载、联网搜索/天气/商店搜索）直接快速失败，不再等超时；回环与局域网私有地址视为本地，LM Studio / Ollama 照常可用 |
+| **连通性探测** | `GET /api/net/probe` 判断「到得了公网」还是「只到局域网」（例如机舱 Wi-Fi 只通门户）。探测有 2 秒级超时、结果短缓存；探测不通时界面只**建议**切到离线模式，不自动切换，用户可拒绝；手动开关始终可强制覆盖 |
+| **本地端点快速失败** | 指向回环/局域网的模型只收紧「连接」超时（约 2 秒），读超时保持原值：连不上立刻报错，模型在算但慢不会被误杀 |
+| **记忆 scope** | 记忆按 `private`、`group:<群号>`、`person:<QQ>` 分 scope 存储；群回合注入「群 + 发言人」，私聊注入「私聊 + 对方」，网页默认 `private`。旧数据没有 scope 时归 `private`，升级不丢条目 |
+| **`/memory`** | 查看当前会话相关的长期记忆（最多列 10 条）；`/memory clear [群/人/私聊/all]` 清空指定 scope，`all` 只覆盖当前会话组合、不跨群也不碰别人。清空属破坏性操作，仅管理员且需确认；群友不能查看或清空群/私聊记忆 |
+| **记忆注入预算** | 单轮注入上限 2500 字；超预算时按「知识条目 → 环境经验 → 用户画像」丢弃，同类先丢最久未用的；只影响本轮注入，磁盘条目不删 |
+| **TurnPolicy** | 一个引擎、两套场景策略：主人档保持全部能力；群友档零工具、无长期记忆、400 字硬上限、强制脱敏、只给公开人设（`extra` 只给主人），群聊上下文只带最近 20 条、每条截到 40 字。限制全部在代码层，不靠提示词 |
+| **命令菜单** | `/help` 或「菜单 / 帮助」列出内置斜杠指令与口语别名 |
+| **输出脱敏** | 群友回复会替换配置键、绝对路径、IP、令牌样式文本；后端日志统一打码凭据、Cookie、URL 查询值、非回环 IP 与 QQ 号 |
+
+## 功能细节
 
 ### 对话与画面
 
@@ -74,17 +115,96 @@ QAM 面板由 Decky 插件提供；插件以 root 运行，走本机回环免鉴
 - **Steam**：列已装游戏、商店搜索、按 appid 安装、检查系统更新；安装属危险操作，强制确认。
 - **文件与终端**：工作区内浏览、读写、精确替换；网页终端与文件预览；模拟器 ROM 扫描。
 
-### QQ 远程
-
-- **OneBot 11 / NapCat**：Deck 主动连 NapCat 的 WebSocket 服务器，本机不开入站端口。
-- **触发方式**：私聊直接发；群里必须 @ 机器人。指令前可带昵称前缀（默认 `meido`），也支持整句口语别名。
-- **权限**：群聊只响应 `allow_groups` 白名单里的群，白名单为空时全部不响应，主人身份也不构成豁免；私聊与白名单群内 `admin_qq` 里的号可直接下指令（无需 @，危险操作仍要确认）；普通群成员始终只读聊天（零工具、不读记忆、输出脱敏）。
-- **风险三档**：`deny` 直接拒绝、`hard_confirm` 只认「确认执行」、`normal` 走普通确认。
-- **归档**：可存图、存文本，图片进 `meidobot/images/<日期>/`，索引与文本分别写入 `inbox_index.jsonl`、`text_log.txt`。
-
 ### 跨屏键鼠
 
-在电脑浏览器里点网页左下角 DeckMeido logo，进入 Pointer Lock，把鼠标键盘交给 Deck；再点 logo、按 Esc 或到时间上限即释放。
+1. 网页设置里打开 `[remote_input] enabled`（会先弹一次安全确认）。
+2. 在电脑浏览器点网页左下角 DeckMeido logo 进入接管；指针锁定后移动与按键都发往 Deck。
+3. 再点 logo、按 Esc，或到达 `max_minutes` 自动释放。
+
+注入优先 `ydotool`（由 `ydotoold` 用户服务托管），不可用时直写 `/dev/uinput`——这要求后端有 root 或 `input` 组权限。只有已配对设备能接管。
+
+## QQ 用法
+
+触发前缀就是软件里配置的昵称，默认 `meido`。私聊管理员直接发；群里必须 @ 机器人。指令前可带昵称前缀，也支持整句口语别名。
+
+| 操作 | 斜杠指令 | 口语别名示例 |
+| --- | --- | --- |
+| 查询状态 | `/status` | `状态`、`在吗`、`怎么样了` |
+| 截屏 | `/shot` | `截个屏`、`看看屏幕`、`拍张照` |
+| 取消当前任务 | `/cancel` | `停`、`别做了`、`算了` |
+| 存图 | `/save_image` | `存图`、`保存这张` |
+| 存文本 | `/save_text` | `保存这段`、`存这段文字` |
+| 检查依赖 | `/deps` | `检查依赖`、`查依赖`、`依赖状态` |
+| 查看记忆 | `/memory` | `记忆`、`查看记忆`、`群记忆` |
+| 清空记忆 | `/memory clear [scope]` | `清空记忆`、`清空群记忆`（仅管理员） |
+| 清群常识缓存 | `/memo` | `清除本群缓存`（仅管理员） |
+| 指令菜单 | `/help` | `菜单`、`帮助`、`有什么指令` |
+
+固定指令命中后直接执行既有动作，不经过 AI。`/deps` 只检测并回报依赖状态，不会安装任何东西、不改设备环境。其余文本按聊天处理，可让她执行设备操作。优先级：斜杠指令 > 取消 > 状态 > 截图 > 聊天。
+
+**归档**：可存图、存文本，图片进 `meidobot/images/<日期>/`，索引与文本分别写入 `inbox_index.jsonl`、`text_log.txt`。
+
+## 安全与权限
+
+| 层 | 规则 |
+| --- | --- |
+| 本机权限 | `manual` 全部审批；`auto` 只读放行、危险拦一道；`full` 不审批 |
+| 远程风险三档 | `deny` 直接拒绝；`hard_confirm` 只认「确认执行」；`normal` 走普通确认 |
+| 群白名单 | 只响应 `allow_groups` 里的群；白名单为空时全部不响应，主人身份也不构成豁免 |
+| 管理员 | `admin_qq` 里的号可下指令并触发设备操作；危险操作仍要确认 |
+| 群友 | 只读聊天：零工具、无长期记忆、400 字上限、输出脱敏，上下文只带最近 20 条 × 40 字；`TurnPolicy` 在代码层强制，不靠提示词 |
+| 局域网 | `[server] lan_enable` 默认关闭；开启后用设备配对（PIN + HttpOnly Cookie），本机回环免验证 |
+| 日志 | 落盘前统一脱敏：凭据、Cookie、URL 查询值、非回环 IP、QQ 号 |
+
+**风险命令**：
+
+- `deny`：`rm`、`rmdir -r`、`shred`、`dd`、`mkfs`、分区写入、写 `/dev` 块设备、fork bomb、写系统关键文件等，远程一律拒绝。
+- `hard_confirm`：`sudo`、下载后管道给 shell、`/etc` 或 `/usr` 写入、包管理器安装卸载、`crontab` 修改、非电源类 `systemctl restart` 等，必须回复「确认执行」。
+- `normal`：其余设备操作，按普通确认流程走。
+
+内置指令之外的设备操作，先按 `[security] permission_mode` 判断本机权限，再叠加远程风险档位。
+
+## 配置
+
+改 `userdata/config.toml` 后重启后端生效；网页里改则立即生效。
+
+| 配置段 | 关键项 | 说明 |
+| --- | --- | --- |
+| `[server]` | `lan_enable` / `port` | 默认 `false` / `18765`；旧配置里的 `token` 键会被忽略 |
+| `[runtime]` | `offline_mode` | 离线模式手动开关；默认 `false`；探测只提示，不自动切换 |
+| `[llm]` | `base_url` / `api_key` / `model` | OpenAI 兼容地址与密钥；换服务商时模型名要一起改 |
+| `[llm]` | `reasoning_effort` / `timeout` / `max_continuations` | 思维链强度、请求超时、撞上限自动续写轮数 |
+| `[agent]` | `ask_template` / `translate_template` / `status_prompt` | 截图询问、截图翻译、状态栏短句的提示词 |
+| `[agent]` | `context_window` / `compact_ratio` | 上下文窗口（0 = 按模型名推断）与压缩触发比例 |
+| `[security]` | `permission_mode` | `manual` / `auto` / `full` |
+| `[workspace]` | `dir` | 文件工具工作区；默认 `~/MeidoSpace` |
+| `[tts]` | `enable` / `engine` / `voice` / `speed` | 语音播报开关与音色 |
+| `[power]` | `keep_awake` | 后端运行期间抑制系统休眠 |
+| `[update]` | `github_enable` / `mirror` / `github_repo` | 双源更新：默认镜像与 GitHub 都探测，取更高版本 |
+| `[remote_input]` | `enabled` / `sensitivity` / `max_minutes` | 跨屏键鼠总开关、灵敏度、单次最长分钟数 |
+| `[qq]` | 见下 | QQ 远程通道 |
+
+### `[qq]` 段
+
+| 键 | 说明 |
+| --- | --- |
+| `enable` | 总开关，默认关闭 |
+| `ws_url` | NapCat WebSocket 地址；本机调试 `ws://127.0.0.1:3001`，公网用 `wss://` |
+| `access_token` | 必填，必须与 NapCat 侧一致；留空拒绝启动 |
+| `admin_qq` | 管理员 QQ 号列表，只有这些人能下指令 |
+| `allow_groups` | 允许响应的群号；空 = 所有群一律不响应，主人 QQ 也不能绕过，私聊不受影响 |
+| `guest_prompt` | 群友专用提示词，可写 `{name}`；留空用内置受限版（公开人设） |
+| `allow_image` | 是否处理 QQ 图片（下载、看图、存档） |
+
+其余限流、拆条、确认超时、重连退避等键见 [config.example.toml](server/config.example.toml)。
+
+### 截图与 vision
+
+截图询问、截图翻译和「带画面发送」都要求当前模型支持看图。模型能力可在设置页的校验入口查看；不支持时会退化成纯文字回答。
+
+### 语音开关
+
+语音输入默认开启，可在 QAM / 大屏 / 网页设置里切换（写入 `[stt] enable`）；首次使用会下载识别模型，失败只影响语音，不影响其它功能。语音播报在 `[tts] enable` 或设置里打开，依赖 `espeak-ng`。
 
 ## 安装
 
@@ -95,21 +215,7 @@ QAM 面板由 Decky 插件提供；插件以 root 运行，走本机回环免鉴
 - 可选：Decky Loader。只有想在游戏模式 QAM 里用才需要。
 - **不要用 sudo 运行 `install.sh`**。脚本装到当前用户家目录；控制类系统包由脚本单独调 `sudo` 安装；Decky 插件本身以 root 运行。
 
-### 命令
-
-```bash
-git clone https://github.com/Congmeims/DeckMeido.git && cd DeckMeido
-bash install.sh
-```
-
-GitHub 连不上时走国内镜像：
-
-```bash
-curl -fsSL -o /tmp/dm.sh https://meido.meagames.cn/deckmeido/install.sh
-bash /tmp/dm.sh from-mirror
-```
-
-其它入口：
+### 其它入口
 
 ```bash
 bash install.sh menu                 # 交互菜单：安装 / 升级 / 卸载
@@ -130,54 +236,11 @@ bash install.sh speedtest            # 只测 pip 源速率
 6. 写桌面快捷方式与 `uninstall.sh`；**不生成、不安装任何 systemd 单元**，后端只由客户端与插件拉起。
 7. 检测到 Decky Loader 时询问是否安装 QAM 插件，然后启动客户端。
 
-### Decky 插件
+### Decky 插件与桌面客户端
 
 安装器发现 Decky 会询问，同意后把 `deploy/deckmeido-plugin.zip` 解到 `~/homebrew/plugins/DeckMeido`，并打印「插件已安装 v…」。到 **设置 → Decky Loader → 重新载入** 即可在 QAM 看到。没装 Decky 会整段跳过；之后想装可先装 Decky 再执行 `bash install.sh upgrade`，或运行 `bash ~/DeckMeido/plugin/deploy.sh`。
 
-### 桌面客户端
-
 装完会自动打开一次客户端，同时拉起后端。之后双击桌面上的 DeckMeido 图标即可；窗口最小化驻留托盘，右键菜单可退出。
-
-## 首次配置
-
-网页或客户端打开后进「设置」，填模型地址与 Key 就能对话。也可以直接改 `userdata/config.toml`（改完重启后端生效，网页里改则立即生效）。
-
-| 配置段 | 关键项 | 说明 |
-| --- | --- | --- |
-| `[server]` | `lan_enable` / `port` | 默认 `false` / `18765`；局域网鉴权用设备配对（PIN + HttpOnly Cookie），本机回环免验证；旧配置里的 `token` 键会被忽略 |
-| `[llm]` | `base_url` / `api_key` / `model` | OpenAI 兼容地址与密钥；换服务商时模型名要一起改 |
-| `[llm]` | `reasoning_effort` / `timeout` / `max_continuations` | 思维链强度、请求超时、撞上限自动续写轮数 |
-| `[agent]` | `ask_template` / `translate_template` / `status_prompt` | 截图询问、截图翻译、状态栏短句的提示词 |
-| `[agent]` | `context_window` / `compact_ratio` | 上下文窗口（0 = 按模型名推断）与压缩触发比例 |
-| `[security]` | `permission_mode` | `manual` / `auto` / `full` |
-| `[workspace]` | `dir` | 文件工具工作区；默认 `~/MeidoSpace` |
-| `[tts]` | `enable` / `engine` / `voice` / `speed` | 语音播报开关与音色 |
-| `[power]` | `keep_awake` | 后端运行期间抑制系统休眠 |
-| `[update]` | `github_enable` / `mirror` / `github_repo` | 双源更新：默认镜像与 GitHub 都探测，取更高版本 |
-| `[remote_input]` | `enabled` / `sensitivity` / `max_minutes` | 跨屏键鼠总开关、灵敏度、单次最长分钟数 |
-| `[qq]` | 见下 | QQ 远程通道 |
-
-### 截图与 vision
-
-截图询问、截图翻译和「带画面发送」都要求当前模型支持看图。模型能力可在设置页的校验入口查看；不支持时会退化成纯文字回答。
-
-### 语音开关
-
-语音输入默认开启，可在 QAM / 大屏 / 网页设置里切换（写入 `[stt] enable`）；首次使用会下载识别模型，失败只影响语音，不影响其它功能。语音播报在 `[tts] enable` 或设置里打开，依赖 `espeak-ng`。
-
-### `[qq]` 段
-
-| 键 | 说明 |
-| --- | --- |
-| `enable` | 总开关，默认关闭 |
-| `ws_url` | NapCat WebSocket 地址；本机调试 `ws://127.0.0.1:3001`，公网用 `wss://` |
-| `access_token` | 必填，必须与 NapCat 侧一致；留空拒绝启动 |
-| `admin_qq` | 管理员 QQ 号列表，只有这些人能下指令 |
-| `allow_groups` | 允许响应的群号；空 = 所有群一律不响应，主人 QQ 也不能绕过，私聊不受影响 |
-| `guest_prompt` | 群友专用提示词，可写 `{name}`；留空用内置受限版 |
-| `allow_image` | 是否处理 QQ 图片（下载、看图、存档） |
-
-其余限流、拆条、确认超时、重连退避等键见 [config.example.toml](server/config.example.toml)。
 
 ## 数据目录
 
@@ -187,10 +250,11 @@ bash install.sh speedtest            # 只测 pip 源速率
 userdata/
 ├── config.toml              600
 ├── persona/meidosoul.json   人设：名字、性格、称呼、语气
-├── memory.json              长期记忆
+├── memory.json              长期记忆（条目自带 scope）
 ├── sessions/                会话记录
 ├── uploads/                 用户上传与工作区文件
 ├── models/sensevoice/       语音识别模型（首次使用时按需下载）
+├── models/tts/tsukuyomi/    语音合成模型（首次使用时按需下载）
 ├── logs/
 │   ├── backend.log          后端日志（由后端轮转，保留 backend.log.1/.2）
 │   ├── overlay.log          操作遮罩日志
@@ -205,9 +269,15 @@ userdata/
 - 目录权限 `700`、`config.toml` 权限 `600`（安装器创建时收紧）。
 - 安装器只维护这一套标准布局；数据根位置由 `DECKMEIDO_DATA_DIR`（默认 `<安装目录>/userdata`）决定。
 
-## 卸载
+## 升级与卸载
 
-用安装目录里的卸载脚本：
+**升级**
+
+- **软件内**：设置 → 关于 → 检查更新 → 升级。下载后校验 sha256，失败整份回滚；配置、会话、工作区不受影响，完成后自动重启。
+- **双源**：默认同时探测国内镜像与 GitHub Release，取版本更高者，同版本优先镜像；`[update] github_enable = false` 则只用镜像。
+- **命令行**：`bash ~/DeckMeido/install.sh upgrade`，会先停客户端与后端，再同步代码与依赖；`--deps` 顺带检查控制类控件。
+
+**卸载**
 
 ```bash
 bash ~/DeckMeido/uninstall.sh            # 按清单删安装器文件，保留 userdata/
@@ -220,46 +290,6 @@ bash ~/DeckMeido/uninstall.sh --purge    # 额外删安装器创建的配置备�
 - `--purge` 只删除安装器创建、且带 `.deckmeido-config` 标记的配置目录（逐项）；工作区、`$HOME`、`/` 一律拒绝，`userdata/` 永不删除。
 - 需要强删无标记目录时才设 `DECKMEIDO_ALLOW_UNSAFE_UNINSTALL=1`，它也只允许删清单文件，不会 `rmdir`。
 
-## 升级
-
-- **软件内**：设置 → 关于 → 检查更新 → 升级。下载后校验 sha256，失败整份回滚；配置、会话、工作区不受影响，完成后自动重启。
-- **双源**：默认同时探测国内镜像与 GitHub Release，取版本更高者，同版本优先镜像；`[update] github_enable = false` 则只用镜像。
-- **命令行**：`bash ~/DeckMeido/install.sh upgrade`，会先停客户端与后端，再同步代码与依赖；`--deps` 顺带检查控制类控件。
-
-## QQ 用法
-
-触发前缀就是软件里配置的昵称，默认 `meido`。私聊管理员直接发；群里必须 @ 机器人。
-
-| 操作 | 斜杠指令 | 口语别名示例 |
-| --- | --- | --- |
-| 查询状态 | `/status` | `状态`、`在吗`、`怎么样了` |
-| 截屏 | `/shot` | `截个屏`、`看看屏幕`、`拍张照` |
-| 取消当前任务 | `/cancel` | `停`、`别做了`、`算了` |
-| 存图 | `/save_image` | `存图`、`保存这张` |
-| 存文本 | `/save_text` | `保存这段`、`存这段文字` |
-| 检查依赖 | `/deps` | `检查依赖`、`查依赖`、`依赖状态` |
-| 指令菜单 | `/help` | `菜单`、`帮助`、`有什么指令` |
-
-固定指令命中后直接执行既有动作，不经过 AI。`/deps` 只检测并回报依赖状态，不会安装任何东西、不改设备环境。其余文本按聊天处理，可让她执行设备操作。优先级：斜杠指令 > 取消 > 状态 > 截图 > 聊天。
-
-**管理员与群友**：群聊先过 `allow_groups`，只有白名单里的群会响应，白名单为空时全部不响应，主人身份也不能绕过；私聊与白名单群内管理员能下指令并触发设备操作（无需 @，危险操作仍要确认）；普通群成员只读聊天，这一轮零工具、不读主人记忆、不带截图，输出还会做脱敏。
-
-**风险控制**：
-
-- `deny`：`rm`、`rmdir -r`、`shred`、`dd`、`mkfs`、分区写入、写 `/dev` 块设备、fork bomb、写系统关键文件等，远程一律拒绝。
-- `hard_confirm`：`sudo`、下载后管道给 shell、`/etc` 或 `/usr` 写入、包管理器安装卸载、`crontab` 修改、非电源类 `systemctl restart` 等，必须回复「确认执行」。
-- `normal`：其余设备操作，按普通确认流程走。
-
-内置指令之外的设备操作，先按 `[security] permission_mode` 判断本机权限，再叠加远程风险档位。
-
-## 跨屏键鼠
-
-1. 网页设置里打开 `[remote_input] enabled`（会先弹一次安全确认）。
-2. 在电脑浏览器点网页左下角 logo 进入接管；指针锁定后移动与按键都发往 Deck。
-3. 再点 logo、按 Esc（浏览器会强制释放 Pointer Lock）或到达 `max_minutes` 自动释放。
-
-注入优先 `ydotool`（由 `ydotoold` 用户服务托管），不可用时直写 `/dev/uinput`——这要求后端有 root 或 `input` 组权限。只有已配对设备能接管，且建议只在可信局域网开启。
-
 ## 故障排查
 
 | 现象 | 排查 |
@@ -267,6 +297,7 @@ bash ~/DeckMeido/uninstall.sh --purge    # 额外删安装器创建的配置备�
 | 插件版本没变 | 看安装日志里是否有「插件已安装 v…」；到 设置 → Decky Loader 点「重新载入」，或运行 `bash ~/DeckMeido/plugin/deploy.sh` |
 | 后端没起来 | 看 `~/DeckMeido/userdata/logs/backend.log`（轮转备份 `backend.log.1/.2`，只在后端运行时产生）；确认 `18765` 没被别的进程占用 |
 | 配置写坏了 | 删除 `userdata/config.toml` 后重启，会按模板重新生成（自定义项会丢）；人设 JSON 坏了会自动回落默认人设 |
+| 模型连不上 | 先看离线模式是否打开；本地端点连接超时约 2 秒，读超时按配置。`/api/net/probe` 可判断当前只通局域网还是能到公网 |
 | QQ 连不上 | 网页 QQ 状态页看 `detail`；确认 `access_token` 非空且与 NapCat 一致、`ws_url` 可达、机器人已登录 |
 | 截图 / 点击不灵 | 跑 `bash install.sh check`；`ydotoold` 没运行会让 ydotool 报 socket 错误 |
 | 升级后打不开 | 多半是旧后端占着端口；再跑一次 `bash install.sh upgrade` 会清理残留进程 |
@@ -288,7 +319,7 @@ DeckMeido/
 ```
 
 ```bash
-py -3 -m unittest discover -s tests     # 当前 197 项
+python -m unittest discover -s tests   # 当前 905 项
 cd plugin && npm run build              # 构建插件前端到 plugin/dist
 python tools/release.py 0.7.1           # 构建 dist/：tar.gz + 插件 zip + latest.json
 ```

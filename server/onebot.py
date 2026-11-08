@@ -40,7 +40,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from . import groupmemo, menu, memory, netmode, paths, redact
+from . import groupmemo, menu, memory, netmode, paths, policy, redact
 
 # ---------- 图片链接安全校验 ----------
 # NapCat 传来的图片地址是外部输入：必须挡住 file:// 等本地协议、
@@ -98,8 +98,9 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 _SAFE_OPENER = urllib.request.build_opener(_SafeRedirectHandler())
 
 DEFAULT_PREFIX = "meido"
-DEFAULT_RATE_PER_MINUTE = 6            # 每人每分钟条数（<=0 不限）
-DEFAULT_GROUP_RATE_PER_MINUTE = 10     # 每个群每分钟条数（<=0 不限）
+# 限频数值来自 policy 的场景策略表（QQ_RATE），这里只做别名，避免两处各写一份
+DEFAULT_RATE_PER_MINUTE = policy.QQ_RATE.per_user          # 每人每分钟条数（<=0 不限）
+DEFAULT_GROUP_RATE_PER_MINUTE = policy.QQ_RATE.per_group   # 每个群每分钟条数（<=0 不限）
 # 群常识只读缓存：每群最近多少条、每条活多久、整段注入最多多少字
 DEFAULT_GROUP_MEMO_SIZE = 20
 DEFAULT_GROUP_MEMO_TTL = 300.0
@@ -122,8 +123,8 @@ MAX_GUEST_PROMPT = 2000        # 群友提示词硬上限（字符）
 DEFAULT_IMAGE_RECENT_MINUTES = 2.0
 DEFAULT_AUTO_LAUNCH_WAIT = 6.0
 # 群友回复硬上限：模型偶尔会无视「短一点」的提示写长文。代码层截断，
-# 不指望提示词能守住回复长度这条策略。
-MAX_GUEST_REPLY_CHARS = 400
+# 不指望提示词能守住回复长度这条策略。数值与 policy.GUEST_POLICY 共用一份。
+MAX_GUEST_REPLY_CHARS = policy.GUEST_REPLY_MAX_CHARS
 IMAGE_SEND_MAX_BASE64 = 3 * 1024 * 1024   # 单条图文里 base64 的上限
 LOG_MAXLEN = 400
 

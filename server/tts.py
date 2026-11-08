@@ -61,7 +61,6 @@ PREVIEW_TEXTS = {
 
 VOICE_ID = "tsukuyomi"
 VOICE_LABEL = "つくよみちゃん（ja/zh/en/es/fr/pt）"
-MODEL_DIR_NAME = "tsukuyomi"
 ONNX_NAME = "tsukuyomi-chan-6lang-fp16.onnx"
 CONFIG_NAME = "config.json"
 MODEL_FILES = (ONNX_NAME, CONFIG_NAME)
@@ -184,10 +183,9 @@ _SCRIPT_TOKEN_RE = re.compile(
 # 「她的口头禅是「甘いものは正義です」…」7/26≈0.27。取 0.30 可以把这类中文
 # 主语句判回 zh，同时给真日语句（通常 >0.5）留足余量。
 KANA_JA_RATIO = 0.30
-# 旧版按「拉丁字符占比」判整句英文（0.75）。实测「把 API 和 GPU 的配置改一下」
+# 旧版按「拉丁字符占比」判整句英文（历史阈值 0.75）。实测「把 API 和 GPU 的配置改一下」
 # 这种中文句会被判成英文，整句换语言。现在改成按词数 + 是否有完整 CJK 语句判断，
-# 常量保留仅作参考，不再参与判定。
-LATIN_EN_RATIO = 0.75
+# 旧的占比常量已删除，不再参与判定。
 
 _HIRAGANA_RE = re.compile(r"[\u3040-\u309f]")
 # 引号/括号内的文本单独判定语言，外面的文本按外层主语言判定

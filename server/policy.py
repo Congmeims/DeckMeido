@@ -117,6 +117,102 @@ class TurnContext:
     force_confirm: bool = False
 
 
+# ---------- 场景策略表 ----------
+# 场景档位：主人（本机网页 / 插件 / QQ 主人）与群友（白名单群里的普通成员）。
+# 两档共用同一个引擎和公开人设，差别只落在下面这张 TurnPolicy 表里。
+SCENE_OWNER = "owner"
+SCENE_GUEST = "guest"
+
+# 确认级别：default = 按本机权限模式；remote = 远程入口，危险操作必须二次确认
+CONFIRM_DEFAULT = "default"
+CONFIRM_REMOTE = "remote"
+
+# 群友回复字符上限。旧路径 onebot.MAX_GUEST_REPLY_CHARS 与它共用同一个值，
+# 两处不会各写一份。
+GUEST_REPLY_MAX_CHARS = 400
+
+
+@dataclass(frozen=True)
+class RateLimit:
+    """渠道限频：每人 / 每群在 window 秒内最多几条"""
+    per_user: int
+    per_group: int
+    window: float = 60.0
+
+
+# QQ 渠道的默认闸门。onebot 的 RateGate 直接引用这两个数，
+# 所以「限频」这一行只有这张表一个来源。
+QQ_RATE = RateLimit(per_user=6, per_group=10)
+
+
+@dataclass(frozen=True)
+class TurnPolicy:
+    """一轮对话的场景策略表：引擎只按这张表执行，不在入口散落 if。
+
+    主人档保持现有能力；群友档零工具、无长期记忆、400 字上限、强制脱敏。
+    安全限制全部落在代码层（readonly + 空工具集 + 回复截断），不靠提示词。
+    """
+    scene: str = SCENE_OWNER
+    # 可用工具名集合：None = 全部工具；空集 = 零工具
+    tools: frozenset[str] | None = None
+    # 记忆 scope：None = 跟随当前会话（onebot/memory 设置的上下文）；
+    # () = 本轮完全不注入长期记忆；显式元组 = 只注入这些 scope
+    memory_scopes: tuple[str, ...] | None = None
+    # 回复字符上限：0 = 不限制
+    reply_max_chars: int = 0
+    # 确认级别（CONFIRM_DEFAULT / CONFIRM_REMOTE）
+    confirm_level: str = CONFIRM_DEFAULT
+    # 渠道限频；None = 不额外限频（沿用渠道现有闸门）
+    rate_limit: RateLimit | None = None
+    # 输出强制脱敏（密钥、内网地址等）
+    redact: bool = False
+    # 只给公开人设：不拼 extra_system、模式段和长期记忆
+    public_persona: bool = False
+    # 工具层硬拒（policy.check 里最前面那道闸）
+    readonly: bool = False
+    # 本轮上下文窗口：最多带几条历史（0 = 全部）
+    history_max_messages: int = 0
+    # 历史里每条文字最多保留多少字（0 = 不截断）；超出部分加省略号
+    history_item_max_chars: int = 0
+
+    def allows_tool(self, name: str) -> bool:
+        return self.tools is None or name in self.tools
+
+    def filter_tools(self, specs: list[dict]) -> list[dict]:
+        """按工具集裁剪本轮可用工具（specs 是 OpenAI tools 结构）"""
+        if self.tools is None:
+            return list(specs)
+        return [s for s in specs
+                if self.allows_tool((s.get("function") or {}).get("name") or "")]
+
+    def memory_enabled(self) -> bool:
+        return self.memory_scopes is None or bool(self.memory_scopes)
+
+    def force_confirm(self) -> bool:
+        return self.confirm_level == CONFIRM_REMOTE
+
+
+# 主人档：能力与现在完全一致，所有开关保持默认
+OWNER_POLICY = TurnPolicy(scene=SCENE_OWNER)
+
+# 群友档：零工具、无长期记忆、400 字、强制脱敏、只给公开人设；
+# 群聊上下文只带最近 20 条、每条截到 40 字（群里一句闲聊本来就短，
+# 完整群史既贵又容易让模型把别的话题带进来）
+GUEST_POLICY = TurnPolicy(
+    scene=SCENE_GUEST,
+    tools=frozenset(),
+    memory_scopes=(),
+    reply_max_chars=GUEST_REPLY_MAX_CHARS,
+    confirm_level=CONFIRM_REMOTE,
+    rate_limit=QQ_RATE,
+    redact=True,
+    public_persona=True,
+    readonly=True,
+    history_max_messages=20,
+    history_item_max_chars=40,
+)
+
+
 @dataclass
 class PolicyDecision:
     allowed: bool

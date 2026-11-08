@@ -132,6 +132,56 @@ class GuestPersonaPolicyTest(unittest.TestCase):
         self.assertTrue(out.endswith("……"))
 
 
+class TurnPolicyTest(unittest.TestCase):
+    """场景策略表：两档的差异全部落在表里；群档的安全限制必须是代码层。"""
+
+    def test_owner_keeps_full_capability(self):
+        pol = policy.OWNER_POLICY
+        self.assertEqual(pol.scene, policy.SCENE_OWNER)
+        self.assertIsNone(pol.tools)
+        self.assertIsNone(pol.memory_scopes)
+        self.assertEqual(pol.reply_max_chars, 0)
+        self.assertFalse(pol.redact)
+        self.assertFalse(pol.readonly)
+        self.assertEqual(pol.history_max_messages, 0)
+        self.assertEqual(pol.history_item_max_chars, 0)
+        self.assertTrue(pol.allows_tool("run_command"))
+        self.assertTrue(pol.memory_enabled())
+
+    def test_guest_is_locked_down(self):
+        pol = policy.GUEST_POLICY
+        self.assertEqual(pol.scene, policy.SCENE_GUEST)
+        self.assertEqual(pol.tools, frozenset())
+        self.assertFalse(pol.allows_tool("run_command"))
+        self.assertEqual(pol.memory_scopes, ())
+        self.assertFalse(pol.memory_enabled())
+        self.assertEqual(pol.reply_max_chars, 400)
+        self.assertTrue(pol.redact)
+        self.assertTrue(pol.readonly)
+        self.assertTrue(pol.force_confirm())
+        # 群聊上下文窗口也落在同一张表里：最近 20 条、每条 40 字
+        self.assertEqual(pol.history_max_messages, 20)
+        self.assertEqual(pol.history_item_max_chars, 40)
+
+    def test_guest_tool_filter_drops_everything(self):
+        specs = [{"type": "function", "function": {"name": "screenshot"}},
+                 {"type": "function", "function": {"name": "read_file"}}]
+        self.assertEqual(policy.GUEST_POLICY.filter_tools(specs), [])
+        self.assertEqual(len(policy.OWNER_POLICY.filter_tools(specs)), 2)
+
+    def test_numbers_have_one_source(self):
+        # 限频和群友回复上限都只在策略表里写一次，onebot 侧只是别名
+        self.assertEqual(onebot.DEFAULT_RATE_PER_MINUTE, policy.QQ_RATE.per_user)
+        self.assertEqual(onebot.DEFAULT_GROUP_RATE_PER_MINUTE, policy.QQ_RATE.per_group)
+        self.assertEqual(onebot.MAX_GUEST_REPLY_CHARS, policy.GUEST_REPLY_MAX_CHARS)
+
+    def test_guest_policy_denies_tools_at_authorization(self):
+        ctx = policy.TurnContext(readonly=True)
+        decision = policy.check("run_command", {"command": "ls"}, ctx)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.code, "readonly")
+
+
 class ImageUrlGuardTest(unittest.TestCase):
     """QQ 图片链接的协议 / 地址 / 重定向校验。"""
 
