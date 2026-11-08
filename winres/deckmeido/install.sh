@@ -3257,25 +3257,40 @@ sed_repl() {
 PLUGIN_SKIP_REASON=""
 
 decky_ready() {
-  local d="$INSTALL_DIR/plugin/deploy.sh"
+  local d="$INSTALL_DIR/plugin/deploy.sh" rc=0
   [ -f "$d" ] || { PLUGIN_SKIP_REASON="安装包里没有 plugin/deploy.sh"; return 1; }
-  DECKMEIDO_NONINTERACTIVE=1 bash "$d" --detect >/dev/null 2>&1
+  # 保留退出码：2 = 机器上没装 Decky（正常跳过），其它非 0 = 检测本身出错
+  DECKMEIDO_NONINTERACTIVE=1 bash "$d" --detect >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    2) PLUGIN_SKIP_REASON="没检测到 Decky Loader"; return 1 ;;
+    *) PLUGIN_SKIP_REASON="检测 Decky 失败（deploy.sh --detect 退出码 $rc）"; return 1 ;;
+  esac
 }
 
 install_plugin() {
   if ! decky_ready; then
+    PLUGIN_RELOAD_STATE="absent"
     dim "跳过 Decky 插件：${PLUGIN_SKIP_REASON:-没装 Decky Loader}"
-    [ -n "$PLUGIN_SKIP_REASON" ] || dim "想用游戏模式面板，先装 Decky Loader，再跑：bash $INSTALL_DIR/plugin/deploy.sh"
+    dim "想用游戏模式面板，先装 Decky Loader（可选依赖），再跑：bash $INSTALL_DIR/plugin/deploy.sh"
+    plugin_handoff_zip
     return 0
   fi
   # 动手之前先体检 Decky。已经卡在重启循环时再去重启它，只会把循环坐实，
   # 而这一步完全可以在复制文件之前就判断出来——先提示，用户可以先重启 Deck。
-  if ! decky_health; then
-    warn "Decky 当前异常：$DECKY_HEALTH_NOTE"
-    warn "本次不会重启 Decky；插件文件仍会正常部署，装完请先重启 Deck，再到 设置 → Decky Loader 点「重新载入」"
-  else
-    dim "Decky 状态正常（$DECKY_HEALTH_NOTE）"
-  fi
+  local hrc=0
+  decky_health || hrc=$?
+  case "$hrc" in
+    1)
+      warn "Decky 当前异常：$DECKY_HEALTH_NOTE"
+      warn "本次不会重启 Decky；插件文件仍会正常部署，装完请先重启 Deck，再到 设置 → Decky Loader 点「重新载入」" ;;
+    2)
+      dim "Decky 状态未知：$DECKY_HEALTH_NOTE" ;;
+    3)
+      dim "Decky 已安装但服务没在运行；插件会先部署，装完自动启动 Decky" ;;
+    *)
+      dim "Decky 状态正常（$DECKY_HEALTH_NOTE）" ;;
+  esac
   # 已经装过插件就是升级：直接替换，不再问。以前这里走 ask_yes（默认 N），
   # 用户在终端按回车就把插件跳过了，升级后插件一直停在旧版本（0.6.11 就是这么来的）。
   local installed=""
@@ -3308,6 +3323,7 @@ install_plugin() {
       ver="$(plugin_installed_version)" && info "插件已安装 v${ver}"
       plugin_reload || true
     else
+      PLUGIN_RELOAD_STATE="failed"
       warn "插件自动更新失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
     fi
     return 0
@@ -3316,6 +3332,7 @@ install_plugin() {
   case "${DECKMEIDO_INSTALL_PLUGIN:-ask}" in
     0|no|off|false)
       dim "已跳过 Decky 插件（可选下载里选择了不装）"
+      PLUGIN_RELOAD_STATE="skipped"
       plugin_handoff_zip
       return 0 ;;
     1|yes|on|true)
@@ -3325,6 +3342,7 @@ install_plugin() {
         ver="$(plugin_installed_version)" && info "插件已安装 v${ver}"
         plugin_reload || true
       else
+        PLUGIN_RELOAD_STATE="failed"
         warn "插件安装失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
       fi
       return 0 ;;
@@ -3343,9 +3361,11 @@ install_plugin() {
       PLUGIN_RELOAD_STATE="${PLUGIN_RELOAD_STATE:-pending}"
       dim "插件已就绪，到 设置 → Decky Loader 点「重新载入」即可在 QAM 里看到"
     else
+      PLUGIN_RELOAD_STATE="failed"
       warn "插件安装失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
     fi
   else
+    PLUGIN_RELOAD_STATE="skipped"
     plugin_handoff_zip
   fi
   return 0
@@ -3505,7 +3525,8 @@ decky_wait_stopped() {
 }
 
 # 动手前给 Decky 体检。返回 0 = 可用；1 = 已异常（绝不能再去重启它）；
-# 2 = 查不了（没有 systemctl / 没装 Decky，不算故障）。
+# 2 = 查不了（没有 systemctl / 没装 Decky，不算故障）；
+# 3 = 装了但服务没在跑（没启动 / 被停用），不是故障，start 一下就行。
 # 判据三条一起看：is-active 是不是 active、journal 近 2 分钟有没有 1337 bind 失败、
 # 1337 是否真的能连上。只看第一条会被重启循环骗过去（那期间 is-active 一直是 active）。
 decky_health() {
@@ -3526,9 +3547,10 @@ decky_health() {
   nr="$(decky_nrestarts "$unit")"
   hits="$(decky_bind_fail_hits "$unit" '2 minutes ago')"
   if [ "$state" != "active" ]; then
-    DECKY_HEALTH="broken"
-    DECKY_HEALTH_NOTE="服务不是 active（${state:-unknown}）"
-    return 1
+    # 只是没在跑（没启动 / 被停用），不等于坏了：文件照常部署，随后 start 即可
+    DECKY_HEALTH="down"
+    DECKY_HEALTH_NOTE="Decky 服务没有在运行（${state:-unknown}）"
+    return 3
   fi
   if [ "$hits" -gt 0 ]; then
     DECKY_HEALTH="broken"
@@ -3590,7 +3612,7 @@ decky_restart_loop_note() {
 # 所以必须 stop（让 systemd 按自己的 TimeoutStopSec 收尾）→ 确认残留真的没了
 # → 才 start。残留没清干净就绝不再 start，宁可让用户重启 Deck。
 decky_safe_reload() {
-  local unit tmo state i
+  local unit tmo state i did_stop=0
   DECKY_SAFE_STATE=""
   DECKY_SAFE_NOTE=""
   DECKY_LOOP_NOTE=""
@@ -3610,21 +3632,35 @@ decky_safe_reload() {
     DECKY_SAFE_NOTE="没有 root 权限，无法安全重载；请到 设置 → Decky Loader 点「重新载入」"
     return 1
   fi
-  if ! run_root systemctl stop "$unit" >/dev/null 2>&1; then
-    DECKY_SAFE_STATE="failed"
-    DECKY_SAFE_NOTE="停止 Decky 失败（$unit）：sudo 被拒绝或服务不存在"
-    return 1
-  fi
-  # 等它真正停干净。上限取服务自己的 TimeoutStopSec（15s），再长也没意义
-  tmo="$(systemctl show -p TimeoutStopSec --value "$unit" 2>/dev/null || true)"
-  tmo="${tmo%s}"
-  case "$tmo" in ''|*[!0-9]*) tmo=15 ;; esac
-  [ "$tmo" -gt 20 ] && tmo=20
-  [ "$tmo" -lt 3 ] && tmo=3
-  if ! decky_wait_stopped "$unit" "$tmo"; then
-    DECKY_SAFE_STATE="failed"
-    DECKY_SAFE_NOTE="停止 Decky 后仍有残留进程（PID: $(decky_residual_procs)）占着 1337；已放弃重载，避免触发重启循环。请重启 Deck 后再继续"
-    return 1
+  state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+  if [ "$state" = "active" ]; then
+    did_stop=1
+    if ! run_root systemctl stop "$unit" >/dev/null 2>&1; then
+      DECKY_SAFE_STATE="failed"
+      DECKY_SAFE_NOTE="停止 Decky 失败（$unit）：sudo 被拒绝或服务不存在"
+      return 1
+    fi
+    # 等它真正停干净。上限取服务自己的 TimeoutStopSec（15s），再长也没意义
+    tmo="$(systemctl show -p TimeoutStopSec --value "$unit" 2>/dev/null || true)"
+    tmo="${tmo%s}"
+    case "$tmo" in ''|*[!0-9]*) tmo=15 ;; esac
+    [ "$tmo" -gt 20 ] && tmo=20
+    [ "$tmo" -lt 3 ] && tmo=3
+    if ! decky_wait_stopped "$unit" "$tmo"; then
+      DECKY_SAFE_STATE="failed"
+      DECKY_SAFE_NOTE="停止 Decky 后仍有残留进程（PID: $(decky_residual_procs)）占着 1337；已放弃重载，避免触发重启循环。请重启 Deck 后再继续"
+      return 1
+    fi
+  else
+    # 服务本来就没在跑（没启动 / 被停用）：不需要 stop，但必须先确认没有残留子进程
+    # 占着 1337——否则 start 一上来就会撞端口，直接进重启循环。
+    local res
+    res="$(decky_residual_procs)"
+    if [ -n "$res" ]; then
+      DECKY_SAFE_STATE="failed"
+      DECKY_SAFE_NOTE="Decky 服务已停止，但仍有残留进程（PID: $res）占着 1337；已放弃重载，请重启 Deck 后再继续"
+      return 1
+    fi
   fi
   if ! run_root systemctl start "$unit" >/dev/null 2>&1; then
     DECKY_SAFE_STATE="failed"
@@ -3658,7 +3694,9 @@ decky_safe_reload() {
     DECKY_SAFE_NOTE="Decky 已启动但 127.0.0.1:1337 不应答：插件加载失败，请重启 Deck 后再试"
     return 1
   fi
-  DECKY_SAFE_NOTE="Decky 已安全重载（$unit：stop→start，1337 可连）"
+  local how="stop→start"
+  [ "$did_stop" = 1 ] || how="原来没在运行，已直接 start"
+  DECKY_SAFE_NOTE="Decky 已安全重载（$unit：$how，1337 可连）"
   return 0
 }
 
@@ -3674,20 +3712,27 @@ decky_plugin_logged() {
 
 # 重载 Decky：插件是启动时一次性 import 的，换了磁盘上的文件不重载还是旧代码
 plugin_reload() {
+  local hrc=0
   DECKY_LOOP_NOTE=""
   DECKY_SAFE_STATE=""
   DECKY_SAFE_NOTE=""
-  # 动手前先体检：已经卡在循环里还去重启它，只会把循环坐实
-  if ! decky_health; then
-    # 只有「确实坏了」才写进收尾告警；查不了（没有 systemctl）只算待重载
-    if [ "$DECKY_HEALTH" = "broken" ]; then
-      DECKY_LOOP_NOTE="$DECKY_HEALTH_NOTE"
-    fi
+  # 动手前先体检：已经卡在循环里还去重启它，只会把循环坐实。
+  # 注意 3 是「装了但没在跑」——那不是故障，后面 start 一下就行，不能跳过。
+  decky_health || hrc=$?
+  if [ "$hrc" = 1 ]; then
     PLUGIN_RELOAD_STATE="pending"
+    DECKY_LOOP_NOTE="$DECKY_HEALTH_NOTE"
     warn "Decky 当前异常：$DECKY_HEALTH_NOTE"
     warn "为避免把 Decky 弄坏，本次不重启它；插件文件已部署，请先重启 Deck，再到 设置 → Decky Loader 点「重新载入」"
     return 1
   fi
+  if [ "$hrc" = 2 ]; then
+    PLUGIN_RELOAD_STATE="pending"
+    warn "$DECKY_HEALTH_NOTE"
+    warn "无法自动重载；请到 设置 → Decky Loader 点「重新载入」使插件生效"
+    return 1
+  fi
+  [ "$hrc" = 3 ] && dim "Decky 服务当前没在运行，接下来会先启动它"
   if decky_safe_reload; then
     PLUGIN_RELOAD_STATE="ok"
     info "$DECKY_SAFE_NOTE"
@@ -3718,8 +3763,8 @@ plugin_handoff_zip() {
   cp -f "$src" "$dst"
   dim "已把插件包放到工作区：$dst"
   dim "之后想装，手动执行："
-  dim "  mkdir -p ~/homebrew/plugins/DeckMeido"
-  dim "  unzip -o '$dst' -d ~/homebrew/plugins/DeckMeido"
+  dim "  sudo mkdir -p ~/homebrew/plugins"
+  dim "  sudo unzip -o '$dst' -d ~/homebrew/plugins   # zip 顶层已经是 DeckMeido/"
   dim "  # 然后到 设置 → Decky Loader 点「重新载入」"
   return 0
 }
@@ -3907,11 +3952,14 @@ print_done() {
   if [ -n "$DECKY_LOOP_NOTE" ]; then
     card_line "⚠ Decky     $DECKY_LOOP_NOTE"
   fi
-  # 插件到底有没有真的生效，必须在这里说清楚：「已安装」不等于「已加载」
+  # 插件到底有没有真的生效，必须在这里说清楚：「已安装」不等于「已加载」。
+  # absent/skipped 也要单列：不然用户以为装好了，进 QAM 找不到入口却不知道该怪谁。
   case "${PLUGIN_RELOAD_STATE:-}" in
     ok)      card_line "Decky 插件   v${pv:-?} 已重载，游戏模式面板可用" ;;
     pending) card_line "Decky 插件   v${pv:-?} 已部署，待重载（请先重启 Deck，再到 Decky 设置点「重新载入」）" ;;
     failed)  card_line "Decky 插件   v${pv:-?} 已部署，但重载失败（请重启 Deck 后再重新载入）" ;;
+    absent)  card_line "Decky 插件   未安装：没检测到 Decky Loader（可选依赖）" ;;
+    skipped) card_line "Decky 插件   未安装：按你的选择跳过，zip 已放到工作区" ;;
     *)       [ -n "$pv" ] && card_line "Decky 插件   v${pv} 已部署" ;;
   esac
   card_line "本机控制台   http://127.0.0.1:$PORT/"
@@ -4047,11 +4095,15 @@ do_install() {
   install_uninstaller
   install_plugin
   # Decky 会在插件加载时自动建 settings/data/logs/<插件名>；装完先占上，
-  # 保证清单里一定记着这三处（否则卸载时它们会成为「插件没卸干净」）
-  local _dd
-  while IFS= read -r _dd; do
-    mkdir -p "$_dd" 2>/dev/null || true
-  done < <(decky_plugin_dirs)
+  # 保证清单里一定记着这三处（否则卸载时它们会成为「插件没卸干净」）。
+  # 没装 Decky 时不能建：会在没有 Decky 的机器上凭空造出 ~/homebrew/{settings,data,logs}，
+  # 看起来像装过 Decky，卸载时还得再清一遍。
+  if decky_ready 2>/dev/null; then
+    local _dd
+    while IFS= read -r _dd; do
+      mkdir -p "$_dd" 2>/dev/null || true
+    done < <(decky_plugin_dirs)
+  fi
   # 所有安装动作结束后再落标记/清单，确保 venv、桌面项、插件都记录在内
   write_install_records
   step_ok "桌面入口、Decky 插件与安装清单已写入"
@@ -5387,11 +5439,19 @@ restart_decky() {
     un_skip "dry-run：不执行 Decky 重载"
     return 0
   fi
-  if ! decky_health; then
+  local hrc=0
+  decky_health || hrc=$?
+  if [ "$hrc" = 1 ]; then
     un_note "Decky 当前异常：$DECKY_HEALTH_NOTE"
     un_note "跳过重载，避免把 Decky 弄得更坏；请先重启 Deck"
     DECKY_LOOP_NOTE="$DECKY_HEALTH_NOTE"
     UN_DECKY_STATE="异常，已跳过重载（$DECKY_HEALTH_NOTE）"
+    return 0
+  fi
+  if [ "$hrc" = 3 ]; then
+    # 服务本来就没在跑：卸载不需要把它拉起来，拉起反而多一次风险
+    un_skip "Decky 服务没在运行（$DECKY_HEALTH_NOTE），跳过重载"
+    UN_DECKY_STATE="未运行（跳过重载）"
     return 0
   fi
   decky_safe_reload

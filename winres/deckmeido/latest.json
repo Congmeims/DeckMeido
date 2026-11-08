@@ -1,10 +1,10 @@
 {
   "tag": "0.7.9",
   "name": "DeckMeido 0.7.9",
-  "notes": "# DeckMeido 0.7.9\n\n- install.sh: Decky 插件安装/卸载改为体检 + stop/start 安全序列\n- install.sh: Decky 重启后回读 NRestarts，卡在重启循环时明确告警\n- Release: ship 0.7.9 artifacts\n- tts: 修正月读酱模型哈希（取 lfs.oid 而非 xetHash）并把下载地址钉到 commit\n- Release: rebuild 0.7.8 artifacts with new uninstall flow\n- uninstall: move userdata to MeidoSpace before deleting, verify every step\n- Release: ship 0.7.8 artifacts\n- chore: 版本号升到 0.7.8\n- install: 删除旧版本兼容与失效注释\n- install: 自定义安装项默认全装，卸载系统包默认删除\n- install: 语音模型缺失不再被静默吞掉，安装期下载统一重试 3 次\n- Release: ship 0.7.7 artifacts\n- Release: bump to 0.7.7\n- Uninstall: trash-only cleanup driven by install manifest\n- Release: ship 0.7.6 artifacts\n- Release: bump to 0.7.6\n- Settings: regroup into six panes with global search and tighter density\n- Fix: keep pairing results, index QQ sessions at once, accept CGNAT in release audit\n- Installer: add minimal/standard/full profiles; fix exit key and box width\n- Config: mark eyes_display reserved for future versions\n",
-  "published_at": "2026-11-08T22:41:59+08:00",
+  "notes": "# DeckMeido 0.7.9\n\n- deploy_deck.sh: 重载 Decky 改为体检 + stop/start 安全序列；install.sh 补齐无 Decky 分支\n- Release: 0.7.9 产物重打（install.sh 改为安全重载 Decky）\n- install.sh: Decky 插件安装/卸载改为体检 + stop/start 安全序列\n- install.sh: Decky 重启后回读 NRestarts，卡在重启循环时明确告警\n- Release: ship 0.7.9 artifacts\n- tts: 修正月读酱模型哈希（取 lfs.oid 而非 xetHash）并把下载地址钉到 commit\n- Release: rebuild 0.7.8 artifacts with new uninstall flow\n- uninstall: move userdata to MeidoSpace before deleting, verify every step\n- Release: ship 0.7.8 artifacts\n- chore: 版本号升到 0.7.8\n- install: 删除旧版本兼容与失效注释\n- install: 自定义安装项默认全装，卸载系统包默认删除\n- install: 语音模型缺失不再被静默吞掉，安装期下载统一重试 3 次\n- Release: ship 0.7.7 artifacts\n- Release: bump to 0.7.7\n- Uninstall: trash-only cleanup driven by install manifest\n- Release: ship 0.7.6 artifacts\n- Release: bump to 0.7.6\n- Settings: regroup into six panes with global search and tighter density\n- Fix: keep pairing results, index QQ sessions at once, accept CGNAT in release audit\n",
+  "published_at": "2026-11-08T22:55:43+08:00",
   "files": {
     "tarball": "deckmeido-0.7.9.tar.gz",
-    "sha256": "c508c346df1793545e997b1b892f1be2c6e53ca011bbca3f62c7454485c1cc72"
+    "sha256": "c0546e0aae27494510e03baa81cd945e3b5124864b3ec304204e67b34414d4bf"
   }
 }
