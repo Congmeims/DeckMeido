@@ -1,10 +1,10 @@
 {
-  "tag": "0.7.7",
-  "name": "DeckMeido 0.7.7",
-  "notes": "# DeckMeido 0.7.7\n\n- Uninstall: trash-only cleanup driven by install manifest\n- Release: ship 0.7.6 artifacts\n- Release: bump to 0.7.6\n- Settings: regroup into six panes with global search and tighter density\n- Fix: keep pairing results, index QQ sessions at once, accept CGNAT in release audit\n- Installer: add minimal/standard/full profiles; fix exit key and box width\n- Config: mark eyes_display reserved for future versions\n- Docs: document smart speaker, music, and remaining features\n- Docs: refresh test count\n- Policy: two scene presets and guest history window\n- Memory: cap injection budget; share persona style with guests\n- Memory: scope-aware store and /memory command\n- Offline: offline mode v1 with fast-fail and banner\n- Media: fix Decky RPC id mixups, verify playback, boost speech volume\n- Media: voice song request through Decky Music search and queue\n- Upload: keep fail/expanded classes on finished card\n- Upload: resume after first file, show walk progress, cancel during prep\n- Media: local intent fast path for Decky Music over MPRIS\n- Wake: wait briefly for the pre-cached ack when arming\n- Wake: pre-cached 我在 ack and doodle-face eyes\n",
-  "published_at": "2026-11-08T19:53:03+08:00",
+  "tag": "0.7.8",
+  "name": "DeckMeido 0.7.8",
+  "notes": "# DeckMeido 0.7.8\n\n- chore: 版本号升到 0.7.8\n- install: 删除旧版本兼容与失效注释\n- install: 自定义安装项默认全装，卸载系统包默认删除\n- install: 语音模型缺失不再被静默吞掉，安装期下载统一重试 3 次\n- Release: ship 0.7.7 artifacts\n- Release: bump to 0.7.7\n- Uninstall: trash-only cleanup driven by install manifest\n- Release: ship 0.7.6 artifacts\n- Release: bump to 0.7.6\n- Settings: regroup into six panes with global search and tighter density\n- Fix: keep pairing results, index QQ sessions at once, accept CGNAT in release audit\n- Installer: add minimal/standard/full profiles; fix exit key and box width\n- Config: mark eyes_display reserved for future versions\n- Docs: document smart speaker, music, and remaining features\n- Docs: refresh test count\n- Policy: two scene presets and guest history window\n- Memory: cap injection budget; share persona style with guests\n- Memory: scope-aware store and /memory command\n- Offline: offline mode v1 with fast-fail and banner\n- Media: fix Decky RPC id mixups, verify playback, boost speech volume\n",
+  "published_at": "2026-11-08T21:12:11+08:00",
   "files": {
-    "tarball": "deckmeido-0.7.7.tar.gz",
-    "sha256": "a76bdb6cc1968171c0836b0911d6d607c1d1a721b66d912c0bda52dc3072a9b8"
+    "tarball": "deckmeido-0.7.8.tar.gz",
+    "sha256": "d56982a7aa8e0b25093fb86afe81610c6ebb2c2c1f7a33a148a194de939f1ed6"
   }
 }
