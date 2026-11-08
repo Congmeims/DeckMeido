@@ -16,7 +16,7 @@
 #   bash install.sh upgrade --minimal|--standard|--full   升级并按对应档位补齐组件
 #   bash install.sh upgrade --deps      升级后顺带检查并安装控制类插件
 #   bash install.sh check          自检：逐个实测控制类控件是否真的能用
-#   bash install.sh uninstall     卸载：安装器文件全部移入回收站，保留 userdata/ 与工作区
+#   bash install.sh uninstall     卸载：userdata 先搬到 ~/MeidoSpace，其余全部移入回收站
 #   bash install.sh uninstall --dry-run  只列计划，零改动（系统包也只列不删）
 #   bash install.sh uninstall --purge    连工作区、userdata、日志、模型、配置备份一起移入回收站
 #   bash install.sh from-mirror   从国内镜像站下载最新版并安装（GitHub 不通时用）
@@ -71,6 +71,7 @@ MIRROR="${DECKMEIDO_MIRROR:-https://meido.meagames.cn/deckmeido}"
 MIRROR="${MIRROR%/}"
 GITHUB_REPO="Congmeims/DeckMeido"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/$APP"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/$APP_DIR"
 DESKTOP_DIR="$HOME/.local/share/applications"
 # 真正的「桌面」目录：可能是 Desktop 也可能是 桌面，取 xdg 配置，没配置就默认 Desktop
 DESKTOP_FOLDER="$(command -v xdg-user-dir >/dev/null 2>&1 && xdg-user-dir DESKTOP 2>/dev/null || true)"
@@ -482,7 +483,7 @@ trash_path() {
       # 兜底：cp 完整搬过去再移除源（跨文件系统、mv 不支持的情况）
       if cp -a -- "$p" "$dest" 2>/dev/null && [ -e "$dest" ]; then
         if [ -d "$p" ] && [ ! -L "$p" ]; then rm -rf -- "$p" 2>/dev/null || true
-        else rm -f -- "$p" 2>/dev/null || true; fi
+        else rm -f "$p" 2>/dev/null || true; fi
       fi
     fi
     if [ -e "$p" ] || [ -L "$p" ]; then
@@ -1983,7 +1984,7 @@ prune_stale() {
   local old
   # 文件名可能带空格（安装目录不是我们的名字规则），不能靠 $(ls) 分词
   while IFS= read -r old; do
-    [ -n "$old" ] && rm -f -- "$old"
+    [ -n "$old" ] && rm -f "$old"
   done < <(find "$INSTALL_DIR" -maxdepth 1 -name 'update-backup-*.tar.gz' -type f \
              -printf '%T@ %p\n' 2>/dev/null | sort -rn | tail -n +2 | cut -d' ' -f2-)
   [ "$removed" -gt 0 ] && dim "清理了 $removed 个新版本中已不存在的旧文件"
@@ -4484,10 +4485,11 @@ uninstall_optional_deps() {
   if ! ask_yn "要卸载上面这些包吗？" y "卸载"; then
     UNINSTALL_KEPT_PKGS="${cand_pkg[*]}"
     warn "已保留：$UNINSTALL_KEPT_PKGS（按你的选择没有卸载，系统与这些包均未改动）"
-    # 卸载后 userdata 会保留，把选择写进保留说明里，以后翻到就知道是主动留下的
-    if [ -f "$DATA_KEEP_NOTE" ]; then
+    # 选择写进保留说明里，以后翻到就知道是主动留下的（userdata 可能已经搬到 MeidoSpace）
+    local keep_note="${DATA_AT:-$DATA_DIR}/README-KEPT.txt"
+    if [ -f "$keep_note" ]; then
       printf '\n卸载时选择保留的系统包（没有删除）：%s\n' \
-        "$UNINSTALL_KEPT_PKGS" >> "$DATA_KEEP_NOTE" 2>/dev/null || true
+        "$UNINSTALL_KEPT_PKGS" >> "$keep_note" 2>/dev/null || true
     fi
     return 0
   fi
@@ -4518,18 +4520,22 @@ uninstall_optional_deps() {
     # 逐个删：一次删多个时 pacman 会把「另一个包需要它」的提示合并成一条，
     # 用户看不出是哪个；逐个删出错时也只影响那一个
     for p in "${pkg_del[@]}"; do
-      if sudo pacman -R --noconfirm -- "$p"; then
+      if run_root pacman -R --noconfirm -- "$p"; then
         info "已卸载：$p"
+        UNINSTALL_REMOVED_PKGS="${UNINSTALL_REMOVED_PKGS:+$UNINSTALL_REMOVED_PKGS }$p"
       else
         warn "卸载 $p 失败（可能有别的包依赖它）。手动处理：sudo pacman -R $p"
+        UNINSTALL_FAILS+=("系统包卸载失败：$p（手动：sudo pacman -R $p）")
       fi
     done
   fi
   for p in "${aur_del[@]}"; do
     if "$helper" -R --noconfirm -- "$p"; then
       info "已卸载（$helper）：$p"
+      UNINSTALL_REMOVED_PKGS="${UNINSTALL_REMOVED_PKGS:+$UNINSTALL_REMOVED_PKGS }$p"
     else
       warn "卸载 $p 失败。手动处理：$helper -R $p"
+      UNINSTALL_FAILS+=("系统包卸载失败：$p（手动：$helper -R $p）")
     fi
   done
   # 选 Y 就等于承诺「包没了」：逐个复检。sudo 失败或被别的包依赖挡住时，
@@ -4541,6 +4547,7 @@ uninstall_optional_deps() {
   if [ ${#still[@]} -gt 0 ]; then
     UNINSTALL_LEFT_PKGS="${still[*]}"
     warn "复检：这些包仍装在系统里：$UNINSTALL_LEFT_PKGS（原因见上方失败提示）"
+    UNINSTALL_FAILS+=("系统包复检仍在：$UNINSTALL_LEFT_PKGS")
   else
     dim "复检通过：上面这些系统包都已不在系统里"
   fi
@@ -4620,9 +4627,478 @@ print_trash_summary() {
   return 0
 }
 
+# ---------- 卸载：提权、结果记账、日志 ----------
+# 卸载要结束 root 插件进程、重启 Decky、恢复只读层。三种环境都要能跑：
+# 已经是 root、能免密 sudo、只有终端（让 sudo 自己问密码）。都不行就返回 127，
+# 由调用方明确记成失败——绝不能静默跳过、假装成功。
+run_root() {
+  local rc
+  if [ "$(id -u)" = "0" ]; then
+    "$@"; rc=$?
+  elif ! need_cmd sudo; then
+    un_log "  RC=127 root: $*（没有 sudo）"
+    return 127
+  elif sudo -n true >/dev/null 2>&1; then
+    sudo -n "$@"; rc=$?
+  elif [ -t 0 ] || { true </dev/tty; } 2>/dev/null; then
+    sudo "$@"; rc=$?
+  else
+    un_log "  RC=127 root: $*（没有终端，无法输入 sudo 密码）"
+    return 127
+  fi
+  un_log "  RC=$rc root: $*"
+  return "$rc"
+}
+
+# 每一步的结果同时进 DONE / FAILS，收尾汇总照实打印，失败不会被后面的输出冲掉。
+UNINSTALL_DONE=()
+UNINSTALL_FAILS=()
+UNINSTALL_LOG=""
+UN_STEP=0
+UN_STEP_TOTAL=9
+UN_STEP_FAIL_BASE=0
+DATA_AT=""
+UNINSTALL_REMOVED_PKGS=""
+
+un_log() {
+  [ -n "$UNINSTALL_LOG" ] || return 0
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$UNINSTALL_LOG" 2>/dev/null || true
+  return 0
+}
+# 每一步结束时把「这一步成功还是失败」以 exit=0/1 写进日志，方便事后核对
+un_step_close() {
+  [ "$UN_STEP" -gt 0 ] || return 0
+  local rc=0
+  [ "${#UNINSTALL_FAILS[@]}" -gt "$UN_STEP_FAIL_BASE" ] && rc=1
+  un_log "== step $UN_STEP exit=$rc =="
+}
+un_step() {
+  un_step_close
+  UN_STEP=$((UN_STEP + 1))
+  UN_STEP_FAIL_BASE=${#UNINSTALL_FAILS[@]}
+  printf '\n%s[%d/%d]%s %s%s%s\n' "$C_B" "$UN_STEP" "$UN_STEP_TOTAL" "$C_END" "$C_B" "$1" "$C_END"
+  un_log "== [$UN_STEP/$UN_STEP_TOTAL] $1 =="
+}
+un_ok()   { printf '      %s✓%s %s\n' "$C_OK" "$C_END" "$*"; UNINSTALL_DONE+=("$*"); un_log "  OK   $*"; }
+un_skip() { printf '      %s-%s %s\n' "$C_DIM" "$C_END" "$*"; un_log "  SKIP $*"; }
+un_note() { printf '      %s%s%s\n' "$C_DIM" "$*" "$C_END"; un_log "  NOTE $*"; }
+un_fail() {
+  printf '      %s✗%s %s\n' "$C_ERR" "$C_END" "$*"
+  UNINSTALL_FAILS+=("$*")
+  un_log "  FAIL $*"
+}
+
+# 卸载日志写到 ~/MeidoSpace（这个目录卸载后保留），避免随安装目录一起进回收站。
+# --purge 会连工作区一起移走，那种模式写到家目录根下；dry-run 不写字。
+start_uninstall_log() {
+  local purge="${1:-0}" dir="" fallback=0
+  if [ "$DRY_RUN" = 1 ]; then
+    dim "dry-run：不写卸载日志"
+    return 0
+  fi
+  if [ "$purge" = 1 ]; then
+    dir="$HOME"
+  else
+    dir="$HOME/MeidoSpace"
+    if ! mkdir -p "$dir" 2>/dev/null; then
+      dir="$HOME"
+      fallback=1
+    fi
+  fi
+  UNINSTALL_LOG="$dir/uninstall-$(date -u +%Y%m%d-%H%M%S).log"
+  if ! : > "$UNINSTALL_LOG" 2>/dev/null; then
+    UNINSTALL_LOG=""
+    warn "无法写卸载日志（$dir 不可写），本次只在屏幕上输出"
+    return 0
+  fi
+  {
+    printf '%s\n' '这是 DeckMeido 的卸载日志。'
+    printf '%s\n' '记录了卸载每一步做了什么、成功还是失败；可以随时删除，不影响任何东西。'
+    printf '%s\n' "时间：$(date '+%Y-%m-%d %H:%M:%S')"
+    printf '%s\n' "安装目录：$INSTALL_DIR"
+    printf '%s\n' "用户数据：$DATA_DIR"
+    printf '\n'
+  } >> "$UNINSTALL_LOG" 2>/dev/null || true
+  [ "$fallback" = 1 ] && warn "无法在 ~/MeidoSpace 建目录，卸载日志改写到 $HOME"
+  dim "卸载日志：$UNINSTALL_LOG"
+}
+
+# 只读层的真实状态；不是 SteamOS 或没这个命令时输出为空
+readonly_state() {
+  command -v steamos-readonly >/dev/null 2>&1 || return 0
+  steamos-readonly status 2>/dev/null | head -n1 || true
+}
+
+# 恢复 SteamOS 只读层，并回读确认。必须在卸载系统包之后调用。
+restore_readonly() {
+  local st
+  if ! need_cmd steamos-readonly; then
+    un_skip "没有 steamos-readonly（不是 SteamOS），跳过只读层恢复"
+    return 0
+  fi
+  st="$(readonly_state)"
+  if [ "$st" = "enabled" ]; then
+    un_ok "只读层已是 enabled"
+    return 0
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '[计划] sudo steamos-readonly enable（当前 %s）\n' "${st:-unknown}"
+    return 0
+  fi
+  if ! run_root steamos-readonly enable; then
+    un_fail "恢复只读层失败（当前 ${st:-unknown}），请手动执行：sudo steamos-readonly enable"
+    return 1
+  fi
+  st="$(readonly_state)"
+  if [ "$st" = "enabled" ]; then
+    un_ok "只读层已恢复：enabled"
+  else
+    un_fail "只读层恢复后状态仍是 ${st:-unknown}"
+  fi
+  return 0
+}
+
+# 异常退出（Ctrl-C、中途失败）也把只读层恢复回去。
+# 这里只用免密 sudo：trap 里不能弹密码框，否则退出流程会卡住。
+readonly_guard_setup() {
+  [ "$DRY_RUN" = 1 ] && return 0
+  trap 'trap - EXIT INT TERM
+if need_cmd steamos-readonly && [ "$(readonly_state)" != "enabled" ]; then
+  sudo -n steamos-readonly enable >/dev/null 2>&1 || \
+    printf "\033[33m[!] 恢复 SteamOS 只读层失败，请手动执行：sudo steamos-readonly enable\033[0m\n" >&2
+fi' EXIT INT TERM
+}
+
+# root 拥有的目标（插件目录等）：先走普通回收站，失败再提权搬进回收站。
+# 不用 rm -rf —— 搬走的东西仍然能从回收站拿回来。
+trash_path_root() {
+  local p="${1:-}" root dest info tried=0
+  [ -n "$p" ] || return 1
+  [ -e "$p" ] || [ -L "$p" ] || return 0
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '[计划] 移入回收站（需要 root）：%s\n' "$p"
+    TRASH_COUNT=$((TRASH_COUNT + 1))
+    return 0
+  fi
+  # 父目录自己不可写（root 所有的插件目录）就别先试普通回收站，
+  # 否则会先打印一条「未能移走」的假警告，再提权成功，用户看着矛盾
+  if [ -w "$(dirname -- "$p")" ]; then
+    tried=1
+    trash_path "$p" && return 0
+  fi
+  # 普通回收站已经记过一次失败，这里改成提权成功后就把它撤销，别让汇总多报一项
+  [ "$tried" = 1 ] && [ "${TRASH_FAILED:-0}" -gt 0 ] && TRASH_FAILED=$((TRASH_FAILED - 1))
+  root="$(trash_root)"
+  TRASH_FALLBACK_DIR="$root"
+  mkdir -p "$root/files" "$root/info" 2>/dev/null || return 1
+  dest="$(_trash_dest_for "$p")"
+  if ! run_root mv -- "$p" "$dest"; then
+    TRASH_FAILED=$((TRASH_FAILED + 1))
+    return 1
+  fi
+  # 回收站归当前用户所有：root 搬进来的也交还给他，否则清空回收站时还要再要一次密码
+  run_root chown -R "$(id -u):$(id -g)" "$dest" 2>/dev/null || true
+  info="$root/info/$(basename -- "$dest").trashinfo"
+  {
+    printf '[Trash Info]\n'
+    printf 'Path=%s\n' "$(urlencode_path "$p")"
+    printf 'DeletionDate=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S')"
+  } > "$info" 2>/dev/null || true
+  echo "[已移入] $dest"
+  TRASH_COUNT=$((TRASH_COUNT + 1))
+  TRASH_LAST_DIR="$root"
+  return 0
+}
+
+# 卸载后应该不存在的所有残留路径（不含安装目录本身，它整目录单独处理）
+uninstall_residue_paths() {
+  local root p
+  local -A seen=()
+  for root in "${DECKY_PLUGINS_DIR:-}" "$HOME/homebrew/plugins"; do
+    [ -n "$root" ] || continue
+    p="${root%/}/DeckMeido"
+    [ -n "${seen[$p]:-}" ] && continue
+    seen[$p]=1
+    printf '%s\n' "$p"
+  done
+  for p in \
+    "$HOME/homebrew/settings/DeckMeido" \
+    "$HOME/homebrew/data/DeckMeido" \
+    "$HOME/homebrew/logs/DeckMeido" \
+    "$CONFIG_DIR" \
+    "$CACHE_DIR" \
+    "$HOME/.deckmeido" \
+    "$DESKTOP_DIR/DeckMeido.desktop" \
+    "$DESKTOP_FOLDER/DeckMeido.desktop"
+  do
+    [ -n "$p" ] || continue
+    [ -n "${seen[$p]:-}" ] && continue
+    seen[$p]=1
+    printf '%s\n' "$p"
+  done
+}
+
+# 把 userdata 搬到工作区下带时间戳的目录，校验文件数与总字节都一致才算成功。
+# 失败时返回 1 且不动目标/源，调用方据此中止「删除安装目录」。
+move_userdata_to_workspace() {
+  local ws="${1:-}" src="$DATA_DIR" dst count_src bytes_src count_dst bytes_dst
+  if [ -z "$ws" ]; then
+    un_fail "工作区路径为空，无法迁移用户数据"
+    return 1
+  fi
+  if [ ! -e "$src" ]; then
+    un_skip "没有用户数据目录（$src），无需搬迁"
+    return 0
+  fi
+  if [ ! -d "$src" ]; then
+    un_fail "用户数据路径不是目录：$src"
+    return 1
+  fi
+  dst="$ws/userdata-$(date '+%Y%m%d-%H%M%S')"
+  while [ -e "$dst" ]; do
+    dst="$ws/userdata-$(date '+%Y%m%d-%H%M%S')-$RANDOM"
+  done
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '[计划] 用户数据搬迁：%s → %s\n' "$src" "$dst"
+    printf '[计划] 搬迁后校验文件数与总字节数，通过后才删除安装目录\n'
+    DATA_AT="$dst"
+    return 0
+  fi
+  if ! mkdir -p "$ws" 2>/dev/null; then
+    un_fail "无法创建工作区目录：$ws（用户数据未动，安装目录不会删除）"
+    return 1
+  fi
+  count_src="$(find "$src" -type f 2>/dev/null | wc -l)"
+  bytes_src="$(du -sb "$src" 2>/dev/null | awk '{print $1}')"
+  count_src="${count_src:-0}"
+  bytes_src="${bytes_src:-0}"
+  if mv -- "$src" "$dst" 2>/dev/null; then
+    :
+  elif cp -a -- "$src" "$dst" 2>/dev/null; then
+    un_note "跨文件系统，已复制到目标（源目录随安装目录一起进回收站）"
+  else
+    un_fail "用户数据搬迁失败：$src → $dst（安装目录不会删除）"
+    return 1
+  fi
+  count_dst="$(find "$dst" -type f 2>/dev/null | wc -l)"
+  bytes_dst="$(du -sb "$dst" 2>/dev/null | awk '{print $1}')"
+  count_dst="${count_dst:-0}"
+  bytes_dst="${bytes_dst:-0}"
+  if [ "$count_dst" != "$count_src" ] || [ "$bytes_dst" != "$bytes_src" ]; then
+    un_fail "用户数据校验不一致（源 ${count_src} 个文件/${bytes_src} 字节，目标 ${count_dst} 个/${bytes_dst} 字节）"
+    un_note "源目录保持原样：$src；安装目录不会删除"
+    return 1
+  fi
+  DATA_AT="$dst"
+  un_ok "已保留用户数据：$dst（${count_src} 个文件，已校验）"
+  # 依赖清单/安装基线随 userdata 一起搬走了，后面的包判定要读新位置
+  DEP_RECORD="$dst/.deckmeido-deps"
+  BASELINE_FILE="$dst/.deckmeido-baseline"
+  return 0
+}
+
+# 保留目录里放一份说明，过几个月翻到还能知道这是什么、怎么恢复
+write_kept_note_at() {
+  local d="${1:-}" old="${2:-$DATA_DIR}"
+  [ -n "$d" ] && [ -d "$d" ] || return 0
+  [ "$DRY_RUN" = 1 ] && return 0
+  cat > "$d/README-KEPT.txt" <<EOF 2>/dev/null || return 0
+DeckMeido 已经卸载，这个目录是特意保留的用户数据（原来在 $old）。
+里面是：配置 config.toml、人设 persona/、长期记忆 memory.json、会话 sessions/、
+上传文件 uploads/、模型 models/、日志 logs/。
+
+怎么恢复：重新装好 DeckMeido 后，把本目录的内容放回新安装目录的 userdata/，
+或者启动时设 DECKMEIDO_DATA_DIR 指向本目录。
+
+怎么彻底删除：gio trash "$d"
+EOF
+  un_note "保留说明：$d/README-KEPT.txt"
+}
+
+# 插件跑在 root 下，deck 用户 pkill 不掉——必须提权，并且回读确认真的没了。
+PLUGIN_MAIN_PAT="homebrew/plugins/DeckMeido/main.py"
+plugin_pids() {
+  command -v pgrep >/dev/null 2>&1 || return 0
+  pgrep -f "$PLUGIN_MAIN_PAT" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true
+}
+
+kill_plugin_process() {
+  local pids i
+  pids="$(plugin_pids)"
+  if [ -z "$pids" ]; then
+    un_skip "没有发现 Decky 插件进程"
+    return 0
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '[计划] 结束插件进程（需要 root）：%s\n' "$pids"
+    return 0
+  fi
+  un_note "结束插件进程（需要 root）：$pids"
+  # 按 PID 杀，不用 pkill -f：sudo 自己的命令行里也会带上模式串，容易误伤
+  # shellcheck disable=SC2086
+  run_root kill -TERM $pids >/dev/null 2>&1 || true
+  for i in $(seq 1 10); do
+    [ -z "$(plugin_pids)" ] && break
+    sleep 0.3
+  done
+  pids="$(plugin_pids)"
+  if [ -n "$pids" ]; then
+    # shellcheck disable=SC2086
+    run_root kill -KILL $pids >/dev/null 2>&1 || true
+    for i in $(seq 1 10); do
+      [ -z "$(plugin_pids)" ] && break
+      sleep 0.3
+    done
+  fi
+  if [ -n "$(plugin_pids)" ]; then
+    un_fail "插件进程仍在运行（$(plugin_pids)）：sudo 被拒绝或权限不足"
+    return 1
+  fi
+  un_ok "已结束插件进程"
+  return 0
+}
+
+decky_service_unit() {
+  systemctl list-unit-files 2>/dev/null |
+    sed -nE 's/^((decky|plugin_loader)[^[:space:]]*\.service).*/\1/p' | head -n1 || true
+}
+
+# 重启 Decky 并回读 is-active；失败要明确报出来，不能像上次那样静默没重启。
+restart_decky() {
+  local unit state i
+  if ! need_cmd systemctl; then
+    un_skip "没有 systemctl，跳过 Decky 重启"
+    return 0
+  fi
+  unit="$(decky_service_unit)"
+  if [ -z "$unit" ]; then
+    un_skip "没检测到 Decky 服务（decky/plugin_loader），跳过重启"
+    return 0
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '[计划] sudo systemctl restart %s，然后回读 is-active\n' "$unit"
+    return 0
+  fi
+  if ! run_root systemctl restart "$unit"; then
+    un_fail "重启 Decky 失败（$unit）：sudo 被拒绝或服务不存在"
+    return 1
+  fi
+  state=""
+  for i in $(seq 1 20); do
+    state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    [ "$state" = "active" ] && break
+    sleep 0.5
+  done
+  if [ "$state" != "active" ]; then
+    un_fail "Decky 重启后状态是「${state:-unknown}」，不是 active"
+    return 1
+  fi
+  un_ok "Decky 已重启（$unit：active）"
+  return 0
+}
+
+# /tmp 里的 socket 与 PyInstaller 解包目录：能删就删，删不掉只记一行，不算失败
+cleanup_tmp_leftovers() {
+  local p n=0 failed=0 skipped=0
+  for p in /tmp/DeckMeidoOverlay-* /tmp/_MEI*; do
+    [ -e "$p" ] || [ -L "$p" ] || continue
+    if [ "$DRY_RUN" = 1 ]; then
+      printf '[计划] 清临时残留：%s\n' "$p"
+      n=$((n + 1))
+      continue
+    fi
+    # 自己的直接删；root 的只有确认里面有 DeckMeido 痕迹才提权删，
+    # 避免误伤别的插件（别的 Decky 插件也跑 root，也会留 /tmp/_MEI*）
+    if [ -O "$p" ]; then
+      rm -rf -- "$p" 2>/dev/null || failed=$((failed + 1))
+    elif find "$p" -maxdepth 3 -iname '*deckmeido*' 2>/dev/null | grep -q .; then
+      run_root rm -rf -- "$p" >/dev/null 2>&1 || true
+      [ -e "$p" ] && failed=$((failed + 1))
+    else
+      skipped=$((skipped + 1))
+      continue
+    fi
+    [ -e "$p" ] || n=$((n + 1))
+  done
+  if [ "$failed" -gt 0 ]; then
+    un_note "有 $failed 项 /tmp 残留删不掉（不算失败，重启后会自动消失）"
+  fi
+  if [ "$skipped" -gt 0 ]; then
+    un_note "有 $skipped 项 /tmp 残留不属于本用户且看不出 DeckMeido 痕迹，未动"
+  fi
+  if [ "$n" -gt 0 ]; then
+    un_ok "已清理 /tmp 残留 $n 项"
+  elif [ "$failed" -eq 0 ] && [ "$skipped" -eq 0 ]; then
+    un_skip "没有发现 /tmp 残留"
+  fi
+  return 0
+}
+
+# 汇总里单独列一下「系统原有、这次没动的包」，避免用户误以为卸载把系统清空了
+sys_kept_pkgs() {
+  local p out=""
+  command -v pacman >/dev/null 2>&1 || { printf '（没有 pacman）'; return 0; }
+  for p in fakeroot espeak-ng spectacle; do
+    pacman -Qq -- "$p" >/dev/null 2>&1 && out="${out:+$out }$p"
+  done
+  printf '%s' "${out:-无}"
+}
+
+# 收尾汇总：成功、失败、保留、回收站、日志，一次说清楚
+uninstall_summary() {
+  local aborted="${1:-0}" l title="卸载完成"
+  [ "$aborted" = 1 ] && title="卸载中止"
+  echo
+  if [ "$DRY_RUN" = 1 ]; then
+    if ui_fits; then
+      card
+      card_title "卸载计划（dry-run）"
+      card_line "以上步骤都不会真正执行，没有改动任何文件"
+      card_end
+      echo
+    else
+      info "以上是计划（--dry-run），没有改动任何文件"
+    fi
+    return 0
+  fi
+  if ui_fits; then
+    card
+    card_title "$title"
+    if [ ${#UNINSTALL_DONE[@]} -gt 0 ]; then
+      for l in "${UNINSTALL_DONE[@]}"; do card_line "✓ $l"; done
+    fi
+    if [ ${#UNINSTALL_FAILS[@]} -gt 0 ]; then
+      for l in "${UNINSTALL_FAILS[@]}"; do card_line "✗ $l"; done
+    fi
+    [ -n "$DATA_AT" ] && card_line "用户数据：$DATA_AT"
+    [ -n "${UNINSTALL_KEPT_PKGS:-}" ] && card_line "按你的选择保留的包：$UNINSTALL_KEPT_PKGS"
+    card_line "系统原有包未动：$(sys_kept_pkgs)"
+    card_line "回收站：$(trash_root)（共 $TRASH_COUNT 项）"
+    [ -n "$UNINSTALL_LOG" ] && card_line "卸载日志：$UNINSTALL_LOG"
+    card_end
+    echo
+  else
+    info "$title"
+    if [ ${#UNINSTALL_DONE[@]} -gt 0 ]; then
+      for l in "${UNINSTALL_DONE[@]}"; do printf '  ✓ %s\n' "$l"; done
+    fi
+    if [ ${#UNINSTALL_FAILS[@]} -gt 0 ]; then
+      for l in "${UNINSTALL_FAILS[@]}"; do warn "$l"; done
+    fi
+    [ -n "$DATA_AT" ] && info "用户数据：$DATA_AT"
+    [ -n "${UNINSTALL_KEPT_PKGS:-}" ] && info "按你的选择保留的包：$UNINSTALL_KEPT_PKGS"
+    info "系统原有包未动：$(sys_kept_pkgs)"
+    info "回收站：$(trash_root)（共 $TRASH_COUNT 项）"
+    [ -n "$UNINSTALL_LOG" ] && info "卸载日志：$UNINSTALL_LOG"
+  fi
+  if [ ${#UNINSTALL_FAILS[@]} -gt 0 ]; then
+    warn "本次有 ${#UNINSTALL_FAILS[@]} 项失败，见上方 ✗ 行；文件类失败可以直接重跑卸载"
+  fi
+  return 0
+}
+
 do_uninstall() {
-  local purge=0 has_marker=0 has_manifest=0
-  local ws="" kept_dir=0 t0="" arg
+  local purge=0 arg p t0="" ws="" have_install=0 residue=0 abort=0 i left=""
   for arg in "$@"; do
     case "$arg" in
       --purge) purge=1 ;;
@@ -4631,28 +5107,48 @@ do_uninstall() {
         cat <<'EOF'
 用法：bash install.sh uninstall [选项]
 
-  --dry-run   只列出将要移入回收站的内容，零改动（系统包也只列不删）
-  --purge     连工作区、userdata、日志、模型、配置备份一起移入回收站
+  --dry-run   只打印完整步骤，零改动（系统包、只读层也只列计划）
+  --purge     彻底清除：userdata、工作区、配置一起移入回收站
+              （默认模式会先把 userdata 搬到 ~/MeidoSpace/userdata-<时间> 再删代码）
 
-所有模式都只把文件移入回收站（gio trash，失败则放 ~/.local/share/Trash），
-绝不永久删除。回收站里的内容需要你自己清空，不清空不影响重新安装。
+默认卸载顺序：
+  1. 停客户端与后端
+  2. 结束 root 插件进程（提权，回读确认）
+  3. userdata 搬到 ~/MeidoSpace/userdata-<时间>，校验文件数与字节数
+  4. 卸载安装器装过的系统包（回车=卸载，输入 n 才保留）
+  5. 安装目录整目录、Decky 四个目录、~/.config/deckmeido、~/.cache/DeckMeido、
+     桌面快捷方式 → 回收站
+  6. 重启 Decky 并回读 is-active
+  7. 清理 /tmp 残留
+  8. 恢复 SteamOS 只读层为 enabled
+  9. 汇总
+
+所有文件只进回收站（gio trash / 提权 mv 到回收站），不永久删除。
 EOF
         return 0 ;;
       *) warn "忽略未知参数：$arg" ;;
     esac
   done
   check_user
-  [ -f "$INSTALL_MARKER" ] && has_marker=1
-  [ -f "$INSTALL_MANIFEST" ] && has_manifest=1
-  if [ "$has_marker" = 0 ] || [ "$has_manifest" = 0 ]; then
-    if [ ! -d "$INSTALL_DIR" ]; then
-      info "没有找到已安装的 DeckMeido（$INSTALL_DIR），无需卸载"
+
+  [ -d "$INSTALL_DIR" ] && have_install=1
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ -e "$p" ] || [ -L "$p" ]; then residue=1; break; fi
+  done < <(uninstall_residue_paths)
+
+  if [ "$have_install" = 0 ] && [ "$residue" = 0 ]; then
+    if [ "$DRY_RUN" = 1 ]; then
+      # 演练模式：没装也照常把完整步骤走一遍，方便核对顺序
+      warn "本机没有已安装的 DeckMeido，也没有残留；以下仍按完整流程演示"
+    else
+      info "没有找到已安装的 DeckMeido，也没有相关残留：$INSTALL_DIR"
+      dim "无需卸载。想确认的话：ls -d ~/homebrew/plugins/DeckMeido ~/.config/deckmeido 2>/dev/null"
       return 0
     fi
-    die "缺少安装清单（$INSTALL_MANIFEST）：只支持卸载本安装器写下的安装"
   fi
-  # 第一道：危险路径/源码工作区一律在动手前拒绝，保证零改动
-  if ! safe_rm_target "$INSTALL_DIR"; then
+  # 危险路径/源码工作区一律在动手前拒绝，保证零改动
+  if [ "$have_install" = 1 ] && ! safe_rm_target "$INSTALL_DIR"; then
     warn "拒绝卸载：$INSTALL_DIR 疑似源码工作区或危险路径"
     die "卸载中止（未删除任何文件）"
   fi
@@ -4663,151 +5159,207 @@ EOF
   else
     info "卸载 DeckMeido"
   fi
-  warn "卸载模式：文件只移入回收站，不永久删除"
+  start_uninstall_log "$purge"
+
+  # 安装时间窗要在搬走 userdata/清单之前取，否则读不到记录
+  [ "$have_install" = 1 ] && t0="$(uninstall_window_start)"
+  ws="$(workspace_dir)"
+  # 工作区配置成家目录或根目录时不要往里搬东西，退回默认的 ~/MeidoSpace
+  if [ -z "$ws" ] || [ "$ws" = "/" ] || [ "$ws" = "$HOME" ]; then
+    ws="$HOME/MeidoSpace"
+  fi
+  # 用户数据固定搬到 ~/MeidoSpace（不跟工作区配置走，卸载后这个目录一定保留）
+  local data_ws="$HOME/MeidoSpace"
+
+  # ---------- 先说清楚要发生什么，再确认 ----------
+  info "将要发生的事"
+  if [ "$have_install" = 1 ]; then
+    if [ "$purge" = 1 ]; then
+      dim "· 用户数据 $DATA_DIR 随安装目录一起移入回收站（--purge）"
+    else
+      dim "· 用户数据 $DATA_DIR → $data_ws/userdata-<时间>，校验通过后才删代码"
+    fi
+    dim "· 安装目录 $INSTALL_DIR 整目录移入回收站（含代码、install.sh、VERSION、清单）"
+  else
+    warn "安装目录 $INSTALL_DIR 已不存在：只清理残留，不会重建它"
+  fi
+  dim "· Decky 插件目录、settings/data/logs、$CONFIG_DIR、$CACHE_DIR、桌面快捷方式 → 回收站"
+  dim "· 结束 root 插件进程并重启 Decky（都会回读确认，失败会报）"
+  local dep_list=""
+  if [ -f "$DEP_RECORD" ]; then
+    dep_list="$(awk -F'\t' 'NF{print $1}' "$DEP_RECORD" 2>/dev/null | sort -u | tr '\n' ' ')"
+  fi
+  dim "· 系统包（默认卸载，输入 n 才保留）：${dep_list:-没有安装记录，跳过}"
+  dim "· 恢复 SteamOS 只读层为 enabled"
+  dim "· 全部走回收站，不永久删除"
+  echo
+  if [ "$DRY_RUN" = 1 ]; then
+    info "dry-run：只列步骤，不询问、不改动"
+  elif ! ask_yn "确认开始卸载吗？" y "卸载"; then
+    info "已取消，未做任何改动"
+    un_log "用户取消，未做任何改动"
+    return 0
+  fi
   echo
   TRASH_COUNT=0
   TRASH_FAILED=0
   TRASH_LAST_DIR=""
-  t0="$(uninstall_window_start)"
-  [ -n "$t0" ] && dim "安装时间窗起点：${t0:0:19}"
 
-  # ---------- 列清单 ----------
-  info "按安装清单卸载：$INSTALL_MANIFEST"
-  dim "清单外的文件一律不动；安装前就已存在的条目会跳过"
-  if [ "$purge" = 1 ]; then
-    dim "彻底清除：连工作区、userdata、日志、模型、配置备份一起移入回收站"
+  # ---------- 1 停客户端/后端 ----------
+  un_step "停止客户端与后端"
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '[计划] 关闭客户端、后端、overlay 进程\n'
   else
-    dim "默认卸载：保留 userdata/（人设、记忆、会话）与工作区"
-  fi
-
-  # ---------- 确认 ----------
-  if [ "$DRY_RUN" = 0 ]; then
-    if ! ask_yes "确认开始卸载吗？"; then
-      info "已取消，未做任何改动"
-      return 0
-    fi
-  else
-    info "dry-run：只列计划，不询问也不改动"
-  fi
-
-  # ---------- 先停进程，再动文件 ----------
-  if [ "$DRY_RUN" = 0 ]; then
-    # 先把人设和记忆备份走，再动目录，避免删代码时连带丢数据
-    [ "$purge" = 0 ] && backup_soul
     cancel_running_turn
-    if pgrep -f "$INSTALL_DIR/client/main.py" >/dev/null 2>&1; then
-      dim "关闭客户端"
+    stop_client
+    # 杀不到进程时 pkill 返回 1、没有 pgrep/pkill 的系统返回 127：
+    # 这些都不是「卸载失败」，不能让 set -e 把流程打断，结果由下面的回读判定
+    if need_cmd pkill; then
       pkill -f "$INSTALL_DIR/client/launch.sh" 2>/dev/null || true
       pkill -f "$INSTALL_DIR/client/main.py" 2>/dev/null || true
-      sleep 1
-      pkill -9 -f "$INSTALL_DIR/client/main.py" 2>/dev/null || true
+      pkill -f "$INSTALL_DIR/server/main.py" 2>/dev/null || true
+      pkill -f "$INSTALL_DIR/server/overlay.py" 2>/dev/null || true
     fi
-    stop_client
-    pkill -f "$INSTALL_DIR/server/main.py" 2>/dev/null || true
-    pkill -f "$INSTALL_DIR/server/overlay.py" 2>/dev/null || true
-    sleep 1
-  else
-    printf '[计划] 停止客户端与后端进程\n'
-  fi
-
-  # ---------- systemd 状态还原（必须在删包之前） ----------
-  disable_ydotool_unit
-
-  # ---------- 删文件 ----------
-  delete_install_manifest "$INSTALL_MANIFEST" "$purge"
-  cleanup_empty_manifest_dirs "$INSTALL_MANIFEST"
-  dim "按清单移走 $LAST_REMOVED 项（跳过 $LAST_SKIPPED 项，安装前已存在 $LAST_PREEXISTING 项）"
-  if [ "$DRY_RUN" = 0 ] && [ "$purge" = 0 ]; then
-    # 运行期新增的缓存/日志单独清一遍
-    cleanup_generated_leftovers
-    write_keep_note
-  fi
-  # 标记/清单是安装器写的，默认卸载也要带走（否则下次会以为还装着）
-  if [ "$DRY_RUN" = 0 ] && [ "$purge" = 0 ] && [ -d "$INSTALL_DIR" ]; then
-    trash_path "$INSTALL_MANIFEST" || true
-    trash_path "$INSTALL_MARKER" || true
-  fi
-
-  # ---------- --purge 扩大范围 ----------
-  if [ "$purge" = 1 ]; then
-    echo
-    info "彻底清除：额外移走下面这些（同样只进回收站）"
-    # 配置备份
-    if [ -d "$CONFIG_DIR" ]; then
-      trash_path "$CONFIG_DIR"
-    fi
-    # 数据目录若不在安装目录里（DECKMEIDO_DATA_DIR 指到外面），单独移走
-    case "$DATA_DIR" in
-      "$INSTALL_DIR"/*) ;;
-      *) [ -d "$DATA_DIR" ] && trash_path "$DATA_DIR" ;;
-    esac
-  else
-    if [ -d "$DATA_DIR" ]; then
-      info "用户数据保留在 $DATA_DIR（人设、记忆、会话、日志）"
-    fi
-    [ -f "$DATA_KEEP_NOTE" ] 2>/dev/null && dim "保留说明：$DATA_KEEP_NOTE"
-  fi
-
-  # ---------- 工作区 ----------
-  ws="$(workspace_dir)"
-  if [ -z "$ws" ] || [ "$ws" = "/" ] || [ "$ws" = "$HOME" ]; then
-    [ -n "$ws" ] && dim "工作区路径异常，不做处理：$ws"
-  elif [ ! -d "$ws" ]; then
-    :
-  elif [ -e "$ws/.git" ]; then
-    warn "工作区含 .git，可能是你自己的仓库，跳过：$ws"
-    dim "确认没用的话请手动处理"
-  elif [ "$purge" = 1 ]; then
-    info "彻底清除：工作区一起移入回收站：$ws"
-    trash_path "$ws"
-  else
-    dim "工作区保留：$ws（--purge 才会一起移走）"
-  fi
-
-  # ---------- 系统包 ----------
-  uninstall_optional_deps "$t0" "$([ "$DRY_RUN" = 1 ] && echo 0 || echo 1)"
-
-  # ---------- 收尾：空目录、缓存 ----------
-  if [ "$DRY_RUN" = 0 ]; then
-    if [ -d "$INSTALL_DIR" ]; then
-      if [ -z "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-        dim "移除空目录：$INSTALL_DIR"
-        rmdir "$INSTALL_DIR" 2>/dev/null || kept_dir=1
-      else
-        kept_dir=1
+    left=""
+    if need_cmd pgrep; then
+      for i in $(seq 1 10); do
+        left="$(pgrep -f "$INSTALL_DIR/server/main.py" 2>/dev/null || true)$(pgrep -f "$INSTALL_DIR/server/overlay.py" 2>/dev/null || true)"
+        [ -z "$left" ] && break
+        sleep 0.3
+      done
+      if [ -n "$left" ] && need_cmd pkill; then
+        pkill -9 -f "$INSTALL_DIR/server/main.py" 2>/dev/null || true
+        pkill -9 -f "$INSTALL_DIR/server/overlay.py" 2>/dev/null || true
+        sleep 0.5
+        left="$(pgrep -f "$INSTALL_DIR/server/main.py" 2>/dev/null || true)$(pgrep -f "$INSTALL_DIR/server/overlay.py" 2>/dev/null || true)"
       fi
-      [ "$kept_dir" = 1 ] && info "保留目录：$INSTALL_DIR（含用户数据或清单外文件）"
+    fi
+    if [ -n "$left" ]; then
+      un_fail "后端/overlay 进程仍在运行：$left"
+    else
+      un_ok "客户端与后端已停止"
+    fi
+  fi
+
+  # ---------- 2 结束 root 插件进程 ----------
+  un_step "结束 Decky 插件进程"
+  kill_plugin_process
+
+  # ---------- 3 先保数据 ----------
+  un_step "保留用户数据"
+  if [ "$purge" = 1 ]; then
+    un_skip "--purge：用户数据随安装目录一起进回收站，不单独搬迁"
+  elif ! move_userdata_to_workspace "$data_ws"; then
+    abort=1
+    un_fail "用户数据没有安全迁移，已跳过后续删除（安装目录原样保留）"
+  else
+    [ -n "$DATA_AT" ] && write_kept_note_at "$DATA_AT" "$DATA_DIR"
+  fi
+  if [ "$abort" = 1 ]; then
+    un_step_close
+    uninstall_summary 1
+    return 1
+  fi
+
+  # ---------- 4 系统包（要在删安装目录之前：来源判定会扫安装目录里的落盘签名） ----------
+  un_step "卸载系统包"
+  readonly_guard_setup
+  uninstall_optional_deps "$t0" "$([ "$DRY_RUN" = 1 ] && echo 0 || echo 1)"
+  if [ -n "$UNINSTALL_REMOVED_PKGS" ]; then
+    un_ok "系统包已移除：$UNINSTALL_REMOVED_PKGS"
+  fi
+  if [ -n "${UNINSTALL_KEPT_PKGS:-}" ]; then
+    un_skip "已保留系统包（按你的选择）：$UNINSTALL_KEPT_PKGS"
+  fi
+  if [ -n "${UNINSTALL_LEFT_PKGS:-}" ]; then
+    un_fail "系统包复检仍在：$UNINSTALL_LEFT_PKGS"
+  fi
+
+  # ---------- 5 移入回收站 ----------
+  un_step "移入回收站"
+  if [ "$DRY_RUN" = 1 ]; then
+    [ "$have_install" = 1 ] && printf '[计划] 移入回收站：%s（整目录）\n' "$INSTALL_DIR"
+    while IFS= read -r p; do
+      [ -e "$p" ] || [ -L "$p" ] || continue
+      printf '[计划] 移入回收站：%s\n' "$p"
+    done < <(uninstall_residue_paths)
+  else
+    if [ "$have_install" = 1 ]; then
+      if trash_path "$INSTALL_DIR"; then
+        un_ok "已移入回收站：$INSTALL_DIR（整目录）"
+      else
+        un_fail "没能把 $INSTALL_DIR 移入回收站（权限不足或文件被占用）"
+      fi
+    else
+      un_skip "安装目录已不存在：$INSTALL_DIR"
+    fi
+    while IFS= read -r p; do
+      [ -e "$p" ] || [ -L "$p" ] || continue
+      if trash_path_root "$p"; then
+        un_ok "已移入回收站：$p"
+      else
+        un_fail "没能移走：$p"
+      fi
+    done < <(uninstall_residue_paths)
+    # --purge 时数据目录可能被 DECKMEIDO_DATA_DIR 指到安装目录之外
+    if [ "$purge" = 1 ]; then
+      case "$DATA_DIR" in
+        "$INSTALL_DIR"/*|"$INSTALL_DIR") ;;
+        *) if [ -d "$DATA_DIR" ]; then
+             if trash_path "$DATA_DIR"; then un_ok "已移入回收站：$DATA_DIR（用户数据）"
+             else un_fail "没能移走用户数据：$DATA_DIR"; fi
+           fi ;;
+      esac
     fi
     need_cmd update-desktop-database && update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
     need_cmd kbuildsycoca6 && kbuildsycoca6 >/dev/null 2>&1 || true
     need_cmd kbuildsycoca5 && kbuildsycoca5 >/dev/null 2>&1 || true
   fi
-  # ---------- 汇总 ----------
-  echo
-  if ui_fits; then
-    card
-    card_title "卸载完成"
-    if [ "$DRY_RUN" = 1 ]; then
-      card_line "以上全是计划，没有改动任何文件"
-    else
-      card_line "移入回收站 $TRASH_COUNT 项：$(trash_root)"
-      card_line "回收站里的内容需要你自己清空"
-      card_line "不清空不影响重新安装"
-      [ "${TRASH_FAILED:-0}" -gt 0 ] && card_line "有 $TRASH_FAILED 项没移走（权限不足，见上方）"
-      [ "$purge" = 1 ] && card_line "已一并移走：工作区、userdata、日志、模型、配置备份" \
-                       || card_line "用户数据保留在 $DATA_DIR"
-      # 系统包的结果单独写清楚：保留是主动选择，复检仍在是没删掉，两者不能混
-      [ -n "${UNINSTALL_KEPT_PKGS:-}" ] && card_line "已保留：$UNINSTALL_KEPT_PKGS"
-      [ -n "${UNINSTALL_LEFT_PKGS:-}" ] && card_line "复检仍在：$UNINSTALL_LEFT_PKGS"
+
+  # ---------- 工作区 ----------
+  if [ "$purge" = 1 ]; then
+    if [ -z "$ws" ] || [ "$ws" = "/" ] || [ "$ws" = "$HOME" ]; then
+      un_skip "工作区路径异常，未处理：${ws:-空}"
+    elif [ -e "$ws/.git" ]; then
+      un_skip "工作区含 .git，可能是你自己的仓库，跳过：$ws"
+    elif [ -d "$ws" ]; then
+      if [ "$DRY_RUN" = 1 ]; then
+        printf '[计划] 移入回收站：%s（工作区）\n' "$ws"
+      elif trash_path "$ws"; then
+        un_ok "已移入回收站：$ws（工作区）"
+      else
+        un_fail "没能移走工作区：$ws"
+      fi
     fi
-    card_end
-    echo
   else
-    info "卸载完成"
-    print_trash_summary
-    [ -n "${UNINSTALL_KEPT_PKGS:-}" ] && info "已保留：$UNINSTALL_KEPT_PKGS（按你的选择没有卸载）"
-    [ -n "${UNINSTALL_LEFT_PKGS:-}" ] && warn "复检仍在：$UNINSTALL_LEFT_PKGS"
+    un_skip "工作区保留：$ws（--purge 才会移走）"
   fi
+
+  # ---------- 6 重启 Decky ----------
+  un_step "重启 Decky"
+  restart_decky
+  # 上次实测：插件目录被移走后，重启又会建出一个空目录来。这里回读一次，别装作干净。
+  if [ "$DRY_RUN" = 0 ]; then
+    while IFS= read -r p; do
+      [ -e "$p" ] || [ -L "$p" ] || continue
+      un_fail "Decky 重启后又被创建：$p（可再跑一次卸载，或手动移走）"
+    done < <(uninstall_residue_paths)
+  fi
+
+  # ---------- 7 清 /tmp ----------
+  un_step "清理 /tmp 残留"
+  cleanup_tmp_leftovers
+
+  # ---------- 8 只读层 ----------
+  un_step "恢复只读层"
+  restore_readonly
+  # 已经显式恢复并回读过了，撤掉兜底 trap，避免退出时再跑一遍
+  [ "$DRY_RUN" = 0 ] && trap - EXIT INT TERM
+
+  # ---------- 9 汇总 ----------
+  un_step "汇总"
+  uninstall_summary 0
+  un_step_close
   return 0
 }
 
