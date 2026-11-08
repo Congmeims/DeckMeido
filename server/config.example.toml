@@ -257,7 +257,7 @@ wake_timeout_sec = 8.0
 # 预合成并缓存在内存里，命中瞬间只播放，不在唤醒时才合成；合成失败会
 # 静默降级为只在眼睛界面显示文字，不影响唤醒流程。音频用完即删，不落盘。
 ack_text = "我在"
-# 眼睛界面放到哪块屏：auto（有外接屏优先外接，否则当前屏）/ internal / external。
+# 眼睛界面放到哪块屏：当前版本固定使用当前屏幕，本键预留给后续版本（auto / internal / external）。
 eyes_display = "auto"
 
 [ui]
