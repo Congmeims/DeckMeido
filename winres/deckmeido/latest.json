@@ -1,10 +1,10 @@
 {
-  "tag": "0.7.5",
-  "name": "DeckMeido 0.7.5",
-  "notes": "# DeckMeido 0.7.5\n\n- fix(dev): 文件面板 URL 拼接、探针并发、命令通道解释器、心跳参数与 is_dir\n- feat(dev): 思考链完整落盘与重放，新增 reasoning/session.save/ui.render 三处长度埋点\n- feat(logs): 关闭 dev_mode 默认清理 debug 日志；设置页新增按类别清空与占用显示\n- feat(tts): 英文后端离线 nltk 数据与安装自检；中英日混排减少无谓切语言\n- refactor(onebot): server/qqbot.py → server/onebot.py（[qq] 配置段与界面文案保留）\n- build(release): 0.7.4\n- 修复重装后旧后端无法识别、安装日志与开发者模式\n- feat(0.7.3): 安装目录改名 DeckMeido、工作区 MeidoSpace、运行版本闸门与安装器六步版式\n- build(release): 0.7.1（修 /ws 500、插件自动升级、可选下载重做、本地离线更新包）\n- build(release): 0.7.0 重新打包（片假名中文句修正）\n- fix(tts): 纯片假名加汉字的中文句不再误判日语\n- build(release): 0.7.0 重新打包（主语言分段与符号映射）\n- test(tts): 蔚蓝档案资料混排回归 + 星级符号不丢\n- feat(tts): 句子级主语言 + 引号语境 + 符号映射\n- build(release): 0.7.0 重新打包（含逐段混读与 --tts 可选安装）\n- test(tts): 覆盖逐段路由无损与单段失败兜底\n- feat(tts): 逐段混读，假名/汉字/拉丁/数字各自按语言合成\n- build(release): 0.7.0 重新打包并清理 0.6.x 旧产物\n- build(release): winres 只保留最新版本产物\n- feat(install): 新增 --tts 可选安装语音合成依赖\n- build(release): 同步 0.7.0 产物到 winres/deckmeido\n- build(release): 发布包纳入 requirements-tts.txt\n- chore(release): 版本号升至 0.7.0\n- test(tts): 配置归一化、降级判定与打断行为单测\n- feat(web): 女仆人格下新增语音回复设置卡\n",
-  "published_at": "2026-11-06T18:04:14+08:00",
+  "tag": "0.7.6",
+  "name": "DeckMeido 0.7.6",
+  "notes": "# DeckMeido 0.7.6\n\n- Release: bump to 0.7.6\n- Settings: regroup into six panes with global search and tighter density\n- Fix: keep pairing results, index QQ sessions at once, accept CGNAT in release audit\n- Installer: add minimal/standard/full profiles; fix exit key and box width\n- Config: mark eyes_display reserved for future versions\n- Docs: document smart speaker, music, and remaining features\n- Docs: refresh test count\n- Policy: two scene presets and guest history window\n- Memory: cap injection budget; share persona style with guests\n- Memory: scope-aware store and /memory command\n- Offline: offline mode v1 with fast-fail and banner\n- Media: fix Decky RPC id mixups, verify playback, boost speech volume\n- Media: voice song request through Decky Music search and queue\n- Upload: keep fail/expanded classes on finished card\n- Upload: resume after first file, show walk progress, cancel during prep\n- Media: local intent fast path for Decky Music over MPRIS\n- Wake: wait briefly for the pre-cached ack when arming\n- Wake: pre-cached 我在 ack and doodle-face eyes\n- Wake: local wake-word mode with '你好梅朵' and an eyes fullscreen page\n- Settings: lay out Onebot status fields in two columns\n",
+  "published_at": "2026-11-08T17:32:43+08:00",
   "files": {
-    "tarball": "deckmeido-0.7.5.tar.gz",
-    "sha256": "eba2e02cfa69ec9afdce13bd02c1f3d3366cc5718aeee1bc2e6cbe84550ec34a"
+    "tarball": "deckmeido-0.7.6.tar.gz",
+    "sha256": "d3fbf23e8c5343256b6a24815f9b337c08000e3fc313134569973962b3f81cdf"
   }
 }
