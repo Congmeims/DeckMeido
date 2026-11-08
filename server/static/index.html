@@ -1220,10 +1220,28 @@
     flex: 1; min-width: 0; min-height: 0;
     display: flex; flex-direction: column;
   }
+  /* ---------- 设置页视觉密度规范 ----------
+     所有卡片共用这一组变量：改密度只改这里，不在单张卡上另写内联值。
+     控件统一 32px 高，说明文字统一 11.5/1.45，圆角统一 10（卡片 12） */
+  :root {
+    --set-card-pad-y: 11px;
+    --set-card-pad-x: 14px;
+    --set-card-gap: 9px;
+    --set-title-gap: 7px;
+    --set-field-gap: 9px;
+    --set-label-gap: 4px;
+    --set-hint-gap: 3px;
+    --set-ctl-h: 32px;
+    --set-hint-size: 11.5px;
+    --set-hint-lh: 1.45;
+    --set-radius: 10px;
+    --set-card-radius: 12px;
+    --set-grid-gap: 12px;
+  }
   .set-body {
     flex: 1; overflow-y: auto; overscroll-behavior: contain;
-    padding: 22px 26px 32px;
-    padding-top: calc(22px + env(safe-area-inset-top));
+    padding: 16px 24px 24px;
+    padding-top: calc(16px + env(safe-area-inset-top));
   }
   .set-inner { max-width: 760px; margin: 0 auto; }
   /* 女仆人设页：单列纵向排列，不做分栏；已记住的内容是页内最长的列表，
@@ -1232,43 +1250,116 @@
   /* 分区标题：进页时只有当前分区可见 */
   .set-pane { display: none; }
   .set-pane.on { display: block; }
+  /* 搜索时不再受「只有当前分区可见」限制：命中的分区全部展开 */
+  body.set-searching .set-pane { display: none; }
+  body.set-searching .set-pane.search-hit { display: block; }
+  .set-search {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 24px 6px;
+    border-bottom: 1px solid var(--ri-line);
+    flex: 0 0 auto;
+  }
+  .set-search input {
+    width: min(380px, 70%);
+    height: var(--set-ctl-h); padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--set-radius);
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 13.5px;
+    outline: none;
+    box-sizing: border-box;
+  }
+  .set-search input:focus { border-color: var(--brand); }
+  .set-no-match { padding: 28px 0; text-align: center; color: var(--muted); font-size: 14px; }
+  /* 搜索命中：整条目描边 + 轻微底色，Enter 选中时再闪一下 */
+  .search-hit-item { outline: 2px solid rgba(26,159,255,.85); outline-offset: 3px; border-radius: 8px; }
+  .field.search-hit-item { background: rgba(26,159,255,.07); }
+  .search-focus { animation: searchFocus 1.6s ease; }
+  @keyframes searchFocus {
+    0%, 100% { box-shadow: none; }
+    30% { box-shadow: 0 0 0 4px rgba(26,159,255,.55); }
+  }
+  @media (prefers-reduced-motion: reduce) { .search-focus { animation: none; } }
+  /* 外部连接：三个子分区标题，左侧色条 + 浅底，和卡片标题明显区分 */
+  .set-sect {
+    font-size: 14px; font-weight: 600; color: var(--text);
+    margin: 18px 0 8px; padding: 7px 10px;
+    border-left: 3px solid var(--brand);
+    background: rgba(26,159,255,.08);
+    border-radius: 7px;
+  }
+  .set-sect:first-of-type { margin-top: 2px; }
+  /* OneBot 内部的五个折叠子块：默认收起，标题一行可点 */
+  details.set-fold {
+    border-top: 1px solid var(--line);
+    margin-top: 8px; padding-top: 6px;
+  }
+  details.set-fold:first-of-type { border-top: 0; margin-top: 2px; padding-top: 0; }
+  details.set-fold > summary {
+    cursor: pointer; list-style: none;
+    display: flex; align-items: center; gap: 8px;
+    padding: 3px 0; font-size: 12.5px; font-weight: 600; color: var(--text);
+  }
+  details.set-fold > summary::-webkit-details-marker { display: none; }
+  details.set-fold > summary::before {
+    content: '▸'; color: var(--brand); flex: 0 0 auto;
+  }
+  details.set-fold[open] > summary::before { content: '▾'; }
+  details.set-fold > summary::after {
+    content: '展开'; margin-left: auto; font-weight: 400; color: var(--muted); font-size: 11.5px;
+  }
+  details.set-fold[open] > summary::after { content: '收起'; }
+  details.set-fold > *:not(summary) { margin-top: 3px; }
   .set-pane > h3 {
-    font-size: 18px; font-weight: 600; margin-bottom: 4px;
+    font-size: 17px; font-weight: 600; margin-bottom: 2px;
   }
   .set-pane > .pane-desc {
-    font-size: 13px; color: var(--muted); margin-bottom: 20px; line-height: 1.6;
+    font-size: 12.5px; color: var(--muted); margin-bottom: 12px; line-height: 1.5;
   }
   /* 页内小节标题（如「女仆人设」里的长期记忆）：比卡片标题重一点，比页标题轻 */
   .set-sub {
-    font-size: 14.5px; font-weight: 600; color: var(--text);
-    margin: 26px 0 4px; padding-top: 18px; border-top: 1px solid var(--line);
+    font-size: 14px; font-weight: 600; color: var(--text);
+    margin: 18px 0 3px; padding-top: 12px; border-top: 1px solid var(--line);
   }
   .set-sub + .pane-desc {
-    font-size: 13px; color: var(--muted); margin-bottom: 16px; line-height: 1.6;
+    font-size: 12.5px; color: var(--muted); margin-bottom: 10px; line-height: 1.5;
   }
   /* 一页里的一组字段：灰底卡片，用边线分隔，比一堆裸输入框整齐 */
   .card {
     background: var(--surface);
     border: 1px solid var(--line);
-    border-radius: 14px;
-    padding: 16px 18px;
-    margin-bottom: 16px;
+    border-radius: var(--set-card-radius);
+    padding: var(--set-card-pad-y) var(--set-card-pad-x);
+    margin-bottom: var(--set-card-gap);
   }
   .card > .card-title {
-    font-size: 13px; font-weight: 600; color: var(--text);
-    margin-bottom: 12px; letter-spacing: .02em;
+    font-size: 12.5px; font-weight: 600; color: var(--text);
+    margin-bottom: var(--set-title-gap); letter-spacing: .02em;
   }
   .card > .field:last-child { margin-bottom: 0; }
+  /* 字段网格：单行控件（开关 / 数字 / 下拉 / 短文本）并排成一栏或两栏，
+     说明文字仍在各自控件下方的小字里；长文本域不要放进网格 */
+  .set-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--set-field-gap) var(--set-grid-gap);
+    align-items: start;
+  }
+  .set-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .set-grid > .field { margin-bottom: 0; min-width: 0; }
+  .set-grid > .grid-full { grid-column: 1 / -1; }
+  .set-grid .field-row { min-height: var(--set-ctl-h); }
   /* ---------- 用量与余额（设置 → 模型接入） ----------
      纯文本表格：不引入图表库，窄屏也能看；数字列右对齐，首列左对齐 */
   .usage-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-  .usage-balance { font-size: 22px; font-weight: 600; line-height: 1.25; }
+  .usage-balance { font-size: 20px; font-weight: 600; line-height: 1.25; }
   .usage-tables { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 4px; }
   .usage-tables > div { flex: 1 1 300px; min-width: 0; }
-  .usage-caption { font-size: 12px; font-weight: 600; color: var(--text); margin: 10px 0 2px; }
+  .usage-caption { font-size: 12px; font-weight: 600; color: var(--text); margin: 8px 0 2px; }
   .usage-table { width: 100%; border-collapse: collapse; font-size: 12px; }
   .usage-table th, .usage-table td {
-    padding: 4px 6px; text-align: right; white-space: nowrap;
+    padding: 3px 6px; text-align: right; white-space: nowrap;
     border-bottom: 1px solid var(--line);
   }
   .usage-table th { color: var(--muted); font-weight: 500; }
@@ -1282,8 +1373,8 @@
      展开才露出地址/Key 输入。当前使用那条左侧有一道强调色条。
      头部不换行：360px 窄屏下让 host 截断，操作按钮永远留在右边 */
   .api-profile {
-    border: 1px solid var(--line); border-radius: 12px;
-    padding: 8px 10px; margin-bottom: 10px; min-width: 0;
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 6px 10px; margin-bottom: 8px; min-width: 0;
     /* 未选中：压暗的灰底，和选中项拉开明度差 */
     background: color-mix(in srgb, var(--surface-2) 55%, var(--bg));
     transition: border-color .15s, background .15s, box-shadow .15s;
@@ -1370,9 +1461,9 @@
   .api-remove:focus-visible { opacity: .9; }
   .api-remove:hover { color: var(--danger); background: rgba(228,80,80,.12); }
   /* 展开区：只有展开时占位，收起不占高度 */
-  .api-detail { display: none; margin-top: 6px; }
-  .api-profile.open .api-detail { display: block; }
-  .api-profile .field { margin: 8px 0 0; }
+  .api-detail { display: none; margin-top: 4px; }
+  .api-profile.open .api-detail { display: grid; }
+  .api-profile .field { margin: 6px 0 0; }
   .api-profile .field input { width: 100%; min-width: 0; }
   .api-profile .field-hint { word-break: break-all; font-size: 11.5px; }
   .api-empty { color: var(--muted); font-size: 12px; padding: 4px 0 8px; }
@@ -1381,7 +1472,7 @@
      不设 flex-wrap：窄屏只让说明文字换行，按钮 flex:none 永远留在右侧 */
   .api-foot {
     display: flex; align-items: center; gap: 10px;
-    margin-top: 10px; padding-right: 10px;
+    margin-top: 8px; padding-right: 10px;
   }
   .api-foot .field-hint {
     flex: 1 1 auto; min-width: 0;
@@ -1391,7 +1482,7 @@
      字号 11.5 / 内边距 0 9；「使用中」的实心胶囊是状态标记，不并入这套 */
   .api-foot .mini-btn {
     flex: none; display: inline-flex; align-items: center; justify-content: center;
-    height: 24px; min-height: 24px; padding: 0 9px; border-radius: 999px;
+    height: var(--set-ctl-h); min-height: var(--set-ctl-h); padding: 0 10px; border-radius: 999px;
     border: 1px solid color-mix(in srgb, var(--line) 80%, var(--muted) 20%);
     background: transparent; color: var(--muted);
     font-size: 11.5px; white-space: nowrap;
@@ -1422,24 +1513,32 @@
   #saveCfg:active, #updApply:active { filter: brightness(.92); }
   /* 窄屏下侧栏本身是抽屉：设置导航跟着会话列表一起住在抽屉里，不用另写一套 */
   @media (max-width: 720px) {
-    .set-body { padding: 16px 14px 24px; }
-    .card { padding: 14px; }
+    .set-body { padding: 12px 12px 20px; }
+    .set-search { padding: 8px 12px 6px; }
+    .set-search input { width: 100%; }
+    .card { padding: 10px 12px; }
+    .set-sect { margin: 16px 0 8px; padding: 6px 9px; font-size: 13.5px; }
+    details.set-fold > summary { padding: 3px 0; }
+    .search-hit-item { outline-offset: 2px; }
     .set-foot { padding: 8px 10px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+    /* 手机竖屏：所有网格回落单栏，不横向溢出 */
+    .set-grid, .set-grid-3 { grid-template-columns: minmax(0, 1fr); }
   }
-  .field { margin-bottom: 14px; }
-  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .field { margin-bottom: var(--set-field-gap); }
+  .field label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: var(--set-label-gap); }
   .field input {
     width: 100%;
-    padding: 12px 14px;
+    height: var(--set-ctl-h);
+    padding: 0 10px;
     border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: var(--set-radius);
     background: var(--surface-2);
     color: var(--text);
-    font-size: 15px;
+    font-size: 14px;
     outline: none;
     box-sizing: border-box;
   }
-  .field-row { display: flex; align-items: center; justify-content: space-between; }
+  .field-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   /* 滑块（语速/噪声）：不要把上面那套输入框内边距/底色套上去 */
   .field input[type="range"] {
     padding: 0;
@@ -1462,31 +1561,45 @@
   /* 设备配对：待配对卡片与已配对列表 */
   .pair-list { display: flex; flex-direction: column; gap: 8px; }
   .pair-row {
-    border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
-    display: flex; flex-direction: column; gap: 6px; background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px;
+    display: flex; flex-direction: column; gap: 4px; background: var(--surface-2);
   }
   .pair-row-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
   .pair-row-head strong { font-size: 20px; letter-spacing: 4px; font-family: var(--font-mono); }
   .pair-row-meta { font-size: 12px; color: var(--muted); word-break: break-all; }
-  .pair-row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pair-row-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  /* 点过「允许 / 拒绝」的请求：结果按钮保持原色，否则和没点过一样灰 */
+  .pair-row-done .mini-btn:disabled { opacity: 1; cursor: default; }
+  .pair-row-done-ok .mini-btn:disabled { border-color: #3f9c5a; color: #7fd08f; }
+  .pair-row-done-no .mini-btn:disabled { border-color: #8a3b42; color: #e06c75; }
   .pair-empty { font-size: 12.5px; color: var(--muted); }
   /* 输入框 + 按钮一行（API Key / 端口 / 局域网地址都用它） */
   .token-row { display: flex; gap: 8px; align-items: stretch; }
-  .token-row input { flex: 1; font-family: var(--font-mono); letter-spacing: 1px; }
+  .token-row input { flex: 1; min-width: 0; font-family: var(--font-mono); letter-spacing: 1px; }
+  /* 按钮三档统一：次操作(.mini-btn) / 主操作(.primary) / 危险操作(.danger)。
+     同高 32、同圆角、同字号；行内按钮永远靠右，卡片底部按钮靠右 */
   .mini-btn {
     flex: none;
-    /* 高度不再写死：跟随同一行的输入框（.token-row / .mem-add / .about-row 都靠 stretch 对齐），
-       否则 15px 的输入框配 44px 的按钮，一行里三种高度 */
-    padding: 0 14px;
-    min-height: 42px;
+    min-height: var(--set-ctl-h);
+    padding: 0 11px;
     border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: var(--set-radius);
     background: var(--surface-2);
     color: var(--text);
-    font-size: 13px;
+    font-size: 12.5px;
     cursor: pointer;
   }
   .mini-btn:hover { border-color: var(--brand); color: var(--brand); }
+  .mini-btn.primary {
+    background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 600;
+  }
+  .mini-btn.primary:hover { color: #fff; filter: brightness(1.06); }
+  .mini-btn.danger {
+    color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  }
+  .mini-btn.danger:hover {
+    color: var(--danger); border-color: var(--danger); background: rgba(228,80,80,.12);
+  }
   /* 修复守护进程这类要等后台的按钮，置灰表示正在处理，避免重复点 */
   .mini-btn:disabled { opacity: .5; cursor: default; }
   .mini-btn:disabled:hover { border-color: var(--line); color: var(--text); }
@@ -1500,18 +1613,18 @@
   /* 「语气」这类多行输入：和单行输入框同一套外观，可拖高 */
   .field textarea {
     width: 100%;
-    padding: 12px 14px;
+    padding: 8px 10px;
     border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: var(--set-radius);
     background: var(--surface-2);
     color: var(--text);
-    font-size: 15px;
-    line-height: 1.5;
+    font-size: 14px;
+    line-height: 1.45;
     font-family: inherit;
     outline: none;
     resize: vertical;
   }
-  .field-hint { font-size: 12px; color: var(--muted); margin-top: 6px; min-height: 16px; }
+  .field-hint { font-size: var(--set-hint-size); color: var(--muted); margin-top: var(--set-hint-gap); min-height: 0; line-height: var(--set-hint-lh); }
   /* 素材署名（女仆人设 → 语音回复）：压成单行 nowrap，放不下时横向滚动。
      日文句子从中间折行会读不通，所以先缩字号；缩到下限仍放不下时由横向滚动兜底。
      字号由 fitTtsCredit() 按实际可用宽度算，默认 11px 见下方 #ttsCredit 规则 */
@@ -1524,9 +1637,9 @@
   #ttsCredit .tts-credit-line { white-space: nowrap; line-height: 1.45; }
   /* ---------- 语音回复卡：标题+开关 / 发音人+状态+试听 / 一行模型状态 ---------- */
   /* 这张卡只用三层：比其它卡片更矮，内边距和行距都收紧 */
-  .tts-card { padding: 12px 16px 10px; margin-bottom: 12px; }
+  .tts-card { padding: 10px 14px 9px; margin-bottom: var(--set-card-gap); }
   /* 子卡片标题行统一：标题靠左，总开关贴内容区右边缘并垂直居中；标题过长省略 */
-  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
   .card-head .card-title {
     margin: 0; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1537,12 +1650,12 @@
   .tts-label { flex: 0 0 auto; font-size: 13px; color: var(--muted); }
   .tts-row2 .speaker-row { flex: 1 1 160px; min-width: 118px; }
   /* 两个发音人按钮收矮一点：原先 min-height 42px 比旁边的试听高出一截 */
-  .tts-row2 .speaker-btn { min-height: 32px; padding: 0 12px; font-size: 12.5px; }
+  .tts-row2 .speaker-btn { min-height: var(--set-ctl-h); padding: 0 12px; font-size: 12.5px; }
   .tts-actions {
     margin-left: auto; display: flex; align-items: center; justify-content: flex-end;
     gap: 8px; flex: 0 1 auto; flex-wrap: wrap;
   }
-  .tts-preview { min-height: 32px; padding: 0 12px; font-size: 12.5px; }
+  .tts-preview { min-height: var(--set-ctl-h); padding: 0 12px; font-size: 12.5px; }
   /* 模型状态胶囊：已就绪绿色、未就绪黄色（可点下载）、下载中蓝色（可点取消） */
   .tts-pill {
     flex: none; padding: 0 10px; min-height: 24px; border-radius: 999px;
@@ -1574,14 +1687,14 @@
   #ttsCredit { font-size: 11px; }
   /* 设置页里的下拉框：和输入框同一套外观，别再各写一份内联样式 */
   .cfg-select {
-    width: 100%; padding: 12px 14px;
-    border: 1px solid var(--line); border-radius: 10px;
+    width: 100%; height: var(--set-ctl-h); padding: 0 32px 0 10px;
+    border: 1px solid var(--line); border-radius: var(--set-radius);
     background: var(--surface-2); color: var(--text);
-    font-size: 15px; font-family: inherit; outline: none;
+    font-size: 14px; font-family: inherit; outline: none;
     -webkit-appearance: none; -moz-appearance: none; appearance: none;
-    padding-right: 34px; cursor: pointer;
+    cursor: pointer;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b91a3'/%3E%3C/svg%3E");
-    background-repeat: no-repeat; background-position: right 13px center;
+    background-repeat: no-repeat; background-position: right 11px center;
   }
   .cfg-select:focus, .field input:focus, .field textarea:focus, .mem-add input:focus {
     border-color: var(--brand);
@@ -1619,18 +1732,18 @@
 
   /* 长期记忆：新增行 = 下拉 + 输入框 + 按钮，三者同高同圆角，
      输入框直接套 `field` 里的那套外观，别再单独写一份 */
-  .mem-add { display: flex; gap: 8px; align-items: stretch; margin-top: 10px; }
+  .mem-add { display: flex; gap: 8px; align-items: stretch; margin-top: 8px; }
   .mem-add input {
     flex: 1; min-width: 0;
-    padding: 11px 14px;
-    border: 1px solid var(--line); border-radius: 10px;
+    height: var(--set-ctl-h); padding: 0 10px;
+    border: 1px solid var(--line); border-radius: var(--set-radius);
     background: var(--surface-2); color: var(--text);
-    font-size: 14px; font-family: inherit; outline: none;
+    font-size: 13.5px; font-family: inherit; outline: none;
   }
   .mem-add input:focus { border-color: var(--brand); }
   .mem-kind {
-    flex: none; padding: 0 10px;
-    border: 1px solid var(--line); border-radius: 10px;
+    flex: none; height: var(--set-ctl-h); padding: 0 10px;
+    border: 1px solid var(--line); border-radius: var(--set-radius);
     background: var(--surface-2); color: var(--text); font-size: 13px;
     font-family: inherit; outline: none;
     -webkit-appearance: none; -moz-appearance: none; appearance: none;
@@ -1640,7 +1753,7 @@
   }
   .mem-kind:focus { border-color: var(--brand); }
   /* 和输入框一样高：用 stretch 对齐，不再写死 44px */
-  .mem-add .mini-btn { height: auto; padding: 0 14px; }
+  .mem-add .mini-btn { height: auto; padding: 0 12px; }
   .mem-list { margin-top: 10px; }
   .mem-empty { font-size: 13px; color: var(--muted); padding: 10px 0; }
   .mem-group {
@@ -1661,10 +1774,10 @@
   .mem-item.editing { border-color: var(--brand); }
   .mem-item .mini-btn { height: 26px; padding: 0 8px; font-size: 12px; }
   .mem-del:hover { border-color: #e5534b; color: #e5534b; }
-  .mem-foot { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .mem-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
   .mem-foot .field-hint { margin: 0; flex: 1; }
   /* 脚注行里的小按钮也跟着一行高，别再用 mini-btn 的 min-height 顶起来 */
-  .mem-foot .mini-btn { min-height: 32px; font-size: 13px; }
+  .mem-foot .mini-btn { min-height: var(--set-ctl-h); font-size: 12.5px; }
   /* 按游戏提示词预设：一条一张小卡，窄屏时标题/内容/按钮自动换行 */
   .preset-list { display: flex; flex-direction: column; gap: 12px; }
   .preset-item {
@@ -1690,7 +1803,7 @@
     font-size: 12px; font-weight: 600; color: var(--muted);
     padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px;
   }
-  .about-row .mini-btn { margin-left: auto; min-height: 32px; font-size: 13px; }
+  .about-row .mini-btn { margin-left: auto; min-height: var(--set-ctl-h); font-size: 12.5px; }
   /* 版本旁边那句更新总结：有发布说明就显示首行，没有就写「已是最新版本」 */
   .ver-summary {
     flex: 1 1 120px; min-width: 0; font-size: 12px; color: var(--muted);
@@ -1713,8 +1826,8 @@
   /* Onebot 通道状态卡：底色/描边/文字全部走 --ri-* 变量，浅色主题下是浅底深字。
      状态点单独给一组颜色，避免在浅色主题里变成看不清的灰点 */
   .qq-status {
-    display: flex; flex-direction: column; gap: 6px;
-    padding: 10px 12px; margin-bottom: 14px;
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 8px 10px; margin-bottom: 10px;
     border: 1px solid var(--ri-line); border-radius: 10px;
     background: var(--ri-bg); color: var(--ri-fg);
     box-shadow: var(--ri-shadow-sm);
@@ -1762,17 +1875,17 @@
   }
   /* 群友提示词：固定高度 + 内部滚动，别把整张卡撑长 */
   .qq-guest-prompt {
-    height: 160px; min-height: 160px; max-height: 160px;
-    resize: none; overflow-y: auto; font-size: 13px; line-height: 1.55;
+    height: 144px; min-height: 144px; max-height: 144px;
+    resize: none; overflow-y: auto; font-size: 13px; line-height: 1.45;
   }
   .qq-guest-meta { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
   .qq-guest-meta .field-hint { margin-top: 0; flex: 1; min-width: 0; }
   #qqGuestCount { flex: 0 0 auto; }
   /* Onebot 高级设置分组：细分割线 + 两列数字项，窄视口收成一列 */
-  .qq-group { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--ri-line); }
+  .qq-group { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--ri-line); }
   /* 收图 / 存图：常驻展开，字段之间用细线 + 留白分开，标题加粗不再挤成一片 */
   .qq-image-group .field {
-    margin: 0; padding: 14px 0;
+    margin: 0; padding: 10px 0;
     border-top: 1px solid var(--line);
   }
   .qq-image-group .field:first-child { border-top: 0; padding-top: 2px; }
@@ -1800,6 +1913,16 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .qq-group-head > .switch { flex: 0 0 auto; margin: 0 0 0 auto; }
+  /* 群常识缓存 / 限频 / 长回复分段：三个小组并排，输入框不再占满整行；
+     窄屏按 200px 最小宽度自动收成一列，不会把设置页挤坏 */
+  .qq-adv-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px; margin-top: 12px; padding-top: 10px;
+    border-top: 1px solid var(--ri-line);
+  }
+  .qq-adv-grid .qq-group { margin-top: 0; padding-top: 0; border-top: 0; min-width: 0; }
+  .qq-adv-grid .qq-num-grid { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .qq-adv-grid input[type="number"] { max-width: 150px; }
   .qq-num-grid {
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0 16px;
@@ -1845,8 +1968,8 @@
     flex: 0 0 auto; width: auto; min-height: 24px; padding: 0 8px; font-size: 11.5px;
   }
   .qq-logs-body {
-    height: 180px; overflow-y: auto; overflow-x: hidden; padding: 6px 0;
-    font-size: 12px; line-height: 1.55;
+    height: 80px; overflow-y: auto; overflow-x: hidden; padding: 4px 0;
+    font-size: 12px; line-height: 1.5;
   }
   .qq-log-row { display: flex; gap: 6px; padding: 1px 0; word-break: break-word; }
   .qq-log-time { flex: 0 0 auto; opacity: .55; }
@@ -2209,7 +2332,7 @@
      一行 = 状态灯 + 名称 + 次要信息 + 右侧操作；行与行之间只有一条淡分隔线，
      左右两栏不再用不同的方块/底色区分 */
   .ctrl-list { display: flex; flex-direction: column; margin-bottom: 12px; }
-  .ctrl-item { padding: 9px 2px; border-bottom: 1px solid var(--line); }
+  .ctrl-item { padding: 6px 2px; border-bottom: 1px solid var(--line); }
   .ctrl-item:last-child { border-bottom: none; }
   .ctrl-row { display: flex; align-items: center; gap: 10px; font-size: 14px; }
   .ctrl-row .lamp {
@@ -2248,11 +2371,9 @@
     line-height: 1.55; margin-bottom: 12px;
   }
   .ctrl-card .upd-note { font-size: 12.5px; margin-top: 8px; }
-  .ctrl-actions { display: flex; gap: 10px; }
-  /* 主操作（修复守护进程）撑满剩余宽度，次要操作（重新实测）按内容宽度；
-     两者都用 .mini-btn，保证和设置页其它按钮同一套外观 */
-  .ctrl-actions button { flex: 1; }
-  .ctrl-actions button + button { flex: 0 0 auto; }
+  /* 卡片底部操作统一靠右；主操作与次操作同高，不再一左一右 */
+  .ctrl-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .ctrl-actions button { flex: 0 0 auto; }
   .ctrl-log {
     margin-top: 10px; font-size: 11.5px;
     color: var(--muted); white-space: pre-wrap; word-break: break-word;
@@ -2262,7 +2383,7 @@
      窄屏自动上下堆叠，避免数字框被压到没法输入 */
   .ri-io-row {
     display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 1fr);
-    gap: 14px; align-items: end;
+    gap: 10px; align-items: end;
   }
   .ri-io-row > .field { margin-bottom: 0; min-width: 0; }
   @media (max-width: 720px) {
@@ -3343,8 +3464,15 @@
      不用抄一遍，也就不会出现「设置页的顶栏比对话页丑一截」 -->
 <div id="settingsPanel">
   <div class="set-main">
+    <!-- 全局搜索：跨全部分区按标题/标签/说明/占位符过滤，不用先猜在哪个页 -->
+    <div class="set-search">
+      <input id="settingsSearch" type="search" autocomplete="off" spellcheck="false"
+             placeholder="搜索设置项，例如：限频、唤醒、API">
+      <span id="settingsSearchCount" class="field-hint"></span>
+    </div>
     <div class="set-body">
       <div class="set-inner">
+        <div id="settingsNoMatch" class="set-no-match" hidden>没有找到匹配的设置项</div>
 
         <section class="set-pane on" data-pane="model">
           <h3>模型接入</h3>
@@ -3357,6 +3485,14 @@
             <div class="api-foot">
               <div id="apiProfileHint" class="field-hint">同一时间只有一条生效；切换后立即使用新的那组。</div>
               <button id="apiProfileAdd" class="mini-btn" type="button">新增一组</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">当前模型</div>
+            <div class="field">
+              <label>模型（和对话页顶栏、插件端共用）</label>
+              <select id="setModelSelect" class="cfg-select"></select>
+              <div class="field-hint" id="setModelState">正在读取模型列表…</div>
             </div>
           </div>
           <div class="card">
@@ -3382,11 +3518,11 @@
             <div class="mem-foot" style="margin-top:10px;flex-wrap:wrap">
               <span class="field-hint" id="usageNote">费用按官方单价估算，以官方账单为准。</span>
               <button id="usageExport" class="mini-btn" type="button">导出 JSON</button>
-              <button id="usageClear" class="mini-btn" type="button">清空统计</button>
+              <button id="usageClear" class="mini-btn danger" type="button">清空统计</button>
             </div>
           </div>
           <div class="field-hint">
-            模型下拉在「插件设置 → 模型」里，和 Decky 插件端共用同一个当前模型。
+            模型也可以在对话页顶栏切换；插件端 QAM / 大屏读的是同一个当前模型。
           </div>
         </section>
 
@@ -3418,13 +3554,15 @@
               <label>说话方式</label>
               <textarea id="cfgPersonaTone" rows="3" placeholder="礼貌、简洁、干练，偶尔一点俏皮，但不撒娇卖萌"></textarea>
             </div>
-            <div class="field">
-              <label>句尾习惯（可留空）</label>
-              <input id="cfgPersonaEnding" type="text" placeholder="例如：说完结论就好，不加任何语气词" autocomplete="off">
-            </div>
-            <div class="field">
-              <label>落款（可留空）</label>
-              <input id="cfgPersonaSuffix" type="text" placeholder="例如：——女仆长" autocomplete="off">
+            <div class="set-grid">
+              <div class="field">
+                <label>句尾习惯（可留空）</label>
+                <input id="cfgPersonaEnding" type="text" placeholder="例如：说完结论就好，不加任何语气词" autocomplete="off">
+              </div>
+              <div class="field">
+                <label>落款（可留空）</label>
+                <input id="cfgPersonaSuffix" type="text" placeholder="例如：——女仆长" autocomplete="off">
+              </div>
             </div>
             <div class="field">
               <label>禁用的词句（一条都不许出现）</label>
@@ -3444,42 +3582,6 @@
               <label>额外规则（可留空）</label>
               <textarea id="cfgPersonaExtra" rows="5" placeholder="例如：称呼我「主人」，汇报事情先给结论再给过程；不主动开玩笑；涉及设备操作时先说清要做什么。"></textarea>
               <div class="field-hint">整段追加到系统提示词末尾，适合写上面表单装不下的规矩。</div>
-            </div>
-          </div>
-          <div class="card tts-card">
-            <div class="card-head">
-              <div class="card-title">语音回复</div>
-              <label class="switch" title="回复时用语音播报">
-                <input id="cfgTts" type="checkbox">
-                <span class="slider"></span>
-              </label>
-            </div>
-            <div class="tts-row2">
-              <label class="tts-label">发音人</label>
-              <div class="speaker-row" id="ttsSpeakerRow">
-                <button class="mini-btn speaker-btn" type="button" data-speaker="robot">机器人</button>
-                <button class="mini-btn speaker-btn" type="button" data-speaker="maid">月读酱</button>
-              </div>
-              <div class="tts-actions">
-                <span class="field-hint tts-bytes" id="ttsDownloadHint"></span>
-                <button id="ttsPill" class="tts-pill" type="button" disabled>未就绪</button>
-                <button id="ttsPreview" class="mini-btn tts-preview" type="button">试听</button>
-              </div>
-            </div>
-            <div class="tts-row2">
-              <label class="tts-label">播报音量</label>
-              <label class="switch" title="播报时系统音量太低就临时抬高，播完恢复原值">
-                <input id="cfgTtsBoost" type="checkbox">
-                <span class="slider"></span>
-              </label>
-              <span class="field-hint">低于 40% 时临时抬到 55%，播完恢复</span>
-            </div>
-            <!-- つくよみちゃんコーパス利用規約第③类（音声つき会話AIソフト）要求在使用者
-                 能看到的位置署名。下面内容照抄官方模板与模型卡，不要改写：
-                 模型卡「クレジット表記について（必須）」= ■Piper Plus:つくよみちゃん；
-                 语料署名 = ■つくよみちゃんコーパス（CV.夢前黎）。 -->
-            <div class="field-hint" id="ttsCredit">
-              <div class="tts-credit-line">本ソフトウェアの音声合成には、フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）が無料公開している音声データを使用しています。　<a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener" style="color:inherit">■つくよみちゃんコーパス（CV.夢前黎）</a>　<a href="https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan" target="_blank" rel="noopener" style="color:inherit">■Piper Plus:つくよみちゃん</a>　禁止用于人身攻击。</div>
             </div>
           </div>
           <!-- 长期记忆并入这里：记的是「她记得你什么」，本来就是人设的一部分，
@@ -3506,7 +3608,7 @@
             <div class="mem-list" id="memList"></div>
             <div class="mem-foot">
               <span id="memCount" class="field-hint"></span>
-              <button id="memClear" class="mini-btn" type="button">清空全部</button>
+              <button id="memClear" class="mini-btn danger" type="button">清空全部</button>
             </div>
           </div>
           <div class="card">
@@ -3523,77 +3625,119 @@
           </div>
         </section>
 
-        <section class="set-pane" data-pane="device">
-          <h3>本地连接</h3>
-          <p class="pane-desc">她的权限范围、工作目录，以及其他设备连上这台 Deck 的方式。</p>
+        <section class="set-pane" data-pane="voice">
+          <h3>语音引擎</h3>
+          <p class="pane-desc">语音输入、声控唤醒与语音播报。识别与合成都在这台机器上完成，只有识别出的文字会进入对话链路。</p>
+
           <div class="card">
-            <div class="card-title">权限</div>
-            <div class="field">
-              <label>AI 控制权限</label>
-              <select id="cfgPerm" class="cfg-select">
-                <option value="manual">手动审批（每条命令都问你）</option>
-                <option value="auto">智能审批（危险命令才问你）</option>
-                <option value="full">完全访问（不再询问）</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>工作区目录（编程/文件任务默认位置）</label>
-              <input id="cfgWorkspace" type="text" placeholder="~/MeidoSpace" autocomplete="off">
+            <div class="card-title">语音输入</div>
+            <div class="field field-row">
+              <label style="margin:0">语音输入</label>
+              <label class="switch">
+                <input id="cfgStt" type="checkbox">
+                <span class="slider"></span>
+              </label>
             </div>
             <div class="field-hint" style="margin-top:0">
-              语音播报在「女仆人格 → 语音回复」里；语音输入、带画面这些对话开关在「插件设置」里。
+              控制桌面客户端「语音」按钮的听写：录音在本地完成，整段音频交给后端离线识别，文字只填进输入框、不会自动发送。需要先装 sherpa-onnx 运行时并下载约 250MB 的 SenseVoice 模型；关掉后会释放已加载的识别模型（约 100MB+），语音识别随之停用。
             </div>
-          </div>
-          <div class="card">
-            <div class="card-title">局域网访问</div>
-            <div class="field">
-              <label>局域网访问开关（切换后需重启后端生效）</label>
-              <select id="cfgLanEnable" class="cfg-select">
-                <option value="off">关闭：只监听 127.0.0.1（仅本机）</option>
-                <option value="on">开启：监听 0.0.0.0（局域网可访问）</option>
-              </select>
-              <div id="lanWarn" class="field-hint"></div>
-            </div>
-            <div class="field">
-              <label>服务端口（1024-65535，重启后端生效）</label>
-              <div class="token-row">
-                <input id="cfgPort" type="number" min="1024" max="65535" step="1" autocomplete="off">
-                <button id="savePort" class="mini-btn" type="button">保存端口</button>
-                <button id="restartPort" class="mini-btn" type="button">重启后端</button>
+            <div class="set-grid">
+              <div class="field field-row">
+                <label style="margin:0">录音时静音外放（录完自动恢复）</label>
+                <label class="switch">
+                  <input id="cfgSttDuck" type="checkbox">
+                  <span class="slider"></span>
+                </label>
               </div>
-              <div id="portHint" class="field-hint"></div>
-            </div>
-            <div class="field">
-              <label>局域网地址（手机 / 平板 / 电脑浏览器打开）</label>
-              <div class="token-row">
-                <input id="lanUrl" type="text" readonly autocomplete="off">
-                <button id="lanUrlCopy" class="mini-btn" type="button">复制</button>
+              <div class="field field-row" id="r2PttRow">
+                <label style="margin:0">R1 按住说话（桌面客户端）</label>
+                <label class="switch">
+                  <input id="cfgR2Ptt" type="checkbox" checked>
+                  <span class="slider"></span>
+                </label>
               </div>
-              <div class="field-hint">打开后点「配对新设备」，按掌机上的 PIN 配对一次；之后浏览器会记住这台设备。</div>
             </div>
-          </div>
-          <div class="card">
-            <div class="card-title">设备配对</div>
-            <div class="field-hint" style="margin-top:0">
-              新设备打开局域网地址后点「配对新设备」，PIN 就会出现在下面。
-              点「允许」后把 4 位 PIN 告诉对方；PIN 60 秒有效，最多试 3 次。
-            </div>
-            <div class="mem-foot" style="margin-top:10px">
-              <span id="pairAuditSummary" class="field-hint"></span>
-              <button id="pairHostStart" class="mini-btn" type="button">配对新设备</button>
-            </div>
-            <div id="pairPendingList" class="pair-list"></div>
-            <div id="pairHostHint" class="field-hint"></div>
-          </div>
-          <div class="card">
-            <div class="card-title">已配对设备</div>
-            <div id="pairDevList" class="pair-list"></div>
-            <div class="mem-foot">
-              <span id="pairDevCount" class="field-hint"></span>
-              <button id="pairRemoveAll" class="mini-btn" type="button">移除全部设备</button>
+            <div id="sttHint" class="field-hint"></div>
+            <div class="field-hint">
+              按住右肩键（R1）开始录音，松开后把识别文字填入输入框，不自动发送。
+              只在客户端窗口激活且语音输入可用时响应，关掉后 R1 不做任何处理。
             </div>
           </div>
 
+          <div class="card">
+            <div class="card-title">智能音箱</div>
+            <div class="field field-row">
+              <label style="margin:0">智能音箱模式（声控唤醒「你好梅朵」）</label>
+              <label class="switch">
+                <input id="cfgWake" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field-hint" style="margin-top:0">
+              默认关闭。打开后后端常驻监听唤醒词，命中后进入一轮「听 → 想 → 说」，直接发送并朗读；支持 Esc / 托盘 / 屏幕按钮随时停止。唤醒与识别全在本机，音频不落盘、不上传，只有识别出的文字会进入现有对话链路（LLM 仍在远端）。首次启用会下载约 38MB 的唤醒模型；游戏模式不保证全屏覆盖，v1 只面向桌面模式。
+            </div>
+          </div>
+
+          <div class="card tts-card">
+            <div class="card-head">
+              <div class="card-title">语音输出</div>
+              <label class="switch" title="播报回复内容">
+                <input id="cfgTts" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="tts-row2">
+              <span class="tts-label">发音人</span>
+              <div class="speaker-row" id="ttsSpeakerRow">
+                <button class="mini-btn speaker-btn" data-speaker="robot" type="button" aria-pressed="false">机器人</button>
+                <button class="mini-btn speaker-btn active" data-speaker="maid" type="button" aria-pressed="true">月读酱</button>
+              </div>
+              <div class="tts-actions">
+                <button id="ttsPill" class="tts-pill" type="button">读取中…</button>
+                <button id="ttsPreview" class="mini-btn tts-preview" type="button">试听</button>
+              </div>
+            </div>
+            <div id="ttsDownloadHint" class="field-hint tts-bytes"></div>
+            <div class="field field-row" style="margin-top:8px">
+              <label style="margin:0">播报音量临时抬升（播报期间自动提高音量，播完恢复）</label>
+              <label class="switch">
+                <input id="cfgTtsBoost" type="checkbox" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div id="ttsCredit" class="field-hint">
+              <div class="tts-credit-line">■Piper Plus:つくよみちゃん</div>
+              <div class="tts-credit-line">音声：<a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener">■つくよみちゃんコーパス（CV.夢前黎）</a></div>
+              <div class="tts-credit-line">条款：<a href="https://tyc.rei-yumesaki.net/material/corpus/#terms3" target="_blank" rel="noopener">つくよみちゃんコーパス利用規約</a></div>
+              <div class="tts-credit-line">模型：<a href="https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan" target="_blank" rel="noopener">piper-plus-tsukuyomi-chan</a></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="set-pane" data-pane="external">
+          <h3>外部连接</h3>
+          <p class="pane-desc">本机权限与局域网接入、从别的设备远程接管，以及 OneBot 的 QQ 通道。全部只在你明确打开后才生效。</p>
+          <h4 class="set-sect">本机访问</h4>
+          <div class="card">
+            <div class="card-title">权限与工作区</div>
+            <div class="set-grid">
+              <div class="field">
+                <label>AI 控制权限</label>
+                <select id="cfgPerm" class="cfg-select">
+                  <option value="manual">手动审批（每条命令都问你）</option>
+                  <option value="auto">智能审批（危险命令才问你）</option>
+                  <option value="full">完全访问（不再询问）</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>工作区目录（编程/文件任务默认位置）</label>
+                <input id="cfgWorkspace" type="text" placeholder="~/MeidoSpace" autocomplete="off">
+              </div>
+            </div>
+            <div class="field-hint" style="margin-top:0">
+              语音输入、声控唤醒、语音播报在「语音引擎」；带画面询问在「插件设置」。
+            </div>
+          </div>
           <div class="card ctrl-card">
             <div class="card-title">桌面控件自检</div>
             <div class="ctrl-cols">
@@ -3615,14 +3759,62 @@
               </div>
             </div>
           </div>
+          <div class="card">
+            <div class="card-title">局域网访问</div>
+            <div class="field">
+              <label>局域网访问开关（切换后需重启后端生效）</label>
+              <select id="cfgLanEnable" class="cfg-select">
+                <option value="off">关闭：只监听 127.0.0.1（仅本机）</option>
+                <option value="on">开启：监听 0.0.0.0（局域网可访问）</option>
+              </select>
+              <div id="lanWarn" class="field-hint"></div>
+            </div>
+            <div class="set-grid">
+              <div class="field">
+                <label>服务端口（1024-65535，重启后端生效）</label>
+                <div class="token-row">
+                  <input id="cfgPort" type="number" min="1024" max="65535" step="1" autocomplete="off">
+                  <button id="savePort" class="mini-btn" type="button">保存端口</button>
+                  <button id="restartPort" class="mini-btn" type="button">重启后端</button>
+                </div>
+                <div id="portHint" class="field-hint"></div>
+              </div>
+              <div class="field">
+                <label>局域网地址（手机 / 平板 / 电脑浏览器打开）</label>
+                <div class="token-row">
+                  <input id="lanUrl" type="text" readonly autocomplete="off">
+                  <button id="lanUrlCopy" class="mini-btn" type="button">复制</button>
+                </div>
+                <div class="field-hint">打开后点「配对新设备」，按掌机上的 PIN 配对一次；之后浏览器会记住这台设备。</div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">设备配对</div>
+            <div class="field-hint" style="margin-top:0">
+              新设备打开局域网地址后点「配对新设备」，PIN 就会出现在下面。
+              点「允许」后把 4 位 PIN 告诉对方；PIN 60 秒有效，最多试 3 次。
+            </div>
+            <div class="mem-foot" style="margin-top:10px">
+              <span id="pairAuditSummary" class="field-hint"></span>
+              <button id="pairHostStart" class="mini-btn" type="button">配对新设备</button>
+            </div>
+            <div id="pairPendingList" class="pair-list"></div>
+            <div id="pairHostHint" class="field-hint"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">已配对设备</div>
+            <div id="pairDevList" class="pair-list"></div>
+            <div class="mem-foot">
+              <span id="pairDevCount" class="field-hint"></span>
+              <button id="pairRemoveAll" class="mini-btn danger" type="button">移除全部设备</button>
+            </div>
+          </div>
         </section>
 
-        <section class="set-pane" data-pane="remote">
-          <h3>远程连接</h3>
-          <p class="pane-desc">
-            从别的设备远程使用这台 Deck：跨屏鼠标把电脑上的鼠标键盘接管到这台机器；
-            Onebot 通道让指定的 QQ 发消息下达指令。两项都只在你明确打开后才生效。
-          </p>
+        <section class="set-pane" data-pane="external">
+          <h4 class="set-sect">远程接管</h4>
+          <p class="pane-desc">从别的设备把鼠标键盘接管到这台 Deck，或者在网页 / 移动端直接开一个远程终端。</p>
 
           <div class="card" id="riEnableCard">
             <div class="card-head">
@@ -3675,6 +3867,7 @@
             <div class="field-hint" id="termCfgState">当前状态：已关闭</div>
           </div>
 
+          <h4 class="set-sect">OneBot 通道</h4>
           <div class="card">
             <div class="card-head">
               <div class="card-title">Onebot 通道</div>
@@ -3683,6 +3876,8 @@
                 <span class="slider"></span>
               </label>
             </div>
+            <details class="set-fold">
+              <summary>连接与状态</summary>
             <!-- 状态 + 日志合并进同一个气泡：状态在上、日志在下，中间一条分隔线，
                  日志不再单独套一层外框 -->
             <div id="qqStatus" class="qq-status">
@@ -3701,6 +3896,10 @@
                   <div class="qq-log-empty">还没有日志。</div>
                 </div>
               </div>
+            </div>
+            <div class="mem-foot" id="qqReconnectRow">
+              <span class="field-hint">连接参数改完先点下方「保存」，再点这里立即重连；保存本身不会建连。</span>
+              <button id="qqReconnect" class="mini-btn" type="button">重新连接</button>
             </div>
             <div class="field field-row">
               <label style="margin:0">重启后自动连接</label>
@@ -3730,6 +3929,9 @@
                 <button id="qqTokenReveal" class="mini-btn" type="button">显示</button>
               </div>
             </div>
+            </details>
+            <details class="set-fold">
+              <summary>群与权限</summary>
             <div class="field">
               <label for="cfgQqAdmins">主人 QQ</label>
               <input id="cfgQqAdmins" type="text" inputmode="numeric" maxlength="15"
@@ -3753,6 +3955,23 @@
               </div>
             </div>
 
+            <div class="field">
+              <label for="cfgQqGuestPrompt">群友提示词（普通群成员使用）</label>
+              <textarea id="cfgQqGuestPrompt" class="qq-guest-prompt" rows="7"
+                        maxlength="2000" spellcheck="false"
+                        placeholder="留空则使用内置默认"></textarea>
+              <div class="qq-guest-meta">
+                <div class="field-hint" id="qqGuestHint"></div>
+                <span class="field-hint" id="qqGuestCount">0 / 2000</span>
+                <button id="qqGuestReset" class="mini-btn" type="button">恢复默认</button>
+              </div>
+            </div>
+            </details>
+            <details class="set-fold">
+              <summary>回复行为</summary>
+
+            <!-- 三个小组并排：窄屏按 200px 最小宽自动收成一列 -->
+            <div class="qq-adv-grid">
             <div class="qq-group">
               <div class="qq-group-head">
                 <div class="qq-group-title">群常识缓存</div>
@@ -3816,6 +4035,7 @@
                 </div>
               </div>
             </div>
+            </div>
 
             <div class="qq-group">
               <div class="qq-group-title">输出脱敏</div>
@@ -3838,6 +4058,9 @@
                        placeholder="***" spellcheck="false">
               </div>
             </div>
+            </details>
+            <details class="set-fold">
+              <summary>媒体与附件</summary>
 
             <div class="qq-group">
               <div class="qq-group-head">
@@ -3847,19 +4070,21 @@
                   <span class="slider"></span>
                 </label>
               </div>
-              <div class="field field-row">
-                <label style="margin:0">群友也发语音（voice_group_members）</label>
-                <label class="switch">
-                  <input id="cfgQqVoiceMembers" type="checkbox">
-                  <span class="slider"></span>
-                </label>
-              </div>
-              <div class="field field-row">
-                <label style="margin:0">只发语音（voice_only）</label>
-                <label class="switch">
-                  <input id="cfgQqVoiceOnly" type="checkbox">
-                  <span class="slider"></span>
-                </label>
+              <div class="set-grid">
+                <div class="field field-row">
+                  <label style="margin:0">群友也发语音（voice_group_members）</label>
+                  <label class="switch">
+                    <input id="cfgQqVoiceMembers" type="checkbox">
+                    <span class="slider"></span>
+                  </label>
+                </div>
+                <div class="field field-row">
+                  <label style="margin:0">只发语音（voice_only）</label>
+                  <label class="switch">
+                    <input id="cfgQqVoiceOnly" type="checkbox">
+                    <span class="slider"></span>
+                  </label>
+                </div>
               </div>
               <div class="qq-num-grid">
                 <div class="field">
@@ -3919,6 +4144,10 @@
                 </div>
               </div>
             </div>
+            </details>
+            <details class="set-fold">
+              <summary>安装后自动打开</summary>
+
             <div class="field field-row">
               <label style="margin:0">安装完成后自动打开程序</label>
               <label class="switch">
@@ -3935,21 +4164,10 @@
                 命令成功后才尝试打开；gamescope 下窗口可能看不到。
               </div>
             </div>
-            <div class="field">
-              <label for="cfgQqGuestPrompt">群友提示词（普通群成员使用）</label>
-              <textarea id="cfgQqGuestPrompt" class="qq-guest-prompt" rows="7"
-                        maxlength="2000" spellcheck="false"
-                        placeholder="留空则使用内置默认"></textarea>
-              <div class="qq-guest-meta">
-                <div class="field-hint" id="qqGuestHint"></div>
-                <span class="field-hint" id="qqGuestCount">0 / 2000</span>
-                <button id="qqGuestReset" class="mini-btn" type="button">恢复默认</button>
-              </div>
-            </div>
+            </details>
             <div class="mem-foot">
               <span class="field-hint" id="qqPrefixHint">当前指令前缀：meido</span>
-              <button id="qqSave" class="mini-btn" type="button">保存</button>
-              <button id="qqReconnect" class="mini-btn" type="button">重新连接</button>
+              <button id="qqSave" class="mini-btn primary" type="button">保存</button>
             </div>
             <div id="qqHint" class="field-hint"></div>
           </div>
@@ -3965,7 +4183,7 @@
 
           <div class="card chat-voice-card" id="chatVoiceCard">
             <div class="card-head">
-              <div class="card-title">对话与语音</div>
+              <div class="card-title">对话开关</div>
               <label class="switch" title="关闭后这一组功能整体停用">
                 <input id="cfgChatVoice" type="checkbox" checked>
                 <span class="slider"></span>
@@ -3977,45 +4195,6 @@
                 <input id="cfgWithShot" type="checkbox">
                 <span class="slider"></span>
               </label>
-            </div>
-            <div class="field field-row">
-              <label style="margin:0">语音输入</label>
-              <label class="switch">
-                <input id="cfgStt" type="checkbox">
-                <span class="slider"></span>
-              </label>
-            </div>
-            <div class="field-hint" style="margin-top:0">
-              控制桌面客户端「语音」按钮的听写：录音在本地完成，整段音频交给后端离线识别，文字只填进输入框、不会自动发送。需要先装 sherpa-onnx 运行时并下载约 250MB 的 SenseVoice 模型；关掉后会释放已加载的识别模型（约 100MB+），语音识别随之停用。
-            </div>
-            <div class="field field-row">
-              <label style="margin:0">录音时静音外放（录完自动恢复）</label>
-              <label class="switch">
-                <input id="cfgSttDuck" type="checkbox">
-                <span class="slider"></span>
-              </label>
-            </div>
-            <div id="sttHint" class="field-hint"></div>
-            <div class="field field-row" style="margin-top:6px">
-              <label style="margin:0">智能音箱模式（声控唤醒「你好梅朵」）</label>
-              <label class="switch">
-                <input id="cfgWake" type="checkbox">
-                <span class="slider"></span>
-              </label>
-            </div>
-            <div class="field-hint" style="margin-top:0">
-              默认关闭。打开后后端常驻监听唤醒词，命中后进入一轮「听 → 想 → 说」，直接发送并朗读；支持 Esc / 托盘 / 屏幕按钮随时停止。唤醒与识别全在本机，音频不落盘、不上传，只有识别出的文字会进入现有对话链路（LLM 仍在远端）。首次启用会下载约 38MB 的唤醒模型；游戏模式不保证全屏覆盖，v1 只面向桌面模式。
-            </div>
-            <div class="field field-row" id="r2PttRow" style="margin-top:2px">
-              <label style="margin:0">R1 按住说话（桌面客户端）</label>
-              <label class="switch">
-                <input id="cfgR2Ptt" type="checkbox" checked>
-                <span class="slider"></span>
-              </label>
-            </div>
-            <div class="field-hint" style="margin-top:0">
-              按住右肩键（R1）开始录音，松开后把识别文字填入输入框，不自动发送。
-              只在客户端窗口激活且语音输入可用时响应，关掉后 R1 不做任何处理。
             </div>
           </div>
 
@@ -4042,7 +4221,7 @@
             </div>
             <div class="mem-foot">
               <span class="field-hint" id="tplHint"></span>
-              <button id="tplSave" class="mini-btn" type="button">保存提示词</button>
+              <button id="tplSave" class="mini-btn primary" type="button">保存提示词</button>
             </div>
           </div>
 
@@ -4129,16 +4308,19 @@
                 凭据、Cookie、URL 查询值、非回环 IP、QQ 号始终打码。
               </div>
             </div>
+            <details class="set-fold">
+              <summary>日志</summary>
             <div class="field">
               <label>日志占用</label>
               <div id="devLogUsage" class="field-hint">统计中…</div>
               <div class="mem-foot" style="margin-top:8px;flex-wrap:wrap">
-                <button id="logClearDebug" class="mini-btn" type="button">清空调试日志</button>
-                <button id="logClearRun" class="mini-btn" type="button">清空运行日志</button>
-                <button id="logClearInstall" class="mini-btn" type="button">清空安装日志</button>
+                <button id="logClearDebug" class="mini-btn danger" type="button">清空调试日志</button>
+                <button id="logClearRun" class="mini-btn danger" type="button">清空运行日志</button>
+                <button id="logClearInstall" class="mini-btn danger" type="button">清空安装日志</button>
               </div>
               <div id="logClearNote" class="field-hint"></div>
             </div>
+            </details>
           </div>
         </section>
 
@@ -8548,7 +8730,7 @@
     if (shEl('rbPaneShell')) shEl('rbPaneShell').classList.add('sh-off');
     shRenderChips();
     shEmptyBlock('远程终端已在设置里关闭',
-      '到「设置 → 远程连接 → 远程终端」把开关打开，保存后即可使用。',
+      '到「设置 → 外部连接 → 远程接管」把远程终端开关打开，保存后即可使用。',
       '去设置开启',
       function () {
         openSettings();
@@ -11534,7 +11716,7 @@
       var st = await (await fetch('/api/stt')).json();
       sttReady = !!(st.enable !== false && st.runtime && st.model);
       if (!sttReady) {
-        fbToast('语音输入未启用或模型未下载：到设置 → 对话与语音里开启并下载模型', 'chat', true);
+        fbToast('语音输入未启用或模型未下载：到设置 → 语音引擎里开启并下载模型', 'chat', true);
         micBtn.classList.remove('busy');
         micStartPending = false;
         return;
@@ -11740,6 +11922,9 @@
   // '' = 还没选（用后端默认的当前使用）；'all' = 全部汇总
   var usageApi = '';
   var cfgTts = document.getElementById('cfgTts');
+  // 设置页「模型接入 → 当前模型」下拉；和对话页顶栏共用同一个模型键
+  var setModelSelect = document.getElementById('setModelSelect');
+  var setModelState = document.getElementById('setModelState');
   // 播报音量临时抬升的开关（[tts] boost_volume，默认开）
   var cfgTtsBoost = document.getElementById('cfgTtsBoost');
   // 语音回复卡（「女仆人格」下面）：两个发音人 + 试听 + 模型下载
@@ -12299,9 +12484,8 @@
   function pairButton(label, handler, danger) {
     var b = document.createElement('button');
     b.type = 'button';
-    b.className = 'mini-btn';
+    b.className = 'mini-btn' + (danger ? ' danger' : '');
     b.textContent = label;
-    if (danger) b.style.color = '#e06c75';
     b.addEventListener('click', handler);
     return b;
   }
@@ -12323,7 +12507,7 @@
   function loadPairInfo() {
     var q = '';
     Promise.all([
-      fetch('/api/pair/pending' + q).then(function (r) { return r.json(); }),
+      fetch('/api/pair/pending?history=1').then(function (r) { return r.json(); }),
       fetch('/api/devices' + q).then(function (r) { return r.json(); }),
       fetch('/api/audit?limit=50')
         .then(function (r) { return r.json(); }),
@@ -12339,13 +12523,22 @@
           empty.textContent = '还没有待配对请求。在新设备上打开局域网地址并点「配对新设备」，PIN 会显示在这里。';
           pairPendingList.appendChild(empty);
         }
+        // 已处理过的请求也一并渲染：按钮直接变成「已允许 / 已拒绝」，
+        // 让掌机上点完立刻有结果，不用猜有没有点上
+        var DONE_LABELS = { approved: '已允许', denied: '已拒绝', expired: '已过期',
+                            failed: '已作废', paired: '已配对' };
         sessions.forEach(function (p) {
+          var done = !!p.state && p.state !== 'pending';
           var row = document.createElement('div');
           row.className = 'pair-row';
+          if (done) {
+            row.classList.add('pair-row-done');
+            row.classList.add(p.state === 'approved' ? 'pair-row-done-ok' : 'pair-row-done-no');
+          }
           var head = document.createElement('div');
           head.className = 'pair-row-head';
           var pin = document.createElement('strong');
-          pin.textContent = p.pin || '----';
+          pin.textContent = p.pin || (done ? '—' : '----');
           head.appendChild(pin);
           var title = document.createElement('span');
           title.textContent = (p.name || '未知设备') + ' · ' + (p.ip || '未知来源');
@@ -12353,20 +12546,43 @@
           row.appendChild(head);
           var meta = document.createElement('div');
           meta.className = 'pair-row-meta';
-          meta.textContent = '剩余 ' + Math.max(0, p.expires_in) + ' 秒 · 已试 ' +
-            (p.attempts || 0) + '/3 次';
+          if (!done) {
+            meta.textContent = '剩余 ' + Math.max(0, p.expires_in) + ' 秒 · 已试 ' +
+              (p.attempts || 0) + '/3 次';
+          } else if (p.state === 'approved') {
+            meta.textContent = '已允许 · 剩余 ' + Math.max(0, p.expires_in) +
+              ' 秒 · 等待对方输入 PIN';
+          } else if (p.state === 'denied') {
+            meta.textContent = '已拒绝本次配对';
+          } else {
+            meta.textContent = (DONE_LABELS[p.state] || '已结束') + ' · 无法再用于配对';
+          }
           row.appendChild(meta);
           var actions = document.createElement('div');
           actions.className = 'pair-row-actions';
-          actions.appendChild(pairButton('允许', function () {
-            pairPost('/api/pair/decision', { pair_id: p.pair_id, allow: true });
-          }));
-          actions.appendChild(pairButton('拒绝', function () {
-            pairPost('/api/pair/decision', { pair_id: p.pair_id, allow: false });
-          }, true));
-          actions.appendChild(pairButton('刷新 PIN', function () {
-            pairPost('/api/pair/refresh', { pair_id: p.pair_id });
-          }));
+          if (done) {
+            var stateBtn = pairButton(DONE_LABELS[p.state] || '已结束', function () {});
+            stateBtn.disabled = true;
+            actions.appendChild(stateBtn);
+            // 已允许时 PIN 还没被用掉，仍可刷新（原 PIN 过期或输错太多时用）
+            if (p.state === 'approved') {
+              actions.appendChild(pairButton('刷新 PIN', function () {
+                pairPost('/api/pair/refresh', { pair_id: p.pair_id });
+              }));
+            }
+          } else {
+            actions.appendChild(pairButton('允许', function () {
+              this.disabled = true; this.textContent = '处理中…';
+              pairPost('/api/pair/decision', { pair_id: p.pair_id, allow: true });
+            }));
+            actions.appendChild(pairButton('拒绝', function () {
+              this.disabled = true; this.textContent = '处理中…';
+              pairPost('/api/pair/decision', { pair_id: p.pair_id, allow: false });
+            }, true));
+            actions.appendChild(pairButton('刷新 PIN', function () {
+              pairPost('/api/pair/refresh', { pair_id: p.pair_id });
+            }));
+          }
           row.appendChild(actions);
           pairPendingList.appendChild(row);
         });
@@ -12537,14 +12753,14 @@
         + (isCurrent ? '使用中' : '设为使用中') + '</span></label>'
         + '<button class="api-remove" type="button" title="删除这组接口" aria-label="删除">✕</button>'
         + '</div>'
-        + '<div class="api-detail">'
+        + '<div class="api-detail set-grid">'
         + '<div class="field"><label>接口地址（base_url）</label>'
         + '<input class="api-base" type="text" autocomplete="off" placeholder="https://api.deepseek.com"'
         + ' value="' + escapeHtml(p.base_url) + '"></div>'
         + '<div class="field"><label>API Key</label>'
         + '<input class="api-key" type="password" autocomplete="off" placeholder="'
         + escapeHtml(p.key_set ? (p.masked + '（已配置，留空不改）') : 'sk-…') + '"></div>'
-        + '<div class="field-hint">'
+        + '<div class="field-hint grid-full">'
         + (p.key_set ? '已配置：' + escapeHtml(p.masked) : '还没有配置 Key')
         + '</div>'
         + '</div>';
@@ -12971,6 +13187,7 @@
         // 每组只回显打码 Key，输入框留空 = 保存时保持原 Key
         renderApiProfiles(c);
         apiProfilesLoaded = true;
+        if (setModelSelect && c.model) setModelSelect.value = c.model;
         cfgTts.checked = c.tts_enable;
         // 播报音量抬升：老配置没有这项，后端缺省即开
         if (cfgTtsBoost) cfgTtsBoost.checked = c.tts_boost_volume !== false;
@@ -13263,7 +13480,7 @@
   // 名称与顺序固定，和内容区各 <section data-pane> 一一对应
   var setNav = document.getElementById('setNav');
   [['model', '模型接入'], ['persona', '女仆人设'],
-   ['device', '本地连接'], ['remote', '远程连接'],
+   ['voice', '语音引擎'], ['external', '外部连接'],
    ['plugin', '插件设置'], ['about', '关于更新']].forEach(function (it) {
     var b = document.createElement('button');
     b.type = 'button';
@@ -13283,7 +13500,153 @@
   // 切页时内容区回到顶部，否则从长页（人设）切到短页会停在半空
   var setBody = settingsPanel.querySelector('.set-body');
 
+  // ---- 全局设置项搜索：跨分区按标签/说明/占位符过滤 ----
+  var settingsSearch = document.getElementById('settingsSearch');
+  var settingsSearchCount = document.getElementById('settingsSearchCount');
+  var settingsNoMatch = document.getElementById('settingsNoMatch');
+
+  // 可搜文本只包含标签、说明和占位符；输入框里的当前值不算，
+  // 否则搜一个 Key 片段会把所有输入框都当成命中留下
+  function settingsItemText(field) {
+    var parts = [field.textContent || ''];
+    Array.prototype.forEach.call(field.querySelectorAll('input, textarea, select'), function (el) {
+      parts.push(el.getAttribute('placeholder') || '');
+    });
+    return parts.join(' ').toLowerCase();
+  }
+
+  function isSettingBox(el) {
+    return el.classList.contains('card') || el.classList.contains('qq-group') ||
+           el.classList.contains('qq-adv-grid');
+  }
+
+  function applySettingsSearch() {
+    var q = (settingsSearch.value || '').trim().toLowerCase();
+    document.body.classList.toggle('set-searching', !!q);
+    settingsNoMatch.hidden = true;
+    settingsSearchCount.textContent = '';
+    // 每次重新搜索先清掉上一轮的高亮，避免旧命中残留
+    Array.prototype.forEach.call(
+      settingsPanel.querySelectorAll('.search-hit-item'),
+      function (el) { el.classList.remove('search-hit-item'); });
+    var hits = 0, panesHit = {}, firstPane = null;
+    Array.prototype.forEach.call(settingsPanel.querySelectorAll('.set-pane'), function (pane) {
+      var paneHit = false;
+      // 逐个设置项判断，命中的保留、其余的藏掉
+      Array.prototype.forEach.call(pane.querySelectorAll('.field'), function (f) {
+        var hit = !q || settingsItemText(f).indexOf(q) >= 0;
+        f.style.display = hit ? '' : 'none';
+        if (q && hit) {
+          hits++;
+          f.classList.add('search-hit-item');
+          paneHit = true;
+        }
+      });
+      // 卡片 / 分组：里面的设置项全被藏掉就整块藏掉；
+      // 卡片标题、说明、表头文字命中时也露出来（用量表这类没有 .field 的块）
+      // 这里不再只看 pane.children，折叠块里的卡片也要一起处理
+      Array.prototype.forEach.call(pane.querySelectorAll('.card, .qq-group, .qq-adv-grid'), function (box) {
+        if (!q) { box.style.display = ''; return; }
+        var hasField = box.querySelectorAll('.field').length > 0;
+        var visible = false;
+        if (hasField) {
+          Array.prototype.some.call(box.querySelectorAll('.field'), function (f) {
+            if (f.style.display !== 'none') { visible = true; return true; }
+            return false;
+          });
+        }
+        var byBox = false;
+        if (!visible && (box.textContent || '').toLowerCase().indexOf(q) >= 0) {
+          visible = true;
+          byBox = true;
+          // 卡片名 / 说明文字命中时，把卡内条目一起露出来，避免只剩标题的空壳
+          Array.prototype.forEach.call(box.querySelectorAll('.field'), function (f) {
+            f.style.display = '';
+          });
+        }
+        box.style.display = visible ? '' : 'none';
+        if (visible) {
+          paneHit = true;
+          if (!hasField || byBox) {
+            hits++;
+            box.classList.add('search-hit-item');
+          }
+        }
+      });
+      // 折叠块：有命中就自动展开，没命中就收起并藏掉
+      Array.prototype.forEach.call(pane.querySelectorAll('details.set-fold'), function (d) {
+        if (!q) { d.open = false; d.style.display = ''; return; }
+        var visible = false;
+        // 折叠块里可能只有 .field（连接状态、群与权限、日志），不能只看卡片
+        Array.prototype.some.call(d.querySelectorAll('.field, .card, .qq-group, .qq-adv-grid'), function (el) {
+          if (el.style.display !== 'none') { visible = true; return true; }
+          return false;
+        });
+        if (visible) {
+          d.open = true;
+          d.style.display = '';
+        } else {
+          d.open = false;
+          d.style.display = 'none';
+        }
+      });
+      if (!q) {
+        pane.classList.remove('search-hit');
+      } else {
+        pane.classList.toggle('search-hit', paneHit);
+        if (paneHit) {
+          panesHit[pane.dataset.pane || ''] = 1;
+          if (!firstPane) firstPane = pane;
+        }
+      }
+    });
+    if (q) {
+      // 命中后直接切到第一个命中项所在的分页；其余命中的分页仍由
+      // body.set-searching .set-pane.search-hit 保留可见，方便横向对照
+      if (firstPane) showSetPane(firstPane.dataset.pane);
+      setBody.scrollTop = 0;
+      var paneCount = Object.keys(panesHit).length;
+      settingsNoMatch.hidden = !!paneCount;
+      settingsSearchCount.textContent = paneCount
+        ? ('找到 ' + hits + ' 项 · ' + paneCount + ' 个分页')
+        : '没有匹配';
+    }
+  }
+
+  function clearSettingsSearch() {
+    if (!settingsSearch) return;
+    settingsSearch.value = '';
+    applySettingsSearch();
+  }
+
+  settingsSearch.addEventListener('input', applySettingsSearch);
+  settingsSearch.addEventListener('keydown', function (e) {
+    // 只清搜索词，不把整个设置页关掉
+    if (e.key === 'Escape' && settingsSearch.value) {
+      e.stopPropagation();
+      clearSettingsSearch();
+      return;
+    }
+    // Enter 选中第一条命中：切到它所在分页，展开折叠块，滚到视野中间
+    if (e.key === 'Enter' && settingsSearch.value) {
+      e.preventDefault();
+      var hit = settingsPanel.querySelector('.field.search-hit-item') ||
+                settingsPanel.querySelector('.card.search-hit-item');
+      if (!hit) return;
+      var pane = hit.closest('.set-pane');
+      if (pane) showSetPane(pane.dataset.pane);
+      var fold = hit.closest('details');
+      if (fold) fold.open = true;
+      hit.scrollIntoView({ block: 'center' });
+      hit.classList.add('search-focus');
+      setTimeout(function () { hit.classList.remove('search-focus'); }, 1600);
+    }
+  });
+
   function showSetPane(name) {
+    // 旧分页 id 保留重定向：device / remote 合并进 external 后，
+    // 旧深链接或旧的跨组跳转不能落到空白页
+    if (name === 'device' || name === 'remote') name = 'external';
     // 导航在侧栏的 #setNav 里，不在设置内容区；从 settingsPanel 里找会一个都找不到
     Array.prototype.forEach.call(setNav.querySelectorAll('.set-tab'), function (b) {
       b.classList.toggle('on', b.dataset.pane === name);
@@ -13292,8 +13655,8 @@
       p.classList.toggle('on', p.dataset.pane === name);
     });
     setBody.scrollTop = 0;
-    // 人设页里的语音回复卡要看模型/下载的实时状态，切过来时刷新一次
-    if (name === 'persona') { loadTtsStatus(); fitTtsCredit(); }
+    // 语音引擎里的语音回复卡要看模型/下载的实时状态，切过来时刷新一次
+    if (name === 'voice') { loadTtsStatus(); fitTtsCredit(); }
     // 按游戏预设可能在 Deck 上刚存过，切到插件页时重新拉一份
     if (name === 'plugin') loadPresets();
   }
@@ -13302,6 +13665,8 @@
   function closeSettings() {
     document.body.classList.remove('settings-mode');
     document.body.classList.remove('sb-open');
+    // 搜索词不跨次保留：下次打开设置还是正常的分区视图
+    clearSettingsSearch();
     // 退回对话页：右栏的显示/抽屉状态重新按对话页规则算一遍
     rbApplyLayout();
     document.title = 'DeckMeido';
@@ -15325,6 +15690,16 @@
     modelSelect.innerHTML = html;
     if (cur) modelSelect.value = cur;
     if (modelSelect._dd && modelSelect._dd.refresh) modelSelect._dd.refresh();
+    if (setModelSelect) {
+      setModelSelect.innerHTML = html;
+      if (cur) setModelSelect.value = cur;
+      if (setModelSelect._dd && setModelSelect._dd.refresh) setModelSelect._dd.refresh();
+    }
+    if (setModelState) {
+      setModelState.textContent = '当前接口：' + (currentApiName() || '未配置')
+        + ' · 可用模型 ' + opts.length + ' 个'
+        + (missing ? '（当前模型不在列表里）' : '');
+    }
     if (missing) {
       var key = (apiProfilesState.current || '') + '|' + cur;
       if (modelWarnKey !== key) {
@@ -15443,9 +15818,17 @@
   // 键盘无障碍：方向键、Home/End 也能调档
   thinkRange.addEventListener('change', function () { commitThink(thinkRange.value); });
   modelSelect.addEventListener('change', function () {
+    if (setModelSelect) setModelSelect.value = modelSelect.value;
     postConfig({ model: modelSelect.value });
     addSystem('模型已切换为 ' + modelSelect.value);
   });
+  if (setModelSelect) {
+    setModelSelect.addEventListener('change', function () {
+      modelSelect.value = setModelSelect.value;
+      postConfig({ model: setModelSelect.value });
+      addSystem('模型已切换为 ' + setModelSelect.value);
+    });
+  }
 
   // ＋ 附件菜单
   document.getElementById('btnPlus').addEventListener('click', function (e) {
@@ -15714,7 +16097,7 @@
       // 列表没拉到时（没有 Key / /api/models 失败 / 配置读取失败）别留一个空胶囊：
       // 240px 宽、只有箭头的空条看着像一条坏掉的 toast。给个占位文案，用户知道
       // 这里是「模型选择」，点开还能重新拉列表
-      var isModel = sel.id === 'modelSelect';
+      var isModel = sel.id === 'modelSelect' || sel.id === 'setModelSelect';
       label.textContent = (o && o.textContent) || (isModel ? '选择模型' : '请选择');
       wrap.classList.toggle('dd-empty', !(o && o.value));
     }
@@ -15761,13 +16144,13 @@
     refreshLabel();
   }
   function ddInitAll() {
-    [['permSelect'], ['modelSelect'], ['memKind'], ['cfgPerm']]
+    [['permSelect'], ['modelSelect'], ['setModelSelect'], ['memKind'], ['cfgPerm']]
       .forEach(function (id) { ddSelect(document.getElementById(id)); });
   }
   // config/模型列表异步加载后，select.value 被恢复但 label 没跟着变，
   // 强刷会导致下拉框显示第一个选项。这里统一按各自 value 刷新一次 label
   function ddRefreshAll() {
-    ['permSelect', 'modelSelect', 'memKind', 'cfgPerm']
+    ['permSelect', 'modelSelect', 'setModelSelect', 'memKind', 'cfgPerm']
       .forEach(function (id) {
         var el = document.getElementById(id);
         if (el && el._dd && el._dd.refresh) el._dd.refresh();
