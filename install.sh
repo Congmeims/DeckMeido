@@ -11,7 +11,7 @@
 #   bash install.sh install --minimal   最小安装：后端 + Decky 插件 + 桌面客户端，不装语音/系统依赖，不下载模型
 #   bash install.sh install --standard  标准安装（默认）：最小 + STT/TTS 引擎与所需模型
 #   bash install.sh install --full      完整安装：标准 + 系统依赖 + 唤醒词模型 + 音箱模式所需组件
-#   bash install.sh install --custom    自定义：逐项询问（和原来的可选依赖流程一致）
+#   bash install.sh install --custom    自定义：逐项询问，默认全装
 #   bash install.sh upgrade        升级代码与依赖，保留配置（默认逐项询问）
 #   bash install.sh upgrade --minimal|--standard|--full   升级并按对应档位补齐组件
 #   bash install.sh upgrade --deps      升级后顺带检查并安装控制类插件
@@ -19,13 +19,11 @@
 #   bash install.sh uninstall     卸载：安装器文件全部移入回收站，保留 userdata/ 与工作区
 #   bash install.sh uninstall --dry-run  只列计划，零改动（系统包也只列不删）
 #   bash install.sh uninstall --purge    连工作区、userdata、日志、模型、配置备份一起移入回收站
-#   bash install.sh uninstall --scan     没有安装清单的老安装：按签名扫描候选，逐项确认
-#   bash install.sh uninstall --since=YYYY-MM-DD   指定安装时间窗（pacman 取证用）
 #   bash install.sh from-mirror   从国内镜像站下载最新版并安装（GitHub 不通时用）
 #   bash install.sh speedtest     只测各 pip 源的下载速率，挑最快的那个
 #
 # 控制类插件（ydotool / kdotool / wtype / espeak-ng / fakeroot）是系统包，
-# 装它们需要 root：默认只在结尾提示并询问一次（y/N），回答 y 才走 sudo。
+# 装它们需要 root：按档位处理，自定义档逐项询问（默认装），都走 sudo。
 #
 # 为什么装完还要自检：SteamOS 换镜像（BUILD_ID 变动）时，/usr 下由 pacman
 # 装的包会被整片冲掉，而 pacman 的数据库记录不一定同步，所以只查
@@ -39,8 +37,7 @@
 #   想手动选操作（含卸载）：下载脚本后 bash install.sh menu
 #   git 方式（需要本地源码目录时）：git clone ... && cd DeckMeido && bash install.sh
 #   已有脚本、只想走镜像拉最新版：bash install.sh from-mirror
-#   从旧目录 ~/deckmeido 改名到 ~/DeckMeido：bash install.sh migrate
-#
+
 # 再跑第一条 git clone 时若报「目标路径已存在，并且不是一个空目录」，
 # 说明 DeckMeido 目录已存在——直接 cd DeckMeido && bash install.sh 升级即可，
 # 不用删目录重新 clone。
@@ -58,12 +55,6 @@
 # 注意：不要用 sudo 执行。脚本会把程序装到当前用户家目录、注册用户级桌面项，
 #       用 root 装会装到 /root 下，桌面会话里起不来；也不注册开机自启服务。
 #
-# 2026-11-04 事故：卸载验证误把源码工作区当安装目录，rm -rf 清空了整个仓库（含
-# .git）。此后卸载/清理必须先过 safe_rm_target，拒绝源码工作区与危险路径。
-# 2026-11-04 进一步改造：卸载不再整块删除安装目录，改为按 .deckmeido-manifest
-# 逐项删除；目录必须带 .deckmeido-install 标记才算「安装器创建的」，否则一律
-# 拒绝卸载（即使设置了 DECKMEIDO_ALLOW_UNSAFE_UNINSTALL=1 也只删清单文件、
-# 绝不 rmdir），userdata/ 永远保留。
 # 用户可修改数据统一放 <安装目录>/userdata（可用 DECKMEIDO_DATA_DIR 覆盖）：
 # config.toml、persona/meidosoul.json、memory.json、sessions/、uploads/、
 # meidobot/、models/sensevoice/、logs/、core.stopped。只保留这一套标准布局；
@@ -71,8 +62,7 @@
 set -euo pipefail
 
 APP=deckmeido                 # 配置目录、数据目录沿用这个稳定标识（与安装目录大小写无关）
-APP_DIR=DeckMeido             # 安装目录名；Linux 路径区分大小写，这是真改名（旧名 ~/deckmeido）
-LEGACY_DIR="$HOME/$APP"
+APP_DIR=DeckMeido             # 安装目录名；Linux 路径区分大小写
 DECKMEIDO_DIR_ENV="${DECKMEIDO_DIR:-}"
 INSTALL_DIR="${DECKMEIDO_DIR_ENV:-$HOME/$APP_DIR}"
 PORT="${DECKMEIDO_PORT:-18765}"
@@ -112,19 +102,9 @@ heal_exec_bits() {
 }
 heal_exec_bits "$HERE"
 
-# 0.7.3 安装目录从 ~/deckmeido 改名为 ~/DeckMeido。老用户（旧目录带安装标记或
-# VERSION、且新目录还不存在）默认继续用旧目录原地升级，绝不悄悄装成两份；
-# 想改成新名字：bash install.sh migrate，或在交互菜单里选「迁移」。
-LEGACY_INSTALL=""
-if [ -z "$DECKMEIDO_DIR_ENV" ] && [ ! -e "$INSTALL_DIR" ] && [ -d "$LEGACY_DIR" ] &&
-   { [ -f "$LEGACY_DIR/.deckmeido-install" ] || [ -f "$LEGACY_DIR/VERSION" ]; }; then
-  INSTALL_DIR="$LEGACY_DIR"
-  LEGACY_INSTALL="$LEGACY_DIR"
-fi
-
 # 安装器写下的标记与清单：只有带标记的目录才允许卸载；清单记录本次安装
 # 实际铺进安装目录的条目，卸载时只按清单逐项删除，清单外的文件一律不动。
-# 这些路径都由 INSTALL_DIR 推导，迁移后统一刷新（refresh_paths）。
+# 这些路径都由 INSTALL_DIR 推导，统一在 refresh_paths 里刷新。
 DATA_DIR_ENV="${DECKMEIDO_DATA_DIR:-}"
 refresh_paths() {
   INSTALL_MARKER="$INSTALL_DIR/.deckmeido-install"
@@ -186,21 +166,6 @@ _existing_port="$(config_port "$DATA_CONFIG" || true)"
 if [ -n "$_existing_port" ]; then
   PORT="$_existing_port"
 fi
-
-# 局域网开关：读已有配置的 [server].lan_enable（默认 false，只绑回环）
-config_lan_enable() {
-  local cfg="${1:-}"
-  [ -f "$cfg" ] || { printf '0'; return 0; }
-  command -v python3 >/dev/null 2>&1 || { printf '0'; return 0; }
-  python3 - "$cfg" <<'PY' 2>/dev/null || printf '0'
-import sys, tomllib
-try:
-    with open(sys.argv[1], "rb") as f:
-        print("1" if (tomllib.load(f).get("server") or {}).get("lan_enable") else "0")
-except Exception:
-    print("0")
-PY
-}
 
 # 是否通过「curl | sh -」管道执行。管道执行时脚本不在磁盘上，$BASH_SOURCE[0]
 # 不是真实文件，sync_files 依赖的 $HERE/* 会指向错误位置；此时自动走
@@ -360,16 +325,6 @@ safe_rm_target() {
       ;;
   esac
   return 0
-}
-
-# 守卫 + 打印具体目标 + 真正删除；任何一步失败都以非 0 退出
-remove_tree() {
-  local target="${1:-}"
-  if ! safe_rm_target "$target"; then
-    die "拒绝删除：$target（疑似源码工作区或危险路径）"
-  fi
-  echo "[删除] $target"
-  rm -rf -- "$target"
 }
 
 # ---------- 安装标记与文件清单 ----------
@@ -549,14 +504,7 @@ trash_path() {
   return 0
 }
 
-# 删除清单里的单个具体路径（目录整体移入回收站、文件单移）；插件目录属 root 时补一次 sudo
-remove_manifest_path() {
-  local abs="$1"
-  trash_path "$abs"
-}
-
 # 清单行（format=2）：<类型>:<路径><TAB>preexisting=<0|1>
-# 兼容 format=1 的老清单：没有 TAB 后缀时一律按「安装器所有」处理。
 M_KIND=""; M_PATH=""; M_PRE="0"
 manifest_split_line() {
   local line="${1:-}" pre
@@ -888,37 +836,6 @@ write_config_records() {
   return 0
 }
 
-purge_config_dir() {
-  local line rel abs
-  if [ ! -f "$CONFIG_MARKER" ]; then
-    warn "拒绝删除配置目录：$CONFIG_DIR 缺少安装器标记 .deckmeido-config"
-    return 0
-  fi
-  if [ -f "$CONFIG_MANIFEST" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-      [ -n "$line" ] || continue
-      case "$line" in
-        /*|*..*)
-          warn "跳过配置清单中的异常条目：$line"
-          continue
-          ;;
-      esac
-      abs="$CONFIG_DIR/$line"
-      [ -e "$abs" ] || [ -L "$abs" ] || continue
-      trash_path "$abs" || true
-    done < "$CONFIG_MANIFEST"
-    trash_path "$CONFIG_MANIFEST" || true
-  fi
-  trash_path "$CONFIG_MARKER" || true
-  if [ -z "$(find "$CONFIG_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-    echo "[删除] $CONFIG_DIR"
-    rmdir "$CONFIG_DIR" 2>/dev/null || true
-  else
-    info "保留目录：$CONFIG_DIR（含未识别文件）"
-  fi
-}
-
-
 # ---------- 文本宽度 ----------
 # 终端里中文占 2 列，按字符数排版框线一定会歪，这里按显示宽度算。
 # 只覆盖中日韩 + 全角标点，够本脚本用了（纯 bash，不依赖 wc -L）
@@ -1169,7 +1086,7 @@ system_notes() {
 
 # ---------- 可选系统依赖 ----------
 # 这些是「替你在桌面上动手」的核心控件，装它们必须 root。
-# 默认在安装结尾说明用途并询问一次，或加 --deps 直接装。
+# 安装时按档位处理（自定义档逐项询问，默认装），或加 --deps 直接装。
 # fakeroot 不是运行时控件，但用 paru/yay 编译 AUR 包（kdotool）必须要它，
 # 缺了会在 makepkg 阶段报「fakeroot not found」，所以一起装。
 DEPS_PACMAN=(espeak-ng ydotool wtype fakeroot)
@@ -1411,8 +1328,8 @@ opt_download() {
 # ---------- 安装档位 ----------
 # 三档：minimal（最小）/ standard（标准）/ full（完整），外加 custom（逐项询问）。
 # 命令行 --minimal / --standard / --full / --custom（或 --profile=xxx）直接指定。
-# 没指定时：全新安装弹一次菜单（默认标准）；升级默认自定义（沿用原来的逐项询问，
-# 不会因为一次升级就把用户从没装过的语音组件悄悄装上）。
+# 没指定时：全新安装弹一次菜单（默认标准）；升级默认自定义（逐项询问，默认全装；
+# 不想装的项显式输入 n）。
 # 非交互模式（管道安装、无 tty）绝不询问，直接按传入的默认值继续。
 choose_install_profile() {
   local def="${1:-standard}" cur="${DECKMEIDO_PROFILE:-}"
@@ -2041,9 +1958,7 @@ install_deps() {
 CODE_DIRS=(server client assets deploy tools plugin)
 # deploy/deps/ 里的离线依赖包也必须放过：它们不在源码目录里，照常删的话
 # 每次升级都会把 Release 自带的离线包清空，下次断网就装不上依赖了。
-# 旧布局（0.7.3 之前）的配置、人设、记忆、会话也放在 server/ 下：
-# 它们同样不在源码包里，但绝不能当废弃代码删掉，否则升级即丢账户与历史。
-USER_DATA_RE='\.log$|(^|/)VERSION$|(^|/)__pycache__(/|$)|^deploy/deps/|(^|/)config\.toml(\.bak[^/]*)?$|(^|/)meidosoul\.json$|(^|/)memory\.json$|(^|/)sessions/[^/]+$|(^|/)uploads/[^/]+$|(^|/)static/shots/[^/]+$'
+USER_DATA_RE='\.log$|(^|/)VERSION$|(^|/)__pycache__(/|$)|^deploy/deps/|(^|/)static/shots/[^/]+$'
 
 prune_stale() {
   [ -d "$INSTALL_DIR" ] || return 0
@@ -2097,10 +2012,8 @@ sync_files() {
   for it in "${items[@]}"; do
     [ -e "$HERE/$it" ] || continue
     if [ -d "$HERE/$it" ]; then
-      # userdata/ 是用户数据根，永远不从源码包覆盖；旧布局下 server/ 里的
-      # 配置也属于用户数据，同样不覆盖
+      # userdata/ 是用户数据根，永远不从源码包覆盖
       rsync -a --exclude 'userdata' --exclude '__pycache__' --exclude '*.log' \
-            --exclude 'config.toml' --exclude 'config.toml.bak*' \
             "$HERE/$it/" "$INSTALL_DIR/$it/" 2>/dev/null ||
         cp -r "$HERE/$it/." "$INSTALL_DIR/$it/"
     else
@@ -2176,21 +2089,6 @@ human_rate() {
   else
     printf '连不上'
   fi
-}
-
-# 「11 kB」「1.9 GB」「512」这类 pip 日志里的体积文本 → 字节数
-parse_bytes() {
-  local s="$1" num unit
-  num=$(printf '%s' "$s" | grep -oE '[0-9.]+' | head -1)
-  [ -n "$num" ] || { printf '0'; return 0; }
-  unit=$(printf '%s' "$s" | grep -oE '[a-zA-Z]+' | head -1 | tr 'A-Z' 'a-z')
-  case "$unit" in
-    gb|g) printf '%d' "$(awk "BEGIN{print int($num*1073741824)}")" ;;
-    mb|m) printf '%d' "$(awk "BEGIN{print int($num*1048576)}")" ;;
-    kb|k) printf '%d' "$(awk "BEGIN{print int($num*1024)}")" ;;
-    b|"") printf '%d' "$(awk "BEGIN{print int($num)}")" ;;
-    *)    printf '0' ;;
-  esac
 }
 
 # 秒 → 「1m23s」「45s」
@@ -2927,32 +2825,6 @@ ensure_data_layout() {
   chmod 700 "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" "$DATA_LOGS" "$DATA_MODELS" 2>/dev/null || true
 }
 
-# 旧布局（0.7.3 之前）的配置在 <安装目录>/server/config.toml。新版只认数据根
-# （userdata/config.toml），所以升级时必须先把它复制过去；不复制的话，后端会
-# 因为找不到配置而拿 config.example.toml 生成一份空模板，设置页里的模型账户
-# 就变成「未配置」（0.7.5 用户反馈的「升级后模型接口变空」）。
-# 规则：只复制、不删除；目标已存在一律跳过，绝不用旧文件覆盖用户现有账户。
-migrate_legacy_config() {
-  local src="$INSTALL_DIR/server" f dst
-  [ -d "$src" ] || return 0
-  mkdir -p "$(dirname "$DATA_CONFIG")" 2>/dev/null || true
-  if [ ! -e "$DATA_CONFIG" ] && [ -f "$src/config.toml" ]; then
-    if cp -p -- "$src/config.toml" "$DATA_CONFIG" 2>/dev/null; then
-      dim "已迁移旧配置 $src/config.toml → $DATA_CONFIG（原文件保留）"
-    fi
-  fi
-  # 旧版安装器留下的 config.toml.bak-* 一并带到数据根，留给用户回滚
-  for f in "$src"/config.toml.bak*; do
-    [ -f "$f" ] || continue
-    dst="$DATA_DIR/$(basename "$f")"
-    [ -e "$dst" ] && continue
-    if cp -p -- "$f" "$dst" 2>/dev/null; then
-      dim "已迁移旧配置备份 $(basename "$f")"
-    fi
-  done
-  return 0
-}
-
 # 工作区：安装/升级都保证它存在，幂等；已存在时一律不动里面内容。
 # 首次创建时顺手放两个说明文件，让用户在 Dolphin 里一眼看懂它是什么：
 #   .directory  KDE 文件夹备注（标准 Desktop Entry，右键属性里能看到）
@@ -3013,22 +2885,6 @@ ensure_workspace_owner() {
   return 0
 }
 
-# 旧工作区（0.7.3 之前叫 ~/deckmeido_workspace）：只提示，不自动搬，避免静默丢内容
-workspace_legacy_note() {
-  local ws="$1" old
-  for old in "$HOME/deckmeido_workspace" "$HOME/DeckMeido_workspace"; do
-    [ -d "$old" ] || continue
-    [ "$old" = "$ws" ] && continue
-    [ -n "$(find "$old" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ] || continue
-    if [ -z "$(find "$ws" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-      step_note "发现旧工作区 $old，需要时可迁移：cp -a \"$old/.\" \"$ws/\""
-    else
-      step_note "发现旧工作区 $old（当前工作区已有内容，未自动合并）"
-    fi
-  done
-  return 0
-}
-
 ensure_workspace() {
   local ws; ws="$(workspace_dir)"
   local fresh=0
@@ -3045,7 +2901,6 @@ ensure_workspace() {
   fi
   ensure_workspace_owner "$ws"
   [ "$fresh" = 1 ] && seed_workspace_notes "$ws"
-  workspace_legacy_note "$ws"
   return 0
 }
 
@@ -3571,8 +3426,6 @@ install_uninstaller() {
 #   bash uninstall.sh                  卸载：安装器文件全部移入回收站，保留 userdata/ 与工作区
 #   bash uninstall.sh --dry-run        只列计划，零改动（系统包也只列不删）
 #   bash uninstall.sh --purge          连工作区、userdata、日志、模型、配置备份一起移入回收站
-#   bash uninstall.sh --scan           没有安装清单的老安装：按签名扫描候选，逐项确认
-#   bash uninstall.sh --since=YYYY-MM-DD  指定安装时间窗（pacman 取证用）
 #
 # 所有模式都只把东西丢进回收站，绝不永久删除；userdata/ 只有 --purge 才移走。
 set -euo pipefail
@@ -3761,11 +3614,9 @@ do_install() {
   export DECKMEIDO_PROFILE="${DECKMEIDO_PROFILE:-}"
   # 只补装某一项依赖：不换代码、不停机，走原来的轻量路径
   check_user
-  legacy_prompt
   if [ "$tts_only" = 1 ] || [ "$stt_only" = 1 ] || [ "$gui_only" = 1 ]; then
     check_user
     start_install_log
-    migrate_legacy_config
     sync_files
     ensure_data_layout
     ensure_workspace || true
@@ -3818,8 +3669,6 @@ do_install() {
 
   # [3/6] 下载并校验主程序（本地源码安装就是同步文件）
   step "下载并校验主程序"
-  # 旧布局的配置必须先搬进数据根，否则 prune_stale 会把它当废弃文件删掉
-  migrate_legacy_config
   sync_files
   disk_ver="$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
   step_ok "程序文件已就位：$INSTALL_DIR（v${disk_ver:-未知}）"
@@ -3935,13 +3784,12 @@ do_upgrade() {
   [ -d "$INSTALL_DIR" ] || die "$INSTALL_DIR 不存在，请先执行安装"
   check_user
   print_banner
-  legacy_prompt
   # 升级只换代码和依赖，下面这些一律保留，用户不用担心升级丢数据
   dim "升级会保留：userdata/ 下的配置、人设、长期记忆、会话与上传文件，"
   dim "以及工作区；Decky 插件已装过会自动替换为新版本。"
   start_install_log
-  # 升级默认沿用原来的逐项询问（自定义），不会把用户没装过的语音组件装上；
-  # 显式给了 --minimal / --standard / --full 才按档位执行
+  # 升级默认进逐项询问（自定义）：没装过的组件也会按默认值补上，
+  # 不想装的项显式输入 n；显式给了 --minimal / --standard / --full 才按档位执行
   [ "$gui_only" = 1 ] || choose_install_profile custom
   STEP_QUIET=1
   reset_steps
@@ -3971,7 +3819,6 @@ do_upgrade() {
 
   # [3/6] 下载并校验主程序
   step "下载并校验主程序"
-  migrate_legacy_config
   sync_files
   disk_ver="$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
   step_ok "程序文件已就位：$INSTALL_DIR（v${disk_ver:-未知}）"
@@ -3990,7 +3837,7 @@ do_upgrade() {
     else
       step_note "运行依赖没装全，可重跑：bash $INSTALL_DIR/install.sh upgrade"
     fi
-    # 标准 / 完整档在升级时也补齐语音模型（已有就跳过；自定义档不下载）
+    # 升级时补齐语音模型（已有就跳过；自定义档下 STT 模型不预取，TTS 模型照下）
     prefetch_voice_models
     if [ "$deps" = "--deps" ] || [ "${DECKMEIDO_INSTALL_DEPS:-0}" = "1" ]; then
       maybe_autorepair_after_image_update
@@ -4247,9 +4094,7 @@ do_from_mirror() {
   local tag; tag="$(mirror_latest_tag || true)"
   [ -n "$tag" ] || die "读不到镜像站的版本信息（$MIRROR/latest.json），请检查网络或稍后再试"
   info "最新版本：v$tag"
-  # 临时目录用脚本级变量：trap 要等脚本退出才执行，那时函数里的 local
-  # 已经出栈，set -u 下展开 $tmp 会报「tmp: 未绑定的变量」（用户看到的
-  # 就是按 A 结束后闪出的一条 bash 报错）。改用全局变量 + :- 兜底。
+  # 临时目录用脚本级变量，原因见 do_from_piped 里的说明
   PIPED_TMP="$(mktemp -d)"
   local tmp="$PIPED_TMP"
   trap 'rm -rf "${PIPED_TMP:-}"' EXIT
@@ -4434,16 +4279,6 @@ cleanup_generated_leftovers() {
     \( -name '*.log' -o -name '*.part' -o -name '*.tmp' -o -name '*.pyc' \) -print 2>/dev/null)
 }
 
-# 卸载完还残留的插件目录：多半是权限问题（sudo -n 拿不到密码），要说清楚怎么补
-plugin_leftovers() {
-  local root
-  for root in "${DECKY_PLUGINS_DIR:-}" "$HOME/homebrew/plugins"; do
-    [ -n "$root" ] || continue
-    [ -e "$root/DeckMeido" ] && printf '%s\n' "${root%/}/DeckMeido"
-  done
-  return 0
-}
-
 # ---------- 系统包取证（pacman.log + pacman -Qi + 包目录签名） ----------
 # 没有安装清单的老安装，只能从 /var/log/pacman.log 取证。按安装时间窗分三类：
 #   W 窗口内新装        → 候选，可删（还要过「三方交叉验证」）
@@ -4480,15 +4315,9 @@ pac_log_file() {
   return 1
 }
 
-# 安装时间窗起点：--since 优先，其次清单里的 installed_at，最后退回 .git 的首次提交时间
+# 安装时间窗起点：清单里的 installed_at，没有就退回 .git 的首次提交时间
 uninstall_window_start() {
-  local since="${1:-}" v=""
-  if [ -n "$since" ]; then
-    case "$since" in
-      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) printf '%sT00:00:00\n' "$since"; return 0 ;;
-      *) warn "--since 需要 YYYY-MM-DD 格式，忽略：$since" ;;
-    esac
-  fi
+  local v=""
   v="$(sed -n 's/^installed_at=//p' "$INSTALL_MARKER" 2>/dev/null | head -n1)"
   if [ -z "$v" ] && [ -d "$INSTALL_DIR/.git" ] && need_cmd git; then
     v="$(git -C "$INSTALL_DIR" log --reverse --format=%cI 2>/dev/null | head -n1)"
@@ -4558,8 +4387,9 @@ pac_classify_deps() {
   done
 }
 
-# 可选：卸载安装器亲自装过的系统包。默认不删；只认 DEP_RECORD 清单与
-# pacman 取证里「窗口内新装」的包，绝不碰 SteamOS 自带组件或用户原本就有的包，
+# 可选：卸载安装器亲自装过的系统包。默认卸载（回车=删，显式 n 才保留）；
+# 只认 DEP_RECORD 清单与 pacman 取证里「窗口内新装」的包，
+# 绝不碰 SteamOS 自带组件或用户原本就有的包，
 # 也不用 -Rns 级联删依赖。删包前必须列清单并询问，--purge 也不静默删。
 # requires_confirm=0 时只在 dry-run 下调用（只打印，不问）。
 uninstall_optional_deps() {
@@ -4769,77 +4599,6 @@ disable_ydotool_unit() {
   dim "ydotool.service 已 disable"
 }
 
-# 卸载候选清单（扫描模式）：没有清单时按签名找「哪些东西是我们的」。
-# 只列出并让用户确认，绝不盲删；含 .git 的工作区一律跳过。
-scan_candidates() {
-  local p f
-  SCAN_DIRS=(); SCAN_FILES=(); SCAN_SKIP=()
-  # 安装目录：目录里有安装器签名才认
-  if [ -d "$INSTALL_DIR" ]; then
-    if [ -f "$INSTALL_DIR/server/main.py" ] && [ -f "$INSTALL_DIR/client/launch.sh" ]; then
-      SCAN_DIRS+=("$INSTALL_DIR")
-    else
-      SCAN_SKIP+=("$INSTALL_DIR（目录里没有 DeckMeido 签名，不敢动）")
-    fi
-  fi
-  # 桌面项：认 Name=DeckMeido
-  for f in "${DESKTOP_DIR%/}/DeckMeido.desktop" "${DESKTOP_FOLDER%/}/DeckMeido.desktop"; do
-    [ -f "$f" ] && grep -q '^Name=DeckMeido$' "$f" 2>/dev/null && SCAN_FILES+=("$f")
-  done
-  # 配置目录下的备份标记
-  [ -f "$CONFIG_MARKER" ] && SCAN_FILES+=("$CONFIG_MARKER")
-  [ -f "$CONFIG_DIR/.deps-build-id" ] && SCAN_FILES+=("$CONFIG_DIR/.deps-build-id")
-  # Decky 插件与它托管的三个目录
-  for p in "${DECKY_PLUGINS_DIR:-}" "$HOME/homebrew/plugins"; do
-    [ -n "$p" ] || continue
-    if grep -q '"DeckMeido"' "$p/DeckMeido/plugin.json" 2>/dev/null; then
-      SCAN_DIRS+=("$p/DeckMeido")
-    fi
-  done
-  while IFS= read -r p; do
-    [ -d "$p" ] && SCAN_DIRS+=("$p")
-  done < <(decky_plugin_dirs)
-  # 工作区：配置里写了的 + 默认 ~/MeidoSpace；含 .git 的跳过
-  for p in "$(workspace_dir)" "$HOME/MeidoSpace"; do
-    [ -n "$p" ] && [ -d "$p" ] || continue
-    case " ${SCAN_DIRS[*]-} " in *" $p "*) continue ;; esac
-    case " ${SCAN_SKIP[*]-} " in *" $p（"*) continue ;; esac
-    if [ -e "$p/.git" ]; then
-      SCAN_SKIP+=("$p（工作区里有 .git，可能是你自己的仓库，请手动处理）")
-    else
-      SCAN_DIRS+=("$p")
-    fi
-  done
-  # 运行期临时文件：只认安装器自己写的固定名字，别把 /tmp 里同前缀的
-  # 测试残留、其它工具的临时目录一并算成我们的
-  for f in /tmp/deckmeido-askpass.* /tmp/deckmeido-inline.js /tmp/deckmeido-rewrite-backup /tmp/deckmeido-devlog-*; do
-    [ -e "$f" ] && SCAN_FILES+=("$f")
-  done
-  return 0
-}
-
-# 用扫描结果生成一份临时清单，交给 delete_install_manifest 走同一套删除逻辑
-scan_write_manifest() {
-  local out="$1" p
-  {
-    printf 'format=2\n'
-    printf 'app=%s\n' "$APP"
-    printf 'scan=1\n'
-    for p in "${SCAN_DIRS[@]+"${SCAN_DIRS[@]}"}"; do
-      # 安装目录统一用 dir:. 表示（与正式清单一致，交给 delete_install_manifest
-      # 按 INSTALL_DIR 解析）；其余一律走 ext: 白名单路径
-      if [ "$p" = "$INSTALL_DIR" ]; then
-        printf 'dir:.\tpreexisting=0\n'
-      else
-        printf 'ext:%s\tpreexisting=0\n' "$p"
-      fi
-    done
-    for p in "${SCAN_FILES[@]+"${SCAN_FILES[@]}"}"; do
-      printf 'ext:%s\tpreexisting=0\n' "$p"
-    done
-  } > "$out"
-}
-
 # 一次卸载的回收站汇总：把「丢哪儿了、丢了多少、要不要自己清」说清楚
 print_trash_summary() {
   local n="$TRASH_COUNT" root
@@ -4862,22 +4621,18 @@ print_trash_summary() {
 }
 
 do_uninstall() {
-  local purge=0 scan=0 has_marker=0 has_manifest=0
-  local since="" ws="" kept_dir=0 t0="" arg
+  local purge=0 has_marker=0 has_manifest=0
+  local ws="" kept_dir=0 t0="" arg
   for arg in "$@"; do
     case "$arg" in
       --purge) purge=1 ;;
       --dry-run) DRY_RUN=1 ;;
-      --scan) scan=1 ;;
-      --since=*) since="${arg#--since=}" ;;
       -h|--help)
         cat <<'EOF'
 用法：bash install.sh uninstall [选项]
 
   --dry-run   只列出将要移入回收站的内容，零改动（系统包也只列不删）
   --purge     连工作区、userdata、日志、模型、配置备份一起移入回收站
-  --scan      没有安装清单的老安装：按签名扫描候选，逐项确认
-  --since=YYYY-MM-DD   指定安装时间窗（判断系统包是不是本次装的）
 
 所有模式都只把文件移入回收站（gio trash，失败则放 ~/.local/share/Trash），
 绝不永久删除。回收站里的内容需要你自己清空，不清空不影响重新安装。
@@ -4887,21 +4642,17 @@ EOF
     esac
   done
   check_user
-  has_marker=0
   [ -f "$INSTALL_MARKER" ] && has_marker=1
-  has_manifest=0
   [ -f "$INSTALL_MANIFEST" ] && has_manifest=1
-  if [ "$has_marker" = 1 ] && [ "$has_manifest" = 0 ]; then
-    warn "有安装标记但缺少清单：$INSTALL_MANIFEST"
-    dim "改用扫描模式（--scan）按签名找候选；排查完仍不行可加 --scan 重跑"
-    scan=1
-  fi
-  if [ "$has_marker" = 0 ] && [ "$has_manifest" = 0 ]; then
-    dim "没有安装清单，进入扫描模式：只按 DeckMeido 签名识别候选"
-    scan=1
+  if [ "$has_marker" = 0 ] || [ "$has_manifest" = 0 ]; then
+    if [ ! -d "$INSTALL_DIR" ]; then
+      info "没有找到已安装的 DeckMeido（$INSTALL_DIR），无需卸载"
+      return 0
+    fi
+    die "缺少安装清单（$INSTALL_MANIFEST）：只支持卸载本安装器写下的安装"
   fi
   # 第一道：危险路径/源码工作区一律在动手前拒绝，保证零改动
-  if [ "$scan" = 0 ] && ! safe_rm_target "$INSTALL_DIR"; then
+  if ! safe_rm_target "$INSTALL_DIR"; then
     warn "拒绝卸载：$INSTALL_DIR 疑似源码工作区或危险路径"
     die "卸载中止（未删除任何文件）"
   fi
@@ -4917,28 +4668,12 @@ EOF
   TRASH_COUNT=0
   TRASH_FAILED=0
   TRASH_LAST_DIR=""
-  t0="$(uninstall_window_start "$since")"
+  t0="$(uninstall_window_start)"
   [ -n "$t0" ] && dim "安装时间窗起点：${t0:0:19}"
 
   # ---------- 列清单 ----------
-  local tmp_manifest="" p
-  if [ "$scan" = 1 ]; then
-    scan_candidates
-    echo
-    info "扫描到的候选（按 DeckMeido 签名识别）："
-    for p in "${SCAN_DIRS[@]+"${SCAN_DIRS[@]}"}"; do printf '  · %s\n' "$p"; done
-    for p in "${SCAN_FILES[@]+"${SCAN_FILES[@]}"}"; do printf '  · %s\n' "$p"; done
-    for p in "${SCAN_SKIP[@]+"${SCAN_SKIP[@]}"}"; do dim "  跳过 $p"; done
-    if [ ${#SCAN_DIRS[@]} -eq 0 ] && [ ${#SCAN_FILES[@]} -eq 0 ]; then
-      info "没有找到任何 DeckMeido 签名，机器上可能已经卸干净了"
-      return 0
-    fi
-    tmp_manifest="$(mktemp)"
-    scan_write_manifest "$tmp_manifest"
-  else
-    info "按安装清单卸载：$INSTALL_MANIFEST"
-    dim "清单外的文件一律不动；安装前就已存在的条目会跳过"
-  fi
+  info "按安装清单卸载：$INSTALL_MANIFEST"
+  dim "清单外的文件一律不动；安装前就已存在的条目会跳过"
   if [ "$purge" = 1 ]; then
     dim "彻底清除：连工作区、userdata、日志、模型、配置备份一起移入回收站"
   else
@@ -4947,13 +4682,7 @@ EOF
 
   # ---------- 确认 ----------
   if [ "$DRY_RUN" = 0 ]; then
-    if [ "$scan" = 1 ]; then
-      if ! ask_yes "确认把这些候选移入回收站吗？"; then
-        info "已取消，未做任何改动"
-        rm -f "${tmp_manifest:-}" 2>/dev/null || true
-        return 0
-      fi
-    elif ! ask_yes "确认开始卸载吗？"; then
+    if ! ask_yes "确认开始卸载吗？"; then
       info "已取消，未做任何改动"
       return 0
     fi
@@ -4985,28 +4714,18 @@ EOF
   disable_ydotool_unit
 
   # ---------- 删文件 ----------
-  if [ "$scan" = 1 ]; then
-    delete_install_manifest "$tmp_manifest" "$purge"
-    dim "扫描模式：移走 $LAST_REMOVED 项（跳过 $LAST_SKIPPED 项）"
-  else
-    delete_install_manifest "$INSTALL_MANIFEST" "$purge"
-    cleanup_empty_manifest_dirs "$INSTALL_MANIFEST"
-    dim "按清单移走 $LAST_REMOVED 项（跳过 $LAST_SKIPPED 项，安装前已存在 $LAST_PREEXISTING 项）"
-    if [ "$DRY_RUN" = 0 ] && [ "$purge" = 0 ]; then
-      # 运行期新增的缓存/日志单独清一遍
-      cleanup_generated_leftovers
-      write_keep_note
-    fi
-    # 标记/清单是安装器写的，默认卸载也要带走（否则下次会以为还装着）
-    if [ "$DRY_RUN" = 0 ] && [ "$purge" = 0 ] && [ -d "$INSTALL_DIR" ]; then
-      trash_path "$INSTALL_MANIFEST" || true
-      trash_path "$INSTALL_MARKER" || true
-    fi
+  delete_install_manifest "$INSTALL_MANIFEST" "$purge"
+  cleanup_empty_manifest_dirs "$INSTALL_MANIFEST"
+  dim "按清单移走 $LAST_REMOVED 项（跳过 $LAST_SKIPPED 项，安装前已存在 $LAST_PREEXISTING 项）"
+  if [ "$DRY_RUN" = 0 ] && [ "$purge" = 0 ]; then
+    # 运行期新增的缓存/日志单独清一遍
+    cleanup_generated_leftovers
+    write_keep_note
   fi
-  # 标记/清单本身也是安装器写的，跟着走
-  if [ "$scan" = 1 ] && [ "$DRY_RUN" = 0 ]; then
-    [ -f "$INSTALL_MANIFEST" ] && trash_path "$INSTALL_MANIFEST" || true
-    [ -f "$INSTALL_MARKER" ] && trash_path "$INSTALL_MARKER" || true
+  # 标记/清单是安装器写的，默认卸载也要带走（否则下次会以为还装着）
+  if [ "$DRY_RUN" = 0 ] && [ "$purge" = 0 ] && [ -d "$INSTALL_DIR" ]; then
+    trash_path "$INSTALL_MANIFEST" || true
+    trash_path "$INSTALL_MARKER" || true
   fi
 
   # ---------- --purge 扩大范围 ----------
@@ -5050,7 +4769,7 @@ EOF
 
   # ---------- 收尾：空目录、缓存 ----------
   if [ "$DRY_RUN" = 0 ]; then
-    if [ "$scan" = 0 ] && [ "$has_marker" = 1 ] && [ -d "$INSTALL_DIR" ]; then
+    if [ -d "$INSTALL_DIR" ]; then
       if [ -z "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
         dim "移除空目录：$INSTALL_DIR"
         rmdir "$INSTALL_DIR" 2>/dev/null || kept_dir=1
@@ -5063,8 +4782,6 @@ EOF
     need_cmd kbuildsycoca6 && kbuildsycoca6 >/dev/null 2>&1 || true
     need_cmd kbuildsycoca5 && kbuildsycoca5 >/dev/null 2>&1 || true
   fi
-  rm -f "${tmp_manifest:-}" 2>/dev/null || true
-
   # ---------- 汇总 ----------
   echo
   if ui_fits; then
@@ -5094,71 +4811,11 @@ EOF
   return 0
 }
 
-# ---------- 旧安装目录兜底（0.7.3 改名 ~/deckmeido → ~/DeckMeido） ----------
-# 检测到旧目录时不能静默装成两份：交互时问「迁移 / 继续用旧路径」，
-# 非交互时明确说明本次继续用旧目录，并给出改名命令。
-# bash install.sh migrate 可以单独执行改名。
-do_migrate() {
-  local src="$LEGACY_DIR" dst="$HOME/$APP_DIR" ep
-  if [ ! -d "$src" ] || { [ ! -f "$src/.deckmeido-install" ] && [ ! -f "$src/VERSION" ]; }; then
-    die "没有可迁移的旧安装目录：$src（缺少 .deckmeido-install 或 VERSION）"
-  fi
-  if [ -e "$dst" ]; then
-    die "$dst 已存在；为免覆盖，请先确认并移走它，再执行迁移"
-  fi
-  info "迁移安装目录：$src → $dst"
-  mv "$src" "$dst" || die "迁移失败（目录可能正被占用；先停掉客户端与后端再试）"
-  # 脚本可能就在旧目录里运行：把 HERE 也指到新位置，后续 sync_files 才找得到源码
-  if [ "$HERE" = "$src" ]; then
-    HERE="$dst"
-  fi
-  INSTALL_DIR="$dst"
-  LEGACY_INSTALL=""
-  refresh_paths
-  refresh_data_paths
-  ep="$(config_port "$DATA_CONFIG" || true)"
-  [ -n "$ep" ] && PORT="$ep"
-  info "已迁移到 $dst（配置、userdata 与插件一起搬走；工作区在 $HOME/MeidoSpace，不在安装目录里）"
-  dim "接下来执行：bash $dst/install.sh upgrade（桌面快捷方式会在升级时指向新路径）"
-  return 0
-}
-
-LEGACY_CHOICE_MADE=0
-legacy_prompt() {
-  [ -n "$LEGACY_INSTALL" ] || return 0
-  [ "$LEGACY_CHOICE_MADE" = 1 ] && return 0
-  LEGACY_CHOICE_MADE=1
-  info "检测到旧安装目录：$LEGACY_INSTALL"
-  if [ ! -t 0 ]; then
-    dim "非交互模式：本次继续使用旧目录（不会在新位置再装一份）"
-    dim "想改到 $HOME/$APP_DIR：bash $LEGACY_INSTALL/install.sh migrate"
-    return 0
-  fi
-  echo
-  echo "  ${C_B}1${C_END}  迁移到 $HOME/$APP_DIR  ${C_DIM}（旧目录整体搬过去）${C_END}"
-  echo "  ${C_B}2${C_END}  继续使用旧目录 $LEGACY_INSTALL"
-  echo "  ${C_B}0${C_END}  退出"
-  echo
-  local choice
-  choice=$(ask_choice "请输入序号（1 迁移 / 2 继续 / 0 退出）：") || {
-    dim "没有可用的终端，本次继续使用旧目录"
-    return 0
-  }
-  case "$choice" in
-    1) do_migrate ;;
-    2|"") dim "本次继续使用旧目录：$LEGACY_INSTALL"; return 0 ;;
-    0|q|Q) info "已取消"; exit 0 ;;
-    *) die "无效选择：$choice（输入 1 迁移 / 2 继续 / 0 退出）" ;;
-  esac
-  return 0
-}
-
 # 无参数运行时弹出的交互菜单：检测是否已安装，给出带默认值的选项。
 # 明确带子命令（install/upgrade/uninstall/...）时跳过菜单，仍可直接批处理。
 show_menu() {
   check_user
   print_banner
-  legacy_prompt
 
   local installed=0
   [ -f "$INSTALL_DIR/VERSION" ] && installed=1
@@ -5215,7 +4872,6 @@ show_menu() {
 # 想跳过询问，直接带子命令：bash install.sh upgrade / install / uninstall / check / menu
 smart_default() {
   check_user
-  legacy_prompt
   if [ ! -f "$INSTALL_DIR/VERSION" ]; then
     info "未检测到已安装的 $APP，开始全新安装"
     do_install
@@ -5256,10 +4912,9 @@ case "${1:-}" in
   "")            smart_default ;;
   menu)          show_menu ;;
   install)       do_install "${@:2}" ;;
-  upgrade|update) do_upgrade "${@:2}" ;;
-  migrate)      do_migrate ;;
+  upgrade)      do_upgrade "${@:2}" ;;
   from-mirror)  do_from_mirror "${@:2}" ;;
-  speedtest|mirror-test)
+  speedtest)
                 # 只测速不安装：看各个 pip 源实打实的下载速率
                 check_user
                 idx=$(pick_pip_index)
