@@ -90,6 +90,9 @@ DOWNLOAD_ERR=""
 # 自定义安装里被用户显式跳过的可选项。收尾汇总必须列出来，
 # 否则「没装」和「用户不要」分不清。
 SKIPPED_ITEMS=()
+# Decky 重启后被判定卡在重启循环时的说明（decky_restart_loop_note 写入）。
+# 必须单列进收尾汇总：否则「已重载」会让用户以为插件已生效，实际上一轮都没加载成功。
+DECKY_LOOP_NOTE=""
 
 # 可执行位自愈：Windows/NTFS 打的包或 git 导出常把脚本记成 0644，用 bash 调用
 # 不受影响，但桌面快捷方式是直接执行 client/launch.sh 的——缺可执行位时 Steam
@@ -3361,6 +3364,42 @@ plugin_installed_version() {
   sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$p" | head -n1
 }
 
+# Decky 重启循环探测（安装与卸载共用）：重启后必须回读 NRestarts，不能只看 is-active。
+#
+# 为什么必须查：plugin_loader.service 用的是 KillMode=process，systemctl restart 只杀主进程，
+# 旧子进程继续占着 127.0.0.1:1337；新实例绑不上端口就退出，Restart=always 又把它拉起来，
+# 于是变成每 7 秒一轮的重启循环（2026-11-08 实测 271 次，还把 Decky Music 拖到 10GB）。
+# 这期间 is-active 一直显示 active，只看它就会报「已重载」，完全误导。
+#
+# 判定：15 秒内 NRestarts 增长，或近 30 秒 journal 里出现 1337 的 address already in use。
+# 命中只置 DECKY_LOOP_NOTE 并返回 1，由调用方记进各自的失败清单——绝不中断流程，
+# 因为这时安装/卸载可能已经做了一半，半途停下比继续更糟。
+decky_restart_loop_note() {
+  local unit="$1" before after hits why
+  case "$unit" in ''|*' '*) return 0 ;; esac
+  command -v systemctl >/dev/null 2>&1 || return 0
+  before="$(systemctl show -p NRestarts --value "$unit" 2>/dev/null || true)"
+  case "$before" in ''|*[!0-9]*) return 0 ;; esac
+  sleep 15
+  after="$(systemctl show -p NRestarts --value "$unit" 2>/dev/null || true)"
+  case "$after" in ''|*[!0-9]*) return 0 ;; esac
+  hits="$(journalctl -u "$unit" --since '30 seconds ago' --no-pager 2>/dev/null |
+    grep -c '1337.*address already in use' 2>/dev/null || true)"
+  case "$hits" in ''|*[!0-9]*) hits=0 ;; esac
+  why=""
+  [ "$after" -gt "$before" ] && why="NRestarts ${before} → ${after}"
+  if [ "$hits" -gt 0 ]; then
+    if [ -n "$why" ]; then
+      why="$why，近 30 秒 bind 1337 失败 ${hits} 次"
+    else
+      why="近 30 秒 bind 1337 失败 ${hits} 次"
+    fi
+  fi
+  [ -n "$why" ] || return 0
+  DECKY_LOOP_NOTE="Decky 卡在重启循环（${unit}：${why}）：旧插件进程还占着 127.0.0.1:1337，新实例绑不上端口。请先重启 Deck 再继续"
+  return 1
+}
+
 # 重载 Decky：插件是启动时一次性 import 的，换了磁盘上的文件不重载还是旧代码
 plugin_reload() {
   if ! command -v systemctl >/dev/null 2>&1; then
@@ -3372,7 +3411,12 @@ plugin_reload() {
     sed -nE 's/^((decky|plugin_loader)[^[:space:]]*\.service).*/\1/p' | head -n1)"
   if [ -n "$unit" ] && { sudo -n systemctl restart "$unit" 2>/dev/null ||
       systemctl restart "$unit" 2>/dev/null; }; then
-    info "已重载 Decky（$unit），新插件版本已生效"
+    # 重启命令成功不代表插件生效：Decky 可能正卡在重启循环，必须回读再下结论
+    if decky_restart_loop_note "$unit"; then
+      info "已重载 Decky（$unit），新插件版本已生效"
+    else
+      warn "[!] $DECKY_LOOP_NOTE"
+    fi
     return 0
   fi
   dim "请在 设置 → Decky Loader 点「重新载入」使新插件生效"
@@ -3575,6 +3619,11 @@ print_done() {
   if [ ${#SKIPPED_ITEMS[@]} -gt 0 ]; then
     skipped=$(IFS='、'; printf '%s' "${SKIPPED_ITEMS[*]}")
     card_line "已跳过：$skipped（相应功能降级，可之后单独补装）"
+  fi
+  # Decky 重启循环告警：plugin_reload 只能在当场 warn，这里收尾再单列一行，
+  # 否则用户翻回几十行前的 [!] 才能看见，甚至直接漏掉
+  if [ -n "$DECKY_LOOP_NOTE" ]; then
+    card_line "⚠ Decky     $DECKY_LOOP_NOTE"
   fi
   card_line "本机控制台   http://127.0.0.1:$PORT/"
   card_line "局域网访问   http://$ip:$PORT/（新设备点「配对新设备」，按掌机上的 PIN 配对一次）"
@@ -4994,6 +5043,12 @@ restart_decky() {
     return 1
   fi
   un_ok "Decky 已重启（$unit：active）"
+  # active 不代表真的起来了：Decky 可能正卡在重启循环（见 decky_restart_loop_note）。
+  # 命中只记失败并继续，卸载已经做了一半，绝不能在这里半途停下。
+  if ! decky_restart_loop_note "$unit"; then
+    warn "[!] $DECKY_LOOP_NOTE"
+    un_fail "$DECKY_LOOP_NOTE"
+  fi
   return 0
 }
 
