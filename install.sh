@@ -96,6 +96,9 @@ TTS_MODEL_ERROR=""
 # 通用下载重试：最近一次失败的次数与原因（由 _retry_download 写入）
 DOWNLOAD_ATTEMPTS=0
 DOWNLOAD_ERR=""
+# 自定义安装里被用户显式跳过的可选项。收尾汇总必须列出来，
+# 否则「没装」和「用户不要」分不清。
+SKIPPED_ITEMS=()
 
 # 可执行位自愈：Windows/NTFS 打的包或 git 导出常把脚本记成 0644，用 bash 调用
 # 不受影响，但桌面快捷方式是直接执行 client/launch.sh 的——缺可执行位时 Steam
@@ -441,6 +444,10 @@ TRASH_VIA_XDG=0         # 1 = 至少有一条走了 gio 系统回收站
 TRASH_LAST_DIR=""       # 最近一次使用的回收站根，结尾提示用
 DRY_RUN=0               # 1 = 只列计划，零改动
 DRY_RUN_COUNT=0         # dry-run 计划移走的条目数
+# 卸载系统包的结果。收尾汇总必须如实写出来，否则以后分不清是「按选择保留」
+# 还是「以为删了其实没删」。
+UNINSTALL_KEPT_PKGS=""  # 用户显式选择保留的包
+UNINSTALL_LEFT_PKGS=""  # 回答卸载后复检仍在的包（sudo 失败 / 被依赖挡住）
 
 trash_root() {
   if [ -n "${DECKMEIDO_TRASH_DIR:-}" ]; then
@@ -1307,15 +1314,15 @@ ask_yes() {
   esac
 }
 
-# 掌机友好的确认：$1=问题，$2=默认值（y / n）
+# 掌机友好的确认：$1=问题，$2=默认值（y / n），$3=非交互时默认动作的说明
 # Deck 在游戏模式下用屏幕键盘，A 键等价于回车。提示里把两种操作都写清楚，
 # 不再出现「按任意键」这种没人能按的句子；非交互时直接取默认值并说明。
 ask_yn() {
-  local q="$1" def="${2:-n}" ans="" tag="[y/N]"
+  local q="$1" def="${2:-n}" ans="" tag="[y/N]" yes_label="${3:-安装}"
   [ "$def" = "y" ] && tag="[Y/n]"
   if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
     if [ "$def" = "y" ]; then
-      dim "非交互，默认安装"
+      dim "非交互，默认${yes_label}"
       return 0
     fi
     dim "非交互，默认跳过"
@@ -1367,7 +1374,7 @@ press_continue() {
 
 # ---------- 可选下载 ----------
 # 所有要联网拉取的项集中在这里，逐条确认；已存在的直接跳过并说明。
-# 默认值保持原有语义：服务端依赖/桌面客户端装，STT/TTS/系统控件默认跳过。
+# 自定义档逐项确认时默认全装（[Y/n]，回车即装），只有显式输入 n 才跳过。
 
 # 已装好的判定：$1 = venv python，$2 = 模块名
 have_py_module() {
@@ -1375,9 +1382,11 @@ have_py_module() {
 }
 
 # 打印一条可选项：$1 名称，$2 用途，$3 体积，$4 已存在说明（空=不存在），
-# $5 默认值 y/n。返回 0 = 要装，1 = 跳过。
+# $5 默认值 y/n，$6 跳过后的影响（写进日志与收尾汇总）。
+# 返回 0 = 要装，1 = 跳过。
 opt_download() {
-  local name="$1" purpose="$2" size="$3" present="$4" def="${5:-n}"
+  local name="$1" purpose="$2" size="$3" present="$4" def="${5:-n}" \
+        impact="${6:-该功能不可用，之后可单独补装}"
   if [ -n "$present" ]; then
     dim "$name：已存在（$present），跳过"
     return 1
@@ -1387,13 +1396,15 @@ opt_download() {
       dim "$name：非交互，默认安装（$purpose，$size）"
       return 0
     fi
-    dim "$name：非交互，默认跳过（需要时再单独装）"
+    SKIPPED_ITEMS+=("$name")
+    warn "已跳过：$name（影响：$impact）"
     return 1
   fi
   if ask_yn "$name（$purpose，$size）现在下载安装？" "$def"; then
     return 0
   fi
-  dim "已跳过 $name"
+  SKIPPED_ITEMS+=("$name")
+  warn "已跳过：$name（影响：$impact）"
   return 1
 }
 
@@ -1510,7 +1521,8 @@ optional_downloads() {
   if have_py_module "$py" "fastapi"; then
     dim "Python 运行依赖（服务端）：已存在，跳过"
     export DECKMEIDO_SKIP_SERVER=0
-  elif opt_download "Python 运行依赖（服务端）" "FastAPI/uvicorn 等，缺了后端跑不起来" "约 30MB" "" y; then
+  elif opt_download "Python 运行依赖（服务端）" "FastAPI/uvicorn 等，缺了后端跑不起来" \
+       "约 30MB" "" y "后端无法启动，网页与桌面客户端都不可用"; then
     export DECKMEIDO_SKIP_SERVER=0
   else
     export DECKMEIDO_SKIP_SERVER=1
@@ -1521,7 +1533,8 @@ optional_downloads() {
   if have_py_module "$py" "PySide6"; then
     dim "桌面客户端 PySide6：已存在，跳过"
     export DECKMEIDO_SKIP_GUI=1
-  elif opt_download "桌面客户端（PySide6）" "桌面窗口与内置浏览器，不要也能用网页版" "约 700MB" "" y; then
+  elif opt_download "桌面客户端（PySide6）" "桌面窗口与内置浏览器，不要也能用网页版" \
+       "约 700MB" "" y "没有桌面窗口，只能用网页版"; then
     unset DECKMEIDO_SKIP_GUI
   else
     export DECKMEIDO_SKIP_GUI=1
@@ -1532,7 +1545,8 @@ optional_downloads() {
   if have_py_module "$py" "sherpa_onnx" && [ -f "$stt_model" ]; then
     dim "语音输入（sherpa-onnx + 模型）：已存在，跳过"
     export DECKMEIDO_INSTALL_STT=0
-  elif opt_download "语音输入 STT" "sherpa-onnx 运行库；首次录音再自动下模型（约 240MB）" "约 30MB" "" n; then
+  elif opt_download "语音输入 STT" "sherpa-onnx 运行库；首次录音再自动下模型（约 240MB）" \
+       "约 30MB" "" y "语音输入不可用，聊天与其余功能不受影响"; then
     export DECKMEIDO_INSTALL_STT=1
   else
     export DECKMEIDO_INSTALL_STT=0
@@ -1543,7 +1557,8 @@ optional_downloads() {
   if have_py_module "$py" "piper_plus" && [ -f "$tts_model" ]; then
     dim "语音合成（piper-plus + 模型）：已存在，跳过"
     export DECKMEIDO_INSTALL_TTS=0
-  elif opt_download "语音合成 TTS" "piper-plus + onnxruntime；首次播报再自动下模型（约 38MB）" "约 60MB" "" n; then
+  elif opt_download "语音合成 TTS" "piper-plus + onnxruntime；首次播报再自动下模型（约 38MB）" \
+       "约 60MB" "" y "月读酱语音不可用（会退回系统机器人音的替代方案）"; then
     export DECKMEIDO_INSTALL_TTS=1
   else
     export DECKMEIDO_INSTALL_TTS=0
@@ -1554,7 +1569,8 @@ optional_downloads() {
   if need_cmd ydotool && need_cmd wtype; then
     deps_present="ydotool/wtype 已在 PATH"
   fi
-  if opt_download "系统控件依赖（--deps）" "模拟点击/输入、截图等系统能力，需 sudo 走 pacman/AUR" "约 100MB" "$deps_present" n; then
+  if opt_download "系统控件依赖（--deps）" "模拟点击/输入、截图等系统能力，需 sudo 走 pacman/AUR" \
+       "约 100MB" "$deps_present" y "模拟点击/输入等系统控制能力不可用"; then
     export DECKMEIDO_INSTALL_DEPS=1
   else
     export DECKMEIDO_INSTALL_DEPS=0
@@ -1567,7 +1583,8 @@ optional_downloads() {
     if [ -n "$pver" ]; then
       dim "Decky 插件：已安装 v$pver，升级时会自动替换为新版本"
       export DECKMEIDO_INSTALL_PLUGIN=1
-    elif opt_download "Decky 插件包" "游戏模式 QAM 面板，需先装 Decky Loader" "约 2MB" "" n; then
+    elif opt_download "Decky 插件包" "游戏模式 QAM 面板，需先装 Decky Loader" \
+         "约 2MB" "" y "游戏模式 QAM 面板不装（会保留 zip 供手动安装）"; then
       export DECKMEIDO_INSTALL_PLUGIN=1
     else
       export DECKMEIDO_INSTALL_PLUGIN=0
@@ -2226,7 +2243,7 @@ install_wake_text_deps() {
 # 策略说明（避免「装到一半卡住」）：
 #   DECKMEIDO_INSTALL_STT=1  强制安装
 #   DECKMEIDO_INSTALL_STT=0  强制跳过
-#   未设置时：交互安装会问一句（默认不装）；非交互（管道/无 tty）默认跳过，绝不阻塞。
+#   未设置时：交互安装会问一句（默认装，回车=装，输入 n 才跳过）；非交互默认跳过，绝不阻塞。
 # 装不上只警告，不影响后端、网页和桌面客户端 —— /api/stt 会如实报 runtime=false。
 install_stt_deps() {
   local py="$1" start="${2:-0}"
@@ -2267,8 +2284,8 @@ install_stt_deps() {
 # 策略说明（与语音输入一致，避免「装到一半卡住」）：
 #   DECKMEIDO_INSTALL_TTS=1  强制安装
 #   DECKMEIDO_INSTALL_TTS=0  强制跳过
-#   未设置时：交互安装会问一句（默认不装）；非交互（无 tty 或
-#   DECKMEIDO_NONINTERACTIVE=1）默认跳过，绝不阻塞。
+#   未设置时：交互安装会问一句（默认装，回车=装，输入 n 才跳过）；非交互
+#   （无 tty 或 DECKMEIDO_NONINTERACTIVE=1）默认跳过，绝不阻塞。
 # piper-plus 2.x 要求 Python 3.11+，版本不够就直接跳过并说明原因。
 # 装不上只警告，不影响后端、网页和桌面客户端 —— /api/tts 会如实报 runtime=false。
 install_tts_deps() {
@@ -3681,7 +3698,7 @@ PY
 }
 
 print_done() {
-  local ip ve rv
+  local ip ve rv skipped
   ip=$(lan_ip)
   [ -n "$ip" ] || ip=$(hostname -I 2>/dev/null | awk '{print $1}')
   [ -n "$ip" ] || ip="<deck-ip>"
@@ -3700,6 +3717,11 @@ print_done() {
     broken) card_line "语音模型     校验失败（设置页可重新下载）" ;;
     *)      card_line "语音模型     未下载（约 38MB，设置页「下载模型」）" ;;
   esac
+  # 用户显式跳过的可选项：一行列全，不留「怎么少了东西」的疑问
+  if [ ${#SKIPPED_ITEMS[@]} -gt 0 ]; then
+    skipped=$(IFS='、'; printf '%s' "${SKIPPED_ITEMS[*]}")
+    card_line "已跳过：$skipped（相应功能降级，可之后单独补装）"
+  fi
   card_line "本机控制台   http://127.0.0.1:$PORT/"
   card_line "局域网访问   http://$ip:$PORT/（新设备点「配对新设备」，按掌机上的 PIN 配对一次）"
   card_line "配置文件     $DATA_CONFIG"
@@ -3848,6 +3870,14 @@ do_install() {
 
   # [6/6] 启动后端并校验运行版本
   step "启动后端"
+  # 服务端依赖被显式跳过时后端必然起不来；这里跳过启动而不是报错中断，
+  # 否则「用户选择不装」会被当成安装失败（汇总里有「已跳过」一行说明影响）。
+  if [ "${DECKMEIDO_SKIP_SERVER:-0}" = "1" ]; then
+    step_skip "已跳过启动后端（服务端依赖未安装）"
+    dim "补装依赖后重跑：bash $INSTALL_DIR/install.sh upgrade"
+    print_done
+    return 0
+  fi
   if ! relaunch_runtime; then
     step_fail "后端没能启动"
     next_hint "手动启动：cd $INSTALL_DIR && .venv/bin/python -m uvicorn server.main:app --host 127.0.0.1 --port $PORT"
@@ -3989,6 +4019,13 @@ do_upgrade() {
 
   # [6/6] 启动后端并校验运行版本
   step "启动后端"
+  # 与全新安装一致：服务端依赖被显式跳过时不把「起不来」当升级失败
+  if [ "${DECKMEIDO_SKIP_SERVER:-0}" = "1" ]; then
+    step_skip "已跳过启动后端（服务端依赖未安装）"
+    dim "补装依赖后重跑：bash $INSTALL_DIR/install.sh upgrade"
+    print_done
+    return 0
+  fi
   if ! relaunch_runtime; then
     step_fail "后端没能启动"
     next_hint "手动启动：cd $INSTALL_DIR && .venv/bin/python -m uvicorn server.main:app --host 127.0.0.1 --port $PORT"
@@ -4611,8 +4648,17 @@ uninstall_optional_deps() {
     for p in "${cand_pkg[@]}"; do printf '[计划] 询问后卸载系统包：%s\n' "$p"; done
     return 0
   fi
-  if ! ask_yes "要卸载上面这些包吗？（默认保留，回答 y 才删）"; then
-    dim "已保留这些系统包，没有改动系统"
+  # 默认值必须是「卸载」：直接回车 / 按 A = 删，只有显式输入 n 才保留。
+  # 非交互（无 tty、CI）也按默认值执行，避免自动化里悄悄少做一步，
+  # 事后又分不清是「跳过了」还是「忘了删」。
+  if ! ask_yn "要卸载上面这些包吗？" y "卸载"; then
+    UNINSTALL_KEPT_PKGS="${cand_pkg[*]}"
+    warn "已保留：$UNINSTALL_KEPT_PKGS（按你的选择没有卸载，系统与这些包均未改动）"
+    # 卸载后 userdata 会保留，把选择写进保留说明里，以后翻到就知道是主动留下的
+    if [ -f "$DATA_KEEP_NOTE" ]; then
+      printf '\n卸载时选择保留的系统包（没有删除）：%s\n' \
+        "$UNINSTALL_KEPT_PKGS" >> "$DATA_KEEP_NOTE" 2>/dev/null || true
+    fi
     return 0
   fi
   # ydotool 的守护服务必须先停掉、取消自启，再删包：顺序反了会留下指向
@@ -4656,6 +4702,18 @@ uninstall_optional_deps() {
       warn "卸载 $p 失败。手动处理：$helper -R $p"
     fi
   done
+  # 选 Y 就等于承诺「包没了」：逐个复检。sudo 失败或被别的包依赖挡住时，
+  # 上面只有一条警告，很容易被后面的输出冲掉；这里再确认一次，并写进收尾汇总。
+  local -a still=()
+  for p in "${picked[@]}"; do
+    pacman -Qq -- "$p" >/dev/null 2>&1 && still+=("$p")
+  done
+  if [ ${#still[@]} -gt 0 ]; then
+    UNINSTALL_LEFT_PKGS="${still[*]}"
+    warn "复检：这些包仍装在系统里：$UNINSTALL_LEFT_PKGS（原因见上方失败提示）"
+  else
+    dim "复检通过：上面这些系统包都已不在系统里"
+  fi
   return 0
 }
 
@@ -5021,12 +5079,17 @@ EOF
       [ "${TRASH_FAILED:-0}" -gt 0 ] && card_line "有 $TRASH_FAILED 项没移走（权限不足，见上方）"
       [ "$purge" = 1 ] && card_line "已一并移走：工作区、userdata、日志、模型、配置备份" \
                        || card_line "用户数据保留在 $DATA_DIR"
+      # 系统包的结果单独写清楚：保留是主动选择，复检仍在是没删掉，两者不能混
+      [ -n "${UNINSTALL_KEPT_PKGS:-}" ] && card_line "已保留：$UNINSTALL_KEPT_PKGS"
+      [ -n "${UNINSTALL_LEFT_PKGS:-}" ] && card_line "复检仍在：$UNINSTALL_LEFT_PKGS"
     fi
     card_end
     echo
   else
     info "卸载完成"
     print_trash_summary
+    [ -n "${UNINSTALL_KEPT_PKGS:-}" ] && info "已保留：$UNINSTALL_KEPT_PKGS（按你的选择没有卸载）"
+    [ -n "${UNINSTALL_LEFT_PKGS:-}" ] && warn "复检仍在：$UNINSTALL_LEFT_PKGS"
   fi
   return 0
 }
