@@ -19,7 +19,7 @@
      其余变量给字幕和按钮用，切主题时整页一起换。 */
   :root {
     --bg: #0f1117;
-    --face: #e8eaf0;
+    --face: #ffffff;
     --caption: rgba(232,234,240,.92);
     --btn-bg: rgba(255,255,255,.09);
     --btn-bg-hover: rgba(255,255,255,.16);
@@ -141,8 +141,21 @@
   const state = {
     name: "disarmed", level: 0, levelSmooth: 0, ackText: "我在",
     offline: false, wakeStart: 0, captionUntil: 0, drawnName: "",
-    nextBlink: 0, blinkStart: 0, blinking: false,
+    nextBlink: 0, blinkStart: 0, blinking: false, idleSleep: false,
   };
+
+  // ---- 防烧屏：全屏常亮的脸在 OLED 上会留残影 ----
+  // 5 分钟没有任何交互就闭眼（屏幕基本变黑），15 分钟直接回主界面。
+  // 这里只认用户真的动过：鼠标移动 / 触摸 / 按键；状态轮询和语音交互不算，
+  // 否则一直有人说话就永远闭不上眼。
+  const EYES_IDLE_CLOSE_MS = 5 * 60 * 1000;
+  const EYES_IDLE_EXIT_MS = 15 * 60 * 1000;
+  let lastActive = Date.now();
+  const touchActive = () => { lastActive = Date.now(); };
+  window.addEventListener("mousemove", touchActive, { passive: true });
+  window.addEventListener("touchstart", touchActive, { passive: true });
+  window.addEventListener("keydown", touchActive);
+  window.addEventListener("pointerdown", touchActive, { passive: true });
 
   // ---- 状态轮询：只读，不含音频 ----
   function applyStatus(d) {
@@ -240,6 +253,17 @@
   // 双击空白处也可以退出，作为手柄/触屏的兜底入口
   window.addEventListener("dblclick", leave);
 
+  // 空闲计时：先闭眼，再退出。用 interval 而不是每帧判断，页面被挂起时
+  // 恢复后会立刻按真实空闲时长处理——本来就是为了「人走了别再亮着」。
+  setInterval(() => {
+    const idle = Date.now() - lastActive;
+    if (idle >= EYES_IDLE_EXIT_MS) {
+      leave();
+      return;
+    }
+    state.idleSleep = idle >= EYES_IDLE_CLOSE_MS;
+  }, 1000);
+
   // ---- 绘制：沿用 ouo-face 校准过的 ω 猫嘴脸 ----
   // 圆点眼、^ 笑眼、> < 眯眼、螺旋晕眩眼，嘴的几何参数三点定圆拟合自原图。
   ctx.fillStyle = ctx.strokeStyle = FACE;
@@ -300,10 +324,13 @@
   }
 
   // ω 猫嘴：两段圆弧描边，圆头。三点定圆拟合自原图，宽高比 2.93:1。
-  function drawCatMouth(cx, cy, w, alpha, t) {
+  // 这里固定 1.0 不透明：两瓣的圆头在中缝完全重合，半透明时那一小块会叠两次、
+  // 比别处亮（看着像重影）；不透明时后画的圆头直接盖住前一个，接缝均匀。
+  // 嘴不跟着整张脸淡出——空闲闭眼时整张脸压到 0.16，靠暗度表达即可。
+  function drawCatMouth(cx, cy, w, t) {
     if (w < 2) return;
     ctx.save();
-    ctx.globalAlpha = alpha;
+    ctx.globalAlpha = 1;
     ctx.translate(cx, cy);
     const th = w * 0.092;
     const Hh = w / 2.93;
@@ -328,10 +355,10 @@
   }
 
   // 说话：ω 在开合之间形变——两瓣中心下压、开口放大，模拟嘴部张合
-  function drawTalkingMouth(cx, cy, w, open, alpha) {
+  function drawTalkingMouth(cx, cy, w, open) {
     if (w < 2) return;
     ctx.save();
-    ctx.globalAlpha = alpha;
+    ctx.globalAlpha = 1;
     ctx.translate(cx, cy);
     // 开口越大，ω 纵向拉伸并略有横向收窄
     const sy = 1 + open * 0.55;
@@ -408,7 +435,9 @@
 
     // ---- 每个状态只用一组符号，整组替换，不做变形滤镜 ----
     let expr = "dash";
-    let alpha = 0.9;
+    // 眼睛固定不透明：之前的半透明让描边端头重叠处叠色，也会显得发虚。
+    // 只有「待机」和「空闲闭眼」这两种要呈现暗度的状态才压低 alpha。
+    let alpha = 1;
     let inward = 0;
     let gazeX = 0, gazeY = 0;
     let mouthOpen = 0;
@@ -417,11 +446,11 @@
     switch (state.name) {
       case "disarmed":
         // 待机：闭眼横线，偶尔眨一下眼
-        expr = "dot"; alpha = 0.34;
+        expr = "dot"; alpha = 1;
         blinkable = true;
         break;
       case "armed":
-        expr = "dot"; alpha = 0.82;
+        expr = "dot"; alpha = 1;
         blinkable = true;
         break;
       case "waking": {
@@ -443,7 +472,7 @@
         break;
       case "thinking":
         // 思考：眼珠游移，嘴保持 ω
-        expr = "dot"; alpha = 0.96;
+        expr = "dot"; alpha = 1;
         gazeX = Math.sin(t * 0.45) * eyeR * 0.72;
         gazeY = -eyeR * 0.50 + Math.cos(t * 0.31) * eyeR * 0.14;
         break;
@@ -457,13 +486,20 @@
         break;
       }
       case "error":
-        expr = "spiral"; alpha = 0.82;
+        expr = "spiral"; alpha = 1;
         break;
       default:
-        expr = "dash"; alpha = 0.3;
+        expr = "dash"; alpha = 1;
     }
 
-    const squash = blinkable ? blinkSquash(t) : 0;
+    // 空闲闭眼：整张脸压到很暗的横线，屏幕几乎全黑，减少 OLED 残影
+    if (state.idleSleep) {
+      expr = "dash";
+      alpha = 0.16;
+      inward = 0; gazeX = 0; gazeY = 0; mouthOpen = 0;
+    }
+
+    const squash = (blinkable && !state.idleSleep) ? blinkSquash(t) : 0;
 
     ctx.save();
     ctx.translate(cx, cy);
@@ -478,8 +514,8 @@
 
     // 嘴：眼和嘴的垂直距离 0.26s（ouo-face 校准值）
     const my = cy + s * 0.26;
-    if (mouthOpen > 0.01) drawTalkingMouth(cx, my, mouthW, mouthOpen, alpha);
-    else drawCatMouth(cx, my, mouthW, alpha, t);
+    if (mouthOpen > 0.01) drawTalkingMouth(cx, my, mouthW, mouthOpen);
+    else drawCatMouth(cx, my, mouthW, t);
     ctx.restore();
 
     // ---- 「我在」字幕：唤醒时出现；合成失败也照样显示 ----

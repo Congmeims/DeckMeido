@@ -1027,6 +1027,20 @@ ART
 # 检测（system_notes 里的提示）永远是死的，这里统一从 os-release 读。
 BUILD_ID="$( { sed -n 's/^BUILD_ID=//p' /etc/os-release 2>/dev/null || true; } | tr -d '"' | head -n1 || true)"
 
+# 机型：Jupiter = Steam Deck LCD，Galileo = Steam Deck OLED。
+# 脚本对两种机型走同一套逻辑（都是 SteamOS 3、holo 仓库、同样的系统包），
+# 这里只记一行进安装日志——排障时要先分清是哪台机器装的。
+deck_model() {
+  local name
+  name="$(cat /sys/devices/virtual/dmi/id/product_name 2>/dev/null || true)"
+  case "$name" in
+    *Jupiter*) printf 'Steam Deck LCD（Jupiter）' ;;
+    *Galileo*) printf 'Steam Deck OLED（Galileo）' ;;
+    "") printf '未知' ;;
+    *) printf '%s' "$name" ;;
+  esac
+}
+
 # ---------- 前置检查 ----------
 check_user() {
   if [ "$(id -u)" = "0" ]; then
@@ -1050,6 +1064,7 @@ PY
 # 依赖下完之后才因为磁盘满/端口被占而失败
 preflight() {
   local problems=0
+  dim "机型：$(deck_model)"
   # 1. 磁盘空间：PySide6 解包后约 700MB，venv 最坏按 1.5G 留余量
   local need_mb=1500 avail_mb=""
   avail_mb=$(df -Pm "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
