@@ -1971,6 +1971,41 @@ def get_status(gaming: bool | None = None) -> dict:
     }
 
 
+# 状态层的 TTL 缓存。get_status 要碰 sysfs、/proc、depcheck 探针、tts 状态、
+# 预设视图，全是同步 IO / 子进程；/api/status 每 3 秒轮询一次、WS 广播还会再调，
+# 以前每次都在事件循环里真跑一遍。事件循环同时管着对话流式输出和 WS，
+# 桌面端一卡就是「整个界面停住」。改成：
+#   - 慢的那一半（探针类）在 async 侧 await 一个线程算好的值；
+#   - 整个返回值按 STATUS_TTL 复用，轮询期间只做一次真正采集。
+# 时效性要求高的调用方（刚重启后端、刚改配置）传 fresh=True 跳过缓存。
+STATUS_TTL = 1.5
+_status_cache: dict | None = None
+_status_cache_at = 0.0
+_status_lock = threading.Lock()
+
+
+def status_snapshot(force: bool = False) -> dict:
+    """采集一份完整状态（线程安全、带 TTL）。行内是同步 IO，别在 async 里直接调。"""
+    global _status_cache, _status_cache_at
+    with _status_lock:
+        if (not force and _status_cache is not None
+                and time.monotonic() - _status_cache_at < STATUS_TTL):
+            return _status_cache
+    data = get_status(tools.mode_is_gaming())
+    with _status_lock:
+        _status_cache, _status_cache_at = data, time.monotonic()
+    return data
+
+
+async def status_async(force: bool = False) -> dict:
+    """async 路由/WS 广播统一入口：采集放到线程池，事件循环只等结果。"""
+    with _status_lock:
+        if (not force and _status_cache is not None
+                and time.monotonic() - _status_cache_at < STATUS_TTL):
+            return _status_cache
+    return await asyncio.to_thread(status_snapshot, force)
+
+
 # ---------- 状态栏短句 ----------
 
 DEFAULT_STATUS_PROMPT = status_line.DEFAULT_STATUS_PROMPT
@@ -3633,8 +3668,9 @@ async def api_file_stat(payload: dict):
 
 @app.get("/api/status", dependencies=[Depends(require_auth)])
 async def api_status():
-    # 模式探针要起 pw-dump，放线程里跑，别阻塞事件循环（WS 也在同一个 loop 上）
-    return get_status(await asyncio.to_thread(tools.mode_is_gaming))
+    # 完整采集（模式探针 pw-dump、depcheck、tts）全部在线程里跑并带 TTL 缓存，
+    # 别阻塞事件循环（WS 与流式输出都在同一个 loop 上）
+    return await status_async()
 
 
 @app.get("/api/net/probe", dependencies=[Depends(require_auth)])
@@ -7181,7 +7217,8 @@ async def api_controls_fix():
 
     # 走线程：刚点完修复就要再跑一遍全套探针，同步跑会把事件循环卡住
     out["controls"] = await asyncio.to_thread(depcheck.summary, True)
-    await manager.broadcast({"type": "status", "data": get_status()})
+    # 刚修完控件必须给最新的：跳过 TTL 缓存
+    await manager.broadcast({"type": "status", "data": await status_async(force=True)})
     return out
 
 
@@ -7699,7 +7736,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
 
             # 记录本轮真实占用：优先服务商的 prompt_tokens，拿不到就用上面数过的估算值
             _ctx_used = _split_usage(msg.get("usage")) or used_now
-            await manager.broadcast({"type": "status", "data": get_status()})
+            await manager.broadcast({"type": "status", "data": await status_async()})
 
             # 水位自检：Deck 的可用内存在跑会话时往往只剩一两百 MB，等内核动手就晚了
             # （SIGKILL 之后 Python 一句遗言都留不下）。这里提前把还能丢的东西丢掉：
@@ -8162,7 +8199,7 @@ async def ws_endpoint(ws: WebSocket):
         devlog.log("ws.send", type="history", messages=len(store.history),
                    sid=store.current_sid, inflight=inflight, boot=boot_id)
         await ws.send_json({"type": "status",
-                            "data": {**get_status(), "mode": ws_mode}})
+                            "data": {**await status_async(), "mode": ws_mode}})
         while True:
             data = await ws.receive_json()
             # 不记录图片 base64（可能有几十 MB），只记类型、文本摘要和是否带图

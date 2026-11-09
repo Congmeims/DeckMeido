@@ -1257,6 +1257,9 @@ async def _kill_tree(proc: asyncio.subprocess.Process, grace: float = 2.0) -> No
         pass
 
 
+_LAUNCH_WAIT = 3.0
+
+
 async def _spawn_detached(command: str, env: dict, cwd: str | None = None,
                           reason: str = "") -> str:
     """把命令整个甩到后台跑，立刻返回；用于「要挂遮罩」的启动类命令
@@ -1289,11 +1292,22 @@ async def _spawn_detached(command: str, env: dict, cwd: str | None = None,
     out, _ = await proc.communicate()
     pid = (out or b"").decode("utf-8", "replace").strip()
     # 与 _run_command 里的 launch_wait 保持一致：慢一点的启动器也要有机会
-    # 把报错吐出来，不然会当成「已常驻」放过
-    await asyncio.sleep(3.0)
+    # 把报错吐出来，不然会当成「已常驻」放过。
+    #
+    # 不能无条件 sleep 3 秒：这段是 async 的，一睡就把整个事件循环按住，
+    # 对话流式、WS 广播、遮罩轮询全都停在原地（用户看到的就是「点了命令界面僵住」）。
+    # 改成每 100ms 看一眼 pid 还活着没：启动器自己退了就立刻收工；
+    # 进程还活着就一直等到满 launch_wait 秒为止。
+    delay = 0.1
+    waited = 0.0
+    while waited < _LAUNCH_WAIT and pid and Path(f"/proc/{pid}").exists():
+        await asyncio.sleep(delay)
+        waited += delay
     text = ""
     try:
-        text = out_path.read_text(encoding="utf-8", errors="replace").strip()
+        text = await asyncio.to_thread(
+            out_path.read_text, encoding="utf-8", errors="replace")
+        text = text.strip()
     except Exception:
         pass
     # 日志内容已经读进内存，临时文件不再需要：以前每个启动器都在 /tmp 漏一个

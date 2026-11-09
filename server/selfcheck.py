@@ -520,10 +520,15 @@ def _install_package(item: dict) -> str:
     spec = package_spec(key)
     tmpdir = _workspace_tmp()
     try:
-        path = Path(tmpdir) / spec["filename"]
-        _set(key, "download", 3.0,
-             f"下载 {spec['package']} {spec['version']}…")
-        _download_to(spec, path, key)
+        if spec.get("local"):
+            # pacman 缓存里已有该包：跳过下载，直接校验后本地安装
+            path = Path(spec["local"])
+            _set(key, "download", 43.0, f"使用本机缓存包 {spec['filename']}…")
+        else:
+            path = Path(tmpdir) / spec["filename"]
+            _set(key, "download", 3.0,
+                 f"下载 {spec['package']} {spec['version']}…")
+            _download_to(spec, path, key)
         _set(key, "verify", 45.0, "校验安装包…")
         _verify_package(path, spec)
 
@@ -582,6 +587,8 @@ def _install_package(item: dict) -> str:
 # 安装包下到工作区临时目录，校验后直接交给 pacman，最后清理临时目录。
 PACKAGE_NAMES = {"espeak": "espeak-ng"}
 _PKG_SCHEMES = ("http://", "https://")
+# pacman 缓存目录：file:// 只允许落到这些目录内的真实包文件
+_PKG_LOCAL_DIRS = ("/var/cache/pacman/pkg/",)
 _PKG_SAFE_RE = re.compile(r"[^A-Za-z0-9._+-]")
 _DL_CHUNK = 64 * 1024
 
@@ -656,6 +663,31 @@ def _pkg_url_ok(url: str) -> bool:
     return len(netloc) == 1
 
 
+def _pkg_local_path(url: str):
+    """把 pacman 给出的 file:// 地址落回本机缓存文件；不在缓存目录或文件不存在就返回 None
+
+    SteamOS 镜像 TLS 抽风（证书过期 / 超时）时 `pacman -Sp` 仍可能解析成功，
+    但给出的 %l 是 file:///var/cache/pacman/pkg/xxx.pkg.tar.zst —— 包已经在
+    缓存里。这种「本地就有」原来被 _pkg_url_ok 一律拒绝，界面就只剩一句
+    「pacman 给出的地址不受支持」，用户怎么点安装都修不好。
+    只认缓存目录内的真实文件，避免 file:// 变成任意本地文件读取的入口。
+    """
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "file":
+        return None
+    path = Path(urllib.parse.unquote(parts.path))
+    try:
+        real = path.resolve()
+    except OSError:
+        return None
+    if not any(str(real).startswith(d) for d in _PKG_LOCAL_DIRS):
+        return None
+    if not real.is_file() or not real.name.endswith(
+            (".pkg.tar.zst", ".pkg.tar.xz", ".pkg.tar.gz")):
+        return None
+    return real
+
+
 def _pkg_filename(name: str, version: str, url: str) -> str:
     """优先用镜像给出的原始包文件名；否则按 包名-版本 重建，两种都可辨识"""
     base = urllib.parse.unquote(url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1])
@@ -699,7 +731,17 @@ def package_spec(component: str) -> dict:
         name, version, url = parts[0], parts[1], parts[2]
         if name != pkg:
             continue
+        local = _pkg_local_path(url)
+        if local is not None:
+            # 缓存里已有这个包：不下载，直接把文件交给 pacman -U
+            return {"component": component, "package": name, "version": version,
+                    "url": url, "filename": local.name, "local": str(local)}
         if not _pkg_url_ok(url):
+            if urllib.parse.urlsplit(url).scheme == "file":
+                raise PackageError(
+                    "resolve_failed",
+                    f"本机 pacman 数据库没同步，缓存里也没有 {pkg} 安装包；"
+                    "连上网络后重试，或先在终端执行 sudo pacman -Sy")
             raise PackageError("unsafe_url", f"pacman 给出的地址不受支持：{url[:120]}")
         return {"component": component, "package": name, "version": version,
                 "url": url, "filename": _pkg_filename(name, version, url)}

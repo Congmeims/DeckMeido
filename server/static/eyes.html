@@ -4,14 +4,62 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>DeckMeido · 智能音箱</title>
+<script>
+  // 先挂主题再解析样式，避免浅色主题下进页面时闪一帧深色底
+  (function () {
+    var t = null;
+    try { t = localStorage.getItem("deckmeido_theme"); } catch (e) {}
+    if (t !== "light" && t !== "dark" && t !== "oled") t = "dark";
+    document.documentElement.setAttribute("data-theme", t);
+  })();
+</script>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  /* 三档主题与主界面同名、同顺序：浅色 / 深色 / 暗黑（纯黑取向）。
+     --face 只给 canvas 读取（Canvas 不认 var()，由脚本读出来再用），
+     其余变量给字幕和按钮用，切主题时整页一起换。 */
+  :root {
+    --bg: #0f1117;
+    --face: #e8eaf0;
+    --caption: rgba(232,234,240,.92);
+    --btn-bg: rgba(255,255,255,.09);
+    --btn-bg-hover: rgba(255,255,255,.16);
+    --btn-fg: #ffffff;
+    --btn-line: rgba(255,255,255,.28);
+    --hint-fg: rgba(255,255,255,.42);
+    --notice: rgba(255,255,255,.5);
+    color-scheme: dark;
+  }
+  [data-theme=light] {
+    --bg: #ffffff;
+    --face: #1c2333;
+    --caption: rgba(28,35,51,.92);
+    --btn-bg: rgba(16,24,40,.06);
+    --btn-bg-hover: rgba(16,24,40,.12);
+    --btn-fg: #1c2333;
+    --btn-line: rgba(16,24,40,.18);
+    --hint-fg: rgba(16,24,40,.42);
+    --notice: rgba(16,24,40,.5);
+    color-scheme: light;
+  }
+  [data-theme=oled] {
+    --bg: #000000;
+    --face: #ffffff;
+    --caption: rgba(255,255,255,.92);
+    --btn-bg: rgba(255,255,255,.07);
+    --btn-bg-hover: rgba(255,255,255,.14);
+    --btn-fg: #ffffff;
+    --btn-line: rgba(255,255,255,.24);
+    --hint-fg: rgba(255,255,255,.4);
+    --notice: rgba(255,255,255,.48);
+    color-scheme: dark;
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
   body { cursor: none; -webkit-user-select: none; user-select: none; }
   canvas { display: block; width: 100vw; height: 100vh; }
   /* 「我在」：唤醒瞬间出现的字幕。合成失败时只剩这一行，流程不受影响。 */
   #caption {
     position: fixed; left: 50%; top: 62%; transform: translate(-50%, 0);
-    margin: 0; color: rgba(255,255,255,.92);
+    margin: 0; color: var(--caption);
     font: 600 clamp(18px, 2.3vmin, 30px)/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
     letter-spacing: .22em; text-indent: .22em; white-space: nowrap;
     opacity: 0; transition: opacity .22s ease; pointer-events: none;
@@ -24,16 +72,16 @@
   }
   #hint.on { opacity: 1; pointer-events: auto; }
   #hint button {
-    background: rgba(255,255,255,.09); color: #fff; border: 1px solid rgba(255,255,255,.28);
+    background: var(--btn-bg); color: var(--btn-fg); border: 1px solid var(--btn-line);
     border-radius: 999px; padding: 7px 16px; font: inherit; letter-spacing: .04em;
     cursor: pointer;
   }
-  #hint button:hover { background: rgba(255,255,255,.16); }
-  #hint span { color: rgba(255,255,255,.42); font-size: 12px; }
+  #hint button:hover { background: var(--btn-bg-hover); }
+  #hint span { color: var(--hint-fg); font-size: 12px; }
   /* 只用于「和后端断开」这类连接提示，不用红字、不报错误详情。 */
   #notice {
     position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%);
-    color: rgba(255,255,255,.5); font: 13px/1.6 system-ui, sans-serif; text-align: center;
+    color: var(--notice); font: 13px/1.6 system-ui, sans-serif; text-align: center;
     opacity: 0; transition: opacity .3s ease; pointer-events: none; max-width: 80vw;
   }
   #notice.on { opacity: 1; }
@@ -59,7 +107,26 @@
   const STOP = document.getElementById("stop");
   const EXIT = document.getElementById("exit");
 
-  const WHITE = "255,255,255";
+  // ---- 主题：和主界面共用 localStorage 里的 deckmeido_theme ----
+  // Canvas 不认识 CSS 变量，也不接受 "255,255,255" 这种裸三元组，
+  // 所以从 :root 的 --bg / --face 读出合法颜色再赋值（修复黑屏的关键）。
+  const THEMES = ["light", "dark", "oled"];
+  let BG = "#0f1117", FACE = "#e8eaf0";
+  function readPalette() {
+    const cs = getComputedStyle(document.documentElement);
+    BG = (cs.getPropertyValue("--bg") || "").trim() || "#0f1117";
+    FACE = (cs.getPropertyValue("--face") || "").trim() || "#e8eaf0";
+  }
+  function setTheme(t) {
+    const name = THEMES.indexOf(t) === -1 ? "dark" : t;
+    document.documentElement.setAttribute("data-theme", name);
+    readPalette();
+  }
+  try { setTheme(localStorage.getItem("deckmeido_theme") || "dark"); } catch (e) { setTheme("dark"); }
+  // 主界面切主题时，同一个源下的眼睛页收到 storage 事件，立刻跟着换
+  window.addEventListener("storage", (e) => {
+    if (e.key === "deckmeido_theme") setTheme(e.newValue || "dark");
+  });
 
   let W = 0, H = 0, DPR = 1;
   function resize() {
@@ -175,7 +242,7 @@
 
   // ---- 绘制：沿用 ouo-face 校准过的 ω 猫嘴脸 ----
   // 圆点眼、^ 笑眼、> < 眯眼、螺旋晕眩眼，嘴的几何参数三点定圆拟合自原图。
-  ctx.fillStyle = ctx.strokeStyle = WHITE;
+  ctx.fillStyle = ctx.strokeStyle = FACE;
 
   function drawEye(x, y, r, mode, squash, alpha, t) {
     ctx.save();
@@ -187,7 +254,7 @@
 
     if (mode === "spiral") {
       // 螺旋眼：阿基米德螺线
-      ctx.strokeStyle = WHITE;
+      ctx.strokeStyle = FACE;
       ctx.lineWidth = r * 0.32;
       ctx.lineCap = "round";
       ctx.beginPath();
@@ -200,7 +267,7 @@
       ctx.stroke();
     } else if (mode === "happy") {
       // ^ 弧眼（笑）
-      ctx.strokeStyle = WHITE;
+      ctx.strokeStyle = FACE;
       ctx.lineWidth = r * 0.38;
       ctx.lineCap = "round";
       ctx.beginPath();
@@ -208,7 +275,7 @@
       ctx.stroke();
     } else if (mode === "squint") {
       // > < 折线
-      ctx.strokeStyle = WHITE;
+      ctx.strokeStyle = FACE;
       ctx.lineWidth = r * 0.35;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -219,11 +286,11 @@
       ctx.stroke();
     } else if (mode === "dash" || squash > 0.85) {
       // 闭眼：短横线
-      ctx.fillStyle = WHITE;
+      ctx.fillStyle = FACE;
       ctx.fillRect(-r * 0.9, -r * 0.10, r * 1.8, r * 0.22);
     } else {
       // 圆点眼，眨眼时纵向压扁
-      ctx.fillStyle = WHITE;
+      ctx.fillStyle = FACE;
       const ry = Math.max(r * (1 - squash), r * 0.10);
       ctx.beginPath();
       ctx.ellipse(0, 0, r * 0.92, ry, 0, 0, Math.PI * 2);
@@ -240,7 +307,7 @@
     ctx.translate(cx, cy);
     const th = w * 0.092;
     const Hh = w / 2.93;
-    ctx.strokeStyle = WHITE;
+    ctx.strokeStyle = FACE;
     ctx.lineWidth = th;
     ctx.lineCap = "round";
     const r = w * 0.246;
@@ -271,7 +338,7 @@
     ctx.scale(1 - open * 0.06, sy);
     const th = w * 0.092;
     const Hh = w / 2.93;
-    ctx.strokeStyle = WHITE;
+    ctx.strokeStyle = FACE;
     ctx.lineWidth = th;
     ctx.lineCap = "round";
     const r = w * 0.246;
@@ -324,7 +391,7 @@
     }
 
     ctx.globalAlpha = 1;
-    ctx.fillStyle = "#000";
+    ctx.fillStyle = BG;
     ctx.fillRect(0, 0, W, H);
 
     const s = Math.min(W, H);

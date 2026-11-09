@@ -216,10 +216,20 @@ class TTSError(RuntimeError):
 # 播放会直接失败。下面只做「换一个可用 sink 播」，绝不改系统默认 sink /
 # 端口 / mute，避免产生系统级副作用。
 _SINK_CACHE_TTL = 10.0
+# shutil.which 会把 PATH 整个扫一遍，而 status() 每 3 秒被 /api/status 调一次，
+# 一次要查 5 个名字（pactl / wpctl / espeak-ng / espeak / spd-say / pw-play…）。
+# PATH 在进程生命周期里不会变，结果缓存起来即可。
+_WHICH_CACHE: dict[str, str] = {}
+
+
+def _which(name: str) -> str:
+    if name not in _WHICH_CACHE:
+        _WHICH_CACHE[name] = shutil.which(name) or ""
+    return _WHICH_CACHE[name]
 
 
 def _pactl_output(*args: str) -> str:
-    if not shutil.which("pactl"):
+    if not _which("pactl"):
         return ""
     try:
         proc = subprocess.run(["pactl", *args], capture_output=True, text=True,
@@ -270,7 +280,7 @@ def pick_sink() -> str | None:
 
     探测不到 pactl / 解析失败时返回 None，不改变既有行为。
     """
-    if not shutil.which("pactl"):
+    if not _which("pactl"):
         return None
     default = _pactl_output("get-default-sink")
     sinks = parse_sinks(_pactl_output("list", "sinks"))
@@ -317,9 +327,9 @@ _boost_set: int | None = None    # 临时抬到的音量（百分比）
 
 def _volume_tool() -> str:
     """音量读写工具：pactl 百分比读写最直接，没有时用 wpctl。"""
-    if shutil.which("pactl"):
+    if _which("pactl"):
         return "pactl"
-    if shutil.which("wpctl"):
+    if _which("wpctl"):
         return "wpctl"
     return ""
 
@@ -864,7 +874,7 @@ class TTS:
 
     def _espeak_binary(self) -> str:
         for name in ("espeak-ng", "espeak", "spd-say"):
-            found = shutil.which(name)
+            found = _which(name)
             if found:
                 return found
         return ""
@@ -872,7 +882,7 @@ class TTS:
     @staticmethod
     def _player() -> str:
         for name in ("pw-play", "paplay", "aplay"):
-            found = shutil.which(name)
+            found = _which(name)
             if found:
                 return found
         return ""

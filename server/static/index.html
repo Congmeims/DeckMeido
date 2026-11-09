@@ -80,6 +80,7 @@
 
   /* 顶部状态栏 */
   header {
+    position: relative;
     flex: 0 0 auto;
     display: flex;
     align-items: center;
@@ -1253,15 +1254,33 @@
   /* 搜索时不再受「只有当前分区可见」限制：命中的分区全部展开 */
   body.set-searching .set-pane { display: none; }
   body.set-searching .set-pane.search-hit { display: block; }
-  .set-search {
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 24px 6px;
-    border-bottom: 1px solid var(--ri-line);
-    flex: 0 0 auto;
+  /* 设置页全局搜索：挂在最外层 header 上，绝对居中，不参与 header 的 flex，
+     所以左右两侧的按钮、标题、徽章都不会被它挤压或换行 */
+  .hdr-search {
+    display: none;
+    position: absolute;
+    left: 50%; top: calc(50% + env(safe-area-inset-top) / 2);
+    transform: translate(-50%, -50%);
+    z-index: 2;
+    align-items: center; gap: 8px;
+    width: min(440px, 46vw);
+    max-width: calc(100vw - 24px);
   }
-  .set-search input {
-    width: min(380px, 70%);
-    height: var(--set-ctl-h); padding: 0 10px;
+  body.settings-mode .hdr-search { display: flex; }
+  .hdr-search-field {
+    position: relative; flex: 1 1 auto; min-width: 0;
+    display: flex; align-items: center;
+  }
+  /* 放大镜：窄到只剩一条缝时，占位符会藏起来，这枚图标还能说明这是搜索 */
+  .hdr-search-field .ico {
+    position: absolute; left: 9px; top: 50%; transform: translateY(-50%);
+    width: 14px; height: 14px; color: var(--muted); pointer-events: none;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .hdr-search-field .ico svg { width: 100%; height: 100%; display: block; }
+  .hdr-search input {
+    width: 100%; min-width: 0;
+    height: var(--set-ctl-h); padding: 0 10px 0 30px;
     border: 1px solid var(--line);
     border-radius: var(--set-radius);
     background: var(--surface-2);
@@ -1270,7 +1289,16 @@
     outline: none;
     box-sizing: border-box;
   }
-  .set-search input:focus { border-color: var(--brand); }
+  .hdr-search input::placeholder { color: var(--muted); opacity: .9; }
+  .hdr-search input:focus { border-color: var(--brand); }
+  /* 原生搜索框的清除按钮跟随 color-scheme，三套主题下不会出现浅底白叉 */
+  .hdr-search input::-webkit-search-cancel-button { cursor: pointer; }
+  .hdr-search-count {
+    flex: 0 0 auto;
+    color: var(--muted); font-size: 11.5px; white-space: nowrap;
+    max-width: 42%; overflow: hidden; text-overflow: ellipsis;
+  }
+  .hdr-search.compact .hdr-search-count { display: none; }
   .set-no-match { padding: 28px 0; text-align: center; color: var(--muted); font-size: 14px; }
   /* 搜索命中：整条目描边 + 轻微底色，Enter 选中时再闪一下 */
   .search-hit-item { outline: 2px solid rgba(26,159,255,.85); outline-offset: 3px; border-radius: 8px; }
@@ -1514,8 +1542,6 @@
   /* 窄屏下侧栏本身是抽屉：设置导航跟着会话列表一起住在抽屉里，不用另写一套 */
   @media (max-width: 720px) {
     .set-body { padding: 12px 12px 20px; }
-    .set-search { padding: 8px 12px 6px; }
-    .set-search input { width: 100%; }
     .card { padding: 10px 12px; }
     .set-sect { margin: 16px 0 8px; padding: 6px 9px; font-size: 13.5px; }
     details.set-fold > summary { padding: 3px 0; }
@@ -1523,6 +1549,17 @@
     .set-foot { padding: 8px 10px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
     /* 手机竖屏：所有网格回落单栏，不横向溢出 */
     .set-grid, .set-grid-3 { grid-template-columns: minmax(0, 1fr); }
+  }
+  /* 极窄屏顶栏放不下「左右内容 + 居中搜索」时，让搜索独占顶栏第二行。
+     左右按钮、标题仍然完整留在第一行，不压缩、不换行；搜索水平占满剩余宽度 */
+  @media (max-width: 640px) {
+    body.settings-mode header { flex-wrap: wrap; row-gap: 6px; }
+    body.settings-mode .hdr-search {
+      position: static; transform: none; order: 2;
+      flex: 1 0 100%; width: auto !important;
+      max-width: 440px; margin: 0 auto;
+    }
+    body.settings-mode .hdr-search-count { display: none; }
   }
   .field { margin-bottom: var(--set-field-gap); }
   .field label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: var(--set-label-gap); }
@@ -2025,6 +2062,25 @@
     --ri-focus-soft: rgba(11,127,212,.2);
     /* 告诉浏览内核当前配色，原生滚动条/表单控件才会跟着走 */
     color-scheme: light;
+  }
+  /* 「暗黑」：OLED 取向，底纯黑、卡片只留极浅的一层黑灰拉开层次，
+     不发光的地方尽量是 0 像素。顺序在浅色、深色之后 */
+  [data-theme=oled] {
+    --bg: #000000;
+    --surface: #0a0a0c;
+    --surface-2: #131316;
+    --text: #e6e8ee;
+    --muted: #828795;
+    --brand: #1a9fff;
+    --user-bubble: #1a9fff;
+    --line: rgba(255,255,255,.10);
+    --hover: rgba(255,255,255,.08);
+    --code-bg: #000000; --code-text: #c8d3e0;
+    --overlay: rgba(0,0,0,.72);
+    --share-overlay: rgba(0,0,0,.9);
+    --sb-thumb: rgba(255,255,255,.2); --sb-thumb-hover: rgba(255,255,255,.34);
+    /* 暗黑仍是深色系，接管提示沿用深色那一套 */
+    color-scheme: dark;
   }
   /* 滚动条跟随主题：WebView/Chromium 默认画系统深色条，在浅色下非常突兀 */
   * { scrollbar-width: thin; scrollbar-color: var(--sb-thumb) transparent; }
@@ -3303,7 +3359,7 @@
     </span>
   </div>
   <div class="sb-foot">
-    <button id="btnTheme" title="切换主题">深色模式</button>
+    <button id="btnTheme" title="切换主题">暗黑模式</button>
     <button id="settingsBtn" title="设置">设置</button>
   </div>
   </div><!-- /.sb-body -->
@@ -3348,6 +3404,19 @@
     <span class="badge" id="ctxBadge" hidden></span>
     <span class="badge ctrl" id="ctrlBadge" hidden></span>
     <span class="badge" id="modeBadge" hidden></span>
+  </div>
+  <!-- 设置页全局搜索：只在设置模式出现，绝对居中在顶栏正中间；
+       不参与 header 的 flex，左右按钮/标题/徽章不会被挤压或换行 -->
+  <div class="hdr-search" id="hdrSearch">
+    <div class="hdr-search-field">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5l5 5"/></svg>
+      </span>
+      <input id="settingsSearch" type="search" autocomplete="off" spellcheck="false"
+             aria-label="搜索设置项" placeholder="搜索设置项，例如：限频、唤醒、API">
+    </div>
+    <span id="settingsSearchCount" class="hdr-search-count"></span>
   </div>
 </header>
 
@@ -3464,12 +3533,6 @@
      不用抄一遍，也就不会出现「设置页的顶栏比对话页丑一截」 -->
 <div id="settingsPanel">
   <div class="set-main">
-    <!-- 全局搜索：跨全部分区按标题/标签/说明/占位符过滤，不用先猜在哪个页 -->
-    <div class="set-search">
-      <input id="settingsSearch" type="search" autocomplete="off" spellcheck="false"
-             placeholder="搜索设置项，例如：限频、唤醒、API">
-      <span id="settingsSearchCount" class="field-hint"></span>
-    </div>
     <div class="set-body">
       <div class="set-inner">
         <div id="settingsNoMatch" class="set-no-match" hidden>没有找到匹配的设置项</div>
@@ -8495,6 +8558,8 @@
 
   function termPoll() {
     if (!deviceSession) return;
+    // 只在真有命令在跑时才轮询；页面在后台时跳过（回来时下一次 tick 会补上）
+    if (document.hidden) return;
     fetch('/api/terminal')
       .then(function (r) { return r.json(); })
       .then(function (d) { termApplyState(d.state); })
@@ -10844,6 +10909,8 @@
   function startScPoll() {
     if (scPollTimer) return;
     scPollTimer = setInterval(function () {
+      // 进度本来就走 WS 实时推送，这里的 HTTP 只是兜底：页面在后台时不必再拉
+      if (document.hidden) return;
       fetch('/api/selfcheck/progress')
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
@@ -12652,7 +12719,12 @@
   function startPairPoll() {
     loadPairInfo();
     clearInterval(pairPollTimer);
-    pairPollTimer = setInterval(loadPairInfo, 2000);
+    // 页面在后台（切到别的标签/Deck 进游戏）时不再空转请求：配对窗口本来也只在
+    // 设置页可见时才有意义，恢复可见时下一次 tick 自然会补上最新状态
+    pairPollTimer = setInterval(function () {
+      if (document.hidden) return;
+      loadPairInfo();
+    }, 2000);
   }
 
   function stopPairPoll() {
@@ -13173,6 +13245,8 @@
     loadSttStatus();
     loadUsage();
     startPairPoll();
+    // 顶栏刚从对话模式切到设置模式，等这一帧的布局落定后再量搜索框宽度
+    requestAnimationFrame(fitHdrSearch);
   }
 
   // 读一次配置填进设置页表单。导入备份改了人设之后也要再填一遍，
@@ -13504,6 +13578,57 @@
   var settingsSearch = document.getElementById('settingsSearch');
   var settingsSearchCount = document.getElementById('settingsSearchCount');
   var settingsNoMatch = document.getElementById('settingsNoMatch');
+  var hdrSearch = document.getElementById('hdrSearch');
+  var hdrBar = document.querySelector('#main > header');
+  var hdrRight = hdrBar ? hdrBar.querySelector('.hdr-right') : null;
+  var HDR_SEARCH_PH = '搜索设置项，例如：限频、唤醒、API';
+  var HDR_SEARCH_PH_SHORT = '搜索设置';
+
+  // 搜索框是绝对居中的，宽度只吃左右两侧之间的空档：
+  // 先量左边内容最右缘、右边徽章最左缘，再以页面中线为轴取对称宽度，
+  // 这样它始终在正中，也不会把按钮/标题/徽章挤小。
+  function fitHdrSearch() {
+    if (!hdrSearch || !hdrBar) return;
+    hdrSearch.classList.remove('compact');
+    // <=640px 由 CSS 排进顶栏第二行独占一行，不再算宽度
+    if (window.matchMedia('(max-width: 640px)').matches) {
+      hdrSearch.style.width = '';
+      settingsSearch.placeholder = HDR_SEARCH_PH;
+      return;
+    }
+    var hr = hdrBar.getBoundingClientRect();
+    var pad = parseFloat(getComputedStyle(hdrBar).paddingLeft) || 0;
+    var leftEnd = pad;
+    Array.prototype.forEach.call(hdrBar.children, function (el) {
+      if (el === hdrSearch || el.classList.contains('spacer') ||
+          el.classList.contains('hdr-right')) return;
+      var cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return;
+      var r = el.getBoundingClientRect();
+      if (r.width) leftEnd = Math.max(leftEnd, r.right - hr.left);
+    });
+    var rightStart = hr.width - pad;
+    if (hdrRight && getComputedStyle(hdrRight).display !== 'none') {
+      var rr = hdrRight.getBoundingClientRect();
+      if (rr.width) rightStart = Math.min(rightStart, rr.left - hr.left);
+    }
+    var half = Math.min(hr.width / 2 - leftEnd, rightStart - hr.width / 2);
+    // 左右各留 12px 呼吸；最小 96px，保证输入框不会消失
+    var w = Math.floor(half * 2 - 24);
+    w = Math.min(440, Math.max(96, w > 0 ? w : 96));
+    hdrSearch.style.width = w + 'px';
+    hdrSearch.classList.toggle('compact', w < 320);
+    // 窄了先缩成「搜索设置」，再窄就只留放大镜图标，输入框本身始终在
+    settingsSearch.placeholder = w < 150 ? '' : (w < 260 ? HDR_SEARCH_PH_SHORT : HDR_SEARCH_PH);
+  }
+  window.addEventListener('resize', fitHdrSearch);
+  if (window.ResizeObserver && hdrBar) {
+    var hdrRO = new ResizeObserver(function () { fitHdrSearch(); });
+    hdrRO.observe(hdrBar);
+    if (hdrRight) hdrRO.observe(hdrRight);
+    var hdrTitleEl = document.getElementById('hdrTitle');
+    if (hdrTitleEl) hdrRO.observe(hdrTitleEl);
+  }
 
   // 可搜文本只包含标签、说明和占位符；输入框里的当前值不算，
   // 否则搜一个 Key 片段会把所有输入框都当成命中留下
@@ -13525,6 +13650,7 @@
     document.body.classList.toggle('set-searching', !!q);
     settingsNoMatch.hidden = true;
     settingsSearchCount.textContent = '';
+    settingsSearchCount.removeAttribute('title');
     // 每次重新搜索先清掉上一轮的高亮，避免旧命中残留
     Array.prototype.forEach.call(
       settingsPanel.querySelectorAll('.search-hit-item'),
@@ -13610,6 +13736,8 @@
       settingsSearchCount.textContent = paneCount
         ? ('找到 ' + hits + ' 项 · ' + paneCount + ' 个分页')
         : '没有匹配';
+      // 窄屏会收起计数文字，悬停时仍能看到完整结果
+      settingsSearchCount.title = settingsSearchCount.textContent;
     }
   }
 
@@ -16166,15 +16294,21 @@
   loadToolbar();
   ddInitAll();
 
-  // ---------- 亮暗主题 ----------
+  // ---------- 三档主题：浅色 / 深色 / 暗黑 ----------
+  // 按这个顺序循环；按钮上写的是「点一下会切到的下一档」，和原来两档时的语义一致
+  var THEMES = ['light', 'dark', 'oled'];
+  var THEME_NAME = { light: '浅色模式', dark: '深色模式', oled: '暗黑模式' };
   function applyTheme(t) {
+    if (THEMES.indexOf(t) === -1) t = 'dark';
     document.documentElement.setAttribute('data-theme', t);
     localStorage.setItem('deckmeido_theme', t);
-    document.getElementById('btnTheme').textContent = t === 'light' ? '深色模式' : '浅色模式';
+    var next = THEMES[(THEMES.indexOf(t) + 1) % THEMES.length];
+    document.getElementById('btnTheme').textContent = THEME_NAME[next];
   }
   applyTheme(localStorage.getItem('deckmeido_theme') || 'dark');
   document.getElementById('btnTheme').addEventListener('click', function () {
-    applyTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light');
+    var cur = document.documentElement.getAttribute('data-theme');
+    applyTheme(THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length]);
   });
 
   // 窄屏（手机）侧栏抽屉。设置页用的是同一条顶栏，所以这一颗按钮
