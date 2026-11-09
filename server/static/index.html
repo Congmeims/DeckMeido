@@ -3879,6 +3879,32 @@
           <h4 class="set-sect">远程接管</h4>
           <p class="pane-desc">从别的设备把鼠标键盘接管到这台 Deck，或者在网页 / 移动端直接开一个远程终端。</p>
 
+          <div class="card" id="sleepCard">
+            <div class="card-head">
+              <div class="card-title">睡眠模式</div>
+              <label class="switch" title="闲置满指定时长后自动关机">
+                <input id="cfgSleepEnabled" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <p class="pane-desc" style="margin-top:0">
+              听歌听着睡着了，机器自己关机。需要同时满足两件事并持续满设定时长：
+              <b>音乐已经停了</b>，而且<b>这台机器没人用</b>（没有按键、触摸、鼠标移动，也没在玩游戏）。
+              歌还在放时绝不关机，不会打断还在听的人；有人在用时也不关机。
+            </p>
+            <div class="ri-io-row">
+              <div class="field">
+                <label>闲置多久后关机（分钟）</label>
+                <input id="cfgSleepMinutes" type="number" min="5" max="720" step="1" value="60">
+              </div>
+              <div class="field">
+                <label>关机前倒计时（秒）</label>
+                <input id="cfgSleepCountdown" type="number" min="10" max="600" step="1" value="60">
+              </div>
+            </div>
+            <div class="field-hint" id="sleepCfgState">当前状态：未开启</div>
+          </div>
+
           <div class="card" id="riEnableCard">
             <div class="card-head">
               <div class="card-title">跨屏鼠标（远程接管）</div>
@@ -12281,6 +12307,11 @@
   var updApply = document.getElementById('updApply');
   var cfgUpdGithub = document.getElementById('cfgUpdGithub');
   var updSourceHint = document.getElementById('updSourceHint');
+  // 睡眠模式设置（[sleep] 段；闲置且音乐停满 N 分钟后自动关机）
+  var cfgSleepEnabled = document.getElementById('cfgSleepEnabled');
+  var cfgSleepMinutes = document.getElementById('cfgSleepMinutes');
+  var cfgSleepCountdown = document.getElementById('cfgSleepCountdown');
+  var sleepCfgState = document.getElementById('sleepCfgState');
   // 跨屏接管设置（单开关：开 = 允许局域网接管）
   var cfgRiEnabled = document.getElementById('cfgRiEnabled');
   var cfgRiSens = document.getElementById('cfgRiSens');
@@ -13280,6 +13311,12 @@
         if (cfgWake) cfgWake.checked = c.wake_enabled === true;
         if (cfgChatVoice) cfgChatVoice.checked = c.chat_voice !== false;
         syncChatVoiceGate();
+        // 睡眠模式：默认关闭；分钟数/倒计时以后端为准，缺省 60/60
+        var sl = c.sleep || {};
+        cfgSleepEnabled.checked = sl.enabled === true;
+        cfgSleepMinutes.value = sl.idle_minutes || 60;
+        cfgSleepCountdown.value = sl.countdown_sec || 60;
+        renderSleepState(sl);
         // [ui] language：以服务端为准（老配置没有这一项就是 zh）
         if (cfgLang) cfgLang.value = c.ui_language === 'en' ? 'en' : 'zh';
         cfgAskTemplate.value = c.ask_template || '';
@@ -13910,6 +13947,10 @@
       stt_enable: !!cfgStt.checked,
       stt_duck_output: !!cfgSttDuck.checked,
       wake_enabled: cfgWake ? !!cfgWake.checked : false,
+      // 睡眠模式：开关 + 闲置分钟数 + 关机倒计时
+      sleep_enabled: !!cfgSleepEnabled.checked,
+      sleep_idle_minutes: Math.max(5, Math.min(720, parseInt(cfgSleepMinutes.value, 10) || 60)),
+      sleep_countdown_sec: Math.max(10, Math.min(600, parseInt(cfgSleepCountdown.value, 10) || 60)),
       // [ui] language：切到 en 后整页重载，让 i18n 表重新拉取并替换静态文案
       ui_language: cfgLang ? cfgLang.value : 'zh',
       permission_mode: cfgPerm.value,
@@ -15277,6 +15318,31 @@
   if (cfgRiSens) cfgRiSens.addEventListener('input', function () {
     cfgRiSensVal.textContent = Number(cfgRiSens.value).toFixed(1) + '×';
   });
+
+  // 睡眠模式状态行：不开就是「未开启」；开着但还没进入闲置计时就说「等到点」；
+  // 已经开始计时就显示还剩多久，倒计时中显示正在倒计时——这样能一眼看出
+  // 「她是不是快要关机了」，而不是到点才突然黑屏。
+  function renderSleepState(sl) {
+    if (!sleepCfgState) return;
+    sl = sl || {};
+    if (!sl.enabled) {
+      sleepCfgState.textContent = '当前状态：未开启';
+      return;
+    }
+    var left = sl.countdown_left;
+    if (left != null) {
+      sleepCfgState.textContent = '正在倒计时：' + left + ' 秒后关机（动一下鼠标或键盘即取消）';
+      return;
+    }
+    var remain = sl.remain_sec;
+    if (remain != null) {
+      var m = Math.ceil(remain / 60);
+      sleepCfgState.textContent = '当前状态：音乐已停且无人使用，约 ' + m + ' 分钟后关机';
+      return;
+    }
+    sleepCfgState.textContent = '当前状态：等待闲置（' + (sl.idle_minutes || 60)
+      + ' 分钟内无人使用且音乐已停才会计时）';
+  }
 
   // 单开关：从「关」切到「开」等于开放局域网接管，先明确提醒一次；
   // 取消就把勾选退回去，别让人稀里糊涂把机器暴露出去

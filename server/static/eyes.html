@@ -142,20 +142,35 @@
     name: "disarmed", level: 0, levelSmooth: 0, ackText: "我在",
     offline: false, wakeStart: 0, captionUntil: 0, drawnName: "",
     nextBlink: 0, blinkStart: 0, blinking: false, idleSleep: false,
+    countdownLeft: null,
   };
 
-  // ---- 防烧屏：全屏常亮的脸在 OLED 上会留残影 ----
-  // 5 分钟没有任何交互就闭眼（屏幕基本变黑），15 分钟直接回主界面。
-  // 这里只认用户真的动过：鼠标移动 / 触摸 / 按键；状态轮询和语音交互不算，
+  // ---- 防烧屏 / 闲置退出：全屏常亮的脸在 OLED 上会留残影 ----
+  // 5 分钟没有任何交互就闭眼（屏幕基本变黑），10 分钟直接回主界面。
+  // 「交互」只认用户真的动过：鼠标移动 / 触摸 / 按键；状态轮询不算，
   // 否则一直有人说话就永远闭不上眼。
+  // 退出另有一条：持续 5 分钟既不播放音乐、也没有新的唤醒、屏幕也没被点过，
+  // 就算闲置，退出回主界面。音乐在放时一直陪着，不因为「没人在旁边点屏幕」就退。
   const EYES_IDLE_CLOSE_MS = 5 * 60 * 1000;
-  const EYES_IDLE_EXIT_MS = 15 * 60 * 1000;
+  const EYES_IDLE_EXIT_MS = 10 * 60 * 1000;
+  const EYES_IDLE_QUIT_MS = 5 * 60 * 1000;
   let lastActive = Date.now();
   const touchActive = () => { lastActive = Date.now(); };
-  window.addEventListener("mousemove", touchActive, { passive: true });
-  window.addEventListener("touchstart", touchActive, { passive: true });
-  window.addEventListener("keydown", touchActive);
-  window.addEventListener("pointerdown", touchActive, { passive: true });
+  // 闲置起点：最近一次「有人在用」的时刻。点击 / 唤醒 / 正在放音乐都算，
+  // 由 idleSince 每次重算——音乐停了，闲置计时就从停止那一刻开始。
+  let activeAt = Date.now();
+  let playingNow = false;
+
+  // 一次「有人来了」：刷新交互时间（也顺带让闭眼解除）
+  function markActive() {
+    const now = Date.now();
+    lastActive = now;
+    activeAt = now;
+  }
+  window.addEventListener("mousemove", () => { touchActive(); cancelSleepCountdown(); }, { passive: true });
+  window.addEventListener("touchstart", () => { touchActive(); markActive(); cancelSleepCountdown(); }, { passive: true });
+  window.addEventListener("keydown", () => { touchActive(); cancelSleepCountdown(); });
+  window.addEventListener("pointerdown", () => { touchActive(); markActive(); cancelSleepCountdown(); }, { passive: true });
 
   // ---- 状态轮询：只读，不含音频 ----
   function applyStatus(d) {
@@ -163,6 +178,30 @@
     state.level = Number(d.level) || 0;
     state.ackText = (d.ack && d.ack.text) || "我在";
     state.offline = false;
+    // 后端 5 秒缓存一次的真实播放状态：在放音乐就一直算「有人在用」
+    const p = !!(d.media && d.media.playing);
+    if (p && !playingNow) markActive();
+    playingNow = p;
+    // 睡眠模式倒计时：由后端判定，前端只负责显示和提供取消入口
+    const sl = d.sleep || {};
+    const left = (sl.countdown_left == null) ? null : Number(sl.countdown_left);
+    if (left !== null && left !== state.countdownLeft) {
+      state.countdownLeft = left;
+      const txt = "将在 " + left + " 秒后关机 · 动一下鼠标或键盘即取消";
+      notice.textContent = txt;
+      notice.classList.add("on");
+    } else if (left === null && state.countdownLeft !== null) {
+      state.countdownLeft = null;
+      notice.classList.remove("on");
+      notice.textContent = "";
+    }
+  }
+
+  // 倒计时期间任何输入都取消关机。后端自己也判空闲，所以这里只需要把
+  // 「人已经回来了」这件事告诉它，倒计时就会撤回。
+  function cancelSleepCountdown() {
+    if (state.countdownLeft === null) return;
+    fetch("/api/sleep/cancel", { method: "POST", cache: "no-store" }).catch(() => {});
   }
 
   async function poll() {
@@ -256,12 +295,19 @@
   // 空闲计时：先闭眼，再退出。用 interval 而不是每帧判断，页面被挂起时
   // 恢复后会立刻按真实空闲时长处理——本来就是为了「人走了别再亮着」。
   setInterval(() => {
-    const idle = Date.now() - lastActive;
-    if (idle >= EYES_IDLE_EXIT_MS) {
+    const now = Date.now();
+    // 还在放音乐 = 人在听，不算闲置，计时一直往后推
+    if (playingNow) activeAt = now;
+    if (now - lastActive >= EYES_IDLE_EXIT_MS) {
       leave();
       return;
     }
-    state.idleSleep = idle >= EYES_IDLE_CLOSE_MS;
+    // 不播音乐、没被唤醒、屏幕也没被点，满 5 分钟就退出
+    if (!playingNow && now - activeAt >= EYES_IDLE_QUIT_MS) {
+      leave();
+      return;
+    }
+    state.idleSleep = now - lastActive >= EYES_IDLE_CLOSE_MS;
   }, 1000);
 
   // ---- 绘制：沿用 ouo-face 校准过的 ω 猫嘴脸 ----
@@ -413,6 +459,7 @@
       if (state.name === "waking") {
         state.wakeStart = t;
         state.captionUntil = tms + 1600;
+        markActive();
       }
       state.drawnName = state.name;
     }
@@ -501,21 +548,33 @@
 
     const squash = (blinkable && !state.idleSleep) ? blinkSquash(t) : 0;
 
+    // ---- 摇头晃脑：间歇性左右摆，兼作 OLED 防烧屏 ----
+    // 包络由两个不同周期（约 10s / 27s）相乘，大约每 10 秒鼓起来一次，
+    // 晃两下就停，不会像固定正弦那样「到点必晃」显得机械。闭眼和没唤醒时不晃。
+    let nodX = 0, nodTilt = 0;
+    if (!state.idleSleep && state.name !== "disarmed") {
+      const env = Math.max(0, Math.sin(t * 0.62) * Math.sin(t * 0.23 + 1.1));
+      const wobble = Math.sin(t * 1.7) * 0.7 + Math.sin(t * 2.9 + 0.6) * 0.3;
+      nodX = env * wobble * eyeR * 0.5;
+      nodTilt = env * wobble * 0.035;
+    }
+
     ctx.save();
     ctx.translate(cx, cy);
+    ctx.rotate(nodTilt);
     ctx.scale(faceScale, faceScale);
     ctx.translate(-cx, -cy);
 
     const lx = cx - gap + inward;
     const rx = cx + gap - inward;
 
-    drawEye(lx + gazeX, cy + gazeY, eyeR, expr, squash, alpha, t);
-    drawEye(rx + gazeX, cy + gazeY, eyeR, expr, squash, alpha, t);
+    drawEye(lx + gazeX + nodX, cy + gazeY, eyeR, expr, squash, alpha, t);
+    drawEye(rx + gazeX + nodX, cy + gazeY, eyeR, expr, squash, alpha, t);
 
     // 嘴：眼和嘴的垂直距离 0.26s（ouo-face 校准值）
     const my = cy + s * 0.26;
-    if (mouthOpen > 0.01) drawTalkingMouth(cx, my, mouthW, mouthOpen);
-    else drawCatMouth(cx, my, mouthW, t);
+    if (mouthOpen > 0.01) drawTalkingMouth(cx + nodX, my, mouthW, mouthOpen);
+    else drawCatMouth(cx + nodX, my, mouthW, t);
     ctx.restore();
 
     // ---- 「我在」字幕：唤醒时出现；合成失败也照样显示 ----

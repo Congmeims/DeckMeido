@@ -554,6 +554,10 @@ class WakeService:
         # 歧义确认只问一次：这里存待确认的计划，下一轮的第一句就回答它
         self._pending_confirm = None
         self._music_ducked = False
+        # 音乐是否在放：给眼睛页的闲置判定用。busctl 是子进程，不能每 250ms
+        # 探一次（状态接口被高频轮询），缓存 5 秒；探测失败按「没在放」处理。
+        self._playing = False
+        self._playing_at = 0.0
         # 短反馈词的合成缓存：同一句「切了」只合成一次
         self._fb_wav: dict[str, bytes] = {}
         self._cancel_chat = None
@@ -741,8 +745,10 @@ class WakeService:
             "level": round(self._level, 3),
             "wake_count": self._wake_count,
             "turns": self._turns,
-            # 音乐是否正被压低（只反映状态，不在轮询里跑 busctl）
-            "media": {"ducked": self._music_ducked},
+            # 音乐是否正被压低（只反映状态，不在轮询里跑 busctl）；
+            # playing 带 5 秒缓存，供眼睛页判断「还在放音乐就别当成闲置」
+            "media": {"ducked": self._music_ducked,
+                      "playing": self._playing_now()},
             "last_error": self._last_error,
             "input_device": self._cfg.get("input_device", "default"),
             "wake_words": list(self._cfg.get("wake_words") or []),
@@ -1330,6 +1336,22 @@ class WakeService:
                 self._restore()
             except Exception:
                 pass
+
+    def _playing_now(self) -> bool:
+        """音乐是否在放，5 秒缓存。探测异常一律当「没在放」。
+
+        缓存放宽是必要的：眼睛页 250ms 轮询一次状态，每次都起 busctl
+        子进程会把 Deck 拖得很重；而「有没有在放音乐」5 秒的粒度足够。
+        """
+        now = time.monotonic()
+        if now - self._playing_at >= 5.0:
+            try:
+                self._playing = media.playing()
+            except Exception as exc:
+                devlog.log("wake.media.playing.error", error=str(exc))
+                self._playing = False
+            self._playing_at = now
+        return self._playing
 
     def _duck_music(self) -> None:
         """压低正在播放的音乐。handler 返回 True 才记状态；异常一律吞掉。"""

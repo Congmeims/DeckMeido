@@ -30,7 +30,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from .llm import LLMClient
-from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, media, memory, menu, netcfg, netmode, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, remote_terminal, selfcheck, singleton, status_line, sudo_auth, tools, updater, usage, wake
+from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, media, memory, menu, netcfg, netmode, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, remote_terminal, selfcheck, singleton, sleepmode, status_line, sudo_auth, tools, updater, usage, wake
 from .session_store import store
 from . import session_store
 from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, TTSError, normalize_speaker,
@@ -888,6 +888,8 @@ def apply_config(cfg: dict):
     audiomute.set_enabled(bool(s.get("duck_output", True)))
     # 智能音箱模式：开关 / 唤醒词 / 阈值热更新；关掉时 wake 服务自己退出监听
     wake_service.apply(cfg.get("wake") or {})
+    # 睡眠模式：音乐停 + 会话空闲满 N 分钟后自动关机；开关热更新
+    sleepmode.service.apply(cfg.get("sleep") or {})
     PERMISSION_MODE = cfg.get("security", {}).get("permission_mode", "auto")
     # 文件工具的边界跟着权限模式走：full 不设限（与 run_command 一致），
     # 其余模式只能碰工作区。这里同步一份，热更新后立刻生效
@@ -3835,6 +3837,10 @@ class ConfigUpdate(BaseModel):
     remote_input_enabled: bool | None = None
     remote_input_sensitivity: float | None = None
     remote_input_max_minutes: int | None = None
+    # 睡眠模式：机器闲置（无人使用且音乐已停）满多久后自动关机
+    sleep_enabled: bool | None = None
+    sleep_idle_minutes: int | None = None
+    sleep_countdown_sec: int | None = None
     # 局域网访问开关与监听端口：写入 [server]，绑定地址要重启后端才生效
     lan_enable: bool | None = None
     port: int | None = None
@@ -4114,6 +4120,8 @@ async def api_get_config():
         "remote_input_enabled": remote_input.enabled(CFG.get("remote_input") or {}),
         "remote_input_sensitivity": float((CFG.get("remote_input") or {}).get("sensitivity", 1.5) or 1.5),
         "remote_input_max_minutes": int((CFG.get("remote_input") or {}).get("max_minutes", 30) or 30),
+        # 睡眠模式：设置页表单用开关与分钟数，眼睛页用倒计时（countdown_left）
+        "sleep": sleepmode.service.status(),
         # 远程终端：设置页开关与限流参数（默认全部关闭/保守值）
         "terminal_remote_shell": _terminal_settings().enabled,
         "terminal_idle_timeout": _terminal_settings().idle_timeout_s,
@@ -4404,6 +4412,16 @@ async def api_set_config(req: ConfigUpdate, request: Request):
         ri["max_minutes"] = max(1, min(120, int(req.remote_input_max_minutes)))
     if ri:
         updates["remote_input"] = ri
+    sl = {}
+    if req.sleep_enabled is not None:
+        sl["enabled"] = bool(req.sleep_enabled)
+    if req.sleep_idle_minutes is not None:
+        # 下限 5 分钟：太短会在「歌刚放完、人还没动」时误关机
+        sl["idle_minutes"] = max(5, min(720, int(req.sleep_idle_minutes)))
+    if req.sleep_countdown_sec is not None:
+        sl["countdown_sec"] = max(10, min(600, int(req.sleep_countdown_sec)))
+    if sl:
+        updates["sleep"] = sl
     if req.lan_enable is not None:
         updates.setdefault("server", {})["lan_enable"] = bool(req.lan_enable)
         audit.record("config", "lan", "ok", ip=_client_ip(request),
@@ -5457,7 +5475,10 @@ def _wake_local_only(request: Request) -> None:
 @app.get("/api/wake/state", dependencies=[Depends(require_auth)])
 async def api_wake_state(request: Request):
     _wake_local_only(request)
-    return {"ok": True, **wake_service.status()}
+    # 睡眠模式的倒计时一起带上：眼睛页本来就每 250ms 轮询这个接口，
+    # 再单独去拉整份 /api/status 太重，而倒计时恰恰需要它够快。
+    return {"ok": True, **wake_service.status(),
+            "sleep": sleepmode.service.status()}
 
 
 @app.post("/api/wake/toggle", dependencies=[Depends(require_auth)])
@@ -5493,6 +5514,16 @@ async def api_wake_exit(request: Request):
     _wake_local_only(request)
     save_config({"wake": {"enable": False}})
     return {"ok": True, **await wake_service.disarm()}
+
+
+@app.post("/api/sleep/cancel", dependencies=[Depends(require_auth)])
+async def api_sleep_cancel(request: Request):
+    """取消睡眠模式的关机倒计时。眼睛页收到任何键鼠/触摸输入时调用。
+
+    只在本机有效：局域网设备不该能替这台机器「延后关机」。
+    """
+    _wake_local_only(request)
+    return {"ok": True, "cancelled": sleepmode.service.cancel()}
 
 
 @app.on_event("startup")

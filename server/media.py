@@ -279,6 +279,19 @@ def _playback_status(service: str) -> str:
     return out.split('"')[1] if '"' in out else out.strip()
 
 
+def playing() -> bool:
+    """当前是否有播放器正在放（MPRIS PlaybackStatus == Playing）。
+
+    给眼睛页的闲置判定用：只要还在放音乐就不算闲置，不退出。
+    没装播放器、busctl 不可用、命令超时一律当作「没在放」——
+    这是轮询路径，不能因为探测失败就把异常抛给调用方。
+    """
+    try:
+        return _playback_status(_service_name()) == "Playing"
+    except (MediaError, OSError):
+        return False
+
+
 def execute(action: str) -> None:
     """执行一个固定动作。不在白名单里直接拒绝，不拼任何命令。"""
     if action not in _METHODS and action not in VOLUME_ACTIONS:
