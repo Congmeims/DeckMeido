@@ -308,6 +308,19 @@ def main():
         (ROOT / "plugin" / "package.json").read_text(encoding="utf-8")
     )["version"]
     ver = ver.lstrip("v")
+    # 构建号取自 HEAD：如果版本号是在 HEAD 之后才改的（还没提交），包里就会出现
+    # 「VERSION 是新版本、COMMIT 是旧提交」的错位，装机日志里两者对不上，排障时
+    # 没法判断装的到底是不是这个版本。这里提前拦下。
+    pkg_ver = json.loads((ROOT / "plugin" / "package.json").read_text(encoding="utf-8"))["version"]
+    if pkg_ver != ver:
+        sys.exit(f"版本不一致：参数 {ver} ≠ plugin/package.json {pkg_ver}")
+    dirty = subprocess.run(
+        ["git", "-C", str(ROOT), "status", "--porcelain"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    ).stdout.strip()
+    if dirty:
+        sys.exit("工作区有未提交改动，构建号（COMMIT）会和包内容对不上。先提交再出包：\n"
+                 + "\n".join("    " + line for line in dirty.splitlines()[:10]))
     if not (ROOT / "plugin" / "dist" / "index.js").exists():
         sys.exit("plugin/dist/index.js 不存在，先 cd plugin && npm run build")
 

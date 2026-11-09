@@ -8,6 +8,7 @@ URL 带 native=1 标记，网页会据此把「点开图片」改为调用系统
 """
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
@@ -126,6 +127,16 @@ def _dev_log(event: str, **fields) -> None:
         pass
 
 
+def _write_crash_log(text: str) -> None:
+    """往 client-crash.log 追加一行（失败不影响主流程）"""
+    try:
+        CRASH_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(text)
+    except Exception:
+        pass
+
+
 def _enable_crash_log() -> None:
     """把 C 层致命信号（SIGSEGV / SIGABRT 等）的栈写到文件里"""
     global _CLIENT_DEBUG_LOG
@@ -143,7 +154,29 @@ def _enable_crash_log() -> None:
         except OSError:
             pass
         faulthandler.enable(file=f, all_threads=True)
-        f.write(f"\n===== client start {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
+        _write_crash_log(f"\n===== client start {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
+        # 正常退出也要落一行收尾：以前日志里只有 start，分不清是「还在跑」
+        # 还是「退出过但没写任何东西」，出问题只能靠猜。
+        atexit.register(
+            _write_crash_log,
+            f"===== client exit {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
+        # atexit 在 os._exit / 信号杀死时不执行；Deck 上客户端常被 systemd
+        # 或会话结束以 SIGTERM 结束，这两种信号补一条收尾，并保留原来的默认行为。
+        for _sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                _prev = signal.getsignal(_sig)
+
+                def _on_signal(signum, frame, _prev=_prev, _sig=_sig):
+                    _write_crash_log(
+                        f"===== client exit by signal {signum} "
+                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
+                    if callable(_prev) and _prev is not signal.default_int_handler:
+                        return _prev(signum, frame)
+                    raise SystemExit(128 + _sig)
+
+                signal.signal(_sig, _on_signal)
+            except (ValueError, OSError):
+                pass
         f.flush()
         globals()["_crash_handle"] = f  # 保持引用，别让 GC 把文件关掉
         try:
