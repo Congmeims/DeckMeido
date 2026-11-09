@@ -1,10 +1,10 @@
 {
-  "tag": "0.7.10",
-  "name": "DeckMeido 0.7.10",
-  "notes": "# DeckMeido 0.7.10\n\n- eyes.html: 换成 ouo-face 校准的 omega 猫嘴脸，待机眨眼、唤醒笑眼、说话嘴部随音量开合\n- Release: 0.7.10 产物（README 无 Decky 说明 / 版本 0.7.10）\n- docs+chore: 补「没装 Decky 时 QAM 无入口」说明；版本升到 0.7.10\n- Release: 0.7.9 产物重打（deploy_deck 安全重载 / 无 Decky 分支）\n- deploy_deck.sh: 重载 Decky 改为体检 + stop/start 安全序列；install.sh 补齐无 Decky 分支\n- Release: 0.7.9 产物重打（install.sh 改为安全重载 Decky）\n- install.sh: Decky 插件安装/卸载改为体检 + stop/start 安全序列\n- install.sh: Decky 重启后回读 NRestarts，卡在重启循环时明确告警\n- Release: ship 0.7.9 artifacts\n- tts: 修正月读酱模型哈希（取 lfs.oid 而非 xetHash）并把下载地址钉到 commit\n- Release: rebuild 0.7.8 artifacts with new uninstall flow\n- uninstall: move userdata to MeidoSpace before deleting, verify every step\n- Release: ship 0.7.8 artifacts\n- chore: 版本号升到 0.7.8\n- install: 删除旧版本兼容与失效注释\n- install: 自定义安装项默认全装，卸载系统包默认删除\n- install: 语音模型缺失不再被静默吞掉，安装期下载统一重试 3 次\n- Release: ship 0.7.7 artifacts\n- Release: bump to 0.7.7\n- Uninstall: trash-only cleanup driven by install manifest\n",
-  "published_at": "2026-11-08T23:18:18+08:00",
+  "tag": "0.7.12",
+  "name": "DeckMeido 0.7.12",
+  "notes": "# DeckMeido 0.7.12\n\n- chore: 忽略本地临时产物（.scratch/、.apk_extract/、ouo-face.html 设计参考页）\n- Release: 重打 0.7.10 产物（包含 bf9bddd 的 omega 猫嘴眼睛页）\n- eyes.html: 换成 ouo-face 校准的 omega 猫嘴脸，待机眨眼、唤醒笑眼、说话嘴部随音量开合\n- Release: 0.7.10 产物（README 无 Decky 说明 / 版本 0.7.10）\n- docs+chore: 补「没装 Decky 时 QAM 无入口」说明；版本升到 0.7.10\n- Release: 0.7.9 产物重打（deploy_deck 安全重载 / 无 Decky 分支）\n- deploy_deck.sh: 重载 Decky 改为体检 + stop/start 安全序列；install.sh 补齐无 Decky 分支\n- Release: 0.7.9 产物重打（install.sh 改为安全重载 Decky）\n- install.sh: Decky 插件安装/卸载改为体检 + stop/start 安全序列\n- install.sh: Decky 重启后回读 NRestarts，卡在重启循环时明确告警\n- Release: ship 0.7.9 artifacts\n- tts: 修正月读酱模型哈希（取 lfs.oid 而非 xetHash）并把下载地址钉到 commit\n- Release: rebuild 0.7.8 artifacts with new uninstall flow\n- uninstall: move userdata to MeidoSpace before deleting, verify every step\n- Release: ship 0.7.8 artifacts\n- chore: 版本号升到 0.7.8\n- install: 删除旧版本兼容与失效注释\n- install: 自定义安装项默认全装，卸载系统包默认删除\n- install: 语音模型缺失不再被静默吞掉，安装期下载统一重试 3 次\n- Release: ship 0.7.7 artifacts\n",
+  "published_at": "2026-11-09T11:32:14+08:00",
   "files": {
-    "tarball": "deckmeido-0.7.10.tar.gz",
-    "sha256": "22cf35cfb0715454f4a3d4c2c977f234e00dfcdc5eb0ba0c62689d92a686a479"
+    "tarball": "deckmeido-0.7.12.tar.gz",
+    "sha256": "125251fb57c9c60e601ced46062c3d055520d27671bd1464f88a8278728cc079"
   }
 }

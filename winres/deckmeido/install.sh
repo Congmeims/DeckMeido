@@ -1111,42 +1111,100 @@ DEPS_PACMAN=(espeak-ng ydotool wtype fakeroot)
 # 找不到 AUR helper 才提示手动装。
 DEPS_AUR=(kdotool-bin)
 DEPS_AUR_FALLBACK=(kdotool)
+# install_pacman_deps 跑完后仍然找不到命令的包：安装汇总靠它说实话，
+# 不再一律打勾。2026-11-08 的装机就是「提示 ✓ 已处理，设置页却全红」。
+DEPS_MISSING_AFTER=()
+
+# 随发布包自带的离线包集合：只放「小、依赖浅、缺了直接让设置页变红」的三个。
+# ydotool 16.6KB + wtype 10.0KB + fakeroot 78.7KB ≈ 105KB（压缩后）。
+# espeak-ng（7.2MB，且要 libsonic / pcaudiolib 两个 SteamOS 没自带的依赖）不自带，
+# 走本机缓存或镜像站；kdotool 是 AUR 包，官方仓库里没有，只能放镜像站。
+# 具体下载清单在 tools/fetch_offline_deps.sh 里，两边要一起改。
 
 # Release 里附带的离线包目录（deploy/deps/，随发布包一起分发）。
 # SteamOS 换镜像会重建 /usr，pacman 缓存也会失效，所以不能指望
 # /var/cache/pacman/pkg 里还有东西；这些 .pkg.tar.zst 是独立一份。
 OFFLINE_DIR="$HERE/deploy/deps"
+# 离线包哈希清单：只覆盖 deploy/deps/ 下的 .pkg.tar.zst，
+# 与 dist/SHA256SUMS（覆盖发布 tar.gz）是两套东西，互不替代。
+OFFLINE_MANIFEST="$OFFLINE_DIR/SHA256SUMS"
 
 # 离线包的安装记录。值是一组包名，记录「上次凭离线包装成功的都有谁」。
 # 用途有两个：镜像更新后知道该重装哪些，以及 offline_stale 判断
 # 离线包是不是已经过期（比系统仓库还老就别硬装）。
 offline_stamp() { printf '%s' "$CONFIG_DIR/.deps-offline"; }
 
+# 离线包哈希校验：必须能在 SHA256SUMS 里查到这一行，且实算哈希一致。
+# 清单缺失 / 文件没列 / 哈希不符，一律当不可信——宁可不装，也不装一个
+# 来源不明的系统包（pacman -U 以 root 身份跑，脚本被换掉就是提权入口）。
+offline_hash_ok() {
+  local f="$1" base want got
+  [ -f "$OFFLINE_MANIFEST" ] || return 1
+  base="$(basename "$f")"
+  want="$(awk -v n="$base" '($2==n)||($2=="*" n){print $1}' "$OFFLINE_MANIFEST" 2>/dev/null | head -n1)"
+  [ -n "$want" ] || return 1
+  got="$(sha256sum "$f" 2>/dev/null | awk '{print $1}')"
+  [ "$got" = "$want" ]
+}
+
+# 已装版本比这个包文件新：装回去等于降级，跳过，留给联网仓库版本。
+# SteamOS 换镜像后 holo 仓库会滚动升级，旧离线包不该把系统拽回去。
+pkg_is_downgrade() {
+  local f="$1" p="$2" fv iv
+  fv="$(pacman -Qp "$f" 2>/dev/null | awk '{print $2}')"
+  iv="$(pacman -Q "$p" 2>/dev/null | awk '{print $2}')"
+  [ -n "$fv" ] && [ -n "$iv" ] || return 1
+  need_cmd vercmp || return 1
+  [ "$(vercmp "$fv" "$iv" 2>/dev/null)" -lt 0 ]
+}
+
+# 从发布包自带的 deploy/deps 挑出某个包最新的那一份。
+# 三条硬条件：包名回读一致（防 kdotool / kdotool-bin 这类前缀串包）、
+# 哈希对得上清单、不构成降级。不满足就当没有这一层。
+offline_bundle_file() {
+  local p="$1" f best="" base
+  [ -d "$OFFLINE_DIR" ] || return 0
+  for f in "$OFFLINE_DIR/$p"-*.pkg.tar.zst; do
+    [ -f "$f" ] || continue
+    base="$(basename "$f")"
+    [ "$(pacman -Qp "$f" 2>/dev/null | awk 'NR==1{print $1}')" = "$p" ] || continue
+    if ! offline_hash_ok "$f"; then
+      warn "离线包哈希校验失败，已跳过：$base"
+      continue
+    fi
+    pkg_is_downgrade "$f" "$p" && { dim "已装版本比离线包新，跳过 $p"; continue; }
+    if [ -z "$best" ] || [ "$(printf '%s\n%s\n' "$(basename "$best")" "$base" | sort -V | tail -n1)" = "$base" ]; then
+      best="$f"
+    fi
+  done
+  [ -n "$best" ] && printf '%s' "$best"
+  return 0
+}
+
 # 用本地包直接装，不碰网络。缺点是不会自动补齐依赖树以外的版本约束，
 # 所以装完仍然实测一遍命令在不在。
 offline_pacman_install() {
-  local want=("$@") files=() p
+  local want=("$@") files=() p hit
   [ -d "$OFFLINE_DIR" ] || return 1
   for p in "${want[@]}"; do
-    local hit
-    hit=$(find "$OFFLINE_DIR" -maxdepth 1 -name "$p-*.pkg.tar.zst" 2>/dev/null | sort | tail -n1)
+    hit="$(offline_bundle_file "$p")"
     [ -n "$hit" ] && files+=("$hit")
   done
   [ ${#files[@]} -gt 0 ] || return 1
-  info "从离线包安装：$(printf '%s ' "${files[@]##*/}")"
+  info "从发布包自带离线包安装：$(printf '%s ' "${files[@]##*/}")"
   local log
-  if log=$(sudo pacman -U --noconfirm --needed "${files[@]}" 2>&1); then
+  if log=$(sudo pacman -U --noconfirm --needed "${files[@]}" </dev/null 2>&1); then
     info "离线包安装完成"
   else
     warn "离线包安装失败，稍后回退联网"
     dim "$(printf '%s' "$log" | tail -12)"
     return 1
   fi
-  # 记录装成的那几个（用包名前缀文件名去掉版本号）
+  # 记录装成的那几个（包名从包元数据回读，不靠文件名猜）
   local names=() base
   for p in "${files[@]}"; do
-    base="$(basename "$p")"
-    names+=("${base%%-[0-9]*}")
+    base="$(pacman -Qp "$p" 2>/dev/null | awk 'NR==1{print $1}')"
+    [ -n "$base" ] && names+=("$base")
   done
   mkdir -p "$CONFIG_DIR" 2>/dev/null || true
   printf '%s\n' "${names[*]}" > "$(offline_stamp)" 2>/dev/null || true
@@ -1175,6 +1233,115 @@ offline_check_fresh() {
       dim "断网时装它仍可用；联网时建议让它走仓库：bash install.sh install --deps"
     fi
   done
+}
+
+# ---------- 数据库同步失败时的三层兜底 ----------
+# ① 本机 /var/cache/pacman/pkg ② 发布包自带 deploy/deps ③ 镜像站 $MIRROR/deps
+# 每层都只装「这层找得到的包」，装完实测命令，缺的继续往下一层要；
+# 三层都拿不到就如实报缺，不再假装装好。
+
+# pacman -U 一批本地包文件。needed=1 时不重复装已装版本；
+# needed=0 用于「记录在、命令丢了」的强制覆盖重装。
+pacman_u_batch() {
+  local needed="$1"; shift
+  local log
+  local -a opts=(--noconfirm)
+  [ "$needed" = 1 ] && opts+=(--needed)
+  if log=$(sudo pacman -U "${opts[@]}" "$@" </dev/null 2>&1); then
+    return 0
+  fi
+  warn "pacman -U 失败："
+  dim "$(printf '%s' "$log" | tail -12)"
+  return 1
+}
+
+# 从镜像站 deps/ 取某个包：先拿清单（一次任务只下一次），再下包，
+# 哈希与包名都校验通过才返回路径；任何一步不放心就返回空。
+mirror_fetch_pkg() {
+  local p="$1" dest="$2" man="$2/SHA256SUMS" base want got
+  if [ ! -s "$man" ]; then
+    curl -fsSL --connect-timeout 8 --max-time 25 "$MIRROR/deps/SHA256SUMS" -o "$man" 2>/dev/null || return 0
+  fi
+  # 清单行是 `sha256 名称`；Windows 生成的清单会带 `*` 前缀（sha256sum -b），
+  # 这里先剥掉再按前缀挑版本最新的一份
+  base="$(awk -v p="$p" '{n=$2; sub(/^\*/, "", n); if (n ~ ("^" p "-")) print n}' "$man" | sort -V | tail -n1)"
+  [ -n "$base" ] || return 0
+  case "$base" in
+    *.pkg.tar.zst|*.pkg.tar.xz|*.pkg.tar.gz) ;;
+    *) return 0 ;;
+  esac
+  # 只接受平铺文件名：清单若被改成 ../ 之类，不能让它写/读到别处
+  case "$base" in */*|*..*) return 0 ;; esac
+  curl -fsSL --connect-timeout 10 --max-time 300 "$MIRROR/deps/$base" -o "$dest/$base" 2>/dev/null || return 0
+  want="$(awk -v n="$base" '($2==n)||($2=="*" n){print $1}' "$man" | head -n1)"
+  got="$(sha256sum "$dest/$base" 2>/dev/null | awk '{print $1}')"
+  if [ -z "$want" ] || [ "$got" != "$want" ]; then
+    warn "镜像站的 $base 哈希对不上清单，已丢弃"
+    rm -f "$dest/$base"
+    return 0
+  fi
+  if [ "$(pacman -Qp "$dest/$base" 2>/dev/null | awk 'NR==1{print $1}')" != "$p" ]; then
+    warn "镜像站的 $base 包名对不上（要的是 $p），已丢弃"
+    rm -f "$dest/$base"
+    return 0
+  fi
+  pkg_is_downgrade "$dest/$base" "$p" && { dim "已装版本比镜像包新，跳过 $p"; rm -f "$dest/$base"; return 0; }
+  printf '%s' "$dest/$base"
+  return 0
+}
+
+# 三层兜底入口。needed=1 补装缺失；needed=0 强制重装「记录在、命令没了」。
+# 全部满足才返回 0，否则 1（调用方负责把缺的包名报给用户）。
+pacman_rescue_install() {
+  local needed="${1:-1}"; shift
+  local -a names=("$@") files=() left=()
+  local p f tmp=""
+  [ ${#names[@]} -gt 0 ] || return 1
+
+  # ① 本机 pacman 缓存
+  for p in "${names[@]}"; do
+    f="$(pacman_cache_file "$p")"
+    [ -n "$f" ] && files+=("$f")
+  done
+  if [ ${#files[@]} -gt 0 ] && pacman_u_batch "$needed" "${files[@]}"; then
+    dim "已用本机 pacman 缓存装上 ${#files[@]} 个包"
+  fi
+  left=(); files=()
+  for p in "${names[@]}"; do need_cmd "$p" || left+=("$p"); done
+  [ ${#left[@]} -eq 0 ] && return 0
+  names=("${left[@]}")
+
+  # ② 发布包自带离线包（哈希清单 + 包名回读 + 防降级）
+  for p in "${names[@]}"; do
+    f="$(offline_bundle_file "$p")"
+    [ -n "$f" ] && files+=("$f")
+  done
+  if [ ${#files[@]} -gt 0 ] && pacman_u_batch "$needed" "${files[@]}"; then
+    dim "已用发布包自带离线包装上 ${#files[@]} 个包"
+  fi
+  left=(); files=()
+  for p in "${names[@]}"; do need_cmd "$p" || left+=("$p"); done
+  [ ${#left[@]} -eq 0 ] && return 0
+  names=("${left[@]}")
+
+  # ③ 镜像站 deps/
+  if need_cmd curl; then
+    tmp="$(mktemp -d)"
+    for p in "${names[@]}"; do
+      f="$(mirror_fetch_pkg "$p" "$tmp")"
+      [ -n "$f" ] && files+=("$f")
+    done
+    if [ ${#files[@]} -gt 0 ] && pacman_u_batch "$needed" "${files[@]}"; then
+      dim "已用镜像站离线包装上 ${#files[@]} 个包"
+    fi
+    rm -rf "$tmp"
+  else
+    dim "没有 curl，跳过镜像站这一层"
+  fi
+  left=()
+  for p in "${names[@]}"; do need_cmd "$p" || left+=("$p"); done
+  [ ${#left[@]} -eq 0 ] && return 0
+  return 1
 }
 
 deps_intro() {
@@ -1213,7 +1380,7 @@ deps_intro() {
   if [ -d "$OFFLINE_DIR" ]; then
     local n; n=$(find "$OFFLINE_DIR" -maxdepth 1 -name '*.pkg.tar.zst' 2>/dev/null | wc -l)
     if [ "${n:-0}" -gt 0 ]; then
-      dim "包内自带离线依赖 ${n} 个，将优先本地安装，失败再联网"
+      dim "包内自带离线依赖 ${n} 个（已逐个校验哈希），优先本地安装；装不上再依次退到本机缓存、镜像站、联网"
       offline_check_fresh
     fi
   fi
@@ -1590,8 +1757,30 @@ record_deps() {
   done
 }
 
+# 从本机 pacman 缓存里挑出某个包最新的那份 .pkg.tar.*
+# 数据库同步失败（SteamOS 镜像 TLS 过期 / 断网）时，-Sy 必然失败，
+# 但包经常已经躺在 /var/cache/pacman/pkg 里：直接 pacman -U 就能装，
+# 不依赖数据库也不联网。2026-11-08 装机日志里 ydotool / wtype 就是这样
+# 卡住的（设置页后续还报 file:// 地址不受支持）。
+pacman_cache_file() {
+  local p="$1" f best=""
+  for f in /var/cache/pacman/pkg/"$p"-*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+      *.pkg.tar.zst|*.pkg.tar.xz|*.pkg.tar.gz) ;;
+      *) continue ;;
+    esac
+    # 前缀匹配会串到 kdotool-bin，必须回读包名确认
+    [ "$(pacman -Qp "$f" 2>/dev/null | awk '{print $1}')" = "$p" ] || continue
+    if [ -z "$best" ] || [ "$f" -nt "$best" ]; then best="$f"; fi
+  done
+  [ -n "$best" ] && printf '%s' "$best"
+  return 0
+}
+
 install_pacman_deps() {
   local todo=() reinstall=() installed=()
+  DEPS_MISSING_AFTER=()
   for p in "${DEPS_PACMAN[@]}"; do
     if pacman -Qq "$p" >/dev/null 2>&1; then
       # 记录在：再确认命令真的能用。SteamOS 换镜像后 /usr 被重建，
@@ -1611,7 +1800,7 @@ install_pacman_deps() {
   # 以前这里是 `|| true` 静默吞掉，结果 pacman 报一个跟只读毫无关系的错，
   # 用户完全看不出真正原因。现在失败就直接说清楚。
   if [ -f /etc/steamos-readonly.conf ] || need_cmd steamos-readonly; then
-    if ! sudo steamos-readonly disable 2>/dev/null; then
+    if ! sudo steamos-readonly disable </dev/null 2>/dev/null; then
       warn "关闭 SteamOS 只读保护失败，系统包无法安装"
       dim "手动执行：sudo steamos-readonly disable   然后再重跑本次命令"
       return 1
@@ -1646,27 +1835,39 @@ install_pacman_deps() {
   fi
 
   if [ ${#pkgs[@]} -gt 0 ]; then
-    if log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" 2>&1); then
+    if log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
       info "pacman 安装完成"
     else
       # 最常见失败原因：SteamOS 换镜像后 keyring 对不上，签名校验直接报错
       warn "pacman 安装失败，尝试修复 keyring 后重试"
       dim "$(printf '%s' "$log" | tail -5)"
-      sudo pacman-key --init >/dev/null 2>&1 || true
-      sudo pacman-key --populate archlinux holo >/dev/null 2>&1 || true
-      if log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" 2>&1); then
+      # keyring 修不好不中止（后面还有离线兜底），但失败原因要留进安装日志：
+      # 以前是纯 `|| true`，签名问题只能靠猜
+      sudo pacman-key --init </dev/null >/dev/null 2>&1 || warn "pacman-key --init 失败"
+      sudo pacman-key --populate archlinux holo </dev/null >/dev/null 2>&1 \
+        || warn "pacman-key --populate 失败（keyring 可能损坏，离线包也不一定能验签）"
+      if log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
         info "修复 keyring 后安装成功"
       else
-        warn "pacman 安装仍然失败："
-        dim "$(printf '%s' "$log" | tail -20)"
-        dim "手动排查：sudo pacman -Sy ${pkgs[*]}"
-        ok=0
+        # 数据库同步失败（镜像 TLS 过期 / 断网）时 -Sy 必然失败。
+        # 三层兜底：本机缓存 → 发布包自带离线包 → 镜像站；
+        # 三层都拿不全就如实报缺，绝不在这里打 ✓。
+        if pacman_rescue_install 1 "${pkgs[@]}"; then
+          info "数据库同步失败，已改用离线包安装"
+        else
+          warn "pacman 安装仍然失败，三层离线兜底也凑不齐：${pkgs[*]}"
+          dim "$(printf '%s' "$log" | tail -20)"
+          dim "手动排查：sudo pacman -Sy ${pkgs[*]}"
+          ok=0
+        fi
       fi
     fi
   fi
   if [ ${#reinstall[@]} -gt 0 ] && [ "$ok" = 1 ]; then
-    if sudo pacman -S --noconfirm "${reinstall[@]}" >/dev/null 2>&1; then
+    if sudo pacman -S --noconfirm "${reinstall[@]}" </dev/null >/dev/null 2>&1; then
       info "重装完成：${reinstall[*]}"
+    elif pacman_rescue_install 0 "${reinstall[@]}"; then
+      info "改用离线包重装完成：${reinstall[*]}"
     else
       warn "重装失败：${reinstall[*]}"
       dim "手动排查：sudo pacman -S ${reinstall[*]}"
@@ -1678,12 +1879,14 @@ install_pacman_deps() {
   if [ ${#bad[@]} -gt 0 ]; then
     warn "以下包装完仍找不到命令，可能是镜像更新冲掉了 /usr：${bad[*]}"
     dim "重跑一次：bash install.sh install --deps"
+    DEPS_MISSING_AFTER+=("${bad[@]}")
   fi
   # 只有这次新装上的才记进依赖清单（重装的老包不算「安装器引入」）
   local done_now=()
   for p in "${todo[@]}"; do need_cmd "$p" && done_now+=("$p"); done
   [ ${#done_now[@]} -gt 0 ] && record_deps "${done_now[@]}"
   record_deps_build
+  [ ${#bad[@]} -eq 0 ] || return 1
 }
 
 install_aur_deps() {
@@ -1704,7 +1907,10 @@ install_aur_deps() {
   # 编译 AUR 包需要 fakeroot，缺了会在 makepkg 阶段直接失败
   if ! need_cmd fakeroot; then
     warn "缺少 fakeroot，AUR 编译会失败，先补装"
-    sudo pacman -S --needed --noconfirm fakeroot >/dev/null 2>&1 || true
+    # 必须喂 </dev/null：piped 安装时 stdin 还挂着外层管道，sudo 会把脚本尾巴吃掉
+    if ! sudo pacman -S --needed --noconfirm fakeroot </dev/null >/dev/null 2>&1; then
+      warn "补装 fakeroot 失败，AUR 编译大概率会失败（稍后会给出手动命令）"
+    fi
   fi
   info "用 $helper 安装：${todo[*]}"
   local log
@@ -1952,8 +2158,11 @@ maybe_autorepair_after_image_update() {
 
 install_deps() {
   info "检查可选系统依赖（模拟点击/输入、截图、语音播报）"
-  sudo_warmup || return 0
-  install_pacman_deps
+  # 拿不到 sudo 时返回 2（跳过），不能返回 0：否则调用方会照旧打「✓ 已处理」，
+  # 用户进设置页却发现控件全缺——和「装上了但没用」是同一类假成功。
+  sudo_warmup || return 2
+  local pk_rc=0
+  install_pacman_deps || pk_rc=1
   install_aur_deps
   setup_ydotoold
   # 装完跑一遍实测，把「记录在、命令没了」的情况直接暴露出来
@@ -1963,6 +2172,9 @@ install_deps() {
     dim "逐个看原因：bash install.sh check"
   fi
   system_notes
+  [ "$pk_rc" = 0 ] || return 1
+  [ -z "$broken" ] || return 1
+  return 0
 }
 
 # ---------- 代码同步 ----------
@@ -3323,7 +3535,7 @@ install_plugin() {
       ver="$(plugin_installed_version)" && info "插件已安装 v${ver}"
       plugin_reload || true
     else
-      PLUGIN_RELOAD_STATE="failed"
+      PLUGIN_RELOAD_STATE="install_failed"
       warn "插件自动更新失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
     fi
     return 0
@@ -3342,7 +3554,7 @@ install_plugin() {
         ver="$(plugin_installed_version)" && info "插件已安装 v${ver}"
         plugin_reload || true
       else
-        PLUGIN_RELOAD_STATE="failed"
+        PLUGIN_RELOAD_STATE="install_failed"
         warn "插件安装失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
       fi
       return 0 ;;
@@ -3361,7 +3573,7 @@ install_plugin() {
       PLUGIN_RELOAD_STATE="${PLUGIN_RELOAD_STATE:-pending}"
       dim "插件已就绪，到 设置 → Decky Loader 点「重新载入」即可在 QAM 里看到"
     else
-      PLUGIN_RELOAD_STATE="failed"
+      PLUGIN_RELOAD_STATE="install_failed"
       warn "插件安装失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
     fi
   else
@@ -3429,11 +3641,15 @@ plugin_verify_layout() {
   fi
   vj="$(sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$pj" | head -n1)"
   vp="$(sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$pkg" | head -n1)"
-  if [ -z "$vj" ]; then
-    PLUGIN_LAYOUT_ERROR="plugin.json 里没有 version 字段：$pj"
+  # 版本号以 package.json 为准：Decky 自己只读 package.json 的 version 显示在
+  # QAM 里，官方模板的 plugin.json 只有 name/author/flags/api_version。
+  # 2026-11-08 装机日志：把「plugin.json 没有 version」当成校验失败，卸载旧插件
+  # 之后又把自家的 zip 判死，结果插件目录被删干净、QAM 里再也打不开。
+  if [ -z "$vp" ]; then
+    PLUGIN_LAYOUT_ERROR="package.json 里没有 version 字段：$pkg"
     return 1
   fi
-  if [ -n "$vp" ] && [ "$vj" != "$vp" ]; then
+  if [ -n "$vj" ] && [ "$vj" != "$vp" ]; then
     PLUGIN_LAYOUT_ERROR="版本不一致：plugin.json=$vj，package.json=$vp（打包漏更新了一个）"
     return 1
   fi
@@ -3958,10 +4174,17 @@ print_done() {
     ok)      card_line "Decky 插件   v${pv:-?} 已重载，游戏模式面板可用" ;;
     pending) card_line "Decky 插件   v${pv:-?} 已部署，待重载（请先重启 Deck，再到 Decky 设置点「重新载入」）" ;;
     failed)  card_line "Decky 插件   v${pv:-?} 已部署，但重载失败（请重启 Deck 后再重新载入）" ;;
+    install_failed)
+             card_line "Decky 插件   安装失败（文件没解开，QAM 里不会有入口）" ;;
     absent)  card_line "Decky 插件   未安装：没检测到 Decky Loader（可选依赖）" ;;
     skipped) card_line "Decky 插件   未安装：按你的选择跳过，zip 已放到工作区" ;;
     *)       [ -n "$pv" ] && card_line "Decky 插件   v${pv} 已部署" ;;
   esac
+  # 系统控件缺了就是缺了：这一行必须和设置页「可补装组件」显示的一致，
+  # 不能再出现「上面打勾、下面全红」的矛盾
+  if [ ${#DEPS_MISSING_AFTER[@]} -gt 0 ]; then
+    card_line "系统控件     缺 $(IFS='、'; printf '%s' "${DEPS_MISSING_AFTER[*]}")（联网后重跑 check --fix）"
+  fi
   card_line "本机控制台   http://127.0.0.1:$PORT/"
   card_line "局域网访问   http://$ip:$PORT/（新设备点「配对新设备」，按掌机上的 PIN 配对一次）"
   card_line "配置文件     $DATA_CONFIG"
@@ -4080,8 +4303,19 @@ do_install() {
   if [ "$deps" = "--deps" ] || [ "${DECKMEIDO_INSTALL_DEPS:-0}" = "1" ]; then
     deps_intro
     maybe_autorepair_after_image_update
-    install_deps || true
-    step_ok "系统控件依赖已处理"
+    if install_deps; then
+      step_ok "系统控件依赖已处理"
+    else
+      local _drc=$?
+      if [ "$_drc" = 2 ]; then
+        step_skip "系统控件依赖（没拿到 sudo 权限，一个都没装；之后补装：bash $INSTALL_DIR/install.sh check --fix）"
+      else
+        # 以前这里是 install_deps || true + 无条件 step_ok：装不上也打勾，
+        # 用户进设置页却看到一片「未安装 / 点修复也修不好」，无从判断信谁。
+        step_fail "系统控件没装全（缺：${DEPS_MISSING_AFTER[*]:-见上}）"
+        next_hint "设置页的缺失项就是这里没装上的；联网后重跑：bash $INSTALL_DIR/install.sh check --fix"
+      fi
+    fi
   else
     system_notes
     step_skip "系统控件依赖（之后想装：bash install.sh install --deps）"
@@ -4232,8 +4466,17 @@ do_upgrade() {
     prefetch_voice_models
     if [ "$deps" = "--deps" ] || [ "${DECKMEIDO_INSTALL_DEPS:-0}" = "1" ]; then
       maybe_autorepair_after_image_update
-      install_deps || true
-      step_ok "系统控件依赖已处理"
+      if install_deps; then
+        step_ok "系统控件依赖已处理"
+      else
+        local _drc=$?
+        if [ "$_drc" = 2 ]; then
+          step_skip "系统控件依赖（没拿到 sudo 权限，一个都没装；之后补装：bash $INSTALL_DIR/install.sh check --fix）"
+        else
+          step_fail "系统控件没装全（缺：${DEPS_MISSING_AFTER[*]:-见上}）"
+          next_hint "设置页的缺失项就是这里没装上的；联网后重跑：bash $INSTALL_DIR/install.sh check --fix"
+        fi
+      fi
     else
       system_notes
       step_skip "系统控件依赖（之后想装：bash install.sh upgrade --deps）"
@@ -4678,7 +4921,9 @@ cleanup_generated_leftovers() {
 # 交叉验证：log 事件落在窗口内 + pacman -Qi 的 Install Date 不早于窗口 + 包落盘的
 # 文件确实是 DeckMeido 签名。三者都成立才允许删，少一条只提示、不动手。
 # 不写死任何 SteamOS 包名表。
-PAC_DEPS=(espeak-ng ydotool wtype fakeroot kdotool-bin kdotool)
+# 直接用上面 DEPS_PACMAN / DEPS_AUR / DEPS_AUR_FALLBACK 那份清单：以前这里
+# 又抄了一份，加包时两处漏一处就会「装了却不在可卸清单里」。
+PAC_DEPS=("${DEPS_PACMAN[@]}" "${DEPS_AUR[@]}" "${DEPS_AUR_FALLBACK[@]}")
 
 # 包落盘里是否有 DeckMeido 痕迹。系统包（espeak-ng 之类）本身不会装我们的文件，
 # 所以只看「这个包提供的文件里有没有落在安装目录/配置目录里的、并且确实存在」
@@ -4920,7 +5165,9 @@ uninstall_optional_deps() {
     done
   fi
   for p in "${aur_del[@]}"; do
-    if "$helper" -R --noconfirm -- "$p"; then
+    # </dev/null：paru / yay 的确认提示会读 stdin；上一次卸载日志里就出现过
+    # 「:: 打算删除这些软件包吗？[Y/n]」——它会跟脚本抢输入。明确喂 EOF。
+    if "$helper" -R --noconfirm -- "$p" </dev/null; then
       info "已卸载（$helper）：$p"
       UNINSTALL_REMOVED_PKGS="${UNINSTALL_REMOVED_PKGS:+$UNINSTALL_REMOVED_PKGS }$p"
     else
@@ -5029,9 +5276,12 @@ run_root() {
     un_log "  RC=127 root: $*（没有 sudo）"
     return 127
   elif sudo -n true >/dev/null 2>&1; then
-    sudo -n "$@"; rc=$?
+    # </dev/null：piped 执行时 stdin 还挂着外层管道，子进程（pacman / paru）
+    # 若去读 stdin 会把脚本剩下的部分吃掉，表现为「静默退出、提示符直接回来」
+    sudo -n "$@" </dev/null; rc=$?
   elif [ -t 0 ] || { true </dev/tty; } 2>/dev/null; then
-    sudo "$@"; rc=$?
+    # 密码框由 sudo 自己从 /dev/tty 读，不占 stdin，所以这里重定向是安全的
+    sudo "$@" </dev/null; rc=$?
   else
     un_log "  RC=127 root: $*（没有终端，无法输入 sudo 密码）"
     return 127
@@ -5046,6 +5296,8 @@ UNINSTALL_FAILS=()
 UNINSTALL_LOG=""
 UN_STEP=0
 UN_STEP_TOTAL=9
+UN_STEP_TITLE=""
+UN_ABORT=0
 UN_STEP_FAIL_BASE=0
 DATA_AT=""
 UNINSTALL_REMOVED_PKGS=""
@@ -5065,6 +5317,7 @@ un_step_close() {
 un_step() {
   un_step_close
   UN_STEP=$((UN_STEP + 1))
+  UN_STEP_TITLE="$1"
   UN_STEP_FAIL_BASE=${#UNINSTALL_FAILS[@]}
   printf '\n%s[%d/%d]%s %s%s%s\n' "$C_B" "$UN_STEP" "$UN_STEP_TOTAL" "$C_END" "$C_B" "$1" "$C_END"
   un_log "== [$UN_STEP/$UN_STEP_TOTAL] $1 =="
@@ -5150,9 +5403,20 @@ restore_readonly() {
 
 # 异常退出（Ctrl-C、中途失败）也把只读层恢复回去。
 # 这里只用免密 sudo：trap 里不能弹密码框，否则退出流程会卡住。
+# 2026-11-08 实测卸载停在 [6/9] 之后静默退出：没有报错、没有汇总，
+# 用户完全不知道发生了什么。所以 trap 里必须把「哪一步没跑完」说出来。
 readonly_guard_setup() {
   [ "$DRY_RUN" = 1 ] && return 0
-  trap 'trap - EXIT INT TERM
+  UN_ABORT=1
+  trap 'rc=$?
+trap - EXIT INT TERM
+if [ "${UN_ABORT:-0}" = 1 ]; then
+  un_log "!! 意外退出 rc=$rc 最后一步 [$UN_STEP/$UN_STEP_TOTAL] ${UN_STEP_TITLE:-?}"
+  printf "\n\033[33m[!] 卸载没有跑完（退出码 %s，最后一步 [%s/%s] %s）\033[0m\n" \
+    "$rc" "$UN_STEP" "$UN_STEP_TOTAL" "${UN_STEP_TITLE:-未知}" >&2
+  printf "\033[33m    已完成的步骤不回滚；重新执行 bash install.sh uninstall 会接着清理剩下的。\033[0m\n" >&2
+  printf "\033[33m    卸载日志：%s\033[0m\n" "${UNINSTALL_LOG:-（dry-run 不写）}" >&2
+fi
 if need_cmd steamos-readonly && [ "$(readonly_state)" != "enabled" ]; then
   sudo -n steamos-readonly enable >/dev/null 2>&1 || \
     printf "\033[33m[!] 恢复 SteamOS 只读层失败，请手动执行：sudo steamos-readonly enable\033[0m\n" >&2
@@ -5796,31 +6060,40 @@ EOF
     un_skip "工作区保留：$ws（--purge 才会移走）"
   fi
 
-  # ---------- 6 重启 Decky ----------
-  un_step "重启 Decky"
-  restart_decky
-  # 上次实测：插件目录被移走后，重启又会建出一个空目录来。这里回读一次，别装作干净。
-  if [ "$DRY_RUN" = 0 ]; then
-    while IFS= read -r p; do
-      [ -e "$p" ] || [ -L "$p" ] || continue
-      un_fail "Decky 重启后又被创建：$p（可再跑一次卸载，或手动移走）"
-    done < <(uninstall_residue_paths)
-  fi
-
-  # ---------- 7 清 /tmp ----------
+  # ---------- 6 清 /tmp ----------
   un_step "清理 /tmp 残留"
   cleanup_tmp_leftovers
 
-  # ---------- 8 只读层 ----------
+  # ---------- 7 只读层 ----------
   un_step "恢复只读层"
   restore_readonly
-  # 已经显式恢复并回读过了，撤掉兜底 trap，避免退出时再跑一遍
-  [ "$DRY_RUN" = 0 ] && trap - EXIT INT TERM
 
-  # ---------- 9 汇总 ----------
+  # ---------- 8 汇总 ----------
   un_step "汇总"
   uninstall_summary 0
   un_step_close
+  # 实质工作已经全部结束：即使后面的 Decky 重启把当前终端带走，
+  # 也只剩「重启 Decky」这一件可有可无的事没做完。
+  UN_ABORT=0
+  [ "$DRY_RUN" = 0 ] && trap - EXIT INT TERM
+
+  # ---------- 9 重启 Decky（best-effort，必须放最后） ----------
+  # 2026-11-08 实测：这一步是整条卸载流程里唯一会去动 Decky 服务的地方，
+  # 那次执行停在 stop 之后、start 之前，脚本静默退出，终端的提示符直接回来，
+  # 汇总没打印、只读层也没恢复。放在最后 + 不让失败中断，才能保证
+  # 「卸载要么全做完，要么只剩这一步没做」。
+  un_step "重启 Decky"
+  if ! restart_decky; then
+    warn "Decky 重启没成功；插件文件已经移走，重启 Deck 后 QAM 入口自然会消失"
+  fi
+  un_step_close
+  if [ "$DRY_RUN" = 0 ]; then
+    # 实测插件目录被移走后，Decky 重启又会建出一个空目录来，这里回读一次
+    while IFS= read -r p; do
+      [ -e "$p" ] || [ -L "$p" ] || continue
+      warn "Decky 重启后又被创建：$p（再跑一次卸载即可移走）"
+    done < <(uninstall_residue_paths)
+  fi
   return 0
 }
 
