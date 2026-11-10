@@ -205,9 +205,12 @@ _is_piped() {
 # 脚本在磁盘上、但周围没有源码（用户把 install.sh 单独 scp / 下载下来跑）。
 # 这类情况必须和管道执行一样去下载发布包：以前只在 _is_piped 时自举，
 # 单文件运行时会在第 3 步报「当前目录不像 DeckMeido 源码目录（缺 install.sh）」直接退出。
+# 判断依据是「这里有源码文件（server/）」，不能拿 VERSION 当依据：
+# VERSION 是发布时才生成的，git clone 出来的源码目录里没有它，
+# 会让 git 源码安装被误判成单文件，绕道去下载旧版本的发布包。
 _is_standalone() {
   _is_piped && return 0
-  [ -f "$HERE/install.sh" ] && [ -f "$HERE/VERSION" ] && return 1
+  [ -f "$HERE/install.sh" ] && [ -d "$HERE/server" ] && return 1
   return 0
 }
 
@@ -4209,15 +4212,24 @@ write_version_file() {
   # 发布包里带一份 VERSION（release.py 按 tag 写入），tar 安装时没有
   # git 仓库，只能靠它；git 安装则用 describe，能反映「比 tag 多几个提交」
   local ver=""
-  if [ -f "$HERE/VERSION" ]; then
+  # git 源码目录优先用 git：源目录里的 VERSION 可能是上一版留下的旧值，
+  # 先读它会让界面把新代码显示成旧版本
+  if [ -d "$HERE/.git" ]; then
+    ver=$(git -C "$HERE" describe --tags --always 2>/dev/null || true)
+  fi
+  if [ -z "$ver" ] && [ -f "$HERE/VERSION" ]; then
     ver=$(head -n1 "$HERE/VERSION" 2>/dev/null || true)
   fi
   if [ -z "$ver" ]; then
     ver=$(git -C "$INSTALL_DIR" describe --tags --always 2>/dev/null || true)
   fi
-  [ -n "$ver" ] || ver=$(git -C "$HERE" describe --tags --always 2>/dev/null || true)
-  # 手工解包/无 git 的部署：退回插件 package.json 的 version，
-  # 避免 VERSION 被写成 0.0.0 导致界面显示 v0.0.0
+  # describe 在打不到 tag 的浅克隆里只会给一串提交号，那不是版本号，按序继续找：
+  # package.json（手工解包/无 git 的部署也靠它，避免写成 0.0.0 显示 v0.0.0）
+  case "$ver" in
+    *[0-9].[0-9]*) ;;
+    *) ver="" ;;
+  esac
+  [ -n "$ver" ] || ver=$(sed -nE 's/^  "version": "([^"]*)".*/\1/p' "$HERE/plugin/package.json" 2>/dev/null | head -n1)
   [ -n "$ver" ] || ver=$(sed -nE 's/^  "version": "([^"]*)".*/\1/p' "$INSTALL_DIR/plugin/package.json" 2>/dev/null | head -n1)
   [ -n "$ver" ] || ver="0.0.0"
   printf '%s\n' "${ver#v}" > "$INSTALL_DIR/VERSION"
