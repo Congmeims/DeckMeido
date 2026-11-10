@@ -202,6 +202,15 @@ _is_piped() {
   return 0
 }
 
+# 脚本在磁盘上、但周围没有源码（用户把 install.sh 单独 scp / 下载下来跑）。
+# 这类情况必须和管道执行一样去下载发布包：以前只在 _is_piped 时自举，
+# 单文件运行时会在第 3 步报「当前目录不像 DeckMeido 源码目录（缺 install.sh）」直接退出。
+_is_standalone() {
+  _is_piped && return 0
+  [ -f "$HERE/install.sh" ] && [ -f "$HERE/VERSION" ] && return 1
+  return 0
+}
+
 # ---------- 输出 ----------
 # 注意：start_install_log 之后 stdout 会变成接给 tee 的管道，`[ -t 1 ]` 当场失效。
 # 所以终端与否必须在这里先记下来，后面所有排版/进度判断都用 OUT_IS_TTY，
@@ -1827,9 +1836,22 @@ ask_choice() {
 
 sudo_warmup() {
   need_cmd sudo || { warn "没有 sudo，跳过系统依赖安装"; return 1; }
-  # 不做任何免密探测：sudo -v 自己会在需要时提示输入密码，预判只会多读一次策略
-  info "安装系统依赖需要 root 权限，接下来会提示输入密码"
-  sudo -v || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
+  # 已授权就直接用，别重复要密码
+  sudo -n true 2>/dev/null && return 0
+  # 密码必须从终端读：curl | bash 时 stdin 是脚本本身，sudo 从 stdin 读会直接失败。
+  # 装系统包、写 Decky 插件目录都靠它，这里没拿到就一路静默失败。
+  if (: < /dev/tty) 2>/dev/null; then
+    info "安装系统依赖需要 root 权限，请输入密码"
+    ( exec 0</dev/tty; sudo -v ) || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
+  else
+    warn "当前没有终端，无法输入密码；系统依赖与 Decky 插件将跳过"
+    dim "装完可补：bash $INSTALL_DIR/install.sh check --fix"
+    return 1
+  fi
+  # 安装过程可能超过 sudo 默认的 5 分钟缓存，后台续期，避免中途再次要密码
+  ( while kill -0 "$$" 2>/dev/null; do sudo -n true 2>/dev/null || exit; sleep 50; done ) &
+  SUDO_KEEPALIVE_PID=$!
+  return 0
 }
 
 # 记下「这次真的由安装器装上」的系统包：只有缺包时才会进 todo，
@@ -3069,7 +3091,12 @@ pip_install_with_switch() {
     t0=$SECONDS
     ret=0
     prev_got=0
+    # 采样节流：du 要遍历整个 venv 目录树（装到 1.2GB 时单次上百毫秒，
+    # 每秒两次还会和 pip 抢 IO，实测把下载速度拖慢），改成 2 秒一次。
+    local last_sample=-99
     while kill -0 "$pid" 2>/dev/null; do
+      if [ $((SECONDS - last_sample)) -lt 2 ]; then sleep 1; continue; fi
+      last_sample=$SECONDS
       # 已下载字节：venv + pip 缓存 的落盘体积（单调递增）
       got=$(du -sb "$INSTALL_DIR/.venv" "$cache_dir" 2>/dev/null | awk '{s += $1} END {print s+0}')
       got=${got:-0}
@@ -3135,6 +3162,7 @@ pip_install_with_switch() {
 _spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 _progress_on=0
 _progress_last=""
+SUDO_KEEPALIVE_PID=""
 
 progress_clear() {
   if [ "$_progress_on" = 1 ]; then printf '\r\033[K'; fi
@@ -3734,15 +3762,22 @@ plugin_install_zip() {
   if [ -L "$target" ]; then
     rm -f "$target" 2>/dev/null || sudo rm -f "$target"
   fi
-  # 插件根目录属 root:root，普通用户建不了/删不掉，借一次 sudo 动本插件自己的目录
-  sudo -n mkdir -p "$target" 2>/dev/null ||
-    sudo mkdir -p "$target" 2>/dev/null || { dim "建不动 $target"; return 1; }
+  # 插件根目录属 root:root，普通用户建不了/删不掉，借一次 sudo 动本插件自己的目录。
+  # 走 run_root：免密可用就直接用，否则从 /dev/tty 要密码，不会再静默失败。
+  if ! run_root mkdir -p "$target"; then
+    dim "建不动 $target（需要 root 权限）"
+    PLUGIN_SKIP_REASON="没有 root 权限，无法写入 $root"
+    return 1
+  fi
   # 清旧文件再解：zip 里没有的旧文件（改过名的模块）留着会让 Decky 加载到过期代码
   safe_rm_target "$target" || { dim "拒绝清理插件目录（$target）"; return 1; }
   dim "清理旧插件目录（只删本插件自己的目录，不会动别的插件与用户数据）：$target"
-  sudo rm -rf "$target" 2>/dev/null || true
-  sudo mkdir -p "$target" || return 1
-  sudo unzip -oq "$src" -d "$root" || return 1
+  run_root rm -rf "$target" >/dev/null 2>&1 || true
+  run_root mkdir -p "$target" || return 1
+  if ! run_root unzip -oq "$src" -d "$root"; then
+    PLUGIN_SKIP_REASON="解压失败（$src → $root）"
+    return 1
+  fi
   # zip 顶层目录名是 DeckMeido，解到 $root 下正好生成 $target
   if ! plugin_verify_layout "$target"; then
     dim "插件目录校验失败：$PLUGIN_LAYOUT_ERROR"
@@ -4404,7 +4439,14 @@ do_install() {
   step "检查环境"
   check_prereq
   preflight
-  step_ok "安装目录 $INSTALL_DIR，端口 $PORT"
+  # 装系统包、写 Decky 插件目录都要 root：开局一次性要密码，
+  # 后面全程不再打断用户（后台还有续期进程保活）。
+  if sudo_warmup; then
+    step_ok "安装目录 $INSTALL_DIR，端口 $PORT（root 授权已获取）"
+  else
+    step_ok "安装目录 $INSTALL_DIR，端口 $PORT"
+    step_note "没拿到 root 权限：系统控件与 Decky 插件会跳过，装完可跑 check --fix 补"
+  fi
 
   # [2/6] 停止旧进程
   # 换文件前必须没有旧后端占着端口：用户可能用 nohup 手动起过一份，
@@ -4581,7 +4623,13 @@ do_upgrade() {
   step "检查环境"
   check_prereq
   preflight
-  step_ok "安装目录 $INSTALL_DIR，端口 $PORT"
+  # 升级同样会装系统包、重写插件目录：一开始就要 root
+  if sudo_warmup; then
+    step_ok "安装目录 $INSTALL_DIR，端口 $PORT（root 授权已获取）"
+  else
+    step_ok "安装目录 $INSTALL_DIR，端口 $PORT"
+    step_note "没拿到 root 权限：系统控件与 Decky 插件会跳过，装完可跑 check --fix 补"
+  fi
 
   # [2/6] 停止旧进程
   # 顺序要紧：先停客户端（否则它的 watchdog 会把旧后端拉回来），
@@ -6343,10 +6391,9 @@ smart_default() {
   esac
 }
 
-# 通过「curl -sL ... | sh -」管道执行时，脚本不在本地磁盘上，这里直接自举：
-# 下载最新发布包到临时目录再交给正常的 install 流程。这样用户记住一行命令，
-# 不管全新安装还是之后升级，都能用同一条命令反复跑。
-if _is_piped; then
+# 不在源码目录（curl | sh 或只拿到一个 install.sh）：先下载发布包再交给正常流程。
+# 这样用户记住一行命令，不管全新安装还是之后升级，都能用同一条命令反复跑。
+if _is_standalone; then
   do_from_piped "$@"
   exit $?
 fi
