@@ -71,3 +71,8 @@ server/static/_logo_prev.png
 .scratch/
 .apk_extract/
 ouo-face.html
+
+# 一次性调试样本、本地工具缓存、TTS 试听样音
+.samples/
+.workbuddy/
+tts-demo/
