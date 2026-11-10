@@ -2386,9 +2386,9 @@ sync_files() {
   local items=(server client assets deploy tools plugin requirements.txt requirements-gui.txt requirements-stt.txt requirements-tts.txt README.md install.sh)
   # RELEASE-NOTES.md 只在发布包里存在，有就一起带上，方便用户在安装目录里查更新内容
   [ -f "$HERE/RELEASE-NOTES.md" ] && items+=(RELEASE-NOTES.md)
-  # git clone 出来的源码里没有发布包那份插件 zip（release.py 才往里拷），
-  # 而 plugin/dist/ 被插件自己的 .gitignore 排除了，clone 后也没有前端产物。
-  # 这两种情况都当场构建一份，否则源码安装永远装不上 Decky 插件。
+  # git clone 出来的源码里没有 plugin/dist/（插件自己的 .gitignore 排除），
+  # 仓库里带的是 deploy/deckmeido-plugin.zip 这份 build 产物。两者都缺时
+  # 如果机上有 npm 就当场构建，否则直说装不了插件。
   local build_plugin=0
   [ -f "$HERE/deploy/deckmeido-plugin.zip" ] || build_plugin=1
   [ -f "$HERE/plugin/dist/index.js" ] || build_plugin=1
@@ -2401,7 +2401,7 @@ sync_files() {
       warn "插件前端构建失败；Decky 插件这轮装不上，可稍后手动 bash $INSTALL_DIR/plugin/deploy.sh"
     fi
   elif [ "$build_plugin" = 1 ]; then
-    warn "源码里缺插件前端产物，机上没有 npm；Decky 插件这轮装不上"
+    warn "源码里缺插件前端产物，机上也没有 npm（用发布包安装可避免）"
   fi
   for it in "${items[@]}"; do
     [ -e "$HERE/$it" ] || continue
