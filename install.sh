@@ -5504,6 +5504,7 @@ UN_STEP_TOTAL=9
 UN_STEP_TITLE=""
 UN_ABORT=0
 UN_STEP_FAIL_BASE=0
+UN_IN_SUMMARY=0
 DATA_AT=""
 UNINSTALL_REMOVED_PKGS=""
 
@@ -5527,7 +5528,9 @@ un_step() {
   printf '\n%s[%d/%d]%s %s%s%s\n' "$C_B" "$UN_STEP" "$UN_STEP_TOTAL" "$C_END" "$C_B" "$1" "$C_END"
   un_log "== [$UN_STEP/$UN_STEP_TOTAL] $1 =="
 }
-un_ok()   { printf '      %s✓%s %s\n' "$C_OK" "$C_END" "$*"; UNINSTALL_DONE+=("$*"); un_log "  OK   $*"; }
+# 汇总卡片里已经逐条列过一次，汇总环节不再重复记进 UNINSTALL_DONE，
+# 否则 [8/9] 汇总时同一条 ✓ 会打印两遍
+un_ok()   { printf '      %s✓%s %s\n' "$C_OK" "$C_END" "$*"; [ "${UN_IN_SUMMARY:-0}" = 1 ] || UNINSTALL_DONE+=("$*"); un_log "  OK   $*"; }
 un_skip() { printf '      %s-%s %s\n' "$C_DIM" "$C_END" "$*"; un_log "  SKIP $*"; }
 un_note() { printf '      %s%s%s\n' "$C_DIM" "$*" "$C_END"; un_log "  NOTE $*"; }
 un_fail() {
@@ -5941,7 +5944,8 @@ restart_decky() {
 
 # /tmp 里的 socket 与 PyInstaller 解包目录：能删就删，删不掉只记一行，不算失败
 cleanup_tmp_leftovers() {
-  local p n=0 failed=0 skipped=0
+  local p n=0 failed=0 skipped=0 skip_prefix
+  # 只跳过我们自己产生的 /tmp 残留；别的插件 / 别的用户的东西一律不动
   for p in /tmp/DeckMeidoOverlay-* /tmp/_MEI*; do
     [ -e "$p" ] || [ -L "$p" ] || continue
     if [ "$DRY_RUN" = 1 ]; then
@@ -5957,7 +5961,10 @@ cleanup_tmp_leftovers() {
       run_root rm -rf -- "$p" >/dev/null 2>&1 || true
       [ -e "$p" ] && failed=$((failed + 1))
     else
+      # 一行说完：跳过什么、为什么、怎么处理。以前「未动」和「已清理」分成两条，
+      # 读起来像自相矛盾
       skipped=$((skipped + 1))
+      skip_prefix="${skip_prefix:+$skip_prefix }${p}"
       continue
     fi
     [ -e "$p" ] || n=$((n + 1))
@@ -5966,10 +5973,10 @@ cleanup_tmp_leftovers() {
     un_note "有 $failed 项 /tmp 残留删不掉（不算失败，重启后会自动消失）"
   fi
   if [ "$skipped" -gt 0 ]; then
-    un_note "有 $skipped 项 /tmp 残留不属于本用户且看不出 DeckMeido 痕迹，未动"
+    un_note "跳过 $skipped 项别人的 /tmp 残留（不属于本用户、看不出 DeckMeido 痕迹）：$skip_prefix"
   fi
   if [ "$n" -gt 0 ]; then
-    un_ok "已清理 /tmp 残留 $n 项"
+    un_ok "已清理 DeckMeido 自己的 /tmp 残留 $n 项"
   elif [ "$failed" -eq 0 ] && [ "$skipped" -eq 0 ]; then
     un_skip "没有发现 /tmp 残留"
   fi
@@ -6275,7 +6282,9 @@ EOF
 
   # ---------- 8 汇总 ----------
   un_step "汇总"
+  UN_IN_SUMMARY=1
   uninstall_summary 0
+  UN_IN_SUMMARY=0
   un_step_close
   # 实质工作已经全部结束：即使后面的 Decky 重启把当前终端带走，
   # 也只剩「重启 Decky」这一件可有可无的事没做完。
@@ -6291,7 +6300,18 @@ EOF
   if ! restart_decky; then
     warn "Decky 重启没成功；插件文件已经移走，重启 Deck 后 QAM 入口自然会消失"
   fi
+  # 没 root / 没终端时重载不了，卡片里不能只写「未重载」了事——插件文件已经移走，
+  # 用户只需要手动点一下，必须把这一步写清楚
+  local _decky_hint=""
+  case "$UN_DECKY_STATE" in
+    未重载*|未检查*|未运行*)
+      _decky_hint="手动重载：设置 → Decky Loader → 重新载入（或重启 Deck）" ;;
+  esac
   un_step_close
+  if [ -n "$_decky_hint" ]; then
+    next_hint "$_decky_hint"
+    un_note "$_decky_hint"
+  fi
   if [ "$DRY_RUN" = 0 ]; then
     # 实测插件目录被移走后，Decky 重启又会建出一个空目录来，这里回读一次
     while IFS= read -r p; do
