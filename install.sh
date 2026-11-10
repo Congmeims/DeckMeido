@@ -1855,6 +1855,10 @@ sudo_warmup() {
   if (: < /dev/tty) 2>/dev/null; then
     info "安装系统依赖需要 root 权限，请输入密码"
     ( exec 0</dev/tty; sudo -v ) || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
+  elif [ -n "${SUDO_ASKPASS:-}" ] && [ -x "${SUDO_ASKPASS}" ]; then
+    # 没有终端但有 askpass（SSH 远程装、自动化）：sudo 从 SUDO_ASKPASS 取密码
+    info "没有终端，改用 SUDO_ASKPASS 获取 root 权限"
+    sudo -A -v || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
   else
     warn "当前没有终端，无法输入密码；系统依赖与 Decky 插件将跳过"
     dim "装完可补：bash $INSTALL_DIR/install.sh check --fix"
@@ -1862,7 +1866,6 @@ sudo_warmup() {
   fi
   # 安装过程可能超过 sudo 默认的 5 分钟缓存，后台续期，避免中途再次要密码
   ( while kill -0 "$$" 2>/dev/null; do sudo -n true 2>/dev/null || exit; sleep 50; done ) &
-  SUDO_KEEPALIVE_PID=$!
   return 0
 }
 
@@ -2387,13 +2390,12 @@ sync_files() {
   # RELEASE-NOTES.md 只在发布包里存在，有就一起带上，方便用户在安装目录里查更新内容
   [ -f "$HERE/RELEASE-NOTES.md" ] && items+=(RELEASE-NOTES.md)
   # git clone 出来的源码里没有 plugin/dist/（插件自己的 .gitignore 排除），
-  # 仓库里带的是 deploy/deckmeido-plugin.zip 这份 build 产物。两者都缺时
-  # 如果机上有 npm 就当场构建，否则直说装不了插件。
+  # 仓库里带的是 deploy/deckmeido-plugin.zip 这份 build 产物——有它就够了，
+  # 插件是按 zip 解包的，不需要 dist。两者都缺时才想办法现构建。
   local build_plugin=0
-  [ -f "$HERE/deploy/deckmeido-plugin.zip" ] || build_plugin=1
-  [ -f "$HERE/plugin/dist/index.js" ] || build_plugin=1
+  [ -f "$HERE/deploy/deckmeido-plugin.zip" ] || [ -f "$HERE/plugin/dist/index.js" ] || build_plugin=1
   if [ "$build_plugin" = 1 ] && command -v npm >/dev/null 2>&1; then
-    dim "源码里缺插件前端产物，先用 npm 构建（首次要装 node_modules）"
+    dim "源码里既没插件包也没有前端产物，先用 npm 构建（首次要装 node_modules）"
     if ( cd "$HERE/plugin" && { [ -d node_modules ] || npm install --no-audit --no-fund >/dev/null 2>&1; } &&
          npm run build >/dev/null 2>&1 ); then
       dim "插件前端已构建：plugin/dist/index.js"
@@ -2401,7 +2403,7 @@ sync_files() {
       warn "插件前端构建失败；Decky 插件这轮装不上，可稍后手动 bash $INSTALL_DIR/plugin/deploy.sh"
     fi
   elif [ "$build_plugin" = 1 ]; then
-    warn "源码里缺插件前端产物，机上也没有 npm（用发布包安装可避免）"
+    warn "源码里既没插件包也没有前端产物，机上也没有 npm（用发布包安装可避免）"
   fi
   for it in "${items[@]}"; do
     [ -e "$HERE/$it" ] || continue
@@ -3198,7 +3200,6 @@ pip_install_with_switch() {
 _spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 _progress_on=0
 _progress_last=""
-SUDO_KEEPALIVE_PID=""
 
 progress_clear() {
   if [ "$_progress_on" = 1 ]; then printf '\r\033[K'; fi
@@ -5559,6 +5560,9 @@ run_root() {
   elif [ -t 0 ] || { true </dev/tty; } 2>/dev/null; then
     # 密码框由 sudo 自己从 /dev/tty 读，不占 stdin，所以这里重定向是安全的
     sudo "$@" </dev/null; rc=$?
+  elif [ -n "${SUDO_ASKPASS:-}" ] && [ -x "${SUDO_ASKPASS}" ]; then
+    # 没有终端但有 askpass：与 sudo_warmup 一致，保证 SSH 远程也能装插件
+    sudo -A "$@" </dev/null; rc=$?
   else
     un_log "  RC=127 root: $*（没有终端，无法输入 sudo 密码）"
     return 127
