@@ -2341,6 +2341,11 @@ prune_stale() {
     while IFS= read -r rel; do
       [ -n "$rel" ] || continue
       printf '%s' "$rel" | grep -Eq "$USER_DATA_RE" && continue
+      # 构建产物两边都靠 .gitignore 排除，源码侧本来就不存在；照常删会在
+      # 升级时把刚构建好的 plugin/dist/ 清空，插件随即装不上
+      case "$rel" in
+        */node_modules/*|*/dist/*) continue ;;
+      esac
       [ -e "$HERE/$rel" ] && continue
       rm -f "$INSTALL_DIR/$rel" && removed=$((removed + 1))
     done < <(cd "$INSTALL_DIR" && find "$d" -type f 2>/dev/null)
@@ -2381,6 +2386,23 @@ sync_files() {
   local items=(server client assets deploy tools plugin requirements.txt requirements-gui.txt requirements-stt.txt requirements-tts.txt README.md install.sh)
   # RELEASE-NOTES.md 只在发布包里存在，有就一起带上，方便用户在安装目录里查更新内容
   [ -f "$HERE/RELEASE-NOTES.md" ] && items+=(RELEASE-NOTES.md)
+  # git clone 出来的源码里没有发布包那份插件 zip（release.py 才往里拷），
+  # 而 plugin/dist/ 被插件自己的 .gitignore 排除了，clone 后也没有前端产物。
+  # 这两种情况都当场构建一份，否则源码安装永远装不上 Decky 插件。
+  local build_plugin=0
+  [ -f "$HERE/deploy/deckmeido-plugin.zip" ] || build_plugin=1
+  [ -f "$HERE/plugin/dist/index.js" ] || build_plugin=1
+  if [ "$build_plugin" = 1 ] && command -v npm >/dev/null 2>&1; then
+    dim "源码里缺插件前端产物，先用 npm 构建（首次要装 node_modules）"
+    if ( cd "$HERE/plugin" && { [ -d node_modules ] || npm install --no-audit --no-fund >/dev/null 2>&1; } &&
+         npm run build >/dev/null 2>&1 ); then
+      dim "插件前端已构建：plugin/dist/index.js"
+    else
+      warn "插件前端构建失败；Decky 插件这轮装不上，可稍后手动 bash $INSTALL_DIR/plugin/deploy.sh"
+    fi
+  elif [ "$build_plugin" = 1 ]; then
+    warn "源码里缺插件前端产物，机上没有 npm；Decky 插件这轮装不上"
+  fi
   for it in "${items[@]}"; do
     [ -e "$HERE/$it" ] || continue
     if [ -d "$HERE/$it" ]; then
@@ -2710,7 +2732,9 @@ _retry_download() {
       [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/    /'
       return 0
     fi
-    DOWNLOAD_ERR=$(printf '%s\n' "$out" | tail -n 2 | tr '\n' ' ' | cut -c1-120)
+    # 只留最关键的报错行：Python traceback 的倒数两行常是 raise 语句本身，
+    # 直接截断会把「所有下载源都不可用：hf-mirror…」这样的原因截掉
+    DOWNLOAD_ERR=$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n 1 | sed 's/^[[:space:]]*//' | cut -c1-160)
     [ -n "$DOWNLOAD_ERR" ] || DOWNLOAD_ERR="退出码非 0，无输出"
     warn "$label 第 $attempt/3 次尝试失败：$DOWNLOAD_ERR"
     if [ "$attempt" -lt 3 ]; then
@@ -4375,7 +4399,7 @@ print_done() {
   fi
   case "$TTS_MODEL_STATE" in
     ready)  card_line "语音模型     已就绪（月读酱）" ;;
-    failed) card_line "语音模型     下载失败（已尝试 3 次，原因：$(printf '%s' "${TTS_MODEL_ERROR:-未知}" | cut -c1-60)）" ;;
+    failed) card_line "语音模型     下载失败（已尝试 3 次，原因：$(printf '%s' "${TTS_MODEL_ERROR:-未知}" | cut -c1-80)）" ;;
     broken) card_line "语音模型     校验失败（设置页可重新下载）" ;;
     *)      card_line "语音模型     未下载（约 38MB，设置页「下载模型」）" ;;
   esac
@@ -6357,7 +6381,6 @@ EOF
   esac
   un_step_close
   if [ -n "$_decky_hint" ]; then
-    next_hint "$_decky_hint"
     un_note "$_decky_hint"
   fi
   if [ "$DRY_RUN" = 0 ]; then
