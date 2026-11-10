@@ -1,10 +1,10 @@
 {
   "tag": "0.8.5",
   "name": "DeckMeido 0.8.5",
-  "notes": "# DeckMeido 0.8.5\n\n- repo: 插件 zip 入库，裸 clone 也能装 Decky 插件\n- install: 源码安装补上插件前端构建；升级不再误删 plugin/dist\n- install: 源码目录可直接卸安装目录；源码安装时就地打包 Decky 插件\n- install: 无 tty 时不再刷 /dev/tty 报错，基线快照的 stderr 泄漏修掉\n- install: 修复 git 源码安装被误判为单文件，版本号优先取 git\n- Release: 0.8.5 产物\n- chore: 忽略 .samples/、.workbuddy/、tts-demo/\n- install: 卸载日志去重、/tmp 残留提示合并、无 root 时给出手动重载指引；版本 0.8.5\n- 安装器：开局索要 root 密码，并让单文件脚本也能自举安装\n- wake: 眼睛页闲置按播放与唤醒判定，新增睡眠模式听歌睡着后自动关机\n- wake: 眼睛页补 OLED 防烧屏，眼睛与嘴改为不透明；安装日志记机型\n- install: 日志如实回显档位与勾选组件，custom 档可选音箱模式；顺带修日志可读性与发布校验\n- Release: 0.7.12 产物（版本号 0.7.12，自带离线依赖兜底）\n- install: 依赖安装失败不再假成功，卸载收尾不再静默退出，补离线包三层兜底\n- chore: 忽略本地临时产物（.scratch/、.apk_extract/、ouo-face.html 设计参考页）\n- Release: 重打 0.7.10 产物（包含 bf9bddd 的 omega 猫嘴眼睛页）\n- eyes.html: 换成 ouo-face 校准的 omega 猫嘴脸，待机眨眼、唤醒笑眼、说话嘴部随音量开合\n- Release: 0.7.10 产物（README 无 Decky 说明 / 版本 0.7.10）\n- docs+chore: 补「没装 Decky 时 QAM 无入口」说明；版本升到 0.7.10\n- Release: 0.7.9 产物重打（deploy_deck 安全重载 / 无 Decky 分支）\n",
-  "published_at": "2026-11-10T20:34:46+08:00",
+  "notes": "# DeckMeido 0.8.5\n\n- install: 无终端时用 SUDO_ASKPASS 提权；有插件 zip 时不再误报缺前端产物\n- release: 0.8.5 重出包（install.sh 含源码插件构建、插件 zip 入库）\n- repo: 插件 zip 入库，裸 clone 也能装 Decky 插件\n- install: 源码安装补上插件前端构建；升级不再误删 plugin/dist\n- install: 源码目录可直接卸安装目录；源码安装时就地打包 Decky 插件\n- install: 无 tty 时不再刷 /dev/tty 报错，基线快照的 stderr 泄漏修掉\n- install: 修复 git 源码安装被误判为单文件，版本号优先取 git\n- Release: 0.8.5 产物\n- chore: 忽略 .samples/、.workbuddy/、tts-demo/\n- install: 卸载日志去重、/tmp 残留提示合并、无 root 时给出手动重载指引；版本 0.8.5\n- 安装器：开局索要 root 密码，并让单文件脚本也能自举安装\n- wake: 眼睛页闲置按播放与唤醒判定，新增睡眠模式听歌睡着后自动关机\n- wake: 眼睛页补 OLED 防烧屏，眼睛与嘴改为不透明；安装日志记机型\n- install: 日志如实回显档位与勾选组件，custom 档可选音箱模式；顺带修日志可读性与发布校验\n- Release: 0.7.12 产物（版本号 0.7.12，自带离线依赖兜底）\n- install: 依赖安装失败不再假成功，卸载收尾不再静默退出，补离线包三层兜底\n- chore: 忽略本地临时产物（.scratch/、.apk_extract/、ouo-face.html 设计参考页）\n- Release: 重打 0.7.10 产物（包含 bf9bddd 的 omega 猫嘴眼睛页）\n- eyes.html: 换成 ouo-face 校准的 omega 猫嘴脸，待机眨眼、唤醒笑眼、说话嘴部随音量开合\n- Release: 0.7.10 产物（README 无 Decky 说明 / 版本 0.7.10）\n",
+  "published_at": "2026-11-10T20:58:10+08:00",
   "files": {
     "tarball": "deckmeido-0.8.5.tar.gz",
-    "sha256": "e7685f1d1cb0b6260d944631d75b9fd1071c6b2a88f928eb1eda5763ed4fb499"
+    "sha256": "8653798b4d4a29e543b5062e71d90b895dcc1446f6d0cf80a3dc095424035909"
   }
 }
