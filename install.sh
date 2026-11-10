@@ -1,58 +1,25 @@
 #!/usr/bin/env bash
 # DeckMeido 一键安装 / 升级 / 卸载
+#   bash install.sh [install|upgrade|check|uninstall|from-mirror|speedtest|menu] [--deps|--no-deps|--gui]
+#   无参数：未装则安装，已装则询问（升级/卸载/退出）
+#   默认全装且不再询问档位；模块统一「检测→下载→安装→复查」，已装的自动跳过，
+#   半路失败重跑同一命令即可补齐，无单独补装开关。
 #
-#   bash install.sh              无参数时自动判断：没装就直接装，装了则询问「升级 / 卸载 / 退出」（须手动选择）
-#   bash install.sh menu         弹出交互菜单，手动选「安装 / 升级 / 卸载」
-#   bash install.sh install       全新安装：一次装齐全部组件，不再询问档位
-#   bash install.sh install --deps      顺带用 sudo 安装控制类插件
-#   bash install.sh install --gui       只补装桌面客户端（PySide6），不动别的
-#   bash install.sh install --stt       只补装语音输入依赖（sherpa-onnx）
-#   bash install.sh install --tts       只补装语音合成依赖（piper-plus）
-#   bash install.sh upgrade        升级代码与依赖，保留配置（同样一次装齐）
-#   bash install.sh upgrade --deps      升级后顺带检查并安装控制类插件
-#   bash install.sh check          自检：逐个实测控制类控件是否真的能用
-#   bash install.sh uninstall     卸载：userdata 先搬到 ~/MeidoSpace，其余全部移入回收站
-#   bash install.sh uninstall --dry-run  只列计划，零改动（系统包也只列不删）
-#   bash install.sh uninstall --purge    连工作区、userdata、日志、模型、配置备份一起移入回收站
-#   bash install.sh from-mirror   从国内镜像站下载最新版并安装（GitHub 不通时用）
-#   bash install.sh speedtest     只测各 pip 源的下载速率，挑最快的那个
+# 系统包清单见下方 DEPS_PACMAN，需 root，默认一起装，统一走 sudo。
+# 依赖检测一律实测命令而非 `pacman -Q`：SteamOS 换镜像会重建 /usr，记录会脱节。
+# ydotool 必须由 systemd 用户单元（ydotoold）托管，否则点击/输入失效。
 #
-# 控制类插件（ydotool / kdotool / wtype / espeak-ng / fakeroot）是系统包，
-# 装它们需要 root：完整安装时一并装上，都走 sudo。
-#
-# 为什么装完还要自检：SteamOS 换镜像（BUILD_ID 变动）时，/usr 下由 pacman
-# 装的包会被整片冲掉，而 pacman 的数据库记录不一定同步，所以只查
-# `pacman -Q` 会出现「记录在、命令没了」的假象。install.sh check 一律实测。
-# 同理 ydotoold 必须由 systemd 用户单元托管（enabled），裸跑的进程重启即失效。
-#
-# 怎么装（最傻瓜的一条命令，装完能反复用来自动升级 / 卸载）：
+# 一键（镜像优先，失败回落 GitHub Release）：
 #   curl -sL https://meido.meagames.cn/deckmeido/install.sh | bash
-#   —— 镜像站优先；镜像不可用或校验失败时自动回落到 GitHub Release
-#   —— 第一次跑：全新安装；之后再跑同一条：询问「升级 / 卸载」，选完才继续
-#   想手动选操作（含卸载）：下载脚本后 bash install.sh menu
-#   git 方式（需要本地源码目录时）：git clone ... && cd DeckMeido && bash install.sh
-#   已有脚本、只想走镜像拉最新版：bash install.sh from-mirror
-
-# 再跑第一条 git clone 时若报「目标路径已存在，并且不是一个空目录」，
-# 说明 DeckMeido 目录已存在——直接 cd DeckMeido && bash install.sh 升级即可，
-# 不用删目录重新 clone。
+#   本地源码：cd DeckMeido && bash install.sh（不必删目录重 clone）
 #
 # 环境变量：
-#   DECKMEIDO_DIR        安装目录，默认 ~/DeckMeido（旧版 ~/deckmeido 会被识别并兜底）
-#   DECKMEIDO_WORKSPACE  工作区目录，默认 ~/MeidoSpace（与配置里的 [workspace].dir 同源）
-#   DECKMEIDO_PORT       服务端口，默认 18765
-#   DECKMEIDO_MIRROR     镜像站目录，默认 https://meido.meagames.cn/deckmeido
-#   DECKMEIDO_PIP_INDEX  pip 源；留空则实测各源下载速率，自动用最快的那个
-#   DECKMEIDO_SKIP_GUI   设为 1 则跳过 PySide6（只要网页版 / 后端时用）
-#   DECKMEIDO_INSTALL_STT 语音依赖：1 装 / 0 跳过；不设时一律安装
+#   DECKMEIDO_DIR / DECKMEIDO_WORKSPACE / DECKMEIDO_PORT / DECKMEIDO_MIRROR
+#   DECKMEIDO_PIP_INDEX  留空则实测各源速率取最快
+#   DECKMEIDO_SKIP_GUI=1 / DECKMEIDO_NO_DEPS=1 / DECKMEIDO_NO_SPEAKER=1  显式跳过对应项
 #
-# 注意：不要用 sudo 执行。脚本会把程序装到当前用户家目录、注册用户级桌面项，
-#       用 root 装会装到 /root 下，桌面会话里起不来；也不注册开机自启服务。
-#
-# 用户可修改数据统一放 <安装目录>/userdata（可用 DECKMEIDO_DATA_DIR 覆盖）：
-# config.toml、persona/meidosoul.json、memory.json、sessions/、uploads/、
-# meidobot/、models/sensevoice/、logs/、core.stopped。只保留这一套标准布局；
-# 升级同步排除整个 userdata/，卸载按清单删除代码、userdata/ 整目录保留。
+# 禁止 sudo 执行：会装到 /root，桌面会话起不来。
+# 用户数据统一在 <安装目录>/userdata（DECKMEIDO_DATA_DIR 可覆盖），升级排除、卸载保留。
 set -euo pipefail
 
 APP=deckmeido                 # 配置目录、数据目录沿用这个稳定标识（与安装目录大小写无关）
@@ -73,20 +40,21 @@ DESKTOP_FOLDER="$(command -v xdg-user-dir >/dev/null 2>&1 && xdg-user-dir DESKTO
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
 # 月读酱模型状态：unknown / ready / missing / failed / broken。
-# verify_tts / prefetch_voice_models 会写入，安装收尾汇总按它单列一行——避免
-# 「语音依赖已就绪」被误读成「音色可用」，上次装完才发现模型根本没下载就栽在这。
+# stage_verify_all 写入，安装收尾汇总按它单列一行——避免「语音依赖已就绪」
+# 被误读成「音色可用」，上次装完才发现模型根本没下载就栽在这。
 TTS_MODEL_STATE="unknown"
+# 语音识别模型状态：unknown / ready / failed（stage_verify_all 写入）
+STT_MODEL_STATE="unknown"
+# 系统控件在本次安装里没装好（DEPS_FAILED=1 时收尾汇总会提示重跑）
+DEPS_FAILED=0
 # 三次下载都失败时的最后一次原因，写进收尾汇总
 TTS_MODEL_ERROR=""
 # 通用下载重试：最近一次失败的次数与原因（由 _retry_download 写入）
 DOWNLOAD_ATTEMPTS=0
 DOWNLOAD_ERR=""
-# 无法获取（非交互、权限不足等原因）而跳过的可选项。收尾汇总必须列出来，
+# 用户显式跳过的可选项（如 DECKMEIDO_SKIP_GUI）：收尾汇总必须列出来，
 # 否则「没装」和「用户不要」分不清。
 SKIPPED_ITEMS=()
-# 已经在「可选依赖」里如实报过的语音模型缺失。后面装好依赖的自检不再重复刷
-# 「模型未下载」：模型是在更晚的预取阶段才下载的，先报缺失再报就绪会让人以为装坏了。
-TTS_MISSING_NOTED=0
 # 系统控件装完后的实测复核结果（deps_verified 填充），只记录本次复核缺什么
 DEPS_PROBE_FAILED=()
 # Decky 重启后被判定卡在重启循环时的说明（decky_restart_loop_note 写入）。
@@ -106,10 +74,8 @@ UN_BACKEND_STATE=""
 UN_PLUGIN_STATE=""
 UN_DECKY_STATE=""
 
-# 可执行位自愈：Windows/NTFS 打的包或 git 导出常把脚本记成 0644，用 bash 调用
-# 不受影响，但桌面快捷方式是直接执行 client/launch.sh 的——缺可执行位时 Steam
-# 会弹「缺少运行权限」，表现为热更新之后点图标起不来。每次运行先补一遍，
-# 单个文件补不动就算了，不影响后面的安装/升级。
+# 可执行位自愈：Windows/NTFS 打包或 git 导出常丢 0644，桌面项直接执行时会
+# 「缺少运行权限」；用 bash 调用不受影响。补不动就算了。
 heal_exec_bits() {
   local root="$1" f
   for f in install.sh uninstall.sh client/launch.sh plugin/deploy.sh deploy/DeckMeido.desktop; do
@@ -118,21 +84,17 @@ heal_exec_bits() {
 }
 heal_exec_bits "$HERE"
 
-# 安装器写下的标记与清单：只有带标记的目录才允许卸载；清单记录本次安装
-# 实际铺进安装目录的条目，卸载时只按清单逐项删除，清单外的文件一律不动。
-# 这些路径都由 INSTALL_DIR 推导，统一在 refresh_paths 里刷新。
+# 安装器标记与清单：只有带标记的目录才允许卸载；清单记录实际铺进安装目录的
+# 条目，卸载只按清单删，清单外不动。路径由 INSTALL_DIR 推导，见 refresh_paths。
 DATA_DIR_ENV="${DECKMEIDO_DATA_DIR:-}"
 refresh_paths() {
   INSTALL_MARKER="$INSTALL_DIR/.deckmeido-install"
   INSTALL_MANIFEST="$INSTALL_DIR/.deckmeido-manifest"
-  CONFIG_MARKER="$CONFIG_DIR/.deckmeido-config"
-  CONFIG_MANIFEST="$CONFIG_DIR/.deckmeido-config-manifest"
 }
 
 # ---------- 用户数据根（userdata/） ----------
-# 所有用户可修改的数据统一放在数据根下：默认 $INSTALL_DIR/userdata，可用
-# DECKMEIDO_DATA_DIR 显式覆盖（客户端 / 插件拉起后端时也读这个变量）。卸载永远整目录
-# 保留，安装清单里也不会出现这里面的任何路径。
+# 默认 $INSTALL_DIR/userdata，可用 DECKMEIDO_DATA_DIR 覆盖（客户端/插件拉起后端
+# 时同读此变量）。卸载整目录保留，安装清单里不出现其下任何路径。
 refresh_data_paths() {
   DATA_DIR="${DATA_DIR_ENV:-$INSTALL_DIR/userdata}"
   case "$DATA_DIR" in
@@ -149,19 +111,18 @@ refresh_data_paths() {
   DATA_BOT="$DATA_DIR/meidobot"             # meidobot（QQ）通道归档
   DATA_LOGS="$DATA_DIR/logs"                # backend.log / overlay.log / client-crash.log
   DATA_MODELS="$DATA_DIR/models"            # 语音识别模型（sensevoice/）
-  # 安装器亲自装过的系统包清单：卸载时只对这份清单里的包提供「可选卸载」，
-  # 绝不动 SteamOS 自带组件与用户原本就装好的包
+  # 安装器亲自装的系统包：卸载仅对这份清单提供可选卸载，不动自带包与用户原有包
   DEP_RECORD="$DATA_DIR/.deckmeido-deps"
-  # 首次安装前的机器状态快照（路径是否存在、包是否已装、ydotool.service 原状态）。
-  # 放在 userdata/ 里是为了升级时不丢；卸载时它会随卸载一起移入回收站。
+  # 首装前机器快照（路径/包/ydotool.service 原状态）；放 userdata 以便升级不丢
   BASELINE_FILE="$DATA_DIR/.deckmeido-baseline"
+  # 本次安装用的 pip 下载缓存：固定目录，装完自动清掉（不在用户 ~/.cache/pip 里乱删）
+  PIP_CACHE_DIR="$DATA_DIR/.pip-cache"
 }
 refresh_paths
 refresh_data_paths
 
-# 端口解析：已有配置优先，没有配置才用 DECKMEIDO_PORT，最后是 18765。
-# 升级/重装时用户可能已经在 config.toml 或设置页里改过端口，预检、卸载都
-# 必须跟着这个值，不能一律拿环境变量覆盖掉。
+# 端口：config.toml 优先 > DECKMEIDO_PORT > 18765。用户可能在设置页改过，
+# 预检/卸载都要跟着配置走，不能用环境变量覆盖。
 config_port() {
   local cfg="${1:-}"
   [ -f "$cfg" ] || return 1
@@ -193,22 +154,9 @@ _is_piped() {
   return 0
 }
 
-# 脚本在磁盘上、但周围没有源码（用户把 install.sh 单独 scp / 下载下来跑）。
-# 这类情况必须和管道执行一样去下载发布包：以前只在 _is_piped 时自举，
-# 单文件运行时会在第 3 步报「当前目录不像 DeckMeido 源码目录（缺 install.sh）」直接退出。
-# 判断依据是「这里有源码文件（server/）」，不能拿 VERSION 当依据：
-# VERSION 是发布时才生成的，git clone 出来的源码目录里没有它，
-# 会让 git 源码安装被误判成单文件，绕道去下载旧版本的发布包。
-_is_standalone() {
-  _is_piped && return 0
-  [ -f "$HERE/install.sh" ] && [ -d "$HERE/server" ] && return 1
-  return 0
-}
-
 # ---------- 输出 ----------
-# 注意：start_install_log 之后 stdout 会变成接给 tee 的管道，`[ -t 1 ]` 当场失效。
-# 所以终端与否必须在这里先记下来，后面所有排版/进度判断都用 OUT_IS_TTY，
-# 否则一开日志，颜色和下载进度条就全没了。
+# start_install_log 之后 stdout 接 tee，`[ -t 1 ]` 会失效；终端与否只认 OUT_IS_TTY，
+# 否则开日志后颜色与进度条全丢。
 OUT_IS_TTY=0
 [ -t 1 ] && OUT_IS_TTY=1
 if [ "$OUT_IS_TTY" = 1 ]; then
@@ -221,10 +169,9 @@ info() { printf '%s==>%s %s\n' "$C_OK" "$C_END" "$*"; }
 warn() { printf '%s[!]%s %s\n' "$C_WARN" "$C_END" "$*"; }
 die()  {
   printf '%s[x]%s %s\n' "$C_ERR" "$C_END" "$*" >&2
-  # 失败时只把日志最后几行贴出来（完整日志在 userdata/logs/install-*.log），
-  # 让用户能立刻看到真正的报错，而不是被几十行安装输出淹没
+  # 失败时贴日志尾部；输出经 tee 转发，sleep 0.2 等它落盘
   if [ -n "${INSTALL_LOG:-}" ] && [ -s "$INSTALL_LOG" ]; then
-    # 输出是经 tee 转发的，tail 可能赶在 tee 落盘之前，停一下再读
+    # tee 可能还没落盘
     sleep 0.2
     printf '%s    完整日志：%s%s\n' "$C_DIM" "$INSTALL_LOG" "$C_END" >&2
     printf '%s    最后 8 行：%s\n' "$C_DIM" "$C_END" >&2
@@ -235,10 +182,9 @@ die()  {
 dim()  { printf '%s    %s%s\n' "$C_DIM" "$*" "$C_END"; }
 
 # ---------- 安装步骤版式 ----------
-# 参考 apt / Homebrew：一步一行结果，不把原始日志糊到屏幕上。
-# 原始输出统一进 userdata/logs/install-<时间>.log，失败时由 die 贴最后几行。
+# 原始输出只进 userdata/logs/install-<时间>.log，屏幕一步一行结果，失败由 die 贴尾部。
 STEP_NO=0
-STEP_TOTAL=6
+STEP_TOTAL=8
 reset_steps() { STEP_NO=0; }
 step() {
   STEP_NO=$((STEP_NO + 1))
@@ -250,15 +196,32 @@ step_note() { printf '      %s%s%s\n' "$C_DIM" "$*" "$C_END"; }
 step_fail() { printf '      %s✗%s %s\n' "$C_ERR" "$C_END" "$*"; }
 next_hint() { printf '      %s下一步：%s\n' "$C_WARN" "$*"; }
 
-# 安装日志：把后续 stdout/stderr 同时抄一份到 userdata/logs/install-<时间>.log。
-# 用 tee 进程替换而不是重开文件，屏幕上的输出保持原样。
+# ---------- 模块版式：检测 → 下载 → 安装 → 复查 ----------
+# 所有模块只允许走这一套四行版式，不得另写输出；这里只管排版，结论由模块给。
+mod_begin() { printf '      %s%s%s\n' "$C_B" "$1" "$C_END"; }
+phase() {
+  # $1 = 检测/下载/安装/复查，$2 = 内容
+  printf '        %s· %s%s  %s\n' "$C_DIM" "$1" "$C_END" "$2"
+}
+phase_ok()   { printf '        %s· %s%s  %s✓%s %s\n' "$C_DIM" "$1" "$C_END" "$C_OK" "$C_END" "$2"; }
+phase_skip() { printf '        %s· %s  跳过：%s%s\n' "$C_DIM" "$1" "$2" "$C_END"; }
+phase_fail() { printf '        %s· %s%s  %s✗%s %s\n' "$C_DIM" "$1" "$C_END" "$C_ERR" "$C_END" "$2"; }
+
+# 半路失败唯一话术：没有补装参数，重跑同一命令（幂等，已就绪模块自动跳过）。
+retry_hint() {
+  printf '      %s安装未完成。问题解决后重跑同一条命令即可，已装好的模块会自动跳过：%s\n' \
+    "$C_WARN" "$C_END"
+  printf '      %s  bash %s/install.sh install%s\n' "$C_WARN" "$INSTALL_DIR" "$C_END"
+}
+
+# 安装日志：后续 stdout/stderr 复制一份到 userdata/logs/install-<时间>.log，
+# 用 tee 进程替换保证屏幕输出不变。
 INSTALL_LOG=""
 start_install_log() {
   [ -n "${DECKMEIDO_LOG_STARTED:-}" ] && return 0
   DECKMEIDO_LOG_STARTED=1
   local log_dir="$DATA_LOGS" fallback=0
-  # 安装目录一建好就先建 userdata/logs（mkdir -p 会一并建出安装目录）。
-  # 只有连这个目录都建不出来时，才回退到家目录；日志不能因为目录问题丢掉。
+  # 建不出来才退到家目录；日志不能因目录问题丢失
   if ! mkdir -p "$log_dir" 2>/dev/null; then
     fallback=1
     log_dir="$HOME"
@@ -291,13 +254,11 @@ start_install_log() {
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 # ---------- 删除守卫 ----------
-# 2026-11-04 事故：卸载验证把源码工作区当成安装目录，一条 rm -rf 清空了整个仓库
-#（含 .git）。之后所有删除动作都必须先过 safe_rm_target：
-#   · 目标是源码工作区（含 .git）、或就是本脚本所在目录、或是它的上级 → 拒绝
-#   · 目标是空、/、$HOME、或路径层级过浅 → 拒绝
-#   · 真机确需强删时显式设置 DECKMEIDO_ALLOW_UNSAFE_UNINSTALL=1
+# 2026-11-04 事故：卸载把源码工作区当安装目录，rm -rf 清空整个仓库（含 .git）。
+# 所有删除前必须过 safe_rm_target：拒绝源码工作区（含 .git）、$HERE 及其上级、
+# 空、/、$HOME、路径层级 <3。真机强删用 DECKMEIDO_ALLOW_UNSAFE_UNINSTALL=1。
 safe_rm_target() {
-  local target="${1:-}" abs depth have_marker=0
+  local target="${1:-}" abs depth
   if [ "${DECKMEIDO_ALLOW_UNSAFE_UNINSTALL:-0}" = "1" ]; then
     echo "[删除守卫] 已按 DECKMEIDO_ALLOW_UNSAFE_UNINSTALL=1 放行：$target"
     return 0
@@ -332,16 +293,9 @@ safe_rm_target() {
     echo "[删除守卫] 拒绝：路径层级过浅（$abs）" >&2
     return 1
   fi
-  [ -f "$abs/.deckmeido-install" ] && have_marker=1
   if [ "${DECKMEIDO_INSTALL_DIR_UNINSTALL:-0}" = "1" ] && [ "$abs" = "$INSTALL_DIR" ] &&
      [ ! -d "$abs/.git" ] && [ ! -f "$abs/.git" ]; then
-    # 通过安装目录里的 uninstall.sh 转发进来：HERE 就是安装目录，属于预期情况。
-    # 仍然拒绝 .git 源码工作区（开发机上的仓库不能当安装目录卸）。
-    return 0
-  fi
-  if [ "$have_marker" = 1 ] && [ "$abs" = "$INSTALL_DIR" ] && [ ! -d "$abs/.git" ]; then
-    # 用源码目录的 install.sh 直接卸安装目录（bash dm-src/install.sh uninstall）：
-    # 目标不是脚本所在目录，只要它带安装器写的标记、且本身不是 git 仓库就放行
+    # 由安装目录内 uninstall.sh 转发：HERE 即安装目录，属预期；.git 仓库仍拒
     return 0
   fi
   if [ "$abs" = "$HERE" ]; then
@@ -362,30 +316,14 @@ safe_rm_target() {
 }
 
 # ---------- 安装标记与文件清单 ----------
-# 2026-11-04 事故后再加一层：卸载只认安装器自己写的清单，不再整块删目录。
-# 清单行格式：
-#   server/xxx            安装目录内的单个文件（相对路径）
-#   dir:client            安装目录内的整目录（安装器完全管理的部分）
-#   ext:/abs/path         安装目录之外、由安装器创建的路径（桌面项/插件）
-# 清单外的任何条目都不动；userdata/ 与标记文件永远不会出现在清单里。
+# 卸载只按安装器清单删，不整块删目录。清单行格式（清单外一律不动，
+# userdata/ 与标记文件永不入清单）：
+#   server/xxx      安装目录内单文件（相对路径）
+#   dir:client      安装目录内整目录
+#   ext:/abs/path   安装目录外由安装器创建的路径（桌面项/插件）
 
-# 相对条目校验：拒绝空、绝对路径、.. 逃逸，以及 userdata 与标记文件本身
-manifest_rel_ok() {
-  local rel="${1:-}"
-  [ -n "$rel" ] || return 1
-  case "$rel" in
-    /*|*..*) return 1 ;;
-    userdata|userdata/*|.deckmeido-install|.deckmeido-manifest) return 1 ;;
-  esac
-  return 0
-}
-
-# Decky Loader 的三个插件专属目录。Decky 会给每个插件自动建
-#   ~/homebrew/settings/<插件名>   Decky 的环境变量与插件自己写的状态（device_id）
-#   ~/homebrew/data/<插件名>       插件运行时数据
-#   ~/homebrew/logs/<插件名>       插件日志
-# 它们都在插件目录之外，卸载插件时 Decky 不会清理，所以要单独记账、单独移走。
-# 只认 <插件名>，绝不碰 ~/homebrew 本身和 Decky 自己的配置。
+# Decky 每个插件的三个外置目录（settings/data/logs），卸载插件时 Decky 不清理，
+# 需单独记账。只认 <插件名>，不碰 ~/homebrew 本身。
 decky_home() {
   local h="${DECKY_HOME:-}"
   if [ -z "$h" ]; then
@@ -402,41 +340,33 @@ decky_plugin_dirs() {
   printf '%s\n' "$h/settings/DeckMeido" "$h/data/DeckMeido" "$h/logs/DeckMeido"
 }
 
-# 外部条目白名单：只允许删安装器自己创建的那几个固定路径
-ext_path_allowed() {
-  local p="${1%/}" root d
-  case "$p" in
-    "${DESKTOP_DIR%/}/DeckMeido.desktop"|"${DESKTOP_FOLDER%/}/DeckMeido.desktop")
-      return 0 ;;
-  esac
-  for root in "${DECKY_PLUGINS_DIR:-}" "$HOME/homebrew/plugins"; do
-    [ -n "$root" ] || continue
-    [ "$p" = "${root%/}/DeckMeido" ] && return 0
+# Decky Music 插件（音乐播控/点歌）是否已装。插件目录名大小写不统一
+# （Decky-Music / DeckMusic 都有），按目录名含 music 判定。
+decky_music_present() {
+  local root d
+  root="$(decky_home)/plugins"
+  [ -d "$root" ] || return 1
+  for d in "$root"/*; do
+    [ -d "$d" ] || continue
+    case "${d##*/}" in
+      *[Mm]usic*) return 0 ;;
+    esac
   done
-  while IFS= read -r d; do
-    [ "$p" = "$d" ] && return 0
-  done < <(decky_plugin_dirs)
   return 1
 }
 
 # ---------- 回收站 ----------
-# 所有卸载模式（含 --purge）都只把文件移入回收站，绝不永久删除：
-#   1. 有 gio 且没指定 DECKMEIDO_TRASH_DIR 时，优先 gio trash（系统回收站）
-#   2. 否则手工放进 <Trash>/files/，并写 <Trash>/info/<name>.trashinfo
-#      （<Trash> = $XDG_DATA_HOME/Trash，默认 ~/.local/share/Trash）
-#   3. DECKMEIDO_TRASH_DIR 可把回收站整个指到别处（沙盒测试用，绝不碰真实回收站）
-# dry-run 时只打印「计划」，不创建目录、不移动任何东西。
+# 一切卸载（含 --purge）只移入回收站，不永久删除：有 gio 且未指定
+# DECKMEIDO_TRASH_DIR 时用 gio trash，否则手工写 <Trash>/files + .trashinfo。
+# DECKMEIDO_TRASH_DIR 可整体重定向（沙盒测试用，绝不碰真实回收站）。
+# dry-run 只打印计划，不建目录不移动。
 TRASH_FALLBACK_DIR=""   # 本次实际使用的回收站根（手工模式）
 TRASH_COUNT=0           # 移走（或 dry-run 计划移走）的条目数
 TRASH_FAILED=0          # 权限不足、没能移走的条目数
-TRASH_VIA_XDG=0         # 1 = 至少有一条走了 gio 系统回收站
-TRASH_LAST_DIR=""       # 最近一次使用的回收站根，结尾提示用
 DRY_RUN=0               # 1 = 只列计划，零改动
-DRY_RUN_COUNT=0         # dry-run 计划移走的条目数
-# 卸载系统包的结果。收尾汇总必须如实写出来，否则以后分不清是「按选择保留」
-# 还是「以为删了其实没删」。
+# 系统包卸载结果，收尾汇总必须如实区分「按选择保留」与「以为删了其实没删」
 UNINSTALL_KEPT_PKGS=""  # 用户显式选择保留的包
-UNINSTALL_LEFT_PKGS=""  # 回答卸载后复检仍在的包（sudo 失败 / 被依赖挡住）
+UNINSTALL_LEFT_PKGS=""  # 卸载后复检仍在的包（sudo 失败 / 被依赖挡住）
 
 trash_root() {
   if [ -n "${DECKMEIDO_TRASH_DIR:-}" ]; then
@@ -466,8 +396,7 @@ urlencode_path() {
 _trash_dest_for() {
   local p="$1" dest n=2 base
   base="$(basename -- "$p")"
-  # 同一个父目录下可能有多个同名项（比如 homebrew/settings/DeckMeido 与
-  # homebrew/plugins/DeckMeido），回收站里只按文件名平铺，撞名时带父目录名区分
+  # 回收站按文件名平铺，同名项（如 homebrew/{settings,plugins}/DeckMeido）带父目录名区分
   [ -d "$p" ] && [ ! -L "$p" ] && base="$(basename -- "$(dirname -- "$p")")-$base"
   dest="$TRASH_FALLBACK_DIR/files/$base"
   while [ -e "$dest" ] || [ -L "$dest" ]; do
@@ -483,7 +412,6 @@ trash_path() {
   [ -e "$p" ] || [ -L "$p" ] || return 0
   if [ "$DRY_RUN" = 1 ]; then
     printf '[计划] 移入回收站：%s\n' "$p"
-    DRY_RUN_COUNT=$((DRY_RUN_COUNT + 1))
     TRASH_COUNT=$((TRASH_COUNT + 1))
     return 0
   fi
@@ -492,8 +420,6 @@ trash_path() {
      gio trash -- "$p" >/dev/null 2>&1 && [ ! -e "$p" ]; then
     echo "[回收站] $p"
     TRASH_COUNT=$((TRASH_COUNT + 1))
-    TRASH_VIA_XDG=1
-    TRASH_LAST_DIR="$(trash_root)"
     return 0
   fi
   root="$(trash_root)"
@@ -534,143 +460,15 @@ trash_path() {
   } > "$info" 2>/dev/null || true
   echo "[已移入] $dest"
   TRASH_COUNT=$((TRASH_COUNT + 1))
-  TRASH_LAST_DIR="$root"
   return 0
-}
-
-# 清单行（format=2）：<类型>:<路径><TAB>preexisting=<0|1>
-M_KIND=""; M_PATH=""; M_PRE="0"
-manifest_split_line() {
-  local line="${1:-}" pre
-  M_KIND=file; M_PATH="$line"; M_PRE=0
-  case "$line" in
-    *$'\t'preexisting=*)
-      pre="${line##*$'\t'}"
-      line="${line%%$'\t'*}"
-      M_PRE="${pre#preexisting=}"
-      ;;
-  esac
-  case "$line" in
-    dir:*) M_KIND=dir; M_PATH="${line#dir:}" ;;
-    ext:*) M_KIND=ext; M_PATH="${line#ext:}" ;;
-    unit:*) M_KIND=unit; M_PATH="" ;;
-    format=*|app=*|version=*|installed_at=*|refreshed_at=*|installer_path=*|install_dir=*)
-      M_KIND=header; M_PATH="" ;;
-  esac
-}
-
-# 按清单逐项删除安装目录内条目。返回通过 LAST_REMOVED 报告实际删除条数。
-# PURGE_ROOT=1 时把安装目录本身（dir:.）也整体移入回收站；默认卸载只把它
-# 留成空目录，保证 userdata/ 一定还在——由调用方通过第二个参数控制。
-delete_install_manifest() {
-  local manifest="$1" purge_root="${2:-0}" line abs pass
-  LAST_REMOVED=0
-  LAST_SKIPPED=0
-  LAST_PREEXISTING=0
-  [ -f "$manifest" ] || return 1
-  # dir:. 是安装目录本身，必须最后处理，否则后面按路径找条目全都落空
-  for pass in 1 2; do
-  while IFS= read -r line || [ -n "$line" ]; do
-    [ -n "$line" ] || continue
-    case "$line" in \#*) continue ;; esac
-    manifest_split_line "$line"
-    case "$M_KIND" in
-      header|unit) continue ;;
-    esac
-    if [ "$M_KIND" = dir ] && [ "$M_PATH" = "." ]; then
-      [ "$pass" = 2 ] || continue
-      # 默认卸载保留安装目录本身（userdata/ 在里面，删了就不算「保留用户数据」）
-      if [ "$purge_root" != 1 ]; then
-        dim "默认卸载保留安装目录：$INSTALL_DIR（--purge 才会一起移走）"
-        continue
-      fi
-    else
-      [ "$pass" = 1 ] || continue
-    fi
-    # 安装前就存在的条目一律跳过：不是安装器带来的，不能带走
-    if [ "$M_PRE" = "1" ]; then
-      dim "跳过（安装前已存在）：${M_PATH:-$line}"
-      LAST_PREEXISTING=$((LAST_PREEXISTING + 1))
-      continue
-    fi
-    case "$M_KIND" in
-      dir)
-        # 安装目录本身写成 dir:.（"." 不是相对条目，单独放行）
-        if [ "$M_PATH" = "." ]; then
-          abs="$INSTALL_DIR"
-        elif manifest_rel_ok "$M_PATH"; then
-          abs="$INSTALL_DIR/$M_PATH"
-        else
-          warn "跳过清单中的异常目录条目：$line"
-          LAST_SKIPPED=$((LAST_SKIPPED + 1))
-          continue
-        fi
-        ;;
-      ext)
-        if ! ext_path_allowed "$M_PATH"; then
-          warn "跳过清单中的外部条目：$M_PATH"
-          LAST_SKIPPED=$((LAST_SKIPPED + 1))
-          continue
-        fi
-        abs="$M_PATH"
-        ;;
-      *)
-        if ! manifest_rel_ok "$M_PATH"; then
-          warn "跳过清单中的异常文件条目：$line"
-          LAST_SKIPPED=$((LAST_SKIPPED + 1))
-          continue
-        fi
-        abs="$INSTALL_DIR/$M_PATH"
-        ;;
-    esac
-    [ -e "$abs" ] || [ -L "$abs" ] || continue
-    if trash_path "$abs"; then
-      LAST_REMOVED=$((LAST_REMOVED + 1))
-    elif [ "$M_KIND" = dir ] && [ "$M_PATH" = "." ]; then
-      # 整个安装目录没搬动时（跨文件系统/权限），退化成把里面剩下的东西逐个移走：
-      # 同样是进回收站，绝不 rm -rf
-      warn "整个目录没能移入回收站，改为逐项移走：$abs"
-      while IFS= read -r -d '' sub; do
-        trash_path "$sub" || true
-      done < <(find "$abs" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
-      rmdir "$abs" 2>/dev/null || true
-    else
-      LAST_SKIPPED=$((LAST_SKIPPED + 1))
-    fi
-  done < "$manifest"
-  done
-  return 0
-}
-
-# 删完文件后，只收掉「因清单文件被删而变空」的父目录；rmdir 非空目录会失败，
-# 所以用户放在这些目录里的文件不会被牵连。
-cleanup_empty_manifest_dirs() {
-  local manifest="$1" line rel dirs=""
-  [ "$DRY_RUN" = 1 ] && return 0
-  [ -f "$manifest" ] || return 0
-  while IFS= read -r line; do
-    manifest_split_line "$line"
-    [ "$M_KIND" = file ] || continue
-    [ "$M_PRE" = "0" ] || continue
-    rel="$M_PATH"
-    manifest_rel_ok "$rel" || continue
-    while [ "${rel%/*}" != "$rel" ]; do
-      rel="${rel%/*}"
-      dirs="$dirs$rel"$'\n'
-    done
-  done < "$manifest"
-  printf '%s' "$dirs" | sort -u -r | while IFS= read -r rel; do
-    [ -n "$rel" ] || continue
-    rmdir "$INSTALL_DIR/$rel" 2>/dev/null || true
-  done
 }
 
 # ---------- 安装前基线 ----------
-# 第一次运行新安装器时抓一份「机器原本是什么样」，之后升级不覆盖：
+# 首次运行抓机器原始状态，升级不覆盖：
 #   install_dir_existed=0/1
-#   ext:<0|1>:<安装目录外的路径>
-#   pkg:<0|1>:<包名>          （0=安装器装上的，1=安装前就有）
-#   unit_enabled / unit_active（ydotool.service 安装前的状态）
+#   ext:<0|1>:<路径>   0=安装器创建的
+#   pkg:<0|1>:<包名>   0=安装器装上的，1=安装前就有
+#   unit_enabled / unit_active（ydotool.service 原状态）
 capture_install_baseline() {
   [ -f "$BASELINE_FILE" ] && grep -q '^format=2$' "$BASELINE_FILE" 2>/dev/null && return 0
   mkdir -p "$DATA_DIR" 2>/dev/null || return 0
@@ -696,7 +494,7 @@ capture_install_baseline() {
         printf 'ext:0:%s\n' "${root%/}/DeckMeido"
       fi
     done
-    # Decky 托管的插件专属目录：安装前就有的（比如老版本留下的）不归本次安装
+    # Decky 插件专属目录：安装前就有的不归本次安装
     while IFS= read -r p; do
       if [ -e "$p" ] || [ -L "$p" ]; then
         printf 'ext:1:%s\n' "$p"
@@ -721,10 +519,7 @@ capture_install_baseline() {
     fi
     printf 'unit_enabled=%s\n' "$en"
     printf 'unit_active=%s\n' "$ac"
-    # stderr 必须在重定向组之前就接好：写成 `} > "$tmp" 2>/dev/null` 时，
-    # 组内 while ... done < <(decky_plugin_dirs) 的进程替换会继承外层 stderr，
-    # 无 tty 时每轮都往屏幕上糊一行 "/dev/tty: No such device or address"
-  } >"$tmp" 2>/dev/null && mv -f "$tmp" "$BASELINE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  } > "$tmp" 2>/dev/null && mv -f "$tmp" "$BASELINE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
 
 baseline_value() {
@@ -744,8 +539,8 @@ baseline_ext_state() {
   esac
 }
 
-# 外部条目「安装前是否已存在」：有基线就以基线为准；没有基线时只有内容
-# 确实是 DeckMeido 的才认作我们的，否则一律按用户原有文件跳过。
+# 外部条目安装前是否存在：有基线按基线；无基线时只有内容确属 DeckMeido 才认作
+# 我们的，否则按用户原有文件跳过。
 ext_preexisting() {
   local p="$1" v
   if v="$(baseline_ext_state "$p")"; then
@@ -758,19 +553,16 @@ ext_preexisting() {
     */DeckMeido)
       grep -q 'DeckMeido' "$p/plugin.json" 2>/dev/null && { printf 0; return 0; } ;;
     */settings/DeckMeido|*/data/DeckMeido|*/logs/DeckMeido)
-      # Decky 托管的插件专属目录：目录名就是本插件名，里面的东西都归本插件
+      # 目录名即插件名，内容全归本插件
       printf 0; return 0 ;;
   esac
   printf 1
 }
 
-# 写入/刷新 .deckmeido-install 与 .deckmeido-manifest。只记录安装器负责的条目：
-#   · 整目录管理的：.venv client assets deploy tools plugin
-#   · server 逐文件列出，跳过日志与运行时缓存
-#   · 顶层文件：requirements、README、install.sh、VERSION、uninstall.sh 等
-#   · 安装目录之外的固定路径（桌面项、Decky 插件）
-# format=2 起每项都带 preexisting 标记；安装目录内部条目都是安装器铺进去的，
-# 真正需要判断「原来有没有」的是桌面项与插件目录。
+# 写 .deckmeido-install / .deckmeido-manifest，只记安装器负责的条目：
+#   整目录：.venv client assets deploy tools plugin；server 逐文件（跳日志与缓存）；
+#   顶层文件（requirements/README/install.sh/VERSION/uninstall.sh 等）；
+#   安装目录外固定路径（桌面项、Decky 插件）。format=2 起带 preexisting 标记。
 write_install_records() {
   [ -d "$INSTALL_DIR" ] || return 0
   local ver tmp="$INSTALL_MANIFEST.tmp" it rel root
@@ -778,7 +570,7 @@ write_install_records() {
   now="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   ver="$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
   [ -n "$ver" ] || ver="unknown"
-  # 升级不能改写首次安装时间，否则 pacman 取证的时间窗就跑到最后一次升级了
+  # 升级不得改写首装时间，否则 pacman 取证时间窗会跑到最后一次升级
   if [ -f "$INSTALL_MARKER" ]; then
     prev_at=$(sed -n 's/^installed_at=//p' "$INSTALL_MARKER" 2>/dev/null | head -n1)
   fi
@@ -855,35 +647,26 @@ write_install_records() {
   return 0
 }
 
-# 配置备份目录（~/.config/deckmeido）的标记与清单：--purge 只按清单逐项删，
-# 没有 .deckmeido-config 标记的目录一律拒绝删除。
-write_config_records() {
-  mkdir -p "$CONFIG_DIR" 2>/dev/null || return 1
-  {
-    printf 'format=1\n'
-    printf 'app=%s\n' "$APP"
-    printf 'created_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    printf 'installer_path=%s\n' "$HERE/install.sh"
-  } > "$CONFIG_MARKER" 2>/dev/null || return 1
-  : > "$CONFIG_MANIFEST" 2>/dev/null || return 0
-  local f
-  for f in meidosoul.json memory.json; do
-    [ -f "$CONFIG_DIR/$f" ] && printf '%s\n' "$f" >> "$CONFIG_MANIFEST"
-  done
-  return 0
-}
-
 # ---------- 文本宽度 ----------
 # 终端里中文占 2 列，按字符数排版框线一定会歪，这里按显示宽度算。
-# 只覆盖中日韩 + 全角标点，够本脚本用了（纯 bash，不依赖 wc -L）
+# 纯 bash，不依赖 wc -L。判据与终端实际渲染保持一致：
+#   ASCII 1 列；CJK 区、全角标点、emoji 2 列；其余（框线、✓✗★⚠ 等杂项符号）
+#   按 1 列——Deck 的 Konsole 就是这么画的，多算会让右框线整行提前缩进。
 char_cols() {
   local cp
   printf -v cp '%d' "'$1"
-  # 制表/框线字符（U+2500–U+257F）在终端是单宽；其余非 ASCII 一律按双宽。
-  # 宁可多算一列（留白多一点），也不让框线被顶出终端。
-  if [ "$cp" -ge 9472 ] && [ "$cp" -le 9599 ]; then
+  if [ "$cp" -lt 128 ]; then
     printf 1
-  elif [ "$cp" -ge 128 ]; then
+  elif { [ "$cp" -ge 4352 ] && [ "$cp" -le 4607 ]; } ||     # 谚文字母
+       { [ "$cp" -ge 12288 ] && [ "$cp" -le 12351 ]; } ||    # CJK 标点（、。「」）
+       { [ "$cp" -ge 12352 ] && [ "$cp" -le 13247 ]; } ||    # 假名
+       { [ "$cp" -ge 13312 ] && [ "$cp" -le 19903 ]; } ||    # CJK 扩展 A
+       { [ "$cp" -ge 19968 ] && [ "$cp" -le 40959 ]; } ||    # CJK 统一表意
+       { [ "$cp" -ge 44032 ] && [ "$cp" -le 55203 ]; } ||    # 谚文音节
+       { [ "$cp" -ge 65024 ] && [ "$cp" -le 65039 ]; } ||    # 变体选择符
+       { [ "$cp" -ge 65280 ] && [ "$cp" -le 65519 ]; } ||    # 全角形式（：；（）等）
+       { [ "$cp" -ge 127744 ] && [ "$cp" -le 129791 ]; } ||  # emoji
+       { [ "$cp" -ge 65536 ] && [ "$cp" -le 1114111 ]; }; then
     printf 2
   else
     printf 1
@@ -903,10 +686,10 @@ disp_len() {
 term_cols() {
   local c="${COLUMNS:-}" sz
   if [ -z "$c" ] || ! [[ "$c" =~ ^[0-9]+$ ]]; then
-    sz=$(stty size < /dev/tty 2>/dev/null | awk '{print $2}' || true)
+    sz=$(stty size < /dev/tty 2>/dev/null | awk '{print $2}')
     c="${sz:-}"
   fi
-  [ -n "$c" ] || c=$( { tput cols < /dev/tty 2>/dev/null || echo 80; } || echo 80 )
+  [ -n "$c" ] || c=$(tput cols < /dev/tty 2>/dev/null || echo 80)
   printf '%s' "${c:-80}"
 }
 # 开场大字/分区标题需要 72 列；结果卡片窄一点也能画（>=44 列）
@@ -940,17 +723,35 @@ section() {
   fi
 }
 
-# 表格一行：左列定宽 14，右列自动换行不缩进过头
+# 表格一行：左列包名定宽 18（最长的 gst-plugin-pipewire 是 18 列），
+# 不够宽时至少留 2 格间隔，别把右列贴上去
 table_row() {
   local left="$1" right="$2" pad
-  pad=$((14 - $(disp_len "$left")))
-  [ "$pad" -lt 1 ] && pad=1
+  pad=$((18 - $(disp_len "$left")))
+  [ "$pad" -lt 2 ] && pad=2
   printf '  %s%s%s%*s%s\n' "$C_OK" "$left" "$C_END" "$pad" "" "$right"
+}
+
+# 清掉本次安装的 pip 下载缓存。装完自动调，用户不用管「结束后可清」这句。
+# 只删 PIP_CACHE_DIR（安装器自己建的），绝不碰用户 ~/.cache/pip；
+# 失败也不影响安装结果，最多下次重下同一个 wheel。
+purge_pip_cache() {
+  local before=0
+  [ -d "$PIP_CACHE_DIR" ] || return 0
+  before=$(du -sm "$PIP_CACHE_DIR" 2>/dev/null | awk '{print $1}')
+  before=${before:-0}
+  rm -rf -- "$PIP_CACHE_DIR" 2>/dev/null || true
+  if [ -d "$PIP_CACHE_DIR" ]; then
+    step_note "下载缓存没删干净（$PIP_CACHE_DIR），不影响使用，可手动删除"
+  elif [ "$before" -ge 1 ]; then
+    step_note "已自动清理下载缓存，腾出约 $(mb_text "$before")"
+  fi
 }
 
 # 完成卡片：带边框的结果汇总
 # 宽度跟着终端走；单行超过内宽时按显示宽度折行，右边的 │ 不会再被顶出屏幕。
 card() {
+  CARD_COL=0
   if card_fits; then
     local inner n
     inner=$(card_inner); n=$((inner + 1))
@@ -959,9 +760,28 @@ card() {
     echo
   fi
 }
+# 一行卡片：文字 + 补齐到内宽 + 右框线。
+# 宽度估算再准，也架不住终端把某些字按别的宽度渲染（中英混排、符号、字体回退），
+# 一行算错就把后面所有行的 │ 推歪。所以真终端里不靠空格补，直接「移到固定列」：
+# 每次重画先回到行首、清掉整行，再在算好的列上画右框线，物理对齐。
+# $1=文本 $2=内宽 $3=是否加粗
+CARD_COL=0
 card_row() {
-  # $1=文本 $2=内宽 $3=是否加粗
-  local text="$1" inner="$2" bold="${3:-0}" pad
+  local text="$1" inner="$2" bold="${3:-0}"
+  if [ "$OUT_IS_TTY" = 1 ]; then
+    # 光标定位不依赖宽度估算：先回行首清行，内容照写，再跳到固定列画 │。
+    # 中英混排/符号宽度哪怕算错，右框线也还是齐的。
+    printf '\r\033[K'
+    if [ "$bold" = 1 ]; then
+      printf '%s│%s %s%s%s' "$C_C" "$C_END" "$C_B" "$text" "$C_END"
+    else
+      printf '%s│%s %s' "$C_C" "$C_END" "$text"
+    fi
+    printf '\033[%dG%s│%s\n' "$((CARD_COL + inner + 3))" "$C_C" "$C_END"
+    CARD_COL=$((CARD_COL + inner + 3))
+    return 0
+  fi
+  local pad
   pad=$((inner - $(disp_len "$text")))
   [ "$pad" -lt 0 ] && pad=0
   if [ "$bold" = 1 ]; then
@@ -982,23 +802,43 @@ card_text() {
     inner=$(term_cols); inner=$((inner - 3))
     [ "$inner" -lt 12 ] && inner=12
   else
-    # 写日志/管道：保持原样一行，不额外插入换行
-    if [ "$bold" = 1 ]; then printf '%s\n' "$text"; else printf '  %s\n' "$text"; fi
-    return 0
+    # 写日志/管道：不画框，但仍按终端宽度折行。以前这里原样输出一行，
+    # 拼成卡片时右框线被长行顶出去，整张卡看起来就是歪的。
+    local wrap=$(( $(term_cols) - 3 )); [ "$wrap" -lt 24 ] && wrap=24
+    inner=$wrap; box=0
   fi
+  # 折行：优先在空格和中文标点后断，避免把 URL、单词从中间劈开；
+  # 一整行没有任何可断点时（比如超长 URL）才硬断。
+  # 续行缩进两格：终端自己折行会把中文断在任意位置，主动折断至少能看出是续行。
+  local cont="  " contw=2 cur="" cw=0 ch w seg lastbreak=-1
   for ((i = 0; i < ${#text}; i++)); do
     ch="${text:i:1}"
     w=$(char_cols "$ch")
     if [ $((cw + w)) -gt "$inner" ] && [ -n "$cur" ]; then
-      if [ "$box" = 1 ]; then
-        card_row "$cur" "$inner" "$bold"
+      if [ "$lastbreak" -ge 0 ] && [ "$lastbreak" -lt "${#cur}" ]; then
+        # 在最近的可断点切开：断点前的部分输出，剩下的字符回退给下一轮处理
+        seg="${cur:0:lastbreak}"
+        i=$((i - (${#cur} - lastbreak)))
+        cur=""
+        cw=0
       else
-        printf '  %s\n' "$cur"
+        seg="$cur"
+        cur=""
+        cw=0
       fi
-      cur="$ch"; cw=$w
-    else
-      cur+="$ch"; cw=$((cw + w))
+      if [ "$box" = 1 ]; then
+        card_row "$seg" "$inner" "$bold"
+      else
+        printf '  %s\n' "$seg"
+      fi
+      cur="$cont"; cw=$contw; lastbreak=-1
+      continue
     fi
+    cur+="$ch"; cw=$((cw + w))
+    # 记「断点之前的字符数」：cur 开头可能有续行缩进，用长度直接当偏移会错位
+    case "$ch" in
+      " "|"、"|"，"|"。"|"；"|"：") lastbreak=$((${#cur} - 1)) ;;
+    esac
   done
   if [ "$box" = 1 ]; then
     card_row "$cur" "$inner" "$bold"
@@ -1012,13 +852,23 @@ card_end() {
   if card_fits; then
     local inner n
     inner=$(card_inner); n=$((inner + 1))
-    printf '%s└%s┘%s\n' "$C_C" "$(printf '─%.0s' $(seq 1 "$n"))" "$C_END"
+    # 底框和顶框一样，按上面记下的左边距对齐（真终端里 CARD_COL 恒为 0）
+    if [ "$OUT_IS_TTY" = 1 ]; then
+      printf '\033[%dG%s└%s┘%s\n' "$((CARD_COL + 1))" "$C_C" \
+        "$(printf '─%.0s' $(seq 1 "$n"))" "$C_END"
+    else
+      printf '%s└%s┘%s\n' "$C_C" "$(printf '─%.0s' $(seq 1 "$n"))" "$C_END"
+    fi
   fi
 }
 
 # 开场：DeckMeido 大字（figlet "Big" 字体），下面接标题与简介
 print_banner() {
   ui_fits || return 0
+  # 自举/菜单链路会先后调用两次（外层菜单一次、子脚本一次），
+  # 用环境变量把「已打过」传给子进程，否则首屏会被顶出可视区。
+  [ "${DECKMEIDO_BANNER_SHOWN:-0}" = "1" ] && return 0
+  export DECKMEIDO_BANNER_SHOWN=1
   printf '%s\n' "$C_C"
   cat <<'ART'
  _____            _    __  __      _     _
@@ -1032,6 +882,186 @@ ART
   printf '\n  %s住在 Steam Deck 里的 AI 女仆%s\n' "$C_B" "$C_END"
   printf '  %s替你聊天、查攻略、开游戏、点屏幕——这一台掌机的女仆%s\n' "$C_DIM" "$C_END"
   printf '  %s%s%s\n\n' "$C_DIM" "$(printf '─%.0s' $(seq 1 54))" "$C_END"
+}
+
+# ---------- 安装容量总表 ----------
+# 全脚本唯一体积来源：预估与各模块实际占用都读这张表。单位 MB（解包后磁盘占用，
+# pip 缓存/临时文件余量见 EST_SCRATCH_MB）。格式：<键>|<显示名>|<MB>
+DEP_TABLE=(
+  "server|服务端运行依赖（FastAPI 等）|90"
+  "gui|桌面客户端（PySide6 + WebEngine）|900"
+  "stt_mod|语音输入运行库（sherpa-onnx）|60"
+  "tts_mod|语音合成运行库（piper-plus）|120"
+  "wake_mod|唤醒词分词依赖（sentencepiece / pypinyin）|30"
+  "sys|系统控件（ydotool / wtype / kdotool 等）|60"
+  "stt_model|语音识别模型（SenseVoice）|250"
+  "tts_model|语音合成模型（つくよみちゃん）|38"
+  "wake_model|唤醒词模型（KWS + silero VAD）|40"
+  "nltk|英文语音数据（nltk_data）|15"
+  "plugin|Decky 插件包|3"
+  "app|程序文件（server / client / plugin）|80"
+)
+# pip 下载缓存 + 解包临时空间：装完可以清掉，但安装过程中必须留得下
+EST_SCRATCH_MB=1200
+# 安装完成后仍应保持的最小空闲空间，低于这个值就提前拦下来
+EST_MIN_FREE_MB=2048
+
+dep_mb() {
+  local want="$1" row
+  for row in "${DEP_TABLE[@]}"; do
+    case "$row" in
+      "$want"\|*) printf '%s' "${row##*|}"; return 0 ;;
+    esac
+  done
+  printf '0'
+}
+
+dep_label() {
+  local want="$1" row
+  for row in "${DEP_TABLE[@]}"; do
+    case "$row" in
+      "$want"\|*)
+        row="${row#*|}"
+        printf '%s' "${row%|*}"
+        return 0 ;;
+    esac
+  done
+  printf '%s' "$want"
+}
+
+# MB → 「1.2GB」「350MB」
+mb_text() {
+  local mb="${1:-0}"
+  if [ "$mb" -ge 1024 ]; then
+    # 纯 bash 取一位小数，不依赖 awk（缺 awk 时旧写法会输出空串）
+    printf '%d.%dGB' $((mb / 1024)) $((mb % 1024 * 10 / 1024))
+  else
+    printf '%sMB' "$mb"
+  fi
+}
+
+# 目录实际占用（MB，向上取整）；不存在输出 0
+path_mb() {
+  local p="$1"
+  [ -e "$p" ] || { printf '0'; return 0; }
+  du -sm "$p" 2>/dev/null | awk '{print $1+0}' || printf '0'
+}
+
+# 安装前容量预估：在一开始就把「总共要占多少、大概要多久」说清楚，并把每个模块的
+# 预估占用列出来。选中的模块由调用方通过 $1 传入（空格分隔的键名）。
+# 耗时是同一条命令里唯一会变的量，所以先实测一下网速（取最快的 pip 源），
+# 一个都测不通就按经验值 2MB/s 算，并在表里如实写明是按这个速率估的。
+# 测速放在打印表格之前，测完表立刻出来（之前表先出、测速跟在后面，像卡住）。
+# 结果写进 PLAN_TOTAL_MB / PLAN_SECONDS，供 step_ok 复述同一套数字。
+EST_FALLBACK_RATE=2097152
+# 按 2MB/s 折算下来的耗时（秒）：超过这个量就别在主流程里等测速了
+EST_SLOW_SECONDS=900
+# 实测到的网速（字节/秒）、是不是真测出来的、各源速率
+EST_RATE=0
+EST_RATE_MEASURED=0
+declare -A _PIP_SPD=()
+# 测速：在容量表之前跑完，用户先看到「在测网速 / 各源多快」，随后立刻出带耗时的成品表。
+# $1=1 表示安静模式（整体要装的量很大时不测，避免为几秒的测速多等）。
+est_net_rate() {
+  local rate=0 quiet="${1:-0}" best_url
+  if need_cmd curl; then
+    [ "$quiet" = 1 ] || dim "测一下网速，好估算本次安装大概要多久"
+    # 必须在当前 shell 里直接调：套 $( ) 会落在子 shell，_PIP_SPD 缓存带不回来，
+    # 紧接着装依赖时还得重新测一遍
+    pick_pip_index >/dev/null || true
+    # 取最快的那个源
+    best_url=$(pick_pip_index 2>/dev/null | tail -n1)
+    if [[ "${best_url:-}" =~ ^[0-9]+$ ]]; then
+      rate=${_PIP_SPD[${PIP_INDEXES[$best_url]}]:-0}
+    fi
+  fi
+  # 记下是不是真测出来的：连不上时表里要写「按经验值估」，不能假装是实测
+  EST_RATE_MEASURED=0
+  if [ "$rate" -le 0 ]; then
+    rate=$EST_FALLBACK_RATE
+  else
+    EST_RATE_MEASURED=1
+  fi
+  # 走全局变量返回：调用方用 $(...) 取会落在子 shell，EST_RATE_MEASURED 就丢了
+  EST_RATE=$rate
+}
+
+# 下载耗时估算（秒）：体积 ÷ 速率。纯 bash 整数运算，不依赖 awk
+# $1 = MB  $2 = 速率(字节/秒)
+est_seconds() {
+  local mb="${1:-0}" r="${2:-1}"
+  [ "$r" -gt 0 ] || r=1
+  printf '%s' $((mb * 1048576 / r))
+}
+
+print_capacity_plan() {
+  local total=0 k free_mb rate secs big="" big_mb=0 rows=0
+  local -a names=() sizes=()
+  for k in $1; do
+    total=$((total + $(dep_mb "$k")))
+    names+=("$(dep_label "$k")")
+    sizes+=("$(dep_mb "$k")")
+    if [ "$(dep_mb "$k")" -gt "$big_mb" ]; then big_mb=$(dep_mb "$k"); big="$k"; fi
+  done
+  free_mb=$(df -Pm "$HOME" 2>/dev/null | sed -n '2s/.* //p')
+  free_mb=${free_mb//[!0-9]/}
+  free_mb=${free_mb:-0}
+  # 只有模型 + 程序包是纯下载；pip 依赖一半下载、一半本机解包编译，按 50% 折算
+  local models=0 pkgs=0 net_mb=0 dl_secs=0
+  for k in $1; do
+    case "$k" in
+      app|plugin|stt_model|tts_model|wake_model|nltk) models=$((models + $(dep_mb "$k"))) ;;
+      *) pkgs=$((pkgs + $(dep_mb "$k") / 2)) ;;
+    esac
+  done
+  net_mb=$((models + pkgs))
+  # 测速必须在表格之前：先让用户看到「在测网速、各源多快」，表出来就是带耗时的成品表，
+  # 不会再出现「表打完了才慢慢测速」的停顿。要装的量很大时就跳过测速——
+  # 那点时间在整体安装里可以忽略，为它多等几秒不划算。
+  if [ $((net_mb * 1048576 / EST_FALLBACK_RATE)) -ge "$EST_SLOW_SECONDS" ]; then
+    est_net_rate 1
+  else
+    est_net_rate
+  fi
+  rate=$EST_RATE
+  dl_secs=$(est_seconds "$net_mb" "$rate")
+  # 下载之外还要装包、建 venv、解包模型：固定再留 2 分钟
+  secs=$((dl_secs + 120))
+
+  # 标签宽度跟着最长的一项走，体积列才对得齐（之前定宽 14，标签基本都超，
+  # 结果体积直接贴在标签后面）
+  local lw=10
+  for k in "${!names[@]}"; do
+    local w=$(disp_len "${names[$k]}")
+    [ "$w" -gt "$lw" ] && lw=$w
+  done
+  local gap
+  printf '      %s【安装前请看】%s\n' "$C_B" "$C_END"
+  for k in "${!names[@]}"; do
+    gap=$((lw - $(disp_len "${names[$k]}") + 2))
+    printf '  %s%s%s%*s%6s\n' "$C_OK" "${names[$k]}" "$C_END" "$gap" "" "$(mb_text "${sizes[$k]}")"
+    rows=$((rows + 1))
+  done
+  [ "$rows" -gt 0 ] && echo
+  printf '      %s合计约 %s%s' "$C_B" "$(mb_text "$total")" "$C_END"
+  printf '%s（安装时另需约 %s 下载缓存，装完自动清理）%s\n' "$C_DIM" "$(mb_text $EST_SCRATCH_MB)" "$C_END"
+  printf '      %s预计耗时 %s%s' "$C_B" "$(human_dur "$secs")" "$C_END"
+  if [ "${EST_RATE_MEASURED:-1}" = "1" ]; then
+    printf '%s（按实测网速 %s，约需下载 %s）%s\n' \
+      "$C_DIM" "$(human_rate "$rate")" "$(human_size $((net_mb * 1048576)))" "$C_END"
+  else
+    printf '%s（没测出可用网速，按 2MB/s 估，约需下载 %s；实际可能更久）%s\n' \
+      "$C_DIM" "$(human_size $((net_mb * 1048576)))" "$C_END"
+  fi
+  printf '      %s其中 %s 最费时（%s）%s\n' \
+    "$C_DIM" "$(dep_label "$big")" "$(mb_text "$big_mb")" "$C_END"
+  printf '      %s当前 %s 可用 %s%s\n' "$C_DIM" "$HOME" "$(mb_text "$free_mb")" "$C_END"
+  if [ "$free_mb" -gt 0 ] &&
+     [ "$free_mb" -lt $((total + EST_SCRATCH_MB + EST_MIN_FREE_MB)) ]; then
+    warn "磁盘空间偏紧：建议先腾出 $(mb_text $((total + EST_SCRATCH_MB + EST_MIN_FREE_MB))) 空闲空间"
+  fi
+  PLAN_TOTAL_MB=$total
+  PLAN_SECONDS=$secs
 }
 
 # SteamOS 镜像号：换镜像时 /usr 下 pacman 装的包会被整片冲掉，这是本脚本
@@ -1077,14 +1107,15 @@ PY
 preflight() {
   local problems=0
   dim "机型：$(deck_model)"
-  # 1. 磁盘空间：PySide6 解包后约 700MB，venv 最坏按 1.5G 留余量
-  local need_mb=1500 avail_mb=""
+  # 1. 磁盘空间：具体要多少由 print_capacity_plan 按本次实际要装的项逐项算，
+  #    这里只兜一个硬底线
+  local avail_mb=""
   avail_mb=$(df -Pm "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
-  if [ -n "$avail_mb" ] && [ "$avail_mb" -lt "$need_mb" ]; then
-    warn "家目录剩余 ${avail_mb}MB，安装建议至少 ${need_mb}MB（PySide6 体积较大）"
+  if [ -n "$avail_mb" ] && [ "$avail_mb" -lt "$EST_MIN_FREE_MB" ]; then
+    warn "家目录剩余 ${avail_mb}MB，低于最低要求 ${EST_MIN_FREE_MB}MB"
     problems=1
   else
-    dim "磁盘空间：剩余 ${avail_mb:-未知}MB，至少需要 ${need_mb}MB"
+    dim "磁盘空间：剩余 ${avail_mb:-未知}MB"
   fi
 
   # 2. 端口占用：与 stop_backend 共用 _port_owned_by_us / _pid_is_ours 这一套
@@ -1114,64 +1145,92 @@ preflight() {
 
 system_notes() {
   local miss=()
-  need_cmd espeak-ng || miss+=("espeak-ng（语音播报回复）")
-  need_cmd kdotool   || miss+=("kdotool（按窗口名切换/聚焦窗口）")
-  need_cmd ydotool   || miss+=("ydotool（模拟鼠标点击、键盘输入）")
-  need_cmd wtype     || miss+=("wtype（Wayland 原生打字，ydotool 的备选）")
-  need_cmd spectacle || miss+=("spectacle（KWin 截图，一般自带）")
+  dep_scan_missing miss
   if [ ${#miss[@]} -gt 0 ]; then
-    warn "以下系统控件没装，相关功能会受限："
-    for m in "${miss[@]}"; do dim "$m"; done
-    dim "想自动安装：bash install.sh install --deps"
-    # SteamOS 换镜像会冲掉 /usr 下 pacman 装的包，这情况最常见
+    warn "以下系统包缺失，相关功能不可用：${miss[*]}"
+    dim "重跑安装命令即可补上：bash install.sh install"
+    # SteamOS 换镜像会冲掉 /usr 里 pacman 装的包
     if [ -n "${BUILD_ID:-}" ] && [ -f "$HOME/.config/deckmeido/.deps-build-id" ]; then
       local prev; prev="$(cat "$HOME/.config/deckmeido/.deps-build-id" 2>/dev/null || true)"
-      [ "$prev" = "$BUILD_ID" ] || dim "检测到 SteamOS 镜像已更新（$prev → ${BUILD_ID}），系统包可能被冲掉，重装即可恢复"
+      [ "$prev" = "$BUILD_ID" ] || dim "SteamOS 镜像已更新（$prev → ${BUILD_ID}），系统包可能被冲掉，重装即可恢复"
     fi
   fi
-  # ydotool 装了但 ydotoold 没跑，点击/输入会直接报 socket 错误，这里提前点出来
+  # ydotool 在但 ydotoold 没跑 → socket 报错
   if need_cmd ydotool && ! pgrep -x ydotoold >/dev/null 2>&1; then
-    warn "ydotool 已装但 ydotoold 守护进程没在运行，模拟点击/输入会失败"
-    dim "修一次：bash install.sh check --fix   （会配置成开机自启）"
+    warn "ydotoold 未运行，模拟点击/输入会失败；重跑 bash install.sh install"
   fi
 }
 
-# ---------- 可选系统依赖 ----------
-# 这些是「替你在桌面上动手」的核心控件，装它们必须 root。
-# 安装时一并装上，或加 --deps 单独装。
-# fakeroot 不是运行时控件，但用 paru/yay 编译 AUR 包（kdotool）必须要它，
-# 缺了会在 makepkg 阶段报「fakeroot not found」，所以一起装。
-DEPS_PACMAN=(espeak-ng ydotool wtype fakeroot)
-# AUR 里叫 kdotool，编译出来很慢；优先用预编译的 kdotool-bin，
-# 找不到 AUR helper 才提示手动装。
+# ---------- 系统依赖 ----------
+# 包名≠命令名的项在 dep_cmd 里映射；检测一律按命令名（need_cmd），不用 pacman -Q。
+# 取舍：base 自带（bash/systemd/procps/iproute2/glib2/sudo）不列；
+# 纯兜底（ffmpeg/paplay/aplay/lsof/pdftotext）不列，缺了主路径仍可用。
+#   tmux       命令面板/Agent 终端整条链路依赖（非 base，SteamOS 无）
+#   qt6-tools  qdbus6 写 Klipper 剪贴板，中文输入唯一通道
+#   gstreamer / gst-plugin-pipewire  gst-launch-1.0 与 pipewiresrc 抓帧
+#   gst-plugins-base/good  videoconvert/pngenc/jpegenc
+#   wireplumber  wpctl 音量（缺了退 pactl，故属降级可用）
+#   pulseaudio-utils  parec：唤醒词/录音首选采集，缺了才退 pw-record
+DEPS_PACMAN=(espeak-ng ydotool wtype fakeroot spectacle libpulse pipewire wireplumber
+             pulseaudio-utils gstreamer gst-plugin-pipewire gst-plugins-base
+             gst-plugins-good tmux qt6-tools)
+# 部分发行版 qt6-tools 拆包，qdbus6 也可能在 qt5-tools（DEPS_PACMAN 装不上时补这个）
+# AUR 无 kdotool-bin 时回落到源码包 kdotool
 DEPS_AUR=(kdotool-bin)
 DEPS_AUR_FALLBACK=(kdotool)
-# install_pacman_deps 跑完后仍然找不到命令的包：安装汇总靠它说实话，
-# 不再一律打勾。2026-11-08 的装机就是「提示 ✓ 已处理，设置页却全红」。
+# 装完仍缺的包名 → 汇总如实报缺，不假打勾
 DEPS_MISSING_AFTER=()
 
-# 随发布包自带的离线包集合：只放「小、依赖浅、缺了直接让设置页变红」的三个。
-# ydotool 16.6KB + wtype 10.0KB + fakeroot 78.7KB ≈ 105KB（压缩后）。
-# espeak-ng（7.2MB，且要 libsonic / pcaudiolib 两个 SteamOS 没自带的依赖）不自带，
-# 走本机缓存或镜像站；kdotool 是 AUR 包，官方仓库里没有，只能放镜像站。
-# 具体下载清单在 tools/fetch_offline_deps.sh 里，两边要一起改。
+# $1=包名 → 打印一个「已装则必有」的命令名（无映射则同名）
+dep_cmd() {
+  case "$1" in
+    libpulse)         echo pactl ;;
+    pipewire)         echo pw-record ;;
+    pulseaudio-utils) echo parec ;;
+    wireplumber)      echo wpctl ;;
+    gstreamer)        echo gst-launch-1.0 ;;
+    gst-plugin-pipewire) echo gst-inspect-1.0 ;;
+    gst-plugins-base) echo gst-inspect-1.0 ;;
+    gst-plugins-good) echo gst-inspect-1.0 ;;
+    qt6-tools|qt5-tools) echo qdbus6 ;;
+    kdotool-bin)      echo kdotool ;;
+    *)                echo "$1" ;;
+  esac
+}
 
-# Release 里附带的离线包目录（deploy/deps/，随发布包一起分发）。
-# SteamOS 换镜像会重建 /usr，pacman 缓存也会失效，所以不能指望
-# /var/cache/pacman/pkg 里还有东西；这些 .pkg.tar.zst 是独立一份。
+# gst 插件类无独立可执行文件，改用 gst-inspect 查元素是否存在
+dep_present() {
+  local p="$1"
+  case "$p" in
+    gst-plugin-pipewire) gst-inspect-1.0 pipewiresrc >/dev/null 2>&1 ;;
+    gst-plugins-base)    gst-inspect-1.0 pngenc >/dev/null 2>&1 ;;
+    gst-plugins-good)    gst-inspect-1.0 jpegenc >/dev/null 2>&1 ;;
+    qt6-tools|qt5-tools) need_cmd qdbus6 || need_cmd qdbus ;;
+    *)                   need_cmd "$(dep_cmd "$p")" ;;
+  esac
+}
+
+# 全部系统包是否就位：缺的追加到 $1 数组
+dep_scan_missing() {
+  local -n _miss="$1"; local p
+  for p in "${DEPS_PACMAN[@]}" "${DEPS_AUR_FALLBACK[0]}"; do
+    dep_present "$p" || _miss+=("$p")
+  done
+}
+
+# 离线包：仅随包带小且依赖浅的 ydotool/wtype/fakeroot。
+# espeak-ng（依赖 libsonic/pcaudiolib）与 AUR 的 kdotool 走镜像站。
+# 清单见 tools/fetch_offline_deps.sh，需同步。SteamOS 换镜像会重建 /usr 并清空
+# pacman 缓存，故另带一份。
 OFFLINE_DIR="$HERE/deploy/deps"
-# 离线包哈希清单：只覆盖 deploy/deps/ 下的 .pkg.tar.zst，
-# 与 dist/SHA256SUMS（覆盖发布 tar.gz）是两套东西，互不替代。
+# 只覆盖 deploy/deps/*.pkg.tar.zst，与 dist/SHA256SUMS 互不替代
 OFFLINE_MANIFEST="$OFFLINE_DIR/SHA256SUMS"
 
-# 离线包的安装记录。值是一组包名，记录「上次凭离线包装成功的都有谁」。
-# 用途有两个：镜像更新后知道该重装哪些，以及 offline_stale 判断
-# 离线包是不是已经过期（比系统仓库还老就别硬装）。
+# 离线包装成功的包名记录（供 offline_stale / 镜像更新后重装判断）
 offline_stamp() { printf '%s' "$CONFIG_DIR/.deps-offline"; }
 
-# 离线包哈希校验：必须能在 SHA256SUMS 里查到这一行，且实算哈希一致。
-# 清单缺失 / 文件没列 / 哈希不符，一律当不可信——宁可不装，也不装一个
-# 来源不明的系统包（pacman -U 以 root 身份跑，脚本被换掉就是提权入口）。
+# 哈希校验：清单必须列出该文件且实算一致。不符一律拒装：
+# pacman -U 以 root 运行，来源不明包 = 提权入口。
 offline_hash_ok() {
   local f="$1" base want got
   [ -f "$OFFLINE_MANIFEST" ] || return 1
@@ -1182,8 +1241,7 @@ offline_hash_ok() {
   [ "$got" = "$want" ]
 }
 
-# 已装版本比这个包文件新：装回去等于降级，跳过，留给联网仓库版本。
-# SteamOS 换镜像后 holo 仓库会滚动升级，旧离线包不该把系统拽回去。
+# 已装版本更新时跳过错离线包，避免降级
 pkg_is_downgrade() {
   local f="$1" p="$2" fv iv
   fv="$(pacman -Qp "$f" 2>/dev/null | awk '{print $2}')"
@@ -1265,18 +1323,16 @@ offline_check_fresh() {
     have="${have%-*}"
     if [ "$(printf '%s\n%s\n' "$have" "$lv" | sort -V | tail -n1)" = "$lv" ] && [ "$have" != "$lv" ]; then
       warn "离线包 $p $have 比系统仓库的 $lv 旧"
-      dim "断网时装它仍可用；联网时建议让它走仓库：bash install.sh install --deps"
+      dim "断网时装它仍可用；联网时建议让它走仓库：重跑 bash install.sh install"
     fi
   done
 }
 
 # ---------- 数据库同步失败时的三层兜底 ----------
-# ① 本机 /var/cache/pacman/pkg ② 发布包自带 deploy/deps ③ 镜像站 $MIRROR/deps
-# 每层都只装「这层找得到的包」，装完实测命令，缺的继续往下一层要；
-# 三层都拿不到就如实报缺，不再假装装好。
+# ① /var/cache/pacman/pkg ② deploy/deps ③ $MIRROR/deps。每层只装能拿到的，
+# 装完实测命令，缺的继续下一层；全拿不到就如实报缺，不打勾。
 
-# pacman -U 一批本地包文件。needed=1 时不重复装已装版本；
-# needed=0 用于「记录在、命令丢了」的强制覆盖重装。
+# pacman -U 一批本地包。needed=1 跳过已装版本；needed=0 强制覆盖重装。
 pacman_u_batch() {
   local needed="$1"; shift
   local log
@@ -1342,7 +1398,7 @@ pacman_rescue_install() {
     dim "已用本机 pacman 缓存装上 ${#files[@]} 个包"
   fi
   left=(); files=()
-  for p in "${names[@]}"; do need_cmd "$p" || left+=("$p"); done
+  for p in "${names[@]}"; do dep_present "$p" || left+=("$p"); done
   [ ${#left[@]} -eq 0 ] && return 0
   names=("${left[@]}")
 
@@ -1355,7 +1411,7 @@ pacman_rescue_install() {
     dim "已用发布包自带离线包装上 ${#files[@]} 个包"
   fi
   left=(); files=()
-  for p in "${names[@]}"; do need_cmd "$p" || left+=("$p"); done
+  for p in "${names[@]}"; do dep_present "$p" || left+=("$p"); done
   [ ${#left[@]} -eq 0 ] && return 0
   names=("${left[@]}")
 
@@ -1374,44 +1430,40 @@ pacman_rescue_install() {
     dim "没有 curl，跳过镜像站这一层"
   fi
   left=()
-  for p in "${names[@]}"; do need_cmd "$p" || left+=("$p"); done
+  for p in "${names[@]}"; do dep_present "$p" || left+=("$p"); done
   [ ${#left[@]} -eq 0 ] && return 0
   return 1
 }
 
 deps_intro() {
-  # 安装前把每个控件是干什么的说清楚，用户才知道为什么要给 sudo
-  local miss_pacman=() miss_aur=() miss_other=()
-  for p in "${DEPS_PACMAN[@]}"; do need_cmd "$p" || miss_pacman+=("$p"); done
-  need_cmd kdotool   || miss_aur+=("${DEPS_AUR[0]}")
-  need_cmd spectacle || miss_other+=("spectacle")
+  local miss=()
+  dep_scan_missing miss
 
-  section "控制类系统控件（推荐安装）"
-  dim "DeckMeido 的「帮你在桌面上操作」能力依赖下面这些系统包；"
-  dim "不装也能聊天、截图、执行命令，但没法替你点鼠标、敲键盘、念出回复。"
-  echo
+  section "系统控件"
   local st
-  for p in ydotool kdotool wtype espeak-ng fakeroot spectacle; do
-    if need_cmd "$p"; then st="${C_OK}已装${C_END}"; else st="${C_WARN}待装${C_END}"; fi
+  for p in "${DEPS_PACMAN[@]}" "${DEPS_AUR_FALLBACK[0]}"; do
+    if dep_present "$p"; then st="${C_OK}已装${C_END}"; else st="${C_WARN}待装${C_END}"; fi
     case "$p" in
-      ydotool)   table_row "$p" "$st  模拟鼠标点击 / 键盘输入（搭配 ydotoold 守护进程）" ;;
-      kdotool)   table_row "$p" "$st  按窗口标题查找并聚焦窗口，配合 ydotool 点击正确的位置" ;;
-      wtype)     table_row "$p" "$st  Wayland 原生打字，ydotool type 不支持中文时的备选" ;;
-      espeak-ng) table_row "$p" "$st  把回复念出来（语音播报）" ;;
-      fakeroot)  table_row "$p" "$st  编译 AUR 包（kdotool）时 makepkg 必需的构建依赖" ;;
-      spectacle) table_row "$p" "$st  KDE 截图工具，用于「看看当前屏幕」" ;;
+      ydotool)          table_row "$p" "$st  模拟鼠标/键盘（需 ydotoold）" ;;
+      kdotool)          table_row "kdotool" "$st  按窗口名查找并聚焦（AUR）" ;;
+      wtype)            table_row "$p" "$st  Wayland 打字，ydotool 不支持中文时兜底" ;;
+      espeak-ng)        table_row "$p" "$st  espeak-ng TTS 兜底" ;;
+      fakeroot)         table_row "$p" "$st  makepkg 编 AUR（kdotool）" ;;
+      spectacle)        table_row "$p" "$st  截图（tools.py / depcheck）" ;;
+      libpulse)         table_row "$p" "$st  pactl（音量）" ;;
+      pipewire)         table_row "$p" "$st  pw-record（录音兜底 / pw-play 播放）" ;;
+      pulseaudio-utils) table_row "$p" "$st  parec（唤醒词 / 录音首选）" ;;
+      wireplumber)      table_row "$p" "$st  wpctl（音量，优先 pactl）" ;;
+      gstreamer)        table_row "$p" "$st  gst-launch-1.0（抓帧）" ;;
+      gst-plugin-pipewire) table_row "$p" "$st  pipewiresrc（游戏模式抓帧）" ;;
+      gst-plugins-base) table_row "$p" "$st  pngenc / videoconvert" ;;
+      gst-plugins-good) table_row "$p" "$st  jpegenc / videoscale" ;;
+      tmux)             table_row "$p" "$st  命令面板 / Agent 终端" ;;
+      qt6-tools)        table_row "$p" "$st  qdbus6 写剪贴板（中文输入）" ;;
     esac
   done
   echo
-  dim "它们分工成三类："
-  dim "  · 动手（ydotool / kdotool / wtype）——替你点鼠标、敲键盘、切窗口"
-  dim "  · 出声（espeak-ng）——把女仆的回复念出来"
-  dim "  · 看屏（spectacle）——截图，让女仆「看到」当前屏幕"
-  echo
-  [ ${#miss_pacman[@]} -gt 0 ] && dim "待安装（pacman）：${miss_pacman[*]}"
-  [ ${#miss_aur[@]}    -gt 0 ] && dim "待安装（AUR）：${miss_aur[*]}（需要 paru 或 yay）"
-  [ ${#miss_other[@]}  -gt 0 ] && dim "未找到：${miss_other[*]}（KDE 一般自带，可忽略）"
-  # 有离线包就先说一声，用户能预期「不用等下载」
+  [ ${#miss[@]} -gt 0 ] && dim "待安装：${miss[*]}（AUR 项需 paru/yay）"
   if [ -d "$OFFLINE_DIR" ]; then
     local n; n=$(find "$OFFLINE_DIR" -maxdepth 1 -name '*.pkg.tar.zst' 2>/dev/null | wc -l)
     if [ "${n:-0}" -gt 0 ]; then
@@ -1419,13 +1471,12 @@ deps_intro() {
       offline_check_fresh
     fi
   fi
-  dim "安装过程会用 sudo 关闭 SteamOS 根分区只读保护并安装系统包，不会改动你的游戏与个人文件。"
-  dim "其中 ydotool / wtype 会注册一个用户级守护进程（ydotoold），装完自动开机自启，无需你手动配置。"
+  dim "安装系统包需 sudo 解除 SteamOS 根分区只读，不改动游戏与个人文件。"
+  dim "ydotool 会注册用户级 ydotoold 守护进程并开机自启，无需手动配置。"
 }
 
-# 卸载只有一个方向（删），所以「终端里默认答 yes」，避免在掌机上多按一次 A；
-# 没有终端时一律视为取消，绝不在无人确认时动手。
-# DECKMEIDO_ASSUME_YES=1 是给自动化测试用的：跳过询问直接视为确认。
+# 卸载只有一个方向（删），终端里默认 yes；无终端一律视为取消。
+# DECKMEIDO_ASSUME_YES=1 仅给自动化测试用。
 ask_yes() {
   local ans=""
   if [ "${DECKMEIDO_ASSUME_YES:-0}" = "1" ]; then
@@ -1495,13 +1546,8 @@ ask_yn() {
   case "$ans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
-# 「按 A 或回车继续」：所有需要停一下看结果的地方都走这里。
-# 按键语义（只是暂停，不承担选择）：
-#   按 A / 回车 / 其它任意键 —— 都结束等待，继续往下；
-#   Ctrl-C —— 照常中断脚本；stdin 已到 EOF（管道）—— 也直接继续。
-# 以前用 `read -r _` 读整行，只按 A 没有回车就会一直卡着，这正是
-# 「按 A 无法退出」的原因；这里改成 -n1，读到一个字符就返回。
-# 非交互（管道/日志）不能停住等人，直接说明「自动继续」。
+# 暂停等按键。必须用 read -n1：旧实现 `read -r _` 要求回车，导致「按 A 退不出」。
+# 任意键继续；Ctrl-C 中断；stdin EOF 继续；DECKMEIDO_NONINTERACTIVE=1 直接过。
 press_continue() {
   local hint="${1:-按 A 或回车继续}" key=""
   if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ]; then
@@ -1523,8 +1569,7 @@ press_continue() {
 }
 
 # ---------- 可选下载 ----------
-# 所有要联网拉取的项集中在这里，逐条确认；已存在的直接跳过并说明。
-# 自定义档逐项确认时默认全装（[Y/n]，回车即装），只有显式输入 n 才跳过。
+# 所有要联网拉取的项集中在这里：默认全装，已存在的直接跳过并说明。
 
 # 已装好的判定：$1 = venv python，$2 = 模块名
 have_py_module() {
@@ -1532,7 +1577,6 @@ have_py_module() {
 }
 
 # 音箱模式（智能音响）所需组件是否齐全：唤醒词模型 + 录音工具 + busctl。
-# 自定义档用它判断「要不要再问一次音箱模式」，完整档用它避免重复询问。
 deckmeido_speaker_ready() {
   local py="$INSTALL_DIR/.venv/bin/python"
   have_py_module "$py" "sherpa_onnx" || return 1
@@ -1542,81 +1586,101 @@ deckmeido_speaker_ready() {
   return 0
 }
 
-# 打印一条可选项：$1 名称，$2 用途，$3 体积，$4 已存在说明（空=不存在），
-# $5 默认值 y/n，$6 跳过后的影响（写进日志与收尾汇总）。
-# 返回 0 = 要装，1 = 跳过。
+# 打印一条可选项：$1 名称，$2 用途，$3 体积，$4 已存在说明（空=不存在）。
+# 默认全装；返回 0 = 要装，1 = 已存在，不用再装。
 opt_download() {
-  local name="$1" purpose="$2" size="$3" present="$4" def="${5:-y}" \
-        impact="${6:-该功能不可用，之后可单独补装}"
+  local name="$1" purpose="$2" size="$3" present="$4"
   if [ -n "$present" ]; then
     dim "$name：已存在（$present），跳过"
     return 1
   fi
-  if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
-    if [ "$def" = "y" ]; then
-      dim "$name：非交互，直接安装（$purpose，$size）"
-      return 0
-    fi
-    SKIPPED_ITEMS+=("$name")
-    warn "已跳过：$name（影响：$impact）"
-    return 1
-  fi
-  if ask_yn "$name（$purpose，$size）现在下载安装？" "$def"; then
-    return 0
-  fi
-  SKIPPED_ITEMS+=("$name")
-  warn "已跳过：$name（影响：$impact）"
-  return 1
-}
-
-optional_downloads() {
-  local py="$INSTALL_DIR/.venv/bin/python" nonint=0
-  if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
-    nonint=1
-  fi
-  section "组件安装"
-  dim "一次装齐全部组件；已有内容会跳过，不会重复下载。"
-  [ "$nonint" = 1 ] && dim "当前是非交互模式：按默认值自动继续/跳过。"
-
-  # 一律完整安装，不再询问档位。已有依赖 / 模型照旧跳过，不会重复下载；
-  # 升级也不会因为重跑安装就重下已经装好的组件。
-  #
-  #   固定内容：后端 + Decky 插件 + 桌面客户端 + STT/TTS 引擎与模型
-  #             + 系统依赖 + 唤醒词模型 + 音箱模式所需组件
-  export DECKMEIDO_SKIP_SERVER=0
-  export DECKMEIDO_INSTALL_STT=1 DECKMEIDO_INSTALL_TTS=1 DECKMEIDO_INSTALL_DEPS=1
-  export DECKMEIDO_INSTALL_SPEAKER=1
-  # 桌面客户端；已经装好就不重装，用户显式 DECKMEIDO_SKIP_GUI=1 也照办
-  if have_py_module "$py" "PySide6" || [ "${DECKMEIDO_SKIP_GUI:-}" = "1" ]; then
-    export DECKMEIDO_SKIP_GUI=1
-  else
-    unset DECKMEIDO_SKIP_GUI
-  fi
-  # 已经装好模块和模型就不再重装，避免每次升级都白跑一遍
-  if have_py_module "$py" "sherpa_onnx" && [ -f "$DATA_MODELS/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx" ]; then
-    export DECKMEIDO_INSTALL_STT=0
-  fi
-  if have_py_module "$py" "piper_plus" && [ -f "$DATA_MODELS/tts/tsukuyomi/tsukuyomi-chan-6lang-fp16.onnx" ]; then
-    export DECKMEIDO_INSTALL_TTS=0
-  fi
-  dim "完整安装：后端 + Decky 插件 + 桌面客户端 + 语音 + 系统依赖 + 音箱模式组件"
-  if decky_ready 2>/dev/null; then
-    export DECKMEIDO_INSTALL_PLUGIN=1
-  else
-    export DECKMEIDO_INSTALL_PLUGIN=0
-  fi
+  dim "$name：待安装（$purpose，$size）"
   return 0
 }
 
-# 读一行输入并回显提示，返回用户敲的内容。
-#
-# 和 ask_yes 不一样，这里**没有默认值**：管道执行（curl | bash）时 stdin 是脚本本身，
-# 直接 read 会读到还没执行的脚本文本，所以固定从 /dev/tty 读。
-# 拿不到终端（无人值守、ssh 没分配 tty）就返回非 0，由调用方决定怎么退。
-#
-# 提示一律写 stderr（或 /dev/tty），stdout 只放答案：调用方用的是
-# choice=$(ask_choice ...)，提示若走 stdout 会被一起捕获，case 永远匹配不上，
-# 还会被 die 再打一遍（照片里的「提示打两遍 + 无效选择」就是这个）。
+optional_downloads() {
+  local py="$INSTALL_DIR/.venv/bin/python"
+  section "组件清单"
+  dim "默认全装：能用到的组件全部装上；已存在的自动跳过，不会重复下载。"
+
+  # 1. 服务端运行依赖
+  opt_download "Python 运行依赖（服务端）" "FastAPI/uvicorn 等，缺了后端跑不起来" \
+    "$(mb_text "$(dep_mb server)")" \
+    "$(have_py_module "$py" "fastapi" && echo "模块已在 venv 中" || true)"
+  export DECKMEIDO_SKIP_SERVER=0
+
+  # 2. 桌面客户端（PySide6 + WebEngine）
+  if have_py_module "$py" "PySide6"; then
+    opt_download "桌面客户端（PySide6）" "" "" "已存在" || true
+    export DECKMEIDO_SKIP_GUI=1
+  elif [ "${DECKMEIDO_SKIP_GUI:-}" = "1" ]; then
+    dim "桌面客户端 PySide6：DECKMEIDO_SKIP_GUI=1，显式跳过"
+  else
+    opt_download "桌面客户端（PySide6）" "桌面窗口与内置浏览器，不要也能用网页版" \
+      "$(mb_text "$(dep_mb gui)")" ""
+    unset DECKMEIDO_SKIP_GUI
+  fi
+
+  # 3. 语音输入（sherpa-onnx + SenseVoice 模型）
+  local stt_model="$DATA_MODELS/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx"
+  opt_download "语音输入 STT" "sherpa-onnx 运行库 + SenseVoice 识别模型" \
+    "$(mb_text "$(( $(dep_mb stt_mod) + $(dep_mb stt_model) ))")" \
+    "$(have_py_module "$py" sherpa_onnx && [ -f "$stt_model" ] && echo "运行库与模型齐全" || true)"
+  export DECKMEIDO_INSTALL_STT=1
+
+  # 4. 语音合成（piper-plus + つくよみちゃん模型）
+  local tts_model="$DATA_MODELS/tts/tsukuyomi/tsukuyomi-chan-6lang-fp16.onnx"
+  opt_download "语音合成 TTS" "piper-plus 运行库 + つくよみちゃん模型" \
+    "$(mb_text "$(( $(dep_mb tts_mod) + $(dep_mb tts_model) + $(dep_mb nltk) ))")" \
+    "$(have_py_module "$py" piper_plus && [ -f "$tts_model" ] && echo "运行库与模型齐全" || true)"
+  export DECKMEIDO_INSTALL_TTS=1
+
+  # 5. 系统控件依赖（代替用户动手的 ydotool / wtype 等）
+  if [ "${DECKMEIDO_NO_DEPS:-}" = "1" ]; then
+    dim "系统控件依赖：DECKMEIDO_NO_DEPS=1，显式跳过"
+    export DECKMEIDO_INSTALL_DEPS=0
+  else
+    local deps_present=""
+    need_cmd ydotool && need_cmd wtype && deps_present="ydotool/wtype 已在 PATH"
+    opt_download "系统控件依赖" "模拟点击/输入、截图等系统能力，需 sudo 走 pacman/AUR" \
+      "$(mb_text "$(dep_mb sys)")" "$deps_present" || true
+    export DECKMEIDO_INSTALL_DEPS=1
+  fi
+
+  # 6. 智能音响模式（音箱模式）组件
+  if [ "${DECKMEIDO_NO_SPEAKER:-}" = "1" ]; then
+    dim "智能音响模式：DECKMEIDO_NO_SPEAKER=1，显式跳过"
+    export DECKMEIDO_INSTALL_SPEAKER=0
+  else
+    opt_download "智能音响模式（唤醒词）" "局域网语音音箱：唤醒词模型 + 分词依赖" \
+      "$(mb_text "$(( $(dep_mb wake_mod) + $(dep_mb wake_model) ))")" \
+      "$(deckmeido_speaker_ready && echo "组件齐全" || true)" || true
+    export DECKMEIDO_INSTALL_SPEAKER=1
+  fi
+
+  # 7. Decky 插件包（已安装时由 install_plugin 自动替换）
+  # 没装 Decky Loader 不等于「不装插件」：装好 zip 放过去，等用户装好 Decky
+  # 后再一键部署——开箱即用不能因为前置框架缺失就静默放弃，那样用户永远不知道
+  # 有这个面板。
+  if decky_ready 2>/dev/null; then
+    local pver=""
+    pver="$(plugin_installed_version 2>/dev/null)" || pver=""
+    if [ -n "$pver" ]; then
+      dim "Decky 插件：已安装 v$pver，升级时会自动替换为新版本"
+    else
+      opt_download "Decky 插件包" "游戏模式 QAM 面板" \
+        "$(mb_text "$(dep_mb plugin)")" ""
+    fi
+  fi
+  export DECKMEIDO_INSTALL_PLUGIN=1
+  # 显式关掉的项不能被上面的 export 1 覆盖，统一在这里收口
+  [ "${DECKMEIDO_NO_SPEAKER:-}" = "1" ] && DECKMEIDO_INSTALL_SPEAKER=0
+  [ "${DECKMEIDO_NO_DEPS:-}" = "1" ] && DECKMEIDO_INSTALL_DEPS=0
+  return 0
+}
+
+# 读一行输入返回到 stdout。无默认值；curl|bash 时 stdin 是脚本本身，固定读 /dev/tty。
+# 提示必须走 stderr/tty：stdout 只放答案，否则 choice=$(ask_choice) 会把提示一起捕获。
 ask_choice() {
   local prompt="$1" ans="" tty_ok=0
   # 1) stdin 就是终端：正常交互
@@ -1685,11 +1749,9 @@ record_deps() {
   done
 }
 
-# 从本机 pacman 缓存里挑出某个包最新的那份 .pkg.tar.*
-# 数据库同步失败（SteamOS 镜像 TLS 过期 / 断网）时，-Sy 必然失败，
-# 但包经常已经躺在 /var/cache/pacman/pkg 里：直接 pacman -U 就能装，
-# 不依赖数据库也不联网。2026-11-08 装机日志里 ydotool / wtype 就是这样
-# 卡住的（设置页后续还报 file:// 地址不受支持）。
+# 数据库同步失败（SteamOS 镜像 TLS 过期 / 断网）时 -Sy 必败，但包往往已在
+# /var/cache/pacman/pkg：直接 pacman -U 即可，不依赖数据库也不联网。
+# （2026-11-08 装机 ydotool/wtype 就卡在这里。）
 pacman_cache_file() {
   local p="$1" f best=""
   for f in /var/cache/pacman/pkg/"$p"-*; do
@@ -1711,9 +1773,8 @@ install_pacman_deps() {
   DEPS_MISSING_AFTER=()
   for p in "${DEPS_PACMAN[@]}"; do
     if pacman -Qq "$p" >/dev/null 2>&1; then
-      # 记录在：再确认命令真的能用。SteamOS 换镜像后 /usr 被重建，
-      # 包记录还留着但文件没了，这种情况必须「重装」而不是跳过
-      if need_cmd "$p"; then installed+=("$p"); else reinstall+=("$p"); fi
+      # 记录在 ≠ 文件在：SteamOS 换镜像会重建 /usr，须再验命令
+      if dep_present "$p"; then installed+=("$p"); else reinstall+=("$p"); fi
     else
       todo+=("$p")
     fi
@@ -1724,35 +1785,28 @@ install_pacman_deps() {
     warn "以下包记录在但命令找不到（镜像更新冲掉了 /usr），重装：${reinstall[*]}"
   fi
   [ ${#todo[@]} -gt 0 ] && info "用 pacman 安装：${todo[*]}"
-  # SteamOS 的根分区是只读的，装包前要先关掉只读保护。
-  # 以前这里是 `|| true` 静默吞掉，结果 pacman 报一个跟只读毫无关系的错，
-  # 用户完全看不出真正原因。现在失败就直接说清楚。
+  # SteamOS 根分区只读，装包前必须关；旧代码 `|| true` 吞错导致 pacman 报无关错
   if [ -f /etc/steamos-readonly.conf ] || need_cmd steamos-readonly; then
     if ! sudo steamos-readonly disable </dev/null 2>/dev/null; then
       warn "关闭 SteamOS 只读保护失败，系统包无法安装"
       dim "手动执行：sudo steamos-readonly disable   然后再重跑本次命令"
       return 1
     fi
-    # 只读是「关掉才能装包」的临时状态：装完（无论成败）都恢复成 enabled，
-    # 否则用户的系统会一直停在可写状态，直到自己想起来手动开回去。
-    # 用 trap 兜住函数中途返回和 Ctrl-C 的情况。
+    # 装完（含失败/Ctrl-C）必须恢复只读，trap 兜住
     trap 'sudo steamos-readonly enable >/dev/null 2>&1 || \
           printf "\033[33m⚠ 恢复 SteamOS 只读保护失败，请手动执行：sudo steamos-readonly enable\033[0m\n" >&2; \
           trap - EXIT INT TERM' EXIT INT TERM
   fi
-  # 先装缺的（--needed）；再对「记录在、文件没了」的强制重装（不能带 --needed，
-  # 否则 pacman 会认为已装而直接跳过）。-Sy 而不 -Syu，避免顺带滚系统
+  # -Sy 不 -Syu：避免顺带滚系统。reinstall 不能带 --needed
   local log ok=1 pkgs=()
   [ ${#todo[@]} -gt 0 ] && pkgs+=("${todo[@]}")
 
-  # 离线优先：Release 自带 deploy/deps/ 时先吃本地包，不碰网络。
-  # 断网、壁纸引擎抢占带宽、holo 仓库抽风这几种情况下能不能装上，
-  # 差别就在这一步。装不上（包不全/依赖对不上）再走原来的联网流程。
+  # 离线优先，断网/仓库抽风时靠它
   local still=()
   if [ ${#pkgs[@]} -gt 0 ] && [ -d "$OFFLINE_DIR" ]; then
     if offline_pacman_install "${pkgs[@]}"; then
       local p
-      for p in "${pkgs[@]}"; do need_cmd "$p" || still+=("$p"); done
+      for p in "${pkgs[@]}"; do dep_present "$p" || still+=("$p"); done
       if [ ${#still[@]} -eq 0 ]; then
         pkgs=()
       else
@@ -1766,20 +1820,16 @@ install_pacman_deps() {
     if log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
       info "pacman 安装完成"
     else
-      # 最常见失败原因：SteamOS 换镜像后 keyring 对不上，签名校验直接报错
+      # 最常见失败：换镜像后 keyring 对不上；修不好不中止（后面有离线兜底）
       warn "pacman 安装失败，尝试修复 keyring 后重试"
       dim "$(printf '%s' "$log" | tail -5)"
-      # keyring 修不好不中止（后面还有离线兜底），但失败原因要留进安装日志：
-      # 以前是纯 `|| true`，签名问题只能靠猜
       sudo pacman-key --init </dev/null >/dev/null 2>&1 || warn "pacman-key --init 失败"
       sudo pacman-key --populate archlinux holo </dev/null >/dev/null 2>&1 \
         || warn "pacman-key --populate 失败（keyring 可能损坏，离线包也不一定能验签）"
       if log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
         info "修复 keyring 后安装成功"
       else
-        # 数据库同步失败（镜像 TLS 过期 / 断网）时 -Sy 必然失败。
-        # 三层兜底：本机缓存 → 发布包自带离线包 → 镜像站；
-        # 三层都拿不全就如实报缺，绝不在这里打 ✓。
+        # 数据库同步失败（镜像 TLS 过期/断网）时 -Sy 必败，走三层兜底
         if pacman_rescue_install 1 "${pkgs[@]}"; then
           info "数据库同步失败，已改用离线包安装"
         else
@@ -1801,17 +1851,25 @@ install_pacman_deps() {
       dim "手动排查：sudo pacman -S ${reinstall[*]}"
     fi
   fi
-  # 装完立刻实测，避免「pacman 说装了但命令不在」的假成功
+  # 装完实测，防「pacman 说装了但命令不在」
   local bad=()
-  for p in "${todo[@]}" "${reinstall[@]}"; do need_cmd "$p" || bad+=("$p"); done
+  for p in "${todo[@]}" "${reinstall[@]}"; do dep_present "$p" || bad+=("$p"); done
+  # qdbus6 被拆包到 qt5-tools 的发行版：按需补装
+  if printf '%s\n' "${bad[@]}" | grep -qx 'qt6-tools'; then
+    if sudo pacman -Sy --needed --noconfirm qt5-tools </dev/null >/dev/null 2>&1 \
+       && dep_present qt6-tools; then
+      info "qdbus6 来自 qt5-tools，已补装"
+      bad=("${bad[@]/qt6-tools/}"); bad=(${bad[@]+"${bad[@]}"})
+    fi
+  fi
   if [ ${#bad[@]} -gt 0 ]; then
     warn "以下包装完仍找不到命令，可能是镜像更新冲掉了 /usr：${bad[*]}"
-    dim "重跑一次：bash install.sh install --deps"
+    dim "重跑同一条安装命令即可补上：bash install.sh install"
     DEPS_MISSING_AFTER+=("${bad[@]}")
   fi
-  # 只有这次新装上的才记进依赖清单（重装的老包不算「安装器引入」）
+  # 只记本次新装的（重装的老包不算安装器引入）
   local done_now=()
-  for p in "${todo[@]}"; do need_cmd "$p" && done_now+=("$p"); done
+  for p in "${todo[@]}"; do dep_present "$p" && done_now+=("$p"); done
   [ ${#done_now[@]} -gt 0 ] && record_deps "${done_now[@]}"
   record_deps_build
   [ ${#bad[@]} -eq 0 ] || return 1
@@ -1923,15 +1981,13 @@ record_deps_build() {
 }
 
 # ---------- 控件自检 ----------
-# 只查 pacman -Q 不够：SteamOS 换镜像会冲掉 /usr 下的包而数据库仍留记录。
-# 所以这里逐项实测「命令在不在 + 真的能不能跑」。
+# 只查 pacman -Q 不够：SteamOS 换镜像会冲掉 /usr，数据库仍有记录，须实测。
 probe_ydotool() {
   need_cmd ydotool || { echo "未安装（模拟鼠标点击、键盘输入）"; return 1; }
   need_cmd ydotoold || { echo "守护进程缺失，需重装 ydotool"; return 1; }
   local sock="/run/user/$(id -u)/.ydotool_socket"
-  [ -S "$sock" ] || { echo "ydotoold 守护进程没在跑（$sock 不存在），点击/输入会失败"; return 1; }
-  # 只连 socket 验活，不发 mousemove 之类的命令——那会把用户的光标真的挪走。
-  # ydotoold 用 SOCK_DGRAM，用 SOCK_STREAM 连会报 Protocol wrong type for socket
+  [ -S "$sock" ] || { echo "ydotoold 没在跑（$sock 不存在），点击/输入会失败"; return 1; }
+  # 只 connect 验活，不发命令（会真移动光标）。ydotoold 用 SOCK_DGRAM，用 STREAM 会报错
   if python3 - "$sock" <<'PY' >/dev/null 2>&1
 import socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -1989,9 +2045,7 @@ probe_fakeroot() {
 }
 probe_spectacle() {
   need_cmd spectacle || { echo "未安装（KWin 截图，KDE 一般自带）"; return 1; }
-  # 只查得到二进制不够，还要确认它能跑起来。这里必须设 offscreen：
-  # 在无 DISPLAY 的环境（systemd 单元、ssh、cron）下 Qt6 会直接 abort 并写 core dump。
-  # 用 --version 而不是 --help，避开 GUI 初始化路径。
+  # 必须 offscreen：无 DISPLAY 时 Qt6 会 abort 并 core dump。用 --version 避开 GUI 初始化
   QT_QPA_PLATFORM=offscreen DISPLAY= WAYLAND_DISPLAY= \
     spectacle --version >/dev/null 2>&1 || { echo "调用异常（可能在无图形环境下崩溃）"; return 1; }
   return 0
@@ -2006,19 +2060,13 @@ deps_broken() {
   echo "${broken[*]:-}"
 }
 
-# 装完系统控件后的实测复核：只验「这次装/这次该有」的控件，并顺带验 ydotoold 托管状态。
-# 缺的写进 DEPS_PROBE_FAILED（只记本次复核的结果，不混进 pacman 侧的历史记录）。
+# 装完实测复核 + ydotoold 托管状态；缺的写进 DEPS_PROBE_FAILED
 deps_verified() {
-  local n
   DEPS_PROBE_FAILED=()
-  for n in ydotool kdotool wtype; do
-    case "$n" in
-      ydotool) probe_ydotool >/dev/null 2>&1 ;;
-      kdotool) probe_kdotool >/dev/null 2>&1 ;;
-      wtype)   probe_wtype   >/dev/null 2>&1 ;;
-    esac || DEPS_PROBE_FAILED+=("$n")
-  done
-  # ydotool 命令在，但守护进程没被 systemd 托管：重启后点击/输入会失效
+  local miss=()
+  dep_scan_missing miss
+  DEPS_PROBE_FAILED+=("${miss[@]}")
+  # ydotool 在但 ydotool.service 未 enable → 重启后点击/输入失效
   if need_cmd ydotool; then
     setup_ydotoold >/dev/null 2>&1 || true
     [ "$(systemctl --user is-enabled ydotool.service 2>/dev/null || echo unknown)" = enabled ] || \
@@ -2042,8 +2090,22 @@ do_check() {
       broken+=("$name")
     fi
   done
+  # 无专用 probe 的包统一走 dep_present（含 gst 元素级判定）
+  local p c
+  for p in "${DEPS_PACMAN[@]}" "${DEPS_AUR_FALLBACK[0]}"; do
+    case "$p" in
+      ydotool|kdotool|wtype|espeak-ng|fakeroot|spectacle) continue ;;
+    esac
+    c="$(dep_cmd "$p")"
+    if dep_present "$p"; then
+      printf '  %s● OK %s %-14s %s\n' "$C_OK" "$C_END" "$c" "$p"
+    else
+      printf '  %s○ BAD%s %-14s 缺 %s\n' "$C_ERR" "$C_END" "$c" "$p"
+      broken+=("$p")
+    fi
+  done
   echo
-  # ydotoold 是否被 systemd 托管，单独一行看清楚：这是「重启后还能不能用」的关键
+  # ydotoold 托管状态决定「重启后还能不能用」
   need_cmd ydotool && { printf '  %-10s %s\n' "ydotoold" "$(ydotoold_state)"; echo; }
   if [ ${#broken[@]} -eq 0 ]; then
     info "全部正常"
@@ -2127,15 +2189,10 @@ install_deps() {
 }
 
 # ---------- 代码同步 ----------
-# 清单式同步：rsync 只管「源里有 → 目标也要有」，源里已经删掉的文件会
-# 永远留在安装目录里。升级几次之后目录里堆满早已废弃的模块，最坑的是
-# 那些文件名还在、但早就没人 import 的旧文件，排查时很容易看错。
-#
-# 这里反向再走一遍：安装目录里存在、源码目录里已不存在的代码文件，删掉。
-# 只处理下面这些已知代码目录，*.log / VERSION 与运行时缓存一概不碰。
+# 反向对照：安装目录里有、源码里已无的代码文件要删，否则废弃模块会一直堆积。
+# 只处理 CODE_DIRS，*.log / VERSION / 缓存不动；deploy/deps 必须放过，
+# 否则升级会清空离线包。
 CODE_DIRS=(server client assets deploy tools plugin)
-# deploy/deps/ 里的离线依赖包也必须放过：它们不在源码目录里，照常删的话
-# 每次升级都会把 Release 自带的离线包清空，下次断网就装不上依赖了。
 USER_DATA_RE='\.log$|(^|/)VERSION$|(^|/)__pycache__(/|$)|^deploy/deps/|(^|/)static/shots/[^/]+$'
 
 prune_stale() {
@@ -2147,24 +2204,18 @@ prune_stale() {
     while IFS= read -r rel; do
       [ -n "$rel" ] || continue
       printf '%s' "$rel" | grep -Eq "$USER_DATA_RE" && continue
-      # 构建产物两边都靠 .gitignore 排除，源码侧本来就不存在；照常删会在
-      # 升级时把刚构建好的 plugin/dist/ 清空，插件随即装不上
-      case "$rel" in
-        */node_modules/*|*/dist/*) continue ;;
-      esac
       [ -e "$HERE/$rel" ] && continue
       rm -f "$INSTALL_DIR/$rel" && removed=$((removed + 1))
     done < <(cd "$INSTALL_DIR" && find "$d" -type f 2>/dev/null)
   done
-  # 删完之后可能留下空目录，一并收掉（只收代码目录内的）
+  # 删完留下的空目录一并收掉（仅代码目录内）
   for d in "${CODE_DIRS[@]}"; do
     [ -d "$INSTALL_DIR/$d" ] || continue
     find "$INSTALL_DIR/$d" -mindepth 1 -type d -empty -delete 2>/dev/null || true
   done
-  # updater 升级前会打包一份 update-backup-*.tar.gz，成功后会自己删；
-  # 进程半路被杀才会剩下，这里兜底清理，只留最新一份
+  # updater 成功会自删 update-backup-*；进程被杀才残留，只留最新一份。
+  # 文件名可能带空格，不能用 $(ls) 分词。
   local old
-  # 文件名可能带空格（安装目录不是我们的名字规则），不能靠 $(ls) 分词
   while IFS= read -r old; do
     [ -n "$old" ] && rm -f "$old"
   done < <(find "$INSTALL_DIR" -maxdepth 1 -name 'update-backup-*.tar.gz' -type f \
@@ -2232,11 +2283,9 @@ PIP_INDEXES=(
   "https://pypi.org/simple"
 )
 
-# 探一下哪个源最快，返回索引；都连不上返回 -1。
-# 不用 ping：ICMP 只能证明「能到」，跟 pip 走 HTTPS 下载快不快没必然关系，
-# 而且 mirror 源一般禁 ICMP。这里直接向每个源拉同一段真实文件，
-# 按实测下载速率（字节/秒）排，用 curl 的量测数据，不用额外依赖。
-PROBE_BYTES=65536      # 每个源只取 64KB，够分辨快慢又不费流量
+# 探最快 pip 源，返回索引；全不通返回 -1。不用 ping：ICMP 只证明能到，
+# 与 HTTPS 下载速率无关且多数源禁 ICMP。直接拉同一段真实文件实测速率。
+PROBE_BYTES=65536      # 每源取 64KB，够分辨快慢又不费流量
 PROBE_MAX=4            # 单个源最多等 4 秒
 
 # 返回「字节/秒」，失败返回 0
@@ -2258,20 +2307,26 @@ probe_speed() {
   printf '%s' "${spd:-0}"
 }
 
+# 容量预估时实测过网速（est_net_rate 调的就是本函数，结果表见 _PIP_SPD）。
+# 同一进程里已经测过的源速率记在 _PIP_SPD 里（声明在容量预估那一节），
+# 紧接着装依赖时直接复用，不再重复测一遍白等十几秒。
 pick_pip_index() {
-  local i n=${#PIP_INDEXES[@]} idx=-1
-  local -a spd
+  local i n=${#PIP_INDEXES[@]} idx=0 best=0 v url
   need_cmd curl || { printf '%s' 0; return 0; }
   # 注意：本函数靠 stdout 返回下标，所有提示必须走 stderr，否则会污染返回值
-  if [ "$n" -gt 1 ]; then
+  if [ "$n" -gt 1 ] && [ "${#_PIP_SPD[@]}" = 0 ]; then
     dim "测速中（各源取 ${PROBE_BYTES} 字节，最多 ${PROBE_MAX}s）" >&2
   fi
   for i in "${!PIP_INDEXES[@]}"; do
-    spd[$i]=$(probe_speed "${PIP_INDEXES[$i]}" || echo 0)
-    dim "$(human_rate "${spd[$i]}")  ${PIP_INDEXES[$i]}" >&2
-    if [ "${spd[$i]}" -gt 0 ] && { [ "$idx" = "-1" ] || [ "${spd[$i]}" -gt "${spd[$idx]}" ]; }; then
-      idx=$i
+    # 用 url 中转：_PIP_SPD 是关联数组，但历史 bash 会把 $_PIP_SPD[...] 里的 [0] 当
+    # 普通数组下标解析，下标是 URL 时直接报 arithmetic syntax error
+    url=${PIP_INDEXES[$i]}
+    if [ -z "${_PIP_SPD[$url]:-}" ]; then
+      _PIP_SPD[$url]=$(probe_speed "$url" || echo 0)
+      dim "$(human_rate "${_PIP_SPD[$url]}")  $url" >&2
     fi
+    v=${_PIP_SPD[$url]}
+    if [ "$v" -gt "$best" ]; then best=$v; idx=$i; fi
   done
   printf '%s' "$idx"
 }
@@ -2302,169 +2357,144 @@ human_dur() {
   fi
 }
 
-# 字节数 → 「1.2GB」「350MB」「11kB」这类友好体积
+# 字节数 → 「1.2GB」「350MB」「11kB」这类友好体积。
+# 纯 bash 取一位小数：以前走 awk，环境里 awk 缺失时会静默输出空串（表里整行空白）
 human_size() {
-  local b="${1:-0}"
+  local b="${1:-0}" unit=1 label=B
   if [ "$b" -ge 1073741824 ]; then
-    printf '%.1fGB' "$(awk "BEGIN{print $b/1073741824}")"
+    unit=1073741824; label=GB
   elif [ "$b" -ge 1048576 ]; then
-    printf '%.1fMB' "$(awk "BEGIN{print $b/1048576}")"
+    unit=1048576; label=MB
   elif [ "$b" -ge 1024 ]; then
-    printf '%.1fkB' "$(awk "BEGIN{print $b/1024}")"
-  else
+    unit=1024; label=kB
+  fi
+  if [ "$unit" = 1 ]; then
     printf '%dB' "$b"
+  else
+    # 「776.0MB」这种 .0 不写出来，省一列也更自然
+    local whole=$((b / unit)) frac=$((b % unit * 10 / unit))
+    if [ "$frac" = 0 ]; then
+      printf '%d%s' "$whole" "$label"
+    else
+      printf '%d.%d%s' "$whole" "$frac" "$label"
+    fi
   fi
 }
 
-# 唤醒词生成（sherpa-onnx-cli text2token）在 sherpa-onnx 之外还要
-# sentencepiece / pypinyin：缺了就补上，失败只警告。
-install_wake_text_deps() {
+# 唤醒词分词依赖（sentencepiece / pypinyin）与 sherpa-onnx 同属语音输入模块。
+# 必须独立判定：sherpa-onnx 在装时也可能漏它们，早退会漏装。
+_wake_text_deps() {
   local py="$1" start="${2:-0}"
+  [ "${DECKMEIDO_WAKE_MODE:-install}" = "install" ] || return 0
   [ -x "$py" ] || return 0
-  if have_py_module "$py" "sentencepiece" && have_py_module "$py" "pypinyin"; then
-    return 0
-  fi
-  dim "补齐唤醒词分词依赖（sentencepiece / pypinyin）"
-  if "$py" -m pip install -q sentencepiece pypinyin -i "${PIP_INDEXES[$start]}" >/dev/null 2>&1 ||
-     "$py" -m pip install -q sentencepiece pypinyin >/dev/null 2>&1; then
-    dim "唤醒词分词依赖已就绪"
+  have_py_module "$py" sentencepiece && have_py_module "$py" pypinyin && return 0
+  phase "补装" "唤醒词分词 sentencepiece / pypinyin"
+  if "$py" -m pip install -q sentencepiece pypinyin -i "${PIP_INDEXES[$start]}" >/dev/null 2>&1 \
+  || "$py" -m pip install -q sentencepiece pypinyin >/dev/null 2>&1; then
+    phase_ok "补装" "唤醒词分词"
   else
-    warn "sentencepiece / pypinyin 没装上：生成唤醒词会失败，可手动 pip 补装"
+    phase_fail "补装" "sentencepiece / pypinyin 未装上，生成唤醒词会失败"
   fi
   return 0
 }
 
-# 语音输入依赖（可选安装项）。$1 python，$2 起始源下标
-#
-# 策略说明（避免「装到一半卡住」）：
-#   DECKMEIDO_INSTALL_STT=1  强制安装
-#   DECKMEIDO_INSTALL_STT=0  强制跳过
-#   未设置时：交互安装会问一句（默认装，回车=装，输入 n 才跳过）；非交互默认跳过，绝不阻塞。
-# 装不上只警告，不影响后端、网页和桌面客户端 —— /api/stt 会如实报 runtime=false。
+# 语音输入依赖。$1 python，$2 起始源下标。
+# 调用前 optional_downloads 已把 DECKMEIDO_INSTALL_STT 定为 1（默认全装）；
+# 这里的 0 / ask 分支只是兜底，正常流程不会走到询问。
 install_stt_deps() {
   local py="$1" start="${2:-0}"
   [ -x "$py" ] || return 0
   if "$py" -c "import sherpa_onnx" >/dev/null 2>&1; then
-    dim "语音输入依赖已就绪（sherpa-onnx）"
+    phase_skip "安装" "语音输入依赖已装（sherpa-onnx）"
+    _wake_text_deps "$py" "$start"
     return 0
   fi
   local mode="${DECKMEIDO_INSTALL_STT:-ask}"
   case "$mode" in
     1|yes|on|true) ;;
     0|no|off|false)
-      dim "已跳过语音输入依赖（DECKMEIDO_INSTALL_STT=$mode）"
+      phase_skip "安装" "语音输入依赖（DECKMEIDO_INSTALL_STT=$mode）"
       return 0 ;;
     *)
       if [ ! -t 0 ] && [ ! -r /dev/tty ]; then
-        dim "非交互安装：默认跳过语音输入依赖"
-        dim "需要时运行：bash $INSTALL_DIR/install.sh install --stt"
+        phase_skip "安装" "非交互环境，跳过语音输入依赖"
         return 0
       fi
-      if ! ask_yes "现在安装语音输入依赖（sherpa-onnx，约 30MB）？不装也能正常聊天，之后随时可补"; then
-        dim "已跳过语音输入依赖；补装：bash $INSTALL_DIR/install.sh install --stt"
+      if ! ask_yes "现在安装语音输入依赖（sherpa-onnx，约 $(mb_text "$(dep_mb stt_mod)")）？不装也能正常聊天，之后随时可补"; then
+        phase_skip "安装" "语音输入依赖（重跑 install.sh 可补装）"
         return 0
       fi
       ;;
   esac
-  section "语音输入依赖（可选）"
   if pip_install_with_switch "$py" requirements-stt.txt "$start"; then
-    dim "语音输入依赖已就绪"
+    phase_ok "安装" "语音输入依赖（sherpa-onnx）"
+    _wake_text_deps "$py" "$start"
     return 0
   fi
-  warn "语音输入依赖没装上：不影响其他功能，稍后重跑 install --stt 即可"
+  phase_fail "安装" "语音输入依赖未装上，重跑 install.sh 可补装"
   return 0
 }
 
-# 语音合成依赖（可选安装项）。$1 python，$2 起始源下标
-#
-# 策略说明（与语音输入一致，避免「装到一半卡住」）：
-#   DECKMEIDO_INSTALL_TTS=1  强制安装
-#   DECKMEIDO_INSTALL_TTS=0  强制跳过
-#   未设置时：交互安装会问一句（默认装，回车=装，输入 n 才跳过）；非交互
-#   （无 tty 或 DECKMEIDO_NONINTERACTIVE=1）默认跳过，绝不阻塞。
-# piper-plus 2.x 要求 Python 3.11+，版本不够就直接跳过并说明原因。
-# 装不上只警告，不影响后端、网页和桌面客户端 —— /api/tts 会如实报 runtime=false。
+# 语音合成依赖。$1 python，$2 起始源下标。
+# piper-plus 2.x 要求 Python 3.11+，版本不够直接跳过并说明原因。
+# 调用前 DECKMEIDO_INSTALL_TTS 已被定为 1；0 / ask 分支只是兜底。
 install_tts_deps() {
   local py="$1" start="${2:-0}"
   [ -x "$py" ] || return 0
   if "$py" -c "import piper_plus" >/dev/null 2>&1; then
-    dim "语音合成依赖已存在（piper-plus）"
+    phase_skip "安装" "语音合成依赖已装（piper-plus）"
     install_tts_nltk_data "$py"
-    if ! verify_tts "$py"; then
-      { [ "$TTS_MODEL_STATE" = "missing" ] || [ "$TTS_MISSING_NOTED" = "1" ]; } ||
-        warn "语音合成自检未通过（原因见上一条）；不影响其他功能"
-    fi
     return 0
   fi
   # 版本不够时硬装只会得到「找不到匹配版本」的报错，先判断再决定
   if ! "$py" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
     local pv
     pv=$("$py" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo "未知")
-    dim "跳过语音合成依赖：piper-plus 需要 Python 3.11+，当前虚拟环境是 $pv"
-    dim "升级系统 Python 后重跑：bash $INSTALL_DIR/install.sh install --tts"
+    phase_skip "安装" "语音合成依赖（piper-plus 需 Python 3.11+，当前 $pv）"
     return 0
   fi
   local mode="${DECKMEIDO_INSTALL_TTS:-ask}"
   case "$mode" in
     1|yes|on|true) ;;
     0|no|off|false)
-      dim "已跳过语音合成依赖（DECKMEIDO_INSTALL_TTS=$mode）"
+      phase_skip "安装" "语音合成依赖（DECKMEIDO_INSTALL_TTS=$mode）"
       return 0 ;;
     *)
       if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
-        dim "非交互安装：默认跳过语音合成依赖"
-        dim "需要时运行：bash $INSTALL_DIR/install.sh install --tts"
+        phase_skip "安装" "非交互环境，跳过语音合成依赖"
         return 0
       fi
-      if ! ask_yes "现在安装语音合成依赖（piper-plus + onnxruntime）？不装也能正常聊天，之后随时可补"; then
-        dim "已跳过语音合成依赖；补装：bash $INSTALL_DIR/install.sh install --tts"
+      if ! ask_yes "现在安装语音合成依赖（piper-plus + onnxruntime，约 $(mb_text "$(dep_mb tts_mod)")）？不装也能正常聊天，之后随时可补"; then
+        phase_skip "安装" "语音合成依赖（重跑 install.sh 可补装）"
         return 0
       fi
       ;;
   esac
-  section "语音合成依赖（可选）"
   if pip_install_with_switch "$py" requirements-tts.txt "$start"; then
-    # 依赖装上 ≠ 音色可用：模型不随包分发，这里必须如实说清楚缺什么
-    if tts_model_present; then
-      dim "语音合成依赖已就绪（月读酱模型已存在）"
-    elif [ "$TTS_MISSING_NOTED" = "1" ]; then
-      # 前面「可选下载」已经说过模型未下载，这里只补一句何时下，别再说一次「未下载」
-      dim "语音合成依赖已就绪；月读酱模型将在安装末尾统一预取"
-    else
-      warn "语音合成依赖已就绪，但月读酱模型未下载（约 38MB，可在设置页「下载模型」）"
-    fi
+    # 依赖装上 ≠ 音色可用：模型与试合成统一由 [6/8] 复查负责，这里只报运行库。
+    phase_ok "安装" "语音合成依赖（piper-plus）"
     install_tts_nltk_data "$py"
-    if ! verify_tts "$py"; then
-      { [ "$TTS_MODEL_STATE" = "missing" ] || [ "$TTS_MISSING_NOTED" = "1" ]; } ||
-        warn "语音合成自检未通过（原因见上一条）；不影响其他功能"
-    fi
     return 0
   fi
-  warn "语音合成依赖没装上：不影响其他功能，稍后重跑 install --tts 即可"
-  dim "手动重试：$py -m pip install -r $INSTALL_DIR/requirements-tts.txt"
+  phase_fail "安装" "语音合成依赖未装上，重跑 install.sh 可补装"
   return 0
 }
 
-# 英文 G2P（piper-plus 自带的 g2p_en）需要 nltk 数据：cmudict + 词性标注器。
-# 安装阶段一次性下到 <数据根>/models/nltk_data；运行时联网会被 SSRF 拦截，
-# 所以这一步不能留到首次播报再做。
-#
-# 实测（Steam Deck，DNS 走代理返回 198.18.x）：nltk.download 会被 nltk 自身的
-# SSRF 保护拒绝（pathsec.urlopen: SSRF attempt to restricted IP），目录建了但
-# 一个文件都没下到，随后英文段整段合成失败。因此先试官方下载器，失败后再用
-# curl 直接取官方 zip 解压（不经过 nltk 的网络层），最后按目录校验。
+# nltk cmudict+averaged_perceptron 须在安装期落到 $DATA_MODELS/nltk_data；运行时联网会被 SSRF 拦。
+# 事故：Deck 代理 DNS 回 198.18.x，nltk.download 被自身 SSRF 保护拒（目录空），英文段合成失败。
+# 故 downloader 失败后用 curl 直取 zip 绕过 nltk 网络层，最后按目录校验。
 install_tts_nltk_data() {
   local py="$1" dir="$DATA_MODELS/nltk_data"
   [ -x "$py" ] || return 0
   if nltk_data_ok "$dir"; then
-    dim "英文语音数据已就绪（$dir）"
+    phase_skip "安装" "英文语音数据已装（nltk_data）"
     return 0
   fi
-  if _retry_download "英文语音数据" _install_tts_nltk_once "$py"; then
-    dim "英文语音数据已就绪（$dir）"
+  phase "下载" "英文语音数据，约 $(mb_text "$(dep_mb nltk)")（数据在 GitHub，慢时自动换源）"
+  if _retry_download "英文语音数据" _install_tts_nltk_once "$py" && nltk_data_ok "$dir"; then
+    phase_ok "安装" "英文语音数据（nltk_data）"
   else
-    warn "英文语音数据下载失败（已尝试 ${DOWNLOAD_ATTEMPTS} 次）：${DOWNLOAD_ERR}"
-    warn "英文段会用 espeak-ng 兜底（中文/日文播报不受影响），重跑 install --tts 可再试"
+    phase_fail "安装" "英文语音数据下载失败（重跑 install.sh 可再试；英文段会用 espeak-ng 兜底）"
   fi
   return 0
 }
@@ -2501,48 +2531,108 @@ PY
   local summary
   summary=$(printf '%s\n' "$out" | grep -E '^(OK|FAIL|SKIP)' | cut -c1-120 | tr '\n' ';' | sed 's/;$//')
   if nltk_data_ok "$dir"; then
-    dim "英文语音数据已就绪（$dir）${summary:+ · $summary}"
     return 0
   fi
-  dim "官方下载器没下成功（代理/镜像网络下常见，${summary:-无输出}），改用 curl 直取数据包"
+  phase "下载" "官方下载器未成功（代理/镜像网络下常见），改用 curl 直取数据包"
   local item sub pkg
   for item in "corpora cmudict" "taggers averaged_perceptron_tagger" "taggers averaged_perceptron_tagger_eng"; do
     sub="${item%% *}"
     pkg="${item#* }"
     [ -d "$dir/$sub/$pkg" ] && continue
-    if fetch_nltk_package "$py" "$dir/$sub" "$sub" "$pkg"; then
-      dim "已下载 $pkg"
-    else
-      warn "英文语音数据没下到：$pkg（中文/日文播报不受影响）"
-      dim "手动补：curl -L https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages/$sub/$pkg.zip -o /tmp/$pkg.zip && unzip -o /tmp/$pkg.zip -d $dir/$sub"
-    fi
+    fetch_nltk_package "$py" "$dir/$sub" "$sub" "$pkg" || true
   done
   nltk_data_ok "$dir" && return 0
-  echo "英文语音数据未齐（cmudict / averaged_perceptron_tagger_eng 缺文件）"
   return 1
 }
 
+# 下载器输出里人能看懂的一句原因：优先「不可用 / 失败 / 中断」这类自带说明的行，
+# 再去掉 Python 的 Traceback、代码行和异常类名，只留冒号后面的人话。
+_dl_reason() {
+  local line
+  line=$(printf '%s\n' "$1" \
+    | grep -E 'TTSError|不可用|失败|中断|不足|超时|timed out|HTTP|URLError|连接' \
+    | grep -v '^[[:space:]]*\(File\|raise \|from \|import \|for \|if \|else\|try\|with\|def \)' \
+    | tail -n 1)
+  [ -n "$line" ] || line=$(printf '%s\n' "$1" | grep -v '^[[:space:]]*$' | tail -n 1)
+  # 去掉异常类名，长句截断：屏幕上只要能看出「哪儿坏了」
+  line=$(printf '%s' "$line" \
+    | sed -E 's/^[a-zA-Z_][a-zA-Z0-9_.]*(\.[a-zA-Z_][a-zA-Z0-9_.]*)*: //; s/^[[:space:]]+//')
+  printf '%s' "$(printf '%s' "$line" | cut -c1-96)"
+}
+
 # 安装期所有下载都走这里：最多 3 次，间隔 2s / 4s，逐次打印第几次和失败原因。
-# 不静默：最后一次失败的原因留在 DOWNLOAD_ERR，供调用方写进收尾汇总。
+# 子进程输出落临时日志、不吞掉：每 DL_TICK 秒透传一行「已收 / 速度 / 已用」，
+# 连续 DL_HEARTBEAT 秒没新字节就补一行心跳——以前整段静默，用户以为卡死
+# （实测月读酱模型出过 5 分钟无任何输出）。失败原因留在 DOWNLOAD_ERR 供收尾汇总。
 # 用法：_retry_download "月读酱模型" <命令> [参数...]
+DOWNLOAD_TIMEOUT=900   # 单次尝试硬上限（秒）：15 分钟没下完就放弃，交给下一次
+DL_TICK=10             # 进度行刷新间隔（秒）：每秒一行会刷屏
+DL_HEARTBEAT=45        # 完全没新数据多久补一行「还在等」
 _retry_download() {
   local label="$1"; shift
-  local attempt=1 delay=2 out
+  local attempt=1 delay=2 log pid t0 now bytes last_bytes idle tick ret=0 spd
   DOWNLOAD_ATTEMPTS=0
   DOWNLOAD_ERR=""
   while [ "$attempt" -le 3 ]; do
     DOWNLOAD_ATTEMPTS=$attempt
-    if out=$("$@" 2>&1); then
-      [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/    /'
+    log=$(mktemp "${TMPDIR:-/tmp}/deckmeido-dl.XXXXXX" 2>/dev/null || echo "/tmp/deckmeido-dl.$$.$attempt")
+    phase "下载" "$label 开始下载（第 $attempt/3 次，最多等 $((DOWNLOAD_TIMEOUT / 60)) 分钟）"
+    "$@" > "$log" 2>&1 &
+    pid=$!
+    t0=$SECONDS
+    last_bytes=0
+    idle=0
+    tick=0
+    # 前台每秒看一次日志长度：变了说明还在收数据；到点才打一行，不刷屏。
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep 1
+      now=$SECONDS
+      bytes=$(wc -c < "$log" 2>/dev/null | tr -d ' ')
+      bytes=${bytes:-0}
+      tick=$((tick + 1))
+      if [ "$bytes" -gt "$last_bytes" ]; then
+        spd=$(((bytes - last_bytes) / (tick > 0 ? tick : 1)))
+        last_bytes=$bytes
+        idle=0
+        if [ "$tick" -ge "$DL_TICK" ]; then
+          tick=0
+          if [ "$spd" -gt 0 ]; then
+            phase "下载" "已收 $(human_size "$bytes")  速度 $(human_rate "$spd")  已用 $(human_dur $((now - t0)))"
+          else
+            phase "下载" "已收 $(human_size "$bytes")  正在解析内容  已用 $(human_dur $((now - t0)))"
+          fi
+        fi
+      else
+        idle=$((idle + 1))
+        if [ "$idle" -ge "$DL_HEARTBEAT" ]; then
+          phase "下载" "已收 $(human_size "$bytes")  还在等数据（已用 $(human_dur $((now - t0)))）"
+          idle=0
+          tick=0
+        fi
+      fi
+      if [ $((now - t0)) -ge "$DOWNLOAD_TIMEOUT" ]; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        DOWNLOAD_ERR="超过 $((DOWNLOAD_TIMEOUT / 60)) 分钟没下完，已中止本次尝试"
+        rm -f "$log"
+        phase_fail "下载" "第 $attempt/3 次超时"
+        return 1
+      fi
+    done
+    ret=0
+    wait "$pid" || ret=$?
+    if [ "$ret" = 0 ]; then
+      # 成功时不回放子命令输出：各下载器自己的格式和 phase 版式不一致，
+      # 会把屏幕刷花；结论统一由调用方用 phase_ok 输出。
+      rm -f "$log"
       return 0
     fi
-    # 只留最关键的报错行：Python traceback 的倒数两行常是 raise 语句本身，
-    # 直接截断会把「所有下载源都不可用：hf-mirror…」这样的原因截掉
-    DOWNLOAD_ERR=$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n 1 | sed 's/^[[:space:]]*//' | cut -c1-160)
-    [ -n "$DOWNLOAD_ERR" ] || DOWNLOAD_ERR="退出码非 0，无输出"
-    warn "$label 第 $attempt/3 次尝试失败：$DOWNLOAD_ERR"
+    DOWNLOAD_ERR=$(_dl_reason "$(tail -n 40 "$log" 2>/dev/null)")
+    [ -n "$DOWNLOAD_ERR" ] || DOWNLOAD_ERR="下载器没有输出就退出了（退出码 $ret）"
+    rm -f "$log"
+    phase_fail "下载" "第 $attempt/3 次失败：$DOWNLOAD_ERR"
     if [ "$attempt" -lt 3 ]; then
-      dim "${delay}s 后重试"
+      phase "下载" "连接不稳，${delay}s 后自动重试（多数情况下一两次就能接上）"
       sleep "$delay"
       delay=$((delay * 2))
     fi
@@ -2587,23 +2677,20 @@ tts_model_present() {
 }
 
 # 真正合成一小段中文 + 一小段英文来判定「已就绪」，不再只看包在不在。
-# 模型未下载时无法自检，如实说明，不算失败。
+# 只在模型已经落盘之后调用；模型没下就是真失败（调用方一定先跑过下载阶段）。
 verify_tts() {
   local py="$1"
   local root="$DATA_MODELS/tts/tsukuyomi"
   local onnx="$root/tsukuyomi-chan-6lang-fp16.onnx" cfg="$root/config.json"
   [ -x "$py" ] || return 1
   if [ ! -f "$onnx" ] || [ ! -f "$cfg" ]; then
-    if [ "$TTS_MISSING_NOTED" = "1" ]; then
-      # 已经在前面说清楚了，这里只记状态，不再刷第二条「未下载」
-      dim "语音合成自检：模型待安装末尾预取，本次跳过试合成"
-    else
-      warn "语音合成自检：月读酱模型未下载（约 38MB），无法试合成；设置页「下载模型」后可试听"
-    fi
     TTS_MODEL_STATE="missing"
+    TTS_MODEL_ERROR="模型文件不在盘上"
     return 1
   fi
   local out
+  # 管道内的 2>&1 已把 Python 的 stderr（onnxruntime / JPCommonLabel 告警）
+  # 收进 $out；这里的 2>/dev/null 是把结论行也丢掉，屏幕只由 stage_verify_all 出。
   out=$(NLTK_DATA="$DATA_MODELS/nltk_data" "$py" - "$onnx" "$cfg" <<'PY' 2>&1
 import os, sys, tempfile, wave
 
@@ -2653,25 +2740,20 @@ for lang, label in (("zh", "中文"), ("en", "英文")):
         print(f"FAIL {label} 合成结果为空")
 raise SystemExit(0 if ok else 1)
 PY
-  ) || {
-    warn "语音合成自检未通过："
-    printf '%s\n' "$out" | sed 's/^/    /'
-    dim "中文可用的前提下，英文失败通常是 nltk 数据缺失；重跑 install --tts 可修复"
+  ) 2>/dev/null || {
+    # 结论统一由 stage_verify_all 用 step_fail 输出，这里只回填状态和原因
     TTS_MODEL_STATE="broken"
+    TTS_MODEL_ERROR="$(printf '%s\n' "$out" | grep -E '^(FAIL|WARNING)' | head -1 | cut -c1-90)"
     return 1
   }
-  printf '%s\n' "$out" | sed 's/^/    /'
-  dim "语音合成自检通过（中文 + 英文）"
   TTS_MODEL_STATE="ready"
+  TTS_MODEL_ERROR=""
   return 0
 }
 
-# 建 venv + 装依赖。$1 = gui 时只装桌面客户端（PySide6），stt / tts 时只补对应可选依赖。
-#
-# 依赖分成两份：requirements.txt（服务端，必装）和 requirements-gui.txt
-# （PySide6 + WebEngine，解包后 700MB 上下）。以前合成一份，PySide6 一超时
-# 整个安装就报「装不上」，网页端其实早就能用了。现在拆开：桌面客户端装失败
-# 只警告，后端与网页版照常可用；之后想补装跑 install --gui。
+# 建 venv + 装依赖。$1 = gui 只装桌面客户端，stt / tts 只补对应可选依赖，空=全装。
+# requirements 分三份：服务端（必装）、gui（PySide6，失败只警告，保留网页版可用）、
+# stt / tts（可选能力）。拆开的目的是 PySide6 超时不会让整个安装失败。
 venv_install() {
   local only_gui="${1:-}"
   local py="$INSTALL_DIR/.venv/bin/python" idx=0 start=0
@@ -2709,11 +2791,10 @@ venv_install() {
 
   if [ "$only_gui" != "gui" ]; then
     if [ "${DECKMEIDO_SKIP_SERVER:-0}" = "1" ]; then
-      dim "已跳过服务端依赖（可选下载里选择了不装）"
+      phase_skip "安装" "服务端依赖（DECKMEIDO_SKIP_SERVER=1）"
     else
-      section "Python 依赖（服务端）"
       if ! pip_install_with_switch "$py" requirements.txt "$start"; then
-        warn "服务端依赖没装全，可稍后重跑：bash $INSTALL_DIR/install.sh upgrade"
+        phase_fail "安装" "服务端依赖没装全，重跑 install.sh 可补齐"
         dim "手动指定源：DECKMEIDO_PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple bash install.sh upgrade"
         return 1
       fi
@@ -2721,13 +2802,13 @@ venv_install() {
       # 但镜像缺包或老 venv 升级时仍可能漏装。这里单独补一次；终端只是可选能力，
       # 装不上只给明确提示与手动命令，不让整个安装失败，也不影响后端启动。
       if ! have_py_module "$py" "ptyprocess"; then
-        dim "补装 ptyprocess（远程终端依赖）"
-        if ! "$py" -m pip install -q 'ptyprocess>=0.7,<0.8' \
+        if "$py" -m pip install -q 'ptyprocess>=0.7,<0.8' \
              -i "${PIP_INDEXES[$start]}" >"$INSTALL_DIR/pip-ptyprocess.log" 2>&1; then
-          warn "ptyprocess 没装上：远程终端 / 终端面板将不可用，后端其余功能不受影响"
+          phase_ok "安装" "远程终端依赖（ptyprocess）"
+        else
+          phase_fail "安装" "远程终端依赖（ptyprocess）未装上：终端面板不可用，其余功能正常"
           dim "安装日志：$INSTALL_DIR/pip-ptyprocess.log"
           dim "手动补齐：$py -m pip install 'ptyprocess>=0.7,<0.8'"
-          dim "或重跑：bash $INSTALL_DIR/install.sh upgrade"
         fi
       fi
     fi
@@ -2738,21 +2819,322 @@ venv_install() {
   fi
 
   if [ -n "${DECKMEIDO_SKIP_GUI:-}" ]; then
-    dim "已跳过桌面客户端（DECKMEIDO_SKIP_GUI=1）"
+    phase_skip "安装" "桌面客户端（DECKMEIDO_SKIP_GUI=1）"
     return 0
   fi
-  section "桌面客户端（PySide6，体积较大）"
   if pip_install_with_switch "$py" requirements-gui.txt "$start"; then
-    dim "PySide6 已就绪"
+    phase_ok "安装" "桌面客户端（PySide6）"
     return 0
   fi
-  warn "PySide6 没装上：网页版可以正常用，桌面上不会有客户端窗口"
-  dim "稍后补装：bash $INSTALL_DIR/install.sh install --gui"
+  phase_fail "安装" "桌面客户端（PySide6）未装上：网页版仍可用，重跑 install.sh 可补装"
   return 0
 }
 
-# 安装阶段的语音模型预取。月读酱模型会在安装末尾尝试下载，
-# 每个下载最多 3 次；三次都失败只警告并写进收尾汇总，不影响安装完成。
+# 模块：系统控件（清单见 DEPS_PACMAN / DEPS_AUR_FALLBACK）
+# $1=1 本次要装；其它只打「跳过」。只负责安装，复查由 stage_verify_all 统一做。
+module_sys() {
+  local want="${1:-0}" miss=()
+  mod_begin "系统控件（pacman / AUR）"
+  if [ "$want" != "1" ]; then
+    phase_skip "检测" "本次未选择系统控件"
+    return 0
+  fi
+  dep_scan_missing miss
+  if [ ${#miss[@]} -eq 0 ]; then
+    phase_ok "检测" "全部已装"
+    phase_skip "下载" "无需下载"
+    phase_skip "安装" "无需重复安装"
+    return 0
+  fi
+  phase "检测" "缺：${miss[*]}"
+  phase "下载" "从 pacman / AUR 取包，约 $(mb_text "$(dep_mb sys)")"
+  deps_intro
+  maybe_autorepair_after_image_update
+  local _drc=0
+  install_deps || _drc=$?
+  if [ "$_drc" = 2 ]; then
+    phase_fail "安装" "没拿到 sudo 权限，一个都没装"
+    DEPS_FAILED=1
+    return 1
+  fi
+  phase_ok "安装" "pacman / AUR 已处理"
+  # 装完只回填实际结果，结论留给全局复查
+  deps_verified || { DEPS_FAILED=1; return 1; }
+  return 0
+}
+
+# 检查 venv 里各功能所需的 Python 模块是否真能 import；缺的追加到 $2 数组。
+# 调用方常写 _py_dep_check "$py" miss，nameref 取名 _missing 才不会和调用方的
+# 变量同名——同名时 bash 会抱「循环的名称引用」警告，且赋值行为未定义。
+_py_dep_check() {
+  local py="$1"
+  local -n _missing="$2"
+  have_py_module "$py" fastapi || _missing+=("fastapi")
+  [ "${DECKMEIDO_STT_MODE:-install}" = "install" ] && { have_py_module "$py" sherpa_onnx || _missing+=("sherpa-onnx"); }
+  [ "${DECKMEIDO_TTS_MODE:-install}" = "install" ] && { have_py_module "$py" piper_plus  || _missing+=("piper-plus"); }
+  [ "${DECKMEIDO_WAKE_MODE:-install}" = "install" ] && {
+    have_py_module "$py" sentencepiece || _missing+=("sentencepiece")
+    have_py_module "$py" pypinyin || _missing+=("pypinyin")
+  }
+  [ "${DECKMEIDO_SKIP_GUI:-0}" != "1" ] && { have_py_module "$py" PySide6 || _missing+=("PySide6"); }
+  return 0
+}
+
+# 模块：桌面客户端（PySide6）——只在 install --gui / upgrade --gui 时单独走
+module_gui() {
+  local py="$1"
+  mod_begin "桌面客户端（PySide6）"
+  if have_py_module "$py" PySide6; then
+    phase_ok "检测" "已装"
+    phase_skip "下载" "无需下载"
+    phase_skip "安装" "无需重复安装"
+  else
+    phase "检测" "缺 PySide6"
+    phase "下载" "PySide6 + WebEngine，约 $(mb_text "$(dep_mb gui)")"
+    if ! venv_install gui; then
+      phase_fail "安装" "PySide6 没装上"
+      phase_fail "复查" "桌面窗口不可用"
+      retry_hint
+      return 1
+    fi
+    phase_ok "安装" "PySide6 已装"
+  fi
+  if have_py_module "$py" PySide6; then
+    phase_ok "复查" "PySide6 可导入（占用 $(mb_text "$(path_mb "$INSTALL_DIR/.venv")")）"
+    return 0
+  fi
+  phase_fail "复查" "PySide6 导入失败"
+  retry_hint
+  return 1
+}
+
+# ---------- 全局三阶段：检测 → 安装 → 复查 ----------
+# 全流程只跑一次，各扫全部依赖。禁止在模块内单独复查：
+# 装一个查一个会让「缺 parec」这类结论拖到安装结束后才出现，届时已无法补装。
+DETECT_MISS=()      # 人类可读的缺失项（检测阶段填充）
+DETECT_NEED_SYS=0   # 系统包有缺
+DETECT_NEED_PY=0    # Python 模块有缺
+DETECT_NEED_PY_NAMES=()
+DETECT_NEED_STT_MODEL=0
+DETECT_NEED_TTS_MODEL=0
+DETECT_NEED_TTS_DATA=0
+DETECT_NEED_WAKE_MODEL=0
+DETECT_NEED_WAKE_TEXT=0
+
+# 音箱可用的常驻录音通道：parec（pulse）或 pw-record（pipewire）
+audio_recorder_present() { need_cmd parec || need_cmd pw-record; }
+
+stage_detect_all() {
+  local py="$1" want_deps="${2:-}" miss=()
+  DETECT_MISS=(); DETECT_NEED_SYS=0; DETECT_NEED_PY=0; DETECT_NEED_PY_NAMES=()
+  DETECT_NEED_STT_MODEL=0; DETECT_NEED_TTS_MODEL=0; DETECT_NEED_TTS_DATA=0
+  DETECT_NEED_WAKE_MODEL=0; DETECT_NEED_WAKE_TEXT=0
+
+  # 1) 系统包（含 gst 元素级判定）
+  if [ -n "$want_deps" ]; then
+    dep_scan_missing miss
+    if [ ${#miss[@]} -gt 0 ]; then
+      DETECT_NEED_SYS=1
+      DETECT_MISS+=("系统控件：${miss[*]}")
+    fi
+  fi
+  # 2) 音箱的常驻录音通道也归系统层，和 ydotool 一样属于「必须有才能用」
+  if [ "${DECKMEIDO_WAKE_MODE:-install}" = "install" ]; then
+    if ! audio_recorder_present; then
+      DETECT_NEED_SYS=1
+      DETECT_MISS+=("parec / pw-record（音箱常驻录音）")
+    fi
+    need_cmd busctl || { DETECT_NEED_SYS=1; DETECT_MISS+=("busctl（音箱音量与媒体控制）"); }
+  fi
+  # 3) Python 模块：一次 import 判定，不再逐个模块各查一遍
+  _py_dep_check "$py" DETECT_NEED_PY_NAMES
+  if [ ${#DETECT_NEED_PY_NAMES[@]} -gt 0 ]; then
+    DETECT_NEED_PY=1
+    DETECT_MISS+=("Python 模块：${DETECT_NEED_PY_NAMES[*]}")
+  fi
+  # 4) 模型与训练数据
+  if [ "${DECKMEIDO_STT_MODE:-install}" = "install" ]; then
+    [ -f "$(stt_model_file)" ] || { DETECT_NEED_STT_MODEL=1; DETECT_MISS+=("SenseVoice 识别模型"); }
+  fi
+  if [ "${DECKMEIDO_TTS_MODE:-install}" = "install" ]; then
+    tts_model_present || { DETECT_NEED_TTS_MODEL=1; DETECT_MISS+=("月读酱合成模型"); }
+    nltk_data_ok "$DATA_MODELS/nltk_data" || { DETECT_NEED_TTS_DATA=1; DETECT_MISS+=("英文语音数据 nltk_data"); }
+  fi
+  if [ "${DECKMEIDO_WAKE_MODE:-install}" = "install" ]; then
+    wake_model_present || { DETECT_NEED_WAKE_MODEL=1; DETECT_MISS+=("唤醒词模型 KWS+VAD"); }
+    if ! have_py_module "$py" sentencepiece || ! have_py_module "$py" pypinyin; then
+      DETECT_NEED_WAKE_TEXT=1
+      DETECT_MISS+=("唤醒词分词 sentencepiece/pypinyin")
+    fi
+  fi
+
+  if [ ${#DETECT_MISS[@]} -eq 0 ]; then
+    step_ok "全部依赖已就位，无需安装"
+  else
+    step_note "待处理 ${#DETECT_MISS[@]} 项："
+    local m; for m in "${DETECT_MISS[@]}"; do step_note "  - $m"; done
+  fi
+  return 0
+}
+
+# 按检测结果一次装完。中途只报进度，不做复查（复查属 [6/8]）。
+stage_install_all() {
+  local py="$1" want_deps="${2:-}" rc=0
+  # 系统层：包（含 parec/pw-record、busctl）一次装完
+  if [ "$DETECT_NEED_SYS" = 1 ]; then
+    module_sys "$want_deps" || rc=1
+  fi
+  # Python 运行依赖：服务端 + STT + TTS + 唤醒词分词 + PySide6，一次装完。
+  # 分词依赖由 venv_install 内部补，模型下载必须在它之后。
+  if [ "$DETECT_NEED_PY" = 1 ] || [ "$DETECT_NEED_WAKE_TEXT" = 1 ]; then
+    mod_begin "Python 运行依赖"
+    # 各子项（服务端/语音输入/语音合成/桌面客户端）自己打 phase 结论，这里只收结果
+    if ! venv_install "" 0; then
+      rc=1
+    fi
+  fi
+  # 模型：依赖全部就绪后再下，避免「包没装就下模型」
+  [ "$DETECT_NEED_STT_MODEL" = 1 ] && { module_stt_download "$py" || rc=1; }
+  [ "$DETECT_NEED_TTS_MODEL" = 1 ] && { module_tts_download "$py" || rc=1; }
+  [ "$DETECT_NEED_WAKE_MODEL" = 1 ] && { module_wake_download "$py" || rc=1; }
+  # nltk 数据要在 TTS 试合成之前，属于「安装」而非「复查」
+  [ "$DETECT_NEED_TTS_DATA" = 1 ] && { install_tts_nltk_data "$py" || true; }
+  return "$rc"
+}
+
+# 只查不装：任何补装动作都不允许出现在这里。
+stage_verify_all() {
+  local py="$1" want_deps="${2:-}" bad=0
+  # 系统控件：只读 deps_verified 的结论，不在这里另写一套判定
+  if [ -n "$want_deps" ]; then
+    if deps_verified; then
+      step_ok "系统控件全部就位"
+    else
+      step_fail "系统控件未就位：${DEPS_PROBE_FAILED[*]}"; bad=1
+    fi
+  fi
+  # 音箱录音通道
+  if [ "${DECKMEIDO_WAKE_MODE:-install}" = "install" ]; then
+    if audio_recorder_present; then step_ok "音箱录音通道（parec / pw-record）"
+    else step_fail "音箱录音通道缺失：parec 与 pw-record 都不可用"; bad=1; fi
+  fi
+  # Python 模块逐个 import
+  local miss=()
+  _py_dep_check "$py" miss
+  if [ ${#miss[@]} -eq 0 ]; then step_ok "Python 模块均可导入"
+  else step_fail "Python 模块导入失败：${miss[*]}"; bad=1; fi
+  # 语音三链只在对应依赖已导入时才有意义，缺依赖不必再跑一遍 Python 栈回溯
+  local py_ok=0
+  [ ${#miss[@]} -eq 0 ] && py_ok=1
+  # 模型真实加载 / 试合成（模型不在盘上时直接判失败，不进 Python 避免栈回溯）
+  if [ "${DECKMEIDO_STT_MODE:-install}" = "install" ] && { [ "$py_ok" = 1 ] || have_py_module "$py" sherpa_onnx; }; then
+    if [ ! -f "$(stt_model_file)" ]; then
+      step_fail "语音识别：模型未就位"; STT_MODEL_STATE="failed"; bad=1
+    elif ( cd "$INSTALL_DIR" && "$py" - <<'PY' >/dev/null 2>&1
+from server import paths
+from server.stt import STT
+STT(paths.stt_model_dir())
+PY
+    ); then step_ok "语音识别：识别器加载通过"; STT_MODEL_STATE="ready"
+    else step_fail "语音识别：识别器加载失败"; STT_MODEL_STATE="failed"; bad=1; fi
+  fi
+  if [ "${DECKMEIDO_TTS_MODE:-install}" = "install" ] && { [ "$py_ok" = 1 ] || have_py_module "$py" piper_plus; }; then
+    if ! tts_model_present; then
+      step_fail "语音合成：月读酱模型未就位"
+      TTS_MODEL_STATE="missing"; TTS_MODEL_ERROR="模型未下载"; bad=1
+    elif verify_tts "$py"; then
+      step_ok "语音合成：中英试合成通过"
+    else
+      step_fail "语音合成：试合成未通过${TTS_MODEL_ERROR:+（${TTS_MODEL_ERROR}）}"; bad=1
+    fi
+  fi
+  if [ "${DECKMEIDO_WAKE_MODE:-install}" = "install" ] && { [ "$py_ok" = 1 ] || have_py_module "$py" sentencepiece; }; then
+    if ! wake_model_present; then
+      step_fail "智能音响：唤醒词模型未就位"; bad=1
+    elif ( cd "$INSTALL_DIR" && "$py" - <<'PY' >/dev/null 2>&1
+from server import paths, wake
+wake.ensure_model(paths.wake_model_dir())
+PY
+    ); then step_ok "智能音响：唤醒词模型加载通过"
+    else step_fail "智能音响：唤醒词模型加载失败"; bad=1; fi
+  fi
+  # 音箱模式的音乐播控/点歌要另装 Decky Music，这不属于安装失败，
+  # 只在复查阶段引导一次，免得用户以为装完就能点歌。
+  if [ "${DECKMEIDO_WAKE_MODE:-install}" = "install" ]; then
+    if decky_music_present; then
+      step_ok "音箱模式播控/点歌：Decky Music 插件已就位"
+    elif decky_ready 2>/dev/null; then
+      step_note "音箱模式播控/点歌还需 Decky Music 插件，装法："
+      step_note "  1) 游戏模式按 ··· 打开 Decky 面板，进「商店」"
+      step_note "  2) 搜索 Decky Music 并安装"
+      step_note "  3) 回到面板给 Decky Music 填上你的音乐账号"
+    else
+      step_note "音箱模式播控/点歌需要两层插件，装法："
+      step_note "  1) 先装 Decky Loader：桌面模式运行"
+      step_note "     curl -L https://github.com/SteamDeckHomebrew/decky-installer/releases/latest/download/install_release.sh | sh"
+      step_note "  2) 游戏模式按 ··· 打开 Decky 面板，进「商店」搜 Decky Music 并安装"
+      step_note "  3) 回到面板给 Decky Music 填上你的音乐账号"
+    fi
+  fi
+  return "$bad"
+}
+
+# ---------- 语音模型：就位判定 + 纯下载 ----------
+# 本段只提供「模型在不在」的判定与「下载解包」，检测与复查统一由全局三阶段负责。
+TTS_MODEL_STATE="${TTS_MODEL_STATE:-}"
+
+stt_model_file() {
+  printf '%s/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx' "$DATA_MODELS"
+}
+
+wake_model_present() {
+  [ -n "$(find "$DATA_MODELS/wake" -maxdepth 3 -name 'encoder*.onnx' -print -quit 2>/dev/null || true)" ]
+}
+
+# 以下三个只做「下载 + 解包」，不含检测与复查（由全局三阶段负责）。
+module_stt_download() {
+  local py="$INSTALL_DIR/.venv/bin/python"
+  mod_begin "语音识别模型（SenseVoice）"
+  mkdir -p "$DATA_MODELS" 2>/dev/null || true
+  phase "下载" "SenseVoice 模型，约 $(mb_text "$(dep_mb stt_model)")"
+  if ! _retry_download "语音识别模型" _prefetch_stt_once; then
+    # 失败原因已由 _retry_download 逐次打印，这里只回填状态给收尾汇总
+    STT_MODEL_STATE="failed"
+    return 1
+  fi
+  phase_ok "安装" "解包到 $DATA_MODELS/sensevoice"
+  return 0
+}
+
+module_tts_download() {
+  local py="$INSTALL_DIR/.venv/bin/python"
+  mod_begin "语音合成模型（月读酱）"
+  mkdir -p "$DATA_MODELS" 2>/dev/null || true
+  phase "下载" "つくよみちゃん模型，约 $(mb_text "$(dep_mb tts_model)")"
+  if ! _retry_download "月读酱模型" _prefetch_tts_once; then
+    # 失败原因已由 _retry_download 逐次打印，这里只回填状态给收尾汇总
+    TTS_MODEL_STATE="failed"
+    TTS_MODEL_ERROR="$DOWNLOAD_ERR"
+    return 1
+  fi
+  phase_ok "安装" "解包到 $DATA_MODELS/tts/tsukuyomi"
+  return 0
+}
+
+module_wake_download() {
+  local py="$INSTALL_DIR/.venv/bin/python"
+  mod_begin "唤醒词模型（KWS + VAD）"
+  mkdir -p "$DATA_MODELS" 2>/dev/null || true
+  phase "下载" "KWS + silero VAD，约 $(mb_text "$(dep_mb wake_model)")"
+  if ! _retry_download "唤醒词模型" _prefetch_wake_once; then
+    # 失败原因已由 _retry_download 逐次打印
+    return 1
+  fi
+  phase_ok "安装" "解包到 $DATA_MODELS/wake"
+  return 0
+}
+
+# 单个模型的下载动作（由 _retry_download 负责重试与报错）。
 _prefetch_stt_once() {
   local py="$INSTALL_DIR/.venv/bin/python"
   ( cd "$INSTALL_DIR" && "$py" - <<'PY'
@@ -2780,58 +3162,21 @@ _prefetch_tts_once() {
 from server import paths
 from server.tts import TTS
 
-TTS(enable=False, model_root=paths.tts_model_dir()).download_model()
+last = [-1]
+
+def progress(done, total, phase, file=None):
+    # 每 10% 一行，与 _prefetch_stt_once 一致（_retry_download 靠它判断「还在动」）
+    if not total or total <= 0:
+        return
+    pct = int(done * 100 / total)
+    if pct // 10 != last[0] // 10:
+        last[0] = pct
+        print(f"    {phase} {pct}%", flush=True)
+
+tts = TTS(enable=False, model_root=paths.tts_model_dir())
+tts.download_model(progress=progress)
 PY
   )
-}
-
-prefetch_voice_models() {
-  local py="$INSTALL_DIR/.venv/bin/python"
-  [ -x "$py" ] || return 0
-  mkdir -p "$DATA_MODELS" 2>/dev/null || true
-
-  # 语音识别模型（SenseVoice，约 250MB）
-  if have_py_module "$py" "sherpa_onnx" &&
-     [ ! -f "$DATA_MODELS/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx" ]; then
-    section "语音识别模型（SenseVoice）"
-    dim "正在下载约 250MB，可能需要几分钟（最多尝试 3 次）"
-    if _retry_download "语音识别模型" _prefetch_stt_once; then
-      dim "语音识别模型已就绪"
-    else
-      warn "语音识别模型下载失败（已尝试 ${DOWNLOAD_ATTEMPTS} 次）：${DOWNLOAD_ERR}"
-      dim "首次录音会再试，也可重跑 install --stt"
-    fi
-  fi
-
-  # 语音合成模型（つくよみちゃん，约 40MB）：装完就能听到女仆音
-  local tts_onnx="$DATA_MODELS/tts/tsukuyomi/tsukuyomi-chan-6lang-fp16.onnx"
-  if have_py_module "$py" "piper_plus" && [ ! -f "$tts_onnx" ]; then
-    section "语音合成模型（つくよみちゃん）"
-    dim "正在下载约 40MB（最多尝试 3 次）"
-    if _retry_download "月读酱模型" _prefetch_tts_once; then
-      dim "语音合成模型已就绪"
-      TTS_MODEL_STATE="ready"
-    else
-      warn "语音合成模型下载失败（已尝试 ${DOWNLOAD_ATTEMPTS} 次）：${DOWNLOAD_ERR}"
-      dim "不影响安装；稍后可在设置页「下载模型」重试"
-      TTS_MODEL_STATE="failed"
-      TTS_MODEL_ERROR="$DOWNLOAD_ERR"
-    fi
-  fi
-
-  # 唤醒词模型（智能音响模式）
-  if [ "${DECKMEIDO_INSTALL_SPEAKER:-0}" = "1" ]; then
-    # 唤醒词生成还要 sentencepiece / pypinyin（text2token 依赖）
-    install_wake_text_deps "$py" 0
-    section "唤醒词模型（智能音响模式）"
-    if _retry_download "唤醒词模型" _prefetch_wake_once; then
-      dim "唤醒词模型已就绪"
-    else
-      warn "唤醒词模型下载失败（已尝试 ${DOWNLOAD_ATTEMPTS} 次）：${DOWNLOAD_ERR}"
-      dim "首次启用智能音响模式会再试"
-    fi
-  fi
-  return 0
 }
 
 _prefetch_wake_once() {
@@ -2844,63 +3189,26 @@ PY
   )
 }
 
-# ---------- 音箱模式（智能音响）前置检查 ----------
-# 安装时固定会装齐音箱模式组件（系统控件、唤醒词模型等）。
-# 缺什么就列什么，并给出一条补齐命令。
-wake_mode_notes() {
-  local py="$INSTALL_DIR/.venv/bin/python" miss=() m
-  have_py_module "$py" "sherpa_onnx" || miss+=("sherpa-onnx 运行时（唤醒检测）")
-  [ -n "$(find "$DATA_MODELS/wake" -maxdepth 3 -name 'encoder*.onnx' -print -quit 2>/dev/null || true)" ] ||
-    miss+=("唤醒词模型（KWS + silero VAD，约 38MB）")
-  { need_cmd parec || need_cmd pw-record; } || miss+=("parec / pw-record（常驻录音工具）")
-  need_cmd busctl || miss+=("busctl（systemd，音量与媒体控制）")
-
-  if [ ${#miss[@]} -eq 0 ]; then
-    dim "智能音响模式所需组件齐全（唤醒词模型、录音工具、busctl）"
-  else
-    warn "智能音响模式组件仍缺以下项，启用时会提示原因："
-    for m in "${miss[@]}"; do dim "  - $m"; done
-    dim "补齐方式：联网后重跑 bash install.sh install，会补下缺失的模型/组件"
-  fi
-
-  # Decky Music 是独立插件，安装器不打它；只做提示，不影响唤醒与问答
-  local found_music=0 root d
-  for root in "${DECKY_PLUGINS_DIR:-}" "$HOME/homebrew/plugins"; do
-    [ -n "$root" ] || continue
-    for d in "$root"/*usic*; do
-      if [ -d "$d" ]; then found_music=1; break; fi
-    done
-  done
-  if [ "$found_music" = 1 ]; then
-    dim "Decky Music 插件已检测到（音乐播控 / 点歌可用）"
-  else
-    dim "音乐播控 / 点歌还需 Decky Music 插件（到 Decky 商店安装并登录，不影响唤醒问答）"
-  fi
-  return 0
-}
-
-# 带进度条与换源的 pip install。
+# ---------- 带进度条与换源的 pip install ----------
 #   $1 python，$2 requirements 文件名，$3 起始源下标（默认 0）
-# 为什么要包一层：pip 下大包时很久不吐一行输出，以前又用了 -q，用户看到的
-# 就是「卡在 pip 镜像源那一步」。这里让 pip 把输出写进日志、放后台跑，
-# 前台每秒重画一次状态行：当前包 / 已下载字节 / 总字节 / 下载速度 / 剩余时间。
+# pip 下大包时久不吐输出，旧版 -q 让人以为卡在选源。改为日志后台跑，
+# 前台每秒重画：当前包 / 已下载 / 总量 / 速度 / 剩余时间。
 pip_install_with_switch() {
   local py="$1" req="$2" start="${3:-0}"
   local n=${#PIP_INDEXES[@]} i k ok=0 log="$INSTALL_DIR/pip-install.log"
   local ret=0 pid t0 cur got total rate prev_got base_got=0
-  # pip 下载的 wheel 先落缓存目录、下载完才装进 venv：下载阶段 venv 体积
-  # 不动、缓存增长，只盯 venv 会把下载速度误判成 0。所以「已下载」取
-  # venv + 缓存 两者体积之和，任何阶段都有增量可测。
-  local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/pip"
-  # 进度按「本次新增」算：先把起点体积记下来，百分比才不会从 60% 起步
+  # wheel 先落 pip 缓存再装进 venv：下载期 venv 不增长，必须两者体积之和。
+  # 缓存固定放 PIP_CACHE_DIR，装完由 purge_pip_cache 一次删掉，不碰用户自己的 ~/.cache/pip
+  local cache_dir="$PIP_CACHE_DIR"
+  export PIP_CACHE_DIR="$cache_dir"
+  mkdir -p "$cache_dir" 2>/dev/null || true
+  # 进度按「本次新增」算，否则百分比从 60% 起步
   base_got=$(du -sb "$INSTALL_DIR/.venv" "$cache_dir" 2>/dev/null | awk '{s += $1} END {print s+0}')
   base_got=${base_got:-0}
   for ((i = 0; i < n; i++)); do
     k=$(((start + i) % n))
     if [ "$i" -gt 0 ]; then dim "换源重试：${PIP_INDEXES[$k]}"; fi
-    # --progress-bar off：进度由我们自己画，不让 pip 的 \r 刷屏搅乱。
-    # 老 pip 不认 off 会退化成 on，所以这里再关掉颜色（--no-color），
-    # 万一仍是 on，至少日志里剩下可读的百分比行而不是纯控制符。
+    # 进度自绘；老 pip 不认 off 且可能仍输出颜色，一并关掉
     PIP_PROGRESS_OPTS=(--progress-bar off --no-color)
     "$py" -m pip install -r "$INSTALL_DIR/$req" \
       "${PIP_PROGRESS_OPTS[@]}" --timeout 60 --retries 3 \
@@ -2909,12 +3217,7 @@ pip_install_with_switch() {
     t0=$SECONDS
     ret=0
     prev_got=0
-    # 采样节流：du 要遍历整个 venv 目录树（装到 1.2GB 时单次上百毫秒，
-    # 每秒两次还会和 pip 抢 IO，实测把下载速度拖慢），改成 2 秒一次。
-    local last_sample=-99
     while kill -0 "$pid" 2>/dev/null; do
-      if [ $((SECONDS - last_sample)) -lt 2 ]; then sleep 1; continue; fi
-      last_sample=$SECONDS
       # 已下载字节：venv + pip 缓存 的落盘体积（单调递增）
       got=$(du -sb "$INSTALL_DIR/.venv" "$cache_dir" 2>/dev/null | awk '{s += $1} END {print s+0}')
       got=${got:-0}
@@ -2949,7 +3252,7 @@ pip_install_with_switch() {
     progress_clear
     if [ "$ret" = 0 ]; then
       ok=1
-      dim "$req 装好了（venv $(human_size "$(du -sb "$INSTALL_DIR/.venv" 2>/dev/null | awk '{print $1}')")）"
+      phase_ok "安装" "$req（虚拟环境 $(human_size "$(du -sb "$INSTALL_DIR/.venv" 2>/dev/null | awk '{print $1}')")）"
       break
     fi
     if [ -s "$log" ]; then
@@ -2974,9 +3277,8 @@ pip_install_with_switch() {
 
 # ---------- 进度显示 ----------
 # pip 不把实时速度/eta 落盘（它只在 \r 里画，写不进日志），所以这里自己算：
-# 用 venv 体积增量当「下载速度」，用日志里 Downloading 行累加出的总大小
-# 减已落盘字节当「剩余量」，两者相除得「剩余时间」。
-# 只在真终端里用 \r 原地重画；输出被重定向到文件/管道时只打普通行，不刷屏。
+# 速度用 venv 体积增量，剩余量用日志 Downloading 累加总大小减已落盘字节。
+# \r 原地重画只在真终端；重定向时打普通行。
 _spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 _progress_on=0
 _progress_last=""
@@ -2984,6 +3286,8 @@ _progress_last=""
 progress_clear() {
   if [ "$_progress_on" = 1 ]; then printf '\r\033[K'; fi
   _progress_on=0
+  # 每轮 pip 重来，百分比要从 0 重新记，否则第二轮 10% 档位对不上就不打了
+  _progress_last=""
 }
 
 # progress_bar <已下载字节> <总字节> <速度(字节/秒)> <当前包名>
@@ -3008,18 +3312,19 @@ progress_bar() {
   else
     eta_text="剩余 --"
   fi
-  # 速度 0 不代表「连不上」：pip 下载大包时先落缓存、还没装进 venv，
-  # 体积采样可能还没动，这里统一叫「测速中」，别吓用户
+  # 速度 0 ≠ 连不上：pip 先落缓存，体积采样可能还没动
   if [ "$rate" -gt 0 ]; then
     spd_text="$(human_rate "$rate")"
   else
     spd_text="测速中"
   fi
   if [ "$OUT_IS_TTY" != 1 ]; then
-    # 非终端：当前包变了才打一行，重定向到日志时也能看出进度
-    if [ -n "$cur" ] && [ "$cur" != "$_progress_last" ]; then
-      printf '    [%s] %s  %s  %s  %s\n' "$pct_text" "$size_text" "$spd_text" "$eta_text" "$cur"
-      _progress_last="$cur"
+    # 非终端（安装日志）：进度条不刷屏，百分比只作为 phase 行里的一个字段，
+    # 每 10% 更新一次同一条「下载」行，格式和其它阶段完全一致。
+    local step_pct=$((pct / 10 * 10))
+    if [ "$step_pct" != "${_progress_last:-}" ]; then
+      phase "下载" "$cur  $pct_text  ${spd_text}"
+      _progress_last="$step_pct"
     fi
     return 0
   fi
@@ -3037,12 +3342,8 @@ ensure_data_layout() {
   chmod 700 "$DATA_DIR" "$DATA_PERSONA_DIR" "$DATA_SESSIONS" "$DATA_UPLOADS" "$DATA_BOT" "$DATA_LOGS" "$DATA_MODELS" 2>/dev/null || true
 }
 
-# 工作区：安装/升级都保证它存在，幂等；已存在时一律不动里面内容。
-# 首次创建时顺手放两个说明文件，让用户在 Dolphin 里一眼看懂它是什么：
-#   .directory  KDE 文件夹备注（标准 Desktop Entry，右键属性里能看到）
-#   说明.txt    给用户看的纯文本
-# 这两个文件只在目录首次创建时写；已存在就完全不动，避免升级覆盖用户改过的内容。
-# 写入失败只记一行日志，绝不让安装失败。
+# 工作区：幂等保证存在，已存在绝不动内容。首次创建时放 .directory（KDE 文件夹备注）
+# 与 说明.txt；写入失败只记日志，不影响安装。
 seed_workspace_notes() {
   local ws="$1" f failed=0
   f="$ws/.directory"
@@ -3186,34 +3487,65 @@ prepare_config() {
   chmod 600 "$cfg" 2>/dev/null || true
 }
 
-# 后端只由插件（游戏模式）和桌面客户端拉起，安装器不再生成或启用任何
-# systemd 服务单元，也不提供需要用户手动 enable 的入口。
+# 后端只由插件（游戏模式）和桌面客户端拉起，安装器不生成/启用任何 systemd
+# 单元，也不提供需手动 enable 的入口。
 
-# 停掉后端进程本身（不是客户端）。
-#
-# 为什么单独停：后端是用 start_new_session 拉起的，客户端被杀不会带走它；
-# 而且客户端启动时如果后端已经在跑（例如游戏模式下 Decky 插件先拉起了核心），
-# 它退出时会刻意不碰那个进程。旧后端还占着端口时，新后端在 singleton.guard
-# 里会直接退出，客户端只能报「后端核心启动失败」——表现就是升级后第一次
-# 打不开、再走一次升级（此时旧进程已经自己退出）才正常。
+# 单独停后端（不含客户端）：后端由 start_new_session 拉起，杀客户端带不走它；
+# 客户端启动时若后端已在跑（如 Decky 先拉了核心），退出时也刻意不碰它。
+# 旧后端占端口 → 新后端被 singleton.guard 挡下直接退出 → 客户端报
+# 「后端核心启动失败」，表现为升级后首次打不开、再升一次才好。
 # 只认 `python -m uvicorn server.main:app`，避免误杀 runuser 包装或安装脚本。
-# 端口上监听的进程 pid（ss 优先，退化到 lsof）
+# 端口上监听的进程 pid（ss 优先，lsof 次之，都没有则翻 /proc）
 _port_pids() {
   local port="$1"
   if need_cmd ss; then
     ss -ltnp "sport = :$port" 2>/dev/null | sed -nE 's/.*pid=([0-9]+).*/\1/p' | sort -u
-  elif need_cmd lsof; then
-    lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u
+    return 0
   fi
+  if need_cmd lsof; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u
+    return 0
+  fi
+  _proc_socket_pids "$port"
 }
 
-# 进程判据只有两条，故意不要求路径匹配：
-#   1. 同一个 UID（不是 root、也不是别的用户的进程）；
-#   2. 命令行含 server.main:app 或 client/main.py。
-# 为什么不再要求 cwd == $INSTALL_DIR：用户可能用 nohup 从旧目录拉起过一份，
-# 安装目录改名/删除后，那个进程的 cwd 会显示成 "/path (deleted)"，命令行里
-# 也可能只有相对模块名 —— 旧判据认不出它，于是第 2 步静默跳过，新后端又被
-# singleton 挡在端口外，安装器只看到「v未知」（0.7.3 首次安装起不来的根因）。
+# 没有 ss/lsof 时的兜底：按 /proc/net/tcp{,6} 里 LISTEN(0A) 的 inode 反查 fd。
+# SteamOS 一般都有 ss，但卸载是一次性操作，宁可多一条不依赖额外命令的路。
+# 路径用 _PROC（默认 /proc）拼，测试时可以指到别处。
+_PROC="/proc"
+_proc_socket_pids() {
+  local port="$1" hex f line laddr st inode pid found="" d fd
+  hex="$(printf '%04X' "$port")"
+  for f in "$_PROC/net/tcp" "$_PROC/net/tcp6"; do
+    [ -r "$f" ] || continue
+    while read -r line; do
+      # 列：sl local_address rem_address st ...
+      laddr="$(printf '%s' "$line" | awk '{print $2}')"
+      st="$(printf '%s' "$line" | awk '{print $4}')"
+      inode="$(printf '%s' "$line" | awk '{print $10}')"
+      [ "${laddr##*:}" = "$hex" ] || continue
+      [ "$st" = "0A" ] || continue
+      [ -n "$inode" ] && [ "$inode" != "0" ] || continue
+      for d in "$_PROC"/[0-9]*; do
+        pid="${d##*/}"
+        case " $found " in *" $pid "*) continue ;; esac
+        for fd in "$d"/fd/*; do
+          [ -L "$fd" ] || continue
+          if [ "$(readlink "$fd" 2>/dev/null)" = "socket:[$inode]" ]; then
+            found="$found $pid"
+            break
+          fi
+        done
+      done
+    done < "$f"
+  done
+  for pid in $found; do printf '%s\n' "$pid"; done
+}
+
+# 进程判据只有两条：同 UID + 命令行含 server.main:app 或 client/main.py。
+# 不要求 cwd 匹配：nohup 从旧目录拉起的进程 cwd 会变成 "<path> (deleted)"，
+# 旧判据认不出 → 停止步骤静默跳过 → 新后端被 singleton 挡在端口外，
+# 表现为「v未知」（0.7.3 首装起不来的根因）。
 _proc_uid() {
   local pid="$1" uid=""
   uid="$(awk '/^Uid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null || true)"
@@ -3236,6 +3568,20 @@ _pid_is_ours() {
   [ -n "$cmd" ] || return 1
   case "$cmd" in
     *server.main:app*|*client/main.py*) return 0 ;;
+  esac
+  return 1
+}
+
+# 命令行像本程序，但不分用户、不要求 cwd 还在：它就是「我们自己拉起的」，
+# 只是可能是 root 起的、或安装目录已经进回收站（cwd 变成 "(deleted)"）。
+# 卸载时必须用它——_pid_is_ours 只认同 UID，root 那份 uvicorn 永远杀不掉。
+_pid_is_deckmeido() {
+  local pid="$1" cmd
+  [ -r "/proc/$pid/cmdline" ] || return 1
+  cmd="$(_proc_cmdline "$pid")"
+  [ -n "$cmd" ] || return 1
+  case "$cmd" in
+    *server.main:app*|*client/main.py*|*server/overlay.py*|*client/launch.sh*) return 0 ;;
   esac
   return 1
 }
@@ -3424,8 +3770,7 @@ relaunch_runtime() {
 
 # verify_running_version <期望版本>
 # 只比对一次：不一致就直接失败退出，不自动杀进程重试、不回滚。
-# 装完仍跑着旧版本，多半是安装前就有一个脱管的后端没停干净，
-# 该由第 2 步（停机）负责；这里只是最后的兜底，报一句能马上执行的话。
+# 装完仍跑旧版本：多半是脱管后端未停干净（应由第 2 步负责），此处仅兜底。
 verify_running_version() {
   local want="$1" got
   wait_ready || true
@@ -3446,13 +3791,14 @@ sed_repl() {
 }
 
 # ---------- Decky 插件 ----------
-# 插件只在装了 Decky Loader 的机器上有意义。先问框架在不在，不在就整段跳过，
-# 不构建、不报错 —— 大部分桌面模式用户根本没装 Decky。
-#   deploy.sh --detect：0 = 框架在，2 = 没装（1 当没装处理，宁可跳过也别乱装）
+# 插件只在装了 Decky Loader 的机器上有意义，先探在不在，不在就整段跳过。
+# 不构建、不报错 —— 多数桌面模式用户没装 Decky。
+#   deploy.sh --detect：0 = 框架在，2 = 没装（1 按没装处理，宁可跳过别乱装）
 PLUGIN_SKIP_REASON=""
 
 decky_ready() {
   local d="$INSTALL_DIR/plugin/deploy.sh" rc=0
+  PLUGIN_SKIP_REASON=""
   [ -f "$d" ] || { PLUGIN_SKIP_REASON="安装包里没有 plugin/deploy.sh"; return 1; }
   # 保留退出码：2 = 机器上没装 Decky（正常跳过），其它非 0 = 检测本身出错
   DECKMEIDO_NONINTERACTIVE=1 bash "$d" --detect >/dev/null 2>&1 || rc=$?
@@ -3466,8 +3812,8 @@ decky_ready() {
 install_plugin() {
   if ! decky_ready; then
     PLUGIN_RELOAD_STATE="absent"
-    dim "跳过 Decky 插件：${PLUGIN_SKIP_REASON:-没装 Decky Loader}"
-    dim "想用游戏模式面板，先装 Decky Loader（可选依赖），再跑：bash $INSTALL_DIR/plugin/deploy.sh"
+    phase_skip "安装" "Decky 插件：${PLUGIN_SKIP_REASON:-没装 Decky Loader}，插件包已备好"
+    dim "装好 Decky Loader 后一键部署：bash $INSTALL_DIR/plugin/deploy.sh"
     plugin_handoff_zip
     return 0
   fi
@@ -3477,87 +3823,80 @@ install_plugin() {
   decky_health || hrc=$?
   case "$hrc" in
     1)
-      warn "Decky 当前异常：$DECKY_HEALTH_NOTE"
-      warn "本次不会重启 Decky；插件文件仍会正常部署，装完请先重启 Deck，再到 设置 → Decky Loader 点「重新载入」" ;;
+      phase "检测" "Decky 当前异常（${DECKY_HEALTH_NOTE}），本次不重启，装完需重启 Deck" ;;
     2)
-      dim "Decky 状态未知：$DECKY_HEALTH_NOTE" ;;
+      phase "检测" "Decky 状态未知（${DECKY_HEALTH_NOTE}）" ;;
     3)
-      dim "Decky 已安装但服务没在运行；插件会先部署，装完自动启动 Decky" ;;
+      phase "检测" "Decky 已装但服务没在运行，装完会自动启动" ;;
     *)
-      dim "Decky 状态正常（$DECKY_HEALTH_NOTE）" ;;
+      phase "检测" "Decky 状态正常（${DECKY_HEALTH_NOTE}）" ;;
   esac
-  # 已经装过插件就是升级：直接替换，不再问。以前这里走 ask_yes（默认 N），
-  # 用户在终端按回车就把插件跳过了，升级后插件一直停在旧版本（0.6.11 就是这么来的）。
+  # 已装插件 = 升级，直接替换不再询问。旧实现走 ask_yes（默认 N），
+  # 终端回车即跳过，插件停在旧版（0.6.11 事故）。
   local installed=""
   installed="$(plugin_installed_version 2>/dev/null)" || installed=""
   if [ -n "$installed" ]; then
-    info "检测到已安装 Decky 插件 v${installed}，升级自动替换"
     if plugin_install_zip; then
       local ver=""
       ver="$(plugin_installed_version)" || ver=""
-      if [ -n "$ver" ]; then
-        if [ "$ver" = "$installed" ]; then
-          dim "插件版本仍是 v${ver}（zip 与已装版本相同）"
-        else
-          info "插件已更新：v${installed} → v${ver}"
-        fi
+      if [ -n "$ver" ] && [ "$ver" != "$installed" ]; then
+        phase_ok "安装" "Decky 插件 v${installed} → v${ver}"
+      else
+        phase_skip "安装" "Decky 插件已是 v${installed}（包内版本相同）"
       fi
       plugin_reload || true
     else
-      warn "插件自动更新失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
+      PLUGIN_RELOAD_STATE="install_failed"
+      phase_fail "安装" "Decky 插件自动更新失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
     fi
     return 0
   fi
-  # 内联升级（updater.py 用 start_new_session + stdin=/dev/null 拉起本脚本）
-  # 拿不到终端，ask_yes 永远回答「不」，插件就被静默跳过、版本停在旧的。
-  # 这类无人值守的升级必须自动装：用户既然装过插件，升级时就该跟着换。
+  # 内联升级（updater.py 以 start_new_session + stdin=/dev/null 拉起）无终端，
+  # ask_yes 恒答不 → 插件被静默跳过。无人值守必须自动装。
   if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
-    info "非交互升级：自动更新 Decky 插件"
     if plugin_install_zip; then
       local ver
-      ver="$(plugin_installed_version)" && info "插件已安装 v${ver}"
+      ver="$(plugin_installed_version)" || ver=""
+      phase_ok "安装" "Decky 插件${ver:+ v$ver}"
       plugin_reload || true
     else
       PLUGIN_RELOAD_STATE="install_failed"
-      warn "插件自动更新失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
+      phase_fail "安装" "Decky 插件未装上，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
     fi
     return 0
   fi
   # 可选下载里已经确认过（=0 跳过 / =1 装）；没确认过才在这里问
   case "${DECKMEIDO_INSTALL_PLUGIN:-ask}" in
     0|no|off|false)
-      dim "已跳过 Decky 插件（可选下载里选择了不装）"
+      phase_skip "安装" "Decky 插件（DECKMEIDO_INSTALL_PLUGIN=0）"
       PLUGIN_RELOAD_STATE="skipped"
       plugin_handoff_zip
       return 0 ;;
     1|yes|on|true)
-      info "安装 QAM 插件（zip 解包，不使用软链接）"
       if plugin_install_zip; then
         local ver
-        ver="$(plugin_installed_version)" && info "插件已安装 v${ver}"
+        ver="$(plugin_installed_version)" || ver=""
+        phase_ok "安装" "Decky 插件${ver:+ v$ver}"
         plugin_reload || true
       else
         PLUGIN_RELOAD_STATE="install_failed"
-        warn "插件安装失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
+        phase_fail "安装" "Decky 插件未装上，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
       fi
       return 0 ;;
   esac
   # 检测到 Decky，但装不装让用户定：插件要写进 ~/homebrew/plugins，属于系统级改动
   if ask_yes "检测到 Decky Loader，现在就在游戏模式里装上 QAM 面板吗？（输入 y 后按回车；直接按 A/回车=不装）"; then
-    info "安装 QAM 插件（zip 解包，不使用软链接）"
-    # 直接解 zip 到 ~/homebrew/plugins/DeckMeido：和 Decky 自己的安装器同一套产物，
-    # 插件目录自洽，删掉安装目录也不影响它加载。
-    # deploy.sh 保留给「装完还想重新解一次」的场景，这里不再走它。
+    # 直接解 zip 到 ~/homebrew/plugins/DeckMeido（与 Decky 安装器同产物，
+    # 删安装目录不影响加载）；deploy.sh 仅供手动重解。
     if plugin_install_zip; then
       local ver
-      ver="$(plugin_installed_version)" && info "插件已安装 v${ver}"
-      # 首次安装不主动重启 Decky（游戏模式里正开着，重启会打断用户），
-      # 但状态要记成「待重载」，收尾卡片不能写成「已生效」
+      ver="$(plugin_installed_version)" || ver=""
+      # 不主动重启 Decky（会打断游戏模式），只记「待重载」，收尾卡片不得写已生效
       PLUGIN_RELOAD_STATE="${PLUGIN_RELOAD_STATE:-pending}"
-      dim "插件已就绪，到 设置 → Decky Loader 点「重新载入」即可在 QAM 里看到"
+      phase_ok "安装" "Decky 插件${ver:+ v$ver}，待 Decky 重新载入后生效"
     else
       PLUGIN_RELOAD_STATE="install_failed"
-      warn "插件安装失败（${PLUGIN_SKIP_REASON:-未知原因}），可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
+      phase_fail "安装" "Decky 插件未装上，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
     fi
   else
     PLUGIN_RELOAD_STATE="skipped"
@@ -3566,32 +3905,29 @@ install_plugin() {
   return 0
 }
 
-# 把发布包里的插件 zip 解到 ~/homebrew/plugins/DeckMeido。
-# zip 由 release.py 打（前端已编译，无需 npm），顶层是 DeckMeido/ 目录。
+# 解包 deploy/deckmeido-plugin.zip 到 ~/homebrew/plugins/DeckMeido。
+# zip 由 release.py 产出（前端已编译），顶层为 DeckMeido/。
 plugin_install_zip() {
-  # 优先用发布包里带的那份（deploy/deckmeido-plugin.zip，由 release.py 从 dist/ 拷进来）；
-  # git 源码目录里没有这个 zip，那份 dist/index.js 是仓库自带的产物，直接当场压一个
   local src="$INSTALL_DIR/deploy/deckmeido-plugin.zip"
   local root="${DECKY_PLUGINS_DIR:-$HOME/homebrew/plugins}"
   local target="$root/DeckMeido"
   local tmpdir="" stage="" tmpzip=""
+  # 优先用安装目录里带的那份（release.py 从 dist/ 拷进 deploy/）；
+  # git 源码目录不带这个 zip，但有 plugin/dist/index.js 时当场压一个
   if [ ! -f "$src" ]; then
     if [ ! -f "$INSTALL_DIR/plugin/dist/index.js" ] || [ ! -f "$INSTALL_DIR/plugin/package.json" ]; then
       dim "安装包里没带插件包（$src），源码里也没有 plugin/dist/index.js，跳过"
-      PLUGIN_SKIP_REASON="没有插件包，也没有编译好的前端产物"
       return 1
     fi
-    need_cmd zip || { dim "缺少 zip，无法就地打包插件"; PLUGIN_SKIP_REASON="缺少 zip 命令"; return 1; }
-    # zip 里顶层目录必须是 DeckMeido/（Decky 按目录名识别插件），
-    # 所以先拷成 DeckMeido/ 再压
-    tmpdir="$(mktemp -d)" || { PLUGIN_SKIP_REASON="建不了临时目录"; return 1; }
+    need_cmd zip || { dim "缺少 zip，无法就地打包插件"; return 1; }
+    # zip 顶层目录必须是 DeckMeido/（Decky 按目录名识别插件），先拷成 DeckMeido/ 再压
+    tmpdir="$(mktemp -d)" || return 1
     stage="$tmpdir/DeckMeido"
     tmpzip="$tmpdir/deckmeido-plugin.zip"
     if ! cp -a "$INSTALL_DIR/plugin" "$stage" ||
        ! rm -rf "$stage/node_modules" "$stage/src" ||
        ! ( cd "$tmpdir" && zip -qr "$tmpzip" DeckMeido ) >/dev/null 2>&1; then
       dim "就地打包插件失败（$tmpdir）"
-      PLUGIN_SKIP_REASON="打包插件失败"
       rm -rf "$tmpdir"
       return 1
     fi
@@ -3599,41 +3935,33 @@ plugin_install_zip() {
     src="$tmpzip"
   fi
   need_cmd unzip || { dim "缺少 unzip，跳过"; return 1; }
-  # 旧版本可能是软链接装进来的：先删链接本身，别顺着链接把安装目录删了
+  # 旧版可能是软链接：先删链接本身，别顺着链接删到安装目录
   if [ -L "$target" ]; then
     rm -f "$target" 2>/dev/null || sudo rm -f "$target"
   fi
-  # 插件根目录属 root:root，普通用户建不了/删不掉，借一次 sudo 动本插件自己的目录。
-  # 走 run_root：免密可用就直接用，否则从 /dev/tty 要密码，不会再静默失败。
-  if ! run_root mkdir -p "$target"; then
-    dim "建不动 $target（需要 root 权限）"
-    PLUGIN_SKIP_REASON="没有 root 权限，无法写入 $root"
-    return 1
-  fi
-  # 清旧文件再解：zip 里没有的旧文件（改过名的模块）留着会让 Decky 加载到过期代码
-  safe_rm_target "$target" || { dim "拒绝清理插件目录（$target）"; return 1; }
+  # 插件根目录 root:root，普通用户建不了，借一次 sudo
+  sudo -n mkdir -p "$target" 2>/dev/null ||
+    sudo mkdir -p "$target" 2>/dev/null || { dim "建不动 $target"; [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
+  # zip 里没有的旧文件（改名模块）会让 Decky 加载过期代码，先清空
+  safe_rm_target "$target" || { dim "拒绝清理插件目录（$target）"; [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
   dim "清理旧插件目录（只删本插件自己的目录，不会动别的插件与用户数据）：$target"
-  run_root rm -rf "$target" >/dev/null 2>&1 || true
-  run_root mkdir -p "$target" || return 1
-  if ! run_root unzip -oq "$src" -d "$root"; then
-    PLUGIN_SKIP_REASON="解压失败（$src → $root）"
-    return 1
-  fi
+  sudo rm -rf "$target" 2>/dev/null || true
+  sudo mkdir -p "$target" || { [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
+  sudo unzip -oq "$src" -d "$root"; local _zrc=$?
+  [ -n "$tmpdir" ] && rm -rf "$tmpdir"
+  [ "$_zrc" = 0 ] || return 1
   # zip 顶层目录名是 DeckMeido，解到 $root 下正好生成 $target
   if ! plugin_verify_layout "$target"; then
     dim "插件目录校验失败：$PLUGIN_LAYOUT_ERROR"
-    PLUGIN_SKIP_REASON="插件目录校验失败：$PLUGIN_LAYOUT_ERROR"
-    [ -n "$tmpdir" ] && rm -rf "$tmpdir"
     return 1
   fi
-  [ -n "$tmpdir" ] && rm -rf "$tmpdir"
   return 0
 }
 
 # 插件目录自检：dist/index.js（前端产物）、plugin.json（Decky 清单）、
 # package.json（版本）三者必须齐全且版本一致。
-# 为什么要查版本一致性：release.py 分开更新这两个文件，只要漏一个，Decky 面板
-# 显示的版本和实际跑的代码就对不上，用户报障时完全没法判断装的是哪一版。
+# 版本一致性必须查：release.py 分开更新 plugin.json / package.json，漏一个就会
+# Decky 面板版本与实跑代码不符，用户报障时无法判断版本。
 PLUGIN_LAYOUT_ERROR=""
 plugin_verify_layout() {
   local dir="${1:-${DECKY_PLUGINS_DIR:-$HOME/homebrew/plugins}/DeckMeido}"
@@ -3658,10 +3986,10 @@ plugin_verify_layout() {
   fi
   vj="$(sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$pj" | head -n1)"
   vp="$(sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$pkg" | head -n1)"
-  # 版本号以 package.json 为准：Decky 自己只读 package.json 的 version 显示在
-  # QAM 里，官方模板的 plugin.json 只有 name/author/flags/api_version。
-  # 2026-11-08 装机日志：把「plugin.json 没有 version」当成校验失败，卸载旧插件
-  # 之后又把自家的 zip 判死，结果插件目录被删干净、QAM 里再也打不开。
+  # 版本号以 package.json 为准：Decky 只读它的 version 显示在 QAM，官方模板
+  # plugin.json 只有 name/author/flags/api_version。2026-11-08 装机日志把
+  # 「plugin.json 无 version」判成失败，删掉旧插件后又判死自家 zip，
+  # 插件目录被清空、QAM 打不开。故 vj 缺失可以，vp 缺失才失败。
   if [ -z "$vp" ]; then
     PLUGIN_LAYOUT_ERROR="package.json 里没有 version 字段：$pkg"
     return 1
@@ -3670,8 +3998,7 @@ plugin_verify_layout() {
     PLUGIN_LAYOUT_ERROR="版本不一致：plugin.json=$vj，package.json=$vp（打包漏更新了一个）"
     return 1
   fi
-  # 权限：Decky 以 root 加载，用户读不到也不影响运行，但说明文件被人改成了 0600，
-  # 顺手报出来，免得以后排查时又多一层迷雾
+  # 不可读不影响出包（Decky 以 root 加载），仅提示
   if [ ! -r "$pj" ] || [ ! -r "$dist" ]; then
     mode="$(stat -c '%a' "$pj" 2>/dev/null || echo '?')"
     dim "提示：插件文件当前用户不可读（plugin.json 权限 $mode）；Decky 以 root 运行通常仍能加载"
@@ -3729,11 +4056,18 @@ decky_bind_fail_hits() {
 # stop 之后还活着的 Decky 进程。KillMode=process 下这正是死循环的来源：
 # 主进程被杀，子进程继续持有 1337，所以必须在 start 之前确认它们真的没了。
 decky_residual_procs() {
-  local pid cmd out=""
-  command -v pgrep >/dev/null 2>&1 || return 0
-  for pid in $(pgrep -f 'PluginLoader|plugin_loader' 2>/dev/null || true); do
+  local pid cmd out="" cands
+  cands="$(_port_pids 1337)"
+  # 除了按进程名找，还必须找「真正占着 1337 的人」：stop 之后仍持有端口的子进程
+  # 未必有 plugin_loader 字样（2026-11-10 卸载实测，残留 PID 1734/1909/1910 就
+  # 全是这样）。只按名字找会漏掉它们 → start 一上来就撞端口 → 重启循环。
+  if command -v pgrep >/dev/null 2>&1; then
+    cands="$cands $(pgrep -f 'PluginLoader|plugin_loader' 2>/dev/null || true)"
+  fi
+  for pid in $(printf '%s\n' $cands | sort -u); do
     [ "$pid" = "$$" ] && continue
-    cmd="$( { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null || true )"
+    [ "$pid" = "${PPID:-}" ] && continue
+    cmd="$(_proc_cmdline "$pid")"
     # 我们自己的探针命令（pgrep/systemctl 的命令行里也带这些字样）不算残留
     case "$cmd" in
       *pgrep*|*systemctl*|*install.sh*|*uninstall.sh*) continue ;;
@@ -3757,11 +4091,10 @@ decky_wait_stopped() {
   return 1
 }
 
-# 动手前给 Decky 体检。返回 0 = 可用；1 = 已异常（绝不能再去重启它）；
-# 2 = 查不了（没有 systemctl / 没装 Decky，不算故障）；
-# 3 = 装了但服务没在跑（没启动 / 被停用），不是故障，start 一下就行。
-# 判据三条一起看：is-active 是不是 active、journal 近 2 分钟有没有 1337 bind 失败、
-# 1337 是否真的能连上。只看第一条会被重启循环骗过去（那期间 is-active 一直是 active）。
+# Decky 体检。0=可用；1=已异常（绝不能重启它）；2=查不了（无 systemctl/
+# 没装 Decky，不算故障）；3=装了但没在跑（start 即可）。
+# 三条判据同看：is-active、journal 近 2 分钟 1337 bind 失败、1337 能否连通。
+# 只看 is-active 会被重启循环骗过（循环期它一直是 active）。
 decky_health() {
   local unit state nr hits
   DECKY_HEALTH="unknown"
@@ -3800,16 +4133,12 @@ decky_health() {
   return 0
 }
 
-# Decky 重启循环探测（安装与卸载共用）：重启后必须回读 NRestarts，不能只看 is-active。
-#
-# 为什么必须查：plugin_loader.service 用的是 KillMode=process，systemctl restart 只杀主进程，
-# 旧子进程继续占着 127.0.0.1:1337；新实例绑不上端口就退出，Restart=always 又把它拉起来，
-# 于是变成每 7 秒一轮的重启循环（2026-11-08 实测 271 次，还把 Decky Music 拖到 10GB）。
-# 这期间 is-active 一直显示 active，只看它就会报「已重载」，完全误导。
-#
-# 判定：15 秒内 NRestarts 增长，或近 30 秒 journal 里出现 1337 的 address already in use。
-# 命中只置 DECKY_LOOP_NOTE 并返回 1，由调用方记进各自的失败清单——绝不中断流程，
-# 因为这时安装/卸载可能已经做了一半，半途停下比继续更糟。
+# 重启循环探测（安装/卸载共用）：重启后必须回读 NRestarts，不能只看 is-active。
+# plugin_loader.service 是 KillMode=process，systemctl restart 只杀主进程，旧子进程
+# 仍占 127.0.0.1:1337；新实例绑不上就退出，Restart=always 再拉起 → 每 7 秒一轮循环
+# （2026-11-08 实测 271 次，还把 Decky Music 拖到 10GB），期间 is-active 恒为 active。
+# 判定：15 秒内 NRestarts 增长，或近 30 秒 journal 出现 1337 address already in use。
+# 命中只置 DECKY_LOOP_NOTE 并返回 1，不中断流程（此时流程可能已做了一半）。
 decky_restart_loop_note() {
   local unit="$1" before after hits why
   case "$unit" in ''|*' '*) return 0 ;; esac
@@ -3837,13 +4166,10 @@ decky_restart_loop_note() {
 }
 
 # 安全重载 Decky：stop → 等残留退出 → start → 回读验证。
-#
-# 为什么不用 systemctl restart：unit 是 KillMode=process，restart 只杀 PyInstaller
-# 主进程，十几个子进程还留在旧 cgroup 里继续持有 1337；systemd 立刻拉起新实例，
-# 新实例绑不上端口就退出，Restart=always 再拉起来 —— 直接进入无限重启循环
-# （2026-11-08 实测 271 次，Decky 全挂、Decky Music 涨到 10GB）。
-# 所以必须 stop（让 systemd 按自己的 TimeoutStopSec 收尾）→ 确认残留真的没了
-# → 才 start。残留没清干净就绝不再 start，宁可让用户重启 Deck。
+# 不用 systemctl restart：unit 是 KillMode=process，restart 只杀主进程，子进程仍持
+# 1337，systemd 立刻拉起新实例 → 绑不上 → 无限重启循环（2026-11-08 实测 271 次）。
+# 因此必须 stop（等 TimeoutStopSec 收尾）→ 确认残留消失 → 才 start；
+# 残留未清绝不 start，宁可让用户重启 Deck。
 decky_safe_reload() {
   local unit tmo state i did_stop=0
   DECKY_SAFE_STATE=""
@@ -3873,6 +4199,19 @@ decky_safe_reload() {
       DECKY_SAFE_NOTE="停止 Decky 失败（$unit）：sudo 被拒绝或服务不存在"
       return 1
     fi
+    # Decky 停下后，插件在 Decky 环境里拉起的客户端/后端就成孤儿了：它们仍然
+    # 占着 1337（以及后端端口），名字里没有 plugin_loader，不做处理就会被当成
+    # 「残留进程」把重载卡死。先补一刀：本程序进程 + 1337 的实际持有者。
+    local orph pid
+    orph="$(_deckmeido_pids_all)"
+    for pid in $(_port_pids 1337); do
+      [ "$pid" = "$$" ] && continue
+      case " $orph " in *" $pid "*) ;; *) orph="$orph $pid" ;; esac
+    done
+    orph="${orph# }"
+    if [ -n "$orph" ]; then
+      un_stop_pids "$orph" >/dev/null 2>&1 || true
+    fi
     # 等它真正停干净。上限取服务自己的 TimeoutStopSec（15s），再长也没意义
     tmo="$(systemctl show -p TimeoutStopSec --value "$unit" 2>/dev/null || true)"
     tmo="${tmo%s}"
@@ -3880,8 +4219,20 @@ decky_safe_reload() {
     [ "$tmo" -gt 20 ] && tmo=20
     [ "$tmo" -lt 3 ] && tmo=3
     if ! decky_wait_stopped "$unit" "$tmo"; then
+      local res cur
+      res="$(decky_residual_procs)"
       DECKY_SAFE_STATE="failed"
-      DECKY_SAFE_NOTE="停止 Decky 后仍有残留进程（PID: $(decky_residual_procs)）占着 1337；已放弃重载，避免触发重启循环。请重启 Deck 后再继续"
+      cur=""
+      for i in $res; do
+        case "$( _proc_cmdline "$i" )" in
+          *server.main:app*|*client/main.py*|*server/overlay.py*) cur="$cur $i" ;;
+        esac
+      done
+      if [ -n "$cur" ]; then
+        DECKY_SAFE_NOTE="停止 Decky 后仍有残留进程（PID:$res），其中$cur 是本程序的客户端/后端（它们在这里跑在 Decky 环境里）。已放弃重载，避免触发重启循环。重启 Deck 即可；急着用可先执行：kill${cur}，再重新运行卸载"
+      else
+        DECKY_SAFE_NOTE="停止 Decky 后仍有残留进程（PID: $res）占着 1337；已放弃重载，避免触发重启循环。请重启 Deck 后再继续"
+      fi
       return 1
     fi
   else
@@ -3890,8 +4241,12 @@ decky_safe_reload() {
     local res
     res="$(decky_residual_procs)"
     if [ -n "$res" ]; then
+      un_stop_pids "$res" >/dev/null 2>&1 || true
+      res="$(decky_residual_procs)"
+    fi
+    if [ -n "$res" ]; then
       DECKY_SAFE_STATE="failed"
-      DECKY_SAFE_NOTE="Decky 服务已停止，但仍有残留进程（PID: $res）占着 1337；已放弃重载，请重启 Deck 后再继续"
+      DECKY_SAFE_NOTE="Decky 服务已停止，但仍有残留进程（PID: $res）占着 1337，且结束不掉；已放弃重载，请重启 Deck 后再继续"
       return 1
     fi
   fi
@@ -3949,8 +4304,8 @@ plugin_reload() {
   DECKY_LOOP_NOTE=""
   DECKY_SAFE_STATE=""
   DECKY_SAFE_NOTE=""
-  # 动手前先体检：已经卡在循环里还去重启它，只会把循环坐实。
-  # 注意 3 是「装了但没在跑」——那不是故障，后面 start 一下就行，不能跳过。
+  # 先体检再动手：已卡在重启循环里还去重启只会坐实循环。
+  # 3 = 装了但没在跑，不算故障，后面 start 即可，不能跳过。
   decky_health || hrc=$?
   if [ "$hrc" = 1 ]; then
     PLUGIN_RELOAD_STATE="pending"
@@ -4025,13 +4380,9 @@ install_desktop() {
 install_uninstaller() {
   cat > "$INSTALL_DIR/uninstall.sh" <<'EOS'
 #!/usr/bin/env bash
-# DeckMeido 卸载入口（由 install.sh 自动生成，逻辑只有 install.sh 的 do_uninstall 一份）
-#
-#   bash uninstall.sh                  卸载：安装器文件全部移入回收站，保留 userdata/ 与工作区
-#   bash uninstall.sh --dry-run        只列计划，零改动（系统包也只列不删）
-#   bash uninstall.sh --purge          连工作区、userdata、日志、模型、配置备份一起移入回收站
-#
-# 所有模式都只把东西丢进回收站，绝不永久删除；userdata/ 只有 --purge 才移走。
+# 生成的卸载入口。逻辑只有 install.sh 的 do_uninstall 一份，此处仅转发。
+#   bash uninstall.sh [--dry-run] [--purge]
+# 一律只移入回收站，不永久删除；userdata/ 仅 --purge 时移走。
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELF="$HERE/install.sh"
@@ -4053,24 +4404,15 @@ write_version_file() {
   # 发布包里带一份 VERSION（release.py 按 tag 写入），tar 安装时没有
   # git 仓库，只能靠它；git 安装则用 describe，能反映「比 tag 多几个提交」
   local ver=""
-  # git 源码目录优先用 git：源目录里的 VERSION 可能是上一版留下的旧值，
-  # 先读它会让界面把新代码显示成旧版本
-  if [ -d "$HERE/.git" ]; then
-    ver=$(git -C "$HERE" describe --tags --always 2>/dev/null || true)
-  fi
-  if [ -z "$ver" ] && [ -f "$HERE/VERSION" ]; then
+  if [ -f "$HERE/VERSION" ]; then
     ver=$(head -n1 "$HERE/VERSION" 2>/dev/null || true)
   fi
   if [ -z "$ver" ]; then
     ver=$(git -C "$INSTALL_DIR" describe --tags --always 2>/dev/null || true)
   fi
-  # describe 在打不到 tag 的浅克隆里只会给一串提交号，那不是版本号，按序继续找：
-  # package.json（手工解包/无 git 的部署也靠它，避免写成 0.0.0 显示 v0.0.0）
-  case "$ver" in
-    *[0-9].[0-9]*) ;;
-    *) ver="" ;;
-  esac
-  [ -n "$ver" ] || ver=$(sed -nE 's/^  "version": "([^"]*)".*/\1/p' "$HERE/plugin/package.json" 2>/dev/null | head -n1)
+  [ -n "$ver" ] || ver=$(git -C "$HERE" describe --tags --always 2>/dev/null || true)
+  # 手工解包/无 git 的部署：退回插件 package.json 的 version，
+  # 避免 VERSION 被写成 0.0.0 导致界面显示 v0.0.0
   [ -n "$ver" ] || ver=$(sed -nE 's/^  "version": "([^"]*)".*/\1/p' "$INSTALL_DIR/plugin/package.json" 2>/dev/null | head -n1)
   [ -n "$ver" ] || ver="0.0.0"
   printf '%s\n' "${ver#v}" > "$INSTALL_DIR/VERSION"
@@ -4093,10 +4435,9 @@ write_version_file() {
 }
 
 wait_ready() {
-  # 客户端冷启动要依次：起 Qt、拉起后端、uvicorn 加载、第一次渲染页面。
-  # 以前只等 3×0.3 秒，新装/大版本升级（venv 冷启动、PySide6 首次解压缓存）
-  # 几乎必然超时，用户看到一条「未能自动启动」，其实界面几秒后就出来了。
-  # 这里给到 30 秒，进程已经退出（启动失败）就提前放弃，不白等。
+  # 冷启动要依次起 Qt、拉后端、uvicorn 加载、首次渲染。旧版只等 0.9 秒，
+  # 新装/大版本升级几乎必超时（误报「未能自动启动」）。给到 30 秒，
+  # 进程已退出（启动失败）则提前放弃。
   local url="http://127.0.0.1:$PORT/"
   local i
   for i in $(seq 1 60); do
@@ -4179,15 +4520,26 @@ print_done() {
     if tts_model_present; then TTS_MODEL_STATE="ready"; else TTS_MODEL_STATE="missing"; fi
   fi
   case "$TTS_MODEL_STATE" in
-    ready)  card_line "语音模型     已就绪（月读酱）" ;;
-    failed) card_line "语音模型     下载失败（已尝试 3 次，原因：$(printf '%s' "${TTS_MODEL_ERROR:-未知}" | cut -c1-80)）" ;;
-    broken) card_line "语音模型     校验失败（设置页可重新下载）" ;;
-    *)      card_line "语音模型     未下载（约 38MB，设置页「下载模型」）" ;;
+    ready)   card_line "语音合成     已就绪（月读酱，中英试合成通过）" ;;
+    failed)  card_line "语音合成     模型下载失败（已尝试 ${DOWNLOAD_ATTEMPTS} 次，原因：$(printf '%s' "${TTS_MODEL_ERROR:-未知}" | cut -c1-60)）" ;;
+    broken)  card_line "语音合成     试合成失败（重跑安装即可再试）" ;;
+    missing) card_line "语音合成     模型缺失（重跑安装即可补下）" ;;
+    *)       card_line "语音合成     本次未选" ;;
   esac
-  # 无法安装的可选项：一行列全，不留「怎么少了东西」的疑问
+  case "${STT_MODEL_STATE:-unknown}" in
+    ready)  card_line "语音识别     已就绪（SenseVoice）" ;;
+    failed) card_line "语音识别     模型未就绪（重跑安装可再试）" ;;
+    *)
+      if [ "${DECKMEIDO_STT_MODE:-install}" = "install" ]; then
+        card_line "语音识别     未复查（重跑安装可补齐）"
+      else
+        card_line "语音识别     本次未选"
+      fi ;;
+  esac
+  # 用户显式跳过的可选项（DECKMEIDO_SKIP_GUI 等）：一行列全
   if [ ${#SKIPPED_ITEMS[@]} -gt 0 ]; then
     skipped=$(IFS='、'; printf '%s' "${SKIPPED_ITEMS[*]}")
-    card_line "已跳过：$skipped（相应功能降级，可之后单独补装）"
+    card_line "已跳过：$skipped（相应功能降级，重跑安装即可补上）"
   fi
   # Decky 重启循环告警：plugin_reload 只能在当场 warn，这里收尾再单列一行，
   # 否则用户翻回几十行前的 [!] 才能看见，甚至直接漏掉
@@ -4201,7 +4553,7 @@ print_done() {
     pending) card_line "Decky 插件   v${pv:-?} 已部署，待重载（请先重启 Deck，再到 Decky 设置点「重新载入」）" ;;
     failed)  card_line "Decky 插件   v${pv:-?} 已部署，但重载失败（请重启 Deck 后再重新载入）" ;;
     install_failed)
-             card_line "Decky 插件   安装失败（${PLUGIN_SKIP_REASON:-未知原因}；QAM 里不会有入口）" ;;
+             card_line "Decky 插件   安装失败（文件没解开，QAM 里不会有入口）" ;;
     absent)  card_line "Decky 插件   未安装：没检测到 Decky Loader（可选依赖）" ;;
     skipped) card_line "Decky 插件   未安装：按你的选择跳过，zip 已放到工作区" ;;
     *)       [ -n "$pv" ] && card_line "Decky 插件   v${pv} 已部署" ;;
@@ -4210,12 +4562,12 @@ print_done() {
   if deckmeido_speaker_ready; then
     card_line "音箱模式     已就绪（唤醒词 + 录音 + 媒体控制）"
   else
-    card_line "音箱模式     组件不全（详见上文「智能音响模式」缺项）"
+    card_line "音箱模式     组件不全（详见上文「智能音响模式」缺项，重跑安装即可补上）"
   fi
   # 系统控件缺了就是缺了：这一行必须和设置页「可补装组件」显示的一致，
   # 不能再出现「上面打勾、下面全红」的矛盾
-  if [ ${#DEPS_MISSING_AFTER[@]} -gt 0 ]; then
-    card_line "系统控件     缺 $(IFS='、'; printf '%s' "${DEPS_MISSING_AFTER[*]}")（联网后重跑 check --fix）"
+  if [ ${#DEPS_MISSING_AFTER[@]} -gt 0 ] || [ "$DEPS_FAILED" = 1 ]; then
+    card_line "系统控件     缺 $(IFS='、'; printf '%s' "${DEPS_MISSING_AFTER[*]:-见上文}")（联网后重跑安装即可补上）"
   fi
   card_line "本机控制台   http://127.0.0.1:$PORT/"
   card_line "局域网访问   http://$ip:$PORT/（本次掌机 IP；换了网络会变，以设置页显示为准）"
@@ -4232,71 +4584,59 @@ print_done() {
 }
 
 # ---------- 子命令 ----------
-# 六步版式：检查环境 → 停止旧进程 → 下载并校验主程序 → 可选依赖 →
-# 部署插件与桌面入口 → 启动后端（并校验运行版本）。
-# 每一步只留一行结论；原始输出全进 userdata/logs/install-<时间>.log。
+# 七步顺序按依赖排死，不可颠倒；每步只输出结论行，原始输出进
+# userdata/logs/install-<时间>.log。依赖必须早于模型早于复查（试合成/试唤醒）。
 do_install() {
-  local deps="" gui_only=0 stt_only=0 tts_only=0
+  local deps="--deps" gui_only=0
   for a in "$@"; do
     case "$a" in
       --deps) deps="--deps" ;;
+      --no-deps) deps="" ;;   # 仅调试用：显式不装系统控件
       --gui)  gui_only=1 ;;   # 只补装桌面客户端（PySide6），不动别的
-      --stt)  stt_only=1 ;;   # 只补装语音输入依赖（sherpa-onnx）
-      --tts)  tts_only=1 ;;   # 只补装语音合成依赖（piper-plus）
     esac
   done
-  # 只补装某一项依赖：不换代码、不停机，走原来的轻量路径
-  check_user
-  if [ "$tts_only" = 1 ] || [ "$stt_only" = 1 ] || [ "$gui_only" = 1 ]; then
-    check_user
-    start_install_log
-    sync_files
-    ensure_data_layout
-    ensure_workspace || true
-    if [ "$tts_only" = 1 ]; then
-      DECKMEIDO_INSTALL_TTS=1 venv_install tts
-    elif [ "$stt_only" = 1 ]; then
-      DECKMEIDO_INSTALL_STT=1 venv_install stt
-    else
-      venv_install gui
-    fi
-    write_install_records
-    return 0
-  fi
-
   check_user
   print_banner
   start_install_log
+  # 默认全装：不再询问档位，能用到的组件一律装上。
+  # 各模块先在清单里「检测」，已装好的到时自动跳过，不会重复下载。
+  optional_downloads
+  export DECKMEIDO_STT_MODE=$([ "${DECKMEIDO_INSTALL_STT:-1}" = "1" ] && echo install || echo skip)
+  export DECKMEIDO_TTS_MODE=$([ "${DECKMEIDO_INSTALL_TTS:-1}" = "1" ] && echo install || echo skip)
+  export DECKMEIDO_WAKE_MODE=$([ "${DECKMEIDO_INSTALL_SPEAKER:-1}" = "1" ] && echo install || echo skip)
+  # 系统控件同时受命令行开关与逐项勾选约束，两者取「都同意才装」
+  [ "${DECKMEIDO_INSTALL_DEPS:-1}" = "1" ] || deps=""
   STEP_QUIET=1
   reset_steps
   local disk_ver="" had_old=0
 
-  # [1/6] 检查环境
+  # [1/8] 检查环境
   step "检查环境"
   check_prereq
   preflight
-  # 装系统包、写 Decky 插件目录都要 root：开局一次性要密码，
-  # 后面全程不再打断用户（后台还有续期进程保活）。
-  if sudo_warmup; then
-    step_ok "安装目录 $INSTALL_DIR，端口 $PORT（root 授权已获取）"
-  else
-    step_ok "安装目录 $INSTALL_DIR，端口 $PORT"
-    step_note "没拿到 root 权限：系统控件与 Decky 插件会跳过，装完可跑 check --fix 补"
-  fi
+  step_ok "安装目录 $INSTALL_DIR，端口 $PORT"
+  # 容量预估：把本次要占多少、每项多少先说清楚，再动手。
+  # 只算真正会装的模块——未勾选的项不会下载，报了反而让人以为非要那么大空间。
+  plan_keys="app server gui stt_mod tts_mod"
+  [ -n "$deps" ] && plan_keys="$plan_keys sys"
+  [ "${DECKMEIDO_SKIP_GUI:-0}" = "1" ] && plan_keys="${plan_keys/ gui/}"
+  [ "$DECKMEIDO_STT_MODE" = "install" ] && plan_keys="$plan_keys stt_model"
+  [ "$DECKMEIDO_TTS_MODE" = "install" ] && plan_keys="$plan_keys tts_model nltk"
+  [ "$DECKMEIDO_WAKE_MODE" = "install" ] && plan_keys="$plan_keys wake_mod wake_model"
+  plan_keys="$plan_keys plugin"
+  print_capacity_plan "$plan_keys"
+  step_ok "合计约 $(mb_text "$PLAN_TOTAL_MB")，预计 $(human_dur "$PLAN_SECONDS")；中途可随时 Ctrl+C，重跑会接着装"
 
-  # [2/6] 停止旧进程
-  # 换文件前必须没有旧后端占着端口：用户可能用 nohup 手动起过一份，
-  # 它不是安装器拉起的 pid，只按 pid 记录停不掉（0.7.1 装完仍是 0.7.0 的根因）。
-  #
-  # 动手改任何东西之前先抓一份「机器原本是什么样」（只在第一次安装时抓，
-  # 升级不覆盖）。卸载时靠它判断哪些路径/包是我们带来的、ydotool.service
-  # 安装前是什么状态，做到「除了回收站以外，机器没做任何其他改动」。
+  # [2/8] 停止旧进程
+  # 换文件前必须没有旧后端占着端口。capture_install_baseline 只在第一次安装时抓，
+  # 升级不覆盖；卸载靠它判断哪些东西是我们带来的。
   capture_install_baseline
   step "停止旧进程"
   [ -n "$(_backend_pids)" ] && had_old=1
   [ -n "$(_client_pids)" ] && had_old=1
   if ! stop_runtime; then
     step_fail "旧进程没停掉，为安全起见没有替换任何文件"
+    retry_hint
     die "请先按上面的提示手动停掉旧进程，再重跑安装"
   fi
   if [ "$had_old" = 1 ]; then
@@ -4305,91 +4645,68 @@ do_install() {
     step_skip "没有运行中的后端 / 客户端"
   fi
 
-  # [3/6] 下载并校验主程序（本地源码安装就是同步文件）
-  step "下载并校验主程序"
+  # [3/8] 安装程序文件
+  step "安装程序文件"
   sync_files
   disk_ver="$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
-  step_ok "程序文件已就位：$INSTALL_DIR（v${disk_ver:-未知}）"
   ensure_data_layout
   prepare_config
-  step_ok "配置已就绪：$DATA_CONFIG"
-  # 之前卸载时备份的人设/记忆搬回来，让「她」还是原来的她
   restore_soul
   ensure_workspace || true
+  local app_mb
+  app_mb=$(path_mb "$INSTALL_DIR/server")
+  step_ok "已就位：$INSTALL_DIR（v${disk_ver:-未知}，server $(mb_text "$app_mb")）"
+  step_ok "配置已就绪：$DATA_CONFIG"
 
-  # [4/6] 可选依赖
-  step "可选依赖"
-  optional_downloads
-  # 依赖没装全不该让整个安装中断：代码已经同步好了，联网问题用户之后能自行重试
-  if venv_install; then
-    step_ok "Python 运行环境已就绪"
-  else
-    step_note "运行依赖没装全，可重跑：bash $INSTALL_DIR/install.sh upgrade"
-  fi
-  # 标准 / 完整档：把语音模型一起下好（最小档什么都不下）
-  prefetch_voice_models
-  if [ "$deps" = "--deps" ] || [ "${DECKMEIDO_INSTALL_DEPS:-0}" = "1" ]; then
-    deps_intro
-    maybe_autorepair_after_image_update
-    if install_deps; then
-      # 「已处理」不等于「能用」：逐个包实测一次，缺哪个就把哪个列出来
-      if deps_verified; then
-        step_ok "系统控件依赖已就绪（ydotoold / ydotool / wtype / kdotool 实测可用）"
-      else
-        step_ok "系统控件依赖已安装"
-        step_fail "但 ${#DEPS_PROBE_FAILED[@]} 项实测不可用：${DEPS_PROBE_FAILED[*]}"
-        next_hint "联网后重跑：bash $INSTALL_DIR/install.sh check --fix"
-      fi
-    else
-      local _drc=$?
-      if [ "$_drc" = 2 ]; then
-        step_skip "系统控件依赖（没拿到 sudo 权限，一个都没装；之后补装：bash $INSTALL_DIR/install.sh check --fix）"
-      else
-        # 以前这里是 install_deps || true + 无条件 step_ok：装不上也打勾，
-        # 用户进设置页却看到一片「未安装 / 点修复也修不好」，无从判断信谁。
-        step_fail "系统控件没装全（缺：${DEPS_MISSING_AFTER[*]:-见上}）"
-        next_hint "设置页的缺失项就是这里没装上的；联网后重跑：bash $INSTALL_DIR/install.sh check --fix"
-      fi
-    fi
-  else
-    system_notes
-    step_skip "系统控件依赖（之后想装：bash install.sh install --deps）"
-  fi
-  # 音箱模式（智能音响）组件检查，缺的逐项列清楚
-  wake_mode_notes
+  # [4/8] 检测依赖：一次性扫完全部依赖，只报缺什么，不装任何东西
+  step "检测依赖"
+  local py="$INSTALL_DIR/.venv/bin/python"
+  stage_detect_all "$py" "$deps"
 
-  # [5/6] 部署插件与桌面入口
+  # [5/8] 安装依赖与模型：按 [4/8] 的结果一次装完，中途不复查
+  step "安装依赖与模型"
+  if stage_install_all "$py" "$deps"; then
+    step_ok "依赖与模型已装完"
+  else
+    step_fail "有项目没装成功，明细见上"
+  fi
+
+  # [6/8] 功能复查：只查不装，缺什么在这里如实列出
+  step "功能复查"
+  if stage_verify_all "$py" "$deps"; then
+    step_ok "复查通过"
+  else
+    step_fail "复查有未通过项"
+    retry_hint
+  fi
+  # 依赖已装完、也不再需要下载：立刻清缓存，别把 1GB 临时文件留在硬盘上
+  purge_pip_cache
+
+  # [7/8] 部署插件与桌面入口；[8/8] 启动后端
   step "部署插件与桌面入口"
   install_desktop
   install_uninstaller
   install_plugin
-  # Decky 会在插件加载时自动建 settings/data/logs/<插件名>；装完先占上，
-  # 保证清单里一定记着这三处（否则卸载时它们会成为「插件没卸干净」）。
-  # 没装 Decky 时不能建：会在没有 Decky 的机器上凭空造出 ~/homebrew/{settings,data,logs}，
-  # 看起来像装过 Decky，卸载时还得再清一遍。
   if decky_ready 2>/dev/null; then
     local _dd
     while IFS= read -r _dd; do
       mkdir -p "$_dd" 2>/dev/null || true
     done < <(decky_plugin_dirs)
   fi
-  # 所有安装动作结束后再落标记/清单，确保 venv、桌面项、插件都记录在内
   write_install_records
-  step_ok "桌面入口、Decky 插件与安装清单已写入"
+  step_ok "桌面入口、Decky 插件与安装清单已写入（插件 $(mb_text "$(dep_mb plugin)")）"
 
-  # [6/6] 启动后端并校验运行版本
   step "启动后端"
-  # 服务端依赖被显式跳过时后端必然起不来；这里跳过启动而不是报错中断，
-  # 否则「用户选择不装」会被当成安装失败（汇总里有「已跳过」一行说明影响）。
   if [ "${DECKMEIDO_SKIP_SERVER:-0}" = "1" ]; then
     step_skip "已跳过启动后端（服务端依赖未安装）"
-    dim "补装依赖后重跑：bash $INSTALL_DIR/install.sh upgrade"
+    retry_hint
     print_done
     return 0
   fi
   if ! relaunch_runtime; then
     step_fail "后端没能启动"
     next_hint "手动启动：cd $INSTALL_DIR && .venv/bin/python -m uvicorn server.main:app --host 127.0.0.1 --port $PORT"
+    retry_hint
     die "安装已完成，但后端没有起来"
   fi
   if ! verify_running_version "${disk_ver:-0.0.0}"; then
@@ -4425,10 +4742,11 @@ stop_client() {
 }
 
 do_upgrade() {
-  local deps="" gui_only=0
+  local deps="--deps" gui_only=0
   for a in "$@"; do
     case "$a" in
       --deps) deps="--deps" ;;
+      --no-deps) deps="" ;;
       --gui)  gui_only=1 ;;
     esac
   done
@@ -4440,23 +4758,34 @@ do_upgrade() {
   dim "升级会保留：userdata/ 下的配置、人设、长期记忆、会话与上传文件，"
   dim "以及工作区；Decky 插件已装过会自动替换为新版本。"
   start_install_log
+  # 默认全装：缺什么补什么，已装好的自动跳过；--gui 只补桌面客户端，不动别的
+  [ "$gui_only" = 1 ] || optional_downloads
+  export DECKMEIDO_STT_MODE=$([ "${DECKMEIDO_INSTALL_STT:-1}" = "1" ] && echo install || echo skip)
+  export DECKMEIDO_TTS_MODE=$([ "${DECKMEIDO_INSTALL_TTS:-1}" = "1" ] && echo install || echo skip)
+  export DECKMEIDO_WAKE_MODE=$([ "${DECKMEIDO_INSTALL_SPEAKER:-1}" = "1" ] && echo install || echo skip)
+  [ "${DECKMEIDO_INSTALL_DEPS:-1}" = "1" ] || deps=""
   STEP_QUIET=1
   reset_steps
   local disk_ver="" had_old=0
 
-  # [1/6] 检查环境
+  # [1/8] 检查环境
   step "检查环境"
   check_prereq
   preflight
-  # 升级同样会装系统包、重写插件目录：一开始就要 root
-  if sudo_warmup; then
-    step_ok "安装目录 $INSTALL_DIR，端口 $PORT（root 授权已获取）"
-  else
-    step_ok "安装目录 $INSTALL_DIR，端口 $PORT"
-    step_note "没拿到 root 权限：系统控件与 Decky 插件会跳过，装完可跑 check --fix 补"
+  step_ok "安装目录 $INSTALL_DIR，端口 $PORT"
+  if [ "$gui_only" = 0 ]; then
+    # 只算真正会装机 / 会下载的模块
+    plan_keys="server gui stt_mod tts_mod"
+    [ -n "$deps" ] && plan_keys="$plan_keys sys"
+    [ "${DECKMEIDO_SKIP_GUI:-0}" = "1" ] && plan_keys="${plan_keys/ gui/}"
+    [ "$DECKMEIDO_STT_MODE" = "install" ] && plan_keys="$plan_keys stt_model"
+    [ "$DECKMEIDO_TTS_MODE" = "install" ] && plan_keys="$plan_keys tts_model nltk"
+    [ "$DECKMEIDO_WAKE_MODE" = "install" ] && plan_keys="$plan_keys wake_mod wake_model"
+    print_capacity_plan "$plan_keys"
+    step_ok "合计约 $(mb_text "$PLAN_TOTAL_MB")，预计 $(human_dur "$PLAN_SECONDS")；中途可随时 Ctrl+C，重跑会接着装"
   fi
 
-  # [2/6] 停止旧进程
+  # [2/8] 停止旧进程
   # 顺序要紧：先停客户端（否则它的 watchdog 会把旧后端拉回来），
   # 再把可能已经「脱管」的后端进程也收掉，保证换文件时没有旧进程占着端口
   step "停止旧进程"
@@ -4464,6 +4793,7 @@ do_upgrade() {
   [ -n "$(_client_pids)" ] && had_old=1
   if ! stop_runtime; then
     step_fail "旧进程没停掉，为安全起见没有替换任何文件"
+    retry_hint
     die "请先按上面的提示手动停掉旧进程，再重跑升级"
   fi
   if [ "$had_old" = 1 ]; then
@@ -4472,74 +4802,65 @@ do_upgrade() {
     step_skip "没有运行中的后端 / 客户端"
   fi
 
-  # [3/6] 下载并校验主程序
-  step "下载并校验主程序"
+  # [3/8] 安装程序文件
+  step "安装程序文件"
   sync_files
   disk_ver="$(head -n1 "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
-  step_ok "程序文件已就位：$INSTALL_DIR（v${disk_ver:-未知}）"
   ensure_data_layout
   ensure_workspace || true
+  local app_mb
+  app_mb=$(path_mb "$INSTALL_DIR/server")
+  step_ok "已就位：$INSTALL_DIR（v${disk_ver:-未知}，server $(mb_text "$app_mb")）"
 
-  # [4/6] 可选依赖
-  step "可选依赖"
+  # [4/8] 检测依赖（与全新安装同一套顺序）
+  step "检测依赖"
+  local py="$INSTALL_DIR/.venv/bin/python"
   if [ "$gui_only" = 1 ]; then
-    venv_install gui || true
-    step_ok "桌面客户端依赖已处理（只补装 PySide6，其余未动）"
+    module_gui "$py"
+    write_install_records
+    print_done
+    return 0
+  fi
+  stage_detect_all "$py" "$deps"
+
+  # [5/8] 安装依赖与模型：一次装完，中途不复查
+  step "安装依赖与模型"
+  if stage_install_all "$py" "$deps"; then
+    step_ok "依赖与模型已装完"
   else
-    optional_downloads
-    if venv_install; then
-      step_ok "Python 运行环境已就绪"
-    else
-      step_note "运行依赖没装全，可重跑：bash $INSTALL_DIR/install.sh upgrade"
-    fi
-    # 升级时补齐语音模型（已有就跳过；自定义档下 STT 模型不预取，TTS 模型照下）
-    prefetch_voice_models
-    if [ "$deps" = "--deps" ] || [ "${DECKMEIDO_INSTALL_DEPS:-0}" = "1" ]; then
-      maybe_autorepair_after_image_update
-      if install_deps; then
-        step_ok "系统控件依赖已处理"
-      else
-        local _drc=$?
-        if [ "$_drc" = 2 ]; then
-          step_skip "系统控件依赖（没拿到 sudo 权限，一个都没装；之后补装：bash $INSTALL_DIR/install.sh check --fix）"
-        else
-          step_fail "系统控件没装全（缺：${DEPS_MISSING_AFTER[*]:-见上}）"
-          next_hint "设置页的缺失项就是这里没装上的；联网后重跑：bash $INSTALL_DIR/install.sh check --fix"
-        fi
-      fi
-    else
-      system_notes
-      step_skip "系统控件依赖（之后想装：bash install.sh upgrade --deps）"
-    fi
-    # 音箱模式（智能音响）组件检查，缺的逐项列清楚
-    wake_mode_notes
+    step_fail "有项目没装成功，明细见上"
   fi
 
-  # [5/6] 部署插件与桌面入口
+  # [6/8] 功能复查：只查不装
+  step "功能复查"
+  if stage_verify_all "$py" "$deps"; then
+    step_ok "复查通过"
+  else
+    step_fail "复查有未通过项"
+    retry_hint
+  fi
+  # 依赖已装完、也不再需要下载：立刻清缓存
+  purge_pip_cache
+
+  # [7/8] 部署插件与桌面入口；[8/8] 启动后端
   step "部署插件与桌面入口"
-  if [ "$gui_only" = 1 ]; then
-    write_install_records
-    step_skip "只补装桌面客户端，插件与桌面入口未改动"
-  else
-    install_desktop
-    install_uninstaller
-    install_plugin
-    write_install_records
-    step_ok "桌面入口、Decky 插件与安装清单已更新"
-  fi
+  install_desktop
+  install_uninstaller
+  install_plugin
+  write_install_records
+  step_ok "桌面入口、Decky 插件与安装清单已更新"
 
-  # [6/6] 启动后端并校验运行版本
   step "启动后端"
-  # 与全新安装一致：服务端依赖被显式跳过时不把「起不来」当升级失败
   if [ "${DECKMEIDO_SKIP_SERVER:-0}" = "1" ]; then
     step_skip "已跳过启动后端（服务端依赖未安装）"
-    dim "补装依赖后重跑：bash $INSTALL_DIR/install.sh upgrade"
+    retry_hint
     print_done
     return 0
   fi
   if ! relaunch_runtime; then
     step_fail "后端没能启动"
     next_hint "手动启动：cd $INSTALL_DIR && .venv/bin/python -m uvicorn server.main:app --host 127.0.0.1 --port $PORT"
+    retry_hint
     die "升级已完成，但后端没有起来"
   fi
   if ! verify_running_version "${disk_ver:-0.0.0}"; then
@@ -4564,9 +4885,9 @@ github_latest_tag() { json_tag "$GH_LATEST/latest.json"; }
 mirror_latest_tag() { json_tag "$MIRROR/latest.json"; }
 
 # curl_progress <url> <输出文件> [显示名]
-# 边下边报：文件名 / 已下载 / 总大小 / 百分比 / 速度。裸 curl -o 在 Deck 的
-# 小屏上等于「没有任何反馈」，几十 MB 的包会被当成卡死。
-# 非终端（重定向/日志）时只在百分比跨过 10% 时打一行，避免刷屏。
+# 边下边报：文件名 / 已下载 / 总大小 / 百分比 / 速度。裸 curl -o 在 Deck 小屏上
+# 毫无反馈，几十 MB 的包会被当成卡死。
+# 非终端（重定向/日志）时每跨 10% 打一行，避免刷屏。
 curl_progress() {
   local url="$1" dest="$2" label="${3:-$(basename "$2")}"
   local total pid rc got pct=-1 rate=0 eta=0 t0 now dt last_t last_got=0
@@ -4691,12 +5012,9 @@ fetch_pkg() {
   return 0
 }
 
-# 管道执行时「装 / 升 / 卸」怎么定：
-#   没装   → 什么都不问，直接装（一行命令的默认用途）
-#   装了   → 必须手动选「升级」还是「卸载」，不设默认值
-# 之所以不给默认值：回车就升级的话，想卸载的人一旦手滑就直接覆盖安装，
-# 卸载入口等于藏起来了。这里强制敲 1 或 2。
-# 结果写进 REMOTE_ACTION（不用命令替换捕获：横幅与提示都走 stdout，捕获会把它们混进来）
+# 管道执行时装/升/卸怎么定：没装 → 直接装；装了 → 必须手选 1/2，不设默认。
+# 不给默认值：回车就升级会让想卸载的人手滑覆盖安装，卸载入口等于藏起来。
+# 结果写 REMOTE_ACTION（不用命令替换捕获：横幅与提示都走 stdout 会被混进来）。
 REMOTE_ACTION=""
 remote_pick_action() {
   print_banner
@@ -4768,17 +5086,21 @@ do_from_mirror() {
   [ -n "$src" ] || die "安装包结构不对：里面没有 install.sh"
   info "开始执行：$REMOTE_ACTION（来源：$src）"
   # 让子进程沿用这次用的镜像地址，写进配置的就是它。
-  # 子命令明确传下去：上面已经问过「升级还是卸载」，不能让子脚本再猜一次；
-  # 其余参数（--deps / --gui 等）也一并转发
+  # 子命令明确传下去：上面已经问过「升级还是卸载」，不能让子脚本再猜一次。
+  # DECKMEIDO_BANNER_SHOWN 一并导出：大字已经在本进程打过了，子脚本再打一遍
+  # 会把首屏顶出可视区（用户看到的就是「logo 滚走了」）。
+  export DECKMEIDO_BANNER_SHOWN=1
   DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" "$REMOTE_ACTION" "$@"
 }
 
 # 管道执行 / 一行命令自举：先镜像，镜像不可用再 GitHub。
 do_from_piped() {
   need_cmd curl || die "需要 curl：先装 curl（sudo pacman -S curl）"
-  remote_action_or_exit
 
   print_banner
+  # 动作先问（会再调一次 print_banner，已由上面的去重挡掉），再报网络进度，
+  # 这样首屏先出大字+菜单，而不是先刷两行版本信息再把 logo 顶走。
+  remote_action_or_exit
   # 临时目录用脚本级变量：trap 要等脚本退出才执行，那时函数里的 local
   # 已经出栈，set -u 下展开 $tmp 会报「tmp: 未绑定的变量」（用户看到的
   # 就是按 A 结束后闪出的一条 bash 报错）。改用全局变量 + :- 兜底。
@@ -4820,7 +5142,8 @@ do_from_piped() {
   [ -n "$src" ] || die "安装包结构不对：里面没有 install.sh"
   info "开始执行：$REMOTE_ACTION（来源：$src，包来自$origin）"
   # 镜像地址仍写进配置，供软件内更新作为兜底源；本次安装包来源由 origin 决定。
-  # 其余参数（--deps / --gui 等）一并转发给子脚本
+  # 大字已在本进程打过，导出标记让子脚本别再打一次（否则首屏被顶出可视区）。
+  export DECKMEIDO_BANNER_SHOWN=1
   DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" "$REMOTE_ACTION" "$@"
 }
 
@@ -4861,28 +5184,6 @@ PY
   printf '%s\n' "$ws"
 }
 
-# 卸载前把「她这个人」的数据备份到 ~/.config/deckmeido/，普通卸载只删代码、
-# 不丢人设和记忆；下次安装时自动恢复。--purge 才会连这份备份一起删，
-# 但无论哪种模式，userdata/ 都整目录保留。
-# 备份两份文件：meidosoul.json（人设）+ memory.json（长期记忆/偏好）。
-backup_soul() {
-  local dst="$CONFIG_DIR"
-  mkdir -p "$dst"
-  local saved=0
-  local soul="$DATA_PERSONA" mem="$DATA_MEMORY"
-  if [ -f "$soul" ]; then
-    cp -f "$soul" "$dst/meidosoul.json" 2>/dev/null && saved=1
-  fi
-  if [ -f "$mem" ]; then
-    cp -f "$mem" "$dst/memory.json" 2>/dev/null && saved=1
-  fi
-  # 只有安装器创建的配置目录才允许日后 --purge 删除，必须留下标记与清单
-  write_config_records || true
-  [ "$saved" = 1 ] && dim "已备份人设与记忆到 $dst（下次安装自动恢复）"
-  # 没有可备份文件时上面的 && 列表返回 1，不能让 set -e 把卸载中断
-  return 0
-}
-
 # 安装完成后，若 ~/.config/deckmeido/ 里有之前卸载时留下的人设/记忆备份，
 # 就搬回 server/ 目录，让「她」还是原来的她。
 restore_soul() {
@@ -4901,63 +5202,17 @@ restore_soul() {
   return 0
 }
 
-# ---------- 卸载辅助 ----------
-DATA_KEEP_NOTE="$DATA_DIR/README-KEPT.txt"
-
-# 在保留的数据目录里留一份说明，避免用户以后对着一堆文件不知道能不能删
-write_keep_note() {
-  [ -d "$DATA_DIR" ] || return 0
-  cat > "$DATA_KEEP_NOTE" <<EOF 2>/dev/null || return 0
-DeckMeido 已经卸载，这个目录是特意保留的用户数据。
-
-里面保存的是：
-  · config.toml            设置（含 API Key）
-  · persona/               人设（meidosoul.json）
-  · memory.json            长期记忆
-  · sessions/              对话历史
-  · uploads/  logs/        上传与日志
-  · models/                语音识别模型（如果有）
-  · meidobot/              QQ 通道归档
-
-为什么保留：下次重新安装时会直接接上，不用重新配置、也不会丢记忆。
-怎么彻底删除：确认不再使用后，把整个目录丢进回收站即可，例如：
-  gio trash "$DATA_DIR"
-如果本目录位于安装目录内，连安装目录一起丢进回收站也可以。
-EOF
-  info "保留说明已写入 $DATA_KEEP_NOTE"
-}
-
-# server/ 里运行期生成的东西（__pycache__、日志、临时分片）不在安装清单里，
-# 单独清一遍，否则卸载完 server/ 还会剩一堆「未识别文件」
-cleanup_generated_leftovers() {
-  local d="$INSTALL_DIR/server" p
-  [ -d "$d" ] || return 0
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    trash_path "$p" >/dev/null || true
-  done < <(find "$d" -path "$d/userdata" -prune -o -type d -name '__pycache__' -print 2>/dev/null)
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    trash_path "$p" >/dev/null || true
-  done < <(find "$d" -path "$d/userdata" -prune -o -type f \
-    \( -name '*.log' -o -name '*.part' -o -name '*.tmp' -o -name '*.pyc' \) -print 2>/dev/null)
-}
-
 # ---------- 系统包取证（pacman.log + pacman -Qi + 包目录签名） ----------
-# 没有安装清单的老安装，只能从 /var/log/pacman.log 取证。按安装时间窗分三类：
-#   W 窗口内新装        → 候选，可删（还要过「三方交叉验证」）
-#   U 窗口内升级但原本已有 → 只记录，永远不删（那是用户的包）
-#   O 早于窗口的老包      → 永远不删（SteamOS 基线 / 用户自己装的）
-# 交叉验证：log 事件落在窗口内 + pacman -Qi 的 Install Date 不早于窗口 + 包落盘的
-# 文件确实是 DeckMeido 签名。三者都成立才允许删，少一条只提示、不动手。
-# 不写死任何 SteamOS 包名表。
-# 直接用上面 DEPS_PACMAN / DEPS_AUR / DEPS_AUR_FALLBACK 那份清单：以前这里
-# 又抄了一份，加包时两处漏一处就会「装了却不在可卸清单里」。
+# 无安装清单的老安装只能从 pacman.log 取证，按安装时间窗分三类：
+#   W 窗口内新装 → 候选可删（仍需三方交叉验证）
+#   U 窗口内升级但原本已有 → 只记录，永不删
+#   O 早于窗口 → 永不删（SteamOS 基线 / 用户自装）
+# 交叉验证三条全中才删：log 在窗内 + pacman -Qi Install Date 不早于窗口 + 落盘文件带签名。
+# 不写死 SteamOS 包名表。清单直接复用 DEPS_*，避免两处漏同步。
 PAC_DEPS=("${DEPS_PACMAN[@]}" "${DEPS_AUR[@]}" "${DEPS_AUR_FALLBACK[@]}")
 
-# 包落盘里是否有 DeckMeido 痕迹。系统包（espeak-ng 之类）本身不会装我们的文件，
-# 所以只看「这个包提供的文件里有没有落在安装目录/配置目录里的、并且确实存在」
-# 那就说明它确有文件落在我们地盘上。没有痕迹不代表不能删——只表示证据少一条。
+# 包落盘文件里是否有落在安装/配置目录且存在的 → 说明它写过我们的地盘。
+# 无痕迹只表示证据少一条，不代表不能删。
 pac_pkg_has_signature() {
   local p="$1" f
   while IFS= read -r f; do
@@ -5055,9 +5310,8 @@ pac_classify_deps() {
 
 # 可选：卸载安装器亲自装过的系统包。默认卸载（回车=删，显式 n 才保留）；
 # 只认 DEP_RECORD 清单与 pacman 取证里「窗口内新装」的包，
-# 绝不碰 SteamOS 自带组件或用户原本就有的包，
-# 也不用 -Rns 级联删依赖。删包前必须列清单并询问，--purge 也不静默删。
-# requires_confirm=0 时只在 dry-run 下调用（只打印，不问）。
+# 绝不碰 SteamOS 自带组件或用户原有的包，不用 -Rns 级联删。
+# 删包前列清单并询问，--purge 也不静默删。do_ask=0 只在 dry-run 下用（只打印）。
 uninstall_optional_deps() {
   local t0="${1:-}" do_ask="${2:-1}"
   local p ev line cls reason ver src
@@ -5223,9 +5477,9 @@ uninstall_optional_deps() {
 
 # ---------- ydotool.service 状态还原 ----------
 # 安装器对系统只做了两件「持久」的事：装包，以及把 ydotool.service enable 起来。
-# 卸载要把 enable 还原：只有「安装前不是 enabled、本次由我们 enable」的才 disable；
-# 原本就 enabled 的不动（那是用户自己的设置）。
-# 证据优先级：基线快照 > 清单里的 unit: 行（旧清单没有 → 认为是安装器 enable 的）。
+# 卸载是否该 disable ydotool.service：只有「安装前非 enabled、本次由我们 enable」才
+# disable，原本就 enabled 的不动（用户自有设置）。
+# 证据优先级：基线快照 > 清单 unit: 行（旧清单无 → 视为安装器 enable）。
 ydotool_unit_before() {
   local f="$BASELINE_FILE" v=""
   if [ -f "$f" ]; then
@@ -5273,27 +5527,6 @@ disable_ydotool_unit() {
   dim "ydotool.service 已 disable"
 }
 
-# 一次卸载的回收站汇总：把「丢哪儿了、丢了多少、要不要自己清」说清楚
-print_trash_summary() {
-  local n="$TRASH_COUNT" root
-  root="$(trash_root)"
-  if [ "$DRY_RUN" = 1 ]; then
-    info "以上是计划（--dry-run），没有改动任何文件"
-    return 0
-  fi
-  if [ "$n" -eq 0 ]; then
-    dim "本次没有文件需要移走"
-  else
-    info "已把 $n 项移入回收站：$root"
-    dim "回收站里的内容需要你自己清空（在文件管理器里清空回收站即可）。"
-    dim "不清空也不影响以后重新安装。"
-  fi
-  if [ "${TRASH_FAILED:-0}" -gt 0 ]; then
-    warn "有 $TRASH_FAILED 项没能移走（多半是权限），见上方提示"
-  fi
-  return 0
-}
-
 # ---------- 卸载：提权、结果记账、日志 ----------
 # 卸载要结束 root 插件进程、重启 Decky、恢复只读层。三种环境都要能跑：
 # 已经是 root、能免密 sudo、只有终端（让 sudo 自己问密码）。都不行就返回 127，
@@ -5306,14 +5539,14 @@ run_root() {
     un_log "  RC=127 root: $*（没有 sudo）"
     return 127
   elif sudo -n true >/dev/null 2>&1; then
-    # </dev/null：piped 执行时 stdin 还挂着外层管道，子进程（pacman / paru）
-    # 若去读 stdin 会把脚本剩下的部分吃掉，表现为「静默退出、提示符直接回来」
+    # </dev/null 必须：piped 执行时 stdin 挂着外层管道，子进程（pacman/paru）
+    # 读 stdin 会吃掉剩余脚本，表现为「静默退出、提示符直接回来」
     sudo -n "$@" </dev/null; rc=$?
   elif [ -t 0 ] || { true </dev/tty; } 2>/dev/null; then
     # 密码框由 sudo 自己从 /dev/tty 读，不占 stdin，所以这里重定向是安全的
     sudo "$@" </dev/null; rc=$?
   elif [ -n "${SUDO_ASKPASS:-}" ] && [ -x "${SUDO_ASKPASS}" ]; then
-    # 没有终端但有 askpass：与 sudo_warmup 一致，保证 SSH 远程也能装插件
+    # 没有终端但有 askpass（SSH 远程卸载、自动化）
     sudo -A "$@" </dev/null; rc=$?
   else
     un_log "  RC=127 root: $*（没有终端，无法输入 sudo 密码）"
@@ -5332,7 +5565,7 @@ UN_STEP_TOTAL=9
 UN_STEP_TITLE=""
 UN_ABORT=0
 UN_STEP_FAIL_BASE=0
-UN_IN_SUMMARY=0
+UN_STEP_CLOSED=0
 DATA_AT=""
 UNINSTALL_REMOVED_PKGS=""
 
@@ -5344,6 +5577,9 @@ un_log() {
 # 每一步结束时把「这一步成功还是失败」以 exit=0/1 写进日志，方便事后核对
 un_step_close() {
   [ "$UN_STEP" -gt 0 ] || return 0
+  # 同一步只记一次 exit=：汇总后显式关了一次，下一个 un_step 又会关一次
+  [ "${UN_STEP_CLOSED:-0}" = "$UN_STEP" ] && return 0
+  UN_STEP_CLOSED=$UN_STEP
   local rc=0
   [ "${#UNINSTALL_FAILS[@]}" -gt "$UN_STEP_FAIL_BASE" ] && rc=1
   un_log "== step $UN_STEP exit=$rc =="
@@ -5353,12 +5589,11 @@ un_step() {
   UN_STEP=$((UN_STEP + 1))
   UN_STEP_TITLE="$1"
   UN_STEP_FAIL_BASE=${#UNINSTALL_FAILS[@]}
+  UN_STEP_CLOSED=0
   printf '\n%s[%d/%d]%s %s%s%s\n' "$C_B" "$UN_STEP" "$UN_STEP_TOTAL" "$C_END" "$C_B" "$1" "$C_END"
   un_log "== [$UN_STEP/$UN_STEP_TOTAL] $1 =="
 }
-# 汇总卡片里已经逐条列过一次，汇总环节不再重复记进 UNINSTALL_DONE，
-# 否则 [8/9] 汇总时同一条 ✓ 会打印两遍
-un_ok()   { printf '      %s✓%s %s\n' "$C_OK" "$C_END" "$*"; [ "${UN_IN_SUMMARY:-0}" = 1 ] || UNINSTALL_DONE+=("$*"); un_log "  OK   $*"; }
+un_ok()   { printf '      %s✓%s %s\n' "$C_OK" "$C_END" "$*"; UNINSTALL_DONE+=("$*"); un_log "  OK   $*"; }
 un_skip() { printf '      %s-%s %s\n' "$C_DIM" "$C_END" "$*"; un_log "  SKIP $*"; }
 un_note() { printf '      %s%s%s\n' "$C_DIM" "$*" "$C_END"; un_log "  NOTE $*"; }
 un_fail() {
@@ -5438,9 +5673,9 @@ restore_readonly() {
 }
 
 # 异常退出（Ctrl-C、中途失败）也把只读层恢复回去。
-# 这里只用免密 sudo：trap 里不能弹密码框，否则退出流程会卡住。
-# 2026-11-08 实测卸载停在 [6/9] 之后静默退出：没有报错、没有汇总，
-# 用户完全不知道发生了什么。所以 trap 里必须把「哪一步没跑完」说出来。
+# trap 里只用免密 sudo：不能弹密码框，否则退出流程卡死。
+# 2026-11-08 实测卸载停在 [6/9] 后静默退出（无报错无汇总），故 trap 必须说出
+# 「哪一步没跑完」。
 readonly_guard_setup() {
   [ "$DRY_RUN" = 1 ] && return 0
   UN_ABORT=1
@@ -5496,7 +5731,6 @@ trash_path_root() {
   } > "$info" 2>/dev/null || true
   echo "[已移入] $dest"
   TRASH_COUNT=$((TRASH_COUNT + 1))
-  TRASH_LAST_DIR="$root"
   return 0
 }
 
@@ -5612,13 +5846,66 @@ plugin_pids() {
   pgrep -f "$PLUGIN_MAIN_PAT" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true
 }
 
-# 全机的后端进程（不限安装目录、不限用户）。为什么不能用安装目录匹配：
-# 上次卸载日志写「已停止」，但 uvicorn 其实是 root 从旧目录拉起的，
-# 命令行里根本没有当前 $INSTALL_DIR，按目录匹配就漏了，端口一直被占到卸载结束。
-# 模式写成 [s]erver.main:app 是为了让 pkill 自己的命令行不匹配自己。
+# 全机后端进程（不限目录/用户）。不能按安装目录匹配：上次卸载日志写「已停止」，
+# 实际是 root 从旧目录拉起的 uvicorn，命令行不含当前 $INSTALL_DIR 被漏掉，
+# 端口占到卸载结束。模式写成 [s]erver 避免 pkill 匹配到自身命令行。
 _all_backend_pids() {
   command -v pgrep >/dev/null 2>&1 || return 0
   pgrep -f '[s]erver\.main:app' 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true
+}
+
+# 全机、不分用户的本程序进程（root 起的 uvicorn / 旧目录里还在跑的客户端）。
+# 卸载专用：_backend_pids 只认同 UID，root 那份它永远看不见。
+_deckmeido_pids_all() {
+  local d pid out=""
+  for d in /proc/[0-9]*; do
+    pid="${d#/proc/}"
+    [ "$pid" = "$$" ] && continue
+    [ "$pid" = "${PPID:-}" ] && continue
+    _pid_is_deckmeido "$pid" || continue
+    out="$out $pid"
+  done
+  for pid in $(_port_pids "$PORT"); do
+    [ "$pid" = "$$" ] && continue
+    _pid_is_deckmeido "$pid" || continue
+    case " $out " in *" $pid "*) ;; *) out="$out $pid" ;; esac
+  done
+  printf '%s' "${out# }"
+}
+
+# 先 TERM 等一会儿，没退再提权 TERM，最后提权 KILL；返回仍活着的 pid。
+# $1 = 要结束的 pid 列表；$2 = 判定「还没死」的探测命令（默认是本程序进程扫描）。
+# 卸载各步杀的对象不同（后端 / 插件进程 / 端口持有者），探测必须能换，
+# 否则「后端进程杀完了，但插件进程还在」会被误判成 success。
+un_stop_pids() {
+  local pids="$1" probe="${2:-_deckmeido_pids_all}" i left
+  [ -n "$pids" ] || return 0
+  # shellcheck disable=SC2086
+  kill -TERM $pids 2>/dev/null || true
+  for i in $(seq 1 10); do
+    left="$($probe)"
+    [ -z "$left" ] && return 0
+    sleep 0.3
+  done
+  # shellcheck disable=SC2086
+  run_root kill -TERM $pids >/dev/null 2>&1 || true
+  for i in $(seq 1 10); do
+    left="$($probe)"
+    [ -z "$left" ] && return 0
+    sleep 0.3
+  done
+  # shellcheck disable=SC2086
+  run_root kill -KILL $pids >/dev/null 2>&1 || true
+  sleep 0.5
+  left="$($probe)"
+  # 父进程被杀后子进程会换新 pid，第二轮按新 pid 再杀一遍（覆盖 root 拉起的孙进程）
+  if [ -n "$left" ]; then
+    # shellcheck disable=SC2086
+    run_root kill -KILL $left >/dev/null 2>&1 || true
+    sleep 0.5
+    left="$($probe)"
+  fi
+  printf '%s' "$left"
 }
 
 # 卸载时真正停掉后端：pkill → pgrep 回读 → 提权再杀 → 再回读（含端口持有者）。
@@ -5643,20 +5930,20 @@ un_stop_backend() {
     sleep 0.3
     left="$(_all_backend_pids)"
   done
-  # 还有残留（典型是 root 拉起的那份）就提权再杀一轮
+  # 还有残留（典型是 root 拉起的那份）就提权再杀一轮。
+  # 这里用全机扫描：root 的 uvicorn、从已删目录起的客户端都算，
+  # 否则客户端 watchdog 会在卸载途中把这批进程再拉起来；
+  # 再把端口持有者一并算进来——名字不像本程序但占着端口的，同样挡住重装。
+  left="$(_deckmeido_pids_all)"
+  for pid in $(_port_pids "$PORT"); do
+    [ "$pid" = "$$" ] && continue
+    case " $left " in *" $pid "*) ;; *) left="$left $pid" ;; esac
+  done
+  left="${left# }"
   if [ -n "$left" ]; then
-    un_note "仍有后端进程（$left），提权结束"
-    run_root pkill -TERM -f '[s]erver\.main:app' >/dev/null 2>&1 || true
-    for i in $(seq 1 10); do
-      left="$(_all_backend_pids)"
-      [ -z "$left" ] && break
-      sleep 0.3
-    done
-  fi
-  if [ -n "$left" ]; then
-    run_root pkill -KILL -f '[s]erver\.main:app' >/dev/null 2>&1 || true
-    sleep 0.5
-    left="$(_all_backend_pids)"
+    un_note "仍有进程占用（$left），提权结束"
+    un_stop_pids "$left"
+    left="$(_deckmeido_pids_all)"
   fi
   # 端口回读：进程退了但端口还 LISTEN，说明还有别的持有者（可能是 root）
   port_left=0
@@ -5710,6 +5997,20 @@ kill_plugin_process() {
     UN_PLUGIN_STATE="仍在运行（$(plugin_pids)）"
     return 1
   fi
+  # 插件进程退了，但它以 root 在 Decky 环境里拉起的客户端/后端可能还活着，
+  # 继续占着 1337，第 9 步重载时就会被判成残留（2026-11-10 卸载卡死就是这批）。
+  # 顺手一并结束，剩下清不掉的交给第 9 步的补刀。
+  local orph pid
+  orph="$(_deckmeido_pids_all)"
+  for pid in $(_port_pids 1337); do
+    [ "$pid" = "$$" ] && continue
+    case " $orph " in *" $pid "*) ;; *) orph="$orph $pid" ;; esac
+  done
+  orph="${orph# }"
+  if [ -n "$orph" ]; then
+    un_note "插件拉起的进程仍在运行（$orph），一并结束"
+    un_stop_pids "$orph" >/dev/null 2>&1 || true
+  fi
   un_ok "已结束插件进程（回读确认）"
   UN_PLUGIN_STATE="已结束（回读确认）"
   return 0
@@ -5717,8 +6018,7 @@ kill_plugin_process() {
 
 # 卸载时的 Decky 重载：绝不用 systemctl restart（KillMode=process 会把 Decky
 # 打进重启循环，就是 2026-11-08 那次事故），一律走 stop → 等残留退出 → start。
-# 而且先体检：卸载过程中 Decky 若已经卡在循环里，直接跳过重载并提示，
-# 不能让卸载成为压垮 Decky 的最后一根稻草。
+# 先体检：卸载中若 Decky 已卡在循环里，跳过重载并提示，不能成为压垮它的最后一击。
 restart_decky() {
   local unit
   UN_DECKY_STATE=""
@@ -5772,8 +6072,7 @@ restart_decky() {
 
 # /tmp 里的 socket 与 PyInstaller 解包目录：能删就删，删不掉只记一行，不算失败
 cleanup_tmp_leftovers() {
-  local p n=0 failed=0 skipped=0 skip_prefix
-  # 只跳过我们自己产生的 /tmp 残留；别的插件 / 别的用户的东西一律不动
+  local p n=0 failed=0 skipped=0
   for p in /tmp/DeckMeidoOverlay-* /tmp/_MEI*; do
     [ -e "$p" ] || [ -L "$p" ] || continue
     if [ "$DRY_RUN" = 1 ]; then
@@ -5789,10 +6088,7 @@ cleanup_tmp_leftovers() {
       run_root rm -rf -- "$p" >/dev/null 2>&1 || true
       [ -e "$p" ] && failed=$((failed + 1))
     else
-      # 一行说完：跳过什么、为什么、怎么处理。以前「未动」和「已清理」分成两条，
-      # 读起来像自相矛盾
       skipped=$((skipped + 1))
-      skip_prefix="${skip_prefix:+$skip_prefix }${p}"
       continue
     fi
     [ -e "$p" ] || n=$((n + 1))
@@ -5801,10 +6097,10 @@ cleanup_tmp_leftovers() {
     un_note "有 $failed 项 /tmp 残留删不掉（不算失败，重启后会自动消失）"
   fi
   if [ "$skipped" -gt 0 ]; then
-    un_note "跳过 $skipped 项别人的 /tmp 残留（不属于本用户、看不出 DeckMeido 痕迹）：$skip_prefix"
+    un_note "有 $skipped 项 /tmp 残留不属于本用户且看不出 DeckMeido 痕迹，未动"
   fi
   if [ "$n" -gt 0 ]; then
-    un_ok "已清理 DeckMeido 自己的 /tmp 残留 $n 项"
+    un_ok "已清理 /tmp 残留 $n 项"
   elif [ "$failed" -eq 0 ] && [ "$skipped" -eq 0 ]; then
     un_skip "没有发现 /tmp 残留"
   fi
@@ -5993,7 +6289,6 @@ EOF
   echo
   TRASH_COUNT=0
   TRASH_FAILED=0
-  TRASH_LAST_DIR=""
 
   # ---------- 1 停客户端/后端 ----------
   un_step "停止客户端与后端"
@@ -6110,9 +6405,7 @@ EOF
 
   # ---------- 8 汇总 ----------
   un_step "汇总"
-  UN_IN_SUMMARY=1
   uninstall_summary 0
-  UN_IN_SUMMARY=0
   un_step_close
   # 实质工作已经全部结束：即使后面的 Decky 重启把当前终端带走，
   # 也只剩「重启 Decky」这一件可有可无的事没做完。
@@ -6120,25 +6413,13 @@ EOF
   [ "$DRY_RUN" = 0 ] && trap - EXIT INT TERM
 
   # ---------- 9 重启 Decky（best-effort，必须放最后） ----------
-  # 2026-11-08 实测：这一步是整条卸载流程里唯一会去动 Decky 服务的地方，
-  # 那次执行停在 stop 之后、start 之前，脚本静默退出，终端的提示符直接回来，
-  # 汇总没打印、只读层也没恢复。放在最后 + 不让失败中断，才能保证
-  # 「卸载要么全做完，要么只剩这一步没做」。
+  # 2026-11-08 实测：此处停在 stop 后、start 前静默退出，汇总未打印、只读层
+  # 未恢复。放最后且不中断失败，才能保证「卸载要么全做完，要么只差这一步」。
   un_step "重启 Decky"
   if ! restart_decky; then
     warn "Decky 重启没成功；插件文件已经移走，重启 Deck 后 QAM 入口自然会消失"
   fi
-  # 没 root / 没终端时重载不了，卡片里不能只写「未重载」了事——插件文件已经移走，
-  # 用户只需要手动点一下，必须把这一步写清楚
-  local _decky_hint=""
-  case "$UN_DECKY_STATE" in
-    未重载*|未检查*|未运行*)
-      _decky_hint="手动重载：设置 → Decky Loader → 重新载入（或重启 Deck）" ;;
-  esac
   un_step_close
-  if [ -n "$_decky_hint" ]; then
-    un_note "$_decky_hint"
-  fi
   if [ "$DRY_RUN" = 0 ]; then
     # 实测插件目录被移走后，Decky 重启又会建出一个空目录来，这里回读一次
     while IFS= read -r p; do
@@ -6177,6 +6458,9 @@ show_menu() {
       dim "非交互，自动继续：升级"
       choice="1"
     fi
+    # 子流程（do_install / do_upgrade）里还会打一次大字，这里把标记立起来，
+    # 让它们跳过，首屏的大字才不会被顶出可视区。
+    export DECKMEIDO_BANNER_SHOWN=1
     case "${choice:-1}" in
       1|"") do_upgrade ;;
       2)    do_install ;;
@@ -6230,6 +6514,8 @@ smart_default() {
     dim "带子命令直接指定：bash install.sh upgrade / bash install.sh uninstall"
     exit 0
   fi
+  # 子流程里还会打一次大字，这里立标记让它们跳过，首屏才不会被顶走。
+  export DECKMEIDO_BANNER_SHOWN=1
   case "$choice" in
     1) do_upgrade ;;
     2) do_uninstall ;;
@@ -6238,9 +6524,10 @@ smart_default() {
   esac
 }
 
-# 不在源码目录（curl | sh 或只拿到一个 install.sh）：先下载发布包再交给正常流程。
-# 这样用户记住一行命令，不管全新安装还是之后升级，都能用同一条命令反复跑。
-if _is_standalone; then
+# 通过「curl -sL ... | sh -」管道执行时，脚本不在本地磁盘上，这里直接自举：
+# 下载最新发布包到临时目录再交给正常的 install 流程。这样用户记住一行命令，
+# 不管全新安装还是之后升级，都能用同一条命令反复跑。
+if _is_piped; then
   do_from_piped "$@"
   exit $?
 fi
