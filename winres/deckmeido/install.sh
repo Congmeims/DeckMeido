@@ -3,17 +3,12 @@
 #
 #   bash install.sh              无参数时自动判断：没装就直接装，装了则询问「升级 / 卸载 / 退出」（须手动选择）
 #   bash install.sh menu         弹出交互菜单，手动选「安装 / 升级 / 卸载」
-#   bash install.sh install       直接全新安装（跳过菜单）
-#   bash install.sh install --deps      顺带用 sudo 安装控制类插件（不再询问）
+#   bash install.sh install       全新安装：一次装齐全部组件，不再询问档位
+#   bash install.sh install --deps      顺带用 sudo 安装控制类插件
 #   bash install.sh install --gui       只补装桌面客户端（PySide6），不动别的
-#   bash install.sh install --stt       只补装语音输入依赖（sherpa-onnx，可选）
-#   bash install.sh install --tts       只补装语音合成依赖（piper-plus，可选）
-#   bash install.sh install --minimal   最小安装：后端 + Decky 插件 + 桌面客户端，不装语音/系统依赖，不下载模型
-#   bash install.sh install --standard  标准安装（默认）：最小 + STT/TTS 引擎与所需模型
-#   bash install.sh install --full      完整安装：标准 + 系统依赖 + 唤醒词模型 + 音箱模式所需组件
-#   bash install.sh install --custom    自定义：逐项询问，默认全装
-#   bash install.sh upgrade        升级代码与依赖，保留配置（默认逐项询问）
-#   bash install.sh upgrade --minimal|--standard|--full   升级并按对应档位补齐组件
+#   bash install.sh install --stt       只补装语音输入依赖（sherpa-onnx）
+#   bash install.sh install --tts       只补装语音合成依赖（piper-plus）
+#   bash install.sh upgrade        升级代码与依赖，保留配置（同样一次装齐）
 #   bash install.sh upgrade --deps      升级后顺带检查并安装控制类插件
 #   bash install.sh check          自检：逐个实测控制类控件是否真的能用
 #   bash install.sh uninstall     卸载：userdata 先搬到 ~/MeidoSpace，其余全部移入回收站
@@ -23,7 +18,7 @@
 #   bash install.sh speedtest     只测各 pip 源的下载速率，挑最快的那个
 #
 # 控制类插件（ydotool / kdotool / wtype / espeak-ng / fakeroot）是系统包，
-# 装它们需要 root：按档位处理，自定义档逐项询问（默认装），都走 sudo。
+# 装它们需要 root：完整安装时一并装上，都走 sudo。
 #
 # 为什么装完还要自检：SteamOS 换镜像（BUILD_ID 变动）时，/usr 下由 pacman
 # 装的包会被整片冲掉，而 pacman 的数据库记录不一定同步，所以只查
@@ -49,8 +44,7 @@
 #   DECKMEIDO_MIRROR     镜像站目录，默认 https://meido.meagames.cn/deckmeido
 #   DECKMEIDO_PIP_INDEX  pip 源；留空则实测各源下载速率，自动用最快的那个
 #   DECKMEIDO_SKIP_GUI   设为 1 则跳过 PySide6（只要网页版 / 后端时用）
-#   DECKMEIDO_INSTALL_STT 语音依赖：1 装 / 0 跳过；不设时交互询问、非交互跳过
-#   DECKMEIDO_PROFILE     安装档位：minimal / standard / full / custom（同命令行 --minimal 等）
+#   DECKMEIDO_INSTALL_STT 语音依赖：1 装 / 0 跳过；不设时一律安装
 #
 # 注意：不要用 sudo 执行。脚本会把程序装到当前用户家目录、注册用户级桌面项，
 #       用 root 装会装到 /root 下，桌面会话里起不来；也不注册开机自启服务。
@@ -87,12 +81,9 @@ TTS_MODEL_ERROR=""
 # 通用下载重试：最近一次失败的次数与原因（由 _retry_download 写入）
 DOWNLOAD_ATTEMPTS=0
 DOWNLOAD_ERR=""
-# 自定义安装里被用户显式跳过的可选项。收尾汇总必须列出来，
+# 无法获取（非交互、权限不足等原因）而跳过的可选项。收尾汇总必须列出来，
 # 否则「没装」和「用户不要」分不清。
 SKIPPED_ITEMS=()
-# 自定义安装里用户实际勾选了哪些组件（中文短语，按询问顺序），收尾汇总单列一行。
-# 日志里只看得见面板序号，看不出勾选结果，出问题时分不清「没装」和「没要装」。
-PROFILE_ITEMS=()
 # 已经在「可选依赖」里如实报过的语音模型缺失。后面装好依赖的自检不再重复刷
 # 「模型未下载」：模型是在更晚的预取阶段才下载的，先报缺失再报就绪会让人以为装坏了。
 TTS_MISSING_NOTED=0
@@ -1147,7 +1138,7 @@ system_notes() {
 
 # ---------- 可选系统依赖 ----------
 # 这些是「替你在桌面上动手」的核心控件，装它们必须 root。
-# 安装时按档位处理（自定义档逐项询问，默认装），或加 --deps 直接装。
+# 安装时一并装上，或加 --deps 单独装。
 # fakeroot 不是运行时控件，但用 paru/yay 编译 AUR 包（kdotool）必须要它，
 # 缺了会在 makepkg 阶段报「fakeroot not found」，所以一起装。
 DEPS_PACMAN=(espeak-ng ydotool wtype fakeroot)
@@ -1555,20 +1546,15 @@ deckmeido_speaker_ready() {
 # $5 默认值 y/n，$6 跳过后的影响（写进日志与收尾汇总）。
 # 返回 0 = 要装，1 = 跳过。
 opt_download() {
-  local name="$1" purpose="$2" size="$3" present="$4" def="${5:-n}" \
+  local name="$1" purpose="$2" size="$3" present="$4" def="${5:-y}" \
         impact="${6:-该功能不可用，之后可单独补装}"
-  # custom 档才需要「选了什么」这一行；三档安装是整档定义，不逐项记
-  local track=0
-  [ "${DECKMEIDO_PROFILE:-}" = "custom" ] && track=1
   if [ -n "$present" ]; then
     dim "$name：已存在（$present），跳过"
-    [ "$track" = 1 ] && PROFILE_ITEMS+=("$name（已有）")
     return 1
   fi
   if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
     if [ "$def" = "y" ]; then
-      dim "$name：非交互，默认安装（$purpose，$size）"
-      [ "$track" = 1 ] && PROFILE_ITEMS+=("$name（默认）")
+      dim "$name：非交互，直接安装（$purpose，$size）"
       return 0
     fi
     SKIPPED_ITEMS+=("$name")
@@ -1576,7 +1562,6 @@ opt_download() {
     return 1
   fi
   if ask_yn "$name（$purpose，$size）现在下载安装？" "$def"; then
-    [ "$track" = 1 ] && PROFILE_ITEMS+=("$name")
     return 0
   fi
   SKIPPED_ITEMS+=("$name")
@@ -1584,225 +1569,43 @@ opt_download() {
   return 1
 }
 
-# ---------- 安装档位 ----------
-# 三档：minimal（最小）/ standard（标准）/ full（完整），外加 custom（逐项询问）。
-# 命令行 --minimal / --standard / --full / --custom（或 --profile=xxx）直接指定。
-# 没指定时：全新安装弹一次菜单（默认标准）；升级默认自定义（逐项询问，默认全装；
-# 不想装的项显式输入 n）。
-# 非交互模式（管道安装、无 tty）绝不询问，直接按传入的默认值继续。
-choose_install_profile() {
-  local def="${1:-standard}" cur="${DECKMEIDO_PROFILE:-}"
-  case "$cur" in
-    ""|minimal|standard|full|custom) ;;
-    *) die "未知安装档位：$cur（可选 minimal / standard / full / custom）" ;;
-  esac
-  if [ -n "$cur" ]; then
-    return 0
-  fi
-
-  local dflt
-  case "$def" in
-    minimal) dflt=1 ;; standard) dflt=2 ;; full) dflt=3 ;; *) dflt=4 ;;
-  esac
-  if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
-    DECKMEIDO_PROFILE="$def"
-    export DECKMEIDO_PROFILE
-    dim "非交互模式，按默认档位继续：$def"
-    return 0
-  fi
-
-  echo
-  echo "  请选择安装档位："
-  echo "  ${C_B}1${C_END}  最小安装  ${C_DIM}后端 + Decky 插件 + 桌面客户端；不装语音、不下载模型、不装系统依赖${C_END}"
-  echo "  ${C_B}2${C_END}  标准安装  ${C_DIM}最小内容 + STT/TTS 引擎与所需模型（不含音箱模式）${C_END}"
-  echo "  ${C_B}3${C_END}  完整安装  ${C_DIM}标准内容 + 系统依赖 + 唤醒词模型 + 音箱模式所需组件${C_END}"
-  echo "  ${C_B}4${C_END}  自定义    ${C_DIM}逐项询问服务端 / 桌面客户端 / 语音 / 系统依赖${C_END}"
-  echo
-  local choice="" prompt=""
-  case "$dflt" in
-    1) prompt="请输入序号 [1]（最小）" ;;
-    2) prompt="请输入序号 [2]（标准，直接回车即可）" ;;
-    3) prompt="请输入序号 [3]（完整）" ;;
-    *) prompt="请输入序号 [4]（自定义）" ;;
-  esac
-  # 提示写 stderr、回答单独一行 dim 进日志：走 tee 时 stdout 不归行，
-  # 整块提示会黏到上一段输出后面，事后看不出用户选了哪档。
-  printf '%s[?]%s %s' "$C_WARN" "$C_END" "$prompt" >&2
-  if [ -t 0 ]; then
-    read -r choice || choice=""
-  else
-    read -r choice < /dev/tty || choice=""
-  fi
-  dim "  安装档位回答：${choice:-$dflt}（回车=默认 $dflt）"
-  case "${choice:-$dflt}" in
-    1) DECKMEIDO_PROFILE=minimal ;;
-    2) DECKMEIDO_PROFILE=standard ;;
-    3) DECKMEIDO_PROFILE=full ;;
-    4) DECKMEIDO_PROFILE=custom ;;
-    *) warn "无效选择：$choice，按默认档位继续"; DECKMEIDO_PROFILE="$def" ;;
-  esac
-  export DECKMEIDO_PROFILE
-  # 选完先把结果回显一行：以前日志里只有默认序号的提问，事后看不出用户到底选了哪档
-  local picked
-  case "$DECKMEIDO_PROFILE" in
-    minimal)  picked="最小安装" ;;
-    standard) picked="标准安装" ;;
-    full)     picked="完整安装" ;;
-    *)        picked="自定义安装（逐项询问）" ;;
-  esac
-  dim "已选择：$picked"
-}
-
 optional_downloads() {
   local py="$INSTALL_DIR/.venv/bin/python" nonint=0
   if [ "${DECKMEIDO_NONINTERACTIVE:-0}" = "1" ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
     nonint=1
   fi
-  section "可选下载"
-  dim "下面每一项都会单独确认；已有内容会跳过，不会重复下载。"
+  section "组件安装"
+  dim "一次装齐全部组件；已有内容会跳过，不会重复下载。"
   [ "$nonint" = 1 ] && dim "当前是非交互模式：按默认值自动继续/跳过。"
 
-  # 三档安装：档位给定后不再逐项询问。已有依赖 / 模型照旧跳过，不会重复下载；
-  # 升级时也不会因为选了 minimal 就卸载已经装好的组件。
+  # 一律完整安装，不再询问档位。已有依赖 / 模型照旧跳过，不会重复下载；
+  # 升级也不会因为重跑安装就重下已经装好的组件。
   #
-  #   最小：后端 + Decky 插件 + 桌面客户端；不装 STT/TTS、不下载语音模型、
-  #         不装系统依赖，不含音箱模式（智能音响）组件
-  #   标准：最小 + STT/TTS 引擎与所需模型（SenseVoice、つくよみちゃん）；仍不含音箱模式
-  #   完整：标准 + 系统依赖 + 唤醒词模型 + 音箱模式所需组件
-  case "${DECKMEIDO_PROFILE:-}" in
-    minimal|standard|full)
-      export DECKMEIDO_SKIP_SERVER=0
-      export DECKMEIDO_INSTALL_STT=0 DECKMEIDO_INSTALL_TTS=0 DECKMEIDO_INSTALL_DEPS=0
-      # 桌面客户端三档都装；已经装好就不重装，用户显式 DECKMEIDO_SKIP_GUI=1 也照办
-      if have_py_module "$py" "PySide6" || [ "${DECKMEIDO_SKIP_GUI:-}" = "1" ]; then
-        export DECKMEIDO_SKIP_GUI=1
-      else
-        unset DECKMEIDO_SKIP_GUI
-      fi
-      if [ "$DECKMEIDO_PROFILE" = "minimal" ]; then
-        dim "最小安装：后端 + Decky 插件 + 桌面客户端；不装语音组件、不下载模型、不装系统依赖（不含音箱模式）"
-      else
-        export DECKMEIDO_INSTALL_STT=1 DECKMEIDO_INSTALL_TTS=1
-        # 已经装好模块和模型就不再重装，避免每次升级都白跑一遍
-        if have_py_module "$py" "sherpa_onnx" && [ -f "$DATA_MODELS/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx" ]; then
-          export DECKMEIDO_INSTALL_STT=0
-        fi
-        if have_py_module "$py" "piper_plus" && [ -f "$DATA_MODELS/tts/tsukuyomi/tsukuyomi-chan-6lang-fp16.onnx" ]; then
-          export DECKMEIDO_INSTALL_TTS=0
-        fi
-        if [ "$DECKMEIDO_PROFILE" = "full" ]; then
-          export DECKMEIDO_INSTALL_DEPS=1
-          dim "完整安装：标准内容 + 系统依赖 + 唤醒词模型 + 音箱模式所需组件"
-        else
-          dim "标准安装：最小内容 + STT/TTS 引擎与所需模型（不含音箱模式）"
-        fi
-      fi
-      if decky_ready 2>/dev/null; then
-        export DECKMEIDO_INSTALL_PLUGIN=1
-      else
-        export DECKMEIDO_INSTALL_PLUGIN=0
-      fi
-      return 0
-      ;;
-  esac
-
-  # 1. 服务端运行依赖（必装，但允许用户明确取消）
-  if have_py_module "$py" "fastapi"; then
-    dim "Python 运行依赖（服务端）：已存在，跳过"
-    export DECKMEIDO_SKIP_SERVER=0
-  elif opt_download "Python 运行依赖（服务端）" "FastAPI/uvicorn 等，缺了后端跑不起来" \
-       "约 30MB" "" y "后端无法启动，网页与桌面客户端都不可用"; then
-    export DECKMEIDO_SKIP_SERVER=0
-  else
-    export DECKMEIDO_SKIP_SERVER=1
-    warn "跳过后端依赖，程序可能无法启动；可随时重跑 bash install.sh upgrade"
-  fi
-
-  # 2. 桌面客户端（PySide6 + WebEngine）
-  if have_py_module "$py" "PySide6"; then
-    dim "桌面客户端 PySide6：已存在，跳过"
+  #   固定内容：后端 + Decky 插件 + 桌面客户端 + STT/TTS 引擎与模型
+  #             + 系统依赖 + 唤醒词模型 + 音箱模式所需组件
+  export DECKMEIDO_SKIP_SERVER=0
+  export DECKMEIDO_INSTALL_STT=1 DECKMEIDO_INSTALL_TTS=1 DECKMEIDO_INSTALL_DEPS=1
+  export DECKMEIDO_INSTALL_SPEAKER=1
+  # 桌面客户端；已经装好就不重装，用户显式 DECKMEIDO_SKIP_GUI=1 也照办
+  if have_py_module "$py" "PySide6" || [ "${DECKMEIDO_SKIP_GUI:-}" = "1" ]; then
     export DECKMEIDO_SKIP_GUI=1
-  elif opt_download "桌面客户端（PySide6）" "桌面窗口与内置浏览器，不要也能用网页版" \
-       "约 700MB" "" y "没有桌面窗口，只能用网页版"; then
+  else
     unset DECKMEIDO_SKIP_GUI
-  else
-    export DECKMEIDO_SKIP_GUI=1
   fi
-
-  # 3. 语音输入（sherpa-onnx + 首次使用自动下载 SenseVoice 模型）
-  local stt_model="$DATA_MODELS/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx"
-  if have_py_module "$py" "sherpa_onnx" && [ -f "$stt_model" ]; then
-    dim "语音输入（sherpa-onnx + 模型）：已存在，跳过"
-    export DECKMEIDO_INSTALL_STT=0
-  elif opt_download "语音输入 STT" "sherpa-onnx 运行库；首次录音再自动下模型（约 240MB）" \
-       "约 30MB" "" y "语音输入不可用，聊天与其余功能不受影响"; then
-    export DECKMEIDO_INSTALL_STT=1
-  else
+  # 已经装好模块和模型就不再重装，避免每次升级都白跑一遍
+  if have_py_module "$py" "sherpa_onnx" && [ -f "$DATA_MODELS/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx" ]; then
     export DECKMEIDO_INSTALL_STT=0
   fi
-
-  # 4. 语音合成（piper-plus + つくよみちゃん模型）
-  local tts_model="$DATA_MODELS/tts/tsukuyomi/tsukuyomi-chan-6lang-fp16.onnx"
-  if have_py_module "$py" "piper_plus" && [ -f "$tts_model" ]; then
-    dim "语音合成（piper-plus + 模型）：已存在，跳过"
-    export DECKMEIDO_INSTALL_TTS=0
-  elif opt_download "语音合成 TTS" "piper-plus + onnxruntime；首次播报再自动下模型（约 38MB）" \
-       "约 60MB" "" y "月读酱语音不可用（会退回系统机器人音的替代方案）"; then
-    export DECKMEIDO_INSTALL_TTS=1
-    # 这里如实说一句模型还没下，后面装好依赖的自检就不再重复「模型未下载」
-    if [ ! -f "$tts_model" ]; then
-      TTS_MISSING_NOTED=1
-      dim "月读酱模型尚未下载（约 38MB），会在本次安装末尾统一预取"
-    fi
-  else
+  if have_py_module "$py" "piper_plus" && [ -f "$DATA_MODELS/tts/tsukuyomi/tsukuyomi-chan-6lang-fp16.onnx" ]; then
     export DECKMEIDO_INSTALL_TTS=0
   fi
-
-  # 5. 系统控件依赖（代替用户动手的 ydotool / wtype 等）
-  local deps_present=""
-  if need_cmd ydotool && need_cmd wtype; then
-    deps_present="ydotool/wtype 已在 PATH"
-  fi
-  if opt_download "系统控件依赖（--deps）" "模拟点击/输入、截图等系统能力，需 sudo 走 pacman/AUR" \
-       "约 100MB" "$deps_present" y "模拟点击/输入等系统控制能力不可用"; then
-    export DECKMEIDO_INSTALL_DEPS=1
-  else
-    export DECKMEIDO_INSTALL_DEPS=0
-  fi
-
-  # 6. 智能音响模式（音箱模式）组件。
-  # 以前这一项只在完整档打包，自定义档没有入口——用户选自定义就永远装不上，
-  # 收尾还甩一句「custom档不含音箱模式组件」。现在自定义档也能勾。
-  # 它依赖系统控件（模拟点击/音频控制），本条选是而系统控件选否时另外提醒。
-  if [ "${DECKMEIDO_NO_SPEAKER:-}" = "1" ] || deckmeido_speaker_ready; then
-    dim "智能音响模式：已就绪或本次显式跳过"
-  elif opt_download "智能音响模式（音箱模式）" "局域网语音音箱：唤醒词、语音播报与音量/播放控制" \
-       "约 60MB" "" n "音箱模式不可用，其余语音功能不受影响"; then
-    export DECKMEIDO_INSTALL_SPEAKER=1
-    if [ "${DECKMEIDO_INSTALL_DEPS:-1}" = "0" ]; then
-      warn "音箱模式依赖系统控件（音量/播放控制），本次跳过了系统控件依赖，可能不完整"
-    fi
-  else
-    export DECKMEIDO_INSTALL_SPEAKER=0
-  fi
-
-  # 7. Decky 插件包（已安装时由 install_plugin 自动替换，不再问）
+  dim "完整安装：后端 + Decky 插件 + 桌面客户端 + 语音 + 系统依赖 + 音箱模式组件"
   if decky_ready 2>/dev/null; then
-    local pver=""
-    pver="$(plugin_installed_version 2>/dev/null)" || pver=""
-    if [ -n "$pver" ]; then
-      dim "Decky 插件：已安装 v$pver，升级时会自动替换为新版本"
-      export DECKMEIDO_INSTALL_PLUGIN=1
-    elif opt_download "Decky 插件包" "游戏模式 QAM 面板，需先装 Decky Loader" \
-         "约 2MB" "" y "游戏模式 QAM 面板不装（会保留 zip 供手动安装）"; then
-      export DECKMEIDO_INSTALL_PLUGIN=1
-    else
-      export DECKMEIDO_INSTALL_PLUGIN=0
-    fi
+    export DECKMEIDO_INSTALL_PLUGIN=1
   else
-    dim "Decky 插件：没有检测到 Decky Loader，跳过"
     export DECKMEIDO_INSTALL_PLUGIN=0
   fi
+  return 0
 }
 
 # 读一行输入并回显提示，返回用户敲的内容。
@@ -2514,10 +2317,9 @@ human_size() {
 }
 
 # 唤醒词生成（sherpa-onnx-cli text2token）在 sherpa-onnx 之外还要
-# sentencepiece / pypinyin，只有完整档需要：缺了就补上，失败只警告。
+# sentencepiece / pypinyin：缺了就补上，失败只警告。
 install_wake_text_deps() {
   local py="$1" start="${2:-0}"
-  [ "${DECKMEIDO_PROFILE:-}" = "full" ] || return 0
   [ -x "$py" ] || return 0
   if have_py_module "$py" "sentencepiece" && have_py_module "$py" "pypinyin"; then
     return 0
@@ -2949,7 +2751,7 @@ venv_install() {
   return 0
 }
 
-# 安装阶段的语音模型预取。月读酱模型所有档位都会尝试下载（含 custom），
+# 安装阶段的语音模型预取。月读酱模型会在安装末尾尝试下载，
 # 每个下载最多 3 次；三次都失败只警告并写进收尾汇总，不影响安装完成。
 _prefetch_stt_once() {
   local py="$INSTALL_DIR/.venv/bin/python"
@@ -2984,16 +2786,12 @@ PY
 }
 
 prefetch_voice_models() {
-  local profile="${DECKMEIDO_PROFILE:-}" py="$INSTALL_DIR/.venv/bin/python"
-  case "$profile" in
-    standard|full|custom) ;;
-    *) return 0 ;;
-  esac
+  local py="$INSTALL_DIR/.venv/bin/python"
   [ -x "$py" ] || return 0
   mkdir -p "$DATA_MODELS" 2>/dev/null || true
 
-  # 语音识别模型（SenseVoice，约 250MB）：音量太大，仍只在标准/完整档预取
-  if [ "$profile" != "custom" ] && have_py_module "$py" "sherpa_onnx" &&
+  # 语音识别模型（SenseVoice，约 250MB）
+  if have_py_module "$py" "sherpa_onnx" &&
      [ ! -f "$DATA_MODELS/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx" ]; then
     section "语音识别模型（SenseVoice）"
     dim "正在下载约 250MB，可能需要几分钟（最多尝试 3 次）"
@@ -3005,7 +2803,7 @@ prefetch_voice_models() {
     fi
   fi
 
-  # 语音合成模型（つくよみちゃん，约 40MB）：所有档位都下，装完就能听到女仆音
+  # 语音合成模型（つくよみちゃん，约 40MB）：装完就能听到女仆音
   local tts_onnx="$DATA_MODELS/tts/tsukuyomi/tsukuyomi-chan-6lang-fp16.onnx"
   if have_py_module "$py" "piper_plus" && [ ! -f "$tts_onnx" ]; then
     section "语音合成模型（つくよみちゃん）"
@@ -3021,8 +2819,8 @@ prefetch_voice_models() {
     fi
   fi
 
-  # 唤醒词模型（智能音响模式）：完整档整档预置，自定义档按用户是否勾选音箱模式决定
-  if [ "$profile" = "full" ] || [ "${DECKMEIDO_INSTALL_SPEAKER:-0}" = "1" ]; then
+  # 唤醒词模型（智能音响模式）
+  if [ "${DECKMEIDO_INSTALL_SPEAKER:-0}" = "1" ]; then
     # 唤醒词生成还要 sentencepiece / pypinyin（text2token 依赖）
     install_wake_text_deps "$py" 0
     section "唤醒词模型（智能音响模式）"
@@ -3047,11 +2845,10 @@ PY
 }
 
 # ---------- 音箱模式（智能音响）前置检查 ----------
-# 组件是否齐全由用户在安装档位里决定：完整档整档预置，自定义档逐项勾选。
-# 缺什么就列什么，理由写着「本次没选」而不是「档位不含」——以前无论用户选哪档，
-# 都归到「custom档不含音箱模式组件」，与事实不符。
+# 安装时固定会装齐音箱模式组件（系统控件、唤醒词模型等）。
+# 缺什么就列什么，并给出一条补齐命令。
 wake_mode_notes() {
-  local profile="${DECKMEIDO_PROFILE:-}" py="$INSTALL_DIR/.venv/bin/python" miss=() m
+  local py="$INSTALL_DIR/.venv/bin/python" miss=() m
   have_py_module "$py" "sherpa_onnx" || miss+=("sherpa-onnx 运行时（唤醒检测）")
   [ -n "$(find "$DATA_MODELS/wake" -maxdepth 3 -name 'encoder*.onnx' -print -quit 2>/dev/null || true)" ] ||
     miss+=("唤醒词模型（KWS + silero VAD，约 38MB）")
@@ -3061,40 +2858,23 @@ wake_mode_notes() {
   if [ ${#miss[@]} -eq 0 ]; then
     dim "智能音响模式所需组件齐全（唤醒词模型、录音工具、busctl）"
   else
-    case "$profile" in
-      full)
-        warn "智能音响模式组件仍缺以下项，启用时会提示原因：" ;;
-      custom)
-        if [ "${DECKMEIDO_INSTALL_SPEAKER:-0}" = "1" ]; then
-          warn "智能音响模式已勾选，但组件仍缺以下项，启用时会提示原因："
-        else
-          dim "本次自定义安装未选「智能音响模式」，缺少："
-        fi ;;
-      *)
-        dim "${profile:-未知}档不含音箱模式组件，缺少：" ;;
-    esac
+    warn "智能音响模式组件仍缺以下项，启用时会提示原因："
     for m in "${miss[@]}"; do dim "  - $m"; done
-    if [ "$profile" = "custom" ] && [ "${DECKMEIDO_INSTALL_SPEAKER:-0}" != "1" ]; then
-      dim "补齐方式：重跑安装并在「智能音响模式」一项选是，或 bash install.sh install --full（完整档）"
-    else
-      dim "补齐方式：联网后重跑 bash install.sh install --full（完整档），会补下缺失的模型/组件"
-    fi
+    dim "补齐方式：联网后重跑 bash install.sh install，会补下缺失的模型/组件"
   fi
 
   # Decky Music 是独立插件，安装器不打它；只做提示，不影响唤醒与问答
-  if [ "$profile" = "full" ] || [ "${DECKMEIDO_INSTALL_SPEAKER:-0}" = "1" ]; then
-    local found_music=0 root d
-    for root in "${DECKY_PLUGINS_DIR:-}" "$HOME/homebrew/plugins"; do
-      [ -n "$root" ] || continue
-      for d in "$root"/*usic*; do
-        if [ -d "$d" ]; then found_music=1; break; fi
-      done
+  local found_music=0 root d
+  for root in "${DECKY_PLUGINS_DIR:-}" "$HOME/homebrew/plugins"; do
+    [ -n "$root" ] || continue
+    for d in "$root"/*usic*; do
+      if [ -d "$d" ]; then found_music=1; break; fi
     done
-    if [ "$found_music" = 1 ]; then
-      dim "Decky Music 插件已检测到（音乐播控 / 点歌可用）"
-    else
-      dim "音乐播控 / 点歌还需 Decky Music 插件（到 Decky 商店安装并登录，不影响唤醒问答）"
-    fi
+  done
+  if [ "$found_music" = 1 ]; then
+    dim "Decky Music 插件已检测到（音乐播控 / 点歌可用）"
+  else
+    dim "音乐播控 / 点歌还需 Decky Music 插件（到 Decky 商店安装并登录，不影响唤醒问答）"
   fi
   return 0
 }
@@ -4404,11 +4184,7 @@ print_done() {
     broken) card_line "语音模型     校验失败（设置页可重新下载）" ;;
     *)      card_line "语音模型     未下载（约 38MB，设置页「下载模型」）" ;;
   esac
-  # 自定义安装：把用户实际勾选的组件单列一行，事后看日志能直接核对装了什么
-  if [ "${DECKMEIDO_PROFILE:-}" = "custom" ] && [ ${#PROFILE_ITEMS[@]} -gt 0 ]; then
-    card_line "本次选择    $(IFS='、'; printf '%s' "${PROFILE_ITEMS[*]}")"
-  fi
-  # 用户显式跳过的可选项：一行列全，不留「怎么少了东西」的疑问
+  # 无法安装的可选项：一行列全，不留「怎么少了东西」的疑问
   if [ ${#SKIPPED_ITEMS[@]} -gt 0 ]; then
     skipped=$(IFS='、'; printf '%s' "${SKIPPED_ITEMS[*]}")
     card_line "已跳过：$skipped（相应功能降级，可之后单独补装）"
@@ -4433,10 +4209,8 @@ print_done() {
   # 音箱模式：装没装齐一句话说清，免得用户在设置页打开开关后才猜原因
   if deckmeido_speaker_ready; then
     card_line "音箱模式     已就绪（唤醒词 + 录音 + 媒体控制）"
-  elif [ "${DECKMEIDO_INSTALL_SPEAKER:-0}" = "1" ] || [ "${DECKMEIDO_PROFILE:-}" = "full" ]; then
-    card_line "音箱模式     组件不全（详见上文「智能音响模式」缺项）"
   else
-    card_line "音箱模式     本次未选（需要时重跑安装勾选，或用完整档）"
+    card_line "音箱模式     组件不全（详见上文「智能音响模式」缺项）"
   fi
   # 系统控件缺了就是缺了：这一行必须和设置页「可补装组件」显示的一致，
   # 不能再出现「上面打勾、下面全红」的矛盾
@@ -4469,17 +4243,8 @@ do_install() {
       --gui)  gui_only=1 ;;   # 只补装桌面客户端（PySide6），不动别的
       --stt)  stt_only=1 ;;   # 只补装语音输入依赖（sherpa-onnx）
       --tts)  tts_only=1 ;;   # 只补装语音合成依赖（piper-plus）
-      # 安装档位：三档 + 自定义（逐项询问）
-      --minimal|--standard|--full)  DECKMEIDO_PROFILE="${a#--}" ;;
-      --custom|--advanced)          DECKMEIDO_PROFILE=custom ;;
-      --profile=*)                  DECKMEIDO_PROFILE="${a#--profile=}" ;;
     esac
   done
-  case "${DECKMEIDO_PROFILE:-}" in
-    ""|minimal|standard|full|custom) ;;
-    *) die "未知安装档位：$DECKMEIDO_PROFILE（可选 minimal / standard / full / custom）" ;;
-  esac
-  export DECKMEIDO_PROFILE="${DECKMEIDO_PROFILE:-}"
   # 只补装某一项依赖：不换代码、不停机，走原来的轻量路径
   check_user
   if [ "$tts_only" = 1 ] || [ "$stt_only" = 1 ] || [ "$gui_only" = 1 ]; then
@@ -4502,8 +4267,6 @@ do_install() {
   check_user
   print_banner
   start_install_log
-  # 全新安装：交互时弹三档菜单（默认标准）；命令行/环境变量给了档位就不再问
-  choose_install_profile standard
   STEP_QUIET=1
   reset_steps
   local disk_ver="" had_old=0
@@ -4592,7 +4355,7 @@ do_install() {
     system_notes
     step_skip "系统控件依赖（之后想装：bash install.sh install --deps）"
   fi
-  # 音箱模式（智能音响）按档位/勾选决定，缺的组件逐项列清楚
+  # 音箱模式（智能音响）组件检查，缺的逐项列清楚
   wake_mode_notes
 
   # [5/6] 部署插件与桌面入口
@@ -4667,17 +4430,9 @@ do_upgrade() {
     case "$a" in
       --deps) deps="--deps" ;;
       --gui)  gui_only=1 ;;
-      --minimal|--standard|--full)  DECKMEIDO_PROFILE="${a#--}" ;;
-      --custom|--advanced)          DECKMEIDO_PROFILE=custom ;;
-      --profile=*)                  DECKMEIDO_PROFILE="${a#--profile=}" ;;
     esac
   done
   if [ "$gui_only" = 1 ]; then deps=""; fi
-  case "${DECKMEIDO_PROFILE:-}" in
-    ""|minimal|standard|full|custom) ;;
-    *) die "未知安装档位：$DECKMEIDO_PROFILE（可选 minimal / standard / full / custom）" ;;
-  esac
-  export DECKMEIDO_PROFILE="${DECKMEIDO_PROFILE:-}"
   [ -d "$INSTALL_DIR" ] || die "$INSTALL_DIR 不存在，请先执行安装"
   check_user
   print_banner
@@ -4685,9 +4440,6 @@ do_upgrade() {
   dim "升级会保留：userdata/ 下的配置、人设、长期记忆、会话与上传文件，"
   dim "以及工作区；Decky 插件已装过会自动替换为新版本。"
   start_install_log
-  # 升级默认进逐项询问（自定义）：没装过的组件也会按默认值补上，
-  # 不想装的项显式输入 n；显式给了 --minimal / --standard / --full 才按档位执行
-  [ "$gui_only" = 1 ] || choose_install_profile custom
   STEP_QUIET=1
   reset_steps
   local disk_ver="" had_old=0
@@ -4759,7 +4511,7 @@ do_upgrade() {
       system_notes
       step_skip "系统控件依赖（之后想装：bash install.sh upgrade --deps）"
     fi
-    # 音箱模式（智能音响）按档位/勾选决定，缺的组件逐项列清楚
+    # 音箱模式（智能音响）组件检查，缺的逐项列清楚
     wake_mode_notes
   fi
 
@@ -5017,7 +4769,7 @@ do_from_mirror() {
   info "开始执行：$REMOTE_ACTION（来源：$src）"
   # 让子进程沿用这次用的镜像地址，写进配置的就是它。
   # 子命令明确传下去：上面已经问过「升级还是卸载」，不能让子脚本再猜一次；
-  # 额外的档位参数（--minimal / --full 等）也一并转发
+  # 其余参数（--deps / --gui 等）也一并转发
   DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" "$REMOTE_ACTION" "$@"
 }
 
@@ -5068,7 +4820,7 @@ do_from_piped() {
   [ -n "$src" ] || die "安装包结构不对：里面没有 install.sh"
   info "开始执行：$REMOTE_ACTION（来源：$src，包来自$origin）"
   # 镜像地址仍写进配置，供软件内更新作为兜底源；本次安装包来源由 origin 决定。
-  # 额外参数（--minimal / --standard / --full 等）一并转发给子脚本
+  # 其余参数（--deps / --gui 等）一并转发给子脚本
   DECKMEIDO_MIRROR="$MIRROR" bash "$src/install.sh" "$REMOTE_ACTION" "$@"
 }
 
