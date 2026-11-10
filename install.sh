@@ -306,7 +306,7 @@ need_cmd() { command -v "$1" >/dev/null 2>&1; }
 #   · 目标是空、/、$HOME、或路径层级过浅 → 拒绝
 #   · 真机确需强删时显式设置 DECKMEIDO_ALLOW_UNSAFE_UNINSTALL=1
 safe_rm_target() {
-  local target="${1:-}" abs depth
+  local target="${1:-}" abs depth have_marker=0
   if [ "${DECKMEIDO_ALLOW_UNSAFE_UNINSTALL:-0}" = "1" ]; then
     echo "[删除守卫] 已按 DECKMEIDO_ALLOW_UNSAFE_UNINSTALL=1 放行：$target"
     return 0
@@ -341,10 +341,16 @@ safe_rm_target() {
     echo "[删除守卫] 拒绝：路径层级过浅（$abs）" >&2
     return 1
   fi
+  [ -f "$abs/.deckmeido-install" ] && have_marker=1
   if [ "${DECKMEIDO_INSTALL_DIR_UNINSTALL:-0}" = "1" ] && [ "$abs" = "$INSTALL_DIR" ] &&
      [ ! -d "$abs/.git" ] && [ ! -f "$abs/.git" ]; then
     # 通过安装目录里的 uninstall.sh 转发进来：HERE 就是安装目录，属于预期情况。
     # 仍然拒绝 .git 源码工作区（开发机上的仓库不能当安装目录卸）。
+    return 0
+  fi
+  if [ "$have_marker" = 1 ] && [ "$abs" = "$INSTALL_DIR" ] && [ ! -d "$abs/.git" ]; then
+    # 用源码目录的 install.sh 直接卸安装目录（bash dm-src/install.sh uninstall）：
+    # 目标不是脚本所在目录，只要它带安装器写的标记、且本身不是 git 仓库就放行
     return 0
   fi
   if [ "$abs" = "$HERE" ]; then
@@ -3746,7 +3752,7 @@ install_plugin() {
       dim "插件已就绪，到 设置 → Decky Loader 点「重新载入」即可在 QAM 里看到"
     else
       PLUGIN_RELOAD_STATE="install_failed"
-      warn "插件安装失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
+      warn "插件安装失败（${PLUGIN_SKIP_REASON:-未知原因}），可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
     fi
   else
     PLUGIN_RELOAD_STATE="skipped"
@@ -3758,11 +3764,35 @@ install_plugin() {
 # 把发布包里的插件 zip 解到 ~/homebrew/plugins/DeckMeido。
 # zip 由 release.py 打（前端已编译，无需 npm），顶层是 DeckMeido/ 目录。
 plugin_install_zip() {
-  # 优先用发布包里带的那份（deploy/deckmeido-plugin.zip，由 release.py 从 dist/ 拷进来）
+  # 优先用发布包里带的那份（deploy/deckmeido-plugin.zip，由 release.py 从 dist/ 拷进来）；
+  # git 源码目录里没有这个 zip，那份 dist/index.js 是仓库自带的产物，直接当场压一个
   local src="$INSTALL_DIR/deploy/deckmeido-plugin.zip"
   local root="${DECKY_PLUGINS_DIR:-$HOME/homebrew/plugins}"
   local target="$root/DeckMeido"
-  [ -f "$src" ] || { dim "安装包里没带插件包（$src），跳过"; return 1; }
+  local tmpdir="" stage="" tmpzip=""
+  if [ ! -f "$src" ]; then
+    if [ ! -f "$INSTALL_DIR/plugin/dist/index.js" ] || [ ! -f "$INSTALL_DIR/plugin/package.json" ]; then
+      dim "安装包里没带插件包（$src），源码里也没有 plugin/dist/index.js，跳过"
+      PLUGIN_SKIP_REASON="没有插件包，也没有编译好的前端产物"
+      return 1
+    fi
+    need_cmd zip || { dim "缺少 zip，无法就地打包插件"; PLUGIN_SKIP_REASON="缺少 zip 命令"; return 1; }
+    # zip 里顶层目录必须是 DeckMeido/（Decky 按目录名识别插件），
+    # 所以先拷成 DeckMeido/ 再压
+    tmpdir="$(mktemp -d)" || { PLUGIN_SKIP_REASON="建不了临时目录"; return 1; }
+    stage="$tmpdir/DeckMeido"
+    tmpzip="$tmpdir/deckmeido-plugin.zip"
+    if ! cp -a "$INSTALL_DIR/plugin" "$stage" ||
+       ! rm -rf "$stage/node_modules" "$stage/src" ||
+       ! ( cd "$tmpdir" && zip -qr "$tmpzip" DeckMeido ) >/dev/null 2>&1; then
+      dim "就地打包插件失败（$tmpdir）"
+      PLUGIN_SKIP_REASON="打包插件失败"
+      rm -rf "$tmpdir"
+      return 1
+    fi
+    dim "源码目录不带插件包，已就地打包：$tmpzip"
+    src="$tmpzip"
+  fi
   need_cmd unzip || { dim "缺少 unzip，跳过"; return 1; }
   # 旧版本可能是软链接装进来的：先删链接本身，别顺着链接把安装目录删了
   if [ -L "$target" ]; then
@@ -3787,8 +3817,11 @@ plugin_install_zip() {
   # zip 顶层目录名是 DeckMeido，解到 $root 下正好生成 $target
   if ! plugin_verify_layout "$target"; then
     dim "插件目录校验失败：$PLUGIN_LAYOUT_ERROR"
+    PLUGIN_SKIP_REASON="插件目录校验失败：$PLUGIN_LAYOUT_ERROR"
+    [ -n "$tmpdir" ] && rm -rf "$tmpdir"
     return 1
   fi
+  [ -n "$tmpdir" ] && rm -rf "$tmpdir"
   return 0
 }
 
@@ -4367,7 +4400,7 @@ print_done() {
     pending) card_line "Decky 插件   v${pv:-?} 已部署，待重载（请先重启 Deck，再到 Decky 设置点「重新载入」）" ;;
     failed)  card_line "Decky 插件   v${pv:-?} 已部署，但重载失败（请重启 Deck 后再重新载入）" ;;
     install_failed)
-             card_line "Decky 插件   安装失败（文件没解开，QAM 里不会有入口）" ;;
+             card_line "Decky 插件   安装失败（${PLUGIN_SKIP_REASON:-未知原因}；QAM 里不会有入口）" ;;
     absent)  card_line "Decky 插件   未安装：没检测到 Decky Loader（可选依赖）" ;;
     skipped) card_line "Decky 插件   未安装：按你的选择跳过，zip 已放到工作区" ;;
     *)       [ -n "$pv" ] && card_line "Decky 插件   v${pv} 已部署" ;;
