@@ -1715,9 +1715,25 @@ ask_choice() {
 
 sudo_warmup() {
   need_cmd sudo || { warn "没有 sudo，跳过系统依赖安装"; return 1; }
-  # 不做任何免密探测：sudo -v 自己会在需要时提示输入密码，预判只会多读一次策略
-  info "安装系统依赖需要 root 权限，接下来会提示输入密码"
-  sudo -v || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
+  # 已授权就直接用，别重复要密码
+  sudo -n true 2>/dev/null && return 0
+  # 密码必须从终端读：curl | bash 时 stdin 是脚本本身，sudo 从 stdin 读会直接失败。
+  # 装系统包、写 Decky 插件目录都靠它，这里没拿到就一路静默失败。
+  if (: < /dev/tty) 2>/dev/null; then
+    info "安装系统依赖需要 root 权限，请输入密码"
+    ( exec 0</dev/tty; sudo -v ) || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
+  elif [ -n "${SUDO_ASKPASS:-}" ] && [ -x "${SUDO_ASKPASS}" ]; then
+    # 没有终端但有 askpass（SSH 远程装、自动化）：sudo 从 SUDO_ASKPASS 取密码
+    info "没有终端，改用 SUDO_ASKPASS 获取 root 权限"
+    sudo -A -v || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
+  else
+    warn "当前没有终端，无法输入密码；系统依赖与 Decky 插件将跳过"
+    dim "装完可补：bash $INSTALL_DIR/install.sh check --fix"
+    return 1
+  fi
+  # 安装过程可能超过 sudo 默认的 5 分钟缓存，后台续期，避免中途再次要密码
+  ( while kill -0 "$$" 2>/dev/null; do sudo -n true 2>/dev/null || exit; sleep 50; done ) &
+  return 0
 }
 
 # 记下「这次真的由安装器装上」的系统包：只有缺包时才会进 todo，
@@ -2227,6 +2243,22 @@ sync_files() {
   local items=(server client assets deploy tools plugin requirements.txt requirements-gui.txt requirements-stt.txt requirements-tts.txt README.md install.sh)
   # RELEASE-NOTES.md 只在发布包里存在，有就一起带上，方便用户在安装目录里查更新内容
   [ -f "$HERE/RELEASE-NOTES.md" ] && items+=(RELEASE-NOTES.md)
+  # git clone 出来的源码里没有 plugin/dist/（插件自己的 .gitignore 排除），
+  # 仓库里带的是 deploy/deckmeido-plugin.zip 这份 build 产物——有它就够了，
+  # 插件是按 zip 解包的，不需要 dist。两者都缺时才想办法现构建。
+  local build_plugin=0
+  [ -f "$HERE/deploy/deckmeido-plugin.zip" ] || [ -f "$HERE/plugin/dist/index.js" ] || build_plugin=1
+  if [ "$build_plugin" = 1 ] && command -v npm >/dev/null 2>&1; then
+    dim "源码里既没插件包也没有前端产物，先用 npm 构建（首次要装 node_modules）"
+    if ( cd "$HERE/plugin" && { [ -d node_modules ] || npm install --no-audit --no-fund >/dev/null 2>&1; } &&
+         npm run build >/dev/null 2>&1 ); then
+      dim "插件前端已构建：plugin/dist/index.js"
+    else
+      warn "插件前端构建失败；Decky 插件这轮装不上，可稍后手动 bash $INSTALL_DIR/plugin/deploy.sh"
+    fi
+  elif [ "$build_plugin" = 1 ]; then
+    warn "源码里既没插件包也没有前端产物，机上也没有 npm（用发布包安装可避免）"
+  fi
   for it in "${items[@]}"; do
     [ -e "$HERE/$it" ] || continue
     if [ -d "$HERE/$it" ]; then
@@ -3879,7 +3911,29 @@ plugin_install_zip() {
   local src="$INSTALL_DIR/deploy/deckmeido-plugin.zip"
   local root="${DECKY_PLUGINS_DIR:-$HOME/homebrew/plugins}"
   local target="$root/DeckMeido"
-  [ -f "$src" ] || { dim "安装包里没带插件包（$src），跳过"; return 1; }
+  local tmpdir="" stage="" tmpzip=""
+  # 优先用安装目录里带的那份（release.py 从 dist/ 拷进 deploy/）；
+  # git 源码目录不带这个 zip，但有 plugin/dist/index.js 时当场压一个
+  if [ ! -f "$src" ]; then
+    if [ ! -f "$INSTALL_DIR/plugin/dist/index.js" ] || [ ! -f "$INSTALL_DIR/plugin/package.json" ]; then
+      dim "安装包里没带插件包（$src），源码里也没有 plugin/dist/index.js，跳过"
+      return 1
+    fi
+    need_cmd zip || { dim "缺少 zip，无法就地打包插件"; return 1; }
+    # zip 顶层目录必须是 DeckMeido/（Decky 按目录名识别插件），先拷成 DeckMeido/ 再压
+    tmpdir="$(mktemp -d)" || return 1
+    stage="$tmpdir/DeckMeido"
+    tmpzip="$tmpdir/deckmeido-plugin.zip"
+    if ! cp -a "$INSTALL_DIR/plugin" "$stage" ||
+       ! rm -rf "$stage/node_modules" "$stage/src" ||
+       ! ( cd "$tmpdir" && zip -qr "$tmpzip" DeckMeido ) >/dev/null 2>&1; then
+      dim "就地打包插件失败（$tmpdir）"
+      rm -rf "$tmpdir"
+      return 1
+    fi
+    dim "源码目录不带插件包，已就地打包：$tmpzip"
+    src="$tmpzip"
+  fi
   need_cmd unzip || { dim "缺少 unzip，跳过"; return 1; }
   # 旧版可能是软链接：先删链接本身，别顺着链接删到安装目录
   if [ -L "$target" ]; then
@@ -3887,13 +3941,15 @@ plugin_install_zip() {
   fi
   # 插件根目录 root:root，普通用户建不了，借一次 sudo
   sudo -n mkdir -p "$target" 2>/dev/null ||
-    sudo mkdir -p "$target" 2>/dev/null || { dim "建不动 $target"; return 1; }
+    sudo mkdir -p "$target" 2>/dev/null || { dim "建不动 $target"; [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
   # zip 里没有的旧文件（改名模块）会让 Decky 加载过期代码，先清空
-  safe_rm_target "$target" || { dim "拒绝清理插件目录（$target）"; return 1; }
+  safe_rm_target "$target" || { dim "拒绝清理插件目录（$target）"; [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
   dim "清理旧插件目录（只删本插件自己的目录，不会动别的插件与用户数据）：$target"
   sudo rm -rf "$target" 2>/dev/null || true
-  sudo mkdir -p "$target" || return 1
-  sudo unzip -oq "$src" -d "$root" || return 1
+  sudo mkdir -p "$target" || { [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
+  sudo unzip -oq "$src" -d "$root"; local _zrc=$?
+  [ -n "$tmpdir" ] && rm -rf "$tmpdir"
+  [ "$_zrc" = 0 ] || return 1
   # zip 顶层目录名是 DeckMeido，解到 $root 下正好生成 $target
   if ! plugin_verify_layout "$target"; then
     dim "插件目录校验失败：$PLUGIN_LAYOUT_ERROR"
@@ -5489,6 +5545,9 @@ run_root() {
   elif [ -t 0 ] || { true </dev/tty; } 2>/dev/null; then
     # 密码框由 sudo 自己从 /dev/tty 读，不占 stdin，所以这里重定向是安全的
     sudo "$@" </dev/null; rc=$?
+  elif [ -n "${SUDO_ASKPASS:-}" ] && [ -x "${SUDO_ASKPASS}" ]; then
+    # 没有终端但有 askpass（SSH 远程卸载、自动化）
+    sudo -A "$@" </dev/null; rc=$?
   else
     un_log "  RC=127 root: $*（没有终端，无法输入 sudo 密码）"
     return 127
