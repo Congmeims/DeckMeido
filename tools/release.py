@@ -3,8 +3,9 @@
 """本地发版构建：打 tar.gz + 插件 zip + latest.json，不在任何地方上传。
 
 用法（仓库根目录）：
-    python tools/release.py 0.6.6
-不带版本号时读 plugin/package.json 的 version。
+    python tools/release.py            # 版本号读 plugin/package.json
+    python tools/release.py 0.8.6      # 显式指定版本
+    python tools/release.py --no-check 跳过安装器自检（不建议）
 
 产物写到 dist/，并自动同步到 winres/deckmeido/（该目录只保留当前版本产物）。
 剩下的发布步骤是人工的：
@@ -303,8 +304,34 @@ def sync_winres(ver: str, tarball: Path, zip_path: Path) -> None:
     print(f"    已同步到 winres/deckmeido（只保留 {ver} 版本产物）")
 
 
+def check_installer():
+    """出包前检查安装器：交互式档位菜单已经在安装器里删掉，只留完整安装。
+
+    以前这份源码里又长回「请选择安装档位」的菜单，打出来的包对谁都弹菜单；
+    管道安装时 /dev/tty 不存在，安装直接读失败。这里命中就中止，
+    避免带档位菜单的包再次发出去。
+    """
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    bad = [
+        (r"请选择安装档位", "交互式档位菜单"),
+        (r"choose_install_profile", "档位选择函数"),
+        (r"DECKMEIDO_PROFILE", "档位环境变量"),
+        (r"--minimal|--standard|--custom", "档位命令行参数"),
+    ]
+    hits = []
+    for pattern, label in bad:
+        for m in re.finditer(pattern, text):
+            line = text.count("\n", 0, m.start()) + 1
+            hits.append(f"    install.sh:{line}  {label}：{m.group(0)}")
+    if hits:
+        sys.exit("安装器里仍有档位相关代码，出包会带着它一起发出去。"
+                 "先删干净再出包（或用 --no-check 强行跳过）：\n" + "\n".join(hits))
+
+
 def main():
-    ver = sys.argv[1] if len(sys.argv) > 1 else json.loads(
+    argv = [a for a in sys.argv[1:] if a != "--no-check"]
+    skip_check = "--no-check" in sys.argv[1:]
+    ver = argv[0] if argv else json.loads(
         (ROOT / "plugin" / "package.json").read_text(encoding="utf-8")
     )["version"]
     ver = ver.lstrip("v")
@@ -323,6 +350,13 @@ def main():
                  + "\n".join("    " + line for line in dirty.splitlines()[:10]))
     if not (ROOT / "plugin" / "dist" / "index.js").exists():
         sys.exit("plugin/dist/index.js 不存在，先 cd plugin && npm run build")
+
+    # 安装器自检放在最前面：不通过就别浪费一次完整打包
+    if skip_check:
+        print("==> 安装器自检：已用 --no-check 跳过")
+    else:
+        check_installer()
+        print("==> 安装器自检通过（无档位菜单，完整安装）")
 
     print(f"==> 打包 {ver}")
     z = build_plugin_zip(ver)
