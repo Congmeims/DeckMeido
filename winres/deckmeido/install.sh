@@ -205,9 +205,12 @@ _is_piped() {
 # 脚本在磁盘上、但周围没有源码（用户把 install.sh 单独 scp / 下载下来跑）。
 # 这类情况必须和管道执行一样去下载发布包：以前只在 _is_piped 时自举，
 # 单文件运行时会在第 3 步报「当前目录不像 DeckMeido 源码目录（缺 install.sh）」直接退出。
+# 判断依据是「这里有源码文件（server/）」，不能拿 VERSION 当依据：
+# VERSION 是发布时才生成的，git clone 出来的源码目录里没有它，
+# 会让 git 源码安装被误判成单文件，绕道去下载旧版本的发布包。
 _is_standalone() {
   _is_piped && return 0
-  [ -f "$HERE/install.sh" ] && [ -f "$HERE/VERSION" ] && return 1
+  [ -f "$HERE/install.sh" ] && [ -d "$HERE/server" ] && return 1
   return 0
 }
 
@@ -303,7 +306,7 @@ need_cmd() { command -v "$1" >/dev/null 2>&1; }
 #   · 目标是空、/、$HOME、或路径层级过浅 → 拒绝
 #   · 真机确需强删时显式设置 DECKMEIDO_ALLOW_UNSAFE_UNINSTALL=1
 safe_rm_target() {
-  local target="${1:-}" abs depth
+  local target="${1:-}" abs depth have_marker=0
   if [ "${DECKMEIDO_ALLOW_UNSAFE_UNINSTALL:-0}" = "1" ]; then
     echo "[删除守卫] 已按 DECKMEIDO_ALLOW_UNSAFE_UNINSTALL=1 放行：$target"
     return 0
@@ -338,10 +341,16 @@ safe_rm_target() {
     echo "[删除守卫] 拒绝：路径层级过浅（$abs）" >&2
     return 1
   fi
+  [ -f "$abs/.deckmeido-install" ] && have_marker=1
   if [ "${DECKMEIDO_INSTALL_DIR_UNINSTALL:-0}" = "1" ] && [ "$abs" = "$INSTALL_DIR" ] &&
      [ ! -d "$abs/.git" ] && [ ! -f "$abs/.git" ]; then
     # 通过安装目录里的 uninstall.sh 转发进来：HERE 就是安装目录，属于预期情况。
     # 仍然拒绝 .git 源码工作区（开发机上的仓库不能当安装目录卸）。
+    return 0
+  fi
+  if [ "$have_marker" = 1 ] && [ "$abs" = "$INSTALL_DIR" ] && [ ! -d "$abs/.git" ]; then
+    # 用源码目录的 install.sh 直接卸安装目录（bash dm-src/install.sh uninstall）：
+    # 目标不是脚本所在目录，只要它带安装器写的标记、且本身不是 git 仓库就放行
     return 0
   fi
   if [ "$abs" = "$HERE" ]; then
@@ -721,7 +730,10 @@ capture_install_baseline() {
     fi
     printf 'unit_enabled=%s\n' "$en"
     printf 'unit_active=%s\n' "$ac"
-  } > "$tmp" 2>/dev/null && mv -f "$tmp" "$BASELINE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+    # stderr 必须在重定向组之前就接好：写成 `} > "$tmp" 2>/dev/null` 时，
+    # 组内 while ... done < <(decky_plugin_dirs) 的进程替换会继承外层 stderr，
+    # 无 tty 时每轮都往屏幕上糊一行 "/dev/tty: No such device or address"
+  } >"$tmp" 2>/dev/null && mv -f "$tmp" "$BASELINE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
 
 baseline_value() {
@@ -900,10 +912,10 @@ disp_len() {
 term_cols() {
   local c="${COLUMNS:-}" sz
   if [ -z "$c" ] || ! [[ "$c" =~ ^[0-9]+$ ]]; then
-    sz=$(stty size < /dev/tty 2>/dev/null | awk '{print $2}')
+    sz=$(stty size < /dev/tty 2>/dev/null | awk '{print $2}' || true)
     c="${sz:-}"
   fi
-  [ -n "$c" ] || c=$(tput cols < /dev/tty 2>/dev/null || echo 80)
+  [ -n "$c" ] || c=$( { tput cols < /dev/tty 2>/dev/null || echo 80; } || echo 80 )
   printf '%s' "${c:-80}"
 }
 # 开场大字/分区标题需要 72 列；结果卡片窄一点也能画（>=44 列）
@@ -2329,6 +2341,11 @@ prune_stale() {
     while IFS= read -r rel; do
       [ -n "$rel" ] || continue
       printf '%s' "$rel" | grep -Eq "$USER_DATA_RE" && continue
+      # 构建产物两边都靠 .gitignore 排除，源码侧本来就不存在；照常删会在
+      # 升级时把刚构建好的 plugin/dist/ 清空，插件随即装不上
+      case "$rel" in
+        */node_modules/*|*/dist/*) continue ;;
+      esac
       [ -e "$HERE/$rel" ] && continue
       rm -f "$INSTALL_DIR/$rel" && removed=$((removed + 1))
     done < <(cd "$INSTALL_DIR" && find "$d" -type f 2>/dev/null)
@@ -2369,6 +2386,23 @@ sync_files() {
   local items=(server client assets deploy tools plugin requirements.txt requirements-gui.txt requirements-stt.txt requirements-tts.txt README.md install.sh)
   # RELEASE-NOTES.md 只在发布包里存在，有就一起带上，方便用户在安装目录里查更新内容
   [ -f "$HERE/RELEASE-NOTES.md" ] && items+=(RELEASE-NOTES.md)
+  # git clone 出来的源码里没有 plugin/dist/（插件自己的 .gitignore 排除），
+  # 仓库里带的是 deploy/deckmeido-plugin.zip 这份 build 产物。两者都缺时
+  # 如果机上有 npm 就当场构建，否则直说装不了插件。
+  local build_plugin=0
+  [ -f "$HERE/deploy/deckmeido-plugin.zip" ] || build_plugin=1
+  [ -f "$HERE/plugin/dist/index.js" ] || build_plugin=1
+  if [ "$build_plugin" = 1 ] && command -v npm >/dev/null 2>&1; then
+    dim "源码里缺插件前端产物，先用 npm 构建（首次要装 node_modules）"
+    if ( cd "$HERE/plugin" && { [ -d node_modules ] || npm install --no-audit --no-fund >/dev/null 2>&1; } &&
+         npm run build >/dev/null 2>&1 ); then
+      dim "插件前端已构建：plugin/dist/index.js"
+    else
+      warn "插件前端构建失败；Decky 插件这轮装不上，可稍后手动 bash $INSTALL_DIR/plugin/deploy.sh"
+    fi
+  elif [ "$build_plugin" = 1 ]; then
+    warn "源码里缺插件前端产物，机上也没有 npm（用发布包安装可避免）"
+  fi
   for it in "${items[@]}"; do
     [ -e "$HERE/$it" ] || continue
     if [ -d "$HERE/$it" ]; then
@@ -2698,7 +2732,9 @@ _retry_download() {
       [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/    /'
       return 0
     fi
-    DOWNLOAD_ERR=$(printf '%s\n' "$out" | tail -n 2 | tr '\n' ' ' | cut -c1-120)
+    # 只留最关键的报错行：Python traceback 的倒数两行常是 raise 语句本身，
+    # 直接截断会把「所有下载源都不可用：hf-mirror…」这样的原因截掉
+    DOWNLOAD_ERR=$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n 1 | sed 's/^[[:space:]]*//' | cut -c1-160)
     [ -n "$DOWNLOAD_ERR" ] || DOWNLOAD_ERR="退出码非 0，无输出"
     warn "$label 第 $attempt/3 次尝试失败：$DOWNLOAD_ERR"
     if [ "$attempt" -lt 3 ]; then
@@ -3740,7 +3776,7 @@ install_plugin() {
       dim "插件已就绪，到 设置 → Decky Loader 点「重新载入」即可在 QAM 里看到"
     else
       PLUGIN_RELOAD_STATE="install_failed"
-      warn "插件安装失败，可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
+      warn "插件安装失败（${PLUGIN_SKIP_REASON:-未知原因}），可手动重装：bash $INSTALL_DIR/plugin/deploy.sh"
     fi
   else
     PLUGIN_RELOAD_STATE="skipped"
@@ -3752,11 +3788,35 @@ install_plugin() {
 # 把发布包里的插件 zip 解到 ~/homebrew/plugins/DeckMeido。
 # zip 由 release.py 打（前端已编译，无需 npm），顶层是 DeckMeido/ 目录。
 plugin_install_zip() {
-  # 优先用发布包里带的那份（deploy/deckmeido-plugin.zip，由 release.py 从 dist/ 拷进来）
+  # 优先用发布包里带的那份（deploy/deckmeido-plugin.zip，由 release.py 从 dist/ 拷进来）；
+  # git 源码目录里没有这个 zip，那份 dist/index.js 是仓库自带的产物，直接当场压一个
   local src="$INSTALL_DIR/deploy/deckmeido-plugin.zip"
   local root="${DECKY_PLUGINS_DIR:-$HOME/homebrew/plugins}"
   local target="$root/DeckMeido"
-  [ -f "$src" ] || { dim "安装包里没带插件包（$src），跳过"; return 1; }
+  local tmpdir="" stage="" tmpzip=""
+  if [ ! -f "$src" ]; then
+    if [ ! -f "$INSTALL_DIR/plugin/dist/index.js" ] || [ ! -f "$INSTALL_DIR/plugin/package.json" ]; then
+      dim "安装包里没带插件包（$src），源码里也没有 plugin/dist/index.js，跳过"
+      PLUGIN_SKIP_REASON="没有插件包，也没有编译好的前端产物"
+      return 1
+    fi
+    need_cmd zip || { dim "缺少 zip，无法就地打包插件"; PLUGIN_SKIP_REASON="缺少 zip 命令"; return 1; }
+    # zip 里顶层目录必须是 DeckMeido/（Decky 按目录名识别插件），
+    # 所以先拷成 DeckMeido/ 再压
+    tmpdir="$(mktemp -d)" || { PLUGIN_SKIP_REASON="建不了临时目录"; return 1; }
+    stage="$tmpdir/DeckMeido"
+    tmpzip="$tmpdir/deckmeido-plugin.zip"
+    if ! cp -a "$INSTALL_DIR/plugin" "$stage" ||
+       ! rm -rf "$stage/node_modules" "$stage/src" ||
+       ! ( cd "$tmpdir" && zip -qr "$tmpzip" DeckMeido ) >/dev/null 2>&1; then
+      dim "就地打包插件失败（$tmpdir）"
+      PLUGIN_SKIP_REASON="打包插件失败"
+      rm -rf "$tmpdir"
+      return 1
+    fi
+    dim "源码目录不带插件包，已就地打包：$tmpzip"
+    src="$tmpzip"
+  fi
   need_cmd unzip || { dim "缺少 unzip，跳过"; return 1; }
   # 旧版本可能是软链接装进来的：先删链接本身，别顺着链接把安装目录删了
   if [ -L "$target" ]; then
@@ -3781,8 +3841,11 @@ plugin_install_zip() {
   # zip 顶层目录名是 DeckMeido，解到 $root 下正好生成 $target
   if ! plugin_verify_layout "$target"; then
     dim "插件目录校验失败：$PLUGIN_LAYOUT_ERROR"
+    PLUGIN_SKIP_REASON="插件目录校验失败：$PLUGIN_LAYOUT_ERROR"
+    [ -n "$tmpdir" ] && rm -rf "$tmpdir"
     return 1
   fi
+  [ -n "$tmpdir" ] && rm -rf "$tmpdir"
   return 0
 }
 
@@ -4209,15 +4272,24 @@ write_version_file() {
   # 发布包里带一份 VERSION（release.py 按 tag 写入），tar 安装时没有
   # git 仓库，只能靠它；git 安装则用 describe，能反映「比 tag 多几个提交」
   local ver=""
-  if [ -f "$HERE/VERSION" ]; then
+  # git 源码目录优先用 git：源目录里的 VERSION 可能是上一版留下的旧值，
+  # 先读它会让界面把新代码显示成旧版本
+  if [ -d "$HERE/.git" ]; then
+    ver=$(git -C "$HERE" describe --tags --always 2>/dev/null || true)
+  fi
+  if [ -z "$ver" ] && [ -f "$HERE/VERSION" ]; then
     ver=$(head -n1 "$HERE/VERSION" 2>/dev/null || true)
   fi
   if [ -z "$ver" ]; then
     ver=$(git -C "$INSTALL_DIR" describe --tags --always 2>/dev/null || true)
   fi
-  [ -n "$ver" ] || ver=$(git -C "$HERE" describe --tags --always 2>/dev/null || true)
-  # 手工解包/无 git 的部署：退回插件 package.json 的 version，
-  # 避免 VERSION 被写成 0.0.0 导致界面显示 v0.0.0
+  # describe 在打不到 tag 的浅克隆里只会给一串提交号，那不是版本号，按序继续找：
+  # package.json（手工解包/无 git 的部署也靠它，避免写成 0.0.0 显示 v0.0.0）
+  case "$ver" in
+    *[0-9].[0-9]*) ;;
+    *) ver="" ;;
+  esac
+  [ -n "$ver" ] || ver=$(sed -nE 's/^  "version": "([^"]*)".*/\1/p' "$HERE/plugin/package.json" 2>/dev/null | head -n1)
   [ -n "$ver" ] || ver=$(sed -nE 's/^  "version": "([^"]*)".*/\1/p' "$INSTALL_DIR/plugin/package.json" 2>/dev/null | head -n1)
   [ -n "$ver" ] || ver="0.0.0"
   printf '%s\n' "${ver#v}" > "$INSTALL_DIR/VERSION"
@@ -4327,7 +4399,7 @@ print_done() {
   fi
   case "$TTS_MODEL_STATE" in
     ready)  card_line "语音模型     已就绪（月读酱）" ;;
-    failed) card_line "语音模型     下载失败（已尝试 3 次，原因：$(printf '%s' "${TTS_MODEL_ERROR:-未知}" | cut -c1-60)）" ;;
+    failed) card_line "语音模型     下载失败（已尝试 3 次，原因：$(printf '%s' "${TTS_MODEL_ERROR:-未知}" | cut -c1-80)）" ;;
     broken) card_line "语音模型     校验失败（设置页可重新下载）" ;;
     *)      card_line "语音模型     未下载（约 38MB，设置页「下载模型」）" ;;
   esac
@@ -4352,7 +4424,7 @@ print_done() {
     pending) card_line "Decky 插件   v${pv:-?} 已部署，待重载（请先重启 Deck，再到 Decky 设置点「重新载入」）" ;;
     failed)  card_line "Decky 插件   v${pv:-?} 已部署，但重载失败（请重启 Deck 后再重新载入）" ;;
     install_failed)
-             card_line "Decky 插件   安装失败（文件没解开，QAM 里不会有入口）" ;;
+             card_line "Decky 插件   安装失败（${PLUGIN_SKIP_REASON:-未知原因}；QAM 里不会有入口）" ;;
     absent)  card_line "Decky 插件   未安装：没检测到 Decky Loader（可选依赖）" ;;
     skipped) card_line "Decky 插件   未安装：按你的选择跳过，zip 已放到工作区" ;;
     *)       [ -n "$pv" ] && card_line "Decky 插件   v${pv} 已部署" ;;
@@ -6309,7 +6381,6 @@ EOF
   esac
   un_step_close
   if [ -n "$_decky_hint" ]; then
-    next_hint "$_decky_hint"
     un_note "$_decky_hint"
   fi
   if [ "$DRY_RUN" = 0 ]; then
