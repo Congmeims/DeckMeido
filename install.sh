@@ -724,7 +724,10 @@ capture_install_baseline() {
     fi
     printf 'unit_enabled=%s\n' "$en"
     printf 'unit_active=%s\n' "$ac"
-  } > "$tmp" 2>/dev/null && mv -f "$tmp" "$BASELINE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+    # stderr 必须在重定向组之前就接好：写成 `} > "$tmp" 2>/dev/null` 时，
+    # 组内 while ... done < <(decky_plugin_dirs) 的进程替换会继承外层 stderr，
+    # 无 tty 时每轮都往屏幕上糊一行 "/dev/tty: No such device or address"
+  } >"$tmp" 2>/dev/null && mv -f "$tmp" "$BASELINE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
 
 baseline_value() {
@@ -903,10 +906,10 @@ disp_len() {
 term_cols() {
   local c="${COLUMNS:-}" sz
   if [ -z "$c" ] || ! [[ "$c" =~ ^[0-9]+$ ]]; then
-    sz=$(stty size < /dev/tty 2>/dev/null | awk '{print $2}')
+    sz=$(stty size < /dev/tty 2>/dev/null | awk '{print $2}' || true)
     c="${sz:-}"
   fi
-  [ -n "$c" ] || c=$(tput cols < /dev/tty 2>/dev/null || echo 80)
+  [ -n "$c" ] || c=$( { tput cols < /dev/tty 2>/dev/null || echo 80; } || echo 80 )
   printf '%s' "${c:-80}"
 }
 # 开场大字/分区标题需要 72 列；结果卡片窄一点也能画（>=44 列）
