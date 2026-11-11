@@ -115,6 +115,10 @@ class TurnContext:
     # 强制二次确认：QQ 这类「远程、无人值守」的入口即使处于 full 模式，
     # 危险工具也必须等用户回「确认」才执行
     force_confirm: bool = False
+    # 本机完全访问（设置里开了「完全访问」，且不是远程入口）。
+    # 只放行文件删除那一层：批量/通配/递归/相对路径都不再拦，
+    # 会话删除（清空历史）不在放行范围内，见 check_delete。
+    full_access: bool = False
 
 
 # ---------- 场景策略表 ----------
@@ -375,6 +379,8 @@ class _DeleteHit:
     code: str
     target: str
     reason: str
+    # file = 删文件（完全访问下放行）；session = 删会话历史（完全访问下也不放行）
+    kind: str = "file"
 
 
 def _session_paths() -> tuple[str, str]:
@@ -427,15 +433,18 @@ def _session_named(sid: str, ctx: TurnContext) -> bool:
 def _check_session_target(sid: str, ctx: TurnContext) -> _DeleteHit | None:
     bad = _sid_problem(sid)
     if bad:
-        return _DeleteHit(bad, sid, "会话删除只接受单个明确的 sid，不接受批量/通配/范围")
+        return _DeleteHit(bad, sid, "会话删除只接受单个明确的 sid，不接受批量/通配/范围",
+                          kind="session")
     if not _session_named(sid, ctx):
         return _DeleteHit("not_explicitly_named", sid,
-                          "用户本轮没有明确点名这个会话，不能删除；先列出清单让用户确认")
+                          "用户本轮没有明确点名这个会话，不能删除；先列出清单让用户确认",
+                          kind="session")
     if sid != ctx.sid:
         try:
             if not (paths.sessions_dir() / f"{sid}.json").exists():
                 return _DeleteHit("unknown_target", sid,
-                                  "没有找到这个会话，不要猜 sid；请先确认要删的是哪一条")
+                                  "没有找到这个会话，不要猜 sid；请先确认要删的是哪一条",
+                                  kind="session")
         except Exception:
             pass
     return None
@@ -573,12 +582,13 @@ def _check_curl_session(rest: list[str], ctx: TurnContext) -> _DeleteHit | None:
     if method != "DELETE":
         return None
     if not urls:
-        return _DeleteHit("missing_target", "", "会话删除没有给出 sid")
+        return _DeleteHit("missing_target", "", "会话删除没有给出 sid", kind="session")
     sids: list[str] = []
     for u in urls:
         path = urlparse(u).path.rstrip("/")
         if path.endswith("/api/sessions"):
-            return _DeleteHit("batch_delete", u, "会话删除必须带单个明确 sid")
+            return _DeleteHit("batch_delete", u, "会话删除必须带单个明确 sid",
+                              kind="session")
         m = re.search(r"/api/sessions/([^/]+)$", path)
         if m:
             sids.append(unquote(m.group(1)))
@@ -638,15 +648,36 @@ def _delete_blocked(hit: _DeleteHit) -> PolicyDecision:
                           reason=f"{hit.reason}（目标：{target or '未提供'}）")
 
 
+def _is_full_access(ctx: TurnContext) -> bool:
+    """本机完全访问：设置里开了 full，且不是 QQ 这类远程入口"""
+    return bool(ctx.full_access) and not ctx.force_confirm
+
+
 def check_delete(name: str, args: dict, ctx: TurnContext) -> PolicyDecision | None:
-    """删除类工具调用的硬约束入口（不通过则不执行工具）"""
+    """删除类工具调用的硬约束入口（不通过则不执行工具）
+
+    完全访问（本机 full 模式）下文件删除不再受限：用户已在设置里显式
+    放弃了这层保护，再拦就等于「开了权限也不生效」。
+    删会话历史除外 —— 它清的是用户自己的对话记录，误删不可恢复，
+    和「删个临时目录」不是一回事，full 模式下仍然要求本轮点名。
+    """
     if name != "run_command":
         return None
     cmd = str((args or {}).get("command") or "")
     if not cmd:
         return None
     hit = _scan_delete(cmd, ctx)
-    return _delete_blocked(hit) if hit else None
+    if not hit:
+        return None
+    if _is_full_access(ctx) and hit.kind == "file":
+        # 放行但留一行审计，事后能查到「什么时候删了什么」
+        try:
+            audit.record("delete", "allowed_full", "ok", reason=hit.code,
+                         detail=" ".join(str(hit.target or "").split())[:160])
+        except Exception:
+            pass
+        return None
+    return _delete_blocked(hit)
 
 
 def risky_action(name: str, args: dict) -> str | None:

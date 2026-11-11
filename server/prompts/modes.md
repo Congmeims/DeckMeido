@@ -1,8 +1,9 @@
 <!--
-四种可选段，按运行时状态挑一个拼进系统提示：
+五种可选段，按运行时状态挑一个拼进系统提示：
   mode_gaming        当前是游戏模式（_mode_block(gaming=True)）
   mode_desktop       当前是桌面模式（_mode_block(gaming=False)）
   perm_manual        权限模式 manual
+  perm_custom        权限模式 custom
   perm_auto          权限模式 auto
   perm_full          权限模式 full
 每段用 `<!-- @part: 名字 -->` 开头、`<!-- /@part -->` 收尾（收尾标记写在正文行尾，
@@ -34,6 +35,10 @@
 
 <!-- @part: perm_manual -->
 当前权限模式=手动审批：每条命令系统都会先向用户展示并等待确认，你照常发起调用即可。
+<!-- /@part -->
+
+<!-- @part: perm_custom -->
+当前权限模式=自定义：读文件、改文件、危险命令、联网这几类各自听用户的开关，需要确认的操作由系统自动弹确认，你照常发起调用即可。
 <!-- /@part -->
 
 <!-- @part: perm_auto -->

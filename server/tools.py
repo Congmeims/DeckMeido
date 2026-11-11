@@ -703,6 +703,68 @@ def is_dangerous(cmd: str) -> bool:
     return _structural_danger(norm)
 
 
+# ---------- 自定义审批 ----------
+# 设置页「自定义」档的四组开关（参考 Trae 的权限维度）：
+#   read   读文件（对应 Trae「文件读取」）
+#   write  改文件（对应 Trae「文件写入」）
+#   cmd    系统命令（危险命令要不要问，对应 Trae「命令执行」）
+#   net    联网操作（联网搜索 / 浏览器 / 外部请求）
+# 每组只有「直接执行 / 先问我」两种状态，不设第三档 —— 问太多等于关掉这个功能。
+CUSTOM_GROUPS = ("read", "write", "cmd", "net")
+# 默认：读和联网放开，改文件和危险命令仍然要问（和老 auto 档的实际体验接近）
+CUSTOM_DEFAULT = {"read": False, "write": True, "cmd": True, "net": False}
+
+# 默认要问的组。config.toml 里缺字段时按它补齐，旧配置升级上来行为不变
+CUSTOM_LABELS = {
+    "read": "读取文件",
+    "write": "修改文件",
+    "cmd": "系统命令",
+    "net": "联网操作",
+}
+
+_FILE_WRITE_TOOLS = {"write_file", "edit_file"}
+_FILE_READ_TOOLS = {"read_file", "list_dir"}
+_NET_TOOLS = {"web_search", "get_weather", "find_game"}
+
+
+def normalize_custom(raw) -> dict[str, bool]:
+    """把配置里的自定义开关归一成 {read/write/cmd/net: bool}（True = 先问我）"""
+    out = dict(CUSTOM_DEFAULT)
+    if isinstance(raw, dict):
+        for k in CUSTOM_GROUPS:
+            if k in raw and raw[k] is not None:
+                out[k] = bool(raw[k])
+    return out
+
+
+def custom_group(name: str, args: dict | None) -> str | None:
+    """工具调用属于自定义档的哪一组；不归任何组（如 memory/ask_user）返回 None
+
+    run_command 只看是不是危险命令：安全命令（ls/cat/git status）即使在「系统命令」
+    开启询问时也直接执行，否则自定义档就等于手动审批了。
+    """
+    if name == "run_command":
+        cmd = str((args or {}).get("command") or "")
+        return "cmd" if is_dangerous(cmd) else None
+    if name in _FILE_WRITE_TOOLS:
+        return "write"
+    if name in _FILE_READ_TOOLS:
+        return "read"
+    if name in _NET_TOOLS:
+        return "net"
+    if name in DANGEROUS:
+        return "cmd"
+    return None
+
+
+def custom_needs_approval(name: str, args: dict | None, groups: dict) -> bool:
+    """自定义档：按工具归属的组查开关，True = 需要用户确认"""
+    grp = custom_group(name, args)
+    if grp is None:
+        return False
+    return bool(groups.get(grp, CUSTOM_DEFAULT.get(grp, True)))
+
+
 # 从命令中识别会写入/改动的文件路径（用于 UI 展示）
 WRITE_PATTERNS = [
     r"(?<![\d&])>+\s*([^\s|;&>]+)",                          # > file / >> file（排除 2>&1 这类）

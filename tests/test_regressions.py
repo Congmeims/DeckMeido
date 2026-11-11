@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from server import policy  # noqa: E402
+from server import policy, tools  # noqa: E402
 
 
 class PolicyTest(unittest.TestCase):
@@ -323,6 +323,77 @@ class DeletePolicyTest(unittest.TestCase):
         self.deny("bash -c 'rm -rf /home/deck/tmp'", "删掉临时目录")
         self.deny("find /home/deck -name '*.tmp' -delete", "清理临时文件")
         self.deny("rmdir /home/deck/tmp", "删掉空目录")
+
+    def test_full_access_releases_file_delete(self):
+        """完全访问下文件删除不再拦：开了权限却还拦等于没生效"""
+        ctx = self.ctx("删掉那个临时目录")
+        ctx.full_access = True
+        for cmd in ("cd /tmp && rm -rf piptest",
+                    "rm /home/deck/*.log",
+                    "rm foo.txt",
+                    "find /home/deck -name '*.tmp' -delete"):
+            decision = policy.check("run_command", {"command": cmd}, ctx)
+            self.assertTrue(decision.allowed, cmd)
+
+    def test_full_access_keeps_session_delete_guard(self):
+        """会话历史不在放行范围：误删不可恢复，仍然要求本轮点名"""
+        ctx = self.ctx("把没用的会话都删了")
+        ctx.full_access = True
+        decision = policy.check(
+            "run_command",
+            {"command": "curl -X DELETE http://127.0.0.1:18765/api/sessions/old-project"},
+            ctx)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.code, "delete_blocked")
+
+    def test_full_access_ignored_for_remote_entry(self):
+        """QQ 远程即使配置里是 full，也不能放开删除"""
+        ctx = self.ctx("删掉那个临时目录")
+        ctx.full_access = True
+        ctx.force_confirm = True
+        decision = policy.check("run_command", {"command": "rm -rf /home/deck/tmp"}, ctx)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.code, "delete_blocked")
+
+    def test_custom_groups_defaults(self):
+        """自定义档缺字段时按默认补齐，旧配置升级后行为不变"""
+        self.assertEqual(tools.normalize_custom(None), tools.CUSTOM_DEFAULT)
+        self.assertEqual(tools.normalize_custom({"cmd": False}),
+                         {"read": False, "write": True, "cmd": False, "net": False})
+        # 非布尔值一律折成布尔
+        self.assertEqual(tools.normalize_custom({"read": 1})["read"], True)
+
+    def test_custom_safe_command_never_asks(self):
+        """「系统命令」开关只对危险命令生效，ls/cat 不该因为自定义档而每次弹窗"""
+        groups = {"read": True, "write": True, "cmd": True, "net": True}
+        self.assertFalse(tools.custom_needs_approval("run_command",
+                                                     {"command": "ls /home/deck"},
+                                                     groups))
+        self.assertTrue(tools.custom_needs_approval(
+            "run_command", {"command": "rm -rf /home/deck/tmp"}, groups))
+
+    def test_custom_file_and_net_groups(self):
+        """读文件 / 改文件 / 联网各走自己的开关"""
+        only_read = {"read": True, "write": False, "cmd": False, "net": False}
+        self.assertTrue(tools.custom_needs_approval("read_file", {"path": "/a"}, only_read))
+        self.assertTrue(tools.custom_needs_approval("list_dir", {"path": "/a"}, only_read))
+        self.assertFalse(tools.custom_needs_approval("write_file", {"path": "/a"}, only_read))
+        self.assertFalse(tools.custom_needs_approval("edit_file", {"path": "/a"}, only_read))
+        self.assertFalse(tools.custom_needs_approval("web_search", {"query": "x"}, only_read))
+        # 联网开关打开后要问
+        self.assertTrue(tools.custom_needs_approval(
+            "web_search", {"query": "x"}, dict(only_read, net=True)))
+        # 不归任何组的工具（记忆/提问）永远直接执行
+        self.assertFalse(tools.custom_needs_approval("remember", {}, only_read))
+        self.assertFalse(tools.custom_needs_approval("ask_user", {}, only_read))
+
+    def test_custom_dangerous_tool_follows_cmd_group(self):
+        """install_game 这类危险工具跟着「系统命令」开关走"""
+        groups = {"read": False, "write": False, "cmd": True, "net": False}
+        self.assertTrue(tools.custom_needs_approval("install_game", {"appid": 1}, groups))
+        self.assertTrue(tools.custom_needs_approval("gamepad", {}, groups))
+        groups["cmd"] = False
+        self.assertFalse(tools.custom_needs_approval("install_game", {"appid": 1}, groups))
 
     def test_non_delete_command_untouched(self):
         decision = policy.check("run_command", {"command": "ls /home/deck"},

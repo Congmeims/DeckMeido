@@ -891,6 +891,9 @@ def apply_config(cfg: dict):
     # 睡眠模式：音乐停 + 会话空闲满 N 分钟后自动关机；开关热更新
     sleepmode.service.apply(cfg.get("sleep") or {})
     PERMISSION_MODE = cfg.get("security", {}).get("permission_mode", "auto")
+    # 自定义档的四组开关跟着热更新，保存后下一次工具调用就按新值判断
+    global CUSTOM_PERM
+    CUSTOM_PERM = tools.normalize_custom((cfg.get("security") or {}).get("custom"))
     # 文件工具的边界跟着权限模式走：full 不设限（与 run_command 一致），
     # 其余模式只能碰工作区。这里同步一份，热更新后立刻生效
     tools.path_bound = PERMISSION_MODE != "full"
@@ -918,8 +921,11 @@ def reload_persona() -> dict:
     return PERSONA
 
 
-# 权限模式：manual=所有命令手动审批 / auto=危险命令才审批 / full=完全访问
+# 权限模式：manual=所有命令手动审批 / custom=按四组开关 / auto=危险命令才审批
+# full=完全访问。custom 的四组开关见 tools.CUSTOM_GROUPS
 PERMISSION_MODE = CFG.get("security", {}).get("permission_mode", "auto")
+# 自定义档的四个开关（True = 先问我）；只有 PERMISSION_MODE == "custom" 时才被读取
+CUSTOM_PERM = tools.normalize_custom((CFG.get("security") or {}).get("custom"))
 tools.path_bound = PERMISSION_MODE != "full"
 
 # 工作区（默认 ~/MeidoSpace，可在设置里改）
@@ -2922,10 +2928,14 @@ async def api_terminal_run(payload: dict):
     cmd = str(payload.get("command") or "").strip()
     if not cmd:
         raise HTTPException(status_code=400, detail="命令为空")
-    # 和对话里同一个审批通道：手动模式一律先问，智能模式只拦危险命令，
+    # 和对话里同一个审批通道：手动模式一律先问，智能/自定义模式只拦危险命令，
     # 完全访问直接跑。面板不能变成绕过审批的后门，但也不该自己发明一套规则
     needs_approval = (PERMISSION_MODE == "manual"
-                      or (PERMISSION_MODE == "auto" and tools.is_dangerous(cmd)))
+                      or (PERMISSION_MODE == "auto" and tools.is_dangerous(cmd))
+                      or (PERMISSION_MODE == "custom"
+                          and tools.custom_needs_approval("run_command",
+                                                          {"command": cmd},
+                                                          CUSTOM_PERM)))
     if needs_approval:
         # 挂进和对话同一份 pending_action，之后由对话里那句「确认」放行
         global pending_action
@@ -3813,6 +3823,8 @@ class ConfigUpdate(BaseModel):
     # 「对话与语音」整组总开关：写入 [agent] chat_voice；关闭后该组功能整体停用
     chat_voice: bool | None = None
     permission_mode: str | None = None
+    # 自定义档的四组开关 {read/write/cmd/net: bool}，True = 先问我
+    permission_custom: dict | None = None
     # 深度思考档位：空串 / low / medium / high（前端滑条的「无 / 低 / 中 / 高」）
     reasoning_effort: str | None = None
     workspace: str | None = None
@@ -4071,6 +4083,8 @@ async def api_get_config():
         # [ui] language：网页/客户端据此显示语言下拉，切换后整页重载
         "ui_language": UI_LANG,
         "permission_mode": PERMISSION_MODE,
+        # 自定义档的四组开关：设置页打开时按它落位
+        "permission_custom": dict(CUSTOM_PERM),
         "workspace": str(tools.WORKSPACE),
         "port": CFG["server"].get("port", 18765),
         # 局域网访问开关：默认 false 只监听 127.0.0.1；开启后设置页显示地址与配对入口
@@ -4368,8 +4382,15 @@ async def api_set_config(req: ConfigUpdate, request: Request):
         # 深度思考滑条：空串 = 不带参数（不思考），其余原样写进 [llm]。
         # 空串要显式落盘，不能当作「没传」忽略，否则关掉之后再打开还是旧的档位
         llm_updates["reasoning_effort"] = req.reasoning_effort
-    if req.permission_mode in ("manual", "auto", "full"):
-        updates["security"] = {"permission_mode": req.permission_mode}
+    if req.permission_mode in ("manual", "auto", "custom", "full"):
+        sec = {"permission_mode": req.permission_mode}
+        # 自定义档的四组开关跟着一起落盘；没传就沿用当前值，
+        # 避免「只切模式」把用户配好的开关洗回默认
+        if req.permission_custom is not None:
+            sec["custom"] = tools.normalize_custom(req.permission_custom)
+        else:
+            sec["custom"] = dict(CUSTOM_PERM)
+        updates["security"] = sec
     if req.workspace is not None and req.workspace.strip():
         updates["workspace"] = {"dir": req.workspace.strip()}
     if req.ask_template is not None:
@@ -5967,6 +5988,8 @@ async def handle_chat(text: str, announce: bool = True,
         boot_id=_system_boot_id(),
         readonly=pol.readonly,
         force_confirm=force_confirm or pol.force_confirm(),
+        # 完全访问：删除类硬约束让路（会话历史除外，见 policy.check_delete）
+        full_access=(PERMISSION_MODE == "full"),
     )
     # 带图轮的单轮策略按入口区分：大屏聊天页放开多轮；询问页/截图翻译
     # （包括 QAM 的全部截图轮）继续一问一答，行为保持原样
@@ -7480,6 +7503,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
         boot_id=_system_boot_id(),
         readonly=pol.readonly,
         force_confirm=pol.force_confirm(),
+        # 完全访问：删除类硬约束让路（会话历史除外，见 policy.check_delete）
+        full_access=(PERMISSION_MODE == "full"),
     )
     if pol.public_persona:
         # 群友档：公开人设 + 群聊上下文；不拼模式段、extra 和长期记忆，
@@ -8002,6 +8027,11 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 # 升级会让服务重启、对话中断，无论什么权限模式都要用户点头
                 if name == "self_update" and args.get("action") == "upgrade":
                     needs_approval = True
+                # 自定义档：非 run_command 的工具按组判断（读文件 / 改文件 / 联网）
+                if (not needs_approval and PERMISSION_MODE == "custom"
+                        and name != "run_command"):
+                    needs_approval = tools.custom_needs_approval(
+                        name, args, CUSTOM_PERM)
                 extra_danger = ""
                 if name == "run_command":
                     cmd = str(args.get("command", ""))
@@ -8014,6 +8044,10 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         needs_approval = tools.is_dangerous(cmd) or bool(extra_danger)
                     elif PERMISSION_MODE == "manual":
                         needs_approval = True
+                    elif PERMISSION_MODE == "custom":
+                        # 自定义档：安全命令直接跑，危险命令看「系统命令」开关
+                        needs_approval = tools.custom_needs_approval(
+                            name, args, CUSTOM_PERM)
                     elif PERMISSION_MODE == "auto":
                         needs_approval = tools.is_dangerous(cmd)
                     # full 模式下不拦截

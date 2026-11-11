@@ -1736,6 +1736,34 @@
   .cfg-select:focus, .field input:focus, .field textarea:focus, .mem-add input:focus {
     border-color: var(--brand);
   }
+  /* 「完全访问」选项标黄：展开下拉时能一眼看出这是有风险的那一档。
+     Windows/SteamOS 的 WebView 里 option 只吃 color，背景改不动，所以只上色不加底。 */
+  option.opt-danger { color: #e8b339; font-weight: 600; }
+  /* 选中后下拉框本身也标黄，避免收起后看不出当前处在高风险档 */
+  select.perm-danger { color: #e8b339; border-color: #e8b339; font-weight: 600; }
+  #permSelect.perm-danger { border-color: #e8b339; }
+  /* 自绘下拉（ddSelect）：原生 select 被盖住了，标黄要落在胶囊和候选行上。
+     dd-danger 既给收起时的 trigger，也给展开后的候选行 */
+  .dd.dd-danger .dd-trigger { color: #e8b339; border-color: #e8b339; font-weight: 600; }
+  /* 文字色落在 .dd-label 上（见 .dd-trigger .dd-label），只改外层没用 */
+  .dd.dd-danger .dd-trigger .dd-label { color: #e8b339; font-weight: 600; }
+  .dd-item.dd-danger { color: #e8b339; font-weight: 600; }
+  /* 自定义档的四组开关：跟着权限下拉展开，和设置页的分组字段同一套留白 */
+  .perm-custom { margin-top: 8px; padding: 8px 10px;
+                 background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; }
+  .perm-custom[hidden] { display: none; }
+  .perm-custom-row { display: flex; align-items: center; justify-content: space-between;
+                     gap: 12px; padding: 6px 0; font-size: 14px; cursor: pointer; }
+  .perm-custom-row input { width: 16px; height: 16px; accent-color: var(--brand); }
+  .perm-custom-hint { margin-top: 4px; font-size: 12px; color: var(--muted); }
+  /* 展开时「完全访问」是当前值时，选中色（品牌蓝）会盖掉黄色，这里抢回来 */
+  .dd.dd-danger .dd-trigger,
+  .dd-item.dd-danger.sel { color: #e8b339; }
+  /* 胶囊在悬停/展开时会被 .dd-trigger:hover 改成正文色，高风险档保持黄色 */
+  .dd.dd-danger .dd-trigger:hover,
+  .dd.dd-danger.open .dd-trigger { color: #e8b339; }
+  .dd.dd-danger .dd-trigger:hover .dd-label,
+  .dd.dd-danger.open .dd-trigger .dd-label { color: #e8b339; }
   /* 扫码连接 */
   .qr-box { display: none; margin-top: 10px; text-align: center; }
   .qr-box.show { display: block; }
@@ -2891,6 +2919,54 @@
   }
   .fb-confirm button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
   .fb-confirm button:active { opacity: .75; }
+  /* 开启「完全访问」前的风险确认：全屏遮罩，不受面板范围限制。
+     这一层是用户最后一次能反悔的地方，所以文字要完整展开、不能截断，
+     并且必须点「我已知晓」才生效（Esc / 点遮罩都不算同意）。 */
+  #fullAccessMask {
+    position: fixed; inset: 0; z-index: 400;
+    display: none; align-items: center; justify-content: center;
+    padding: 24px; background: rgba(0, 0, 0, .62);
+  }
+  #fullAccessMask.show { display: flex; }
+  .fa-card {
+    width: 100%; max-width: 460px; max-height: 86vh; overflow-y: auto;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 20px 22px 16px;
+    box-shadow: 0 18px 56px rgba(0, 0, 0, .6);
+    animation: fbConfirmIn .16s ease;
+  }
+  .fa-card h3 {
+    margin: 0 0 4px; font-size: 15px; font-weight: 600;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .fa-card h3::before {
+    content: ''; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--danger); flex: none;
+  }
+  .fa-card .fa-sub { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+  .fa-card .fa-body {
+    font-size: 13px; line-height: 1.72; color: var(--text);
+    border-left: 2px solid var(--danger);
+    padding-left: 12px; margin-bottom: 16px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .fa-card .fa-check {
+    display: flex; align-items: flex-start; gap: 8px;
+    font-size: 12.5px; color: var(--muted); line-height: 1.5;
+    margin-bottom: 14px; cursor: pointer;
+  }
+  .fa-card .fa-check input { margin-top: 2px; flex: none; }
+  .fa-card .btns { display: flex; justify-content: flex-end; gap: 8px; }
+  .fa-card button {
+    border: 1px solid var(--line); background: var(--surface);
+    color: var(--text); font-size: 13px; padding: 7px 18px;
+    border-radius: 999px; cursor: pointer;
+  }
+  .fa-card button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .fa-card button:disabled { opacity: .4; cursor: not-allowed; }
+  .fa-card button:not(:disabled):active { opacity: .75; }
   /* AI 正在看的那个文件：黄一下再淡出，比直接变色更容易被注意到 */
   .fb-item.sel { background: rgba(26,159,255,.18); box-shadow: inset 0 0 0 1px rgba(26,159,255,.55); }
   .fb-item.flash { animation: fbFlash 1.2s ease-out 2; }
@@ -3498,8 +3574,9 @@
       <button class="cb-btn" id="btnPlus" title="添加附件/引用" style="font-size:16px">＋</button>
       <select class="cb-select" id="permSelect" title="AI 控制权限">
         <option value="manual">手动审批</option>
-        <option value="auto">智能审批</option>
-        <option value="full">完全访问</option>
+        <option value="auto">自动审批</option>
+        <option value="full" class="opt-danger">完全访问</option>
+        <option value="custom">自定义</option>
       </select>
       <!-- 深度思考档位：无 / 低 / 中 / 高，跟着权限下拉走 -->
       <label class="think-slider" id="thinkWrap" title="深度思考档位">
@@ -3788,9 +3865,30 @@
                 <label>AI 控制权限</label>
                 <select id="cfgPerm" class="cfg-select">
                   <option value="manual">手动审批（每条命令都问你）</option>
-                  <option value="auto">智能审批（危险命令才问你）</option>
-                  <option value="full">完全访问（不再询问）</option>
+                  <option value="auto">自动审批（只有危险命令才问你）</option>
+                  <option value="full" class="opt-danger">完全访问（不再询问，风险自负）</option>
+                  <option value="custom">自定义（自己选哪些命令要问）</option>
                 </select>
+                <!-- 自定义档的四个维度（对齐 Trae 的权限设置）：只在选中「自定义」时展开 -->
+                <div class="perm-custom" id="permCustom" hidden>
+                  <label class="perm-custom-row">
+                    <span>读取文件</span>
+                    <input type="checkbox" id="permCustomRead" data-k="read">
+                  </label>
+                  <label class="perm-custom-row">
+                    <span>修改文件</span>
+                    <input type="checkbox" id="permCustomWrite" data-k="write">
+                  </label>
+                  <label class="perm-custom-row">
+                    <span>系统命令</span>
+                    <input type="checkbox" id="permCustomCmd" data-k="cmd">
+                  </label>
+                  <label class="perm-custom-row">
+                    <span>联网操作</span>
+                    <input type="checkbox" id="permCustomNet" data-k="net">
+                  </label>
+                  <div class="perm-custom-hint">勾选 = 这类操作先问你；取消勾选 = 直接执行。</div>
+                </div>
               </div>
               <div class="field">
                 <label>工作区目录（编程/文件任务默认位置）</label>
@@ -4501,6 +4599,24 @@
           <button id="fbConfirmNo">取消</button>
           <button id="fbConfirmYes" class="danger">删除</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 开启「完全访问」前的风险确认。挂在 body 级：设置页和快捷栏两个入口共用，
+       放在某个面板里会被面板的 overflow 裁掉 -->
+  <div id="fullAccessMask">
+    <div class="fa-card">
+      <h3>开启完全访问？</h3>
+      <div class="fa-sub">AI 将不再向你确认任何操作</div>
+      <div class="fa-body" id="fullAccessBody"></div>
+      <label class="fa-check">
+        <input type="checkbox" id="fullAccessAck">
+        <span>我已阅读并知晓上述风险，愿意自行承担由此产生的后果</span>
+      </label>
+      <div class="btns">
+        <button id="fullAccessNo">取消</button>
+        <button id="fullAccessYes" class="danger" disabled>开启完全访问</button>
       </div>
     </div>
   </div>
@@ -12101,6 +12217,12 @@
   var ttsState = null;
   var ttsSpeaker = 'maid';
   var cfgPerm = document.getElementById('cfgPerm');
+  // 自定义档的四组开关面板与复选框（勾选 = 这类操作先问我）
+  var permCustom = document.getElementById('permCustom');
+  var permCustomRead = document.getElementById('permCustomRead');
+  var permCustomWrite = document.getElementById('permCustomWrite');
+  var permCustomCmd = document.getElementById('permCustomCmd');
+  var permCustomNet = document.getElementById('permCustomNet');
   var cfgWorkspace = document.getElementById('cfgWorkspace');
   var lanUrl = document.getElementById('lanUrl');
   var cfgLanEnable = document.getElementById('cfgLanEnable');
@@ -13324,6 +13446,16 @@
         cfgTranslateTemplate.value = c.translate_template || '';
         trnTplDefault = c.translate_template_default || '';
         cfgPerm.value = c.permission_mode || 'auto';
+        // 弹窗被取消时据此还原；否则会停在「完全访问」上，看起来像已经开了
+        cfgPerm.dataset.prev = cfgPerm.value;
+        syncPermDanger(cfgPerm);
+        // 自定义档的四组开关按后端回传的值落位，面板本身只在 custom 档可见
+        var pc = c.permission_custom || {};
+        permCustomRead.checked = pc.read !== undefined ? !!pc.read : false;
+        permCustomWrite.checked = pc.write !== undefined ? !!pc.write : true;
+        permCustomCmd.checked = pc.cmd !== undefined ? !!pc.cmd : true;
+        permCustomNet.checked = pc.net !== undefined ? !!pc.net : false;
+        permCustom.hidden = (cfgPerm.value !== 'custom');
         cfgWorkspace.value = c.workspace || '';
         cfgRiEnabled.checked = !!c.remote_input_enabled;
         cfgRiSens.value = c.remote_input_sensitivity || 1.5;
@@ -13369,6 +13501,7 @@
         // 更新源：双源探测，这里只控制是否同时查 GitHub
         cfgUpdGithub.checked = c.update_github_enable !== false;
         ddRefreshAll();
+        syncPermDanger(cfgPerm);
         updSourceHint.textContent = c.update_mirror ? '镜像地址：' + c.update_mirror : '';
         // 没配 Key 时直接把设置页顶到最显眼的位置当首次引导
         if (!c.llm_configured) {
@@ -13924,7 +14057,41 @@
     });
   }
 
+  /* 「完全访问」这一档始终标黄：收起下拉后也要能一眼看出当前处于高风险档。
+     原生 select 本身被 ddSelect 的自绘胶囊盖住了，标黄实际落在 .dd.dd-danger 上
+     （见 ddSelect 的 refreshLabel），这里保留是为了无 JS 时的原生外观 */
+  function syncPermDanger(el) {
+    if (el) el.classList.toggle('perm-danger', el.value === 'full');
+    if (el && el._dd && el._dd.refresh) el._dd.refresh();
+  }
+
+  cfgPerm.addEventListener('change', function () {
+    syncPermDanger(cfgPerm);
+    // 只有选中「自定义」时才展开四组开关，切到别的档隐藏
+    permCustom.hidden = (cfgPerm.value !== 'custom');
+  });
+
   saveCfg.addEventListener('click', function () {
+    // 从非 full 切到 full 时先过风险确认，没同意就不提交这次保存
+    if (cfgPerm.value === 'full' && cfgPerm.dataset.prev !== 'full') {
+      confirmFullAccess().then(function (ok) {
+        if (!ok) {
+          cfgPerm.value = cfgPerm.dataset.prev || 'auto';
+          syncPermDanger(cfgPerm);
+          cfgHint.textContent = '已取消：仍为「' +
+            cfgPerm.options[cfgPerm.selectedIndex].text + '」';
+          return;
+        }
+        cfgPerm.dataset.prev = 'full';
+        doSaveCfg();
+      });
+      return;
+    }
+    cfgPerm.dataset.prev = cfgPerm.value;
+    doSaveCfg();
+  });
+
+  function doSaveCfg() {
     cfgHint.textContent = '保存中…';
     // 只有输入框里真有内容才提交 api_key：留空表示「保持原样」。
     // 旧逻辑无条件回传输入框的值，而新设备打开设置页时输入框是空的，
@@ -13954,6 +14121,14 @@
       // [ui] language：切到 en 后整页重载，让 i18n 表重新拉取并替换静态文案
       ui_language: cfgLang ? cfgLang.value : 'zh',
       permission_mode: cfgPerm.value,
+      // 自定义档的四组开关（true = 先问我）；其他档后端会忽略，但照样带上，
+      // 免得切回自定义时开关被洗回默认
+      permission_custom: {
+        read: !!permCustomRead.checked,
+        write: !!permCustomWrite.checked,
+        cmd: !!permCustomCmd.checked,
+        net: !!permCustomNet.checked
+      },
       workspace: cfgWorkspace.value,
       persona_name: document.getElementById('cfgPersonaName').value,
       persona_traits: document.getElementById('cfgPersonaTraits').value,
@@ -15827,12 +16002,58 @@
     return cfgChain;
   }
 
+  // 开启「完全访问」前的风险确认，返回 Promise<boolean>。
+  // 必须勾选「已阅读」才能点确认；Esc 和点遮罩都视为取消，避免一路回车误开。
+  function confirmFullAccess() {
+    var mask = rbEl('fullAccessMask');
+    var body = rbEl('fullAccessBody');
+    var ack = rbEl('fullAccessAck');
+    var yes = rbEl('fullAccessYes');
+    var no = rbEl('fullAccessNo');
+    if (body) {
+      body.textContent =
+        '完全访问意味着 AI 助手可以在你的电脑上执行任何操作，包括：\n' +
+        '读取、修改或删除任意文件（含系统文件和个人数据）；\n' +
+        '运行任何命令，包括安装软件、修改系统配置；\n' +
+        '访问网络、上传或下载内容；\n' +
+        '读取你电脑上的敏感信息，包括密码、API Key 和私钥。\n\n' +
+        '一旦开启，上述操作不会再逐条弹窗征求你的同意。\n' +
+        '如果 AI 误判、理解偏差或遭到提示词注入，可能造成无法恢复的损失。\n\n' +
+        '除非你完全信任当前模型与当前任务，否则不建议长期开启。';
+    }
+    ack.checked = false;
+    yes.disabled = true;
+    mask.classList.add('show');
+    return new Promise(function (resolve) {
+      function cleanup(result) {
+        mask.classList.remove('show');
+        ack.onchange = null;
+        yes.onclick = null;
+        no.onclick = null;
+        document.removeEventListener('keydown', onKey);
+        resolve(result);
+      }
+      function onKey(e) {
+        if (e.key === 'Escape') cleanup(false);
+      }
+      ack.onchange = function () { yes.disabled = !ack.checked; };
+      yes.onclick = function () { cleanup(true); };
+      no.onclick = function () { cleanup(false); };
+      document.addEventListener('keydown', onKey);
+    });
+  }
+
   var modelsErrShown = false;   // 模型列表失败只提示一次，成功后再重置
   function loadToolbar() {
     fetch('/api/config')
       .then(function (r) { return r.json(); })
       .then(function (c) {
-        if (c.permission_mode) permSelect.value = c.permission_mode;
+        if (c.permission_mode) {
+          permSelect.value = c.permission_mode;
+          // 记下「上次是什么」，弹窗被取消时据此还原下拉框
+          permSelect.dataset.prev = c.permission_mode;
+          syncPermDanger(permSelect);
+        }
         setThinkLevel(THINK_LEVELS.indexOf(c.reasoning_effort || ''));
         // 模型下拉：先用当前模型占位，再异步补上服务商真实模型列表
         fillModelSelect([c.model]);
@@ -15939,7 +16160,22 @@
     return modelsPromise;
   }
   permSelect.addEventListener('change', function () {
-    postConfig({ permission_mode: permSelect.value });
+    var want = permSelect.value;
+    var back = permSelect.dataset.prev || 'auto';
+    if (want === 'full') {
+      // 先弹风险确认；不同意就把下拉框拨回原来的值，不往后端发请求
+      confirmFullAccess().then(function (ok) {
+        if (!ok) { permSelect.value = back; syncPermDanger(permSelect); return; }
+        permSelect.dataset.prev = 'full';
+        syncPermDanger(permSelect);
+        postConfig({ permission_mode: 'full' });
+        addSystem('权限模式已切换：' + permSelect.options[permSelect.selectedIndex].text);
+      });
+      return;
+    }
+    permSelect.dataset.prev = want;
+    syncPermDanger(permSelect);
+    postConfig({ permission_mode: want });
     addSystem('权限模式已切换：' + permSelect.options[permSelect.selectedIndex].text);
   });
   // 深度思考档位：无 / 低 / 中 / 高。四档在后端只落成 llm.reasoning_effort
@@ -16294,6 +16530,10 @@
       var isModel = sel.id === 'modelSelect' || sel.id === 'setModelSelect';
       label.textContent = (o && o.textContent) || (isModel ? '选择模型' : '请选择');
       wrap.classList.toggle('dd-empty', !(o && o.value));
+      // 原生 <select> 被自绘 trigger 盖住了，标在 select 上的颜色看不见；
+      // 「完全访问」这类高危档要同步标到自绘胶囊上，主界面收起时也能一眼认出
+      var danger = !!(o && o.classList.contains('opt-danger'));
+      wrap.classList.toggle('dd-danger', danger);
     }
     sel._dd.refresh = refreshLabel;
     refreshLabel();  // 建出来就先给占位文案，别等 /api/config 回来才不是空条
@@ -16312,7 +16552,8 @@
         var o = sel.options[i];
         (function (val) {
           var it = document.createElement('div');
-          it.className = 'dd-item' + (val === cur ? ' sel' : '');
+          it.className = 'dd-item' + (val === cur ? ' sel' : '')
+            + (o.classList.contains('opt-danger') ? ' dd-danger' : '');
           it.textContent = o.textContent;
           it.addEventListener('click', function () {
             sel.value = val;
@@ -16359,6 +16600,9 @@
 
   loadToolbar();
   ddInitAll();
+  // 自绘胶囊建好后再同步一次：此时 permSelect/cfgPerm 的当前值就该标黄
+  syncPermDanger(permSelect);
+  syncPermDanger(cfgPerm);
 
   // ---------- 三档主题：浅色 / 深色 / 暗黑 ----------
   // 按这个顺序循环；按钮上写的是「点一下会切到的下一档」，和原来两档时的语义一致
