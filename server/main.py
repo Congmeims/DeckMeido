@@ -814,13 +814,15 @@ wake_service = wake.WakeService(
     duck=audiomute.duck,
     restore=audiomute.restore,
     # 音乐走 Decky Music 自己的 MPRIS2 服务（server/media.py），只认固定动作
-    media_duck=media.duck,
-    media_restore=media.restore,
+    # 唤醒时不再压低音乐：声音忽高忽低，改由录音静音接管
     media_action=media.execute,
     # 点播走 Decky Music 自带 provider 的搜索接口 + 它自己的队列
     media_resolve=media.resolve_song,
     media_random=media.resolve_random,
     media_play=media.play_plan,
+    # 录音期间把音乐静音：喇叭里的歌声被麦克风收进去，会被当成用户的话去追问
+    media_record_mute=media.mute_for_record,
+    media_record_unmute=media.unmute_for_record,
     power_hold=lambda: power.keeper.hold("wake_mode", "智能音箱模式"),
     power_release=lambda: power.keeper.release("wake_mode"),
 )
@@ -2148,6 +2150,59 @@ async def _run_tool(name: str, args: dict):
                ms=round((time.perf_counter() - start) * 1000, 1),
                result=result)
     return result
+
+
+async def _run_tool_busy(name: str, args: dict) -> tuple:
+    """跑一个工具，跑久了就定期往对话里推一条「还在跑 · 第 N 秒」。
+
+    长任务（`flatpak update`、apt 升级、编译）期间模型一句话都收不到，
+    用户屏幕上只有读秒，看不出到底是在下载还是已经卡死。这里每
+    _BUSY_NOTE_EVERY 秒给前端推一条进度（带命令名、已跑秒数、输出尾巴），
+    同时记下来，工具结束前由调用方写进 events，刷新页面后仍然看得到。
+
+    返回 (工具结果, 发过的提示文案列表)。
+    """
+    task = asyncio.ensure_future(_run_tool(name, args))
+    notes: list[str] = []
+    if name != "run_command":
+        return (await task), notes
+    started = time.time()
+    last_sent = 0.0
+    while True:
+        try:
+            result = await asyncio.wait_for(asyncio.shield(task), _BUSY_NOTE_EVERY)
+            return result, notes
+        except asyncio.TimeoutError:
+            pass
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        cur = tools.CURRENT_CMD
+        # CURRENT_CMD 会被面板轮询冲掉成别的命令，只认自己这条
+        if not cur or abs(float(cur.get("started") or 0) - started) > 5:
+            continue
+        snap = tools.progress_snapshot(cur)
+        elapsed = int(snap["elapsed"])
+        if elapsed - last_sent < _BUSY_NOTE_EVERY:
+            continue
+        last_sent = elapsed
+        if not snap["alive"] and not snap["running"]:
+            continue
+        tail = (snap["output"] or "").strip().splitlines()[-1:] or [""]
+        note = f"还在跑 · 已 {elapsed} 秒"
+        if tail[0]:
+            note += f"：{tail[0][-60:]}"
+        notes.append(note)
+        try:
+            await manager.broadcast({"type": "progress", "text": note,
+                                     "ts": time.time(), **_turn_tag()})
+        except Exception:
+            pass
+
+
+# 长工具每隔多少秒给用户 / 模型喂一次进度。120 秒是用户提的节奏：
+# 一分钟级的小任务不该被打扰，拖到两分钟以上就该有人说句话
+_BUSY_NOTE_EVERY = 120
 
 
 def _pack_image(data: str, prompt: str = "") -> tuple[dict | None, bytes | None]:
@@ -3959,6 +4014,8 @@ class OneBotConfigUpdate(BaseModel):
     # 限频 / 分段 / 输出脱敏
     rate_per_minute: int | None = None
     group_rate_per_minute: int | None = None
+    # 主动接话概率（0~100）：没人喊机器人时自己插话的几率
+    proactive_chance: int | None = None
     reply_chunk_chars: int | None = None
     max_reply_chunks: int | None = None
     redact_words: list[str] | str | None = None
@@ -5502,6 +5559,36 @@ async def api_wake_state(request: Request):
             "sleep": sleepmode.service.status()}
 
 
+@app.get("/api/music/now", dependencies=[Depends(require_auth)])
+async def api_music_now():
+    """侧栏音乐条：当前在放什么 + 封面 + 进度。没在放就返回 playing=False。
+
+    和 /api/sysinfo 同一档鉴权（5 秒一刷的轮询接口）；封面是播放器给的远端
+    图片地址，由浏览器自己去取，不经过这里。
+    """
+    try:
+        info = await asyncio.to_thread(media.now_playing)
+    except Exception:
+        info = None
+    return {"ok": True, "playing": False} if not info else {"ok": True, **info}
+
+
+@app.post("/api/music/action", dependencies=[Depends(require_auth)])
+async def api_music_action(payload: dict):
+    """侧栏音乐条的三个按钮：上一首 / 播放暂停 / 下一首。"""
+    action = str((payload or {}).get("action") or "").strip().lower()
+    if action == "toggle":
+        info = await asyncio.to_thread(media.now_playing)
+        action = "pause" if info and info.get("playing") else "play"
+    if action not in ("next", "previous", "pause", "play"):
+        raise HTTPException(status_code=400, detail="不支持的动作")
+    try:
+        await asyncio.to_thread(media.execute, action)
+    except media.MediaError as exc:
+        raise HTTPException(status_code=503, detail=exc.reason) from exc
+    return {"ok": True, "action": action}
+
+
 @app.post("/api/wake/toggle", dependencies=[Depends(require_auth)])
 async def api_wake_toggle(request: Request, on: bool | None = Query(default=None)):
     """开关常驻监听；打开时写 [wake] enabled=true，关闭时同时退出监听。"""
@@ -5524,9 +5611,10 @@ async def api_wake_toggle(request: Request, on: bool | None = Query(default=None
 
 @app.post("/api/wake/stop", dependencies=[Depends(require_auth)])
 async def api_wake_stop(request: Request):
-    """中止当前一轮（思考/播报），回到待机；不退出模式。"""
+    """停止聆听：立刻停采集并退出智能音箱模式；播报用 /api/wake/tts-stop。"""
     _wake_local_only(request)
-    return {"ok": True, **await wake_service.stop()}
+    save_config({"wake": {"enable": False}})
+    return {"ok": True, **await wake_service.disarm()}
 
 
 @app.post("/api/wake/exit", dependencies=[Depends(require_auth)])
@@ -5568,9 +5656,9 @@ async def _wake_shutdown():
         await wake_service.disarm()
     except Exception:
         pass
-    # 进程退出兜底：即使上面哪一步异常，也不能把用户的音乐音量停在压低状态
+    # 进程退出兜底：即使上面哪一步异常，也不能把用户的音乐音量停在静音状态
     try:
-        media.restore()
+        media.unmute_for_record()
     except Exception:
         pass
 
@@ -8153,12 +8241,17 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 if power_act:
                     _arm_power_intent(ctx, power_act, hist)
                 try:
-                    result = await _run_tool(name, args)
+                    result, notes = await _run_tool_busy(name, args)
                 finally:
                     if on_screen:
                         set_overlay(False)
                     set_overlay_pointer(False)
                 log_item["interrupted"] = False
+                # 长任务中途发过的「还在跑 · 第 N 秒」，收尾时连同结果一起落盘，
+                # 否则刷新页面后那几句进度提示就没了
+                for note in notes:
+                    events.append({"type": "progress", "text": note,
+                                   "ts": time.time() + 0.001 * len(notes)})
                 # 退出码为 0 记 executed，失败记 cancelled；真重启通常走不到这里，
                 # 由下次启动的 boot_id 对账补上
                 _record_power_intent(ctx, name, args, result)
@@ -8495,11 +8588,13 @@ def _qq_clear_pending(device: str, sid: str) -> None:
 
 async def _qq_run_turn(text: str, *, sid: str, device: str,
                        readonly: bool, turn_id: str = "",
-                       image: bytes | None = None) -> dict:
+                       image: bytes | None = None,
+                       proactive: bool = False) -> dict:
     """QQ 通道的一轮对话
 
     走现有 handle_chat，但用 QQ 自己的会话（sid）和来源标记（device）：
     本地界面正在看的会话不会被追答写进去，历史里也能分清每条来自哪个 QQ / 群。
+    proactive=True 表示这一轮是「没人叫、按概率自己插话」，只用于日志区分。
 
     来源授权闸门：只有 onebot 明确标记为已授权（True）才开回合。
     未授权时直接返回，不写会话、不广播、不跑工具——避免界面里出现一条
@@ -8849,6 +8944,7 @@ def _qq_public_config() -> dict:
         "archive_dir_default": str(onebot.archive_root("")),
         "rate_per_minute": cfg.rate_per_minute,
         "group_rate_per_minute": cfg.group_rate_per_minute,
+        "proactive_chance": cfg.proactive_chance,
         "max_message_chars": cfg.max_message_chars,
         "reply_chunk_chars": cfg.reply_chunk_chars,
         "max_reply_chunks": cfg.max_reply_chunks,
