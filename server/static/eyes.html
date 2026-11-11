@@ -16,11 +16,10 @@
 <style>
   /* 三档主题与主界面同名、同顺序：浅色 / 深色 / 暗黑（纯黑取向）。
      --face 只给 canvas 读取（Canvas 不认 var()，由脚本读出来再用），
-     其余变量给字幕和按钮用，切主题时整页一起换。 */
+     其余变量给按钮和提示用，切主题时整页一起换。 */
   :root {
     --bg: #0f1117;
     --face: #ffffff;
-    --caption: rgba(232,234,240,.92);
     --btn-bg: rgba(255,255,255,.09);
     --btn-bg-hover: rgba(255,255,255,.16);
     --btn-fg: #ffffff;
@@ -32,7 +31,6 @@
   [data-theme=light] {
     --bg: #ffffff;
     --face: #1c2333;
-    --caption: rgba(28,35,51,.92);
     --btn-bg: rgba(16,24,40,.06);
     --btn-bg-hover: rgba(16,24,40,.12);
     --btn-fg: #1c2333;
@@ -44,7 +42,6 @@
   [data-theme=oled] {
     --bg: #000000;
     --face: #ffffff;
-    --caption: rgba(255,255,255,.92);
     --btn-bg: rgba(255,255,255,.07);
     --btn-bg-hover: rgba(255,255,255,.14);
     --btn-fg: #ffffff;
@@ -56,15 +53,6 @@
   html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
   body { cursor: none; -webkit-user-select: none; user-select: none; }
   canvas { display: block; width: 100vw; height: 100vh; }
-  /* 「我在」：唤醒瞬间出现的字幕。合成失败时只剩这一行，流程不受影响。 */
-  #caption {
-    position: fixed; left: 50%; top: 62%; transform: translate(-50%, 0);
-    margin: 0; color: var(--caption);
-    font: 600 clamp(18px, 2.3vmin, 30px)/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
-    letter-spacing: .22em; text-indent: .22em; white-space: nowrap;
-    opacity: 0; transition: opacity .22s ease; pointer-events: none;
-  }
-  #caption.on { opacity: 1; }
   #hint {
     position: fixed; left: 0; right: 0; bottom: 26px; display: flex; gap: 14px;
     justify-content: center; align-items: center; opacity: 0; pointer-events: none;
@@ -89,7 +77,6 @@
 </head>
 <body>
 <canvas id="stage"></canvas>
-<p id="caption"></p>
 <div id="notice"></div>
 <div id="hint">
   <button id="stop">停止</button>
@@ -103,7 +90,6 @@
   const ctx = cv.getContext("2d", { alpha: false });
   const hint = document.getElementById("hint");
   const notice = document.getElementById("notice");
-  const caption = document.getElementById("caption");
   const STOP = document.getElementById("stop");
   const EXIT = document.getElementById("exit");
 
@@ -139,8 +125,8 @@
   resize();
 
   const state = {
-    name: "disarmed", level: 0, levelSmooth: 0, ackText: "我在",
-    offline: false, wakeStart: 0, captionUntil: 0, drawnName: "",
+    name: "disarmed", level: 0, levelSmooth: 0,
+    offline: false, wakeStart: 0, drawnName: "",
     nextBlink: 0, blinkStart: 0, blinking: false, idleSleep: false,
     countdownLeft: null,
   };
@@ -173,10 +159,38 @@
   window.addEventListener("pointerdown", () => { touchActive(); markActive(); cancelSleepCountdown(); }, { passive: true });
 
   // ---- 状态轮询：只读，不含音频 ----
+  // 麦克风只在眼睛页上开着，而且只在智能音箱模式真的在听时才开：
+  // 待机（armed）和收完一轮（退回 armed）都不需要。退出模式时立刻关掉。
+  let micStream = null, micWanted = false;
+  const RECORDING_STATES = ["listening", "waking", "thinking", "speaking"];
+  function micRelease() {
+    if (micStream) {
+      try { micStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+      micStream = null;
+    }
+  }
+  function micSync(name) {
+    // 退出模式（disarmed）或链路断了都按「不再听」处理
+    const want = state.offline ? false : RECORDING_STATES.includes(name);
+    if (want === micWanted) return;
+    micWanted = want;
+    if (!want) { micRelease(); return; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+    navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    }).then((s) => {
+      // 建流是异步的：等回来时可能已经退出模式了，这时不能留一条没关的流
+      if (!micWanted) { try { s.getTracks().forEach((t) => t.stop()); } catch (e) {} return; }
+      micRelease();
+      micStream = s;
+    }).catch(() => {});
+  }
+  window.addEventListener("pagehide", () => { micWanted = false; micRelease(); });
+
   function applyStatus(d) {
     state.name = d.state || "disarmed";
+    micSync(state.name);
     state.level = Number(d.level) || 0;
-    state.ackText = (d.ack && d.ack.text) || "我在";
     state.offline = false;
     // 后端 5 秒缓存一次的真实播放状态：在放音乐就一直算「有人在用」
     const p = !!(d.media && d.media.playing);
@@ -211,6 +225,8 @@
       applyStatus(await r.json());
     } catch (e) {
       state.offline = true;
+      micWanted = false;
+      micRelease();
     }
     setTimeout(poll, state.offline ? 1500 : 250);
   }
@@ -282,12 +298,9 @@
   window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     e.preventDefault();
-    // 有正在进行的轮次（含刚唤醒播「我在」）先停；已经空闲就退出模式
-    if (["waking", "listening", "thinking", "speaking"].includes(state.name)) {
-      post("/api/wake/stop");
-    } else {
-      leave();
-    }
+    // Esc 一律退出模式（后端会立刻停掉采集，页面随即关掉麦克风）；
+    // 原来「有轮次就先停一轮」的做法会让麦克风多开一会儿，与退出语义冲突
+    leave();
   });
   // 双击空白处也可以退出，作为手柄/触屏的兜底入口
   window.addEventListener("dblclick", leave);
@@ -454,11 +467,10 @@
     lastFrame = t;
     state.levelSmooth += (state.level - state.levelSmooth) * Math.min(1, dt * 9);
 
-    // 状态切换：被唤醒的瞬间记下时间，供「一惊」动画和「我在」字幕使用
+    // 状态切换：被唤醒的瞬间记下时间，供「一惊」动画使用
     if (state.name !== state.drawnName) {
       if (state.name === "waking") {
         state.wakeStart = t;
-        state.captionUntil = tms + 1600;
         markActive();
       }
       state.drawnName = state.name;
@@ -470,10 +482,14 @@
 
     const s = Math.min(W, H);
     const margin = Math.max(32, s * 0.08);
-    // 与 ouo-face 校准后的比例一致：眼半径 0.065s，眼距 0.21s，嘴宽 = 眼距 × 1.05
-    const eyeR = Math.max(10, Math.min(s * 0.065, (W / 2 - margin) / 3.6, H * 0.10));
-    const gap = eyeR * 3.23;            // 0.21s / 0.065s ≈ 3.23
-    const mouthW = gap * 1.05;
+    // 眼半径在 ouo-face 校准值（0.065s）基础上放大 1.8 倍；嘴宽仍按原基准算，不跟着放大。
+    // 眼距至少要留出两个眼半径的间距，否则两只会粘在一起。
+    const eyeR = Math.max(10, Math.min(s * 0.117, (W / 2 - margin) / 2.4, H * 0.18));
+    // 瞳距：在原有眼距上各向外挪 150px（左右各 150，合计拉开 300px）。
+    // 屏幕不够宽时按边距收住，保证两只眼都不出画。
+    const gapMax = W / 2 - margin - eyeR;
+    const gap = Math.max(eyeR * 1.15, Math.min(s * 0.115 + 150, gapMax));
+    const mouthW = s * 0.065 * 3.23 * 1.05;
     const cx = W / 2;
     let cy = H * 0.40;
     const breathe = Math.sin(t * (state.name === "disarmed" ? 0.42 : 0.55));
@@ -571,18 +587,11 @@
     drawEye(lx + gazeX + nodX, cy + gazeY, eyeR, expr, squash, alpha, t);
     drawEye(rx + gazeX + nodX, cy + gazeY, eyeR, expr, squash, alpha, t);
 
-    // 嘴：眼和嘴的垂直距离 0.26s（ouo-face 校准值）
-    const my = cy + s * 0.26;
+    // 嘴：ouo-face 校准值 0.26s 的基础上再下移 100px
+    const my = cy + s * 0.26 + 100;
     if (mouthOpen > 0.01) drawTalkingMouth(cx + nodX, my, mouthW, mouthOpen);
     else drawCatMouth(cx + nodX, my, mouthW, t);
     ctx.restore();
-
-    // ---- 「我在」字幕：唤醒时出现；合成失败也照样显示 ----
-    const nowMs = tms;
-    const showCaption = (state.name === "waking" || nowMs < state.captionUntil)
-      && state.name !== "error";
-    if (showCaption) caption.textContent = state.ackText;
-    caption.classList.toggle("on", showCaption && !state.offline);
 
     // ---- 连接提示：只有断线，不显示错误详情 ----
     notice.classList.toggle("on", state.offline);

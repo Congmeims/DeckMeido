@@ -34,6 +34,7 @@ TOOL_CN: dict[str, str] = {
     "list_installed_games": "查看游戏库",
     "find_game": "搜索商店游戏",
     "check_system_updates": "检查系统更新",
+    "task_status": "查看任务进度",
     "install_game": "安装游戏",
     "list_emulator_roms": "扫描模拟器游戏",
     "run_command": "执行命令",
@@ -109,6 +110,16 @@ TOOLS: list[dict] = [
                 },
                 "required": ["name"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_status",
+            "description": ("查看当前有没有命令还在跑、跑到第几秒、最近输出了什么。"
+                            "长任务（升级、下载、编译）中途用户问「到哪了」「还在跑吗」"
+                            "或你想汇报进度时先调这个，不要重复发起同一条命令"),
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -1514,6 +1525,73 @@ def _push_cmd_output(chunks: list[bytes]) -> None:
     CURRENT_CMD["output"] = CURRENT_CMD["output"][-8000:]
 
 
+# 最近跑过的长命令（超过 CMD_HISTORY_MIN 秒才进列表，只留最近几条）。
+# 「查一下刚才那条命令现在怎么样了」要能回答：CURRENT_CMD 只记当前这条，
+# 而前端每 2 秒轮询 /api/term/cmd 会把 CURRENT_CMD 冲掉成前端自己那条命令
+CMD_HISTORY_MIN = 60
+CMD_HISTORY_MAX = 3
+_CMD_HISTORY: list[dict] = []
+
+
+def _archive_cmd(cur: dict | None) -> None:
+    """把一条跑得够久的命令存进历史，供模型 / 用户事后查状态。"""
+    if not cur:
+        return
+    started = float(cur.get("started") or 0)
+    if time.time() - started < CMD_HISTORY_MIN:
+        return
+    _CMD_HISTORY.append({
+        "cmd": cur.get("cmd") or "",
+        "reason": cur.get("reason") or "",
+        "pid": cur.get("pid"),
+        "started": started,
+        "ended": cur.get("ended") or time.time(),
+        "background": bool(cur.get("background")),
+        "exit": cur.get("exit"),
+        "output": (cur.get("output") or "")[-600:],
+    })
+    del _CMD_HISTORY[:-CMD_HISTORY_MAX]
+
+
+def progress_snapshot(cur: dict) -> dict:
+    """一条正在跑的命令「现在到哪了」，给模型中途汇报用。
+
+    model 只看得到工具跑完后的结果，长任务期间是个黑洞：`flatpak update`
+    三四分钟不返回，模型既不知道自己还在跑、也不知道跑到哪，用户屏幕上也
+    只剩读秒。所以每过一段就喂给它一份这个快照，让它能说一句「还在下」。
+    """
+    now = time.time()
+    elapsed = int(now - float(cur.get("started") or now))
+    alive = True
+    pid = cur.get("pid")
+    if pid:
+        try:
+            # 只看进程本身还在不在；进程已退出但输出还没读完也算活着，
+            # 这两种情况对用户是一样的「还在跑」
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            alive = bool(cur.get("running"))
+        except PermissionError:
+            alive = True
+        except OSError:
+            alive = True
+    tail = (cur.get("output") or "").strip()
+    return {
+        "cmd": cur.get("cmd") or "",
+        "reason": cur.get("reason") or "",
+        "elapsed": elapsed,
+        "running": bool(cur.get("running")),
+        "alive": alive,
+        "background": bool(cur.get("background")),
+        "output": tail[-800:],
+    }
+
+
+def long_commands() -> list[dict]:
+    """最近几条跑得久（≥ 1 分钟）的命令，新的在前。"""
+    return list(reversed(_CMD_HISTORY))
+
+
 def _finish_cmd(cur: dict | None, chunks: list[bytes], code: int) -> None:
     """给终端面板收尾：补最后一次输出快照 + 标成已结束
 
@@ -1946,6 +2024,8 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
             cur["running"] = False
             cur["exit"] = proc.returncode
             cur["ended"] = time.time()
+        # 跑得久的命令留一份存档：模型 / 用户事后问「刚才那条升级怎么样了」还能答
+        _archive_cmd(cur)
         # 每条以 sudo 执行的命令都留审计（时间/来源/脱敏命令/退出码），绝不含密码
         if uses_sudo:
             try:
@@ -2190,6 +2270,35 @@ async def _self_update(action: str = "check") -> str:
     except RuntimeError as e:
         return f"升级失败：{e}"
     return f"{res['message']}。日志：{res.get('log', '')}"
+
+
+async def _task_status() -> str:
+    """当前 / 最近的长命令进度。给模型一条「别重复发起、先看看」的路。"""
+    lines: list[str] = []
+    cur = CURRENT_CMD
+    if cur and cur.get("running"):
+        snap = progress_snapshot(cur)
+        head = "正在跑" if snap["alive"] else "已结束（输出收尾中）"
+        lines.append(f"{head}：{snap['cmd']}（{snap['elapsed']} 秒）")
+        if snap["output"]:
+            tail = "\n".join(snap["output"].splitlines()[-12:])
+            lines.append(f"最近的输出：\n{tail}")
+    elif cur and cur.get("ended") and time.time() - float(cur["ended"]) < 30:
+        lines.append(f"刚结束：{cur.get('cmd')}，退出码 {cur.get('exit')}，"
+                     f"耗时 {int(float(cur['ended']) - float(cur.get('started') or 0))} 秒")
+        tail = (cur.get("output") or "").strip()
+        if tail:
+            lines.append("\n".join(tail.splitlines()[-12:]))
+    history = long_commands()
+    if history:
+        lines.append("更早的长时间命令：")
+        for item in history:
+            took = int(float(item["ended"]) - float(item["started"]))
+            state = "后台" if item.get("background") else f"退出码 {item.get('exit')}"
+            lines.append(f"- {item['cmd']}（{took} 秒，{state}）")
+    if not lines:
+        return "当前没有正在运行的命令，最近也没有跑超过 1 分钟的命令。"
+    return "\n".join(lines)
 
 
 async def _check_system_updates() -> str:
@@ -3483,9 +3592,6 @@ async def _music_control(action: str) -> str:
     if action not in MUSIC_ACTIONS:
         return f"不支持的动作：{action}。可用：{'、'.join(MUSIC_ACTIONS)}"
     try:
-        # 改音量前先放回 duck 压低前的音量，否则「恢复」会冲掉用户要的值
-        if action in media.VOLUME_ACTIONS:
-            media.restore()
         await asyncio.to_thread(media.execute, action)
     except media.MediaError as exc:
         return f"{exc.speech}（{exc.reason}）"
@@ -3511,12 +3617,32 @@ def tool_ready(name: str, args: dict) -> bool:
     return _music_ready(name, args)
 
 
+def song_hint(text: str) -> str:
+    """说出来的话像点歌、但整句没进对话链路时，给模型一句接续提示。
+
+    只有「整轮被本地口令逻辑吞掉、又没有真正执行」的情况才会用到（例如
+    「江南」两个字：本地抽不出点播动词，模型也没机会接话）。
+    """
+    if netmode.enabled():
+        return ""
+    from . import media
+    if not media.available():
+        return ""
+    text = str(text or "").strip()
+    if not text or len(media._PUNCT_RE.sub("", text)) > media.MAX_QUERY_CHARS:
+        return ""
+    if media._QUESTION_RE.search(text) or media.match_intent(text) is not None:
+        return ""
+    return "用户像是在点歌，歌名是「%s」。直接调 music_play 播放。" % text
+
+
 EXECUTORS = {
     "get_weather": _get_weather,
     "web_search": _web_search,
     "list_installed_games": _list_installed_games,
     "find_game": _find_game,
     "check_system_updates": _check_system_updates,
+    "task_status": _task_status,
     "install_game": _install_game,
     "list_emulator_roms": _list_emulator_roms,
     "run_command": _run_command,
@@ -3544,7 +3670,7 @@ _OUTBOUND_TOOLS = {"get_weather", "web_search", "find_game", "self_update"}
 _NO_KEEP_AWAKE = {
     "get_weather", "web_search", "find_game", "list_installed_games",
     "list_emulator_roms", "check_system_updates", "screenshot", "remember",
-    "music_search", "music_play", "music_control",
+    "music_search", "music_play", "music_control", "task_status",
 }
 
 
@@ -3557,7 +3683,7 @@ _NO_KEEP_AWAKE = {
 _TOOL_TIMEOUT = {
     "web_search": 60, "get_weather": 30, "find_game": 30,
     "list_installed_games": 60, "list_emulator_roms": 30,
-    "check_system_updates": 60, "screenshot": 45,
+    "check_system_updates": 60, "screenshot": 45, "task_status": 10,
     "read_file": 30, "write_file": 30, "edit_file": 30, "list_dir": 30,
     # 曲库搜索/开播各有一次 RPC 超时（6 秒）兜底，再加回读确认
     "music_search": 30, "music_play": 40, "music_control": 20,

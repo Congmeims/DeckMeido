@@ -167,44 +167,40 @@ class MediaTests(unittest.TestCase):
         media.execute("unmute")
         self.assertAlmostEqual(self.bus.volume, 0.6)
 
-    # ---- duck / restore ----
+    # ---- 录音静音 / 恢复 ----
 
-    def test_duck_and_restore_pair(self):
-        self.assertTrue(media.duck())
-        self.assertAlmostEqual(self.bus.volume, 0.2)
-        media.restore()
+    def test_mute_for_record_and_unmute_restore(self):
+        self.assertTrue(media.mute_for_record())
+        self.assertAlmostEqual(self.bus.volume, 0.0)
+        self.assertTrue(media.unmute_for_record())
         self.assertAlmostEqual(self.bus.volume, 0.8)
 
-    def test_duck_twice_only_sets_once(self):
-        self.assertTrue(media.duck())
+    def test_mute_for_record_twice_only_sets_once(self):
+        self.assertTrue(media.mute_for_record())
         before = len(self.bus.sets())
-        self.assertTrue(media.duck())
+        self.assertTrue(media.mute_for_record())
         self.assertEqual(len(self.bus.sets()), before)
-        media.restore()
+        media.unmute_for_record()
         self.assertAlmostEqual(self.bus.volume, 0.8)
 
-    def test_duck_skipped_when_not_playing(self):
+    def test_mute_for_record_skipped_when_not_playing(self):
         self.bus.status = "Paused"
-        self.assertFalse(media.duck())
+        self.assertFalse(media.mute_for_record())
         self.assertEqual(self.bus.sets(), [])
-        media.restore()  # 没压过，恢复必须是空操作
+        self.assertFalse(media.unmute_for_record())  # 没静音过，恢复必须是空操作
         self.assertEqual(self.bus.sets(), [])
 
-    def test_duck_skipped_without_player(self):
+    def test_mute_for_record_skipped_without_player(self):
         self.bus.services = []
-        self.assertFalse(media.duck())
-        media.restore()
+        self.assertFalse(media.mute_for_record())
+        media.unmute_for_record()
         self.assertEqual(self.bus.sets(), [])
 
-    def test_restore_keeps_user_volume_change(self):
-        self.assertTrue(media.duck())
-        self.bus.volume = 0.5  # 用户中途自己调了（或说了「音量调大」）
-        media.restore()
+    def test_unmute_for_record_keeps_user_volume_change(self):
+        self.assertTrue(media.mute_for_record())
+        self.bus.volume = 0.5  # 录音期间用户自己调了音量
+        media.unmute_for_record()
         self.assertAlmostEqual(self.bus.volume, 0.5)
-
-    def test_restore_without_duck_does_nothing(self):
-        media.restore()
-        self.assertEqual(self.bus.calls, [])
 
     # ---- 失败降级 ----
 
@@ -229,13 +225,13 @@ class MediaTests(unittest.TestCase):
         self.assertIn("busctl", str(ctx.exception))
         self.assertEqual(ctx.exception.speech, "控制不了")
 
-    def test_duck_never_raises(self):
+    def test_mute_for_record_never_raises(self):
         def boom(cmd, timeout=3.0):
             raise media.MediaError("炸了")
 
         media._run = boom
-        self.assertFalse(media.duck())
-        media.restore()  # 不能抛
+        self.assertFalse(media.mute_for_record())
+        media.unmute_for_record()  # 不能抛
 
 
 class FakeLoader:
@@ -738,6 +734,15 @@ class MusicToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.tools.tool_ready("web_search", {}))
         media.available = lambda: True
         self.assertTrue(self.tools.tool_ready("music_play", {}))
+
+    def test_song_hint_only_for_bare_titles(self):
+        # 只报歌名要提示点歌；口令、问句、长句、播放器不在都不提示
+        self.assertIn("江南", self.tools.song_hint("江南"))
+        for text in ("下一首", "江南是什么歌", "帮我找一下周杰伦很早以前那首江南放来听听", ""):
+            with self.subTest(text=text):
+                self.assertEqual(self.tools.song_hint(text), "")
+        media.available = lambda: False
+        self.assertEqual(self.tools.song_hint("江南"), "")
 
 
 if __name__ == "__main__":

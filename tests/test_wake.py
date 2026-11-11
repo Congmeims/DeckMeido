@@ -83,10 +83,9 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.ack_play_error = None
         self.ack_play_gate = None
         self.text = "把客厅灯打开"
-        # 音乐 duck / 固定动作：只记调用顺序，不碰真实 MPRIS
+        # 音乐录音静音 / 固定动作：只记调用顺序，不碰真实 MPRIS
         self.media_events = []
         self.media_error = None
-        self.media_duck_result = True
         self.states = []
         # 点播：假解析 / 假随机 / 假开播，全部只记调用
         self.song_plan = media.SongPlan("ok", "放周杰伦的稻香",
@@ -125,12 +124,11 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
             if self.ack_play_error:
                 raise self.ack_play_error
 
-        def media_duck():
-            self.media_events.append("duck")
-            return self.media_duck_result
+        def media_record_mute():
+            self.media_events.append("mute")
 
-        def media_restore():
-            self.media_events.append("restore")
+        def media_record_unmute():
+            self.media_events.append("unmute")
 
         def media_action(action):
             self.media_events.append(f"action:{action}")
@@ -164,8 +162,8 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
             restore=restore,
             ack_synth=ack_synth,
             ack_play=ack_play,
-            media_duck=media_duck,
-            media_restore=media_restore,
+            media_record_mute=media_record_mute,
+            media_record_unmute=media_record_unmute,
             media_action=media_action,
             media_resolve=media_resolve,
             media_random=media_random,
@@ -180,6 +178,11 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
 
     def _tts_stop(self):
         self.tts_stop_calls += 1
+        async def done():
+            return None
+        return done()
+
+    def _noop(self):
         async def done():
             return None
         return done()
@@ -354,6 +357,26 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.transcribe_calls, [])
         gate.set()
 
+    async def test_stop_keeps_capture_for_next_wake(self):
+        """停止聆听是掐掉这一轮；待机还要接着等唤醒词，采集不能断。"""
+        await self._arm()
+        self.detector.hit = True
+        self.service.feed_frame(FRAME, now=self.service._clock())
+        self.detector.hit = False
+        self.assertEqual(self.service.state, "waking")
+        cap = self.service._capture
+        await self.service.stop()
+        self.assertEqual(self.service.state, "armed")
+        self.assertIs(self.service._capture, cap)
+        # 停完仍能被唤醒
+        self.detector.hit = True
+        self.service.feed_frame(FRAME, now=self.service._clock())
+        self.detector.hit = False
+        self.assertEqual(self.service.state, "waking")
+        await self._drain()
+        await self.service.disarm()
+        self.assertIsNone(self.service._capture)
+
     async def test_ack_pauses_capture_until_listening(self):
         cap = FakeCapture()
 
@@ -482,13 +505,14 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.service.state, "armed")
         self.assertNotIn("thinking", self.states)  # 不进思考态
         self.assertIn("speaking", self.states)     # 但要有反馈播报
-        # 唤醒时压低一次，反馈播完恢复一次
-        self.assertEqual(self.media_events.count("duck"), 1)
-        self.assertEqual(self.media_events.count("restore"), 1)
+        # 录音期间静音一次、录完还原一次，全程不压音量
+        self.assertEqual(self.media_events.count("mute"), 1)
+        self.assertEqual(self.media_events.count("unmute"), 1)
+        self.assertEqual(self.media_events.count("duck"), 0)
         # 反馈是模块内的短词，不是模型回答
         self.assertEqual(self.ack_synth_calls[-1], "切了")
 
-    async def test_media_volume_action_restores_duck_first(self):
+    async def test_media_volume_action_runs_after_record_unmute(self):
         self.text = "音量调大"
         await self._arm()
         await self._wake()
@@ -496,9 +520,8 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         await self._drain()
         self.assertEqual(self.media_events.count("action:volume_up"), 1)
         events = self.media_events
-        # 必须先恢复原音量再执行加减，否则恢复动作会覆盖用户要求的音量
-        self.assertLess(events.index("restore"), events.index("action:volume_up"))
-        self.assertEqual(events.count("restore"), 1)
+        # 必须先还原录音静音再执行加减，否则还原动作会覆盖用户要求的音量
+        self.assertLess(events.index("unmute"), events.index("action:volume_up"))
 
     async def test_media_failure_degrades_and_next_round_works(self):
         self.text = "暂停"
@@ -511,7 +534,7 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.service.state, "armed")
         self.assertIn("没找到播放器", self.service.status()["last_error"])
         self.assertEqual(self.ack_synth_calls[-1], "没有播放器")
-        self.assertEqual(self.media_events.count("restore"), 1)
+        self.assertEqual(self.media_events.count("unmute"), 1)
         # 播控失败不能影响下一轮主流程
         self.text = "把客厅灯打开"
         await self._wake()
@@ -534,8 +557,8 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         await self._wake()
         self.service.feed_frame(FRAME, now=self.service._wait_until + 0.1)
         self.assertEqual(self.service.state, "armed")
-        self.assertEqual(self.media_events.count("duck"), 1)
-        self.assertEqual(self.media_events.count("restore"), 1)
+        self.assertEqual(self.media_events.count("mute"), 1)
+        self.assertEqual(self.media_events.count("unmute"), 1)
 
     async def test_stop_during_ack_restores_music(self):
         gate = asyncio.Event()
@@ -548,27 +571,31 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         await self.service.stop()
         await self._drain()
         self.assertEqual(self.service.state, "armed")
-        self.assertEqual(self.media_events.count("restore"), 1)
+        # 停止时要收尾干净：静音过的必须还原，且次数配平
+        self.assertEqual(self.media_events.count("unmute"),
+                         self.media_events.count("mute"))
         gate.set()
 
-    async def test_music_duck_skipped_when_nothing_playing(self):
-        self.media_duck_result = False
+    async def test_music_is_silenced_while_recording_only(self):
         await self._arm()
         await self._wake()
         await self._speak_then_silence(4, 5)
         await self._drain()
-        # 没压成功就绝不能去「恢复」：那会把用户音量写成旧值
-        self.assertGreaterEqual(self.media_events.count("duck"), 1)
+        # 唤醒压音量这条路必须彻底关掉（声音忽高忽低），改为录音期间静音
+        self.assertEqual(self.media_events.count("duck"), 0)
         self.assertEqual(self.media_events.count("restore"), 0)
+        self.assertGreaterEqual(self.media_events.count("mute"), 1)
+        self.assertGreaterEqual(self.media_events.count("unmute"), 1)
+        self.assertLess(self.media_events.index("mute"),
+                        self.media_events.index("unmute"))
 
-    async def test_chat_round_keeps_music_ducked_until_answer_ends(self):
+    async def test_chat_round_unmutes_before_answer_ends(self):
         release = asyncio.Event()
 
         async def chat(text, force_tts=False, client=""):
             self.chat_calls.append((text, True, "wake"))
-            # 回答播报期间音乐必须仍是压低的
-            self.assertEqual(self.media_events.count("duck"), 1)
-            self.assertEqual(self.media_events.count("restore"), 0)
+            # 录完就还原：回答播报时音乐不该是静音的
+            self.assertGreaterEqual(self.media_events.count("unmute"), 1)
             await release.wait()
 
         self.service.set_handlers(chat=chat)
@@ -577,10 +604,9 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         await self._speak_then_silence(4, 5)
         for _ in range(5):
             await asyncio.sleep(0)
-        self.assertEqual(self.media_events.count("restore"), 0)
         release.set()
         await self._drain()
-        self.assertEqual(self.media_events.count("restore"), 1)
+        self.assertEqual(self.media_events.count("duck"), 0)
         self.assertEqual(self.service.state, "listening")
 
     # ---- 声控点播 ----
@@ -597,9 +623,9 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("thinking", self.states)
         self.assertEqual(self.ack_synth_calls[-1], "放周杰伦的稻香")
         self.assertEqual(self.service.state, "armed")
-        # 唤醒压一次、反馈念完恢复一次
-        self.assertEqual(self.media_events.count("duck"), 1)
-        self.assertEqual(self.media_events.count("restore"), 1)
+        # 录完还原一次、反馈念完再收尾一次，全程不压音量
+        self.assertEqual(self.media_events.count("unmute"), 1)
+        self.assertEqual(self.media_events.count("duck"), 0)
 
     async def test_local_intent_off_falls_back_to_chat(self):
         # 默认关：口令交给对话链路，由模型调 music_play（本地不执行）
@@ -746,7 +772,9 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.service.feed_frame(FRAME, now=self.service._wait_until + 0.1)
         self.assertEqual(self.service.state, "armed")
         self.assertIsNone(self.service._pending_confirm)
-        self.assertEqual(self.media_events.count("restore"), 1)  # 本轮唤醒压过一次
+        # 本轮录音静音过一次，超时后必须还原
+        self.assertEqual(self.media_events.count("unmute"),
+                         self.media_events.count("mute"))
 
     # ---- 配置/状态 ----
 

@@ -1537,6 +1537,9 @@ def main() -> int:
     def _wake_stop_done(result) -> None:
         if isinstance(result, Exception):
             tray.showMessage("DeckMeido", f"停止失败：{result}", icon, 5000)
+            return
+        # 「停止聆听/播报」= 立刻退出采集并退出智能音箱模式，画面也一起收回来
+        _leave_eyes()
 
     def toggle_wake() -> None:
         if eyes_state["active"]:

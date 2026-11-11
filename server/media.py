@@ -44,9 +44,11 @@ PLAYER_PATH = "/org/mpris/MediaPlayer2"
 PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
 CMD_TIMEOUT = 3.0
 
-# 音量加减步进；duck 压到原来的这个比例
+# busctl 打印 `a{sv}` 时出现的类型标记，解析 Metadata 时要跳过它们
+_DBUS_TYPES = ("s", "x", "t", "o", "d", "b", "as", "array")
+
+# 音量加减步进
 VOLUME_STEP = 0.1
-DUCK_RATIO = 0.25
 
 # Decky Loader 本地 RPC
 LOADER_HOST = "127.0.0.1"
@@ -149,9 +151,9 @@ _YES_RE = re.compile(r"^(对|是|是的|嗯|好|可以|没错|就这个|就它|�
 _NO_RE = re.compile(r"^(不是|不对|不|错了|换|不要|no)")
 
 _lock = threading.RLock()
-_duck_prev: float | None = None
-_duck_value: float | None = None
 _muted_prev: float | None = None
+# 录音静音前的音量：mute_for_record 写 0 时记下，unmute_for_record 原样写回
+_mute_prev: float | None = None
 _py_cache: dict[str, str] = {}
 
 
@@ -292,6 +294,146 @@ def playing() -> bool:
         return False
 
 
+def _mpris_metadata(service: str) -> dict:
+    """读 MPRIS `Metadata`。
+
+    busctl 把 `a{sv}` 打成「一行键、下一行值」的展开格式：
+
+        a{sv} 3 "mpris:length" x 231000000 "xesam:title" s "稻香" ...
+
+    也有播放器让 busctl 输出单行。两种都按「键 → 类型标记 → 值」的顺序
+    扫一遍，不做正则猜格式；字符串值取引号里那段，数值直接取 token。
+    """
+    out = _busctl("get-property", service, PLAYER_PATH, PLAYER_IFACE, "Metadata")
+    # 开头的 `a{sv} 5` 是类型签名和元素个数，不是键值对，先切掉，
+    # 否则它会被当成第一个键、把紧随其后的 artUrl 抢走
+    head, sep, body = out.partition(" ")
+    out = body if head.strip('"') == "a{sv}" else out
+    # 再按引号切成「引号内 / 引号外」交替的片段，把引号外按空白切词。
+    # 这样带空格的歌手名（"A / B / C"）不会被拆成三段，也不用猜转义。
+    tokens: list[str] = []
+    for idx, part in enumerate(out.split('"')):
+        if idx % 2:
+            tokens.append(part)          # 引号内：整段就是一个值
+        else:
+            tokens.extend(part.split())
+    data: dict[str, str] = {}
+    key = ""
+    kind = ""
+    for tok in tokens:
+        if tok.startswith("mpris:") or tok.startswith("xesam:"):
+            key, kind = tok, ""
+            data.setdefault(key, "")
+            continue
+        if kind == "" and tok in _DBUS_TYPES:
+            kind = tok
+            continue
+        if key and not data[key]:
+            # 数组的形态是 `as 1 "值"`：类型后面的数字是元素个数，不是值
+            if kind == "as" and tok.isdigit():
+                continue
+            data[key] = tok
+    def pick(name: str) -> str:
+        # 标题/歌手在 xesam: 命名空间，封面和时长在 mpris: 命名空间
+        raw = data.get(f"xesam:{name}") or data.get(f"mpris:{name}") or ""
+        return _unescape(raw)
+    return {
+        "title": pick("title"),
+        "artist": pick("artist") or pick("albumArtist"),
+        "artUrl": pick("artUrl"),
+        "length": data.get("mpris:length", ""),
+    }
+
+
+def _unescape(text: str) -> str:
+    """还原 busctl 的八进制转义：中文歌名会输出成 `\\345\\210\\235`。
+
+    按字节累积再整体解码，多字节 UTF-8 字符才能拼回去；遇到非转义的普通
+    字符照原样当 UTF-8 编码后的字节处理，混排也不会错位。
+    """
+    if "\\" not in text:
+        return text
+    buf = bytearray()
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 3 < len(text) and text[i + 1:i + 4].isdigit():
+            buf.append(int(text[i + 1:i + 4], 8))
+            i += 4
+            continue
+        buf.extend(ch.encode("utf-8"))
+        i += 1
+    try:
+        return buf.decode("utf-8")
+    except UnicodeDecodeError:
+        return text
+
+
+def _position(service: str) -> tuple[float, float]:
+    """(已播秒数, 总秒数)。MPRIS 的 Position / mpris:length 都是微秒。"""
+    pos = 0.0
+    try:
+        out = _busctl("get-property", service, PLAYER_PATH, PLAYER_IFACE, "Position")
+        pos = float(out.split()[-1]) / 1_000_000
+    except (MediaError, IndexError, ValueError):
+        pos = 0.0
+    length = 0.0
+    try:
+        meta = _mpris_metadata(service)
+        length = float(meta.get("length") or 0) / 1_000_000
+    except (MediaError, ValueError):
+        pass
+    return pos, length
+
+
+def now_playing() -> dict | None:
+    """当前在放什么，给侧栏的音乐条用。没播放器 / 已停止就返回 None。
+
+    MPRIS 给标题、歌手、封面和播放位置；时长和封面缺失时用 Decky Music 的
+    `get_playback` 补一次（媒体库里的曲目信息更全）。
+    """
+    try:
+        service = _service_name()
+        status = _playback_status(service)
+    except (MediaError, OSError):
+        return None
+    if status == "Stopped":
+        return None
+    try:
+        meta = _mpris_metadata(service)
+    except MediaError:
+        meta = {}
+    pos, length = _position(service) if status == "Playing" else (0.0, 0.0)
+    title = str(meta.get("title") or "")
+    artist = str(meta.get("artist") or "")
+    cover = str(meta.get("artUrl") or "")
+    if not title or length <= 0 or not cover:
+        try:
+            playback = _rpc("get_playback")
+        except MediaError:
+            playback = {}
+        current = playback.get("current") if isinstance(playback, dict) else None
+        if isinstance(current, dict):
+            title = title or str(current.get("name") or "")
+            artist = artist or str(current.get("singer") or "")
+            cover = cover or str(current.get("cover") or "")
+            if length <= 0:
+                try:
+                    length = float(current.get("duration") or 0)
+                except (TypeError, ValueError):
+                    length = 0.0
+    if not title:
+        return None
+    return {
+        "title": title,
+        "artist": artist,
+        "cover": cover,
+        "playing": status == "Playing",
+        "position": round(max(0.0, pos), 2),
+        "duration": round(max(0.0, length), 2),
+    }
+
+
 def execute(action: str) -> None:
     """执行一个固定动作。不在白名单里直接拒绝，不拼任何命令。"""
     if action not in _METHODS and action not in VOLUME_ACTIONS:
@@ -318,53 +460,49 @@ def execute(action: str) -> None:
             _muted_prev = None
 
 
-def duck() -> bool:
-    """正在播放时把音乐压到 25%。没播放器/没在播/失败都返回 False，不抛异常。"""
-    global _duck_prev, _duck_value
+def mute_for_record() -> bool:
+    """录音期间把音乐静音（写 0，不是改音量），只动 MPRIS 里的音乐，不抛异常。
+
+    为什么不用整机静音（audiomute）：那条路会连 TTS 一起静掉，录音中途播提示
+    音就哑了；这里只压音乐，播报照常。为什么写 0 而不是乘 0.1：任何非零音量
+    都可能被麦克风收进去，而 Volume 撞 0 不会丢信息——原值记在 _mute_prev，
+    结束时原样写回。没在播就返回 False，不做任何事。
+    """
+    global _mute_prev
     with _lock:
-        if _duck_prev is not None:
+        if _mute_prev is not None:
             return True
         try:
             service = _service_name()
             if _playback_status(service) != "Playing":
                 return False
             volume = _volume(service)
+            _set_volume(service, 0.0)
         except MediaError:
             return False
-        target = round(volume * DUCK_RATIO, 3)
-        if target >= volume - 0.001:
-            return False
-        try:
-            _set_volume(service, target)
-        except MediaError:
-            return False
-        _duck_prev, _duck_value = volume, target
+        _mute_prev = volume
         return True
 
 
-def restore() -> None:
-    """恢复 duck 前的音量。
+def unmute_for_record() -> bool:
+    """录音结束：把原音量写回。
 
-    只回写「当前值仍是我们压低后的值」的情况：用户中途自己调了音量（或用了
-    「音量调大」口令），就保持用户的新值，不被恢复动作覆盖。
+    录音期间用户自己调过音量（按音量键 / 「大点声」口令）就不覆盖他，保持
+    用户的新值——只把自己写成 0 的那次还原。
     """
-    global _duck_prev, _duck_value
+    global _mute_prev
     with _lock:
-        prev, ducked = _duck_prev, _duck_value
-        _duck_prev = _duck_value = None
+        prev = _mute_prev
+        _mute_prev = None
         if prev is None:
-            return
+            return False
         try:
             service = _service_name()
-            current = _volume(service)
+            if _volume(service) <= 0.001:
+                _set_volume(service, prev)
+            return True
         except MediaError:
-            return
-        if ducked is None or abs(current - ducked) > 0.02:
-            return
-        try:
-            _set_volume(service, prev)
-        except MediaError:
-            pass
+            return False
 
 
 # ---------- Decky Loader 本地 RPC（点播面） ----------
@@ -861,8 +999,8 @@ def is_yes(text: str) -> bool | None:
 
 
 def _reset() -> None:
-    """测试用：清掉 duck/静音状态，避免用例之间互相影响。"""
-    global _duck_prev, _duck_value, _muted_prev
+    """测试用：清掉静音状态，避免用例之间互相影响。"""
+    global _muted_prev, _mute_prev
     with _lock:
-        _duck_prev = _duck_value = _muted_prev = None
+        _muted_prev = _mute_prev = None
     _py_cache.clear()

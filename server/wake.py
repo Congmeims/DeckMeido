@@ -524,8 +524,9 @@ class WakeService:
                  transcribe=None, chat=None, duck=None, restore=None,
                  power_hold=None, power_release=None,
                  ack_synth=None, ack_play=None,
-                 media_duck=None, media_restore=None, media_action=None,
-                 media_resolve=None, media_random=None, media_play=None):
+                 media_action=None,
+                 media_resolve=None, media_random=None, media_play=None,
+                 media_record_mute=None, media_record_unmute=None):
         self._root = model_root or paths.wake_model_dir()
         self._detector_factory = detector_factory or (
             lambda root, cfg: SherpaDetector(
@@ -545,10 +546,10 @@ class WakeService:
         self._ack_text = ""
         self._ack_error = ""
         self._ack_preparing = False
-        # 音乐 duck 与「录音时静音系统输出」（audiomute）是两套：前者只压
-        # Decky Music 自己的 MPRIS 音量，不影响 TTS；没有播放器时什么都不做。
-        self._media_duck = media_duck
-        self._media_restore = media_restore
+        # 录音期间把音乐静音（写 0，录完原样写回）：喇叭里的歌声会被麦克风收进去，
+        # 转写成文字后又被当成用户的话传给模型，这就是「播歌时误追问」的根因。
+        self._media_record_mute = media_record_mute
+        self._media_record_unmute = media_record_unmute
         self._media_action = media_action
         # 点播：搜（纯查询）→ 随机挑 → 真正开播，三段分开注入，测试可各段造假
         self._media_resolve = media_resolve
@@ -556,8 +557,8 @@ class WakeService:
         self._media_play = media_play
         # 歧义确认只问一次：这里存待确认的计划，下一轮的第一句就回答它
         self._pending_confirm = None
-        self._music_ducked = False
-        # 音乐是否在放：给眼睛页的闲置判定用。busctl 是子进程，不能每 250ms
+        # 音乐是否被本次录音静音了：还原时据此判断，避免重复写回音量
+        self._record_muted = False
         # 探一次（状态接口被高频轮询），缓存 5 秒；探测失败按「没在放」处理。
         self._playing = False
         self._playing_at = 0.0
@@ -700,7 +701,7 @@ class WakeService:
 
     def set_handlers(self, *, transcribe=None, chat=None, duck=None, restore=None,
                      power_hold=None, power_release=None, cancel_chat=None,
-                     media_duck=None, media_restore=None, media_action=None,
+                     media_action=None,
                      media_resolve=None, media_random=None, media_play=None,
                      on_state=None) -> None:
         if transcribe is not None:
@@ -717,10 +718,6 @@ class WakeService:
             self._power_release = power_release
         if cancel_chat is not None:
             self._cancel_chat = cancel_chat
-        if media_duck is not None:
-            self._media_duck = media_duck
-        if media_restore is not None:
-            self._media_restore = media_restore
         if media_action is not None:
             self._media_action = media_action
         if media_resolve is not None:
@@ -748,10 +745,8 @@ class WakeService:
             "level": round(self._level, 3),
             "wake_count": self._wake_count,
             "turns": self._turns,
-            # 音乐是否正被压低（只反映状态，不在轮询里跑 busctl）；
-            # playing 带 5 秒缓存，供眼睛页判断「还在放音乐就别当成闲置」
-            "media": {"ducked": self._music_ducked,
-                      "playing": self._playing_now()},
+            # 音乐是否正在放：playing 带 5 秒缓存，供眼睛页判断「还在放就别当闲置」
+            "media": {"playing": self._playing_now()},
             "last_error": self._last_error,
             "input_device": self._cfg.get("input_device", "default"),
             "wake_words": list(self._cfg.get("wake_words") or []),
@@ -787,6 +782,8 @@ class WakeService:
             try:
                 if self._detector is None:
                     await self._start_detector()
+                # 待机也常驻麦克风：唤醒词检测本来就要一直听着，
+                # 这是本模式下唯一允许持续采集的地方
                 if self._capture is None:
                     await self._start_capture()
             except WakeError as exc:
@@ -808,7 +805,6 @@ class WakeService:
         self._ready = False
         await self._stop_capture()
         self._release_duck()
-        self._release_music_duck()
         if self._power_release:
             try:
                 self._power_release()
@@ -827,7 +823,11 @@ class WakeService:
         return await self.disarm()
 
     async def stop(self) -> dict:
-        """停止当前一轮（TTS / 对话），回到待机；不退出模式。"""
+        """停止当前一轮（TTS / 对话）并回到待机；不退出模式。
+
+        待机阶段本来就常驻麦克风（唤醒词检测要一直听着），所以这里只掐掉
+        正在进行的这一轮；要真正停掉采集请用 disarm()。
+        """
         self._cancel_round()
         if self._cancel_chat:
             try:
@@ -842,10 +842,26 @@ class WakeService:
                 await tts()
             except Exception:
                 pass
+        await self._stop_capture()
         self._release_duck()
-        self._release_music_duck()
         self._reset_audio()
-        self._set_state("armed")
+        if self._state in ("disarmed", "error"):
+            return self.status()
+        # 回到待机就重新开采集：下一句唤醒词还得接着听，
+        # 待机态本来就不算「额外的长时间采集」
+        async with self._arm_lock:
+            if self._state != "disarmed":
+                try:
+                    if self._detector is None:
+                        await self._start_detector()
+                    if self._capture is None:
+                        await self._start_capture()
+                except WakeError as exc:
+                    self._ready = False
+                    self._fail(str(exc))
+                    return self.status()
+                self._ready = True
+                self._set_state("armed")
         return self.status()
 
     def set_tts_stop(self, fn) -> None:
@@ -873,16 +889,22 @@ class WakeService:
             cap = factory()
         if cap is None:
             return  # 测试注入：不加采集，靠 feed_frame 喂数据
+        self._capture = cap
         try:
             await asyncio.to_thread(cap.start)
         except WakeError:
+            self._capture = None
+            self._reader_task = asyncio.create_task(asyncio.sleep(0))
             raise
         except Exception as exc:
+            self._capture = None
             raise WakeError(f"常驻采集启动失败：{exc}") from exc
-        self._capture = cap
         self._reader_task = asyncio.create_task(self._reader_loop())
 
     async def _stop_capture(self) -> None:
+        # 先摘掉引用再停：读取循环和开始/停止都在同一个事件循环里跑，
+        # 这样 stop() 一返回就不会再有新帧进来
+        cap, self._capture = self._capture, None
         task, self._reader_task = self._reader_task, None
         if task is not None:
             task.cancel()
@@ -890,7 +912,6 @@ class WakeService:
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
-        cap, self._capture = self._capture, None
         if cap is not None:
             try:
                 await asyncio.to_thread(cap.stop)
@@ -937,8 +958,6 @@ class WakeService:
         if self._detector is not None:
             self._detector.reset()
         self._set_state("waking")
-        # 命中先把音乐压低：接下来要放「我在」，别让音乐和回应抢声音
-        self._duck_music()
         devlog.log("wake.hit", word=word, count=self._wake_count,
                    ack_ready=bool(self._ack_wav))
         self._task = asyncio.create_task(self._run_ack())
@@ -977,6 +996,7 @@ class WakeService:
         self._reset_audio()
         self._wait_until = self._clock() + float(
             self._cfg.get("wake_timeout_sec", 8.0))
+        self._mute_music_for_record()
         self._set_state("listening")
 
     def _handle_listening(self, frame: bytes, now: float) -> None:
@@ -988,8 +1008,6 @@ class WakeService:
                 self._silence_ms = 0
                 self._pcm.extend(frame)
                 self._duck_now()
-                # 追问窗口里再次开口：音乐同样要压低
-                self._duck_music()
                 return
             # 唤醒后没人说话：超时直接退回待机，不转写、不发送
             if not self._followup and now >= getattr(self, "_wait_until", now):
@@ -1015,7 +1033,9 @@ class WakeService:
             return
         pcm = bytes(self._pcm)
         self._reset_audio()
-        # 录音结束就还原系统静音（audiomute）；音乐会一直压到本轮说完再恢复
+        # 录音结束就还原系统静音（audiomute）；音乐同样立刻恢复，不等本轮说完，
+        # 否则「放歌→我说话→模型没听懂」这段时间里用户只看到静音的音乐。
+        self._unmute_music_for_record()
         self._release_duck()
         if not pcm:
             self._to_armed()
@@ -1071,7 +1091,8 @@ class WakeService:
                 raise WakeError("对话入口未就绪")
             # 本地没抓住口令的句子（含长句点播）交给模型，模型自己带 music_play 工具
             # 本轮强制 TTS：handle_chat 在 force_tts=True 时会 await 播放结束
-            await self._chat(text, force_tts=True, client="wake")
+            await self._chat(self._with_song_hint(text), force_tts=True,
+                             client="wake")
             # start_chat 会吞掉 CancelledError 返回 cancelled=True，所以这里必须
             # 看自己的取消标记，不能只看有没有抛异常。
             if self._round_cancelled:
@@ -1080,22 +1101,16 @@ class WakeService:
             self._turns += 1
             self._enter_followup()
         except asyncio.CancelledError:
-            self._release_duck()
             self._set_state("armed")
             raise
         except Exception as exc:
             self._fail(f"对话失败：{exc}")
         finally:
             self._busy = False
-            # 「我在」、回答、口令反馈都结束：恢复音乐音量
-            self._release_music_duck()
 
     async def _run_media(self, action: str, feedback: str) -> None:
         """本地意图快通道：固定动作 + 一句短反馈，不经过对话链路。"""
         speech = feedback
-        if action in media.VOLUME_ACTIONS:
-            # 用户要改音量：先把 duck 恢复成原值，否则「恢复」会把他要求的值冲掉
-            self._release_music_duck()
         try:
             await asyncio.to_thread(self._media_action, action)
         except asyncio.CancelledError:
@@ -1208,6 +1223,19 @@ class WakeService:
         self._turns += 1
         self._to_armed()
 
+    def _with_song_hint(self, text: str) -> str:
+        """短句既不是口令、也算不上正常对话时，补一句点歌提示给模型。
+
+        典型是只报歌名（「江南」）：本地抽不出动词，模型也没有上下文，
+        不加提示它只会反问「你想听什么」。
+        """
+        from . import tools
+        hint = tools.song_hint(text)
+        if not hint:
+            return text
+        devlog.log("wake.song_hint", text=text)
+        return f"{text}\n\n（{hint}）"
+
     async def _speak_short(self, text: str) -> None:
         """念一句极短反馈；合成或播放失败都只记日志，不拦回待机。"""
         if not text:
@@ -1241,7 +1269,29 @@ class WakeService:
         self._followup = True
         self._followup_until = self._clock() + float(
             self._cfg.get("followup_sec", 4))
+        self._mute_music_for_record()
         self._set_state("listening")
+
+    def _mute_music_for_record(self) -> None:
+        """开始录音：把音乐静音。没在播/没播放器/失败都静默跳过。"""
+        if not self._media_record_mute or self._record_muted:
+            return
+        self._record_muted = True
+        try:
+            self._media_record_mute()
+        except Exception as exc:
+            self._record_muted = False
+            devlog.log("wake.media.record_mute.error", error=str(exc))
+
+    def _unmute_music_for_record(self) -> None:
+        """录音结束：还原音乐音量。所有收尾路径都会调到这里，必须幂等。"""
+        if not self._record_muted or not self._media_record_unmute:
+            return
+        self._record_muted = False
+        try:
+            self._media_record_unmute()
+        except Exception as exc:
+            devlog.log("wake.media.record_unmute.error", error=str(exc))
 
     # ---- TTS 状态 ----
 
@@ -1278,8 +1328,8 @@ class WakeService:
 
     def _abort(self, reason: str) -> None:
         self._pending_confirm = None
+        self._unmute_music_for_record()
         self._release_duck()
-        self._release_music_duck()
         self._reset_audio()
         if reason:
             self._last_error = reason
@@ -1288,8 +1338,8 @@ class WakeService:
 
     def _fail(self, reason: str) -> None:
         self._pending_confirm = None
+        self._unmute_music_for_record()
         self._release_duck()
-        self._release_music_duck()
         self._reset_audio()
         self._last_error = reason
         devlog.log("wake.error", reason=reason)
@@ -1311,8 +1361,8 @@ class WakeService:
 
     def _to_armed(self) -> None:
         self._pending_confirm = None
+        self._unmute_music_for_record()
         self._release_duck()
-        self._release_music_duck()
         self._reset_audio()
         self._set_state("armed")
 
@@ -1361,35 +1411,12 @@ class WakeService:
             self._playing_at = now
         return self._playing
 
-    def _duck_music(self) -> None:
-        """压低正在播放的音乐。handler 返回 True 才记状态；异常一律吞掉。"""
-        if self._music_ducked or not self._media_duck:
-            return
-        try:
-            ducked = self._media_duck()
-        except Exception as exc:
-            devlog.log("wake.media.duck.error", error=str(exc))
-            return
-        if ducked:
-            self._music_ducked = True
-
-    def _release_music_duck(self) -> None:
-        """恢复音乐音量。无论哪条收尾路径都要走到，异常也不能抛出去。"""
-        if not self._music_ducked:
-            return
-        self._music_ducked = False
-        if self._media_restore:
-            try:
-                self._media_restore()
-            except Exception as exc:
-                devlog.log("wake.media.restore.error", error=str(exc))
-
     def _cancel_round(self) -> None:
         self._round_cancelled = True
         self._pending_confirm = None
         task, self._task = self._task, None
         if task is not None and not task.done():
             task.cancel()
+        self._unmute_music_for_record()
         self._release_duck()
-        self._release_music_duck()
         self._reset_audio()
