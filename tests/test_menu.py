@@ -26,14 +26,39 @@ class ParseTest(unittest.TestCase):
         got = menu.parse("meido /foo bar", "meido")
         self.assertEqual((got.kind, got.text), ("chat", "/foo bar"))
 
-    def test_prefix_only_is_empty_chat(self):
+    def test_prefix_only_is_none(self):
+        # 只喊昵称、没跟空格但紧贴着别的字：不是叫机器人
+        self.assertIsNone(menu.parse("meido你好", "meido"))
+        # 单独喊昵称 / 昵称 + 空白：算叫了机器人，只是空闲聊
         self.assertEqual(menu.parse("meido", "meido").kind, "chat")
+        self.assertEqual(menu.parse("meido  ", "meido").kind, "chat")
 
     def test_missing_prefix_returns_none(self):
         self.assertIsNone(menu.parse("随便聊聊", "meido"))
 
     def test_prefix_for_default(self):
         self.assertEqual(menu.prefix_for(""), menu.DEFAULT_PREFIX)
+
+    def test_zh_command_after_prefix(self):
+        # 「昵称 + 空格 + 中文指令」直接执行，不必带反斜杠
+        self.assertEqual(menu.parse("露露 菜单", "露露").kind, "help")
+        self.assertEqual(menu.parse("露露 截屏", "露露").kind, "shot")
+        self.assertEqual(menu.parse("露露 状态", "露露").kind, "status")
+        self.assertEqual(menu.parse("露露 停", "露露").kind, "cancel")
+
+    def test_zh_command_with_argument(self):
+        got = menu.parse("露露 清空记忆 群", "露露")
+        self.assertEqual((got.kind, got.text), ("memory_clear", "群"))
+
+    def test_zh_non_command_is_chat(self):
+        # 昵称后面不是指令词：按闲聊处理
+        got = menu.parse("露露 今天天气不错", "露露")
+        self.assertEqual((got.kind, got.text), ("chat", "今天天气不错"))
+
+    def test_zh_command_requires_space(self):
+        # 昵称后面没空白：`露露你好` 是普通聊天，不算叫机器人
+        self.assertIsNone(menu.parse("露露你好", "露露"))
+        self.assertEqual(menu.parse("露露  菜单", "露露").kind, "help")
 
 
 class AliasTest(unittest.TestCase):
@@ -122,9 +147,17 @@ class ConfirmTest(unittest.TestCase):
 class HelpTest(unittest.TestCase):
     def test_help_lists_commands(self):
         text = menu.help_text("meido")
-        self.assertIn("/deps", text)
+        self.assertIn("查依赖", text)
         self.assertIn("检查依赖状态（只检测，不安装）", text)
-        self.assertIn("/status", text)
+        self.assertIn("状态", text)
+        self.assertIn("meido 菜单", text)
+
+    def test_help_has_no_slash_commands(self):
+        # 用户可见文案只留中文指令，不再出现英文反斜杠指令
+        text = menu.help_text("露露")
+        for name in menu.SLASH_MAP:
+            self.assertNotIn("/" + name, text)
+        self.assertNotIn("/", text)
 
     def test_help_has_no_install_entry(self):
         text = menu.help_text("meido")

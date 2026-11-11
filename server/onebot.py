@@ -101,6 +101,10 @@ DEFAULT_PREFIX = "meido"
 # 限频数值来自 policy 的场景策略表（QQ_RATE），这里只做别名，避免两处各写一份
 DEFAULT_RATE_PER_MINUTE = policy.QQ_RATE.per_user          # 每人每分钟条数（<=0 不限）
 DEFAULT_GROUP_RATE_PER_MINUTE = policy.QQ_RATE.per_group   # 每个群每分钟条数（<=0 不限）
+# 主动接话概率：默认 0（主人没叫就不插话）
+DEFAULT_PROACTIVE_CHANCE = 0
+PROACTIVE_MIN = 0
+PROACTIVE_MAX = 100
 # 群常识只读缓存：每群最近多少条、每条活多久、整段注入最多多少字
 DEFAULT_GROUP_MEMO_SIZE = 20
 DEFAULT_GROUP_MEMO_TTL = 300.0
@@ -197,6 +201,9 @@ class OneBotConfig:
     auto_launch_wait_seconds: float = DEFAULT_AUTO_LAUNCH_WAIT
     rate_per_minute: int = DEFAULT_RATE_PER_MINUTE
     group_rate_per_minute: int = DEFAULT_GROUP_RATE_PER_MINUTE
+    # 主动接话概率（0~100，%）：只管「没人喊机器人」的群消息自己插话，
+    # 0 = 从不主动接话，100 = 每条都有概率接。@ 与昵称前缀不受它影响。
+    proactive_chance: int = DEFAULT_PROACTIVE_CHANCE
     max_message_chars: int = DEFAULT_MAX_MESSAGE_CHARS
     reply_chunk_chars: int = DEFAULT_REPLY_CHUNK_CHARS
     max_reply_chunks: int = DEFAULT_MAX_REPLY_CHUNKS
@@ -249,6 +256,11 @@ def _as_float(value, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _clamp_proactive(value) -> int:
+    """主动接话概率一律夹到 0~100，配置写错也不至于关掉或永远插话"""
+    return max(PROACTIVE_MIN, min(PROACTIVE_MAX, _as_int(value, DEFAULT_PROACTIVE_CHANCE)))
 
 
 def _as_str_list(value) -> tuple[str, ...]:
@@ -312,6 +324,8 @@ def parse_config(raw: dict | None) -> OneBotConfig:
         group_rate_per_minute=_as_int(
             raw.get("group_rate_per_minute", DEFAULT_GROUP_RATE_PER_MINUTE),
             DEFAULT_GROUP_RATE_PER_MINUTE),
+        proactive_chance=_clamp_proactive(
+            raw.get("proactive_chance", DEFAULT_PROACTIVE_CHANCE)),
         max_message_chars=_as_int(raw.get("max_message_chars", DEFAULT_MAX_MESSAGE_CHARS),
                                   DEFAULT_MAX_MESSAGE_CHARS),
         reply_chunk_chars=_as_int(raw.get("reply_chunk_chars", DEFAULT_REPLY_CHUNK_CHARS),
@@ -352,7 +366,8 @@ def parse_config(raw: dict | None) -> OneBotConfig:
 # 网页设置页可改的高级项：保存时逐项校验边界，非法值拒绝并给出原因
 ADVANCED_FIELDS = (
     "group_memo", "group_memo_size", "group_memo_ttl", "group_memo_max_chars",
-    "rate_per_minute", "group_rate_per_minute", "reply_chunk_chars",
+    "rate_per_minute", "group_rate_per_minute", "proactive_chance",
+    "reply_chunk_chars",
     "max_reply_chunks", "redact_words", "redact_mask",
     "voice_reply", "voice_group_members", "voice_only",
     "voice_max_seconds", "voice_max_kb",
@@ -407,6 +422,7 @@ def normalize_advanced(raw: dict) -> tuple[dict, str | None]:
              "注入片段字数上限"),
             ("rate_per_minute", 0, RATE_LIMIT_MAX, "每人每分钟条数"),
             ("group_rate_per_minute", 0, RATE_LIMIT_MAX, "每群每分钟条数"),
+            ("proactive_chance", PROACTIVE_MIN, PROACTIVE_MAX, "主动接话概率"),
             ("reply_chunk_chars", REPLY_CHUNK_MIN, REPLY_CHUNK_MAX, "每段字数"),
             ("max_reply_chunks", REPLY_CHUNKS_MIN, REPLY_CHUNKS_MAX, "最多分段数"),
             ("voice_max_kb", VOICE_KB_MIN, VOICE_KB_MAX, "语音大小上限（KB）")):
@@ -662,6 +678,8 @@ class MessageEvent:
     reply_id: str = ""
     # 发送者昵称（群名片优先）：写记忆前要去掉「昵称：」这类前缀
     sender_name: str = ""
+    # 这一条没有 @ 也没有昵称前缀，是按「主动接话概率」入场的
+    proactive: bool = False
 
 
 def _cq_image_payload(params: str) -> dict:
@@ -748,22 +766,41 @@ def normalize_event(data: dict) -> MessageEvent | None:
 
 @dataclass
 class Route:
-    action: str          # ignore / command / unknown / chat
+    action: str          # ignore / command / unknown / chat / maybe
     kind: str = ""       # command 时是 status / shot / cancel / save_image / save_text
     text: str = ""
     readonly: bool = True
     reason: str = ""
     alias: str = ""      # 命中的别名原文，日志用
     alias_miss: bool = False
+    proactive: bool = False   # 这次回合是「没人喊机器人、按概率自己插话」
 
 
 def _match_slash(text: str) -> ParsedCommand | None:
     return menu.match_slash(text)
 
 
+def _parse_called(text: str, nickname: str) -> Route | None:
+    """「昵称 + 空格 + 指令或正文」；没叫机器人时返回 None
+
+    群友和主人都能这样直接聊，不必 @：命中中文指令就执行，
+    其余正文当闲聊（群友仍是只读）。
+    """
+    parsed = menu.parse(text, nickname)
+    if parsed is None:
+        return None
+    if parsed.kind == "chat":
+        return Route("chat", text=parsed.text)
+    return Route("command", kind=parsed.kind, text=parsed.text)
+
+
 def _admin_route(text: str, nickname: str, readonly: bool) -> Route:
-    """管理员文本 → Route：斜杠指令 > 口语别名 > 未登记斜杠提示 > 聊天"""
+    """管理员文本 → Route：昵称指令 > 斜杠指令 > 口语别名 > 未登记斜杠 > 聊天"""
     body = (text or "").strip()
+    called = _parse_called(body, nickname)
+    if called:
+        called.readonly = readonly
+        return called
     slash = _match_slash(body)
     if slash:
         return Route("command", kind=slash.kind, text=slash.text, readonly=readonly)
@@ -818,21 +855,35 @@ def voice_identity(cfg: OneBotConfig, ev: MessageEvent) -> str:
 def route_message(cfg: OneBotConfig, ev: MessageEvent, nickname: str) -> Route:
     """权限判定与指令路由（纯函数，方便单测）
 
-    顺序固定：群白名单 → 管理员身份 → 私聊/群友身份。
-    群聊一律先过 allow_groups（空 = 全禁），主人也不能绕过；白名单群内的
-    主人仍免 @、可执行指令。非管理员私聊：静默忽略；
-    非管理员群聊：没 @ 机器人时静默忽略，其余只读聊天。
+    顺序固定：群白名单 → @ 机器人 → 昵称前缀 → 主动接话概率。
+    群聊一律先过 allow_groups（空 = 全禁），主人也不能绕过。
+    @ 机器人必回；`昵称 + 空格` 开头同样算叫机器人（群友与主人都能这样直接聊，
+    群友只读）；两样都没有的消息只有群里才可能被「主动接话概率」捞起
+    （maybe，由调用方掷骰子），私聊里不 @ 也不带前缀一律静默忽略。
     """
     if not group_allowed(cfg, ev):
         return Route("ignore", reason="群不在白名单")
-    if is_admin_user(cfg, ev):
-        return _admin_route(ev.text, nickname, readonly=False)
+    admin = is_admin_user(cfg, ev)
     if ev.group_id is None:
+        # 私聊：主人直接进 AI，陌生人静默忽略（私聊没有概率路径）
+        if admin:
+            return _admin_route(ev.text, nickname, readonly=False)
         return Route("ignore", reason="非管理员私聊")
-    if not ev.at_bot:
-        return Route("ignore", reason="群里没有 @ 机器人")
-    body = strip_prefix(ev.text, nickname)
-    return Route("chat", text=body, readonly=True)
+    if admin:
+        # @ 机器人、或者消息本身是指令：照常处理
+        route = _admin_route(ev.text, nickname, readonly=False)
+        if ev.at_bot or route.action == "command":
+            return route
+    else:
+        # 群友：@ 机器人一律当闲聊；带昵称前缀的按指令/闲聊解析，但只读
+        if ev.at_bot:
+            return Route("chat", text=strip_prefix(ev.text, nickname), readonly=True)
+        called = _parse_called(ev.text, nickname)
+        if called:
+            called.readonly = True
+            return called
+    # 既没 @ 也没昵称前缀：主人和群友一样，只可能被主动接话概率捞起
+    return Route("maybe", reason="没喊机器人", proactive=True)
 
 
 def reply_eligible(cfg: OneBotConfig, ev: MessageEvent) -> bool:
@@ -848,7 +899,11 @@ def reply_eligible(cfg: OneBotConfig, ev: MessageEvent) -> bool:
         return True
     if ev.group_id is None:
         return False
-    return bool(ev.at_bot)
+    # 群里带昵称前缀（叫机器人）或按主动接话概率入场的回合都允许出站；
+    # 入场时的冷却与掷骰在 _dispatch_inner 里判过。
+    if ev.at_bot:
+        return True
+    return ev.proactive
 
 
 # ---------- 限流 / 截断 / 退避 ----------
@@ -986,7 +1041,8 @@ class OneBotClient:
                  clock=time.time, image_optimizer=None,
                  voice_synth=None, voice_convert=None, voice_saved=None):
         """
-        runner: async (text, *, sid, device, readonly, turn_id, image=None)
+        runner: async (text, *, sid, device, readonly, turn_id, image=None,
+                       proactive=False)
                 -> {"reply", "pending", "image", "caption"}
         screenshot: async () -> (bytes|None, 说明)
         status_provider: async () -> dict（核心/模式等，/status 用）
@@ -1049,7 +1105,7 @@ class OneBotClient:
         self._stats = {
             "received": 0, "ignored": 0, "rate_limited": 0,
             "commands": 0, "turns": 0, "replies": 0, "errors": 0,
-            "reconnects": 0,
+            "reconnects": 0, "proactive": 0,
         }
 
     # -- 日志 --
@@ -1721,6 +1777,20 @@ class OneBotClient:
             except Exception as e:
                 self._log("warn", "群缓存写入失败", repr(e))
         device = device_tag(ev)
+        # 先做权限/指令路由：没 @ 也没昵称前缀的群消息走概率路径，
+        # 掷不中就静默丢弃（群里不提示、不排队）。
+        route = route_message(cfg, ev, nickname)
+        if route.action == "ignore":
+            self._stats["ignored"] += 1
+            self._log("info", "权限忽略", route.reason)
+            return
+        if route.action == "maybe":
+            # 主动接话也走限流：超了就不插话（静默，不回「太快了」）
+            if not self._proactive_hit(ev):
+                return
+            ev.proactive = True
+            route = Route("chat", text=ev.text, readonly=not is_admin_user(cfg, ev),
+                          proactive=True)
         # 判定顺序：白名单/私聊（上面已过）→ 限流 → 权限（管理员）→ 处理。
         # 非白名单群根本走不到这里，也就不能消耗配额、更不能收到「太快了」提示。
         allowed, notice = self._gate.check(ev.uin, ev.group_id)
@@ -1728,14 +1798,8 @@ class OneBotClient:
             self._stats["rate_limited"] += 1
             self._log("warn", "限流丢弃",
                       f"uin={ev.uin}" + (f" group={ev.group_id}" if ev.group_id else ""))
-            if notice:
+            if notice and not route.proactive:
                 await self._send_text(ev, notice, at=False)
-            return
-        # 权限路由：管理员 / 私聊 / 群友，只在白名单群内生效
-        route = route_message(cfg, ev, nickname)
-        if route.action == "ignore":
-            self._stats["ignored"] += 1
-            self._log("info", "权限忽略", route.reason)
             return
         # 危险固定命令的二次确认：上一条挂起的命令先在这里消化掉
         if await self._consume_menu_confirm(ev, device):
@@ -1756,7 +1820,8 @@ class OneBotClient:
             self._stats["ignored"] += 1
             self._log("info", "未知指令", route.text)
             await self._send_text(
-                ev, f"没有这条指令：{route.text}；发 /help 看可用指令。")
+                ev, f"没有这条指令：{route.text}；发 {menu.prefix_for(nickname)} 菜单"
+                    " 看可用指令。")
             return
         if route.action == "command":
             self._stats["commands"] += 1
@@ -1840,6 +1905,26 @@ class OneBotClient:
         await handler(ev)
         return True
 
+    def _proactive_hit(self, ev: MessageEvent) -> bool:
+        """主动接话掷骰：概率 0 永不命中；命中后遇到忙碌也静默放弃
+
+        只用来决定「没人喊机器人时要不要插话」。群里人人适用，
+        主人也不例外（主人找机器人会主动 @ 或带昵称前缀）。
+        """
+        chance = max(0, min(100, int(self._cfg.proactive_chance or 0)))
+        if chance <= 0:
+            return False
+        # 概率按百分比：chance >= 100 时不再过滤（100% = 任意人说话都有概率接话）
+        if chance < 100 and random.random() * 100 >= chance:
+            return False
+        if self._busy():
+            self._log("info", "主动接话放弃", "上一轮还没结束")
+            return False
+        self._stats["proactive"] += 1
+        self._log("info", "主动接话",
+                  f"uin={ev.uin}" + (f" group={ev.group_id}" if ev.group_id else ""))
+        return True
+
     def _busy(self) -> bool:
         return self._turn_task is not None and not self._turn_task.done()
 
@@ -1852,17 +1937,21 @@ class OneBotClient:
             self._log("warn", "skip",
                       f"reason=turn_not_authorized group={ev.group_id} uin={ev.uin}")
             return
+        prefix = menu.prefix_for(self._nickname())
         if self._busy():
-            await self._send_text(ev, "上一件事还在处理，稍等一下；要停下就发 /cancel。")
+            await self._send_text(ev, f"上一件事还在处理，稍等一下；要停下就发 {prefix} 停。")
             return
         device = device_tag(ev)
         sid = session_sid(ev)
         text = (route.text or "").strip()
         if not text and route.readonly:
-            await self._send_text(ev, "想聊什么直接 @ 我就好。")
+            await self._send_text(
+                ev, f"想聊什么直接 @ 我，或者发「{prefix} 想说的话」。")
             return
         if not text:
-            await self._send_text(ev, "在昵称后面跟一句要聊的话，或者用 /status、/shot、/cancel。")
+            await self._send_text(
+                ev, f"在昵称后面跟一句要聊的话，例如「{prefix} 在吗」；"
+                    f"发「{prefix} 菜单」看可用指令。")
             return
         turn_id = ""
         tracked = self._pending_conf.get(device)
@@ -1936,7 +2025,8 @@ class OneBotClient:
         try:
             task = asyncio.create_task(
                 self._runner(text, sid=sid, device=device,
-                             readonly=route.readonly, turn_id=turn_id, image=image))
+                             readonly=route.readonly, turn_id=turn_id, image=image,
+                             proactive=route.proactive))
         finally:
             memory.reset_context(token_mem)
             _TURN_AUTHORIZED.reset(token_auth)
@@ -2088,7 +2178,8 @@ class OneBotClient:
             lines.append(f"{i}. [{memory.KINDS[it['kind']]}] {text}")
         if len(items) > 10:
             lines.append(f"只显示前 10 条，共 {len(items)} 条。")
-        lines.append("清空：/memory clear [群/人/私聊/all]，需管理员确认。")
+        prefix = menu.prefix_for(self._nickname())
+        lines.append(f"清空：{prefix} 清空记忆 [群/人/私聊/all]，需管理员确认。")
         await self._send_text(ev, "\n".join(lines))
 
     async def _do_memory_clear(self, ev: MessageEvent) -> None:

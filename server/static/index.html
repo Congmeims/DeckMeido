@@ -4196,10 +4196,11 @@
               <div id="qqGroupChips" class="chip-list"></div>
               <div class="field-hint" id="qqGroupHint"></div>
               <div class="field-hint">
-                群里必须 @ 机器人才处理（主人 QQ 在白名单群内免 @，可直接发指令）。
+                群里 @ 机器人必回；发「昵称 + 空格」开头的消息也算叫机器人（群友与主人都能这样直接聊）。
+                两样都没有的消息只有「主动接话概率」命中时才会被回应。
                 普通群成员只能闲聊；主人可下指令（危险操作仍要确认）。
                 群号留空 = 全禁，所有群消息一律不响应（主人也不触发）。
-                直接发 /shot、/status、/cancel 或「截个屏」「在吗」「停一下」都算。
+                指令写成「昵称 + 空格 + 指令」，例如「露露 菜单」「露露 截屏」「露露 停」。
               </div>
             </div>
 
@@ -4266,6 +4267,21 @@
                 </div>
               </div>
               <div class="field-hint">0 = 不限。被限流时只发一次简短提示，不刷屏。</div>
+            </div>
+
+            <div class="qq-group">
+              <div class="qq-group-title">主动接话</div>
+              <div class="qq-num-grid">
+                <div class="field">
+                  <label>主动回复闲聊概率（proactive_chance，%）</label>
+                  <input id="cfgQqProactive" type="number" min="0" max="100" step="1"
+                         value="0" spellcheck="false">
+                </div>
+              </div>
+              <div class="field-hint">
+                0% = 群里没人 @ 也不带昵称前缀时，从不主动接话；100% = 任意人说话都有概率接话。
+                @ 机器人和「昵称 + 空格」开头的消息不受影响，永远会回。
+              </div>
             </div>
 
             <div class="qq-group">
@@ -4414,7 +4430,7 @@
             </div>
             </details>
             <div class="mem-foot">
-              <span class="field-hint" id="qqPrefixHint">当前指令前缀：meido</span>
+              <span class="field-hint" id="qqPrefixHint">当前昵称前缀：meido（指令写成「meido 菜单」）</span>
               <button id="qqSave" class="mini-btn primary" type="button">保存</button>
             </div>
             <div id="qqHint" class="field-hint"></div>
@@ -11935,6 +11951,47 @@
   var micChunks = [], micRate = 48000, micTimer = null;
   // 客户端 R1：按下时麦克风还没拿到就松手，要取消这次录音
   var micStartPending = false, micR2Release = false;
+  // 麦克风的唯一长期持有者：智能音箱模式（唤醒监听由后端跑），
+  // 以及有轮次在跑（后端半双工会暂停入队，但录音进程还在）。
+  // 这两个条件都不成立时，页面里的麦克风必须立刻关掉——否则主界面过
+  // getUserMedia 拿到的那条流会一直挂着，等于普通对话也常驻采集。
+  var wakeRunning = false;
+  var micRoundActive = false;
+  function micHold() { return wakeRunning || micRoundActive; }
+
+  function micRelease() {
+    // 只释放「长期持有」：正在做一次性识别（working）时不能掐，不然刚收的
+    // 音频还没转写就被丢掉
+    if (micState === 'working') return;
+    micReset();
+    micChunks = [];
+    micStartPending = false; micR2Release = false;
+    if (micState === 'recording') duckOutput(false);
+    micState = 'idle';
+    if (micBtn) {
+      micBtn.classList.remove('rec', 'busy');
+      micBtn.textContent = tr('语音');
+      micBtn.title = '语音输入（桌面客户端，按住 R1 说话）';
+    }
+  }
+
+  // 麦克风的采样只由这两个状态驱动：
+  //   micRound(state)  —— 智能音箱模式里的一轮（播放/聆听/思考/播报）；
+  //   micIdleExit(on)  —— 是否仍处于智能音箱模式（退出即收回麦克风）。
+  // 主界面这两处由唤醒状态驱动，状态没切到这两条路径时一律不长期开麦。
+  function micRound(state) {
+    var on = ["waking", "listening", "thinking", "speaking"].includes(String(state || ''));
+    if (!on) { micRoundActive = false; micRelease(); return; }
+    micRoundActive = true;
+    // 后台提前把录音流打开：用户看到「我在」播完就能直接说话，
+    // 不用再等一次授权与建流
+    if (micState === 'idle' && !micStartPending) micStart();
+  }
+
+  function micIdleExit(on) {
+    wakeRunning = !!on;
+    if (!micHold()) micRelease();
+  }
 
   function micReset() {
     if (micTimer) { clearTimeout(micTimer); micTimer = null; }
@@ -12059,7 +12116,9 @@
     micBtn.classList.add('rec');
     micBtn.textContent = tr('停止');
     micBtn.title = '再点一下结束录音';
-    // 兜底：最长 60 秒，防止忘了关一直占着麦克风
+    // 常驻监听期间不设上限：设置 60 秒会把录音掐掉，而这时的录音本来就是
+    // 给后端唤醒/半双工用的。用户手动按 R1 时仍按 60 秒兜底
+    if (micHold()) return;
     micTimer = setTimeout(function () { if (micState === 'recording') micStop(); }, 60000);
   }
 
@@ -12545,6 +12604,7 @@
   var cfgQqMemoChars = document.getElementById('cfgQqMemoChars');
   var cfgQqRate = document.getElementById('cfgQqRate');
   var cfgQqGroupRate = document.getElementById('cfgQqGroupRate');
+  var cfgQqProactive = document.getElementById('cfgQqProactive');
   var cfgQqChunkChars = document.getElementById('cfgQqChunkChars');
   var cfgQqChunks = document.getElementById('cfgQqChunks');
   var cfgQqRedactMask = document.getElementById('cfgQqRedactMask');
@@ -14768,7 +14828,7 @@
   }
 
   function qqPrefixText(prefix, guestCustom) {
-    return '当前指令前缀：' + (prefix || 'meido')
+    return '当前昵称前缀：' + (prefix || 'meido') + '（指令写成「' + (prefix || 'meido') + ' 菜单」）'
       + '；群友提示词：' + (guestCustom ? '自定义' : '默认');
   }
 
@@ -15028,6 +15088,8 @@
       if (cfgQqRate) cfgQqRate.value = c.rate_per_minute != null ? c.rate_per_minute : 6;
       if (cfgQqGroupRate) cfgQqGroupRate.value =
         c.group_rate_per_minute != null ? c.group_rate_per_minute : 10;
+      if (cfgQqProactive) cfgQqProactive.value =
+        c.proactive_chance != null ? c.proactive_chance : 0;
       if (cfgQqChunkChars) cfgQqChunkChars.value =
         c.reply_chunk_chars != null ? c.reply_chunk_chars : 300;
       if (cfgQqChunks) cfgQqChunks.value =
@@ -15118,6 +15180,7 @@
       group_memo_max_chars: qqNum(cfgQqMemoChars, 400),
       rate_per_minute: qqNum(cfgQqRate, 6),
       group_rate_per_minute: qqNum(cfgQqGroupRate, 10),
+      proactive_chance: qqNum(cfgQqProactive, 0),
       reply_chunk_chars: qqNum(cfgQqChunkChars, 300),
       max_reply_chunks: qqNum(cfgQqChunks, 3),
       redact_words: qqRedactWords ? qqRedactWords.get() : [],

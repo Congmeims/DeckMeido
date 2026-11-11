@@ -91,10 +91,10 @@ SPECS: tuple[Spec, ...] = (
          "清除本群常识缓存（仅管理员）"),
     Spec("memory", ("memory", "mem"),
          ("记忆", "查看记忆", "记忆列表", "我的记忆", "群记忆"),
-         "查看当前会话的长期记忆（/memory clear 清空）"),
+         "查看当前会话的长期记忆（发「清空记忆」可清空）"),
     Spec("memory_clear", ("memclear",),
          ("清空记忆", "清除记忆", "清空群记忆"),
-         "清空当前或指定 scope 的长期记忆（/memory clear，仅管理员）",
+         "清空当前或指定 scope 的长期记忆（仅管理员）",
          dangerous=True),
 )
 
@@ -147,21 +147,62 @@ def unknown_slash(text: str) -> str:
     return "" if name.lower() in SLASH_MAP else "/" + name
 
 
-def parse(text: str, nickname: str) -> Parsed | None:
-    """解析「昵称 + 子命令或正文」。不匹配前缀返回 None
+# 昵称后面必须跟空白才算「叫机器人」：`露露你好` 是聊天，`露露 菜单` 才是指令
+_NICK_SPLIT_RE = re.compile(r"\s+")
+# 中文指令名：把别名里较长的短句排除在「精确指令名」之外，只留短词
+_MAX_ZH_COMMAND_CHARS = 4
 
-    规则：忽略首尾空白、ASCII 不区分大小写，前缀后可以直接跟子命令，
-    也可以空格再接正文。
-    """
+
+def zh_names() -> dict[str, str]:
+    """中文指令名 → 内部动作名（用户只看中文，英文 key 只是内部动作名）"""
+    names: dict[str, str] = {}
+    for spec in SPECS:
+        for phrase in spec.phrases:
+            if len(phrase) <= _MAX_ZH_COMMAND_CHARS:
+                names.setdefault(phrase, spec.key)
+    return names
+
+
+ZH_COMMANDS: dict[str, str] = zh_names()
+
+
+def _split_nick(text: str, nickname: str) -> tuple[bool, str]:
+    """按「昵称 + 空格」切开；返回 (是否带昵称前缀, 后面的正文)"""
     body = (text or "").strip()
     prefix = prefix_for(nickname)
     if len(body) < len(prefix):
-        return None
+        return False, body
     if body[:len(prefix)].casefold() != prefix.casefold():
+        return False, body
+    rest = body[len(prefix):]
+    # 昵称后面既没空白也没别的字符（`露露`/`露露  `）：算叫了机器人，只是没带话
+    if not rest.strip():
+        return True, ""
+    if not rest[:1].isspace():
+        return False, body
+    return True, rest.strip()
+
+
+def parse(text: str, nickname: str) -> Parsed | None:
+    """解析「昵称 + 空格 + 指令或正文」。不带昵称前缀返回 None
+
+    昵称后面第一个词精确命中中文指令名（或旧斜杠指令）才算指令；
+    其余一律按闲聊处理。`露露` 单独一句是空闲聊。
+    """
+    called, rest = _split_nick(text, nickname)
+    if not called:
         return None
-    rest = body[len(prefix):].strip()
     if not rest:
         return Parsed("chat", "")
+    head = _NICK_SPLIT_RE.split(rest, 1)[0]
+    kind = ZH_COMMANDS.get(head)
+    if kind and len(head) <= len(rest):
+        arg = rest[len(head):].strip()
+        if kind == "memory":
+            cm = _MEMORY_CLEAR_RE.match(arg)
+            if cm:
+                return Parsed("memory_clear", (cm.group(1) or "").strip())
+        return Parsed(kind, arg)
     slash = match_slash(rest)
     if slash:
         return slash
@@ -286,12 +327,18 @@ def remote_command_danger(cmd: str, depth: int = 0) -> str:
     return ""
 
 
+def help_name(spec: Spec) -> str:
+    """帮助文案里给人看的中文指令名：取该命令最短的中文词"""
+    return min(spec.phrases, key=len) if spec.phrases else spec.slash[0]
+
+
 def help_text(nickname: str = "") -> str:
-    """帮助文案：固定命令一览（危险命令会单独标出来）"""
+    """帮助文案：只列中文指令，写成「昵称 + 空格 + 指令」"""
     prefix = prefix_for(nickname)
-    lines = ["可用指令（直接回复即可，不经过 AI）："]
+    lines = [f"可用指令（发「{prefix} 指令」即可，不经过 AI）："]
     for spec in SPECS:
         flag = "（危险操作，需确认）" if spec.dangerous else ""
-        lines.append(f"/{spec.slash[0]} {spec.summary}{flag}")
-    lines.append(f"触发前缀：{prefix}（例：{prefix} /status）")
+        lines.append(f"{help_name(spec)} —— {spec.summary}{flag}")
+    lines.append(f"触发方式：{prefix} + 空格 + 指令（例：{prefix} 菜单）；"
+                 f"{prefix} 后面接别的话就当闲聊。")
     return "\n".join(lines)

@@ -1,4 +1,4 @@
-"""OneBot 通道（server/onebot.py）的单元测试。
+﻿"""OneBot 通道（server/onebot.py）的单元测试。
 
 全部用本地假 WS（内存队列模拟 NapCat 的 WebSocket 服务器），
 不连真实 NapCat，也不需要本机装 websockets。
@@ -29,8 +29,10 @@ class PrefixTest(unittest.TestCase):
         self.assertEqual(got.text, "")
 
     def test_ascii_case_insensitive_and_direct_attach(self):
-        self.assertEqual(onebot.parse_command("deckmeido/status", "DeckMeido").kind, "status")
+        # 昵称后必须带空白：直接贴文字按闲聊处理
+        self.assertEqual(onebot.parse_command("deckmeido /status", "DeckMeido").kind, "status")
         self.assertEqual(onebot.parse_command("  DECKMEIDO  /shot  ", "DeckMeido").kind, "shot")
+        self.assertIsNone(onebot.parse_command("deckmeido/status", "DeckMeido"))
 
     def test_nickname_changed(self):
         self.assertEqual(onebot.parse_command("喵喵 /cancel", "喵喵").kind, "cancel")
@@ -47,8 +49,11 @@ class PrefixTest(unittest.TestCase):
         self.assertEqual(got.text, "今天天气怎么样")
 
     def test_prefix_only(self):
+        # 紧贴昵称的文字不算叫机器人；单独喊昵称算叫了，只是没带话
+        self.assertIsNone(onebot.parse_command("DeckMeido你好", "DeckMeido"))
         self.assertEqual(onebot.parse_command("DeckMeido", "DeckMeido").kind, "chat")
-        self.assertEqual(onebot.parse_command("DeckMeido", "DeckMeido").text, "")
+        self.assertEqual(onebot.parse_command("DeckMeido  ", "DeckMeido").kind, "chat")
+        self.assertEqual(onebot.parse_command("DeckMeido 你好", "DeckMeido").kind, "chat")
 
     def test_unknown_command_is_chat(self):
         got = onebot.parse_command("DeckMeido /foo bar", "DeckMeido")
@@ -245,9 +250,14 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(route.action, "ignore")
 
     def test_group_requires_at(self):
-        # 群友仍要 @ 机器人才处理
-        route = onebot.route_message(self.cfg(), self.ev("30003", "meido /status", "20001", False), "meido")
-        self.assertEqual(route.action, "ignore")
+        # 群友没 @ 但带了昵称前缀：算叫机器人，只读闲聊
+        route = onebot.route_message(self.cfg(), self.ev("30003", "meido 你好呀", "20001", False), "meido")
+        self.assertEqual(route.action, "chat")
+        self.assertTrue(route.readonly)
+        # 既没 @ 也没前缀：交给主动接话概率决定（0% 时静默丢弃）
+        route = onebot.route_message(self.cfg(), self.ev("30003", "今天吃点啥", "20001", False), "meido")
+        self.assertEqual(route.action, "maybe")
+        self.assertTrue(route.proactive)
 
     def test_group_non_admin_only_chat(self):
         route = onebot.route_message(self.cfg(), self.ev("30003", "meido /status", "20001", True), "meido")
@@ -377,6 +387,19 @@ class ConfigTest(unittest.TestCase):
     def test_mask_url(self):
         self.assertEqual(onebot._mask_url("wss://user:pass@example.com/ws"),
                          "wss://example.com/ws")
+
+    def test_proactive_chance_default_and_clamped(self):
+        self.assertEqual(onebot.parse_config({}).proactive_chance, 0)
+        self.assertEqual(onebot.parse_config({"proactive_chance": "40"}).proactive_chance, 40)
+        self.assertEqual(onebot.parse_config({"proactive_chance": -5}).proactive_chance, 0)
+        self.assertEqual(onebot.parse_config({"proactive_chance": 300}).proactive_chance, 100)
+
+    def test_proactive_chance_is_advanced_field(self):
+        updates, err = onebot.normalize_advanced({"proactive_chance": 30})
+        self.assertIsNone(err)
+        self.assertEqual(updates["proactive_chance"], 30)
+        _updates, err = onebot.normalize_advanced({"proactive_chance": 101})
+        self.assertIsNotNone(err)
 
 
 class AdvancedConfigTest(unittest.TestCase):
@@ -542,9 +565,11 @@ class BotTest(unittest.IsolatedAsyncioTestCase):
         ws = ws or FakeWS()
         calls = []
 
-        async def default_runner(text, *, sid, device, readonly, turn_id="", image=None):
+        async def default_runner(text, *, sid, device, readonly, turn_id="", image=None,
+                                 proactive=False):
             calls.append({"text": text, "sid": sid, "device": device,
-                          "readonly": readonly, "turn_id": turn_id})
+                          "readonly": readonly, "turn_id": turn_id,
+                          "proactive": proactive})
             return {"reply": "好的"}
 
         runner = runner or default_runner
@@ -574,6 +599,22 @@ class BotTest(unittest.IsolatedAsyncioTestCase):
         bot.configure(cfg)
         self.calls, self.cleared = calls, cleared
         return bot, ws
+
+    async def probe(self, text, *, uin="30003", group="20001", config=None):
+        """白名单群里群友发一条不带 @ 的消息，返回这一轮是否被接手"""
+        bot, ws = self.make(config=config)
+        await bot.start()
+        self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
+        ws.feed(group_msg(group, uin, text, at=False, mid="probe"))
+        await bot.wait_idle()
+        await bot.stop()
+        return ws
+
+    async def test_group_chatter_at_bot_only_chats(self):
+        # 默认概率 0：群友没 @、只在正文里提昵称，不算叫机器人，一个字都不回
+        ws = await self.probe("meido 今天好热")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(reply_payloads(ws), [])
 
     async def test_missing_token_refuses_start(self):
         bot, _ = self.make(config={"enable": True, "ws_url": "ws://127.0.0.1:3001",
@@ -672,6 +713,56 @@ class BotTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(replies), 2)
         self.assertTrue(any("快" in r for r in replies))
         self.assertEqual(bot.state()["stats"]["rate_limited"], 2)
+        await bot.stop()
+
+    def test_proactive_hit_respects_chance_and_busy(self):
+        """主动接话掷骰：0% 永不命中，100% 命中，忙碌时静默放弃"""
+        bot, _ws = self.make(config={
+            "enable": True, "ws_url": "ws://127.0.0.1:3001",
+            "access_token": "tok", "admin_qq": ["10001"],
+            "allow_groups": ["20001"], "proactive_chance": 0,
+        })
+        ev = onebot.MessageEvent(uin="30003", text="随便说说", group_id="20001")
+        self.assertFalse(bot._proactive_hit(ev))
+        bot._cfg = onebot.parse_config({
+            "enable": True, "ws_url": "ws://127.0.0.1:3001",
+            "access_token": "tok", "admin_qq": ["10001"],
+            "allow_groups": ["20001"], "proactive_chance": 100,
+        })
+        self.assertTrue(bot._proactive_hit(ev))
+        with mock.patch.object(bot, "_busy", return_value=True):
+            self.assertFalse(bot._proactive_hit(ev))
+
+    async def test_proactive_prop_routes_into_chat(self):
+        """概率命中后按闲聊跑一轮，并把消息标记为 proactive"""
+        bot, ws = self.make(config={
+            "enable": True, "ws_url": "ws://127.0.0.1:3001",
+            "access_token": "tok", "admin_qq": ["10001"],
+            "allow_groups": ["20001"], "proactive_chance": 100,
+        })
+        await bot.start()
+        self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
+        ws.feed(group_msg("20001", "30003", "今天好热", at=False, mid="p1"))
+        await bot.wait_idle()
+        self.assertEqual(len(self.calls), 1)
+        self.assertTrue(self.calls[0]["proactive"])
+        self.assertTrue(reply_payloads(ws))
+        await bot.stop()
+
+    async def test_proactive_zero_ignores_group_chatter(self):
+        """0% 时不主动接话：群里没 @ 也没前缀的消息一个字都不回"""
+        bot, ws = self.make(config={
+            "enable": True, "ws_url": "ws://127.0.0.1:3001",
+            "access_token": "tok", "admin_qq": ["10001"],
+            "allow_groups": ["20001"], "proactive_chance": 0,
+        })
+        await bot.start()
+        self.assertTrue(await wait_until(lambda: bot.state()["state"] == "connected"))
+        ws.feed(group_msg("20001", "30003", "今天好热", at=False, mid="p1"))
+        ws.feed(group_msg("20001", "10001", "我也觉得", at=False, mid="p2"))
+        await bot.wait_idle()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(reply_payloads(ws), [])
         await bot.stop()
 
     async def test_nonwhite_group_member_gets_no_output_even_when_rate_limited(self):
@@ -818,7 +909,7 @@ class BotTest(unittest.IsolatedAsyncioTestCase):
         await bot.stop()
 
     async def test_confirm_reuses_turn_id(self):
-        async def runner(text, *, sid, device, readonly, turn_id="", image=None):
+        async def runner(text, *, sid, device, readonly, turn_id="", image=None, proactive=False):
             self.calls.append({"text": text, "turn_id": turn_id})
             if len(self.calls) == 1:
                 return {"reply": "需要确认：重启设备", "pending": {
@@ -838,7 +929,7 @@ class BotTest(unittest.IsolatedAsyncioTestCase):
         await bot.stop()
 
     async def test_new_message_cancels_pending(self):
-        async def runner(text, *, sid, device, readonly, turn_id="", image=None):
+        async def runner(text, *, sid, device, readonly, turn_id="", image=None, proactive=False):
             self.calls.append({"text": text, "turn_id": turn_id})
             if len(self.calls) == 1:
                 return {"reply": "需要确认", "pending": {"turn_id": "t1",
@@ -858,7 +949,7 @@ class BotTest(unittest.IsolatedAsyncioTestCase):
         await bot.stop()
 
     async def test_confirm_expires(self):
-        async def runner(text, *, sid, device, readonly, turn_id="", image=None):
+        async def runner(text, *, sid, device, readonly, turn_id="", image=None, proactive=False):
             self.calls.append({"text": text, "turn_id": turn_id})
             return {"reply": "需要确认", "pending": {"turn_id": "t1",
                                                     "description": "重启设备"}}
@@ -881,7 +972,7 @@ class BotTest(unittest.IsolatedAsyncioTestCase):
         await bot.stop()
 
     async def test_cancel_command(self):
-        async def slow_runner(text, *, sid, device, readonly, turn_id="", image=None):
+        async def slow_runner(text, *, sid, device, readonly, turn_id="", image=None, proactive=False):
             self.calls.append({"text": text})
             await asyncio.sleep(30)
             return {"reply": "完成"}
@@ -916,7 +1007,7 @@ class GroupMemoFlowTest(unittest.IsolatedAsyncioTestCase):
     def make(self):
         prompts: list[dict] = []
 
-        async def runner(text, *, sid, device, readonly, turn_id="", image=None):
+        async def runner(text, *, sid, device, readonly, turn_id="", image=None, proactive=False):
             # 和 main.py 的 QQ 轮次一样：在子任务里现算 guest prompt
             prompts.append({"text": text, "readonly": readonly,
                              "prompt": onebot.guest_prompt("", "meido")})
@@ -1200,8 +1291,9 @@ class AliasTest(unittest.TestCase):
     def test_non_admin_still_ignored_in_nonwhite_group(self):
         route = alias_route("截个屏", group="29999", at=True, uin="30003")
         self.assertEqual(route.action, "ignore")
+        # 白名单群里没 @ 也没前缀：进概率路径（默认 0% 时不会真的接话）
         route = alias_route("截个屏", group="20001", at=False, uin="30003")
-        self.assertEqual(route.action, "ignore")
+        self.assertEqual(route.action, "maybe")
 
     def test_confirm_keeps_group_isolation(self):
         a = onebot.device_tag(onebot.MessageEvent(uin="10001", text="", group_id="20001"))
@@ -1301,7 +1393,7 @@ async def start_bot(ws=None, *, config=None, runner=None, screenshot=None,
     ws = ws or FakeWS()
     calls = []
 
-    async def default_runner(text, *, sid, device, readonly, turn_id="", image=None):
+    async def default_runner(text, *, sid, device, readonly, turn_id="", image=None, proactive=False):
         calls.append({"text": text, "sid": sid, "device": device,
                       "readonly": readonly, "turn_id": turn_id, "image": image})
         return {"reply": "好的"}
@@ -1710,7 +1802,7 @@ class HardConfirmTest(unittest.IsolatedAsyncioTestCase):
     async def test_hard_pending_only_accepts_exact_phrase(self):
         calls = []
 
-        async def runner(text, *, sid, device, readonly, turn_id="", image=None):
+        async def runner(text, *, sid, device, readonly, turn_id="", image=None, proactive=False):
             calls.append(text)
             if len(calls) == 1:
                 return {"reply": "需要二次确认", "pending": {
@@ -1895,7 +1987,7 @@ class VoiceReplyTest(unittest.IsolatedAsyncioTestCase):
              voice_saved=None):
         ws = FakeWS()
 
-        async def runner(text, *, sid, device, readonly, turn_id="", image=None):
+        async def runner(text, *, sid, device, readonly, turn_id="", image=None, proactive=False):
             return {"reply": reply}
 
         async def default_shot():
