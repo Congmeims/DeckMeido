@@ -565,6 +565,9 @@ class SongTests(unittest.TestCase):
         # 插件接受了调用但没开播（音源失败）：不能当成功回去报「放稻香」
         fake = FakePlayback(index=3, current="3")
         fake.play_index = lambda index: setattr(fake, "index", int(index))
+        # 换成单曲建队也放不出来（版权/音源问题），两条路都不出声
+        fake.play_queue = lambda items, start_index=0: setattr(
+            fake, "index", int(start_index))
         self.loader.handlers.update(fake.handlers())
         with self.assertRaises(media.MediaError) as ctx:
             media.play_plan({"id": "1001", "name": "稻香"})
@@ -647,6 +650,94 @@ class SongTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIs(media.is_yes(text), False)
         self.assertIsNone(media.is_yes("今天天气怎么样"))
+
+
+class MusicToolTests(unittest.IsolatedAsyncioTestCase):
+    """tools.py 里的点播工具：只验分流与回话，不碰网络/播放器。"""
+
+    def setUp(self):
+        from server import tools
+        self.tools = tools
+        self._orig_rpc = media._rpc
+        self.loader = FakeLoader({"search_songs": _search_all})
+        self.playback = FakePlayback(index=3, mode="normal")
+        self.loader.handlers.update(self.playback.handlers())
+        media._rpc = self.loader
+        media._reset()
+        self._orig_available = media.available
+        self._orig_run = media._run
+        self.bus = FakeBus()
+        media._run = self.bus.run
+        media.available = lambda: True
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        media.available = self._orig_available
+        media._run = self._orig_run
+        media._rpc = self._orig_rpc
+        media._reset()
+
+    async def test_search_lists_songs(self):
+        text = await self.tools.execute("music_search", {"keyword": "周杰伦", "limit": 2})
+        self.assertIn("稻香", text)
+        self.assertIn("晴天", text)
+        self.assertNotIn("Slam Dunk", text)
+        self.assertEqual(self.loader.methods(), ["search_songs"])
+
+    async def test_search_rejects_short_keyword(self):
+        text = await self.tools.execute("music_search", {"keyword": "歌"})
+        self.assertIn("太短", text)
+        self.assertEqual(self.loader.calls, [])
+
+    async def test_play_starts_song_and_verifies(self):
+        text = await self.tools.execute("music_play", {"query": "周杰伦 稻香"})
+        self.assertIn("稻香", text)
+        # normal 队列模式：插到下一首再跳过去，最后回读确认
+        self.assertIn("queue_play", self.loader.methods())
+        self.assertEqual(self.playback.current, "1001")
+        self.assertTrue(self.playback.playing)
+
+    async def test_play_miss_does_nothing(self):
+        self.loader.handlers["search_songs"] = lambda *_: {"ok": True, "songs": []}
+        text = await self.tools.execute("music_play", {"query": "不存在的歌"})
+        self.assertIn("没找到", text)
+        self.assertNotIn("queue_play", self.loader.methods())
+
+    async def test_play_does_not_start_while_playback_fails(self):
+        # 队列位置推进了，但播放状态没起来：必须如实回「没放出来」，不能报成功
+        calls = []
+        idle = FakePlayback(index=3, mode="normal", playing=True)
+        self.loader.handlers["queue_play"] = lambda index: (
+            calls.append("queue_play"), setattr(idle, "index", int(index)))
+        self.loader.handlers["queue_insert_next"] = lambda item: None
+        self.loader.handlers["play_queue"] = lambda items, start=0: calls.append("play_queue")
+        self.loader.handlers["get_playback"] = lambda *_: {
+            "index": 4, "queue_mode": "normal", "playing": False,
+            "current": {"id": "1001"},
+        }
+        text = await self.tools.execute("music_play", {"query": "周杰伦 稻香"})
+        self.assertIn("没放出来", text)
+        # 队列路线失败后要用「单曲建队」再试一次，不能只挪指针就收工
+        self.assertEqual(calls, ["queue_play", "play_queue"])
+
+    async def test_control_rejects_unknown_action(self):
+        text = await self.tools.execute("music_control", {"action": "rm -rf /"})
+        self.assertIn("不支持的动作", text)
+        self.assertEqual(self.loader.calls, [])
+
+    async def test_control_whitelisted_action_runs(self):
+        text = await self.tools.execute("music_control", {"action": "next"})
+        self.assertIn("已执行", text)
+        self.assertEqual(self.bus.methods(), ["Next"])
+
+    async def test_tools_hidden_when_player_missing(self):
+        media.available = lambda: False
+        names = [t["function"]["name"] for t in self.tools.TOOLS]
+        self.assertIn("music_play", names)
+        self.assertFalse(self.tools.tool_ready("music_play", {}))
+        self.assertTrue(self.tools.tool_ready("web_search", {}))
+        media.available = lambda: True
+        self.assertTrue(self.tools.tool_ready("music_play", {}))
 
 
 if __name__ == "__main__":

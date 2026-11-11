@@ -7705,7 +7705,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
             _shot_lock = policy.shot_lock_for(from_client, surface)
         locked_shot = has_shot and _shot_lock
         # 工具集由场景策略表决定（群友档是空集 = 零工具），再叠加带图轮的截图限制
-        round_tools = pol.filter_tools(tools.TOOLS)
+        round_tools = [t for t in pol.filter_tools(tools.TOOLS)
+                       if tools.tool_ready(t["function"]["name"], {})]
         if locked_shot:
             round_tools = [t for t in round_tools
                            if t["function"]["name"] != "screenshot"]

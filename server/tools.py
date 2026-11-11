@@ -22,6 +22,10 @@ from . import audit, netmode, power, sudo_auth
 
 HTTP = httpx.AsyncClient(timeout=20, follow_redirects=True)
 
+# 点播动作白名单。schema 里要列出来，所以放在最前面；执行仍走 media.execute。
+MUSIC_ACTIONS = ("next", "previous", "pause", "play", "stop",
+                 "volume_up", "volume_down", "mute", "unmute")
+
 # ---------- 工具中文名（界面提示统一用中文，不暴露内部函数名） ----------
 
 TOOL_CN: dict[str, str] = {
@@ -43,6 +47,9 @@ TOOL_CN: dict[str, str] = {
     "self_update": "更新软件",
     "remember": "记住这件事",
     "ask_user": "向你提问",
+    "music_search": "搜索歌曲",
+    "music_play": "点歌播放",
+    "music_control": "控制播放",
 }
 
 
@@ -370,6 +377,61 @@ TOOLS: list[dict] = [
                                              "某个路径在哪）；note=项目或知识条目。默认 note")},
                 },
                 "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "music_search",
+            "description": ("在 Decky Music 曲库里搜歌（只搜不放），返回歌名与歌手。"
+                            "用户提到具体的歌名/歌手、但你拿不准是哪一首时先用它确认；"
+                            "只想放歌就直接用 music_play"),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {"type": "string", "description": "歌名、歌手或「歌手 歌名」，2~30 个字"},
+                    "limit": {"type": "integer", "description": "最多列几首，默认 5，最大 10"},
+                },
+                "required": ["keyword"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "music_play",
+            "description": ("点歌并立即播放：在 Decky Music 曲库搜「歌名 / 歌手 / 歌手 歌名」，"
+                            "匹配到就开播并回读确认，用户听到的就是这首。"
+                            "用户说「放首歌」「来点周杰伦」「播放稻香」时用它，不要用 run_command 调播放器。"
+                            "结果说「是 XXX 吗」表示有多个相近候选：把这句话原样问用户，"
+                            "用户点头后再调一次并把 confirm 设为 false"),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "歌名、歌手或「歌手 歌名」"},
+                    "confirm": {"type": "boolean",
+                                "description": "默认 true；上一次返回「是 XXX 吗」且用户确认后，这一次传 false"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "music_control",
+            "description": ("控制当前正在播放的音乐：切歌、暂停、继续、停止、音量加减、静音。"
+                            "只做这几件事，不要用 run_command 去调 playerctl/busctl"),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": list(MUSIC_ACTIONS),
+                               "description": ("next=下一首，previous=上一首，pause=暂停，"
+                                               "play=继续播放，stop=停止，volume_up/volume_down=音量加减，"
+                                               "mute=静音，unmute=取消静音")},
+                },
+                "required": ["action"],
             },
         },
     },
@@ -3355,6 +3417,100 @@ async def _remember(text: str, kind: str = "note") -> str:
     return f"已记入{where}（{label}）：{item['text']}"
 
 
+# ---------- 音乐（Decky Music） ----------
+# 只调 server/media.py 的公开函数：动作名进白名单，歌名只作为数据参数，
+# 不拼 shell。media 里的 MPRIS 调用是同步 subprocess，这里统一丢线程。
+
+MUSIC_TOOLS = ("music_search", "music_play", "music_control")
+
+
+def _music_offline() -> str:
+    """点播不可用时的统一说明：播放器不在 / 曲库离线都归到这里。"""
+    return ("点播现在用不了：可能 Decky Music 没装、没登录，或离线模式开着。"
+            "只影响点歌，其他功能不受影响。")
+
+
+def _song_line(song: dict, index: int) -> str:
+    name = str(song.get("name") or "未命名")
+    singer = str(song.get("singer") or "")
+    return f"{index}. {name}" + (f" - {singer}" if singer else "")
+
+
+async def _music_search(keyword: str, limit: int = 5) -> str:
+    """搜曲库，只回歌名/歌手，供模型自己判断该放哪首。"""
+    from . import media
+    keyword = str(keyword or "").strip()
+    if len(keyword) < 2:
+        return "关键词太短，至少两个字。"
+    try:
+        songs = await asyncio.to_thread(media.search_songs, keyword)
+    except media.MediaError as exc:
+        return f"{_music_offline()}（{exc.reason}）"
+    if not songs:
+        return f"曲库里没搜到「{keyword}」。"
+    top = max(1, min(int(limit or 5), 10))
+    lines = [_song_line(s, i + 1) for i, s in enumerate(songs[:top])]
+    more = f"\n（还有 {len(songs) - top} 首没列）" if len(songs) > top else ""
+    return f"「{keyword}」搜到 {len(songs)} 首，前 {len(lines)} 首：\n" + "\n".join(lines) + more
+
+
+async def _music_play(query: str, confirm: bool = True) -> str:
+    """搜 + 匹配 + 开播 + 回读确认，一步到位。歧义时先问，不擅自放。"""
+    from . import media
+    query = str(query or "").strip()
+    if not query:
+        return "要放什么？给我歌名或歌手。"
+    try:
+        plan = await asyncio.to_thread(media.resolve_song, query)
+    except media.MediaError as exc:
+        return f"{_music_offline()}（{exc.reason}）"
+    if plan.status == "miss":
+        return plan.speech or f"没找到{query[:12]}"
+    if plan.status == "ask" and confirm:
+        return f"{plan.speech}（确认的话再调一次 music_play，query 填「{plan.label}」，confirm=false）"
+    try:
+        await asyncio.to_thread(media.play_plan, plan.item)
+    except media.MediaError as exc:
+        # 放不了的时候给模型一个明确的下一步，别让它反复重试同一首
+        return f"「{plan.label}」没放出来：{exc.reason}。跟用户说一声，可以换一首或搜同歌手的其他歌。"
+    return f"已经在放了：{plan.label}"
+
+
+async def _music_control(action: str) -> str:
+    """固定播控动作：切歌 / 暂停 / 继续 / 停止 / 音量。"""
+    from . import media
+    action = str(action or "").strip().lower()
+    if action not in MUSIC_ACTIONS:
+        return f"不支持的动作：{action}。可用：{'、'.join(MUSIC_ACTIONS)}"
+    try:
+        # 改音量前先放回 duck 压低前的音量，否则「恢复」会冲掉用户要的值
+        if action in media.VOLUME_ACTIONS:
+            media.restore()
+        await asyncio.to_thread(media.execute, action)
+    except media.MediaError as exc:
+        return f"{exc.speech}（{exc.reason}）"
+    return f"已执行：{media.FEEDBACK.get(action, action)}"
+
+
+def _music_ready(name: str, args: dict) -> bool:
+    """这轮要不要把点播工具给模型：离线模式、播放器不在时都不给。"""
+    if name not in MUSIC_TOOLS:
+        return True
+    if netmode.enabled():
+        return False
+    from . import media
+    return media.available()
+
+
+def tool_ready(name: str, args: dict) -> bool:
+    """这一轮该不该把某个工具交给模型。
+
+    目前只有点播用得上：Decky Music 不在或离线模式下，别让模型看到这些工具，
+    免得它反复尝试、最后跟用户解释「点不了歌」。
+    """
+    return _music_ready(name, args)
+
+
 EXECUTORS = {
     "get_weather": _get_weather,
     "web_search": _web_search,
@@ -3373,6 +3529,9 @@ EXECUTORS = {
     "edit_file": _edit_file,
     "self_update": _self_update,
     "remember": _remember,
+    "music_search": _music_search,
+    "music_play": _music_play,
+    "music_control": _music_control,
 }
 
 # 真正要出网的工具：离线模式下直接返回可读原因，不发起请求。
@@ -3385,6 +3544,7 @@ _OUTBOUND_TOOLS = {"get_weather", "web_search", "find_game", "self_update"}
 _NO_KEEP_AWAKE = {
     "get_weather", "web_search", "find_game", "list_installed_games",
     "list_emulator_roms", "check_system_updates", "screenshot", "remember",
+    "music_search", "music_play", "music_control",
 }
 
 
@@ -3399,6 +3559,8 @@ _TOOL_TIMEOUT = {
     "list_installed_games": 60, "list_emulator_roms": 30,
     "check_system_updates": 60, "screenshot": 45,
     "read_file": 30, "write_file": 30, "edit_file": 30, "list_dir": 30,
+    # 曲库搜索/开播各有一次 RPC 超时（6 秒）兜底，再加回读确认
+    "music_search": 30, "music_play": 40, "music_control": 20,
 }
 _TOOL_TIMEOUT_DEFAULT = 120
 _TOOL_NO_TIMEOUT = {"run_command", "install_game", "self_update"}

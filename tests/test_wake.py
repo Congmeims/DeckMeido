@@ -175,7 +175,8 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         self.service.set_handlers(
             cancel_chat=self._cancel_chat,
             on_state=lambda st: self.states.append(st["state"]))
-        self.service.apply({"enable": True})
+        # 口令直连默认关；媒体相关的用例都按「开启口令直连」跑
+        self.service.apply({"enable": True, "local_intent": True})
 
     def _tts_stop(self):
         self.tts_stop_calls += 1
@@ -599,6 +600,18 @@ class WakeTests(unittest.IsolatedAsyncioTestCase):
         # 唤醒压一次、反馈念完恢复一次
         self.assertEqual(self.media_events.count("duck"), 1)
         self.assertEqual(self.media_events.count("restore"), 1)
+
+    async def test_local_intent_off_falls_back_to_chat(self):
+        # 默认关：口令交给对话链路，由模型调 music_play（本地不执行）
+        self.service.apply({"enable": True, "local_intent": False})
+        self.text = "放一首稻香"
+        await self._arm()
+        await self._wake()
+        await self._speak_then_silence(4, 5)
+        await self._drain()
+        self.assertEqual(self.resolve_calls, [])
+        self.assertEqual(self.played_items, [])
+        self.assertEqual([c[0] for c in self.chat_calls], ["放一首稻香"])
 
     async def test_random_song_intent(self):
         self.text = "随机放一首"

@@ -745,7 +745,21 @@ def play_plan(item: dict | None) -> None:
             _rpc("play_queue", [item], 0)
         devlog.log("media.song.play", id=str(item.get("id")),
                    name=str(item.get("name") or ""), route=route)
-        _verify_playing(item)
+        try:
+            _verify_playing(item)
+        except MediaError as exc:
+            # 取不到播放地址（no_playable 等）时插件只把队列指针挪过去了，并没有出声。
+            # 队列路线下用「单曲建队」再试一次：另一种载入路径，能救回一部分源；
+            # 还是不行就把原始错误抛出去，调用方要能如实报「没放出来」。
+            if route != "queue":
+                raise
+            try:
+                _rpc("play_queue", [item], 0)
+                _verify_playing(item)
+                devlog.log("media.song.play", id=str(item.get("id")), route="rebuild_retry")
+                return
+            except MediaError:
+                raise exc from None
 
 
 # ---------- 口令匹配 ----------

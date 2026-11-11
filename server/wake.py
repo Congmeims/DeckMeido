@@ -73,6 +73,9 @@ DEFAULTS = {
     "eyes_display": "auto",
     # 唤醒回应：必须在服务启动时预合成并缓存，命中瞬间只做播放。
     "ack_text": "我在",
+    # 口令直连：命中本地口令（放歌/切歌/音量）就直接执行，不调模型。
+    # 关掉后全部都走对话链路，长句点播交给模型的 music_play 工具。
+    "local_intent": False,
 }
 
 STATES = ("disarmed", "armed", "waking", "listening", "thinking", "speaking",
@@ -1046,8 +1049,9 @@ class WakeService:
                     return
                 # 既不是「对」也不是「不是」：按普通输入继续，绝不循环追问
             # 本地快速通道：命中口令就直接执行，不进对话、不进思考态
+            # （配置 local_intent=false 时保持旧行为，全都交给对话链路）
             intent = media.match_intent(text)
-            if intent is not None:
+            if intent is not None and self._cfg.get("local_intent", False):
                 devlog.log("wake.intent", kind=intent.kind, action=intent.action,
                            query=intent.query)
                 if intent.kind == "random":
@@ -1059,9 +1063,13 @@ class WakeService:
                 if self._media_action:
                     await self._run_media(intent.action, intent.feedback)
                     return
+            if intent is not None:
+                devlog.log("wake.intent.agent", kind=intent.kind,
+                           action=intent.action, query=intent.query)
             self._set_state("thinking")
             if not self._chat:
                 raise WakeError("对话入口未就绪")
+            # 本地没抓住口令的句子（含长句点播）交给模型，模型自己带 music_play 工具
             # 本轮强制 TTS：handle_chat 在 force_tts=True 时会 await 播放结束
             await self._chat(text, force_tts=True, client="wake")
             # start_chat 会吞掉 CancelledError 返回 cancelled=True，所以这里必须
