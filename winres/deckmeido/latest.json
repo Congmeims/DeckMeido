@@ -1,10 +1,10 @@
 {
-  "tag": "0.8.7",
-  "name": "DeckMeido 0.8.7",
-  "notes": "# DeckMeido 0.8.7\n\n- chore: 清空 winres 旧产物，准备 0.8.7\n- fix: package.json 去掉 BOM\n- chore: 版本升到 0.8.7\n- install: 补回 SUDO_ASKPASS 提权、插件 zip 兜底打包与前端构建\n- install: 本机版 install.sh（含卸载结束孤儿进程、修 Decky 重载卡死）\n- release: 0.8.6（安装器去掉档位菜单，安装一律完整装齐）\n- plugin: 去掉 package.json 的 BOM\n- install: 删除档位菜单，安装一律完整装齐；release: 出包前校验安装器无档位代码\n- release: 0.8.5 产物重新生成（含 SUDO_ASKPASS 提权修复）\n- install: 无终端时用 SUDO_ASKPASS 提权；有插件 zip 时不再误报缺前端产物\n- release: 0.8.5 重出包（install.sh 含源码插件构建、插件 zip 入库）\n- repo: 插件 zip 入库，裸 clone 也能装 Decky 插件\n- install: 源码安装补上插件前端构建；升级不再误删 plugin/dist\n- install: 源码目录可直接卸安装目录；源码安装时就地打包 Decky 插件\n- install: 无 tty 时不再刷 /dev/tty 报错，基线快照的 stderr 泄漏修掉\n- install: 修复 git 源码安装被误判为单文件，版本号优先取 git\n- Release: 0.8.5 产物\n- chore: 忽略 .samples/、.workbuddy/、tts-demo/\n- install: 卸载日志去重、/tmp 残留提示合并、无 root 时给出手动重载指引；版本 0.8.5\n- 安装器：开局索要 root 密码，并让单文件脚本也能自举安装\n",
-  "published_at": "2026-11-10T21:52:41+08:00",
+  "tag": "0.8.8",
+  "name": "DeckMeido 0.8.8",
+  "notes": "# DeckMeido 0.8.8\n\n- chore: 版本升到 0.8.8\n- feat(音乐): 智能音箱模式接入 Decky Music 点播\n- fix(install): 统一中英混排文案，下载超时改为 5 分钟\n- feat(权限): 完全访问放开文件删除，新增自定义档与风险确认弹窗\n- chore: 同步 deploy 插件包到 0.8.7 构建\n- release: 0.8.7 产物（install.sh 无档位菜单，含插件兜底打包）\n- chore: 清空 winres 旧产物，准备 0.8.7\n- fix: package.json 去掉 BOM\n- chore: 版本升到 0.8.7\n- install: 补回 SUDO_ASKPASS 提权、插件 zip 兜底打包与前端构建\n- install: 本机版 install.sh（含卸载结束孤儿进程、修 Decky 重载卡死）\n- release: 0.8.6（安装器去掉档位菜单，安装一律完整装齐）\n- plugin: 去掉 package.json 的 BOM\n- install: 删除档位菜单，安装一律完整装齐；release: 出包前校验安装器无档位代码\n- release: 0.8.5 产物重新生成（含 SUDO_ASKPASS 提权修复）\n- install: 无终端时用 SUDO_ASKPASS 提权；有插件 zip 时不再误报缺前端产物\n- release: 0.8.5 重出包（install.sh 含源码插件构建、插件 zip 入库）\n- repo: 插件 zip 入库，裸 clone 也能装 Decky 插件\n- install: 源码安装补上插件前端构建；升级不再误删 plugin/dist\n- install: 源码目录可直接卸安装目录；源码安装时就地打包 Decky 插件\n",
+  "published_at": "2026-11-11T19:26:05+08:00",
   "files": {
-    "tarball": "deckmeido-0.8.7.tar.gz",
-    "sha256": "fc0ced4f317cc8d782692c7129e0c53e0bc185cd846ace9482d6d47cd003d0f7"
+    "tarball": "deckmeido-0.8.8.tar.gz",
+    "sha256": "14e9a805d8c12c2bfa68566c640d09dc4e808555ee0f9c028b4f6e78165f2423"
   }
 }
