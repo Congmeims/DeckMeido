@@ -6,9 +6,8 @@
   3. 注入后端：优先 ydotoold（和桌面工具同一条通路），没有时直写 /dev/uinput。
 
 为什么优先 ydotool：ydotoold 由 install.sh 以 deck 用户的 systemd user 单元托管，
-socket 就在 /run/user/<uid>/.ydotool_socket，后端（同样以 deck 运行）直接能用；
-它内部已经处理好了 uinput 设备注册与 gamescope 的兼容。直写 uinput 是兜底：
-后端不是 root 时通常打不开 /dev/uinput（插件才是 root），所以只在前者不可用时尝试。
+socket 就在 /run/user/<uid>/.ydotool_socket，后端（同样以 deck 运行）直接能用。
+直写 uinput 是兜底：后端不是 root 时通常打不开 /dev/uinput（插件才是 root）。
 
 所有失败都抛出带错误码的 RemoteInputError，前端据此显示明确原因，不静默吞掉。
 """
@@ -86,14 +85,22 @@ KEYMAP = {
     # 功能键
     "F1": 59, "F2": 60, "F3": 61, "F4": 62, "F5": 63, "F6": 64,
     "F7": 65, "F8": 66, "F9": 67, "F10": 68, "F11": 87, "F12": 88,
-    # 小键盘（常用几项）
-    "Numpad0": 82, "Numpad1": 79, "Numpad2": 80, "Numpad3": 81,
-    "Numpad4": 75, "Numpad5": 76, "Numpad6": 77,
-    "Numpad7": 71, "Numpad8": 72, "Numpad9": 73,
+    # 小键盘。数字键直接发主键盘区的数字码：ydotoold 的虚拟设备没有 LED，
+    # KWin 不会给它建立 NumLock 的 lock 状态，发 KEY_KP1 会被翻成 KP_End
+    # （小键盘数字按下去毫无反应）。发主键盘数字码就绕开了 NumLock 这一层。
+    # 小数点同理（KEY_KPDOT 不开 NumLock 会变成 KP_Delete）。
+    # 运算键（+ - * / Enter）本来就不受 NumLock 影响，按原码发
+    "Numpad0": 11, "Numpad1": 2, "Numpad2": 3, "Numpad3": 4,
+    "Numpad4": 5, "Numpad5": 6, "Numpad6": 7,
+    "Numpad7": 8, "Numpad8": 9, "Numpad9": 10, "NumpadDecimal": 52,
     "NumpadAdd": 78, "NumpadSubtract": 74, "NumpadMultiply": 55,
-    "NumpadDivide": 98, "NumpadEnter": 96, "NumpadDecimal": 83,
+    "NumpadDivide": 98, "NumpadEnter": 96,
+    "NumpadEqual": 117, "NumLock": 69,
     "PrintScreen": 99,
+    # 修饰与菜单键：接管时要能用 Ctrl+C / Alt+Tab / 右键菜单
+    "AltGraph": 100, "ContextMenu": 127,
 }
+
 
 # 测试用：交付要求里点名必须覆盖的键
 REQUIRED_CODES = (

@@ -611,6 +611,9 @@
   /* 工具动态提示：文字在前，动态点跟在文字后面 */
   .typing-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .typing-label { color: var(--muted); font-size: 12.5px; line-height: 1.5; word-break: break-word; }
+  /* 长任务中途的进度提示（回放用）：一行灰字，和实时的等待提示同一观感 */
+  .progress-note { align-self: flex-start; max-width: 85%; color: var(--muted);
+    font-size: 12.5px; line-height: 1.5; padding: 0 4px; }
 
   /* 「回到底部」悬浮球：AI 正在输出时用户往上翻看旧内容，就不该再被拽回底部，
      只在这时出现，点一下回到最新并恢复自动跟随。
@@ -2288,6 +2291,44 @@
     margin-top: 9px; font-size: 10.5px; color: var(--muted); line-height: 1.5;
     text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  /* 音乐条：检测到在放歌才出现（插在状态卡下面）。结构固定为
+     「封面 | 歌名+歌手 / 进度 / 三个按钮」，窄栏里靠 min-width:0 + 省略号
+     压住长歌名，不让侧栏被撑宽 */
+  .music-card {
+    display: none; padding: 8px; border-bottom: 1px solid var(--line);
+    font-size: 12px; color: var(--muted);
+  }
+  .music-card.on { display: block; }
+  .music-top { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 8px; align-items: center; }
+  /* 封面占位与图片同尺寸：拿不到封面时保持方块，避免卡片高度跳动 */
+  .music-cover {
+    width: 38px; height: 38px; border-radius: 5px; overflow: hidden;
+    background: var(--surface-2); display: flex; align-items: center; justify-content: center;
+    font-size: 16px; color: var(--muted);
+  }
+  .music-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .music-meta { min-width: 0; }
+  .music-title, .music-artist {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .music-title { font-size: 12px; color: var(--text); }
+  .music-artist { font-size: 10.5px; margin-top: 2px; }
+  .music-progress {
+    display: grid; grid-template-columns: 30px minmax(0, 1fr) 30px;
+    align-items: center; gap: 5px; margin-top: 7px; font-size: 10px;
+  }
+  .music-progress span { text-align: center; }
+  .music-bar { height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+  .music-bar > div { height: 100%; width: 0%; background: var(--brand); }
+  .music-btns { display: flex; justify-content: center; gap: 10px; margin-top: 6px; }
+  .music-btns button {
+    flex: 0 0 auto; width: 30px; height: 26px; padding: 0;
+    border: 1px solid var(--line); border-radius: 6px;
+    background: var(--surface-2); color: var(--text); font-size: 12px;
+    cursor: pointer; line-height: 1;
+  }
+  .music-btns button:hover { border-color: var(--brand); }
+  .music-btns button:disabled { opacity: .4; cursor: default; }
   /* 拖拽附件时盖住中间聊天区的提示层：absolute 相对 #chatView，只盖对话区，
      不越过右侧文件/终端面板 */
   #dropHint {
@@ -2463,7 +2504,7 @@
     color: var(--muted); white-space: pre-wrap; word-break: break-word;
     max-height: 160px; overflow: auto;
   }
-  /* 跨屏鼠标：灵敏度 4 : 1 接管上限同一行，标签/控件按底对齐；
+  /* 跨屏键鼠：灵敏度 4 : 1 接管上限同一行，标签/控件按底对齐；
      窄屏自动上下堆叠，避免数字框被压到没法输入 */
   .ri-io-row {
     display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 1fr);
@@ -3416,6 +3457,26 @@
     <div class="sys-row" id="ctxRow" hidden><span class="sys-name" id="ctxName">上下文</span><div class="bar"><div class="fill" id="ctxFill"></div></div><span class="sys-val" id="ctxVal">–</span></div>
     <div class="sys-sub" id="sysSub"></div>
   </div>
+  <!-- 音乐条：检测到在放歌才显示（.on），否则整块隐藏，不占侧栏高度 -->
+  <div class="music-card" id="musicCard">
+    <div class="music-top">
+      <div class="music-cover" id="musicCover">♪</div>
+      <div class="music-meta">
+        <div class="music-title" id="musicTitle">–</div>
+        <div class="music-artist" id="musicArtist"></div>
+      </div>
+    </div>
+    <div class="music-progress">
+      <span id="musicPos">0:00</span>
+      <div class="music-bar"><div id="musicFill"></div></div>
+      <span id="musicDur">0:00</span>
+    </div>
+    <div class="music-btns">
+      <button type="button" data-act="previous" title="上一首">⏮</button>
+      <button type="button" data-act="toggle" title="播放 / 暂停">⏸</button>
+      <button type="button" data-act="next" title="下一首">⏭</button>
+    </div>
+  </div>
   <div class="sb-sess-block">
   <div class="sb-sess-head"><span>会话</span><button id="btnNewSess" title="新会话">＋</button></div>
   <div id="sessList"></div>
@@ -4005,7 +4066,7 @@
 
           <div class="card" id="riEnableCard">
             <div class="card-head">
-              <div class="card-title">跨屏鼠标（远程接管）</div>
+              <div class="card-title">跨屏键鼠（远程接管）</div>
               <label class="switch" title="允许局域网设备接管">
                 <input id="cfgRiEnabled" type="checkbox">
                 <span class="slider"></span>
@@ -4013,7 +4074,7 @@
             </div>
             <p class="pane-desc" style="margin-top:0">
               在电脑浏览器里点左下角 DeckMeido logo 就进入接管：鼠标从电脑上消失，出现在这台 Deck 上，
-              能操作 Steam UI、游戏和这个页面。按 Esc、再点一次 logo，或在 Deck 客户端里点 logo 释放。
+              键盘（含功能键与小键盘）也一并交给 Deck，能操作 Steam UI、游戏和这个页面。按 Esc、再点一次 logo，或在 Deck 客户端里点 logo 释放。
               开关没开时点 logo，会先把你带到这里的开关上。
             </p>
             <div class="ri-io-row">
@@ -4743,7 +4804,7 @@
   // 属于「某一轮对话」的消息类型：这些才需要按会话号过滤
   var TURN_SCOPED = ['user_message', 'stream_start', 'delta', 'thought_start',
                      'thought_delta', 'thought_end', 'tool_done', 'tool_activity',
-                     'ask', 'assistant_message'];
+                     'progress', 'ask', 'assistant_message'];
 
   function fmtTime(ts) {
     var d = ts ? new Date(ts * 1000) : new Date();
@@ -5724,6 +5785,15 @@
     if (ev.type === 'ask') {
       if (String(ev.question || '').trim()) box.appendChild(makeTextBubble(ev.question, false));
       box.appendChild(makeAskCard(ev.question, ev.options));
+      return;
+    }
+    // 长任务的进度提示：落盘后回放时画成一行灰字，
+    // 和实时推过来的那条长一样，刷新页面也还能看到「跑到第几秒」
+    if (ev.type === 'progress') {
+      var pr = document.createElement('div');
+      pr.className = 'progress-note';
+      pr.textContent = ev.text || '';
+      box.appendChild(pr);
       return;
     }
     if (ev.type !== 'tool') return;
@@ -10219,6 +10289,16 @@
         case 'tool_activity':
           showTyping(msg.text);
           break;
+        case 'progress':
+          // 长任务每 2 分钟一条：单独一行留下来，不顶掉当前的等待读秒
+          if (msg.text) {
+            var pn = document.createElement('div');
+            pn.className = 'progress-note';
+            pn.textContent = msg.text;
+            liveBox.appendChild(pn);
+            scrollBottomIfFollow();
+          }
+          break;
         case 'fs_follow':
           // AI 读写/列目录：文件面板跟过去（用户手动点过别处就不跟，只更新横幅）
           if (msg.path) fbFocusAi(msg.path, msg.is_dir);
@@ -14225,7 +14305,7 @@
         var offline = /Failed to fetch|NetworkError|Load failed/i.test(msg);
         cfgHint.textContent = offline ? '连不上服务，请稍等几秒重试' : (msg || '保存失败');
       });
-  });
+  }
 
   // ---------- 插件设置（和 Decky 插件端共用同一份后端配置） ----------
   // 语音输入可用性：/api/stt 会把「运行时没装」和「模型没下」分开报，
@@ -16713,13 +16793,127 @@
   pollSys();
   setInterval(pollSys, 5000);
 
+  // ---------- 侧栏：音乐条 ----------
+  // 只在检测到有歌在放/暂停时出现；歌名或封面一变就整块重画，否则只推进度，
+  // 避免每 2 秒重设 img.src 把封面闪烁一次
+  var musicCard = document.getElementById('musicCard');
+  var musicCover = document.getElementById('musicCover');
+  var musicTitle = document.getElementById('musicTitle');
+  var musicArtist = document.getElementById('musicArtist');
+  var musicPos = document.getElementById('musicPos');
+  var musicDur = document.getElementById('musicDur');
+  var musicFill = document.getElementById('musicFill');
+  var musicToggleBtn = musicCard.querySelector('[data-act="toggle"]');
+  var musicSig = '';       // 当前这首的「歌名|歌手|封面」，用来判断要不要重画
+  var musicPlaying = false;
+  var musicDurSec = 0;
+  var musicBasePos = 0;    // 上一次轮询拿到的秒数
+  var musicBaseAt = 0;     // 拿到它的时刻（Date.now），两次轮询之间靠它自己走
+  function fmtClock(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    var m = Math.floor(sec / 60), s = sec % 60;
+    return m + ':' + (s < 10 ? '0' + s : s);
+  }
+  function renderMusicBar() {
+    var pos = musicBasePos;
+    if (musicPlaying && musicBaseAt) {
+      pos += (Date.now() - musicBaseAt) / 1000;
+    }
+    if (musicDurSec > 0) pos = Math.min(pos, musicDurSec);
+    musicPos.textContent = fmtClock(pos);
+    musicFill.style.width = musicDurSec > 0
+      ? Math.min(100, pos / musicDurSec * 100) + '%' : '0%';
+  }
+  function setMusicPlaying(on) {
+    musicPlaying = !!on;
+    musicToggleBtn.textContent = musicPlaying ? '⏸' : '▶';
+    musicToggleBtn.title = musicPlaying ? '暂停' : '播放';
+  }
+  function renderMusic(d) {
+    var title = String((d && d.title) || '');
+    if (!title) {
+      musicCard.classList.remove('on');
+      musicSig = '';
+      return;
+    }
+    musicCard.classList.add('on');
+    var artist = String(d.artist || '');
+    var cover = String(d.cover || '');
+    var sig = title + '|' + artist + '|' + cover;
+    if (sig !== musicSig) {
+      musicSig = sig;
+      musicTitle.textContent = title;
+      musicTitle.title = title;
+      musicArtist.textContent = artist;
+      musicArtist.title = artist;
+      if (cover && /^https?:\/\//.test(cover)) {
+        musicCover.textContent = '';
+        var img = document.createElement('img');
+        img.alt = '';
+        img.onerror = function () {
+          // 封面挂了退回音符占位，不要把破图留在卡片里
+          musicCover.textContent = '♪';
+        };
+        img.src = cover;
+        musicCover.appendChild(img);
+      } else {
+        musicCover.textContent = '♪';
+      }
+    }
+    musicDurSec = Number(d.duration) || 0;
+    musicDur.textContent = fmtClock(musicDurSec);
+    musicBasePos = Number(d.position) || 0;
+    musicBaseAt = Date.now();
+    setMusicPlaying(d.playing);
+    renderMusicBar();
+  }
+  function pollMusic() {
+    if (!deviceSession) {
+      musicCard.classList.remove('on');
+      return;
+    }
+    if (document.hidden) return;
+    fetch('/api/music/now')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) { if (d) renderMusic(d); })
+      .catch(function () {});
+  }
+  // 进度条在本机自己往前走，不必等后端：250ms 推一次足够顺
+  setInterval(renderMusicBar, 250);
+  // 按钮：先灰掉防连点，点完立刻重拉一次，等下一轮轮询太慢
+  musicCard.querySelectorAll('.music-btns button').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var act = btn.dataset.act;
+      btn.disabled = true;
+      fetch('/api/music/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: act })
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (d) {
+        // 播放/暂停可以本地立刻翻转，切歌等后端回读
+        if (act === 'toggle') setMusicPlaying(d.action === 'play');
+        pollMusic();
+      }).catch(function () {
+        pollMusic();
+      }).then(function () { btn.disabled = false; });
+    });
+  });
+
   // 回到前台立刻补刷一次：上面两个轮询在后台时是跳过的，不补的话
   // 切回来最多要等一轮间隔才更新
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) return;
     pollSys();
+    pollMusic();
     refreshStatus();
   });
+  // 音乐条单独 2 秒一趟：歌名/封面/进度都要跟得上手指，跟着 sysinfo 的 5 秒
+  // 太迟钝，切歌后要好一会儿才换名字
+  setInterval(pollMusic, 2000);
+  pollMusic();
 
   // ---------- 侧栏：会话列表 ----------
   var sessList = document.getElementById('sessList');
