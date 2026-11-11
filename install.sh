@@ -197,10 +197,12 @@ step_fail() { printf '      %s✗%s %s\n' "$C_ERR" "$C_END" "$*"; }
 next_hint() { printf '      %s下一步：%s\n' "$C_WARN" "$*"; }
 
 # ---------- 模块版式：检测 → 下载 → 安装 → 复查 ----------
-# 所有模块只允许走这一套四行版式，不得另写输出；这里只管排版，结论由模块给。
+# 所有模块只允许走这一套版式，不得另写输出；这里只管排版，结论由模块给。
+# 阶段名只用这六个：检测 / 下载 / 解包 / 安装 / 复查 / 配置。
+# 解包单列是有原因的：模型下载完是解压，写成「安装 解包到 …」读起来像装了两遍。
 mod_begin() { printf '      %s%s%s\n' "$C_B" "$1" "$C_END"; }
 phase() {
-  # $1 = 检测/下载/安装/复查，$2 = 内容
+  # $1 = 阶段，$2 = 内容
   printf '        %s· %s%s  %s\n' "$C_DIM" "$1" "$C_END" "$2"
 }
 phase_ok()   { printf '        %s· %s%s  %s✓%s %s\n' "$C_DIM" "$1" "$C_END" "$C_OK" "$C_END" "$2"; }
@@ -2426,8 +2428,7 @@ install_stt_deps() {
       fi
       ;;
   esac
-  if pip_install_with_switch "$py" requirements-stt.txt "$start"; then
-    phase_ok "安装" "语音输入依赖（sherpa-onnx）"
+  if pip_install_with_switch "$py" requirements-stt.txt "语音输入依赖（sherpa-onnx）" "$start"; then
     _wake_text_deps "$py" "$start"
     return 0
   fi
@@ -2470,9 +2471,8 @@ install_tts_deps() {
       fi
       ;;
   esac
-  if pip_install_with_switch "$py" requirements-tts.txt "$start"; then
+  if pip_install_with_switch "$py" requirements-tts.txt "语音合成依赖（piper-plus）" "$start"; then
     # 依赖装上 ≠ 音色可用：模型与试合成统一由 [6/8] 复查负责，这里只报运行库。
-    phase_ok "安装" "语音合成依赖（piper-plus）"
     install_tts_nltk_data "$py"
     return 0
   fi
@@ -2487,14 +2487,15 @@ install_tts_nltk_data() {
   local py="$1" dir="$DATA_MODELS/nltk_data"
   [ -x "$py" ] || return 0
   if nltk_data_ok "$dir"; then
-    phase_skip "安装" "英文语音数据已装（nltk_data）"
+    phase_skip "安装" "英文语音数据（nltk_data）"
     return 0
   fi
-  phase "下载" "英文语音数据，约 $(mb_text "$(dep_mb nltk)")（数据在 GitHub，慢时自动换源）"
-  if _retry_download "英文语音数据" _install_tts_nltk_once "$py" && nltk_data_ok "$dir"; then
+  # 容量与「在 GitHub、慢时换源」并入标签，交给 _retry_download 统一打进度行，
+  # 免得同一件事先「下载」说一遍、再「下载 第 1/3 次」说第二遍。
+  if _retry_download "英文语音数据（nltk_data），约 $(mb_text "$(dep_mb nltk)")" _install_tts_nltk_once "$py" && nltk_data_ok "$dir"; then
     phase_ok "安装" "英文语音数据（nltk_data）"
   else
-    phase_fail "安装" "英文语音数据下载失败（重跑 install.sh 可再试；英文段会用 espeak-ng 兜底）"
+    phase_fail "安装" "英文语音数据没下全（英文段会用 espeak-ng 兜底，重跑 install.sh 可再补）"
   fi
   return 0
 }
@@ -2564,8 +2565,10 @@ _dl_reason() {
 # 子进程输出落临时日志、不吞掉：每 DL_TICK 秒透传一行「已收 / 速度 / 已用」，
 # 连续 DL_HEARTBEAT 秒没新字节就补一行心跳——以前整段静默，用户以为卡死
 # （实测月读酱模型出过 5 分钟无任何输出）。失败原因留在 DOWNLOAD_ERR 供收尾汇总。
-# 用法：_retry_download "月读酱模型" <命令> [参数...]
-DOWNLOAD_TIMEOUT=900   # 单次尝试硬上限（秒）：15 分钟没下完就放弃，交给下一次
+# 用法：_retry_download "月读酱模型，约 1.2GB" <命令> [参数...]
+# 单次上限 5 分钟：慢到 5 分钟还没下完的源，换一次源比继续等更划算；
+# 三次都失败会提示改 DECKMEIDO_MIRROR，而不是让用户干等 45 分钟。
+DOWNLOAD_TIMEOUT=300   # 单次尝试硬上限（秒）
 DL_TICK=10             # 进度行刷新间隔（秒）：每秒一行会刷屏
 DL_HEARTBEAT=45        # 完全没新数据多久补一行「还在等」
 _retry_download() {
@@ -2576,13 +2579,15 @@ _retry_download() {
   while [ "$attempt" -le 3 ]; do
     DOWNLOAD_ATTEMPTS=$attempt
     log=$(mktemp "${TMPDIR:-/tmp}/deckmeido-dl.XXXXXX" 2>/dev/null || echo "/tmp/deckmeido-dl.$$.$attempt")
-    phase "下载" "$label 开始下载（第 $attempt/3 次，最多等 $((DOWNLOAD_TIMEOUT / 60)) 分钟）"
+    # 标签只在每轮开头出现一次；后面的重试行不再重复「下载」「第 N/3 次」两遍
+    phase "下载" "$label  第 $attempt/3 次，单次最多 $((DOWNLOAD_TIMEOUT / 60)) 分钟"
     "$@" > "$log" 2>&1 &
     pid=$!
     t0=$SECONDS
     last_bytes=0
     idle=0
     tick=0
+    timed_out=0
     # 前台每秒看一次日志长度：变了说明还在收数据；到点才打一行，不刷屏。
     while kill -0 "$pid" 2>/dev/null; do
       sleep 1
@@ -2597,15 +2602,15 @@ _retry_download() {
         if [ "$tick" -ge "$DL_TICK" ]; then
           tick=0
           if [ "$spd" -gt 0 ]; then
-            phase "下载" "已收 $(human_size "$bytes")  速度 $(human_rate "$spd")  已用 $(human_dur $((now - t0)))"
+            phase "下载" "$label  已收 $(human_size "$bytes")  速度 $(human_rate "$spd")  已用 $(human_dur $((now - t0)))"
           else
-            phase "下载" "已收 $(human_size "$bytes")  正在解析内容  已用 $(human_dur $((now - t0)))"
+            phase "下载" "$label  已收 $(human_size "$bytes")  正在解析内容  已用 $(human_dur $((now - t0)))"
           fi
         fi
       else
         idle=$((idle + 1))
         if [ "$idle" -ge "$DL_HEARTBEAT" ]; then
-          phase "下载" "已收 $(human_size "$bytes")  还在等数据（已用 $(human_dur $((now - t0)))）"
+          phase "下载" "$label  已收 $(human_size "$bytes")  还在等数据（已用 $(human_dur $((now - t0)))）"
           idle=0
           tick=0
         fi
@@ -2613,12 +2618,25 @@ _retry_download() {
       if [ $((now - t0)) -ge "$DOWNLOAD_TIMEOUT" ]; then
         kill "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
+        timed_out=1
         DOWNLOAD_ERR="超过 $((DOWNLOAD_TIMEOUT / 60)) 分钟没下完，已中止本次尝试"
-        rm -f "$log"
-        phase_fail "下载" "第 $attempt/3 次超时"
-        return 1
+        # 超时算一次失败，照样往下重试；三次都超时才给换源提示
+        phase_fail "下载" "$label  第 $attempt/3 次超时"
+        if [ "$attempt" -lt 3 ]; then
+          phase "下载" "$label  ${delay}s 后重试"
+          sleep "$delay"
+          delay=$((delay * 2))
+        fi
+        attempt=$((attempt + 1))
+        break
       fi
     done
+    # set -e 下不能写 `[ ... ] && continue`：超时那次条件为假时整行返回 1，
+    # 直接把函数带走（正常失败那次就永远走不到下面的重试）。
+    if [ "$timed_out" = 1 ]; then
+      rm -f "$log" 2>/dev/null || true
+      continue
+    fi
     ret=0
     wait "$pid" || ret=$?
     if [ "$ret" = 0 ]; then
@@ -2630,15 +2648,21 @@ _retry_download() {
     DOWNLOAD_ERR=$(_dl_reason "$(tail -n 40 "$log" 2>/dev/null)")
     [ -n "$DOWNLOAD_ERR" ] || DOWNLOAD_ERR="下载器没有输出就退出了（退出码 $ret）"
     rm -f "$log"
-    phase_fail "下载" "第 $attempt/3 次失败：$DOWNLOAD_ERR"
+    phase_fail "下载" "$label  第 $attempt/3 次失败：$DOWNLOAD_ERR"
     if [ "$attempt" -lt 3 ]; then
-      phase "下载" "连接不稳，${delay}s 后自动重试（多数情况下一两次就能接上）"
+      phase "下载" "$label  ${delay}s 后换源重试（多数情况下一两次就能接上）"
       sleep "$delay"
       delay=$((delay * 2))
     fi
     attempt=$((attempt + 1))
   done
+  _download_give_up_hint
   return 1
+}
+
+# 三次都失败后唯一的出路：换个镜像源。只在这里打一次，避免每轮都重复。
+_download_give_up_hint() {
+  phase "下载" "换源：DECKMEIDO_MIRROR=<镜像地址>，或直接用当前源：${MIRROR:-未设置}"
 }
 
 # 英文数据是否齐（只看目录，与 server/tts.py 的 english_data_ready 同一判据）
@@ -2793,7 +2817,7 @@ venv_install() {
     if [ "${DECKMEIDO_SKIP_SERVER:-0}" = "1" ]; then
       phase_skip "安装" "服务端依赖（DECKMEIDO_SKIP_SERVER=1）"
     else
-      if ! pip_install_with_switch "$py" requirements.txt "$start"; then
+      if ! pip_install_with_switch "$py" requirements.txt "服务端依赖" "$start"; then
         phase_fail "安装" "服务端依赖没装全，重跑 install.sh 可补齐"
         dim "手动指定源：DECKMEIDO_PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple bash install.sh upgrade"
         return 1
@@ -2822,8 +2846,7 @@ venv_install() {
     phase_skip "安装" "桌面客户端（DECKMEIDO_SKIP_GUI=1）"
     return 0
   fi
-  if pip_install_with_switch "$py" requirements-gui.txt "$start"; then
-    phase_ok "安装" "桌面客户端（PySide6）"
+  if pip_install_with_switch "$py" requirements-gui.txt "桌面客户端（PySide6）" "$start"; then
     return 0
   fi
   phase_fail "安装" "桌面客户端（PySide6）未装上：网页版仍可用，重跑 install.sh 可补装"
@@ -2987,7 +3010,7 @@ stage_install_all() {
   # Python 运行依赖：服务端 + STT + TTS + 唤醒词分词 + PySide6，一次装完。
   # 分词依赖由 venv_install 内部补，模型下载必须在它之后。
   if [ "$DETECT_NEED_PY" = 1 ] || [ "$DETECT_NEED_WAKE_TEXT" = 1 ]; then
-    mod_begin "Python 运行依赖"
+    mod_begin "程序运行依赖（服务端 / 语音 / 桌面客户端）"
     # 各子项（服务端/语音输入/语音合成/桌面客户端）自己打 phase 结论，这里只收结果
     if ! venv_install "" 0; then
       rc=1
@@ -3096,13 +3119,12 @@ module_stt_download() {
   local py="$INSTALL_DIR/.venv/bin/python"
   mod_begin "语音识别模型（SenseVoice）"
   mkdir -p "$DATA_MODELS" 2>/dev/null || true
-  phase "下载" "SenseVoice 模型，约 $(mb_text "$(dep_mb stt_model)")"
-  if ! _retry_download "语音识别模型" _prefetch_stt_once; then
+  if ! _retry_download "SenseVoice 模型，约 $(mb_text "$(dep_mb stt_model)")" _prefetch_stt_once; then
     # 失败原因已由 _retry_download 逐次打印，这里只回填状态给收尾汇总
     STT_MODEL_STATE="failed"
     return 1
   fi
-  phase_ok "安装" "解包到 $DATA_MODELS/sensevoice"
+  phase_ok "解包" "SenseVoice 模型已就绪（$DATA_MODELS/sensevoice）"
   return 0
 }
 
@@ -3110,14 +3132,13 @@ module_tts_download() {
   local py="$INSTALL_DIR/.venv/bin/python"
   mod_begin "语音合成模型（月读酱）"
   mkdir -p "$DATA_MODELS" 2>/dev/null || true
-  phase "下载" "つくよみちゃん模型，约 $(mb_text "$(dep_mb tts_model)")"
-  if ! _retry_download "月读酱模型" _prefetch_tts_once; then
+  if ! _retry_download "つくよみちゃん模型，约 $(mb_text "$(dep_mb tts_model)")" _prefetch_tts_once; then
     # 失败原因已由 _retry_download 逐次打印，这里只回填状态给收尾汇总
     TTS_MODEL_STATE="failed"
     TTS_MODEL_ERROR="$DOWNLOAD_ERR"
     return 1
   fi
-  phase_ok "安装" "解包到 $DATA_MODELS/tts/tsukuyomi"
+  phase_ok "解包" "つくよみちゃん模型已就绪（$DATA_MODELS/tts/tsukuyomi）"
   return 0
 }
 
@@ -3125,12 +3146,11 @@ module_wake_download() {
   local py="$INSTALL_DIR/.venv/bin/python"
   mod_begin "唤醒词模型（KWS + VAD）"
   mkdir -p "$DATA_MODELS" 2>/dev/null || true
-  phase "下载" "KWS + silero VAD，约 $(mb_text "$(dep_mb wake_model)")"
-  if ! _retry_download "唤醒词模型" _prefetch_wake_once; then
+  if ! _retry_download "KWS + silero VAD，约 $(mb_text "$(dep_mb wake_model)")" _prefetch_wake_once; then
     # 失败原因已由 _retry_download 逐次打印
     return 1
   fi
-  phase_ok "安装" "解包到 $DATA_MODELS/wake"
+  phase_ok "解包" "唤醒词模型已就绪（$DATA_MODELS/wake）"
   return 0
 }
 
@@ -3190,11 +3210,11 @@ PY
 }
 
 # ---------- 带进度条与换源的 pip install ----------
-#   $1 python，$2 requirements 文件名，$3 起始源下标（默认 0）
+#   $1 python，$2 requirements 文件名，$3 中文名（屏幕上只显示它，不显示文件名），$4 起始源下标（默认 0）
 # pip 下大包时久不吐输出，旧版 -q 让人以为卡在选源。改为日志后台跑，
 # 前台每秒重画：当前包 / 已下载 / 总量 / 速度 / 剩余时间。
 pip_install_with_switch() {
-  local py="$1" req="$2" start="${3:-0}"
+  local py="$1" req="$2" label="${3:-$2}" start="${4:-0}"
   local n=${#PIP_INDEXES[@]} i k ok=0 log="$INSTALL_DIR/pip-install.log"
   local ret=0 pid t0 cur got total rate prev_got base_got=0
   # wheel 先落 pip 缓存再装进 venv：下载期 venv 不增长，必须两者体积之和。
@@ -3252,7 +3272,7 @@ pip_install_with_switch() {
     progress_clear
     if [ "$ret" = 0 ]; then
       ok=1
-      phase_ok "安装" "$req（虚拟环境 $(human_size "$(du -sb "$INSTALL_DIR/.venv" 2>/dev/null | awk '{print $1}')")）"
+      phase_ok "安装" "$label（虚拟环境 $(human_size "$(du -sb "$INSTALL_DIR/.venv" 2>/dev/null | awk '{print $1}')")）"
       break
     fi
     if [ -s "$log" ]; then
