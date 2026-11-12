@@ -3767,6 +3767,18 @@ async def api_auth_session(request: Request):
     }
 
 
+@app.api_route("/api/auth/native-ping", methods=["GET", "POST"])
+async def api_auth_native_ping():
+    """原生客户端的探活入口：永远 200，且不带任何鉴权。
+
+    客户端用它判断「后端已经 listen 了没有」。后端刚拉起时端口要过一小会儿
+    才可用，这段时间内页面上的 fetch 全部失败；以前页面会直接弹「连不上
+    服务，请稍候重试」，本机客户端根本没做错什么。客户端拿到失败只重试，
+    不做拦截。
+    """
+    return {"ok": True}
+
+
 # 日志与诊断接口（/api/logs*、/api/debug/render）在 server/routes_logs.py
 
 

@@ -5858,16 +5858,28 @@
     setTimeout(function () { pairBtn.focus(); }, 50);
   }
 
-  // 启动时先问后端：Cookie 已配对或本机回环就直接进主界面
+  // 启动时先问后端：Cookie 已配对或本机回环就直接进主界面。
+  // 后端刚拉起的那几百毫秒里，页面已经加载完、端口还没 listen，fetch 全失败。
+  // 这不是「鉴权失败」，不能弹配对框：原生客户端以前就在这一刻被弹成
+  // 「连不上服务，请稍后重试」，看着像坏了。失败只静默退避重试，直到后端
+  // 可用为止；重试期间界面保持启动态（不做任何弹层）。
+  var bootAuthTimer = null;
+  var bootAuthTries = 0;
   function bootAuth() {
-    fetch('/api/auth/session')
-      .then(function (r) { return r.json(); })
+    clearTimeout(bootAuthTimer);
+    fetch('/api/auth/session', { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('http ' + r.status);
+        return r.json();
+      })
       .then(function (d) {
+        bootAuthTries = 0;
         deviceSession = !!(d && d.authenticated);
         // 连接面板里的「鉴权方式」：回环免验证 / 设备配对凭据
         connInfo.authMode = d && d.local ? '本机回环（免验证）'
           : (d && d.device ? '设备配对凭据' : '未登录');
         if (deviceSession) {
+          authOverlay.classList.remove('show');
           if (d.version_display || d.version) {
             authVer.textContent = 'v' + (d.version_display || d.version);
           }
@@ -5880,7 +5892,14 @@
         showAuth('');
       })
       .catch(function () {
-        showAuth('连不上服务，请稍后重试');
+        // 连不上就退避重试（0.3s → 3s 封顶）。超过约 20 秒仍不通才提示，
+        // 这时后端基本是真的挂了，而不是还在启动。
+        bootAuthTries++;
+        var wait = Math.min(3000, 300 * Math.pow(1.35, bootAuthTries));
+        if (bootAuthTries >= 12) {
+          showAuth('连不上服务，请稍后重试');
+        }
+        bootAuthTimer = setTimeout(bootAuth, wait);
       });
   }
 

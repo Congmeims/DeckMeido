@@ -1245,8 +1245,26 @@ def main() -> int:
             "读不到配置，请检查数据目录：\n"
             f"{CONFIG_PATH}\n\n原因：{_config_error}",
         )
-    view.load(QUrl(f"{API}/?native=1"))
+    # 先等后端端口起来再加载页面：刚 spawn 后端时 socket 还没 listen，
+    # 这时 load() 会直接拿到连接被拒的错误页/失败请求，前端就弹「连不上服务」。
+    # 探活用 /api/auth/native-ping（永远 200、免鉴权），2 秒内连不上就先把
+    # 空页面打开，交给网页端自己的退避重试，不在这里卡住窗口。
+    def _load_when_ready(attempt: int = 0) -> None:
+        if attempt >= 20:
+            view.load(QUrl(f"{API}/?native=1"))
+            return
+        try:
+            with urllib.request.urlopen(f"{API}/api/auth/native-ping",
+                                        data=b"", timeout=0.8) as resp:
+                if resp.status == 200:
+                    view.load(QUrl(f"{API}/?native=1"))
+                    return
+        except Exception:
+            pass
+        QTimer.singleShot(150, lambda: _load_when_ready(attempt + 1))
+
     view.show()
+    _load_when_ready()
     # 缩放只作用于这个网页，不影响系统里其他 Qt 程序；网页端（浏览器打开）保持原样。
     # 取 1.1 而非 1.2：右终端栏的隐藏断点是 max-width:1080px，1.2 时 CSS 视口
     # ≈1240/1.2=1033px 会掉进断点把右栏收成抽屉；1.1 时 CSS 视口≈1127px，
