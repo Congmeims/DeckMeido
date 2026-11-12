@@ -432,19 +432,3 @@ ping_timeout = 15
 # 数据根不可用时直接报错，不会静默换路径。
 # 卸载不会删除 userdata/meidobot：install.sh 卸载时排除整个 userdata/，
 # 结束时打印「保存的 QQ 归档保留在 <路径>」，重新安装后仍在原处。
-
-[terminal]
-# 远程终端（已配对的手机/网页可以执行真实命令）。默认关闭，属于高危能力。
-# 关闭时所有远程终端接口直接 403；打开后也只有已配对设备（设备 Cookie）可用。
-# 后端以 DeckMeido 进程身份（deck 用户）执行，不 sudo、不提权。
-remote_shell = false
-# 空闲回收：会话在这段时间内没有任何输入/心跳就被终止（秒，5–86400）。
-idle_timeout_seconds = 900
-# 同时存在的会话上限（1–10）。旧会话不结束时会拒绝新建。
-max_sessions = 3
-# 单会话输出总量上限（字节，1KB–16MB）。超出后截断并标记，进程不会因此被杀。
-max_output_bytes = 1048576
-# 启动的 shell（可带参数）。留空 = 自动选择：Windows 用 cmd.exe，Linux 优先 /bin/bash。
-shell = ""
-# 默认工作目录。留空 = 当前用户家目录。
-cwd = ""

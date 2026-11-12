@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextvars
-import hashlib
 import ipaddress
 import json
 import random
@@ -632,20 +631,6 @@ def text_log_location(cfg: OneBotConfig) -> Path:
 
 
 # ---------- 前缀与指令解析 ----------
-
-def saved_short_name(path: Path) -> str:
-    """回给群里的「文件名」：月日 + 序号，例如 1112_a3。
-
-    存图落盘的名字是 `HHMMSS_uin_gid_mid.ext`，直接回给群里会把 QQ 号、
-    群号、消息 ID 一起抄出去；这里只取日期 + 短哈希，既能对上号，也不暴露
-    是谁发的、发在哪个群。
-    """
-    try:
-        digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:2]
-        return f"{datetime.now().strftime('%m%d')}_{digest}"
-    except Exception:
-        return "已归档"
-
 
 def prefix_for(nickname: str) -> str:
     """触发前缀就是软件里配置的昵称；昵称为空时退回默认词"""
@@ -2487,9 +2472,10 @@ class OneBotClient:
         self._log("info", "存图成功",
                   f"文件={target.name} 来源={item.get('source') or '未知'} "
                   f"message_id={mid}")
-        # 只回文件名（mmddxx），不回绝对路径：群里任何人都在看，路径会暴露
-        # 设备目录结构和用户名；完整路径只留在设备日志与索引文件里
-        await self._send_text(ev, f"保存成功，文件名 {saved_short_name(target)}")
+        # 只回一句「保存成功~」：不回文件名也不回绝对路径。群里任何人都在看，
+        # 哪怕只是 mmdd+短哈希这种短名，也容易被追问「在哪个目录」而泄露设备结构；
+        # 真实文件名只留在设备日志与索引文件里
+        await self._send_text(ev, "保存成功~")
 
     async def group_names(self, group_ids: list[str]) -> dict[str, str]:
         """按群号批量取群名，仅供设置页辅助展示。
@@ -2566,8 +2552,8 @@ class OneBotClient:
             return
         self._log("info", "保存文本成功",
                   f"文件={path.name} message_id={payload.get('message_id') or ev.reply_id}")
-        # 同样不回路径：只报文件叫什么（YYYYMMDD.txt 这类），内容在设备上
-        await self._send_text(ev, f"保存成功，文件名 {path.name}")
+        # 同样不回文件名、不回路径，只回一句保存成功
+        await self._send_text(ev, "保存成功~")
 
     # -- 工具 --
 

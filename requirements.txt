@@ -10,7 +10,6 @@ pillow
 python-multipart
 psutil        # 系统信息（/api/sysinfo）
 qrcode        # 设置页扫码连接（/api/qrcode）
-ptyprocess>=0.7,<0.8   # 真 PTY 终端（远程终端 / 终端面板）；惰性导入，缺了只影响终端功能
 
 # PySide6（桌面客户端 / 遮罩层）体积很大，拆到 requirements-gui.txt 单独装：
 # 它下载失败不该拖垮整个安装，网页端和后端只靠上面的依赖就能跑

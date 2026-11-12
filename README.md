@@ -140,7 +140,7 @@ QAM 面板由 Decky 插件提供，以 root 运行、走本机回环免鉴权；
 - **虚拟手柄**：后端工具层写 `/dev/uinput` 模拟 Xbox 360 手柄，游戏模式也能用。
 - **截图**：桌面模式走 spectacle/KWin，游戏模式走 gamescope PipeWire 抓帧。
 - **Steam**：列已装游戏、商店搜索、按 appid 安装、检查系统更新；安装属危险操作，强制确认。
-- **文件与终端**：工作区内浏览、读写、精确替换；网页终端与文件预览；模拟器 ROM 扫描。远程终端默认关闭，打开后仅已配对设备可用；会话以后端进程身份（deck 用户）执行，不 sudo，空闲超时回收，输出超量截断（`[terminal] remote_shell`）。
+- **文件与终端**：工作区内浏览、读写、精确替换；网页终端与文件预览；模拟器 ROM 扫描。
 - **操作遮罩**：执行工具时全屏半透明遮罩显示当前动作；点一下遮罩或按音量键立即取消当前任务（遮罩期间音量键改为强制停止）。
 
 ### 设置与数据
@@ -230,7 +230,6 @@ QAM 面板由 Decky 插件提供，以 root 运行、走本机回环免鉴权；
 | `[stt]` | `enable` / `model_source` | 离线语音识别，默认开启；模型约 250 MB，按需下载 |
 | `[tts]` | `enable` / `engine` / `voice` / `speed` | 语音播报开关与音色 |
 | `[wake]` | `enable` / `wake_words` / `followup_sec` | 智能音箱唤醒词与监听参数 |
-| `[terminal]` | `remote_shell` / `idle_timeout_seconds` / `max_sessions` | 远程终端默认关闭；打开后仅已配对设备可用 |
 | `[ui]` | `language` | `zh` / `en`；英文为机翻，插件面板仍为中文 |
 | `[power]` | `keep_awake` | 后端运行期间抑制系统休眠 |
 | `[update]` | `github_enable` / `mirror` / `github_repo` | 双源更新：默认镜像与 GitHub 都探测，取更高版本 |

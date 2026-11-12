@@ -3073,6 +3073,40 @@
   #fbViewer .fv-note { color: var(--muted); font-size: 13px; padding: 24px; text-align: center; }
 
   /* 终端 */
+  /* AI 状态条：常驻一条，高度固定，不随文案长短抖动 */
+  #termAi {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 7px;
+    padding: 6px 10px; border-bottom: 1px solid var(--line);
+    background: var(--surface-2); font-size: 11.5px; color: var(--muted);
+  }
+  #termAi .tai-dot {
+    flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--muted); opacity: .5;
+  }
+  #termAi .tai-dot.on {
+    background: var(--brand); opacity: 1;
+    box-shadow: 0 0 0 0 rgba(26,159,255,.5);
+    animation: taiPulse 1.6s ease-out infinite;
+  }
+  @keyframes taiPulse {
+    0% { box-shadow: 0 0 0 0 rgba(26,159,255,.45); }
+    70% { box-shadow: 0 0 0 6px rgba(26,159,255,0); }
+    100% { box-shadow: 0 0 0 0 rgba(26,159,255,0); }
+  }
+  #termAi .tai-text {
+    flex: 1 1 auto; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #termAi .tai-follow {
+    flex: 0 0 auto; font: inherit; font-size: 11px; line-height: 1;
+    padding: 4px 8px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); background: transparent; color: var(--muted);
+  }
+  #termAi .tai-follow:hover { color: var(--text); border-color: var(--muted); }
+  #termAi .tai-follow.on { color: var(--brand); border-color: rgba(26,159,255,.45);
+    background: rgba(26,159,255,.1); }
+  /* 跟随关掉但 AI 又有新动静：亮一下提醒「有新内容」，点了才跳过去 */
+  #termAi .tai-follow.unread { color: var(--warn, #f5a623); border-color: rgba(245,166,35,.45); }
   #termList { flex: 1 1 auto; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
   .tm {
     border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
@@ -3279,117 +3313,6 @@
   #termRun:hover { opacity: .88; }
   #termRun:active { transform: scale(.95); }
   #termRun:disabled { opacity: .4; cursor: default; transform: none; }
-
-  /* ---------- 远程终端（自己敲命令，可交互）----------
-     与上方 #rbPaneTerm 的 AI 只读条带是两套东西：这里连的是
-     /api/terminal/sessions + /ws/terminal/{id}，输出进自定义等宽滚动区 */
-  #rbPaneShell { min-height: 0; }
-  #shHead {
-    flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
-    padding: 7px 10px; border-bottom: 1px solid var(--line);
-  }
-  #shMeta { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  #shCwd {
-    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    font-family: var(--font-mono); font-size: 11.5px; color: var(--muted);
-  }
-  #shExit { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  #shExit.bad { color: #e0746a; }
-  #shTerminate {
-    flex: 0 0 auto; border: 1px solid rgba(232,70,58,.55);
-    background: rgba(232,70,58,.12); color: #e8463a;
-    font-size: 11.5px; padding: 4px 10px; border-radius: 999px; cursor: pointer;
-    white-space: nowrap;
-  }
-  #shTerminate:active { opacity: .7; }
-  #shTerminate:disabled { opacity: .4; cursor: default; }
-  #shSessRow {
-    flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
-    padding: 6px 10px; border-bottom: 1px solid var(--line);
-  }
-  #shSessions {
-    flex: 1 1 auto; min-width: 0; display: flex; gap: 4px;
-    overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
-  }
-  #shSessions::-webkit-scrollbar { display: none; }
-  .sh-chip {
-    flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px;
-    max-width: 130px; padding: 3px 9px; border-radius: 999px;
-    border: 1px solid var(--line); background: var(--surface-2);
-    color: var(--muted); font-size: 11px; cursor: pointer;
-    font-family: var(--font-mono);
-  }
-  .sh-chip.on { color: var(--text); border-color: var(--brand); background: rgba(26,159,255,.14); }
-  .sh-chip .dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; background: #8b91a3; }
-  .sh-chip .dot.run { background: #2ecc71; }
-  .sh-chip .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sh-chip-empty { flex: 0 0 auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
-  #shNew {
-    flex: 0 0 auto; border: 1px solid var(--line); background: var(--surface-2);
-    color: var(--text); font-size: 11.5px; padding: 4px 10px;
-    border-radius: 999px; cursor: pointer; white-space: nowrap;
-  }
-  #shNew:active { opacity: .7; }
-  #shNew:disabled { opacity: .45; cursor: default; }
-  #shNotice {
-    flex: 0 0 auto; padding: 6px 10px; font-size: 11.5px; line-height: 1.5;
-    color: #e0a33a; background: rgba(224,163,58,.1);
-    border-bottom: 1px solid rgba(224,163,58,.25); word-break: break-word;
-  }
-  #shNotice[hidden] { display: none; }
-  /* 输出区：等宽、可换行，横向绝不溢出；内容按块追加，不整块重画 */
-  #shOut {
-    flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
-    padding: 8px 10px 14px;
-    background: var(--code-bg); color: var(--code-text);
-    font-family: var(--font-mono); font-size: 12px; line-height: 1.45;
-    white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
-    -webkit-overflow-scrolling: touch;
-  }
-  #shOut .sh-banner {
-    margin: 4px 0; padding: 5px 8px; border-radius: 6px;
-    border: 1px dashed rgba(224,163,58,.5); background: rgba(224,163,58,.1);
-    color: #e0a33a; font-size: 11px; white-space: normal;
-    font-family: var(--font-sans);
-  }
-  .sh-empty {
-    display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
-    padding: 16px 4px; color: var(--muted); white-space: normal;
-    font-family: var(--font-sans);
-  }
-  .sh-empty .t { font-size: 13px; font-weight: 600; color: var(--text); }
-  .sh-empty .d { font-size: 12px; line-height: 1.6; max-width: 280px; }
-  .sh-empty-btn {
-    border: 1px solid var(--brand); background: rgba(26,159,255,.16);
-    color: var(--text); font-size: 12px; padding: 5px 12px;
-    border-radius: 999px; cursor: pointer;
-  }
-  .sh-empty-btn:active { opacity: .7; }
-  #shBar {
-    flex: 0 0 auto; display: flex; align-items: flex-end; gap: 6px;
-    padding: 8px; border-top: 1px solid var(--line);
-  }
-  #shInput {
-    flex: 1 1 auto; min-width: 0; min-height: 38px; max-height: 120px;
-    resize: none; padding: 8px 10px; box-sizing: border-box;
-    border: 1px solid var(--line); border-radius: 10px;
-    background: var(--surface-2); color: var(--text);
-    font-family: var(--font-mono); font-size: 12px; line-height: 1.4;
-    outline: none; overflow-y: auto;
-  }
-  #shInput:focus { border-color: var(--brand); }
-  #shInput::placeholder { color: var(--muted); opacity: .7; }
-  #shRun {
-    flex: 0 0 auto; height: 34px; min-width: 48px;
-    border: none; border-radius: 10px; background: var(--brand);
-    color: #fff; font-size: 13px; font-weight: 600; padding: 0 12px; cursor: pointer;
-  }
-  #shRun:active { opacity: .85; }
-  #shRun:disabled { opacity: .4; cursor: default; }
-  /* 关闭状态：整块只剩空状态说明，头部/会话行/输入条都收起 */
-  #rbPaneShell.sh-off #shHead,
-  #rbPaneShell.sh-off #shSessRow,
-  #rbPaneShell.sh-off #shBar { display: none; }
 
   /* 窄屏 / 设置页：工具栏停靠会挤掉对话，改成从右侧滑出的抽屉 */
   @media (max-width: 1080px) {

@@ -12,7 +12,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from . import apicfg, audit, audiomute, devlog, memory, netcfg, netmode, paths, persona, presets, remote_input, remote_terminal, sleepmode, status_line, tools, updater
+from . import apicfg, audit, audiomute, devlog, memory, netcfg, netmode, paths, persona, presets, remote_input, sleepmode, status_line, tools, updater
 from .tts import LANGUAGES, SPEAKER_LABELS, normalize_speaker, speaker_from_legacy
 
 router = APIRouter()
@@ -102,12 +102,6 @@ class ConfigUpdate(BaseModel):
     dev_mode: bool | None = None
     # 离线模式：写入 [runtime]，保存即生效，所有出网入口立即快速失败
     offline_mode: bool | None = None
-    # 远程终端：默认关闭的高危能力，写入 [terminal]，保存即生效
-    terminal_enabled: bool | None = None
-    terminal_idle_timeout: int | None = None
-    terminal_max_sessions: int | None = None
-    terminal_max_output_bytes: int | None = None
-    terminal_shell: str | None = None
 
 
 def _mask_key(key: str) -> str:
@@ -239,13 +233,6 @@ def init(require_auth, client_ip, get_main) -> None:
             "remote_input_max_minutes": int((CFG.get("remote_input") or {}).get("max_minutes", 30) or 30),
             # 睡眠模式：设置页表单用开关与分钟数，眼睛页用倒计时（countdown_left）
             "sleep": sleepmode.service.status(),
-            # 远程终端：设置页开关与限流参数（默认全部关闭/保守值）
-            "terminal_remote_shell": m._terminal_settings().enabled,
-            "terminal_idle_timeout": m._terminal_settings().idle_timeout_s,
-            "terminal_max_sessions": m._terminal_settings().max_sessions,
-            "terminal_max_output_bytes": m._terminal_settings().max_output_bytes,
-            "terminal_shell": m._terminal_settings().shell,
-            "terminal_cwd": m._terminal_settings().cwd,
         }
 
     @router.post("/api/config", dependencies=auth)
@@ -444,34 +431,8 @@ def init(require_auth, client_ip, get_main) -> None:
             # 写 [runtime]；apply_config 里 netmode.configure 立即切换，
             # 之后所有出网入口（模型、更新、余额、下载、联网工具）直接返回原因
             updates.setdefault("runtime", {})["offline_mode"] = bool(req.offline_mode)
-        term = {}
-        if req.terminal_enabled is not None:
-            term["remote_shell"] = bool(req.terminal_enabled)
-        if req.terminal_idle_timeout is not None:
-            term["idle_timeout_seconds"] = max(
-                remote_terminal.MIN_IDLE_TIMEOUT_S,
-                min(remote_terminal.MAX_IDLE_TIMEOUT_S, int(req.terminal_idle_timeout)))
-        if req.terminal_max_sessions is not None:
-            term["max_sessions"] = max(
-                remote_terminal.MIN_MAX_SESSIONS,
-                min(remote_terminal.MAX_MAX_SESSIONS, int(req.terminal_max_sessions)))
-        if req.terminal_max_output_bytes is not None:
-            term["max_output_bytes"] = max(
-                remote_terminal.MIN_MAX_OUTPUT_BYTES,
-                min(remote_terminal.MAX_MAX_OUTPUT_BYTES,
-                    int(req.terminal_max_output_bytes)))
-        if req.terminal_shell is not None:
-            shell = req.terminal_shell.strip()
-            if len(shell) > remote_terminal.MAX_SHELL_CHARS:
-                raise HTTPException(status_code=400, detail="shell 配置过长")
-            term["shell"] = shell
-        if term:
-            updates["terminal"] = term
         if updates:
             m.save_config(updates)
-        if req.terminal_enabled is False:
-            # 关闭开关立刻回收全部会话，不允许旧进程继续跑
-            await remote_terminal.manager.close_all("disabled")
         if ri.get("enabled") is False:
             # 关掉总开关时立刻结束正在进行的接管，不等下一次心跳
             await remote_input.manager.finish(remote_input.RI_DISABLED)
@@ -496,10 +457,4 @@ def init(require_auth, client_ip, get_main) -> None:
                 "dev_mode": devlog.enabled(),
                 # 离线模式保存即生效
                 "offline_mode": netmode.enabled(),
-                # 远程终端开关回传实值，设置页不用再拉一次
-                "terminal_remote_shell": m._terminal_settings().enabled,
-                "terminal_idle_timeout": m._terminal_settings().idle_timeout_s,
-                "terminal_max_sessions": m._terminal_settings().max_sessions,
-                "terminal_max_output_bytes": m._terminal_settings().max_output_bytes,
-                "terminal_shell": m._terminal_settings().shell,
                 "restart_required": bool(req.lan_enable is not None or req.port is not None)}
