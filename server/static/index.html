@@ -6251,9 +6251,31 @@
     if (turnCacheTimer) { clearTimeout(turnCacheTimer); turnCacheTimer = null; }
     turnCacheFlush();
   }
-  window.addEventListener('pagehide', turnCacheFlushNow);
+  window.addEventListener('pagehide', function () {
+    turnCacheFlushNow();
+    // 页面要走：撤销前台登记，后端据此恢复默认息屏
+    if (typeof stopViewReport === 'function') stopViewReport();
+    if (typeof viewReport === 'function') viewReport(false);
+  });
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'hidden') turnCacheFlushNow();
+    // 后台标签页不算「用户正看着」：立刻撤销，回来后重新登记
+    if (document.visibilityState === 'visible') {
+      if (typeof startViewReport === 'function') startViewReport();
+    } else if (typeof stopViewReport === 'function') {
+      stopViewReport();
+      viewReport(false);
+    }
+  });
+
+  // 关闭页面二次确认：浏览器走 beforeunload 的系统弹窗，点了「留在此页」就不关。
+  // 只在真正的关页动作里拦（刷新、关标签、Cmd+W），页面内切视图不会误触。
+  window.addEventListener('beforeunload', function (e) {
+    turnCacheFlushNow();
+    e.preventDefault();
+    // 老浏览器只认 returnValue，新浏览器忽略提示文案、显示自己的通用文案
+    e.returnValue = '';
+    return '';
   });
 
   function turnCacheReset() {
@@ -6285,8 +6307,34 @@
         try { ws.close(); } catch (e) {}
         return;
       }
+      if (viewHeartbeat) {
+        try { ws.send(JSON.stringify({ type: 'view', active: document.visibilityState === 'visible' })); } catch (e) {}
+      }
       try { ws.send(JSON.stringify({ type: 'ping' })); } catch (e) { /* 下一轮判死 */ }
     }, PING_MS);
+  }
+
+  // 网页是否在前台的上报：桌面模式下只要有一个页面在前台，后端就不主动息屏。
+  // 可见时 30s 续一次（后端 120s 没收到就算离开，见 power.VIEW_TTL），
+  // 切到后台/关页面立刻撤销。用 setTimeout 递归而不是 setInterval：后台标签页的
+  // 定时器会被浏览器限流，醒来时如果页面已经不可见就什么都不发。
+  var viewHeartbeat = false;
+  var viewTimer = null;
+  function viewReport(active) {
+    viewHeartbeat = active;
+    if (!ws || ws.readyState !== 1) return;
+    try { ws.send(JSON.stringify({ type: 'view', active: active })); } catch (e) {}
+  }
+  function startViewReport() {
+    stopViewReport();
+    viewReport(true);
+    viewTimer = setTimeout(function () {
+      if (document.visibilityState !== 'visible') return;
+      startViewReport();
+    }, 30000);
+  }
+  function stopViewReport() {
+    if (viewTimer) { clearTimeout(viewTimer); viewTimer = null; }
   }
 
   function stopHeartbeat() {
@@ -6317,6 +6365,8 @@
       if (onboardState === '') onboardState = 'pending';
       lastMsgAt = Date.now();
       startHeartbeat();
+      // 网页在前台才算「用户正看着」：页面可见才登记，后台标签页不登记
+      if (document.visibilityState === 'visible') startViewReport();
       // 重连后补拉接管状态：广播只在状态变化时发，断线期间可能错过
       if (typeof loadRemoteStatus === 'function') loadRemoteStatus();
       if (typeof loadSudoAuth === 'function') loadSudoAuth();

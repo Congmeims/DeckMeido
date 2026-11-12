@@ -2355,8 +2355,16 @@ class OneBotClient:
                   f"message_id={ev.reply_id} uin={data.get('user_id') or '未知'}")
         return data
 
-    async def _reply_image(self, ev: MessageEvent) -> dict | None:
-        """引用消息里的图：只认 admin_qq 发的，其他人的引用图忽略"""
+    async def _reply_image(
+            self, ev: MessageEvent, *, admin_sender_only: bool = True) -> dict | None:
+        """引用消息里的图
+
+        admin_sender_only=True（聊天回合附图）：只认 admin_qq 发的，其他人的
+        引用图忽略，免得群友的图混进上下文。
+        存图走 False：主人引用哪张就是要存哪张，跟原图是谁发的无关——引用这个
+        动作本身已经是主人表达的意图，再按原图发送者过滤只会让存图失败
+        （群友发的图、机器人自己发的图都存不了）。
+        """
         payload = await self._reply_payload(ev)
         if payload is None:
             return None
@@ -2365,7 +2373,7 @@ class OneBotClient:
             self._log("info", "引用图已忽略", "引用消息里没有图片")
             return None
         sender = str(payload.get("user_id") or "").strip()
-        if sender not in self._cfg.admin_qq:
+        if admin_sender_only and sender not in self._cfg.admin_qq:
             self._log("info", "引用图已忽略", f"发送者不是管理员 uin={sender or '未知'}")
             return None
         url = ""
@@ -2417,7 +2425,8 @@ class OneBotClient:
             item = await self._cache_message_image(ev)
             return {**item, "source": "本条消息"} if item else None
         if ev.reply_id:
-            item = await self._reply_image(ev)
+            # 存图不看原图是谁发的：主人引用哪张就存哪张
+            item = await self._reply_image(ev, admin_sender_only=False)
             if item:
                 return {**item, "source": "引用的图"}
         item = self._image_cache(device_tag(ev))

@@ -1541,6 +1541,45 @@ class QqArchiveFlowTest(unittest.IsolatedAsyncioTestCase):
             p.name.endswith("_10001_private_orig9.png")
             for p in self.archive_root().rglob("*.png"))))
 
+    async def test_quote_image_save_from_non_admin(self):
+        """引用的原图不是主人发的，也能存：引用这个动作本身就是主人的意图"""
+        payload = {
+            "message_id": "other7", "user_id": 30003,
+            "sender": {"card": "群友"},
+            "message": [seg_image("http://img.test/friend.jpg")],
+        }
+        bot, ws, _ = await start_bot(FakeWS(api_data={"get_msg": payload}))
+
+        async def download(url):
+            return PNG, "png"
+
+        bot._download_image = download
+        ws.feed(group_event("20001", "10001", "存图", reply_id="other7"))
+        self.assertTrue(await wait_until(lambda: any(
+            p.name.endswith("_30003_20001_other7.png")
+            for p in self.archive_root().rglob("*.png"))))
+        index = (self.archive_root() / "inbox_index.jsonl").read_text(encoding="utf-8")
+        self.assertIn("other7", index)
+        self.assertIn("引用的图", index)
+
+    async def test_quote_image_save_from_bot_self(self):
+        """机器人自己发出的图被引用时同样能存（self_id 不在 admin_qq 里）"""
+        payload = {
+            "message_id": "828424810", "user_id": 99999,
+            "sender": {"nickname": "meido"},
+            "message": [seg_image("http://img.test/self.jpg")],
+        }
+        bot, ws, _ = await start_bot(FakeWS(api_data={"get_msg": payload}))
+
+        async def download(url):
+            return PNG, "png"
+
+        bot._download_image = download
+        ws.feed(group_event("20001", "10001", "存图", reply_id="828424810"))
+        self.assertTrue(await wait_until(lambda: any(
+            p.name.endswith("_99999_20001_828424810.png")
+            for p in self.archive_root().rglob("*.png"))))
+
     async def test_save_text_group_format_and_append(self):
         payload = {
             "message_id": "orig1", "user_id": 10002,

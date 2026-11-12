@@ -7452,6 +7452,8 @@ async def ws_endpoint(ws: WebSocket):
         await ws.close(code=4401)
         return
     await manager.connect(ws)
+    # 电源抑制的「前台网页」登记：连接一断（关页面、切后台被回收）就算离开
+    _view_src = f"ws:{id(ws)}"
     # 来源：优先信调用方显式声明的 client（插件标 qam，桌面客户端标 client），
     # 没声明就按 UA 猜——手机浏览器自动算 mobile，其余算 web。
     # ws_mode 用来记住「这条连接是在什么模式下连上的」：状态广播是全局的，
@@ -7499,6 +7501,12 @@ async def ws_endpoint(ws: WebSocket):
                                     "boot": boot_id,
                                     "partial": _inflight_snapshot(store.current_sid)})
                 continue
+            if data.get("type") == "view":
+                # 前端「网页是否在前台」的上报（可见即上报，切后台/关页面撤销）。
+                # 桌面模式下只要有网页在前台就不息屏，见 power.AwakeKeeper._want。
+                # 每 30s 一次心跳，不在日志里刷记录
+                power.note_view(_view_src, bool(data.get("active")))
+                continue
             if data.get("type") == "chat":
                 # 开始发问就刷新：这条连接此刻在什么模式下，就是它自己的模式
                 ws_mode = (await asyncio.to_thread(get_status))["mode"]
@@ -7541,6 +7549,8 @@ async def ws_endpoint(ws: WebSocket):
     finally:
         # 兜底：不管怎么退出都要摘掉连接，否则 broadcast 会一直往死连接上发
         await manager.disconnect(ws)
+        # 连接没了就等于这个页面不在了：撤销前台登记，别让抑制一直挂着
+        power.note_view(_view_src, False)
 
 
 @app.get("/shots/local", dependencies=[Depends(require_auth)])
