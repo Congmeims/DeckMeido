@@ -1229,9 +1229,14 @@
   <div class="rb-pane on" id="rbPaneFile">
     <!-- 用户手动点过别处后不再跟着 AI 跑，这条横幅就是「点此回到跟随」的入口 -->
     <div id="fbFollow"><span>AI 正在看：</span><span class="p" id="fbFollowPath"></span><span>· 点此跟随</span></div>
-    <!-- AI 主动切换目录的跟踪槽位：固定 30px 高、常驻显示；
-         激活时显示路径，空闲时只留灰点 +「AI 空闲」，不推动下方列表 -->
-    <div id="fbTrackTip"><span class="ico">◉</span><span class="label" id="fbTrackLabel">AI 空闲</span><span class="p" id="fbTrackPath"></span></div>
+    <!-- AI 状态条：与终端页同构（同一个 .ai-bar 组件），左侧圆点表示忙闲，右侧是跟随开关。
+         跟随开着时：AI 跑命令切到终端页，AI 进新目录切回这里并停在它所在的目录 -->
+    <div class="ai-bar" id="fbAiBar">
+      <span class="ai-dot idle" id="fbAiDot"></span>
+      <span class="ai-text" id="fbAiText">AI 空闲</span>
+      <span class="ai-sub" id="fbAiSub"></span>
+      <button id="fbAiFollow" type="button" class="ai-follow on" title="开启后：AI 执行命令自动切到终端，进入新目录自动切回文件页并停在它所在的目录">跟随：开</button>
+    </div>
     <div id="fbBar">
       <button id="fbUp" title="上一级"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
       <button id="fbHome" title="回到工作区"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg></button>
@@ -1280,10 +1285,11 @@
   <div class="rb-pane" id="rbPaneTerm">
     <!-- AI 状态条：和对话区的「AI 空闲 / 正在执行命令…」同构，让用户不必回头翻中间栏。
          右侧开关决定滚动是否跟随 AI（关掉后新命令只加个未读角标，不抢用户的滚动位置） -->
-    <div id="termAi">
-      <span class="tai-dot" id="termAiDot"></span>
-      <span class="tai-text" id="termAiText">AI 空闲</span>
-      <button id="termFollow" type="button" class="tai-follow on" title="开启后：AI 开始/结束命令时终端页自动滚到它所在的位置">跟随：开</button>
+    <div class="ai-bar" id="termAi">
+      <span class="ai-dot idle" id="termAiDot"></span>
+      <span class="ai-text" id="termAiText">AI 空闲</span>
+      <span class="ai-sub"></span>
+      <button id="termFollow" type="button" class="ai-follow on" title="开启后：AI 开始/结束命令时终端页自动滚到它所在的位置">跟随：开</button>
     </div>
     <div id="termList"><div class="fb-note">AI 执行的命令会实时出现在这里<br>也可以在下方输入框直接跑一条</div></div>
     <!-- 输入框和运行按钮平级摆在一行里，与中间「输入区 + 发送按钮」同构。
@@ -2570,6 +2576,8 @@
     // AI 回到空闲：把未读角标清掉，免得下次切回来还挂着一个旧的红点
     if (!busy && !typingEl) termFollow.unread = 0;
     termAiRender();
+    // 文件页的状态条与终端页同构，忙闲由同一处状态驱动
+    if (typeof fbTrackIdle === 'function') fbTrackIdle();
   }
 
   // AI 动过终端：跟随开着才滚动；关着只记未读，绝不改用户的滚动位置
@@ -2609,6 +2617,8 @@
     // 记下当前动作文案：秒表每秒刷新时要和「已执行 N 秒」拼在一起，
     // 不能把「AI 在做什么」整句覆盖掉
     if (label) waitLabel = label;
+    // 右栏联动：命令开跑 → 切终端；改/看文件 → 切回文件页并停在 AI 所在目录
+    if (label && typeof fbTrackOnAction === 'function') fbTrackOnAction(label);
     // 已有提示时只更新文字，避免每次工具事件都重排、闪动
     if (typingEl && label) {
       var lbl = typingEl.querySelector('.typing-label');
@@ -2783,9 +2793,7 @@
     //   只有「由断转连」才补拉：刷新页面时 connect() 里已经拉过一次，
     //   这里再来一次就是白打一个 /api/browse（面板闪一下「加载中…」）
     if (typeof rbEl === 'function') {
-      var tip = rbEl('fbTrackTip');
-      if (tip && typeof fbTrackIdle === 'function') fbTrackIdle();
-      else if (tip) tip.classList.remove('show');
+      if (typeof fbTrackIdle === 'function') fbTrackIdle();
       // 静默补拉：不弹「AI 正在定位」，见 fbLoad 的 quiet 参数
       if (ok && !wasConnected && typeof fbLoad === 'function' && RB && RB.tab === 'file') {
         fbLoad(fb.follow ? (fb.aiPath || fb.path || '') : (fb.path || ''), null, true);
@@ -2927,12 +2935,36 @@
     rbShowTab(tab);
   }
 
+  // 跟随开关：文件页和终端页各一个，默认都开（和旧版终端页一致）。
+  // 文件页那个管「AI 动手时自动切页 + 停在它所在的目录」，
+  // 终端页那个只管「新命令来了要不要把列表滚到底」。
+  var fbTrack = { on: true };
+
+  function rbPaneAnimate(pane, dir) {
+    if (!pane || !dir) return;
+    pane.classList.remove('rb-anim-l', 'rb-anim-r');
+    void pane.offsetWidth;               // 先落地旧状态，动画才能重新触发
+    pane.classList.add(dir === 'fwd' ? 'rb-anim-r' : 'rb-anim-l');
+  }
+  document.addEventListener('animationend', function (e) {
+    if (!e.target) return;
+    if (e.target.classList && e.target.classList.contains('rb-pane')) {
+      e.target.classList.remove('rb-anim-l', 'rb-anim-r');
+    }
+  });
+
   function rbShowTab(tab) {
+    var prev = RB.tab;
     RB.tab = tab;
     rbEl('rbTabFile').classList.toggle('on', tab === 'file');
     rbEl('rbTabTerm').classList.toggle('on', tab === 'term');
     rbEl('rbPaneFile').classList.toggle('on', tab === 'file');
     rbEl('rbPaneTerm').classList.toggle('on', tab === 'term');
+    // 页签切换的平移：文件页在左、终端页在右，谁被切出来就从它所在那一侧滑进来
+    if (prev && prev !== tab) {
+      rbPaneAnimate(rbEl(tab === 'term' ? 'rbPaneTerm' : 'rbPaneFile'),
+                    tab === 'term' ? 'fwd' : 'back');
+    }
     if (tab === 'file' && !fb.path) fbLoad();
     if (tab === 'file') { fbDropInit(); fbAutoStart(); }
     else fbAutoStop();
@@ -2941,6 +2973,43 @@
       if (l) l.scrollTop = l.scrollHeight;
     }
     rbApplyLayout();
+  }
+
+  // AI 动文件/跑命令时的联动（由实时工具事件与命令事件调用）：
+  //   · 跑命令 → 切终端页
+  //   · 改/看文件 → 切回文件页，并跳到 AI 正在停留的目录
+  // 跟随关了就什么都不做，绝不打断用户自己正在看的东西
+  function fbTrackFollow() {
+    return fbTrack.on && !RB.collapsed;
+  }
+
+  // 文案与终端页的 termAiRender 保持完全一致，两个页签看到的永远是同一句话，
+  // 唯一多出来的是「AI 当前停留的目录」这一小段次要信息
+  function fbTrackWord() {
+    if (!busy && !typingEl) return 'AI 空闲';
+    var w = waitUsedTool ? (waitLabel || '正在执行') : (waitSeen ? '已思考' : '等待模型响应');
+    if (waitBase) w += ' · 已' + (waitUsedTool ? '执行' : (waitSeen ? '思考' : '等待')) + ' ' + waitBase + ' 秒';
+    return w;
+  }
+
+  function fbTrackIdle() {
+    var bar = rbEl('fbAiBar'), dot = rbEl('fbAiDot'), txt = rbEl('fbAiText'), sub = rbEl('fbAiSub');
+    if (!bar) return;
+    var busyNow = !!busy || !!typingEl;
+    dot.classList.toggle('on', busyNow);
+    dot.classList.toggle('idle', !busyNow);
+    txt.textContent = fbTrackWord();
+    sub.textContent = busyNow ? (fb.aiPath || '') : '';
+    sub.title = busyNow ? (fb.aiPath || '') : '';
+    bar.classList.toggle('busy', busyNow);
+  }
+
+  // AI 正在动手：记下它当前停留的路径后重绘状态条
+  function fbTrackBusy() { fbTrackIdle(); }
+
+  function fbTrackTip(path) {
+    if (path) fb.aiPath = path;
+    fbTrackIdle();
   }
 
   // ---- 文件浏览器 ----
@@ -4516,12 +4585,19 @@
   function fbFocusAi(path, isDir) {
     fb.aiPath = path;
     fb.aiIsDir = !!isDir;
+    fbTrackTip(path);
     if (!fb.follow) {
       // 不跟随的时候也要让横幅上的路径实时更新，用户才知道 AI 跑哪儿去了
       rbEl('fbFollowPath').textContent = path;
       rbEl('fbFollow').classList.add('show');
       return;
     }
+    rbEl('fbFollow').classList.remove('show');
+    // 跟随关着：只更新状态条，不动用户当前停留的目录
+    if (!fb.follow || !fbTrackFollow()) return;
+    // AI 进了新目录：切回文件页并停在它所在的地方（只在目录真的变了时才切，
+    // 免得 AI 反复读同一个目录里的文件时页面反复横跳）
+    if (path && path !== fb.path) rbAutoSwitch('file');
     // 折叠状态下不抢版面：只是记下来，展开/切到文件页时再跳
     if (RB.collapsed && window.matchMedia('(max-width: 1080px)').matches) return;
     // 去抖：AI 一轮里往往连续读好几个文件，每个都触发一次 fs_follow。直接
@@ -4534,33 +4610,33 @@
     }, 300);
   }
 
-  // AI 切换目录时的跟踪槽位：平时保持「AI 空闲」，AI 定位时点亮并显示路径。
-  // 槽位高度固定，出现/消失都不会推动下面的文件列表，避免误触。
-  function fbTrackIdle() {
-    var tip = rbEl('fbTrackTip');
-    if (!tip) return;
-    clearTimeout(tip._hide);
-    tip._hide = null;
-    tip.classList.remove('show');
-    var lb = rbEl('fbTrackLabel');
-    if (lb) lb.textContent = 'AI 空闲';
-    var p = rbEl('fbTrackPath');
-    if (p) { p.textContent = ''; p.title = ''; }
+  // AI 动手 → 右栏跟着切页。两个入口：
+  //   · fbTrackOnAction(label)：对话区的动作文案（「正在执行命令…」「正在读取…」）
+  //   · fbTermLinkOnTool(ev)：带了具体路径的工具事件，切回文件页并停在那个目录
+  // 跟随关着就什么都不做，绝不打断用户自己正在看的东西
+  var FB_FILE_TOOLS = { read_file: 1, write_file: 1, edit_file: 1, list_dir: 1 };
+
+  function fbTrackOnAction(label) {
+    if (!fbTrackFollow()) return;
+    var t = String(label || '');
+    if (/命令|执行|安装|更新/.test(t)) {
+      // 跑命令：切到终端页看实时输出
+      rbAutoSwitch('term');
+    } else if (/读取|查看|编辑|写入|目录|文件/.test(t)) {
+      // 动文件：切回文件页，目录由随后的 fs_follow 带过来
+      rbAutoSwitch('file');
+    }
   }
 
-  function fbTrackTip(path) {
-    var tip = rbEl('fbTrackTip');
-    if (!tip) return;
-    var lb = rbEl('fbTrackLabel');
-    if (lb) lb.textContent = 'AI 正在定位';
-    var p = rbEl('fbTrackPath');
-    if (p) { p.textContent = path || ''; p.title = path || ''; }
-    tip.classList.remove('show');
-    // 强制重排以重新触发 CSS 动画（高度固定，不会引起列表位移）
-    void tip.offsetWidth;
-    tip.classList.add('show');
-    clearTimeout(tip._hide);
-    tip._hide = setTimeout(fbTrackIdle, 2200);
+  function fbTermLinkOnTool(ev) {
+    if (!ev || !fbTrackFollow()) return;
+    if (ev.name === 'run_command') { rbAutoSwitch('term'); return; }
+    if (FB_FILE_TOOLS[ev.name] && ev.path) {
+      fbFocusAi(ev.path, false);
+      // 文件已读/写完，但目录没变（同一个目录里连读多个文件）时，
+      // fbFocusAi 不会切页；这里补一次切回，保证「离开终端页」这件事发生
+      rbAutoSwitch('file');
+    }
   }
 
   rbEl('rbTabFile').addEventListener('click', function () { rbShowTab('file'); });
@@ -4608,6 +4684,38 @@
     fbLoad('');
   });
   rbEl('fbFollow').addEventListener('click', fbFollowStart);
+
+  // 文件页的跟随开关：和终端页那个是同一套交互（按钮显示开/关、状态存本地）。
+  // 开着时 AI 跑命令切终端、进新目录切回文件页并停在它所在的目录
+  function fbTrackRender() {
+    var btn = rbEl('fbAiFollow');
+    if (!btn) return;
+    btn.textContent = fbTrack.on ? '跟随：开' : '跟随：关';
+    btn.classList.toggle('on', fbTrack.on);
+    btn.classList.toggle('unread', false);
+  }
+
+  function fbTrackToggle() {
+    fbTrack.on = !fbTrack.on;
+    try { localStorage.setItem('dm.fbTrack', fbTrack.on ? '1' : '0'); } catch (e) {}
+    fbTrackRender();
+    // 刚打开跟随：立刻对齐到 AI 当前所在的位置，不用等它下一次动手
+    if (fbTrack.on) {
+      fb.follow = true;
+      rbEl('fbFollow').classList.remove('show');
+      if (fb.aiPath) fbFocusAi(fb.aiPath, fb.aiIsDir);
+    }
+  }
+
+  (function () {
+    try {
+      var saved = localStorage.getItem('dm.fbTrack');
+      if (saved === '0') fbTrack.on = false;
+    } catch (e) {}
+    var btn = rbEl('fbAiFollow');
+    if (btn) btn.addEventListener('click', fbTrackToggle);
+    fbTrackRender();
+  })();
 
   // 上传条「上传」按钮：弹系统文件选择框，选中后走既有的上传队列
   rbEl('fbUploadBtn').addEventListener('click', function () { rbEl('fbFileInput').click(); });
@@ -5390,6 +5498,8 @@
     if (who === 'ai') {
       it.watchAt = Date.now();
       it._timer = setTimeout(function () { termAutoCollapse(it); }, TERM_QUIET_MS + 200);
+      // 跟随开着：AI 一跑命令就把右栏切到终端页，像在看它实时操作
+      if (typeof fbTrackOnAction === 'function') fbTrackOnAction('正在执行命令');
     }
     term.items.push(it);
     if (term.items.length > TERM_ARCH_MAX) term.items.splice(0, term.items.length - TERM_ARCH_MAX);
@@ -6753,6 +6863,8 @@
           : '');
     // 状态条与对话区的读秒共用同一份文案，不多开一个定时器
     termAiRender();
+    // 文件页的状态条也要跟着秒数走：只有它当前正显示着「已执行 xx 秒」时才刷
+    if (rbEl('fbAiBar') && waitUsedTool) fbTrackBusy();
   }
   function startWaitTimer(since) {
     // status 每秒都会来这里续接计时，不能每次都把标志清零；

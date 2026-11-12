@@ -2654,7 +2654,78 @@
 
   .rb-pane { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; position: relative; }
   .rb-pane.on { display: flex; }
+  /* 文件页 / 终端页互切时的平移动画：靠 .rb-anim-l / .rb-anim-r 决定从哪边滑进来。
+     位移很小（14px）+ 淡入，既有方向感又不会晃眼；切换时旧页签直接消失，
+     新页签从对应方向滑入，读起来像两块屏左右推着换 */
+  .rb-pane.rb-anim-l { animation: rbInLeft .26s cubic-bezier(.22,.61,.36,1); }
+  .rb-pane.rb-anim-r { animation: rbInRight .26s cubic-bezier(.22,.61,.36,1); }
+  @keyframes rbInLeft {
+    from { opacity: 0; transform: translateX(-14px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes rbInRight {
+    from { opacity: 0; transform: translateX(14px); }
+    to { opacity: 1; transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rb-pane.rb-anim-l, .rb-pane.rb-anim-r { animation: none !important; }
+  }
   body.rb-collapsed .rb-pane { display: none; }
+
+  /* AI 状态条：文件页和终端页共用同一个组件，保证两处视觉完全一致。
+     高度固定，不随文案长短抖动；左侧圆点表示忙闲，右侧是跟随开关 */
+  .ai-bar {
+    flex: 0 0 30px; height: 30px; box-sizing: border-box;
+    display: flex; align-items: center; gap: 7px;
+    padding: 0 10px; font-size: 11.5px;
+    color: var(--muted); background: var(--surface-2);
+    border-bottom: 1px solid var(--line);
+    overflow: hidden; user-select: none;
+    transition: background .2s ease, color .2s ease;
+  }
+  .ai-bar.busy { color: var(--text); background: rgba(26,159,255,.1); }
+  .ai-bar .ai-dot {
+    flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--muted); opacity: .5;
+    transition: background .2s ease, opacity .2s ease;
+  }
+  .ai-bar .ai-dot.on {
+    background: var(--brand); opacity: 1;
+    animation: aiPulse 1.6s ease-out infinite;
+  }
+  @keyframes aiPulse {
+    0% { box-shadow: 0 0 0 0 rgba(26,159,255,.45); }
+    70% { box-shadow: 0 0 0 6px rgba(26,159,255,0); }
+    100% { box-shadow: 0 0 0 0 rgba(26,159,255,0); }
+  }
+  .ai-bar .ai-text {
+    flex: 1 1 auto; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* 路径等次要信息：更淡、更小，紧跟在文字后面 */
+  .ai-bar .ai-sub {
+    flex: 0 1 auto; min-width: 0; max-width: 45%;
+    color: var(--muted); opacity: .8; font-size: 11px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    direction: rtl; text-align: left;
+  }
+  .ai-bar .ai-sub:empty { display: none; }
+  .ai-bar .ai-follow {
+    flex: 0 0 auto; font: inherit; font-size: 11px; line-height: 1;
+    padding: 4px 8px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); background: transparent; color: var(--muted);
+    transition: color .18s ease, border-color .18s ease, background .18s ease;
+  }
+  .ai-bar .ai-follow:hover { color: var(--text); border-color: var(--muted); }
+  .ai-bar .ai-follow.on {
+    color: var(--brand); border-color: rgba(26,159,255,.45);
+    background: rgba(26,159,255,.1);
+  }
+  /* 跟随关掉但 AI 又有新动静：亮一下提醒「有新内容」，点了才跳过去 */
+  .ai-bar .ai-follow.unread { color: var(--warn, #f5a623); border-color: rgba(245,166,35,.45); }
+  @media (prefers-reduced-motion: reduce) {
+    .ai-bar, .ai-bar .ai-dot, .ai-bar .ai-follow { transition: none !important; animation: none !important; }
+  }
 
   /* 文件浏览器 */
   #fbFollow {
@@ -2666,35 +2737,10 @@
   #fbFollow.show { display: flex; }
   #fbFollow .p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     direction: rtl; text-align: left; }
-  /* AI 切换目录的跟踪槽位：常驻固定 30px 高，不再按需冒出来把文件列表推下去。
-     激活时蓝底 +「AI 正在定位 <路径>」，空闲时灰点 +「AI 空闲」。
-     纯展示、不接收点击，避免误触 */
-  #fbTrackTip {
-    flex: 0 0 30px; height: 30px; box-sizing: border-box;
-    display: flex; align-items: center; gap: 6px;
-    padding: 0 10px; font-size: 11.5px;
-    color: var(--muted); background: var(--surface-2);
-    border-bottom: 1px solid var(--line);
-    overflow: hidden;
-    pointer-events: none;
-    user-select: none;
-  }
-  #fbTrackTip.show {
-    color: #1a9fff;
-    background: rgba(26,159,255,.12);
-    border-bottom-color: rgba(26,159,255,.25);
-    animation: fbTipIn .28s ease;
-  }
-  @keyframes fbTipIn { from { opacity: .4; } to { opacity: 1; } }
-  #fbTrackTip .ico { flex: 0 0 auto; color: inherit; }
-  #fbTrackTip .label { flex: 0 0 auto; white-space: nowrap; }
-  #fbTrackTip .p { flex: 1 1 auto; min-width: 0; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap;
-    direction: rtl; text-align: left; }
   /* AI 跟随跳转时列表的一次淡入过渡：替换「清空→闪白→重绘」的生硬切换 */
   #fbList.fb-anim { animation: fbListIn .34s ease; }
   @keyframes fbListIn { from { opacity: .2; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-  @media (prefers-reduced-motion: reduce) { #fbList.fb-anim, #fbTrackTip { animation: none !important; transition: none !important; } }
+  @media (prefers-reduced-motion: reduce) { #fbList.fb-anim { animation: none !important; transition: none !important; } }
   #fbBar {
     flex: 0 0 auto; display: flex; align-items: center; gap: 4px;
     padding: 6px 8px; border-bottom: 1px solid var(--line);
@@ -3073,40 +3119,6 @@
   #fbViewer .fv-note { color: var(--muted); font-size: 13px; padding: 24px; text-align: center; }
 
   /* 终端 */
-  /* AI 状态条：常驻一条，高度固定，不随文案长短抖动 */
-  #termAi {
-    flex: 0 0 auto; display: flex; align-items: center; gap: 7px;
-    padding: 6px 10px; border-bottom: 1px solid var(--line);
-    background: var(--surface-2); font-size: 11.5px; color: var(--muted);
-  }
-  #termAi .tai-dot {
-    flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
-    background: var(--muted); opacity: .5;
-  }
-  #termAi .tai-dot.on {
-    background: var(--brand); opacity: 1;
-    box-shadow: 0 0 0 0 rgba(26,159,255,.5);
-    animation: taiPulse 1.6s ease-out infinite;
-  }
-  @keyframes taiPulse {
-    0% { box-shadow: 0 0 0 0 rgba(26,159,255,.45); }
-    70% { box-shadow: 0 0 0 6px rgba(26,159,255,0); }
-    100% { box-shadow: 0 0 0 0 rgba(26,159,255,0); }
-  }
-  #termAi .tai-text {
-    flex: 1 1 auto; min-width: 0;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  #termAi .tai-follow {
-    flex: 0 0 auto; font: inherit; font-size: 11px; line-height: 1;
-    padding: 4px 8px; border-radius: 999px; cursor: pointer;
-    border: 1px solid var(--line); background: transparent; color: var(--muted);
-  }
-  #termAi .tai-follow:hover { color: var(--text); border-color: var(--muted); }
-  #termAi .tai-follow.on { color: var(--brand); border-color: rgba(26,159,255,.45);
-    background: rgba(26,159,255,.1); }
-  /* 跟随关掉但 AI 又有新动静：亮一下提醒「有新内容」，点了才跳过去 */
-  #termAi .tai-follow.unread { color: var(--warn, #f5a623); border-color: rgba(245,166,35,.45); }
   #termList { flex: 1 1 auto; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
   .tm {
     border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
