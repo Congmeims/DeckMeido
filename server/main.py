@@ -6587,7 +6587,9 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
     hist = store.history if hist is None else hist
     pol = turn_policy or policy.OWNER_POLICY
     # 单轮超时：配了 max_tool_rounds 才有上限；不限轮数时给足时间（仍有硬超时兜底）
-    agent_timeout = 280 if MAX_TOOL_ROUNDS > 0 else 1800
+    # 900 秒：长任务（编译、装依赖、连续排查）经常需要更多时间，嫌久可以由用户
+    # 自己点终止，而不是被系统提前掐断
+    agent_timeout = 900 if MAX_TOOL_ROUNDS > 0 else 1800
     try:
         reply = await asyncio.wait_for(
             run_agent(events, hist=hist, image_part=image_part, tool_log=tool_log,
