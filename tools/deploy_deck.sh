@@ -44,6 +44,21 @@ sudo_remote() {
   ssh "$HOST" "echo '$SUDO_PASS' | sudo -S -p '' $1"
 }
 
+# ---------- 前端结构自检（门禁） ----------
+# 部署前必须过：sync 之前拦下，坏文件不会被推到 Deck。
+# 拦的是「删别的代码时顺手删掉主对话连接」(e8351a5)：页面能开、一直掉线、还弹配对页。
+# 设 DECK_SKIP_FRONTEND_CHECK=1 可跳过（仅限确定只改后端时）。
+if [ "${DECK_SKIP_FRONTEND_CHECK:-0}" = "1" ]; then
+  printf '\n[跳过] 前端结构自检（DECK_SKIP_FRONTEND_CHECK=1）\n'
+else
+  log "前端结构自检（tests/test_frontend_wiring.py）"
+  PY_BIN="$(command -v python3 || command -v python || true)"
+  [ -n "$PY_BIN" ] || die "找不到 python，无法执行前端结构自检（可设 DECK_SKIP_FRONTEND_CHECK=1 跳过）"
+  ( cd "$ROOT" && "$PY_BIN" -m unittest tests.test_frontend_wiring ) \
+    || die "前端结构自检失败：index.html 的脚本语法或主对话连接有问题，已中止部署"
+  printf '  前端结构自检通过\n'
+fi
+
 # ---------- 部署前备份 ----------
 # 每次部署前把 server/ client/ install.sh 和用户数据目录一起打包到 userdata/backups/deploy/。
 # 代码与数据分成两类归档（DeckMeido-server-backup-* / DeckMeido-data-backup-*），

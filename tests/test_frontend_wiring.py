@@ -14,16 +14,45 @@ connect()、心跳、可见性上报一起被删掉，页面照常加载却永�
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 HTML = ROOT / "server" / "static" / "index.html"
-NODE = shutil.which("node") or shutil.which("node.exe")
+
+
+def _find_node() -> str | None:
+    """找 node 的可执行文件。
+
+    Windows 下 PATH 里可能是无需 .exe 后缀的 wrapper 脚本；Git Bash（MSYS）
+    下 Python 是 Windows 原生版、node 却是 /mnt/c/... 的 MSYS 版，两者认的
+    路径格式不同。统一交给 shutil 找真实文件，找不到就在 Windows 默认安装目录补一遍。
+    """
+    for name in ("node", "node.exe"):
+        p = shutil.which(name)
+        if p and os.path.isfile(p):
+            return p
+    if os.name == "nt":
+        for p in (r"C:\Program Files\nodejs\node.exe",
+                  r"C:\Program Files (x86)\nodejs\node.exe"):
+            if os.path.isfile(p):
+                return p
+    return None
+
+
+NODE = _find_node()
+
+
+def _node_works(exe: str) -> bool:
+    """真的能不能跑：WSL 的 python 找得到 /mnt/c/.../node.exe，但内核不能直接执行 .exe"""
+    try:
+        return subprocess.run([exe, "-v"], capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def _html() -> str:
@@ -40,23 +69,21 @@ class FrontendWiringTest(unittest.TestCase):
         """内联脚本必须语法合法：大段删除后最容易留下半截代码"""
         if not NODE:
             self.skipTest("没有 node，跳过 JS 语法检查")
+        if not _node_works(NODE):
+            self.skipTest(f"node 不可执行（{NODE}），跳过 JS 语法检查")
         scripts = [s for s in _inline_scripts() if s.strip()]
         self.assertTrue(scripts, "index.html 里没有内联脚本？")
+        # 走 stdin（node --check -），不落临时文件：Git Bash 里 Python 是 Windows
+        # 版、node 可能是 MSYS 版，两边对 M:\ 和 /mnt/m/ 的解析不一致，写文件必踩
         for i, src in enumerate(scripts):
-            with tempfile.NamedTemporaryFile(
-                "w", suffix=".js", delete=False, encoding="utf-8"
-            ) as fh:
-                fh.write(src)
-                path = fh.name
-            try:
-                res = subprocess.run(
-                    [NODE, "--check", path], capture_output=True, text=True
-                )
-            finally:
-                Path(path).unlink(missing_ok=True)
+            res = subprocess.run(
+                [NODE, "--check", "-"],
+                input=src.encode("utf-8"), capture_output=True,
+            )
             self.assertEqual(
                 res.returncode, 0,
-                f"第 {i + 1} 段内联脚本语法错误：\n{(res.stderr or '')[:1200]}",
+                "第 %d 段内联脚本语法错误：\n%s"
+                % (i + 1, res.stderr.decode("utf-8", "replace")[:1200]),
             )
 
     def test_main_chat_connection_present(self):
