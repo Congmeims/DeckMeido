@@ -2322,12 +2322,16 @@
   .music-bar > div { height: 100%; width: 0%; background: var(--brand); }
   .music-btns { display: flex; justify-content: center; gap: 10px; margin-top: 6px; }
   .music-btns button {
-    flex: 0 0 auto; width: 30px; height: 26px; padding: 0;
+    flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 26px; padding: 0;
     border: 1px solid var(--line); border-radius: 6px;
     background: var(--surface-2); color: var(--text); font-size: 12px;
     cursor: pointer; line-height: 1;
   }
-  .music-btns button:hover { border-color: var(--brand); }
+  /* 图标尺寸跟文件栏按钮一致（14px 线性），颜色走 currentColor，
+     hover 时和边框一起变品牌色 */
+  .music-btns button svg { display: block; width: 14px; height: 14px; }
+  .music-btns button:hover { border-color: var(--brand); color: var(--brand); }
   .music-btns button:disabled { opacity: .4; cursor: default; }
   /* 拖拽附件时盖住中间聊天区的提示层：absolute 相对 #chatView，只盖对话区，
      不越过右侧文件/终端面板 */
@@ -3471,10 +3475,12 @@
       <div class="music-bar"><div id="musicFill"></div></div>
       <span id="musicDur">0:00</span>
     </div>
+    <!-- 图标用内联 SVG 线性图标，不用 ⏮⏸⏭ 这类字符：
+         Windows 与 SteamOS 的字体回退会把它渲染成彩色 emoji，和全站图标风格不一致 -->
     <div class="music-btns">
-      <button type="button" data-act="previous" title="上一首">⏮</button>
-      <button type="button" data-act="toggle" title="播放 / 暂停">⏸</button>
-      <button type="button" data-act="next" title="下一首">⏭</button>
+      <button type="button" data-act="previous" title="上一首"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 20L9 12l10-8z"/><path d="M5 19V5"/></svg></button>
+      <button type="button" data-act="toggle" title="播放 / 暂停"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4H6v16h4z"/><path d="M18 4h-4v16h4z"/></svg></button>
+      <button type="button" data-act="next" title="下一首"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4l10 8L5 20z"/><path d="M19 5v14"/></svg></button>
     </div>
   </div>
   <div class="sb-sess-block">
@@ -16887,9 +16893,14 @@
     musicFill.style.width = musicDurSec > 0
       ? Math.min(100, pos / musicDurSec * 100) + '%' : '0%';
   }
+  // 播放/暂停图标同样是内联 SVG：暂停画两根竖条，播放画一个实心三角
+  var MUSIC_ICO = {
+    play: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4l13 8-13 8z"/></svg>',
+    pause: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4H6v16h4z"/><path d="M18 4h-4v16h4z"/></svg>'
+  };
   function setMusicPlaying(on) {
     musicPlaying = !!on;
-    musicToggleBtn.textContent = musicPlaying ? '⏸' : '▶';
+    musicToggleBtn.innerHTML = musicPlaying ? MUSIC_ICO.pause : MUSIC_ICO.play;
     musicToggleBtn.title = musicPlaying ? '暂停' : '播放';
   }
   function renderMusic(d) {

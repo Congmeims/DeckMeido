@@ -389,12 +389,24 @@ class PackageSpecTest(SelfcheckBase):
         self.assertEqual(run.call_args[0][0][4], "espeak-ng")
 
     def test_拒绝非http地址(self):
+        # 用绝对不是缓存目录的本地文件：这条要验的是「协议不支持」，
+        # 不是「本机缓存里没有」（后者是 resolve_failed）
+        with mock.patch.object(sc.shutil, "which", return_value=None), \
+                mock.patch.object(sc.subprocess, "run",
+                                  return_value=self._proc(url="data:text/plain,x")):
+            with self.assertRaises(sc.PackageError) as ctx:
+                sc.package_spec("ydotool")
+        self.assertEqual(ctx.exception.reason, "unsafe_url")
+
+    def test_缓存目录外的file地址给出可操作的提示(self):
+        """file:// 落在 pacman 缓存目录外 → 不是 unsafe_url 也不是静默失败"""
         with mock.patch.object(sc.shutil, "which", return_value=None), \
                 mock.patch.object(sc.subprocess, "run",
                                   return_value=self._proc(url="file:///etc/passwd")):
             with self.assertRaises(sc.PackageError) as ctx:
                 sc.package_spec("ydotool")
-        self.assertEqual(ctx.exception.reason, "unsafe_url")
+        self.assertEqual(ctx.exception.reason, "resolve_failed")
+        self.assertIn("pacman -Sy", str(ctx.exception))
 
 
 class PackageInstallTest(SelfcheckBase):

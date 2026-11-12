@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from .llm import LLMClient
+from . import approval
 from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, media, memory, menu, netcfg, netmode, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, remote_terminal, selfcheck, singleton, sleepmode, status_line, sudo_auth, tools, updater, usage, wake
 from .session_store import store
 from . import session_store
@@ -892,7 +893,8 @@ def apply_config(cfg: dict):
     wake_service.apply(cfg.get("wake") or {})
     # 睡眠模式：音乐停 + 会话空闲满 N 分钟后自动关机；开关热更新
     sleepmode.service.apply(cfg.get("sleep") or {})
-    PERMISSION_MODE = cfg.get("security", {}).get("permission_mode", "auto")
+    PERMISSION_MODE = approval.normalize_mode(
+        cfg.get("security", {}).get("permission_mode", "auto"))
     # 自定义档的四组开关跟着热更新，保存后下一次工具调用就按新值判断
     global CUSTOM_PERM
     CUSTOM_PERM = tools.normalize_custom((cfg.get("security") or {}).get("custom"))
@@ -925,7 +927,8 @@ def reload_persona() -> dict:
 
 # 权限模式：manual=所有命令手动审批 / custom=按四组开关 / auto=危险命令才审批
 # full=完全访问。custom 的四组开关见 tools.CUSTOM_GROUPS
-PERMISSION_MODE = CFG.get("security", {}).get("permission_mode", "auto")
+PERMISSION_MODE = approval.normalize_mode(
+    CFG.get("security", {}).get("permission_mode", "auto"))
 # 自定义档的四个开关（True = 先问我）；只有 PERMISSION_MODE == "custom" 时才被读取
 CUSTOM_PERM = tools.normalize_custom((CFG.get("security") or {}).get("custom"))
 tools.path_bound = PERMISSION_MODE != "full"
@@ -2983,20 +2986,23 @@ async def api_terminal_run(payload: dict):
     cmd = str(payload.get("command") or "").strip()
     if not cmd:
         raise HTTPException(status_code=400, detail="命令为空")
-    # 和对话里同一个审批通道：手动模式一律先问，智能/自定义模式只拦危险命令，
-    # 完全访问直接跑。面板不能变成绕过审批的后门，但也不该自己发明一套规则
-    needs_approval = (PERMISSION_MODE == "manual"
-                      or (PERMISSION_MODE == "auto" and tools.is_dangerous(cmd))
-                      or (PERMISSION_MODE == "custom"
-                          and tools.custom_needs_approval("run_command",
-                                                          {"command": cmd},
-                                                          CUSTOM_PERM)))
-    if needs_approval:
+    # 和对话里同一个审批通道（approval.resolve）：手动模式一律先问，智能/自定义
+    # 模式只拦危险命令，完全访问直接跑。面板不能变成绕过审批的后门，也不该自己
+    # 另写一套规则 —— 规则只在 approval.py 里维护一份
+    verdict = approval.resolve(
+        "run_command", {"command": cmd},
+        policy.TurnContext(boot_id=_system_boot_id()),
+        PERMISSION_MODE, CUSTOM_PERM)
+    if verdict.deny:
+        return {"ok": False, "denied": True, "reason": verdict.reason,
+                "output": f"已拒绝执行（{verdict.label}）：{verdict.reason}"}
+    if verdict.ask:
         # 挂进和对话同一份 pending_action，之后由对话里那句「确认」放行
         global pending_action
         args = {"command": cmd, "reason": "终端面板手动执行"}
         pending_action = {"name": "run_command", "args": args,
                           "description": tools.describe("run_command", args),
+                          "hard": verdict.hard,
                           "sid": store.current_sid, "epoch": store.epoch,
                           "turn_id": store.turn.get("turn_id") or "",
                           "client": store.turn.get("client") or "",
@@ -8108,19 +8114,11 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     except Exception as e:
                         print(f"[DeckMeido][policy] 写回授权状态失败：{e}", file=sys.stderr)
 
-                # 完全访问：用户已预先授权一切操作，连 gamepad / install_game 这些
-                # 往常必须点头的也不拦。只有升级例外 —— 它会让服务重启、对话中断，
-                # 属于「做完就跟当前这轮没关系了」的操作，无论什么模式都要确认
-                needs_approval = (False if (PERMISSION_MODE == "full" and not ctx.force_confirm)
-                                  else name in tools.DANGEROUS)
-                # 升级会让服务重启、对话中断，无论什么权限模式都要用户点头
-                if name == "self_update" and args.get("action") == "upgrade":
-                    needs_approval = True
-                # 自定义档：非 run_command 的工具按组判断（读文件 / 改文件 / 联网）
-                if (not needs_approval and PERMISSION_MODE == "custom"
-                        and name != "run_command"):
-                    needs_approval = tools.custom_needs_approval(
-                        name, args, CUSTOM_PERM)
+                # 审批闸门：档位 × 危险级别的判断全部收敛在 approval.resolve，
+                # 这里只负责按结论做事（拒绝 / 挂起等确认 / 直接执行）。
+                # 极危操作（写盘、格式化、清空账号文件…）不给确认通道，任何
+                # 档位包括完全访问都直接拒绝 —— 那是不可逆的破坏，不该由一次
+                # 误判换来一块被抹掉的盘
                 extra_danger = ""
                 if name == "run_command":
                     cmd = str(args.get("command", ""))
@@ -8128,38 +8126,47 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     # 现有 tools/policy 规则没覆盖到的也一律按硬确认拦下
                     extra_danger = (menu.remote_command_danger(cmd)
                                     if ctx.force_confirm else "")
-                    if ctx.force_confirm:
-                        # 远程入口（QQ）：full 模式下也只放行不碰电源/系统的普通命令
-                        needs_approval = tools.is_dangerous(cmd) or bool(extra_danger)
-                    elif PERMISSION_MODE == "manual":
-                        needs_approval = True
-                    elif PERMISSION_MODE == "custom":
-                        # 自定义档：安全命令直接跑，危险命令看「系统命令」开关
-                        needs_approval = tools.custom_needs_approval(
-                            name, args, CUSTOM_PERM)
-                    elif PERMISSION_MODE == "auto":
-                        needs_approval = tools.is_dangerous(cmd)
-                    # full 模式下不拦截
+                verdict = approval.resolve(name, args, ctx, PERMISSION_MODE,
+                                           CUSTOM_PERM, extra_danger=extra_danger)
+                if verdict.deny:
+                    label = tools.cn_name(name)
+                    summary = tools.summarize_tool(name, args)
+                    deny_event = {"type": "tool", "name": name, "label": label,
+                                  "summary": summary, "files": [], "denied": True,
+                                  "reason": verdict.reason}
+                    events.append(deny_event)
+                    await manager.broadcast({"type": "tool_done", "event": deny_event,
+                                             "ts": time.time(), **_turn_tag()})
+                    msgs.append({"role": "tool", "tool_call_id": call["id"],
+                                 "content": f"[{name}] 审批拒绝：{verdict.reason}"})
+                    print(f"[DeckMeido][approval] 拒绝 {name}（{verdict.rule}，"
+                          f"会话 {turn_sid}）：{verdict.reason}", file=sys.stderr)
+                    return (f"这条操作被拦下了（{verdict.label}：{verdict.reason}）。"
+                            f"它属于不可逆的破坏性操作，不会执行，也不要换一种写法绕过。"
+                            f"如果确实需要，请自己在桌面终端里手动操作。")
+                needs_approval = verdict.ask
 
                 if needs_approval or remote_risk.level == "hard_confirm":
+                    hard = verdict.hard or remote_risk.level == "hard_confirm"
                     # 挂起危险操作，等用户下一轮确认。把「谁在哪提的」一并记下，
                     # 确认时校验（见 _pending_matches），别的端说的「好」不算数。
                     # hard 档只认「确认执行」，onebot 侧会按这个标记收紧确认口径
                     pending_action = {"name": name, "args": args,
                                       "description": tools.describe(name, args),
-                                      "hard": (remote_risk.level == "hard_confirm"
-                                               or bool(extra_danger)),
+                                      "hard": hard,
                                       "sid": store.turn.get("sid") or store.current_sid,
                                       "epoch": store.turn.get("epoch") or store.epoch,
                                       "turn_id": store.turn.get("turn_id") or "",
                                       "client": store.turn.get("client") or "",
                                       "device": store.turn.get("device") or ""}
-                    print(f"[DeckMeido] 工具待确认 {name}（模式 {PERMISSION_MODE}）："
+                    print(f"[DeckMeido] 工具待确认 {name}（模式 {PERMISSION_MODE}，"
+                          f"{verdict.label}{'/' + verdict.reason if verdict.reason else ''}）："
                           f"{pending_action['description']}")
                     text_out = prompts.part("pending_approval").format(
                         description=pending_action['description'])
                     if pending_action["hard"]:
-                        text_out += ("\n这项操作在 QQ 远程属于高风险，"
+                        text_out += ("\n这项操作风险较高"
+                                     f"（{verdict.label}：{verdict.reason or '高危操作'}），"
                                      "只有回复「确认执行」才会执行。")
                     return text_out
 

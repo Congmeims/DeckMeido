@@ -2408,6 +2408,10 @@ def _session_user() -> tuple[int, str] | None:
     而 gamescope 在 deck 用户的图形会话里，套接字在 /run/user/1000。
     直接用 getuid() 会连到 /run/user/0，抓帧必然失败。
     """
+    if not hasattr(os, "getuid"):
+        # 非 Linux（开发机跑 Windows 时）：没有 pwd 模块，也没有 /run/user。
+        # 这条探针只用于判断游戏模式，拿不到就当不知道，不能抛错把状态接口带崩
+        return None
     import pwd
 
     if os.getuid() != 0:

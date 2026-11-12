@@ -894,7 +894,10 @@ class SinkFallbackTest(unittest.TestCase):
     def _pick(self, default, text):
         def fake(*args):
             return default if args[0] == "get-default-sink" else text
+        # _which 有进程级缓存：前面的用例跑过之后 pactl 会被记成「没有」，
+        # 只 patch shutil.which 就不生效了，必须把缓存一起清掉
         with mock.patch.object(ttsmod.shutil, "which", return_value="/usr/bin/pactl"), \
+             mock.patch.dict(ttsmod._WHICH_CACHE, {}, clear=True), \
              mock.patch.object(ttsmod, "_pactl_output", side_effect=fake):
             return ttsmod.pick_sink()
 

@@ -185,9 +185,13 @@ class MenuEntryTest(unittest.TestCase):
         self.assertTrue(menu.authorize("memo_clear", is_admin=True))
 
     def test_help_lists_entry(self):
+        # 帮助文案只列中文指令（写成「meido 忘掉群聊」），斜杠写法是内部解析用的
         text = menu.help_text("meido")
-        self.assertIn("/memo", text)
+        self.assertIn("忘掉群聊", text)
         self.assertIn("清除本群常识缓存", text)
+        for line in text.splitlines()[1:-1]:
+            self.assertTrue(line.startswith("忘掉群聊")
+                            or not line.startswith("/"), line)
 
 
 if __name__ == "__main__":
