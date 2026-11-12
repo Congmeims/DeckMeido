@@ -1,7 +1,8 @@
 """上传任务卡的纯函数测试：汇总进度 / 体积格式化 / 失败聚合。
 
-index.html 是单文件内联脚本，这里只抽取 [FB-UPLOAD-HELPERS] 标记之间的
-纯函数，用 node 跑断言；没有 node 时跳过（不伪造结果）。
+纯函数已从 index.html 的内联脚本拆到 server/static/upload-helpers.js，
+这里只抽取 [FB-UPLOAD-HELPERS] 标记之间的纯函数，用 node 跑断言；
+没有 node 时跳过（不伪造结果）。
 
     python -m unittest tests.test_upload_aggregate -v
 """
@@ -16,7 +17,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-HTML = ROOT / "server" / "static" / "index.html"
+HTML = ROOT / "server" / "static" / "upload-helpers.js"
 NODE = shutil.which("node") or shutil.which("node.exe")
 
 
@@ -27,7 +28,7 @@ def _extract_helpers() -> str:
         text, re.S,
     )
     if not m:
-        raise AssertionError("index.html 里找不到 FB-UPLOAD-HELPERS 标记段")
+        raise AssertionError("upload-helpers.js 里找不到 FB-UPLOAD-HELPERS 标记段")
     return m.group(1)
 
 
