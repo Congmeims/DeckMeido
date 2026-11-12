@@ -176,6 +176,25 @@ def pending_status() -> dict | None:
         return dict(_pending) if _pending else None
 
 
+def pending_command(now: float | None = None) -> dict | None:
+    """取出被拦下、还值得续跑的命令：{"command", "source", "created"}。
+
+    没有待授权请求、或它已经过期、或它本来就只是「用户主动提前授权」
+    （command 为空）时返回 None，调用方据此决定是否触发续跑。
+    """
+    with _lock:
+        if not _pending:
+            return None
+        command = str(_pending.get("command") or "").strip()
+        if not command:
+            return None
+        if _now(now) >= float(_pending.get("expires") or 0):
+            return None
+        return {"command": command,
+                "source": str(_pending.get("source") or ""),
+                "created": float(_pending.get("created") or 0)}
+
+
 def clear_all() -> None:
     """仅测试用：清空缓存与待授权请求"""
     global _cache, _pending, _probe
@@ -308,7 +327,7 @@ def _request_message(source: str) -> str:
             f"授权入口已经打开：请在输入框上方的「需要授权」行输入一次管理员密码，"
             f"通过后 {minutes} 分钟内 sudo 命令会直接复用，不会再问。"
             "不要在对话里把密码明文发给我，也不要使用 echo 密码 | sudo -S 这类写法。"
-            "授权完成后重新执行这条命令即可。")
+            "授权完成后会自动重新执行这条命令，不需要你再催我。")
 
 
 def prepare(command: str, source: str = "run_command",
@@ -332,7 +351,7 @@ def prepare(command: str, source: str = "run_command",
         _pending = {
             "id": f"{int(_now(now) * 1000)}",
             "source": str(source or ""),
-            "command": redact_command(command),
+            "command": command,
             "created": _now(now),
             "attempts": 0,
             "last_error": "",
@@ -340,11 +359,12 @@ def prepare(command: str, source: str = "run_command",
         }
         info = dict(_pending)
     _notify({"state": "need_password", "message": "命令需要管理员授权",
-             "source": info["source"], "command": info["command"],
+             "source": info["source"],
+             "command": redact_command(info["command"]),
              "ttl": int(_ttl)})
     _audit_auth("deny", source, "need_password", "等待管理员输入密码")
     return {"ok": False, "reason": "need_auth", "message": _request_message(source),
-            "pending": info}
+            "pending": {**info, "command": redact_command(info["command"])}}
 
 
 def provide_password(password: str, source: str = "ui") -> dict:
@@ -357,10 +377,16 @@ def provide_password(password: str, source: str = "ui") -> dict:
         return {"ok": False, "reason": "empty", "error": "请输入管理员密码"}
     ok, reason, message = verify(password)
     if ok:
+        # store() 会清空 _pending，续跑要用的命令必须在它之前取出来
+        held = pending_command()
         store(password, source)
         _notify({"state": "ok", "expires_in": int(_ttl), "ttl": int(_ttl)})
         _audit_auth("ok", source, "verified", f"授权 {int(_ttl)}s 内复用")
-        return {"ok": True, "expires_in": int(_ttl), "ttl": int(_ttl)}
+        res = {"ok": True, "expires_in": int(_ttl), "ttl": int(_ttl)}
+        if held:
+            # 交给调用方（main）去续跑；用户主动授权时这里为空
+            res["resume"] = held
+        return res
     with _lock:
         if _pending is None:
             # 用户可能在命令触发前就主动授权；失败次数同样要计数

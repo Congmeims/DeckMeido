@@ -4742,7 +4742,42 @@ async def api_sudo_password(req: SudoPasswordBody):
     res = await asyncio.to_thread(sudo_auth.provide_password, req.password, "ui")
     if not res.get("ok"):
         return JSONResponse(res, status_code=400)
+    held = res.pop("resume", None)
+    if held:
+        res["resumed"] = _resume_after_sudo(held)
     return res
+
+
+def _resume_after_sudo(held: dict) -> bool:
+    """密码通过后自动续跑被拦下的那条命令。
+
+    之前只做了一半：命令被拦下 → 用户输密码 → 授权成功，但没有任何环节
+    重新发起那一轮，模型就停在那儿等用户催（会话 042b6a 就是这么卡住的）。
+
+    这里用 announce=False 起一轮新对话，不让界面重复出现一条「用户消息」；
+    上一轮还在跑时不抢跑（current_task 单例会被覆盖），改由界面提示用户。
+    """
+    if current_task is not None and not current_task.done():
+        devlog.debug("main._resume_after_sudo", reason="busy, skipped",
+                     command=held.get("command", "")[:120])
+        return False
+    command = str(held.get("command") or "").strip()
+    if not command:
+        return False
+    text = (f"管理员授权已经通过。刚才被拦下、没有执行的命令是：\n{command}\n"
+            "请现在直接重新执行它（sudo 参数已经可用，不要向我索要密码），"
+            "然后把执行结果告诉我，并继续完成原来那一轮剩下的步骤。")
+
+    async def _run() -> None:
+        try:
+            await start_chat(text, announce=False)
+        except Exception as exc:
+            devlog.debug("main._resume_after_sudo", error=repr(exc))
+
+    asyncio.create_task(_run())
+    devlog.debug("main._resume_after_sudo", reason="started",
+                 command=command[:120])
+    return True
 
 
 @app.get("/api/selfcheck/progress", dependencies=[Depends(require_auth)])
