@@ -1606,9 +1606,12 @@ optional_downloads() {
   dim "默认全装：能用到的组件全部装上；已存在的自动跳过，不会重复下载。"
 
   # 1. 服务端运行依赖
+  # 末尾的 "|| true" 不能省：opt_download 对已存在的项返回 1，而这里是
+  # set -e 下的函数最后一条命令，函数会以 1 结束，整个安装直接静默退出
+  # （表现就是「检测到 venv 已装 fastapi → 打印跳过 → 安装结束」）。
   opt_download "Python 运行依赖（服务端）" "FastAPI/uvicorn 等，缺了后端跑不起来" \
     "$(mb_text "$(dep_mb server)")" \
-    "$(have_py_module "$py" "fastapi" && echo "模块已在 venv 中" || true)"
+    "$(have_py_module "$py" "fastapi" && echo "模块已在 venv 中" || true)" || true
   export DECKMEIDO_SKIP_SERVER=0
 
   # 2. 桌面客户端（PySide6 + WebEngine）
@@ -1619,7 +1622,7 @@ optional_downloads() {
     dim "桌面客户端 PySide6：DECKMEIDO_SKIP_GUI=1，显式跳过"
   else
     opt_download "桌面客户端（PySide6）" "桌面窗口与内置浏览器，不要也能用网页版" \
-      "$(mb_text "$(dep_mb gui)")" ""
+      "$(mb_text "$(dep_mb gui)")" "" || true
     unset DECKMEIDO_SKIP_GUI
   fi
 
@@ -1627,14 +1630,14 @@ optional_downloads() {
   local stt_model="$DATA_MODELS/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx"
   opt_download "语音输入 STT" "sherpa-onnx 运行库 + SenseVoice 识别模型" \
     "$(mb_text "$(( $(dep_mb stt_mod) + $(dep_mb stt_model) ))")" \
-    "$(have_py_module "$py" sherpa_onnx && [ -f "$stt_model" ] && echo "运行库与模型齐全" || true)"
+    "$(have_py_module "$py" sherpa_onnx && [ -f "$stt_model" ] && echo "运行库与模型齐全" || true)" || true
   export DECKMEIDO_INSTALL_STT=1
 
   # 4. 语音合成（piper-plus + つくよみちゃん模型）
   local tts_model="$DATA_MODELS/tts/tsukuyomi/tsukuyomi-chan-6lang-fp16.onnx"
   opt_download "语音合成 TTS" "piper-plus 运行库 + つくよみちゃん模型" \
     "$(mb_text "$(( $(dep_mb tts_mod) + $(dep_mb tts_model) + $(dep_mb nltk) ))")" \
-    "$(have_py_module "$py" piper_plus && [ -f "$tts_model" ] && echo "运行库与模型齐全" || true)"
+    "$(have_py_module "$py" piper_plus && [ -f "$tts_model" ] && echo "运行库与模型齐全" || true)" || true
   export DECKMEIDO_INSTALL_TTS=1
 
   # 5. 系统控件依赖（代替用户动手的 ydotool / wtype 等）
@@ -1671,7 +1674,7 @@ optional_downloads() {
       dim "Decky 插件：已安装 v$pver，升级时会自动替换为新版本"
     else
       opt_download "Decky 插件包" "游戏模式 QAM 面板" \
-        "$(mb_text "$(dep_mb plugin)")" ""
+        "$(mb_text "$(dep_mb plugin)")" "" || true
     fi
   fi
   export DECKMEIDO_INSTALL_PLUGIN=1
