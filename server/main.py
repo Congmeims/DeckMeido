@@ -34,7 +34,7 @@ from . import approval
 from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, media, memory, menu, netcfg, netmode, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, remote_terminal, selfcheck, singleton, sleepmode, status_line, sudo_auth, tools, updater, usage, wake
 from .session_store import store
 from . import session_store
-from . import routes_config, routes_logs, routes_sessions
+from . import routes_config, routes_logs, routes_sessions, routes_system
 from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, TTSError, normalize_speaker,
                   speaker_from_legacy)
 from .stt import STT, STTError, record_supported
@@ -3759,33 +3759,7 @@ async def api_file_stat(payload: dict):
         raise HTTPException(status_code=404, detail="file not found")
 
 
-@app.get("/api/status", dependencies=[Depends(require_auth)])
-async def api_status():
-    # 完整采集（模式探针 pw-dump、depcheck、tts）全部在线程里跑并带 TTL 缓存，
-    # 别阻塞事件循环（WS 与流式输出都在同一个 loop 上）
-    return await status_async()
-
-
-@app.get("/api/net/probe", dependencies=[Depends(require_auth)])
-async def api_net_probe(force: bool = False):
-    """公网连通性：online / lan_only / offline
-
-    按需探测、结果缓存；总预算 2 秒，不会拖住启动或设置页。界面拿到非 online
-    时只提示「可以切到离线模式」，绝不自动改开关。
-    """
-    return await asyncio.to_thread(netmode.probe, bool(force))
-
-
-@app.get("/api/status/line", dependencies=[Depends(require_auth)])
-async def api_status_line(state: str = Query(default=""),
-                          game: str = Query(default=""),
-                          game_confidence: str = Query(default=""),
-                          nickname: str = Query(default="")):
-    """插件状态栏的一句话（idle/busy/error + 高置信度游戏名 + 昵称）
-
-    不写会话历史、不写 memory.json；失败自动回本地模板，状态栏永不空白。
-    """
-    return await build_status_line(state, game, game_confidence, nickname)
+# 状态接口（/api/status*、/api/net/probe）在 server/routes_system.py
 
 
 # 当前正在处理的对话任务（用于终止按钮）
@@ -3883,15 +3857,6 @@ class PairDecisionRequest(BaseModel):
 
 class PairIdRequest(BaseModel):
     pair_id: str
-
-
-class DeviceRenameRequest(BaseModel):
-    device_id: str
-    name: str
-
-
-class DeviceIdRequest(BaseModel):
-    device_id: str
 
 
 class PairQrRequest(BaseModel):
@@ -4647,39 +4612,7 @@ async def pair_qr_page():
     return HTMLResponse(QR_PAGE_HTML)
 
 
-# ---------- 已配对设备 ----------
-
-@app.get("/api/devices", dependencies=[Depends(require_auth)])
-async def api_devices():
-    return {"ok": True, "devices": pairing.manager.devices.list(),
-            "device_days": _device_days()}
-
-
-@app.post("/api/devices/rename", dependencies=[Depends(require_auth)])
-async def api_device_rename(req: DeviceRenameRequest, request: Request):
-    try:
-        device = pairing.manager.devices.rename(req.device_id, req.name)
-    except pairing.PairError as exc:
-        raise _pair_http(exc) from exc
-    audit.record("device", "rename", "ok", ip=_client_ip(request),
-                 detail=device.get("name", ""))
-    return {"ok": True, "device": device}
-
-
-@app.post("/api/devices/remove", dependencies=[Depends(require_auth)])
-async def api_device_remove(req: DeviceIdRequest, request: Request):
-    if not pairing.manager.devices.remove(req.device_id):
-        raise HTTPException(status_code=404, detail="设备不存在或已被移除")
-    audit.record("device", "remove", "ok", ip=_client_ip(request),
-                 detail=req.device_id[:8])
-    return {"ok": True, "devices": pairing.manager.devices.list()}
-
-
-@app.post("/api/devices/remove_all", dependencies=[Depends(require_auth)])
-async def api_device_remove_all(request: Request):
-    n = pairing.manager.devices.remove_all()
-    audit.record("device", "remove_all", "ok", ip=_client_ip(request), detail=str(n))
-    return {"ok": True, "removed": n}
+# 设备接口（/api/devices*）与 DeviceRenameRequest / DeviceIdRequest 在 server/routes_system.py
 
 
 # ---------- 登录与配对审计 ----------
@@ -6189,25 +6122,7 @@ def phone_url() -> str:
     return f"http://{_lan_ip()}:{port}/"
 
 
-@app.get("/api/qrcode", dependencies=[Depends(require_auth)])
-async def api_qrcode():
-    """局域网访问地址 + 二维码 PNG（base64）"""
-    url = phone_url()
-    png_b64 = ""
-    try:
-        import base64
-        import io
-
-        import qrcode
-
-        img = qrcode.make(url)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        png_b64 = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-    except Exception as exc:
-        devlog.debug("main.api_qrcode", error=repr(exc))
-        pass
-    return {"url": url, "qr": png_b64}
+# 二维码接口（/api/qrcode）在 server/routes_system.py
 
 
 # ---------- 操作遮罩 ----------
@@ -8279,6 +8194,10 @@ app.include_router(routes_config.router)
 # 会话路由同样要回读 main 的运行态（pending_action / current_task / _ctx_used）
 routes_sessions.init(require_auth, _client_ip, lambda: sys.modules[__name__], set_overlay)
 app.include_router(routes_sessions.router)
+
+# 状态与设备接口同样回读 main 的运行态（status_async / phone_url / _pair_http）
+routes_system.init(require_auth, _client_ip, lambda: sys.modules[__name__])
+app.include_router(routes_system.router)
 
 
 # 静态网页控制台（放最后挂载，避免覆盖 API 路由）
