@@ -1841,12 +1841,24 @@ def _reject_unauthorized(ip: str, action: str, detail: str = "") -> None:
     raise HTTPException(status_code=401, detail="未配对设备：请先在设置页配对")
 
 
-def require_auth(request: Request):
-    """接口总闸：本机回环免验证，局域网必须已配对（HttpOnly 设备 Cookie）。
+def _is_native_client(request) -> bool:
+    """请求是否来自掌机自己的原生客户端（Deck 桌面客户端内嵌页面）。
 
-    令牌已下线。静态页面本身不设防，未配对时前端会弹 PIN 配对，
-    受保护接口统一 401，不存在「页面能进但接口通不了」的中间态。
+    客户端发起的请求带 X-DeckMeido-Client: 1（见 client/main.py
+    WebPage.acceptNavigationRequest），并且这条请求本身必须来自回环地址。
+    两个条件同时成立才算本机：自定义头普通网页 fetch 要跨域预检、伪造不了，
+    回环地址保证真的是同一台机器，其他设备的浏览器拿不到本机回环入口。
     """
+    ip = _client_ip(request)
+    if not netcfg.is_local(ip):
+        return False
+    return request.headers.get("x-deckmeido-client", "") == "1"
+
+
+def require_auth(request: Request):
+    """接口总闸：本机回环（含原生客户端）免验证，局域网必须已配对。"""
+    if _is_native_client(request):
+        return
     ip = _client_ip(request)
     if netcfg.is_local(ip):
         return
@@ -2088,6 +2100,29 @@ async def _lan_guard(request, call_next):
     ip = request.client.host if request.client else ""
     if not netcfg.lan_enabled(server_cfg) and not netcfg.is_loopback(ip):
         return JSONResponse({"detail": "局域网访问未开启，请在掌机设置里启用"}, status_code=403)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _native_client_cors(request, call_next):
+    """放行原生客户端发出的本机请求头（X-DeckMeido-Client）。
+
+    客户端页面地址是 http://127.0.0.1:PORT，但内嵌页面可能从别的源加载
+    （以及跨源 fetch），浏览器会为自定义头先发 OPTIONS 预检。这里只对
+    回环来源放行这一个头，其他来源一律不加 CORS 头。
+    """
+    origin = request.headers.get("origin", "")
+    ip = request.client.host if request.client else ""
+    if origin and netcfg.is_local(ip):
+        if request.method == "OPTIONS":
+            resp = Response(status_code=204)
+        else:
+            resp = await call_next(request)
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Headers"] = "X-DeckMeido-Client, Content-Type"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+        resp.headers["Vary"] = "Origin"
+        return resp
     return await call_next(request)
 
 
@@ -3718,7 +3753,7 @@ async def api_auth_session(request: Request):
 
     网页打开时先问一次，已配对就直接进主界面；未配对则弹 PIN 配对。
     """
-    local = netcfg.is_local(_client_ip(request))
+    local = netcfg.is_local(_client_ip(request)) or _is_native_client(request)
     device = None if local else _cookie_device(request)
     authenticated = bool(local or device)
     return {

@@ -1123,7 +1123,12 @@ def main() -> int:
         )
 
     class WebPage(QWebEnginePage):
-        """自动授予麦克风权限，让语音输入在客户端里可用
+        """客户端专用页面：自动授予麦克风权限，并给本机请求打上「原生客户端」标记
+
+        本机免配对的前提是后端能确认「这个请求来自掌机自己的客户端」。客户端
+        连的是 127.0.0.1，但用户也可能在 Deck 浏览器里开 127.0.0.1，两者回环
+        地址一样；所以客户端给每个自己发出的请求加一个自定义头（自定义头只能
+        fetch 主动加、且会触发 CORS 预检，别的站点伪造不了），后端据此放行。
 
         权限回调的接口随 Qt 版本变过一次：Qt 6.8 起是 permissionRequested
         信号，参数 QWebEnginePermission（用 permissionType() 判断、
@@ -1166,6 +1171,22 @@ def main() -> int:
                         signal.connect(self._answer_feature)
                     except Exception as exc:
                         _dev_log("web.permission.connect", api="featurePermissionRequested", error=exc)
+
+        def acceptNavigationRequest(self, url, nav_type, is_main_frame):
+            """客户端发起的请求统一带 X-DeckMeido-Client: 1
+
+            Qt 只在请求本机地址时回填这个头，所以它同时也等于「回环」证明；
+            后端只认「回环 + 该头」这一组合。
+            """
+            try:
+                req = self.urlRequest() if hasattr(self, "urlRequest") else None
+                if req is not None:
+                    target = url.toString() if hasattr(url, "toString") else str(url)
+                    if target.startswith(API):
+                        req.setRawHeader(b"X-DeckMeido-Client", b"1")
+            except Exception as exc:
+                _dev_log("web.header.error", error=exc)
+            return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
         def _answer(self, permission) -> None:
             """Qt 6.8+：用 QWebEnginePermission 的 grant()/deny() 直接答复"""
