@@ -5868,6 +5868,7 @@
         connInfo.authMode = d && d.local ? '本机回环（免验证）'
           : (d && d.device ? '设备配对凭据' : '未登录');
         if (deviceSession) {
+          authOverlay.classList.remove('show');
           if (d.version_display || d.version) {
             authVer.textContent = 'v' + (d.version_display || d.version);
           }
