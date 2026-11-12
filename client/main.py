@@ -1052,7 +1052,7 @@ def main() -> int:
         return 0
 
     try:
-        from PySide6.QtWebEngineCore import QWebEnginePage
+        from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
         from PySide6.QtWebEngineWidgets import QWebEngineView
     except ImportError:
         QMessageBox.critical(
@@ -1067,6 +1067,33 @@ def main() -> int:
         from PySide6.QtWebEngineCore import QWebEnginePermission
     except ImportError:
         QWebEnginePermission = None
+
+    _PROFILE_HOLDER: list = []
+
+    def _persistent_profile() -> QWebEngineProfile:
+        """固定存储位置的持久化 QWebEngineProfile（全局只建一份）。
+
+        设备配对的凭据是 HttpOnly Cookie，必须能跨客户端重启存活；用默认
+        profile 时存储目录取决于 Qt 版本与运行环境，目录一变 Cookie 就丢，
+        本机页面会退化成「未配对」。这里显式指定到数据目录下。
+        """
+        if _PROFILE_HOLDER:
+            return _PROFILE_HOLDER[0]
+        storage = _DATA_DIR / "webprofile"
+        try:
+            storage.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        profile = QWebEngineProfile("deckmeido", QApplication.instance())
+        try:
+            profile.setPersistentStoragePath(str(storage))
+            profile.setCachePath(str(storage / "cache"))
+            profile.setPersistentCookiesPolicy(
+                QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
+        except Exception as exc:
+            _dev_log("web.profile.setup", error=exc)
+        _PROFILE_HOLDER.append(profile)
+        return profile
 
     def _enum_member(owner, attr: str):
         """按 Qt 版本查枚举：新版权限在 QWebEnginePermission.PermissionType，
@@ -1110,8 +1137,11 @@ def main() -> int:
         这里按版本分别接信号，只做授权，不碰页面加载与 R2 的任何逻辑。
         """
 
-        def __init__(self, parent=None):
-            super().__init__(parent)
+        def __init__(self, parent=None, profile=None):
+            if profile is not None:
+                super().__init__(profile, parent)
+            else:
+                super().__init__(parent)
             self._allowed = tuple(
                 t for t in (
                     _permission_type("MediaAudioCapture"),
@@ -1174,7 +1204,11 @@ def main() -> int:
         return 1
 
     view = QWebEngineView()
-    view.setPage(WebPage(view))
+    # 显式挂一个持久化 Profile：不指定时 Qt 用默认 profile，会把 Cookie
+    # 存到 ~/.local/share/DeckMeido（或缓存目录），路径随版本/环境变化，
+    # 一旦丢失设备 Cookie，本机页面就会以为「需要配对」。这里固定落在
+    # 数据目录下，后端重装/重启都不会连带清掉。
+    view.setPage(WebPage(view, _persistent_profile()))
     view.setWindowTitle("DeckMeido")
     # 屏蔽网页区右键菜单（Reload/Save page 等 Qt 自带项，在本客户端无用）
     view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
