@@ -4748,6 +4748,15 @@
   // 长时间跑、又一直没输出的命令（sleep、等下载、轮询服务）挂满一屏会把有用的
   // 那几条挤出视野，所以先静音等这么久；到点还没有任何输出就自己收成一行
   var TERM_QUIET_MS = 4000;
+  // 命令结束后完整卡片再留多久才折进「更早的命令」归档区。
+  // 以前 5 秒后整条淡出，用户来不及看退出码；现在成功的留 15 秒，
+  // 失败的留 1 分钟（要能回头查报错，又不能让失败卡片常年堆着）
+  var TERM_KEEP_MS = 15000;
+  var TERM_KEEP_FAIL_MS = 60000;
+  // 归档区最多记多少条，超了丢最老的（内存不会无限涨）
+  var TERM_ARCH_MAX = 100;
+  // 归档区是否展开（用户点过「更早的命令」之后记住，切会话时复位）
+  var termArchOpen = false;
 
   function termElapsedSec(it) {
     var t0 = it.startedAt || (it.sent ? it.sent * 1000 : 0);
@@ -4780,17 +4789,17 @@
   }
 
   function termRenderOne(it) {
+    // 归档项（结束够久了）不再画整张卡片：只留一行「谁 · 命令 · 状态」，
+    // 点一下放大仍可看完整输出（it.out 还在）
+    it._renderedArch = termArchived(it);
+    if (it._renderedArch) return termRenderArchRow(it);
     var box = document.createElement('div');
     box.className = 'tm' + (it.running ? ' running' : '') + (it.collapsed ? ' collapsed' : '');
     it._box = box;
-    // 已退出的命令到点自动消散。diedAt 在状态翻转为结束时打点；
-    // 重画每 800ms 重建节点会让动画从头重播，按「已消散时长」设负 delay 续播
-    var dieAge = it.diedAt ? Date.now() - it.diedAt : -1;
-    if (dieAge >= TERM_DIE_DELAY) {
-      box.classList.add('dying');
-      box.style.animationDelay = (-Math.min(dieAge - TERM_DIE_DELAY, TERM_DIE_ANIM)) / 1000 + 's';
-      if (dieAge - TERM_DIE_DELAY >= TERM_DIE_ANIM) it.dieGone = true;
-    }
+    // 注意：这里不再给结束的命令加 dying 类。
+    // 以前命令一结束就播 0.9s 淡出动画再整条删掉，等于「跑完 5 秒就看不见了」，
+    // 退出码和输出根本来不及看。现在结束的卡片保持原样，等 TERM_KEEP_MS 到了
+    // 才折进底部的「更早的命令」归档区（见 termArchived / termRenderAll）
     var head = document.createElement('div');
     head.className = 'tm-head';
     head.title = (it.reason ? it.reason + '\n' : '') + (it.cmdText || it.cmd);
@@ -5143,6 +5152,27 @@
       });
   }
 
+  // 清空终端记录。切换/新建/删除会话时必须调用：以前这些记录只存在前端的
+  // term.items 里，跟会话没有任何绑定，跑几十条长任务后右侧栏就堆满了，
+  // 删会话也清不掉，重启页面之前一直在。
+  function termResetList() {
+    termStopPoll();
+    var big = termBig ? termBig.it : null;
+    if (big) termCloseBig();
+    for (var i = 0; i < term.items.length; i++) {
+      var x = term.items[i];
+      // xterm 实例不释放会一直挂着 canvas 和监听
+      if (x.xt) { try { x.xt.dispose(); } catch (e) {} x.xt = null; }
+      if (x.xtView) { try { x.xtView.term.dispose(); } catch (e) {} x.xtView = null; }
+      // 还挂着的「自动收起」定时器：数组清空后 termAutoCollapse 自己会返回
+      if (x._timer) { clearTimeout(x._timer); x._timer = null; }
+    }
+    term.items = [];
+    term.trackIdx = -1;
+    termArchOpen = false;
+    termRenderAll();
+  }
+
   function termRenderAll() {
     var list = rbEl('termList');
     if (!term.items.length) {
@@ -5154,24 +5184,18 @@
     // 否则关闭浮层时 host 无处可回。所以只清非放大那条的 DOM，放大那条跳过重建
     var bigIt = (termBig && termBig.it) ? termBig.it : null;
     list.innerHTML = '';
-    // 消散动画播完的从列表里真正移除
-    var gone = 0;
-    for (var g = 0; g < term.items.length; g++) {
-      var x = term.items[g];
-      if (!x.running && x.diedAt && Date.now() - x.diedAt > TERM_DIE_DELAY + TERM_DIE_ANIM + 100) {
-        // 释放 xterm 实例（手动命令的 it.xt 或 AI 的 it.xtView）
-        if (x.xt) { try { x.xt.dispose(); } catch (e) {} x.xt = null; }
-        if (x.xtView) { try { x.xtView.term.dispose(); } catch (e) {} x.xtView = null; }
-        gone++;
-      } else if (gone) {
-        term.items[g - gone] = x;
-      }
-    }
-    if (gone) {
-      term.items.length -= gone;
-      if (term.trackIdx >= term.items.length) term.trackIdx = term.items.length - 1;
-    }
+    // 还在跑的和刚结束的先画（重要的在上面），结束够久的折进底部一条
+    // 「更早的命令 N 条」。以前跑几十条长任务后右栏就被十几张卡片占满，
+    // 真正在跑的那条反倒被挤出视野
+    var archived = [];
     term.items.forEach(function (it) {
+      if (termArchived(it) && it !== bigIt) {
+        // 归档后不再需要 xterm 实例（只留 it.out 文本），顺手释放掉
+        if (it.xt) { try { it.xt.dispose(); } catch (e) {} it.xt = null; }
+        if (it.xtView) { try { it.xtView.term.dispose(); } catch (e) {} it.xtView = null; }
+        archived.push(it);
+        return;
+      }
       // 放大浮层里的那条：只建一个占位 box（host DOM 在浮层），关浮层时再回填
       if (it === bigIt) {
         var ph = document.createElement('div');
@@ -5184,8 +5208,64 @@
       }
       list.appendChild(termRenderOne(it));
     });
+    if (archived.length) list.appendChild(termRenderArchive(archived));
     if (nearBottom) list.scrollTop = list.scrollHeight;
     if (termBig) termRefreshBig();
+  }
+
+  // 归档项的一行：谁 / 命令 / 状态，点开是放大浮层
+  function termRenderArchRow(it) {
+    var row = document.createElement('div');
+    row.className = 'tm-arch-row';
+    var who = document.createElement('span');
+    who.className = 'who' + (it.who === 'me' ? ' me' : '');
+    who.textContent = it.who === 'me' ? '我' : 'AI';
+    var cmd = document.createElement('span');
+    cmd.className = 'cmd';
+    cmd.textContent = it.cmdText || it.cmd;
+    cmd.title = (it.reason ? it.reason + '\n' : '') + (it.cmdText || it.cmd);
+    var st = document.createElement('span');
+    st.className = 'st';
+    st.innerHTML = termStatusText(it);
+    row.appendChild(who);
+    row.appendChild(cmd);
+    row.appendChild(st);
+    row.title = '点击放大查看输出';
+    row.addEventListener('click', function () { termOpenBig(it); });
+    return row;
+  }
+
+  // 这条是不是「已经过去、可以折起来」的：结束满 TERM_KEEP_MS 就归档。
+  // 失败的命令多留一会儿（TERM_KEEP_FAIL_MS），退出码要让人看得到。
+  // 退出码 -1 / null 表示「没拿到退出码」（会话未建立、被中断），
+  // 不当作失败——否则终端没连上时每条命令都要在屏上赖三分钟
+  function termArchived(it) {
+    if (!it || it.running || !it.diedAt) return false;
+    var failed = typeof it.exit === 'number' && it.exit > 0;
+    return Date.now() - it.diedAt > (failed ? TERM_KEEP_FAIL_MS : TERM_KEEP_MS);
+  }
+
+  // 归档区：一条可点开的窄条，默认收起。展开后每条只占一行（命令 + 状态 + 耗时），
+  // 想细看的点「⤢」放浮层——归档项的输出还留在 it.out 里，放大照常能看
+  function termRenderArchive(items) {
+    var wrap = document.createElement('div');
+    wrap.className = 'tm-arch' + (termArchOpen ? ' open' : '');
+    var head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'tm-arch-head';
+    head.textContent = (termArchOpen ? '▾ ' : '▸ ') + '更早的命令 ' + items.length + ' 条';
+    head.title = termArchOpen ? '收起' : '展开查看';
+    head.addEventListener('click', function () {
+      termArchOpen = !termArchOpen;
+      termRenderAll();
+    });
+    wrap.appendChild(head);
+    if (!termArchOpen) return wrap;
+    // 新的在上：用户更关心刚才那条
+    items.slice().reverse().forEach(function (it) {
+      wrap.appendChild(termRenderArchRow(it));
+    });
+    return wrap;
   }
 
   function termAdd(who, cmd, reason, sentAt, slowHint) {
@@ -5200,10 +5280,10 @@
     // 手动敲的命令（who='me'）不动，用户就是要看自己那条的输出
     if (who === 'ai') {
       it.watchAt = Date.now();
-      setTimeout(function () { termAutoCollapse(it); }, TERM_QUIET_MS + 200);
+      it._timer = setTimeout(function () { termAutoCollapse(it); }, TERM_QUIET_MS + 200);
     }
     term.items.push(it);
-    if (term.items.length > 60) term.items.splice(0, term.items.length - 60);
+    if (term.items.length > TERM_ARCH_MAX) term.items.splice(0, term.items.length - TERM_ARCH_MAX);
     term.trackIdx = term.items.length - 1;
     termRenderAll();
     // AI 命令（who==='ai'）走旧轮询；手动命令（who==='me'）由 termRunCmd 起 WS 会话
@@ -5319,6 +5399,22 @@
     var cur = term.items[term.trackIdx];
     if (cur && !cur.running) termStopPoll();
   }, 5000);
+
+  // 归档的到点重绘：命令结束后轮询就停了，没人再调 termRenderAll，
+  // 「结束满 TERM_KEEP_MS 折成一行」就永远不会发生。这里低频兜底扫一遍，
+  // 只在某条该换形态（整卡 → 一行、或该淡出）时才重画，空闲时什么都不做
+  setInterval(function () {
+    if (!term.items || !term.items.length) return;
+    for (var i = 0; i < term.items.length; i++) {
+      var it = term.items[i];
+      if (it.running || !it.diedAt) continue;
+      var arch = termArchived(it);
+      // 形态和上次渲染时一致就不动它
+      if (it._renderedArch === arch) continue;
+      termRenderAll();
+      return;
+    }
+  }, 2000);
 
   function termRunCmd() {
     var inp = rbEl('termCmd');
@@ -6397,6 +6493,9 @@
           break;
         case 'history':
           if (msg.sid) currentSid = msg.sid;
+          // 终端里的命令记录属于上一个会话的上下文，跟着会话一起换掉；
+          // 否则每轮长任务的记录会在右栏越堆越多，删会话也带不走
+          termResetList();
           syncQqSessButton();
           // 本端身份以后端这条连接实际看到的为准：前端按 UA 猜只是兜底
           if (msg.my_client) localClient = msg.my_client;
@@ -13611,6 +13710,9 @@
                   addSystem('删除会话失败（HTTP ' + r.status + '）');
                 } else {
                   addSystem('会话已移入回收站（userdata/trash），需要时可手工找回');
+                  // 删的是当前会话：右栏的命令记录也跟着清掉，
+                  // 否则对话框空了、右边还挂着一屏上一个会话的执行记录
+                  if (s.id === currentSid) termResetList();
                 }
                 loadSessions();
               })

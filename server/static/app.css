@@ -3096,6 +3096,38 @@
   .tm-head .st.run { color: var(--brand); }
   .tm-head .st.ok { color: #2ecc71; }
   .tm-head .st.bad { color: var(--danger); }
+  /* 归档区：跑完一段时间的命令折进来，默认只露一条窄条。
+     以前这些卡片只能等 5 秒淡出，攒多了右栏整屏都是历史记录，
+     真正在跑的那条被挤到看不见。现在一条窄条 + 可展开的一行式清单 */
+  .tm-arch {
+    border: 1px dashed var(--line); border-radius: 9px;
+    background: transparent; overflow: hidden;
+    flex: 0 0 auto;
+  }
+  .tm-arch-head {
+    display: block; width: 100%; margin: 0; padding: 5px 8px;
+    background: none; border: 0; color: var(--muted);
+    font-size: 11px; text-align: left; cursor: pointer;
+  }
+  .tm-arch-head:hover { background: var(--hover); color: var(--text); }
+  .tm-arch-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 8px; font-size: 11px; color: var(--muted);
+    cursor: pointer; border-top: 1px solid var(--line);
+  }
+  .tm-arch-row:hover { background: var(--hover); }
+  .tm-arch-row .who {
+    flex: 0 0 auto; font-size: 10px; padding: 0 4px; border-radius: 4px;
+    background: rgba(26,159,255,.16); color: var(--brand);
+  }
+  .tm-arch-row .who.me { background: rgba(46,204,113,.14); color: #2ecc71; }
+  .tm-arch-row .cmd {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+  }
+  .tm-arch-row .st { flex: 0 0 auto; font-size: 10.5px; }
+  .tm-arch-row .st.ok { color: #2ecc71; }
+  .tm-arch-row .st.bad { color: var(--danger); }
   .tm-out {
     margin: 0; padding: 0 8px 8px; max-height: 220px; overflow: auto;
     font-family: var(--font-mono); font-size: 11px; line-height: 1.45;
