@@ -10,7 +10,7 @@
 * **模型不进插件 zip**，也不是安装时的必需依赖。sherpa-onnx 和模型都在
   首次按键时按需下载并校验，装不上只影响语音，不影响其它功能（懒依赖）。
 * **懒加载 + 空闲卸载**：第一次识别才建 recognizer，之后空闲
-  `IDLE_UNLOAD_SEC` 秒释放，Deck 只有 15W 功耗预算，不能让模型常驻。
+  `IDLE_UNLOAD_SEC` 秒由后台线程自动释放，Deck 只有 15W 功耗预算，不能让模型常驻。
 * **2 线程**：给推理留 2 个线程就够跑满实时率，线程开多了会和游戏抢 CPU。
 * 模型许可 Apache-2.0，可商用但**必须署名并保留模型名**，见 ATTRIBUTION。
 
@@ -68,9 +68,12 @@ UA = "DeckMeido"
 
 # 推理线程数：2 线程已能跑到实时率的数倍，再多只会和游戏抢 CPU
 NUM_THREADS = 2
-# 空闲多久释放 recognizer（秒）。10 分钟：连续对话不用反复加载，
-# 停下来之后又能尽快把内存还给系统
-IDLE_UNLOAD_SEC = 600
+# 空闲多久释放 recognizer（秒）。5 分钟：连续对话不用反复加载，
+# 停下来之后又能尽快把内存还给系统，不让 onnxruntime 的线程池一直空转耗电
+IDLE_UNLOAD_SEC = 300
+# 空闲检查的间隔（秒）。以前只在「下一次识别」时才检查，用完之后不再说话
+# 就永远不回收，线程池整夜空转；现在由后台线程定时检查
+IDLE_CHECK_SEC = 30
 
 
 class STTError(RuntimeError):
@@ -126,6 +129,8 @@ class STT:
         self._rec = None
         self._lock = threading.Lock()
         self._last_used = 0.0
+        # 空闲回收的后台线程：懒启动，识别器建好时才起，卸载后自己退出
+        self._idle_thread: threading.Thread | None = None
         self._ready_path: Path | None = None
         # 最近一次实际选中/尝试的下载源，给状态接口展示
         self._source_name = ""
@@ -744,7 +749,35 @@ class STT:
                 raise STTError(f"识别器加载失败：{exc}") from exc
             devlog.log("stt.model.load", model=str(root / "model.int8.onnx"),
                        threads=NUM_THREADS, language="auto")
+            # 加载用完才起回收线程：没有识别器时它无事可做，不白占一个线程
+            self._start_idle_watch()
             return self._rec
+
+    def _start_idle_watch(self):
+        """识别器建好后起一个后台线程，到点自动卸载
+
+        以前只在「下一次识别」时检查空闲，用完不再说话就永远不回收，
+        onnxruntime 的 2 个线程会一直空转（Deck 上实测半个核的 CPU）。
+        线程在识别器被卸载后自行退出，下次加载再起，不需要外部启停。
+        """
+        if self._idle_thread is not None and self._idle_thread.is_alive():
+            return
+        t = threading.Thread(target=self._idle_watch_loop, name="stt-idle",
+                             daemon=True)
+        self._idle_thread = t
+        t.start()
+
+    def _idle_watch_loop(self):
+        while True:
+            time.sleep(IDLE_CHECK_SEC)
+            with self._lock:
+                if self._rec is None:
+                    return
+                if time.time() - self._last_used < IDLE_UNLOAD_SEC:
+                    continue
+                self._rec = None
+            devlog.log("stt.model.unload", idle_sec=IDLE_UNLOAD_SEC)
+            return
 
     def _maybe_unload(self):
         """空闲超过 IDLE_UNLOAD_SEC 就释放 recognizer，把内存还给系统"""
