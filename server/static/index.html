@@ -5702,6 +5702,654 @@
     if (e.key === 'Enter') { e.preventDefault(); termRunCmd(); }
   });
 
+  function connect() {
+    // 已配对设备靠 HttpOnly Cookie 认证；本机回环访问后端直接放行
+    if (!deviceSession) { showAuth(''); return; }
+    // 防重入：已有连接正在建/已建立时不要再开一条，
+    // 否则两条 ws 同时收消息、onclose 互相打架，重连风暴会打乱忙碌态
+    if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
+    var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(proto + '://' + location.host + '/ws');
+
+    ws.onopen = function () {
+      connInfo.closeCount = 0;
+      connInfo.closeCode = null;
+      connInfo.httpOk = null;
+      connInfo.lastMsgAt = Date.now();
+      setConnState('on');
+      afterConnect(true);
+      backoff = 1000;
+      reconnectTimer = null;
+      authOverlay.classList.remove('show');
+      authErr.textContent = '';
+      // 连接成功：接下来第一条 status 会带上 llm_configured，由它决定要不要弹设置页
+      if (onboardState === '') onboardState = 'pending';
+      lastMsgAt = Date.now();
+      startHeartbeat();
+      // 网页在前台才算「用户正看着」：页面可见才登记，后台标签页不登记
+      if (document.visibilityState === 'visible') startViewReport();
+      // 重连后补拉接管状态：广播只在状态变化时发，断线期间可能错过
+      if (typeof loadRemoteStatus === 'function') loadRemoteStatus();
+      if (typeof loadSudoAuth === 'function') loadSudoAuth();
+    };
+
+    ws.onmessage = function (ev) {
+      var msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      lastMsgAt = Date.now();
+      // 会话代次过滤：别的端切了会话后，正在跑的那一轮还会继续往外吐流式片段。
+      // 这些片段不属于当前屏幕上的会话，丢弃，否则新会话里会冒出上一轮的回答。
+      // 注意只过滤「本轮对话产物」，history / session_changed / status 必须放行，
+      // 否则切会话后本端会一直停在旧会话上不同步
+      if (msg.sid && currentSid && msg.sid !== currentSid
+          && TURN_SCOPED.indexOf(msg.type) >= 0) return;
+      switch (msg.type) {
+        case 'remote_input':
+          // 跨屏接管状态广播：远程控制端和 Deck 客户端都要显示同一条横幅
+          onRemoteInputBroadcast(msg);
+          break;
+        case 'selfcheck_progress':
+          // 可补装组件的后台安装进度：同一份快照也走 /api/selfcheck/progress 兜底
+          onSelfcheckProgress(msg);
+          break;
+        case 'sudo_auth':
+          // sudo 授权状态：需要密码时打开输入行，成功后收起
+          onSudoAuth(msg);
+          break;
+        case 'history':
+          if (msg.sid) currentSid = msg.sid;
+          // 终端里的命令记录属于上一个会话的上下文，跟着会话一起换掉；
+          // 否则每轮长任务的记录会在右栏越堆越多，删会话也带不走
+          termResetList();
+          syncQqSessButton();
+          // 本端身份以后端这条连接实际看到的为准：前端按 UA 猜只是兜底
+          if (msg.my_client) localClient = msg.my_client;
+          messages.innerHTML = '';
+          // 上面清空 DOM 时，被摘到 trimmedBin 里的节点还留着旧会话的内容，必须一起丢
+          clearTrimmed();
+          resetFollowBottom();
+          // 清空后必须重算按钮：否则切会话/新连接时，上一轮残留的终止态会一直挂着
+          updateSendBtn();
+          // 分页渲染：只画最近 HIST_PAGE 条，更早的挂在队列里，顶部按需补
+          var histList = (msg.messages || []).filter(function (m) {
+            // 随提问附带的画面在历史里是一条独立的 content 数组消息（给模型看图用的），
+            // 不是对话内容。以前把它当正文渲染，屏幕上就多出一条
+            // 「[object Object][object Object]」的气泡
+            return !(m.content && typeof m.content !== 'string');
+          });
+          var cut = Math.max(0, histList.length - HIST_PAGE);
+          histPending = histList.slice(0, cut);
+          histList.slice(cut).forEach(function (m) {
+            // 用户消息也会带事件（截屏询问那一步附带的画面），
+            // 只挂 assistant 的话，回放历史时提问里的图就丢了。
+            // brief 是界面专用的短文案：截屏询问那套提示词一百多字，
+            // 各端都只显示它，真正发出去的仍然是 content
+            addMsg(m.role === 'user' ? 'user' : 'assistant', m.brief || m.content, m.ts,
+                   m.events, m.client, m.device, m.voice);
+          });
+          if (histPending.length) {
+            var moreBar = document.createElement('button');
+            moreBar.id = 'histMore';
+            moreBar.className = 'menu-btn';
+            moreBar.style.cssText = 'align-self:center;margin:4px 0';
+            moreBar.textContent = '加载更早的 ' + histPending.length + ' 条';
+            moreBar.onclick = histLoadOlder;
+            messages.insertBefore(moreBar, messages.firstChild);
+          }
+          // 重启判定：只有「后端进程换了一个」才可能是崩溃丢内容，缓存补回才有意义。
+          // 连续思考时模型一轮要调几十次工具，这期间 WebSocket 断一下重连很常见，
+          // 进程好端端地还在跑；旧逻辑把每次重连都当成崩溃，于是同一段正文被
+          // 本地缓存又贴一遍，屏幕上就冒出「已由本机缓存补回」
+          var serverBoot = msg.boot || '';
+          var crashed = !!lastBoot && serverBoot && serverBoot !== lastBoot;
+          if (serverBoot) lastBoot = serverBoot;
+          // 后端还在跑这一轮（流式正文写在半路、还没进 history）：屏幕上的内容是活的，
+          // 不补；而且发给前端的那份历史里最后一条还是用户消息，此时补就是重复
+          var running = (msg.inflight || []).indexOf(currentSid) >= 0;
+          // 这一轮还在跑、但刚才清空重建了 DOM：把服务端内存里的 parts 补回来。
+          // 不补的话，长任务只要 WebSocket 闪断一次，正在攒的整块思考记录就蒸发，
+          // 后续 delta 重新开一个新块，看着像「思考到一半被删了」。
+          if (running && msg.partial) {
+            var pTexts = [], pEvs = [];
+            (msg.partial.parts || []).forEach(function (p) {
+              if (!p) return;
+              if (p.type === 'text' && p.content) pTexts.push(p.content);
+              else if (p.type === 'event' && p.event) pEvs.push(p.event);
+            });
+            var pText = pTexts.join('\n\n') || String(msg.partial.text || '');
+            if (pText || pEvs.length) {
+              // 这段就是「这一轮目前的时间线」。接成 liveBox 而不是画完就丢：
+              // 收尾的 assistant_message 会按 liveBox 里的工具/思考数量跳过已画过的部分，
+              // 丢掉了就会把整条流水线再画一遍，屏幕上同一组动作出现两次
+              var pBox = addMsg('assistant', pText, msg.partial.ts, pEvs);
+              if (pBox) {
+                liveBox = pBox;
+                var pTools = pEvs.filter(function (e) {
+                  return e && e.type === 'tool';
+                }).length;
+                liveToolCount = pTools;
+                liveThoughtShown = pBox.querySelectorAll('.tl.thought').length;
+                // 屏幕上已经有这一轮的内容了：读秒措辞不能还停在「等待模型响应」
+                waitSeen = true;
+                waitUsedTool = pTools > 0;
+              }
+            }
+          }
+          // 崩溃补丁：后端被杀时最后一条正文可能只发到浏览器、没来得及写盘。
+          // 本地缓存里若有一条服务端历史里没有的回复，补在末尾，避免「我的回复凭空消失」
+          try {
+            var cached = JSON.parse(localStorage.getItem('deckmeido_last_reply') || 'null');
+            if (cached && cached.sid && cached.sid === currentSid && cached.text
+                && crashed && !running) {
+              var lastAsst = null;
+              (msg.messages || []).slice().reverse().some(function (m) {
+                // 历史走的是 brief（截屏询问只显示短文案），比对基准也得跟着用 brief，
+                // 否则同一条回复永远是「不相等」，每次重连都补一条一模一样的
+                if (m.role === 'assistant') { lastAsst = m.brief || m.content; return true; }
+                return false;
+              });
+              var norm = function (s) { return String(s || '').replace(/\s+/g, ''); };
+              if (!lastAsst || norm(lastAsst) !== norm(cached.text)) {
+                addMsg('assistant', cached.text, cached.ts);
+                addMsg('system', '（这条回复在后端退出前发出，本地缓存补回）');
+              }
+              localStorage.removeItem('deckmeido_last_reply');
+            }
+          } catch (e) { /* 缓存损坏：忽略 */ }
+          // 补回的内容挂在末尾，得保证它在「加载更早」那一行之后
+          var hmBar = document.getElementById('histMore');
+          if (hmBar && messages.firstChild !== hmBar) messages.insertBefore(hmBar, messages.firstChild);
+          // 更强的崩溃补丁：本轮屏幕上出现过的全部内容（含过渡正文与工具过程）。
+          // 只在「服务端最后一条是用户消息」时启用——那说明这一轮的答复一个字都没写盘
+          // （进程在第一次节流落盘前就被杀）。此时浏览器手里是唯一的一份完整内容。
+          // 服务端只是残缺而非全无的情况由后端 _streaming.parts 负责，不在这里补，
+          // 否则会和已经恢复出来的内容重复一遍。
+          // 半路上断链重连（进程还活着、这一轮还在跑）也绝不能用它补：
+          // 那只是链路闪断，屏幕上流到一半的思维链和后端手里的内容都是同一份活的
+          try {
+            var tc = JSON.parse(localStorage.getItem('deckmeido_turn_cache') || 'null');
+            if (tc && tc.sid && tc.sid === currentSid && tc.text) {
+              var ms = msg.messages || [];
+              var lastIsUser = ms.length && ms[ms.length - 1].role === 'user';
+              if (lastIsUser && crashed && !running) {
+                addMsg('assistant', tc.text + '\n\n（以上回答在原进程退出前已显示在屏幕上，已由本机缓存补回）', tc.ts);
+                addMsg('system', '（这段内容来自本机缓存，屏幕上出现过的内容已全部保留）');
+              }
+              localStorage.removeItem('deckmeido_turn_cache');
+              turnCache = { sid: currentSid, segs: [], cur: '' };
+            }
+          } catch (e) { /* 缓存损坏：忽略 */ }
+          // 重连后重建现场：残留的流式气泡/事件容器都指向已经不存在的这一轮
+          streamTextPend = '';
+          thoughtTextPend = '';
+          streamEl = null; streamBody = null;
+          // 只有「没从 partial 重建时间线」时才把 liveBox 丢掉。
+          // 重建过的那一份就是当前屏幕，收尾时必须继续按它计数，否则会重复渲染
+          if (!liveBox || !liveBox.parentNode) {
+            liveBox = null; liveToolCount = 0; liveThoughtShown = 0;
+          }
+          liveThought = null;
+          askShown = 0;
+          hideTyping();
+          setBusy(false);
+          // 等服务端紧跟着发的 status：它带着 running 字段，
+          // 据此决定是恢复「运行中」还是把断联期间暂存的消息发出去
+          awaitingResync = true;
+          break;
+        case 'user_message':
+          hideTyping();
+          cancelGuardUntil = 0;   // 新的一轮真的开始了，取消静默窗口失效
+          setBusy(true);          // 别的端发起的任务，这边也要能一键叫停
+          turnCacheReset();       // 新一轮开始，本地屏幕缓存清零
+          if (msg.sid) turnCache.sid = msg.sid;
+          // 带 brief 的一轮（截屏询问）界面上只显示短文案，长提示词不铺满屏幕
+          if (msg.events && msg.events.length) {
+            // 这一轮带了画面：和回放走同一条路径，缩略图挂在提问气泡里
+            addMsg('user', msg.brief || msg.text, msg.ts, msg.events,
+                   msg.client, msg.device);
+          } else {
+            messages.appendChild(makeUserBubble(msg.brief || msg.text, msg.ts,
+                                                msg.client, msg.device, null));
+            scrollBottomSafe();
+          }
+          liveBox = document.createElement('div');
+          liveBox.className = 'events';
+          messages.appendChild(liveBox);
+          liveToolCount = 0;
+          liveThoughtShown = 0;
+          liveThought = null;
+          thoughtTextPend = '';
+          showTyping();
+          break;
+        case 'stream_start':
+          waitSeen = true;   // 已经收到正文：读秒措辞不再是「等待模型响应」
+          hideTyping();
+          // 上一段正文已经说完（工具调用后会另起一段），翻篇进缓存
+          turnCacheNextSeg();
+          // 这段正文要落在时间线里「属于它的位置」：紧接在它之前的思考/工具之后，
+          // 而不是统一堆到所有事件下方。否则一整轮下来就成了
+          // 「思考全在上、说话在中、命令在最下」，滚屏后根本对不上谁先谁后
+          if (!liveBox) {
+            liveBox = document.createElement('div');
+            liveBox.className = 'events';
+            messages.appendChild(liveBox);
+          }
+          streamEl = makeTextBubble('', false);
+          streamBody = streamEl.querySelector('.stream-body');
+          liveBox.appendChild(streamEl);
+          scrollBottomIfFollow();
+          break;
+        case 'delta':
+          if (msg.final) {
+            // 本轮最终正文：服务端已正式落盘，这里存一份到本地崩溃缓冲。
+            // 后端若在「已发送正文、尚未写盘」的瞬间被杀，刷新后本地这份还能补回来
+            if (msg.reply && msg.sid && msg.sid === currentSid) {
+              try {
+                localStorage.setItem('deckmeido_last_reply', JSON.stringify({
+                  sid: msg.sid, text: msg.reply, ts: Date.now() / 1000
+                }));
+              } catch (e) { /* 隐私模式/配额满：忽略，别影响界面 */ }
+            }
+            break;
+          }
+          waitSeen = true;
+          if (!streamBody) {
+            // 兜底：stream_start 丢了（重连窗口、别的端已经开跑、事件乱序）时
+            // 以前这里静默丢弃，正文就整段不见了。现在就地补一个气泡，
+            // 后面 assistant_message 会按正常流程把它补成正式回复
+            if (!liveBox) {
+              liveBox = document.createElement('div');
+              liveBox.className = 'events';
+              messages.appendChild(liveBox);
+            }
+            streamEl = makeTextBubble('', false);
+            streamBody = streamEl.querySelector('.stream-body');
+            liveBox.appendChild(streamEl);
+          }
+          if (streamBody) {
+            // 文字先攒着，到下一帧再一次性写进 DOM：后端已经按 40ms 合过一批，
+            // 一帧里仍可能进来好几条；后端合成的这批到这里再合一次，
+            // 重排次数就从「每条一次」降到「每帧一次」
+            streamTextPend += msg.text;
+            turnCache.cur += msg.text;      // 屏幕上出现的每个字都记进本地缓存
+            turnCacheSchedule();
+            streamFlushSoon();
+          }
+          break;
+        case 'thought_start':
+          waitSeen = true;
+          thoughtFlushNow();   // 上一段思考的尾巴先落地，别串到新块里
+          if (!liveBox) {
+            liveBox = document.createElement('div');
+            liveBox.className = 'events';
+            messages.appendChild(liveBox);
+          }
+          // 流式阶段先建一个空壳，边收边填；结束时空的会被撤掉（不留空头）
+          var trow = makeTlRow('思考', null, true);
+          // 必须带 .thought：收尾时按这个类名数「屏幕上已经画过的思考」，
+          // 数不到就会把 events 里的思考整批重画一遍，叠在正文后面
+          trow.tl.classList.add('thought');
+          var tarr0 = document.createElement('span');
+          tarr0.className = 'tl-arrow';
+          // 三角由 CSS 绘制，方向交给 .tl.open 旋转
+          trow.head.appendChild(tarr0);
+          var tbd = document.createElement('div');
+          tbd.className = 'tl-body';
+          trow.tl.appendChild(tbd);
+          trow.tl.classList.add('open');
+          liveBox.appendChild(trow.tl);
+          liveThought = tbd;
+          scrollBottomIfFollow();
+          break;
+        case 'thought_delta':
+          waitSeen = true;
+          if (liveThought) {
+            thoughtTextPend += msg.text;
+            thoughtFlushSoon();
+          }
+          break;
+        case 'thought_end':
+          // 先把手里的字写进去，再判断空不空、再折叠，否则末尾几个字会跟着被吞
+          thoughtFlushNow();
+          if (liveThought) {
+            var trow2 = liveThought.parentNode;
+            // 空的思考块（模型啥也没想）直接撤掉，不留「思考 ▸」空头
+            if (!liveThought.textContent.trim()) {
+              if (trow2 && trow2.parentNode) trow2.parentNode.removeChild(trow2);
+              liveThought = null;
+              break;
+            }
+            // 思考结束后折叠为「思考 ▸」行，点击可展开
+            // 箭头方向交给 CSS：移除 open 类后自动转回朝右
+            trow2.classList.remove('open');
+            liveThoughtShown++;   // 只在真的留下一条思考时计数
+          }
+          liveThought = null;
+          break;
+        case 'tool_done':
+          // 工具跑完就撤掉动作文案，别让命令早已结束、界面还写着「正在执行命令 …」；
+          // 计时仍继续显示本轮的「已执行 N 秒」
+          waitSeen = true;
+          waitUsedTool = true;   // 真的执行过工具，之后才配说「已执行」
+          waitLabel = '';
+          if (typingEl) {
+            var _tlbl = typingEl.querySelector('.typing-label');
+            if (_tlbl) _tlbl.textContent = '';
+          }
+          if (liveBox && msg.event) {
+            renderEvent(msg.event, liveBox);
+            liveToolCount++;
+            scrollBottomIfFollow();
+          }
+          break;
+        case 'voice_added':
+          // QQ 语音条是在文字发出之后才合成/发送的，后端成功后才补发这条事件；
+          // 找到对应时间戳的助手气泡，把播放条挂上去（换会话了就不处理）
+          if (msg.sid && currentSid && msg.sid !== currentSid) break;
+          if (!msg.voice || !msg.ts) break;
+          var vnodes = messages.querySelectorAll('.msg.assistant[data-ts]');
+          for (var vi = vnodes.length - 1; vi >= 0; vi--) {
+            if (vnodes[vi].dataset.ts === String(msg.ts)) {
+              appendVoiceBubble(vnodes[vi], msg.voice);
+              break;
+            }
+          }
+          break;
+
+        case 'assistant_message':
+          // 这一段负责把「这一轮结束」落实到界面上（补正文、挂按钮、清理时间线）。
+          // 里面任何一步抛异常，旧代码都会连带跳过后面的 flushQueue ——
+          // 结果就是排队的消息永远发不出去，表现成「按回车加入队列」完全不生效。
+          try {
+          hideTyping();
+          setBusy(false);
+          // 最终正文就是时间线里的最后一段气泡：原地把它补成「正式回复」（带按钮/时间），
+          // 而不是抽出来另起一条——否则这一段会掉到所有事件下面，顺序又乱回去
+          var promoted = false;   // 最终正文是否已原地补进时间线
+          // 最终正文那个气泡的引用。streamEl 马上会被清空，收尾补渲染 events 时
+          // 还要靠它把迟到的思考/工具插到正文之前，所以先单独留一份
+          var finalBubble = null;
+          // 这一轮的正文就是那句问题、屏幕上已经以气泡形式出现过了（见 case 'ask'），
+          // 收尾时别再补一条一模一样的
+          // 判据只看「这一轮有没有 ask」和「正文是不是就是那句问题」，
+          // 不看 askShown 计数：面板重挂载 / 重连 / 终止都会把计数清零，
+          // 计数一归零 askOnly 就失效，收尾时又补一条一模一样的正文，
+          // 屏幕上于是出现两组「思考 + 同一句话」
+          var askEv = null;
+          (msg.events || []).forEach(function (e) {
+            if (e && e.type === 'ask' && !askEv) askEv = e;
+          });
+          var askText = askEv ? String(askEv.question || '').trim() : '';
+          var askOnly = !!askEv && (!String(msg.text || '').trim()
+                                    || String(msg.text).trim() === askText);
+          if (streamEl && streamEl.parentNode) {
+            if (msg.text) {
+              var fb = streamEl.querySelector('.stream-body');
+              if (fb) fb.innerHTML = renderMd(msg.text);
+              fillFileSizes(streamEl);
+              if (msg.ts) streamEl.dataset.ts = String(msg.ts);
+              promoted = true;
+              finalBubble = streamEl;
+              if (liveBox && streamEl.parentNode === liveBox) {
+                // 标记一下：整轮的末尾，供重试/分享识别
+                streamEl.classList.add('turn-final');
+              }
+            } else {
+              // 只发了工具调用、没有正文的中间轮：这一段空壳直接丢掉
+              streamEl.parentNode.removeChild(streamEl);
+            }
+          }
+          // 还没写进 DOM 的那一批直接丢掉：这一段马上整段按最终正文重画，
+          // 再补上去就会重复一截
+          streamTextPend = '';
+          streamEl = null; streamBody = null;
+          // 最终正文就是本轮屏幕上出现过的内容：整段订正后立刻落一份到本地，
+          // 作为「后端已落盘但页面还没来得及刷新」这一瞬间的兜底
+          if (msg.sid) turnCache.sid = msg.sid;
+          if (msg.text) turnCache.cur = msg.text;
+          turnCacheFlushNow();
+          // 这一轮正常收尾：服务端确实把这轮的正文写进历史了，本地缓存随即作废。
+          // 留着不删会在下次刷新时被误判成「服务端缺了尾巴」，重复补一条
+          if (!msg.cancelled) {
+            turnCacheReset();
+          }
+          if (msg.events && msg.events.length) {
+            if (liveBox) {
+              // 补渲染未实时显示的事件：已实时展示过的工具块/思维链按数量跳过，
+              // 过渡正文（text）在流式阶段已经显示过了，一并跳过，避免段落重复。
+              // ask 不看计数：重连/重挂载会把 askShown 清零，清零后再按计数跳过
+              // 就会漏判，把 events 里的 ask 重画一遍（屏幕上两组「思考+同一句问题」）。
+              // 这里直接看 liveBox 里是不是已经有问答卡片了
+              var hasAsk = !!liveBox.querySelector('.ask-card');
+              // 计数直接数容器里已经画出来的思考块：重连/重挂载会清零
+              // liveThoughtShown，清零后按计数跳过就会把同一段思考再画一遍
+              var skip = liveToolCount;
+              var skipT = liveBox.querySelectorAll('.tl.thought').length;
+              // 最终正文气泡是「这一轮的结尾」：补渲染的思考块必须插在它前面，
+              // 否则一条迟到的 thought 会追加到答复下方，屏幕上就成了
+              // 「AI 说完了，下面又冒出一串思考」。
+              // 注意用 finalBubble 而不是 streamEl —— 后者在上面的缓存收尾里已经置空
+              var tailRef = (promoted && finalBubble && finalBubble.parentNode === liveBox)
+                            ? finalBubble : null;
+              msg.events.forEach(function (e) {
+                if (e.type === 'text') return;
+                if (e.type === 'ask' && hasAsk) return;
+                if (e.type === 'tool' && skip > 0) { skip--; return; }
+                if (e.type === 'thought' && skipT > 0) { skipT--; return; }
+                // renderEvent 只会往容器末尾追加；要落在正文之前就先画到临时容器，
+                // 再按顺序整体挪过去，多段思考/工具之间的相对顺序保持不变
+                var tmp = document.createElement('div');
+                renderEvent(e, tmp);
+                while (tmp.firstChild) {
+                  if (tailRef) liveBox.insertBefore(tmp.firstChild, tailRef);
+                  else liveBox.appendChild(tmp.firstChild);
+                }
+              });
+            } else {
+              renderEvents(msg.events);
+            }
+          }
+          // 万一流式阶段正文之后又冒过一段思考（模型先说话、再补 reasoning），
+          // 把最终正文挪回容器末尾：屏幕上永远是「思考在前、正文在后」
+          if (promoted && finalBubble && finalBubble.parentNode === liveBox) {
+            liveBox.appendChild(finalBubble);
+          }
+          // dev_mode 埋点：统计本轮思考块实际渲染出来的字符数与段数。
+          // 有实时容器就数 DOM（最接近用户看到的）；没有则按本次补渲染的 events 计
+          if (serverDevMode && msg.sid) {
+            var rcChars = 0, rcSegs = 0;
+            if (liveBox) {
+              Array.prototype.forEach.call(
+                liveBox.querySelectorAll('.tl.thought .tl-body'), function (bd) {
+                  var n = (bd.textContent || '').length;
+                  if (n) { rcChars += n; rcSegs += 1; }
+                });
+            } else {
+              (msg.events || []).forEach(function (e) {
+                if (e && e.type === 'thought' && String(e.text || '').trim()) {
+                  rcChars += String(e.text).length; rcSegs += 1;
+                }
+              });
+            }
+            postDebugRender(msg.sid, rcChars, rcSegs);
+          }
+          if (liveBox && !liveBox.childNodes.length && liveBox.parentNode) {
+            liveBox.parentNode.removeChild(liveBox);
+          }
+          liveBox = null; liveToolCount = 0; liveThoughtShown = 0; askShown = 0;
+          if (!promoted && !askOnly) addMsg('assistant', msg.text, msg.ts);
+          refreshStatus();  // 更新上下文用量徽标
+          } catch (e) {
+            // 渲染出错不能拖住对话流程：记录一笔，继续往下走
+            addSystem('这一轮的界面渲染出了点问题，已跳过：' + (e && e.message ? e.message : e));
+          } finally {
+            // 队列的投递放在 finally 里：不管上面哪一步炸了，只要这一轮确实结束了，
+            // 排队的消息就必须发出去，否则主人会一直等一条永远不动的队列
+            flushQueue(!!msg.cancelled);
+          }
+          break;
+        case 'ask':
+          // 这一轮说到这里就结束：问题先用一条普通气泡说，紧接着摆出候选答案。
+          // 顺序必须是「气泡在上、选项在下」，所以这里先补气泡再挂选项
+          hideTyping();
+          if (!liveBox) {
+            liveBox = document.createElement('div');
+            liveBox.className = 'events';
+            messages.appendChild(liveBox);
+          }
+          // 提问前她可能已经把这句话流式吐了出来（streamEl 里就是它），
+          // 那就把它撤掉，统一用下面这条正式气泡，免得屏幕上同一句话俩气泡
+          if (streamEl && streamEl.parentNode) {
+            var sBody = streamEl.querySelector('.stream-body');
+            var sText = sBody ? sBody.textContent.trim() : '';
+            if (!sText || sText === String(msg.question || '').trim()) {
+              streamEl.parentNode.removeChild(streamEl);
+            }
+          }
+          streamTextPend = '';
+          streamEl = null; streamBody = null;
+          if (msg.question) liveBox.appendChild(makeTextBubble(msg.question, false));
+          liveBox.appendChild(makeAskCard(msg.question, msg.options));
+          askShown++;   // 收尾时 events 里那条 ask 不再画第二遍
+          scrollBottomIfFollow();
+          break;
+        case 'tool_activity':
+          showTyping(msg.text);
+          break;
+        case 'progress':
+          // 长任务每 2 分钟一条：单独一行留下来，不顶掉当前的等待读秒
+          if (msg.text) {
+            var pn = document.createElement('div');
+            pn.className = 'progress-note';
+            pn.textContent = msg.text;
+            liveBox.appendChild(pn);
+            scrollBottomIfFollow();
+          }
+          break;
+        case 'fs_follow':
+          // AI 读写/列目录：文件面板跟过去（用户手动点过别处就不跟，只更新横幅）
+          if (msg.path) fbFocusAi(msg.path, msg.is_dir);
+          break;
+        case 'term_start':
+          if (msg.command) termAdd('ai', msg.command, msg.reason,
+                                   msg.ts_sent || msg.ts || 0, msg.slow || '');
+          break;
+        case 'status':
+          renderStatus(msg.data || {});
+          break;
+        case 'system':
+          addSystem(msg.text || '');
+          break;
+        case 'session_changed':
+        case 'history':
+          loadSessions();
+          break;
+        case 'update_available':
+          markUpdate(msg.latest, msg.current);
+          break;
+      }
+    };
+
+    ws.onclose = function (ev) {
+      connInfo.closeCode = ev.code || 0;
+      connInfo.closeCount += 1;
+      connInfo.lastCloseAt = Date.now();
+      connInfo.lastMsgAt = connInfo.lastMsgAt || Date.now();
+      // 闪断先黄（正在重连），连续 3 次或鉴权被拒才红。这样用户能区分
+      // 「网络抖了一下」和「真的连不上/被踢了」
+      if (ev.code === 4401) setConnState('off');
+      else setConnState(connInfo.closeCount < 3 ? 'warn' : 'off');
+      afterConnect(false);
+      hideTyping();
+      stopHeartbeat();
+      // 断联时把忙碌态复位：旧逻辑保留 busy=true，发送键一直停在终止态，
+      // 点了只会发 cancel（完全不发消息），主人看到的就是「按钮卡死」
+      setBusy(false);
+      streamTextPend = '';
+      thoughtTextPend = '';
+      streamEl = null; streamBody = null;
+      liveBox = null; liveToolCount = 0; liveThoughtShown = 0; liveThought = null;
+      // 内存里这一轮已攒下的正文跟着断链丢掉：不清的话，重连后若这一轮其实已经结束
+      // （收尾消息丢在断链窗口里），它还会被当成「屏幕上的内容」参与补回。
+      // 只清内存不动 localStorage：后端真被杀时，盘上那份缓存才是补回的依据
+      turnCache.segs = []; turnCache.cur = '';
+      if (ev.code === 4401) {
+        // 设备凭据被拒：清掉本地状态并停在鉴权页，不要继续重连
+        deviceSession = false;
+        clearTimeout(reconnectTimer);
+        showAuth('登录已失效，请重新配对');
+        return;
+      }
+      reconnectTimer = setTimeout(function () { reconnectTimer = null; connect(); }, backoff);
+      backoff = Math.min(backoff * 2, 10000);
+    };
+
+    ws.onerror = function () { try { ws.close(); } catch (e) {} };
+  }
+
+  function turnCacheReset() {
+    turnCache = { sid: currentSid, segs: [], cur: '' };
+    try { localStorage.removeItem('deckmeido_turn_cache'); } catch (e) {}
+  }
+
+  // 一段正文说完了（后面跟工具调用或已给出最终答复）：翻篇存起来
+  function turnCacheNextSeg() {
+    if (turnCache.cur && turnCache.cur.trim()) {
+      turnCache.segs.push(turnCache.cur);
+      // 落盘时只取尾部 TURN_CACHE_TAIL 字，前面那些段永远用不上，
+      // 但一轮几十个工具就是几十段留在内存里，长轮次白白占着
+      if (turnCache.segs.length > 8) turnCache.segs.splice(0, turnCache.segs.length - 8);
+    }
+    turnCache.cur = '';
+  }
+
+  // 心跳：PING_MS 内一条消息都没收到就发 ping，再一个周期还没动静就判死重连。
+  // 只发 ping 不断连：真的还有流在走（工具跑得久）时服务端不会回，但也别误杀
+  function startHeartbeat() {
+    stopHeartbeat();
+    pingTimer = setInterval(function () {
+      if (!ws || ws.readyState !== 1) return;
+      var idle = Date.now() - lastMsgAt;
+      if (idle > PING_MS * 2) {
+        // 两个周期全无音讯：连接已经死了（onclose 不会来了），直接拆掉重连
+        stopHeartbeat();
+        try { ws.close(); } catch (e) {}
+        return;
+      }
+      if (viewHeartbeat) {
+        try { ws.send(JSON.stringify({ type: 'view', active: document.visibilityState === 'visible' })); } catch (e) {}
+      }
+      try { ws.send(JSON.stringify({ type: 'ping' })); } catch (e) { /* 下一轮判死 */ }
+    }, PING_MS);
+  }
+
+  // 网页是否在前台的上报：桌面模式下只要有一个页面在前台，后端就不主动息屏。
+  // 可见时 30s 续一次（后端 120s 没收到就算离开，见 power.VIEW_TTL），
+  // 切到后台/关页面立刻撤销。用 setTimeout 递归而不是 setInterval：后台标签页的
+  // 定时器会被浏览器限流，醒来时如果页面已经不可见就什么都不发。
+  var viewHeartbeat = false;
+  var viewTimer = null;
+  function viewReport(active) {
+    viewHeartbeat = active;
+    if (!ws || ws.readyState !== 1) return;
+    try { ws.send(JSON.stringify({ type: 'view', active: active })); } catch (e) {}
+  }
+  function startViewReport() {
+    stopViewReport();
+    viewReport(true);
+    viewTimer = setTimeout(function () {
+      if (document.visibilityState !== 'visible') return;
+      startViewReport();
+    }, 30000);
+  }
+  function stopViewReport() {
+    if (viewTimer) { clearTimeout(viewTimer); viewTimer = null; }
+  }
+
+  function stopHeartbeat() {
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+  }
+
   // ---------- 配对新设备（Sunshine 式：PIN 在掌机上，浏览器只负责提交） ----------
   var pairBusy = false;
   var pairApproved = false;
@@ -5858,11 +6506,18 @@
     setTimeout(function () { pairBtn.focus(); }, 50);
   }
 
-  // 启动时先问后端：Cookie 已配对或本机回环就直接进主界面
+  // 启动时先问后端：Cookie 已配对或本机回环就直接进主界面。
+  // 后端刚拉起的那几百毫秒里页面已经加载完、端口还没 listen，fetch 会失败；
+  // 这不是鉴权失败，不能弹配对页，静默退避重试（0.3s → 3s 封顶）。
+  var bootAuthTries = 0;
+  var bootAuthTimer = null;
+  var bootedSession = false;
   function bootAuth() {
-    fetch('/api/auth/session')
+    clearTimeout(bootAuthTimer);
+    fetch('/api/auth/session', { cache: 'no-store' })
       .then(function (r) { return r.json(); })
       .then(function (d) {
+        bootAuthTries = 0;
         deviceSession = !!(d && d.authenticated);
         // 连接面板里的「鉴权方式」：回环免验证 / 设备配对凭据
         connInfo.authMode = d && d.local ? '本机回环（免验证）'
@@ -5872,18 +6527,26 @@
           if (d.version_display || d.version) {
             authVer.textContent = 'v' + (d.version_display || d.version);
           }
-          // 鉴权通过后要主动拉一次列表：脚本末尾那次 loadSessions 跑在
-          // /api/auth/session 返回之前，deviceSession 还是 false，会被直接跳过
-          loadSessions();
-          connect();
+          // 首次通过才建连；之后的重试只用来「自愈」配对遮罩
+          if (!bootedSession) {
+            bootedSession = true;
+            connect();
+          }
           return;
         }
+        // 真的未配对（局域网新设备）：这才进入配对页
         showAuth('');
       })
       .catch(function () {
-        showAuth('连不上服务，请稍后重试');
+        bootAuthTries++;
+        bootAuthTimer = setTimeout(bootAuth, Math.min(3000, 300 * Math.pow(1.35, bootAuthTries)));
       });
   }
+  // 兜底自愈：还没确认登录态时每隔几秒安静重试一次（成功后自动停止）。
+  // 覆盖「页面加载早于后端 listen」「后端重启后页面停在旧状态」等情况。
+  setInterval(function () {
+    if (!deviceSession) bootAuth();
+  }, 4000);
 
   // 鉴权页显示版本号：这个接口不校验配对，未登录也能查
   var authVerLoaded = false;
@@ -12485,7 +13148,7 @@
   // 只在设置页/语音按钮里拉的话，客户端重启后第一次按 R1 会被当成不可用直接忽略。
   // 网页端不跑，免得白拉一个用不上的请求；失败静默、不阻塞下面的启动流程
   if (IS_NATIVE) loadSttStatus();
-  bootAuth();  // 先确认设备 Cookie / 令牌，再连主对话 WebSocket
+  bootAuth();  // 先确认设备 Cookie / 本机回环，再连主对话 WebSocket
 
   // 连上之后才知道有没有令牌；文件面板首屏在这里补加载一次
   setTimeout(function () {
