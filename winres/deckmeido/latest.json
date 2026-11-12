@@ -1,10 +1,10 @@
 {
   "tag": "0.8.8",
   "name": "DeckMeido 0.8.8",
-  "notes": "# DeckMeido 0.8.8\n\n- chore: 版本升到 0.8.8\n- feat(音乐): 智能音箱模式接入 Decky Music 点播\n- fix(install): 统一中英混排文案，下载超时改为 5 分钟\n- feat(权限): 完全访问放开文件删除，新增自定义档与风险确认弹窗\n- chore: 同步 deploy 插件包到 0.8.7 构建\n- release: 0.8.7 产物（install.sh 无档位菜单，含插件兜底打包）\n- chore: 清空 winres 旧产物，准备 0.8.7\n- fix: package.json 去掉 BOM\n- chore: 版本升到 0.8.7\n- install: 补回 SUDO_ASKPASS 提权、插件 zip 兜底打包与前端构建\n- install: 本机版 install.sh（含卸载结束孤儿进程、修 Decky 重载卡死）\n- release: 0.8.6（安装器去掉档位菜单，安装一律完整装齐）\n- plugin: 去掉 package.json 的 BOM\n- install: 删除档位菜单，安装一律完整装齐；release: 出包前校验安装器无档位代码\n- release: 0.8.5 产物重新生成（含 SUDO_ASKPASS 提权修复）\n- install: 无终端时用 SUDO_ASKPASS 提权；有插件 zip 时不再误报缺前端产物\n- release: 0.8.5 重出包（install.sh 含源码插件构建、插件 zip 入库）\n- repo: 插件 zip 入库，裸 clone 也能装 Decky 插件\n- install: 源码安装补上插件前端构建；升级不再误删 plugin/dist\n- install: 源码目录可直接卸安装目录；源码安装时就地打包 Decky 插件\n",
-  "published_at": "2026-11-11T19:26:05+08:00",
+  "notes": "# DeckMeido 0.8.8\n\n- fix(审批): 终端面板补上 full_access，与对话构造点保持同步\n- refactor(前端): 上传辅助纯函数拆到 upload-helpers.js，测试改读新文件\n- refactor(前端): 将 index.html 内联样式提取为 static/app.css\n- refactor(路由): 状态/二维码/设备接口拆到 routes_system\n- refactor(路由): 会话与检查点接口拆到 routes_sessions\n- refactor(路由): 配置读写接口拆到 routes_config，main.py 继续瘦身\n- refactor(路由): 日志与诊断接口拆到 routes_logs，main.py 分批瘦身\n- chore(日志): 静默异常统一落调试日志，debug 文件按天复用\n- feat(审批): 审批判断收敛为唯一入口，新增四级风险分级\n- feat: 长任务进度提示、侧栏音乐控制与 QQ 主动接话配置\n- feat(QQ): 指令改为「昵称 + 空格 + 中文指令」，新增主动接话概率\n- fix(唤醒): 麦克风只在智能音箱模式内长期采集\n- fix(跨屏键鼠): 小键盘数字键在接管时失效\n- release: 0.8.8 产物\n- chore: 版本升到 0.8.8\n- feat(音乐): 智能音箱模式接入 Decky Music 点播\n- fix(install): 统一中英混排文案，下载超时改为 5 分钟\n- feat(权限): 完全访问放开文件删除，新增自定义档与风险确认弹窗\n- chore: 同步 deploy 插件包到 0.8.7 构建\n- release: 0.8.7 产物（install.sh 无档位菜单，含插件兜底打包）\n",
+  "published_at": "2026-11-12T13:11:01+08:00",
   "files": {
     "tarball": "deckmeido-0.8.8.tar.gz",
-    "sha256": "14e9a805d8c12c2bfa68566c640d09dc4e808555ee0f9c028b4f6e78165f2423"
+    "sha256": "861739543cd9123daf9e0719871937819dde2a1badf7e1bcb695aea7d5d149f9"
   }
 }
