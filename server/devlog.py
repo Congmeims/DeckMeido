@@ -11,6 +11,8 @@
 轮转：单文件 5 MB，保留 2 个旧文件（.1 / .2），单个文件家族约 15 MB。
 Deck 通常是 64 GB / 256 GB 存储，15 MB 可以忽略；同时足够装下几轮带请求/响应
 正文的调试日志。超过上限自动丢最旧的，不会写满存储。
+打开开发者模式时复用当天的 debug-<日期>-*.log，只在当天还没有时才新建：
+以前每次启动都新建一个家族，文件越攒越多，实际占用远超 15 MB。
 debug-<时间>.log 由 RotatingFileHandler 自己轮转；backend.log / overlay.log /
 debug-client-*.log 由客户端进程写入（backend.log 的句柄一直开到客户端退出），
 服务端只做「拷贝成 .1 → 原地截断」，不 rename / 不 unlink。
@@ -119,6 +121,20 @@ def enabled() -> bool:
     return _ENABLED
 
 
+def debug(event: str, **fields) -> None:
+    """记一条异常兜底日志（except 分支用）：未开启时零开销，也绝不再抛。
+
+    单独一个函数而不是让调用方用 log()：调用点已经处在异常处理里，
+    这里再炸一次就会把真正的异常顶掉，所以整段包住。
+    """
+    if not _ENABLED:
+        return
+    try:
+        log(event, **fields)
+    except Exception:
+        pass
+
+
 class _RedactFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         return redact(super().format(record))
@@ -171,7 +187,16 @@ def _ensure_handler() -> logging.Logger | None:
         from . import paths
 
         out_dir = paths.logs_dir()
-        path = out_dir / f"debug-{time.strftime('%Y%m%d-%H%M%S')}.log"
+        # 复用今天已有的那一个 debug 文件：每次启动都新建一个，累积的
+        # 「文件家族」没有任何逻辑回收，实际占用会远超 15 MB 的上限
+        day = time.strftime("%Y%m%d")
+        try:
+            existing = sorted(p for p in out_dir.glob(f"debug-{day}-*.log")
+                              if not _is_rotated_name(p.name))
+        except OSError:
+            existing = []
+        path = existing[-1] if existing else out_dir / (
+            f"debug-{time.strftime('%Y%m%d-%H%M%S')}.log")
         handler = RotatingFileHandler(
             path, maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT, encoding="utf-8"
         )
@@ -449,7 +474,7 @@ def usage() -> dict:
     data = {
         "total": {"bytes": total_bytes, "files": len(files)},
         "categories": cats,
-        # debug 轮转上限（10 MB × 3 代）；其它分类没有独立上限，仅展示用量
+        # debug 轮转上限（5 MB × 3 代 = 15 MB）；其它分类没有独立上限，仅展示用量
         "cap_bytes": LOG_CAP,
         "active": sorted(active),
         "last_clear": _LAST_CLEAR,

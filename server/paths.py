@@ -48,6 +48,7 @@ def _probe_failed(path: Path, exc: OSError) -> None:
         devlog.log("paths.probe_failed", path=str(path),
                    error=f"{type(exc).__name__}: {exc}")
     except Exception:
+        # devlog 自身不可用（比如数据根都建不出来）时这里没有别的出口，只能吞掉
         pass
     finally:
         _probe_logging = False

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from . import audit, paths
+from . import audit, devlog, paths
 
 # pending_intent 默认有效期：过期后旧密码 / 旧确认不再构成授权
 INTENT_TTL = 600.0
@@ -445,7 +445,8 @@ def _check_session_target(sid: str, ctx: TurnContext) -> _DeleteHit | None:
                 return _DeleteHit("unknown_target", sid,
                                   "没有找到这个会话，不要猜 sid；请先确认要删的是哪一条",
                                   kind="session")
-        except Exception:
+        except Exception as exc:
+            devlog.debug("policy._check_session_target", error=repr(exc))
             pass
     return None
 
@@ -640,7 +641,8 @@ def _delete_blocked(hit: _DeleteHit) -> PolicyDecision:
     target = " ".join(str(hit.target or "").split())[:160]
     try:
         audit.record("delete", "blocked", "fail", reason=hit.code, detail=target)
-    except Exception:
+    except Exception as exc:
+        devlog.debug("policy._delete_blocked", error=repr(exc))
         pass
     print(f"[DeckMeido][policy] delete.blocked reason={hit.code} target={target}",
           file=sys.stderr)
@@ -674,7 +676,8 @@ def check_delete(name: str, args: dict, ctx: TurnContext) -> PolicyDecision | No
         try:
             audit.record("delete", "allowed_full", "ok", reason=hit.code,
                          detail=" ".join(str(hit.target or "").split())[:160])
-        except Exception:
+        except Exception as exc:
+            devlog.debug("policy.check_delete", error=repr(exc))
             pass
         return None
     return _delete_blocked(hit)

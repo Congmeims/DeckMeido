@@ -30,6 +30,8 @@ from PySide6.QtWidgets import (
     QApplication, QFrame, QLabel, QVBoxLayout, QWidget,
 )
 
+from . import devlog
+
 
 class _StopRequested(QEvent):
     """监听线程 → 主线程：请把当前任务停掉
@@ -439,7 +441,8 @@ class Mask(QWidget):
                     f"{API}/api/overlay_state?ack=1&hidden="
                     f"{0 if self.isVisible() else 1}")
                 urllib.request.urlopen(req, timeout=2).read()
-            except Exception:
+            except Exception as exc:
+                devlog.debug("overlay.report", error=repr(exc))
                 pass
         QTimer.singleShot(30, lambda: threading.Thread(
             target=report, daemon=True).start())
@@ -581,7 +584,8 @@ class Mask(QWidget):
                 req = urllib.request.Request(
                     f"{API}/api/cancel?client=overlay&device=deck", method="POST")
                 urllib.request.urlopen(req, timeout=3).read()
-            except Exception:
+            except Exception as exc:
+                devlog.debug("overlay.post", error=repr(exc))
                 pass
         threading.Thread(target=post, daemon=True).start()
         QTimer.singleShot(300, self.hide)
@@ -739,7 +743,8 @@ def _alive(pid: int) -> bool:
             st = f.read().rsplit(b")", 1)[-1].split()
         if st and st[0] == b"Z":
             return False
-    except Exception:
+    except Exception as exc:
+        devlog.debug("overlay._alive", error=repr(exc))
         pass
     return True
 
@@ -827,12 +832,14 @@ def acquire_single_instance(force: bool = False) -> QLocalServer | None:
             sock.flush()
             if sock.waitForReadyRead(500):
                 reply = bytes(sock.readAll())
-        except Exception:
+        except Exception as exc:
+            devlog.debug("overlay.request", error=repr(exc))
             pass
         finally:
             try:
                 sock.disconnectFromServer()
-            except Exception:
+            except Exception as exc:
+                devlog.debug("overlay.request", error=repr(exc))
                 pass
         return reply
 
@@ -862,7 +869,8 @@ def acquire_single_instance(force: bool = False) -> QLocalServer | None:
             for p in leftover:
                 try:
                     os.kill(p, signal.SIGKILL)
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("overlay.parse_pid", error=repr(exc))
                     pass
             _wait_dead(leftover, 2.0)
 
@@ -901,12 +909,14 @@ def main() -> int:
         try:
             single.close()
             QLocalServer.removeServer(server_name())
-        except Exception:
+        except Exception as exc:
+            devlog.debug("overlay.shutdown", error=repr(exc))
             pass
         # 退出前主动松开音量键独占，别让它停在「按了没反应」的状态
         try:
             mask.volume_stop.shutdown()
-        except Exception:
+        except Exception as exc:
+            devlog.debug("overlay.shutdown", error=repr(exc))
             pass
         app.quit()
 
@@ -924,7 +934,8 @@ def main() -> int:
                 try:
                     conn.write(b"pid:" + str(os.getpid()).encode())
                     conn.flush()
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("overlay.on_connection", error=repr(exc))
                     pass
                 # 交回事件循环再退，别在槽函数里直接 quit
                 QTimer.singleShot(0, shutdown)
@@ -934,7 +945,8 @@ def main() -> int:
                 try:
                     conn.write(b"pong")
                     conn.flush()
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("overlay.on_connection", error=repr(exc))
                     pass
             conn.disconnectFromServer()
 

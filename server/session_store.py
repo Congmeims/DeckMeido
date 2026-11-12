@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import paths
+from . import devlog, paths
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -395,7 +395,8 @@ class SessionStore:
                                    size=p.stat().st_size,
                                    history=len(data.get("history") or []),
                                    reasoning_chars=n)
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("session_store._write_file", error=repr(exc))
                     pass
         except Exception as e:
             print(f"[DeckMeido] 会话 {sid} 落盘失败：{e}", file=sys.stderr)
@@ -489,7 +490,8 @@ class SessionStore:
             body = json.dumps(list(self._index.values()), ensure_ascii=False)
         try:
             _atomic_write(sessions_dir() / "index.json", body)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("session_store._index_save", error=repr(exc))
             pass
 
     def read_session(self, sid: str) -> dict:
@@ -568,7 +570,8 @@ class SessionStore:
         try:
             path.write_text(json.dumps(list(self._index.values()), ensure_ascii=False),
                             encoding="utf-8")
-        except Exception:
+        except Exception as exc:
+            devlog.debug("session_store.load_index", error=repr(exc))
             pass
 
     def index_drop(self, sid: str) -> None:

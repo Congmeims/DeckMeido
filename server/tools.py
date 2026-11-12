@@ -1070,6 +1070,7 @@ def _log_interpreter(env: dict) -> None:
         print(f"[DeckMeido] 命令通道解释器：python3={info['python3'] or '未找到'}"
               f" python={info['python'] or '未找到'} venv={info['venv_bin'] or '无'}")
     except Exception:
+        # 这行日志本身就是诊断用的，它失败了没有更底层的出口
         pass
 
 
@@ -1173,7 +1174,8 @@ class PtySession:
                  "-x", str(cols), "-y", str(rows)],
                 timeout=2, capture_output=True,
             )
-        except Exception:
+        except Exception as exc:
+            devlog.debug("tools.resize", error=repr(exc))
             pass
 
     async def _read_loop(self) -> None:
@@ -1221,7 +1223,8 @@ class PtySession:
             self.exit_code = -1
         try:
             self.proc.close()
-        except Exception:
+        except Exception as exc:
+            devlog.debug("tools._finish", error=repr(exc))
             pass
         # 推一个哨兵让 WebSocket 读循环知道该结束了
         try:
@@ -1242,12 +1245,14 @@ class PtySession:
             try:
                 subprocess.run(["tmux", "kill-session", "-t", self.tmux_name],
                                timeout=2, capture_output=True)
-            except Exception:
+            except Exception as exc:
+                devlog.debug("tools.stop", error=repr(exc))
                 pass
         try:
             import os as _os
             _os.kill(self.proc.pid, signal.SIGTERM)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("tools.stop", error=repr(exc))
             pass
         # 给一点时间优雅退出
         try:
@@ -1256,7 +1261,8 @@ class PtySession:
             try:
                 import os as _os
                 _os.kill(self.proc.pid, signal.SIGKILL)
-            except Exception:
+            except Exception as exc:
+                devlog.debug("tools.stop", error=repr(exc))
                 pass
         self._finish()
 
@@ -1343,7 +1349,8 @@ async def abort_all_procs(grace: float = 2.0) -> int:
     for p in procs:
         try:
             await _kill_tree(p, grace)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("tools.abort_all_procs", error=repr(exc))
             pass
         _LIVE_PROCS.discard(p)
         _BG_PROCS.discard(p)
@@ -1443,7 +1450,8 @@ async def _spawn_detached(command: str, env: dict, cwd: str | None = None,
         text = await asyncio.to_thread(
             out_path.read_text, encoding="utf-8", errors="replace")
         text = text.strip()
-    except Exception:
+    except Exception as exc:
+        devlog.debug("tools._spawn_detached", error=repr(exc))
         pass
     # 日志内容已经读进内存，临时文件不再需要：以前每个启动器都在 /tmp 漏一个
     try:
@@ -1481,12 +1489,14 @@ def _bg_drain(proc: asyncio.subprocess.Process) -> Path:
                 if not chunk:
                     break
                 os.write(fd, chunk)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("tools._drain", error=repr(exc))
             pass
         finally:
             try:
                 os.close(fd)
-            except Exception:
+            except Exception as exc:
+                devlog.debug("tools._drain", error=repr(exc))
                 pass
 
     task = asyncio.create_task(_drain())
@@ -1628,7 +1638,8 @@ async def _read_probe(proc: asyncio.subprocess.Process, seconds: float) -> tuple
         if not chunk:
             try:
                 await proc.wait()
-            except Exception:
+            except Exception as exc:
+                devlog.debug("tools._read_probe", error=repr(exc))
                 pass
             return b"".join(chunks), True, had_output
         chunks.append(chunk)
@@ -1659,7 +1670,8 @@ async def _read_rest(proc: asyncio.subprocess.Process, budget: float) -> bytes:
         if not chunk:
             try:
                 await proc.wait()
-            except Exception:
+            except Exception as exc:
+                devlog.debug("tools._read_rest", error=repr(exc))
                 pass
             return b"".join(chunks)
         if kept < _OUT_KEEP:
@@ -1692,7 +1704,8 @@ async def _feed_stdin(proc: asyncio.subprocess.Process, feed: bytes | None,
     finally:
         try:
             proc.stdin.close()
-        except Exception:
+        except Exception as exc:
+            devlog.debug("tools._feed_stdin", error=repr(exc))
             pass
 
 
@@ -1726,7 +1739,8 @@ async def _comm_bounded(proc: asyncio.subprocess.Process, feed: bytes | None,
         try:
             if proc.stdin is not None:
                 proc.stdin.close()
-        except Exception:
+        except Exception as exc:
+            devlog.debug("tools._read", error=repr(exc))
             pass
 
 
@@ -2036,7 +2050,8 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
                                     "exit": proc.returncode,
                                     "source": "run_command",
                                     "background": bool(cur.get("background"))})
-            except Exception:
+            except Exception as exc:
+                devlog.debug("tools._run_command", error=repr(exc))
                 pass
     text = out.decode("utf-8", "replace").strip()
     # 防御性脱敏：命令输出里可能回显了密码（旧写法/伪终端回显）
@@ -2055,7 +2070,8 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
             try:
                 pgid = int(group_file.read_text().strip() or 0)
                 started = bool(pgid) and Path(f"/proc/{pgid}").exists()
-            except Exception:
+            except Exception as exc:
+                devlog.debug("tools._run_command", error=repr(exc))
                 pass
             group_file.unlink(missing_ok=True)
         if not started:
@@ -2742,11 +2758,13 @@ class _VirtualPad:
             import fcntl
 
             fcntl.ioctl(self._fd, _UI_DEV_DESTROY)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("tools._destroy", error=repr(exc))
             pass
         try:
             os.close(self._fd)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("tools._destroy", error=repr(exc))
             pass
         self._fd = None
         _PAD_STICK[0] = _PAD_STICK[1] = 0
@@ -2982,7 +3000,8 @@ async def _screenshot() -> str:
                 import mss
                 with mss.mss() as sct:
                     sct.shot(output=str(path))
-            except Exception:
+            except Exception as exc:
+                devlog.debug("tools._screenshot", error=repr(exc))
                 pass
     finally:
         await _set_overlay_lift(False)

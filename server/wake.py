@@ -224,7 +224,8 @@ def _cli_path() -> str:
         scripts = sysconfig.get_path("scripts")
         if scripts:
             dirs.append(Path(scripts))
-    except Exception:
+    except Exception as exc:
+        devlog.debug("wake._cli_path", error=repr(exc))
         pass
     try:
         import site
@@ -235,7 +236,8 @@ def _cli_path() -> str:
         # 既不在 USER_BASE/Scripts 也不在 sysconfig 的 scripts
         if os.name == "nt" and site.USER_SITE:
             dirs.append(Path(site.USER_SITE).parent / "Scripts")
-    except Exception:
+    except Exception as exc:
+        devlog.debug("wake._cli_path", error=repr(exc))
         pass
     dirs.append(Path.home() / ".local" / "bin")
     for d in dirs:
@@ -368,7 +370,8 @@ class SherpaDetector:
         try:
             if self._vad is not None:
                 self._vad.reset()
-        except Exception:
+        except Exception as exc:
+            devlog.debug("wake.reset", error=repr(exc))
             pass
 
 
@@ -484,7 +487,8 @@ class Capture:
             except Exception:
                 try:
                     proc.kill()
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("wake.stop", error=repr(exc))
                     pass
         t = self._thread
         if t is not None:
@@ -796,7 +800,8 @@ class WakeService:
             if self._power_hold:
                 try:
                     self._power_hold()
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("wake.arm", error=repr(exc))
                     pass
         return self.status()
 
@@ -808,7 +813,8 @@ class WakeService:
         if self._power_release:
             try:
                 self._power_release()
-            except Exception:
+            except Exception as exc:
+                devlog.debug("wake.disarm", error=repr(exc))
                 pass
         self._set_state("disarmed")
         return self.status()
@@ -834,13 +840,15 @@ class WakeService:
                 result = self._cancel_chat()
                 if asyncio.iscoroutine(result):
                     await result
-            except Exception:
+            except Exception as exc:
+                devlog.debug("wake.stop", error=repr(exc))
                 pass
         tts = getattr(self, "_tts_stop", None)
         if callable(tts):
             try:
                 await tts()
-            except Exception:
+            except Exception as exc:
+                devlog.debug("wake.stop", error=repr(exc))
                 pass
         await self._stop_capture()
         self._release_duck()
@@ -915,7 +923,8 @@ class WakeService:
         if cap is not None:
             try:
                 await asyncio.to_thread(cap.stop)
-            except Exception:
+            except Exception as exc:
+                devlog.debug("wake._stop_capture", error=repr(exc))
                 pass
 
     async def _reader_loop(self) -> None:
@@ -1315,7 +1324,8 @@ class WakeService:
         if self._capture is not None:
             try:
                 self._capture.set_paused(state in ("waking", "thinking", "speaking"))
-            except Exception:
+            except Exception as exc:
+                devlog.debug("wake._set_state", error=repr(exc))
                 pass
         cb = self._state_cb
         if cb:
@@ -1323,7 +1333,8 @@ class WakeService:
                 result = cb(self.status())
                 if asyncio.iscoroutine(result):
                     asyncio.get_running_loop().create_task(result)
-            except Exception:
+            except Exception as exc:
+                devlog.debug("wake._set_state", error=repr(exc))
                 pass
 
     def _abort(self, reason: str) -> None:
@@ -1382,7 +1393,8 @@ class WakeService:
             try:
                 self._duck()
                 self._ducked = True
-            except Exception:
+            except Exception as exc:
+                devlog.debug("wake._duck_now", error=repr(exc))
                 pass
 
     def _release_duck(self) -> None:
@@ -1392,7 +1404,8 @@ class WakeService:
         if self._restore:
             try:
                 self._restore()
-            except Exception:
+            except Exception as exc:
+                devlog.debug("wake._release_duck", error=repr(exc))
                 pass
 
     def _playing_now(self) -> bool:

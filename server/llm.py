@@ -268,7 +268,8 @@ class LLMClient:
                 if on_retry:
                     try:
                         on_retry()
-                    except Exception:
+                    except Exception as exc:
+                        devlog.debug("llm._thought", error=repr(exc))
                         pass
                 await asyncio.sleep(delay)
         raise RuntimeError("unreachable")

@@ -1122,7 +1122,8 @@ class OneBotClient:
                 "event": str(event)[:120],
                 "detail": str(detail)[:300],
             })
-        except Exception:
+        except Exception as exc:
+            devlog.debug("onebot._log", error=repr(exc))
             pass
 
     def logs(self, limit: int = 100) -> list[dict]:
@@ -1397,8 +1398,10 @@ class OneBotClient:
                 self._fail_pending_calls()
                 try:
                     await ws.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    from . import devlog
+
+                    devlog.debug("onebot._run", error=repr(exc))
             if self._stopping:
                 break
             attempt += 1
@@ -1726,7 +1729,8 @@ class OneBotClient:
             self._log("error", "图片发送失败", type(e).__name__)
             try:
                 await self._send_text(ev, "图片没发出去（详情见设备日志）。")
-            except Exception:
+            except Exception as exc:
+                devlog.debug("onebot._send_image", error=repr(exc))
                 pass
             return False
         self._stats["replies"] += 1
@@ -1747,7 +1751,8 @@ class OneBotClient:
             # 异常细节不外泄：QQ 上只说一句笼统的，详情留着本地日志
             try:
                 await self._send_text(ev, "出了点问题，这一条没处理成功（详情见设备日志）。")
-            except Exception:
+            except Exception as exc:
+                devlog.debug("onebot._dispatch", error=repr(exc))
                 pass
 
     async def _dispatch_inner(self, ev: MessageEvent) -> None:
@@ -2044,7 +2049,8 @@ class OneBotClient:
                 # 是 /cancel 或 stop() 掐掉了这一轮，给用户一个明确结论
                 try:
                     await self._send_text(ev, "已终止当前操作。")
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("onebot._do_chat", error=repr(exc))
                     pass
                 return
             raise
@@ -2079,7 +2085,8 @@ class OneBotClient:
         if had_pending and self._pending_clear is not None:
             try:
                 self._pending_clear(device, session_sid(ev))
-            except Exception:
+            except Exception as exc:
+                devlog.debug("onebot._do_cancel", error=repr(exc))
                 pass
         task = self._turn_task
         if task is not None and not task.done():

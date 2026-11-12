@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from . import devlog
 
 # 密码通过这个环境变量交给 askpass 助手；助手只打印它，不落盘
 ASKPASS_ENV = "DECKMEIDO_SUDO_PASSWORD"
@@ -79,7 +80,8 @@ def _notify(payload: dict) -> None:
     if hook:
         try:
             hook(payload)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("sudo_auth._notify", error=repr(exc))
             pass
 
 
@@ -405,7 +407,8 @@ def _audit_auth(result: str, source: str, reason: str, detail: str = "") -> None
 
         audit.record("sudo", "auth", result, reason=reason, detail=detail,
                      extra={"source": str(source or "")})
-    except Exception:
+    except Exception as exc:
+        devlog.debug("sudo_auth._audit_auth", error=repr(exc))
         pass
 
 

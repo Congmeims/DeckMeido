@@ -1131,7 +1131,8 @@ def refresh_stream_parts(sid: str, text: str, events: list[dict]) -> None:
     """
     try:
         persist_stream(text, parts=_snapshot_parts(events, text), sid=sid)
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main.refresh_stream_parts", error=repr(exc))
         pass
 
 
@@ -1730,7 +1731,8 @@ class ConnectionManager:
         for ws in list(self.active):
             try:
                 await ws.close(code=code)
-            except Exception:
+            except Exception as exc:
+                devlog.debug("main.close_all", error=repr(exc))
                 pass
         self.active.clear()
 
@@ -2199,7 +2201,8 @@ async def _run_tool_busy(name: str, args: dict) -> tuple:
         try:
             await manager.broadcast({"type": "progress", "text": note,
                                      "ts": time.time(), **_turn_tag()})
-        except Exception:
+        except Exception as exc:
+            devlog.debug("main._run_tool_busy", error=repr(exc))
             pass
 
 
@@ -3086,7 +3089,8 @@ async def ws_terminal(ws: WebSocket):
                 break
     except WebSocketDisconnect:
         pass
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main._push_output", error=repr(exc))
         pass
     finally:
         push_task.cancel()
@@ -3384,7 +3388,8 @@ async def ws_terminal_session(ws: WebSocket, sid: str):
             await ws.send_json(event)
         try:
             await ws.close()
-        except Exception:
+        except Exception as exc:
+            devlog.debug("main._pump", error=repr(exc))
             pass
 
     pump_task = asyncio.create_task(_pump())
@@ -3451,19 +3456,22 @@ async def ws_terminal_session(ws: WebSocket, sid: str):
                 try:
                     session.resize(int(data.get("cols") or 120),
                                    int(data.get("rows") or 36))
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("main._pump", error=repr(exc))
                     pass
             elif kind == "stop":
                 await session.terminate("terminated")
                 # 留一点时间把 exited 事件发出去，再关连接
                 try:
                     await asyncio.wait_for(asyncio.shield(pump_task), 1.0)
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("main._pump", error=repr(exc))
                     pass
                 break
     except WebSocketDisconnect:
         pass
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main._pump", error=repr(exc))
         pass
     finally:
         session.unsubscribe(queue)
@@ -3479,7 +3487,8 @@ async def _stop_remote_terminal():
     """服务重启/停止时把所有远程终端会话一起收掉，别留孤儿 shell。"""
     try:
         await remote_terminal.manager.close_all("shutdown")
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main._stop_remote_terminal", error=repr(exc))
         pass
 
 
@@ -3536,7 +3545,8 @@ async def ws_input(ws: WebSocket):
                 try:
                     await ws.send_json({"t": "state", "ok": False,
                                         "code": remote_input.RI_TIMEOUT})
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("main.ws_input", error=repr(exc))
                     pass
                 break
             # 同时等「下一条消息」和「外部释放」：客户端点 logo / 停止按钮时
@@ -3557,7 +3567,8 @@ async def ws_input(ws: WebSocket):
                 try:
                     await ws.send_json({"t": "state", "ok": False,
                                         "code": remote_input.RI_TIMEOUT})
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("main.ws_input", error=repr(exc))
                     pass
                 break
             if stop_task in done:
@@ -3566,7 +3577,8 @@ async def ws_input(ws: WebSocket):
                     try:
                         await ws.send_json({"t": "state", "ok": False,
                                             "code": end_code})
-                    except Exception:
+                    except Exception as exc:
+                        devlog.debug("main.ws_input", error=repr(exc))
                         pass
                 break
             try:
@@ -3585,7 +3597,8 @@ async def ws_input(ws: WebSocket):
                 try:
                     await ws.send_json({"t": "state", "ok": False,
                                         "code": exc.code, "detail": exc.detail})
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("main.ws_input", error=repr(exc))
                     pass
                 break
             if action == remote_input.RI_RELEASED:
@@ -3593,7 +3606,8 @@ async def ws_input(ws: WebSocket):
                 try:
                     await ws.send_json({"t": "state", "ok": True,
                                         "code": remote_input.RI_RELEASED})
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("main.ws_input", error=repr(exc))
                     pass
                 break
     except WebSocketDisconnect:
@@ -3608,7 +3622,8 @@ async def ws_input(ws: WebSocket):
         finally:
             try:
                 await ws.close()
-            except Exception:
+            except Exception as exc:
+                devlog.debug("main.ws_input", error=repr(exc))
                 pass
 
 
@@ -3793,7 +3808,8 @@ async def start_chat(text: str, announce: bool = True, **kwargs):
         try:
             await asyncio.shield(manager.broadcast(
                 {"type": "status", "data": get_status()}))
-        except Exception:
+        except Exception as exc:
+            devlog.debug("main.start_chat", error=repr(exc))
             pass
 
 
@@ -5241,7 +5257,8 @@ async def api_selfcheck_install(component: str = Query(...)):
         try:
             asyncio.run_coroutine_threadsafe(
                 manager.broadcast({"type": "selfcheck_progress", **payload}), loop)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("main.hook", error=repr(exc))
             pass
 
     return selfcheck.start(component, hook)
@@ -5259,7 +5276,8 @@ async def api_selfcheck_uninstall(component: str = Query(...)):
         try:
             asyncio.run_coroutine_threadsafe(
                 manager.broadcast({"type": "selfcheck_progress", **payload}), loop)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("main.hook", error=repr(exc))
             pass
 
     res = selfcheck.start_uninstall(component, hook)
@@ -5650,7 +5668,8 @@ async def _wake_startup():
     async def _boot():
         try:
             await wake_service.arm()
-        except Exception:
+        except Exception as exc:
+            devlog.debug("main._boot", error=repr(exc))
             pass
 
     asyncio.create_task(_boot())
@@ -5660,12 +5679,14 @@ async def _wake_startup():
 async def _wake_shutdown():
     try:
         await wake_service.disarm()
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main._wake_shutdown", error=repr(exc))
         pass
     # 进程退出兜底：即使上面哪一步异常，也不能把用户的音乐音量停在静音状态
     try:
         media.unmute_for_record()
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main._wake_shutdown", error=repr(exc))
         pass
 
 
@@ -5850,7 +5871,8 @@ async def _start_update_watch():
         try:
             asyncio.run_coroutine_threadsafe(
                 manager.broadcast({"type": "sudo_auth", **payload}), loop)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("main.hook", error=repr(exc))
             pass
 
     sudo_auth.set_hook(hook)
@@ -5922,7 +5944,8 @@ def _qq_log(level: str, event: str, detail: str = "") -> None:
     """往 QQ 日志区补一条事件（onebot_client 在模块后段才创建，这里延迟取）"""
     try:
         onebot_client.log_event(level, event, detail)
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main._qq_log", error=repr(exc))
         pass
 
 
@@ -6851,7 +6874,8 @@ async def api_session_delete(sid: str, request: Request):
             await asyncio.wait_for(asyncio.shield(current_task), timeout=2.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
-        except Exception:
+        except Exception as exc:
+            devlog.debug("main.api_session_delete", error=repr(exc))
             pass
     # 先拉黑再删文件：反过来的话，删完到拉黑之间那一瞬间的落盘（流式回调）
     # 就能把文件写回来，等于白删
@@ -6863,7 +6887,8 @@ async def api_session_delete(sid: str, request: Request):
     if sid.startswith("qq-"):
         try:
             onebot_client.drop_session(sid)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("main.api_session_delete", error=repr(exc))
             pass
     pend = pending_action
     if isinstance(pend, dict) and (pend.get("sid") or "") == sid:
@@ -6945,14 +6970,16 @@ async def api_checkpoint():
         if store.turn.get("active") and text.strip():
             persist_stream(text, force=True, parts=buf.get("parts") or [])
             flushed = True
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main.api_checkpoint", error=repr(exc))
         pass
     # 写盘已经丢给 IO 线程排队了，这里要等它真的落完再放客户端走，
     # 否则 SIGTERM 一到，排队中的那一次写入就跟着一起没了。
     # 等待要放到线程里：这一等最长 5 秒，直接在事件循环里等就别想再处理任何请求了
     try:
         await asyncio.to_thread(session_store.io_submit(lambda: None).result, 5)
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main.api_checkpoint", error=repr(exc))
         pass
     return {"ok": True, "flushed": flushed, "sid": store.current_sid,
             "turns": len(store.history)}
@@ -7022,7 +7049,8 @@ async def api_qrcode():
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         png_b64 = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main.api_qrcode", error=repr(exc))
         pass
     return {"url": url, "qr": png_b64}
 
@@ -7116,7 +7144,8 @@ def _ensure_overlay_locked() -> None:
         finally:
             try:
                 log.close()
-            except Exception:
+            except Exception as exc:
+                devlog.debug("main.spawn", error=repr(exc))
                 pass
         # 接管要等旧实例退位，给足时间；退出码非 0 说明没抢到
         for _ in range(40):          # 最多 6 秒
@@ -7154,7 +7183,8 @@ def stop_overlay() -> None:
             try:
                 proc.kill()
                 proc.wait(timeout=2)
-            except Exception:
+            except Exception as exc:
+                devlog.debug("main.stop_overlay", error=repr(exc))
                 pass
     # 句柄之外的残留（含拿不到套接字的聋子孤儿）统一清掉
     for pid in _overlay_pids():
@@ -7162,7 +7192,8 @@ def stop_overlay() -> None:
             if proc is not None and pid == proc.pid:
                 continue
             os.kill(pid, signal.SIGKILL)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("main.stop_overlay", error=repr(exc))
             pass
     # 关键：僵尸子进程必须回收（waitpid）。
     # overlay.py 被 --force 接管时会被别人 SIGKILL，它成了僵尸挂在 CMD_START 的
@@ -7203,7 +7234,8 @@ def _overlay_pids() -> list[int]:
                 pid = int(line)
                 if pid != os.getpid():
                     pids.append(pid)
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main._overlay_pids", error=repr(exc))
         pass
     return pids
 
@@ -7279,7 +7311,8 @@ def _overlay_watchdog() -> None:
             if since and (time.time() - since) > _OVERLAY_MAX_HOLD:
                 print("[DeckMeido] 遮罩超时未复位，已强制收起", file=sys.stderr)
                 set_overlay(False)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("main._overlay_watchdog", error=repr(exc))
             pass
 
 
@@ -7399,7 +7432,8 @@ async def _shutdown_overlay():
     # 电源抑制也一起放掉，别让下一个进程/系统替我们背着
     try:
         power.keeper.shutdown()
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main._shutdown_overlay", error=repr(exc))
         pass
     # 退出前抢救一次：正在生成的正文与内存历史立刻落盘。
     # 客户端退出、systemctl restart、升级重启都走这条路径，
@@ -7417,7 +7451,8 @@ async def _shutdown_overlay():
     # 侧栏索引平时是延迟合并写的，退出前补一次，别让最后几条会话的标题/条数丢了
     try:
         store.flush_index()
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main._shutdown_overlay", error=repr(exc))
         pass
 
 
@@ -7693,7 +7728,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
             full = "".join(stream_text)
             if _stream_would_flush(full, sid=turn_sid):
                 persist_stream(full, parts=_stamp_parts(full), sid=turn_sid)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("main.on_delta", error=repr(exc))
             pass
         # 前端按批渲染，这里把这一片先攒起来
         _flush_delta_later(turn_sid, text, _turn_tag())
@@ -8309,7 +8345,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
                                 pass
                         msgs.append(fresh)
                         shot_msg = fresh
-                    except Exception:
+                    except Exception as exc:
+                        devlog.debug("main._screen_call", error=repr(exc))
                         pass
         # 工具轮数用尽：最后再不给工具地问一次，让它基于已有结果收尾回答
         msg = await llm.chat_with_tools_stream(
@@ -8418,11 +8455,13 @@ async def ws_endpoint(ws: WebSocket):
                             "text": f"这轮出错了：{exc}",
                             "ts": time.time(), "events": [],
                         })
-                    except Exception:
+                    except Exception as exc:
+                        devlog.debug("main.ws_endpoint", error=repr(exc))
                         pass
     except WebSocketDisconnect:
         pass
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main.ws_endpoint", error=repr(exc))
         pass
     finally:
         # 兜底：不管怎么退出都要摘掉连接，否则 broadcast 会一直往死连接上发
@@ -8671,7 +8710,8 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
     try:
         devlog.log("qq.session", sid=sid, readonly=bool(readonly),
                    messages=int(store.index().get(sid, {}).get("messages") or 0))
-    except Exception:
+    except Exception as exc:
+        devlog.debug("main._qq_run_turn", error=repr(exc))
         pass
     out = {"reply": str(result.get("reply") or "")}
     p = pending_action

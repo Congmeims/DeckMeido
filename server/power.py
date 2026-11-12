@@ -28,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time
+from . import devlog
 
 WHO = "DeckMeido"
 # 持有抑制期间核对间隔：抑制进程被外部杀掉、模式从桌面切到游戏，最多这么久被发现。
@@ -247,7 +248,8 @@ class AwakeKeeper:
                  str(cookie)],
                 capture_output=True, timeout=5, env=_session_env(),
             )
-        except Exception:
+        except Exception as exc:
+            devlog.debug("power._screensaver_release", error=repr(exc))
             pass
 
     def _drop(self, why: str) -> None:
@@ -264,7 +266,8 @@ class AwakeKeeper:
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                     proc.wait(timeout=2)
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("power._drop", error=repr(exc))
                     pass
         self._screensaver_release(cookie)
         if proc is not None or cookie is not None:

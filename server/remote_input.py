@@ -20,7 +20,7 @@ import struct
 import sys
 import time
 
-from . import netcfg
+from . import devlog, netcfg
 
 # fcntl 只在 Linux 上有；Windows 开发机跑单元测试时也要能 import 本模块
 try:
@@ -556,7 +556,8 @@ class RemoteInputManager:
                     last = exc
                     try:
                         await cand.close()
-                    except Exception:
+                    except Exception as exc:
+                        devlog.debug("remote_input.begin", error=repr(exc))
                         pass
                 except Exception as exc:
                     last = RemoteInputError(RI_INJECT_FAILED, str(exc))

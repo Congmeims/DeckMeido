@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from . import devlog
 
 try:                        # Windows 上没有 fcntl，开发机跑测试时退化为旧行为
     import fcntl
@@ -211,6 +212,7 @@ def guard(port: int, allow_second: bool = False) -> None:
     try:
         for line in _holder_lines(port):
             print(line, file=sys.stderr)
-    except Exception:
+    except Exception as exc:
+        devlog.debug("singleton.guard", error=repr(exc))
         pass
     raise SystemExit(3)

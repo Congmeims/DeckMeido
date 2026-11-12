@@ -28,7 +28,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from . import depcheck, netmode, sudo_auth, tools, tts as tts_mod
+from . import depcheck, devlog, netmode, sudo_auth, tools, tts as tts_mod
 
 # 后端把 stdout/stderr 落进 userdata/logs/backend.log；未知异常在这里留完整堆栈，
 # 界面只拿到脱敏后的一句话，不暴露 Python 原文。
@@ -298,7 +298,8 @@ def _set(component: str, phase: str, percent: float, message: str = "",
     if hook:
         try:
             hook(data)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("selfcheck._set", error=repr(exc))
             pass
 
 

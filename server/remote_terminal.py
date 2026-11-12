@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import audit, policy
+from . import audit, devlog, policy
 
 DEFAULT_IDLE_TIMEOUT_S = 900.0
 DEFAULT_MAX_SESSIONS = 3
@@ -155,7 +155,8 @@ def _kill_group(pid: int, sig: int) -> None:
     except Exception:
         try:
             os.kill(pid, sig)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("remote_terminal._kill_group", error=repr(exc))
             pass
 
 
@@ -166,7 +167,8 @@ def _set_winsize(fd: int, rows: int, cols: int) -> None:
         import termios
         size = struct.pack("HHHH", rows, cols, 0, 0)
         fcntl.ioctl(fd, termios.TIOCSWINSZ, size)
-    except Exception:
+    except Exception as exc:
+        devlog.debug("remote_terminal._set_winsize", error=repr(exc))
         pass
 
 
@@ -176,7 +178,8 @@ def _load_ptyprocess() -> Any:
 
         if hasattr(ptyprocess, "PtyProcess"):
             return ptyprocess
-    except Exception:
+    except Exception as exc:
+        devlog.debug("remote_terminal._load_ptyprocess", error=repr(exc))
         pass
     return None
 
@@ -236,7 +239,8 @@ class _PtyProcessHandle(_Handle):
     def resize(self, rows: int, cols: int) -> None:
         try:
             self._proc.setwinsize(rows, cols)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("remote_terminal.resize", error=repr(exc))
             pass
 
     def poll(self) -> int | None:
@@ -260,7 +264,8 @@ class _PtyProcessHandle(_Handle):
     def close(self) -> None:
         try:
             self._proc.close()
-        except Exception:
+        except Exception as exc:
+            devlog.debug("remote_terminal.close", error=repr(exc))
             pass
 
 
@@ -304,7 +309,8 @@ class _OpenptyHandle(_Handle):
         self._closed = True
         try:
             os.close(self._master_fd)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("remote_terminal.close", error=repr(exc))
             pass
 
 
@@ -338,19 +344,22 @@ class _PipeHandle(_Handle):
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(self.pid)],
                     capture_output=True, timeout=5, check=False)
-            except Exception:
+            except Exception as exc:
+                devlog.debug("remote_terminal.signal_term", error=repr(exc))
                 pass
         try:
             if self._proc.poll() is None:
                 self._proc.terminate()
-        except Exception:
+        except Exception as exc:
+            devlog.debug("remote_terminal.signal_term", error=repr(exc))
             pass
 
     def signal_kill(self) -> None:
         try:
             if self._proc.poll() is None:
                 self._proc.kill()
-        except Exception:
+        except Exception as exc:
+            devlog.debug("remote_terminal.signal_kill", error=repr(exc))
             pass
 
     def close(self) -> None:
@@ -358,7 +367,8 @@ class _PipeHandle(_Handle):
             try:
                 if stream is not None:
                     stream.close()
-            except Exception:
+            except Exception as exc:
+                devlog.debug("remote_terminal.close", error=repr(exc))
                 pass
 
 
@@ -390,7 +400,8 @@ def _spawn(settings: TerminalSettings, cwd: str, rows: int,
                 proc = ptyproc.PtyProcess.spawn(
                     argv, cwd=cwd, env=env, dimensions=(rows, cols))
                 return _PtyProcessHandle(proc), argv
-            except Exception:
+            except Exception as exc:
+                devlog.debug("remote_terminal._spawn", error=repr(exc))
                 pass
         try:
             import pty
@@ -508,7 +519,8 @@ class RemoteSession:
                 self._process_chunk(chunk)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            devlog.debug("remote_terminal._read_loop", error=repr(exc))
             pass
         finally:
             self._finish()
@@ -575,7 +587,8 @@ class RemoteSession:
         for queue in list(self._listeners):
             try:
                 queue.put_nowait(event)
-            except Exception:
+            except Exception as exc:
+                devlog.debug("remote_terminal._emit", error=repr(exc))
                 pass
 
     def _write(self, data: bytes) -> None:
@@ -751,7 +764,8 @@ class RemoteSession:
                     "confirmed": record["confirmed"],
                     "terminated": terminated,
                 })
-        except Exception:
+        except Exception as exc:
+            devlog.debug("remote_terminal._finish_exec", error=repr(exc))
             pass
 
     def _flush_pending(self, reason: str) -> None:
@@ -785,7 +799,8 @@ class RemoteSession:
         for queue in list(self._listeners):
             try:
                 queue.put_nowait(None)
-            except Exception:
+            except Exception as exc:
+                devlog.debug("remote_terminal._finish", error=repr(exc))
                 pass
         self._listeners.clear()
 
@@ -796,18 +811,21 @@ class RemoteSession:
         self._ending_reason = reason
         try:
             self._handle.signal_term()
-        except Exception:
+        except Exception as exc:
+            devlog.debug("remote_terminal.terminate", error=repr(exc))
             pass
         try:
             await asyncio.to_thread(self._handle.wait, 1.0)
         except Exception:
             try:
                 self._handle.signal_kill()
-            except Exception:
+            except Exception as exc:
+                devlog.debug("remote_terminal.terminate", error=repr(exc))
                 pass
             try:
                 await asyncio.to_thread(self._handle.wait, 0.5)
-            except Exception:
+            except Exception as exc:
+                devlog.debug("remote_terminal.terminate", error=repr(exc))
                 pass
         self._finish(reason)
         return True
@@ -854,7 +872,8 @@ class RemoteTerminalManager:
             target = Path.home()
         try:
             target = target.resolve()
-        except Exception:
+        except Exception as exc:
+            devlog.debug("remote_terminal.create", error=repr(exc))
             pass
         if not target.exists() or not target.is_dir():
             raise TerminalError(
@@ -885,7 +904,8 @@ class RemoteTerminalManager:
                     "shell": " ".join(argv),
                     "backend": session.backend,
                 })
-        except Exception:
+        except Exception as exc:
+            devlog.debug("remote_terminal.create", error=repr(exc))
             pass
         self._ensure_reaper()
         return session
@@ -913,7 +933,8 @@ class RemoteTerminalManager:
                 session.terminated = True
                 try:
                     session._handle.signal_kill()
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("remote_terminal.shutdown_sync", error=repr(exc))
                     pass
 
     async def reap(self, now: float | None = None) -> list[str]:
@@ -962,7 +983,8 @@ class RemoteTerminalManager:
             await asyncio.sleep(interval)
             try:
                 await self.reap()
-            except Exception:
+            except Exception as exc:
+                devlog.debug("remote_terminal._reaper_loop", error=repr(exc))
                 pass
 
 

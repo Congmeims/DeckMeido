@@ -150,7 +150,8 @@ def prepare_english_backend() -> None:
         if not getattr(nltk, "_deckmeido_offline", False):
             nltk.download = lambda *a, **k: True  # type: ignore[assignment]
             nltk._deckmeido_offline = True
-    except Exception:
+    except Exception as exc:
+        devlog.debug("tts.prepare_english_backend", error=repr(exc))
         pass
 
 
@@ -1078,7 +1079,8 @@ class TTS:
             return
         try:
             cb(kind)
-        except Exception:
+        except Exception as exc:
+            devlog.debug("tts._announce_state", error=repr(exc))
             pass
 
     async def speak(self, text: str, force: bool = False):
@@ -1254,7 +1256,8 @@ class TTS:
         # 预热 sink 探测：命中唤醒词时不能再花几十毫秒跑一次 pactl
         try:
             self._pick_sink_cached()
-        except Exception:
+        except Exception as exc:
+            devlog.debug("tts.synth_bytes", error=repr(exc))
             pass
         return data
 
@@ -1654,7 +1657,8 @@ class TTS:
                 try:
                     with self._lock:
                         self._ensure_voice_locked()
-                except Exception:
+                except Exception as exc:
+                    devlog.debug("tts._download_worker", error=repr(exc))
                     pass
             self._dl_update(state="done", percent=100.0, phase="done", file="",
                             error="", error_kind="", done=self._dl.get("total", -1))
