@@ -1052,7 +1052,7 @@ def main() -> int:
         return 0
 
     try:
-        from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+        from PySide6.QtWebEngineCore import QWebEnginePage
         from PySide6.QtWebEngineWidgets import QWebEngineView
     except ImportError:
         QMessageBox.critical(
@@ -1067,33 +1067,6 @@ def main() -> int:
         from PySide6.QtWebEngineCore import QWebEnginePermission
     except ImportError:
         QWebEnginePermission = None
-
-    _PROFILE_HOLDER: list = []
-
-    def _persistent_profile() -> QWebEngineProfile:
-        """固定存储位置的持久化 QWebEngineProfile（全局只建一份）。
-
-        设备配对的凭据是 HttpOnly Cookie，必须能跨客户端重启存活；用默认
-        profile 时存储目录取决于 Qt 版本与运行环境，目录一变 Cookie 就丢，
-        本机页面会退化成「未配对」。这里显式指定到数据目录下。
-        """
-        if _PROFILE_HOLDER:
-            return _PROFILE_HOLDER[0]
-        storage = _DATA_DIR / "webprofile"
-        try:
-            storage.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
-        profile = QWebEngineProfile("deckmeido", QApplication.instance())
-        try:
-            profile.setPersistentStoragePath(str(storage))
-            profile.setCachePath(str(storage / "cache"))
-            profile.setPersistentCookiesPolicy(
-                QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
-        except Exception as exc:
-            _dev_log("web.profile.setup", error=exc)
-        _PROFILE_HOLDER.append(profile)
-        return profile
 
     def _enum_member(owner, attr: str):
         """按 Qt 版本查枚举：新版权限在 QWebEnginePermission.PermissionType，
@@ -1123,12 +1096,7 @@ def main() -> int:
         )
 
     class WebPage(QWebEnginePage):
-        """客户端专用页面：自动授予麦克风权限，并给本机请求打上「原生客户端」标记
-
-        本机免配对的前提是后端能确认「这个请求来自掌机自己的客户端」。客户端
-        连的是 127.0.0.1，但用户也可能在 Deck 浏览器里开 127.0.0.1，两者回环
-        地址一样；所以客户端给每个自己发出的请求加一个自定义头（自定义头只能
-        fetch 主动加、且会触发 CORS 预检，别的站点伪造不了），后端据此放行。
+        """自动授予麦克风权限，让语音输入在客户端里可用
 
         权限回调的接口随 Qt 版本变过一次：Qt 6.8 起是 permissionRequested
         信号，参数 QWebEnginePermission（用 permissionType() 判断、
@@ -1142,11 +1110,8 @@ def main() -> int:
         这里按版本分别接信号，只做授权，不碰页面加载与 R2 的任何逻辑。
         """
 
-        def __init__(self, parent=None, profile=None):
-            if profile is not None:
-                super().__init__(profile, parent)
-            else:
-                super().__init__(parent)
+        def __init__(self, parent=None):
+            super().__init__(parent)
             self._allowed = tuple(
                 t for t in (
                     _permission_type("MediaAudioCapture"),
@@ -1171,22 +1136,6 @@ def main() -> int:
                         signal.connect(self._answer_feature)
                     except Exception as exc:
                         _dev_log("web.permission.connect", api="featurePermissionRequested", error=exc)
-
-        def acceptNavigationRequest(self, url, nav_type, is_main_frame):
-            """客户端发起的请求统一带 X-DeckMeido-Client: 1
-
-            Qt 只在请求本机地址时回填这个头，所以它同时也等于「回环」证明；
-            后端只认「回环 + 该头」这一组合。
-            """
-            try:
-                req = self.urlRequest() if hasattr(self, "urlRequest") else None
-                if req is not None:
-                    target = url.toString() if hasattr(url, "toString") else str(url)
-                    if target.startswith(API):
-                        req.setRawHeader(b"X-DeckMeido-Client", b"1")
-            except Exception as exc:
-                _dev_log("web.header.error", error=exc)
-            return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
         def _answer(self, permission) -> None:
             """Qt 6.8+：用 QWebEnginePermission 的 grant()/deny() 直接答复"""
@@ -1225,11 +1174,7 @@ def main() -> int:
         return 1
 
     view = QWebEngineView()
-    # 显式挂一个持久化 Profile：不指定时 Qt 用默认 profile，会把 Cookie
-    # 存到 ~/.local/share/DeckMeido（或缓存目录），路径随版本/环境变化，
-    # 一旦丢失设备 Cookie，本机页面就会以为「需要配对」。这里固定落在
-    # 数据目录下，后端重装/重启都不会连带清掉。
-    view.setPage(WebPage(view, _persistent_profile()))
+    view.setPage(WebPage(view))
     view.setWindowTitle("DeckMeido")
     # 屏蔽网页区右键菜单（Reload/Save page 等 Qt 自带项，在本客户端无用）
     view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
@@ -1245,26 +1190,8 @@ def main() -> int:
             "读不到配置，请检查数据目录：\n"
             f"{CONFIG_PATH}\n\n原因：{_config_error}",
         )
-    # 先等后端端口起来再加载页面：刚 spawn 后端时 socket 还没 listen，
-    # 这时 load() 会直接拿到连接被拒的错误页/失败请求，前端就弹「连不上服务」。
-    # 探活用 /api/auth/native-ping（永远 200、免鉴权），2 秒内连不上就先把
-    # 空页面打开，交给网页端自己的退避重试，不在这里卡住窗口。
-    def _load_when_ready(attempt: int = 0) -> None:
-        if attempt >= 20:
-            view.load(QUrl(f"{API}/?native=1"))
-            return
-        try:
-            with urllib.request.urlopen(f"{API}/api/auth/native-ping",
-                                        data=b"", timeout=0.8) as resp:
-                if resp.status == 200:
-                    view.load(QUrl(f"{API}/?native=1"))
-                    return
-        except Exception:
-            pass
-        QTimer.singleShot(150, lambda: _load_when_ready(attempt + 1))
-
+    view.load(QUrl(f"{API}/?native=1"))
     view.show()
-    _load_when_ready()
     # 缩放只作用于这个网页，不影响系统里其他 Qt 程序；网页端（浏览器打开）保持原样。
     # 取 1.1 而非 1.2：右终端栏的隐藏断点是 max-width:1080px，1.2 时 CSS 视口
     # ≈1240/1.2=1033px 会掉进断点把右栏收成抽屉；1.1 时 CSS 视口≈1127px，
