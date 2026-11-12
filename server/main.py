@@ -2999,7 +2999,10 @@ async def api_terminal_run(payload: dict):
     # 另写一套规则 —— 规则只在 approval.py 里维护一份
     verdict = approval.resolve(
         "run_command", {"command": cmd},
-        policy.TurnContext(boot_id=_system_boot_id()),
+        # full_access 必须和对话里的构造点同步：终端面板在完全访问档下同样
+        # 享有删除类豁免，否则会出现「同一个命令在对话里放行、在面板里被问」
+        policy.TurnContext(boot_id=_system_boot_id(),
+                           full_access=(PERMISSION_MODE == "full")),
         PERMISSION_MODE, CUSTOM_PERM)
     if verdict.deny:
         return {"ok": False, "denied": True, "reason": verdict.reason,

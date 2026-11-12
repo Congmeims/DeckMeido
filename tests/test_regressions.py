@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import re
 import sys
 import tempfile
 import types
@@ -527,6 +528,44 @@ class ApprovalGateTest(unittest.TestCase):
             self.assertFalse(v.ask, cmd)
         # grep 的参数里带关键词：不是删除，但提权/服务类关键词仍值得留意
         self.assertFalse(self.resolve("grep reboot /var/log/syslog", "auto").deny)
+
+
+class PermissionContextSyncTest(unittest.TestCase):
+    """TurnContext 构造点必须显式同步 full_access
+
+    full_access 与 main.PERMISSION_MODE 是同一个状态的手工同步：漏传会退回
+    默认 False，表现为「开了完全访问，删除类豁免却局部失效」。这里直接扫源码，
+    以后新增第四个构造点忘了写这一行就会失败。
+    """
+
+    def test_every_turn_context_passes_full_access(self):
+        src = (ROOT / "server" / "main.py").read_text(encoding="utf-8")
+        calls = []
+        for m in re.finditer(r"policy\.TurnContext\(", src):
+            # 取到配对的右括号，避免把套在外层的函数调用算进来
+            depth, i = 0, m.end() - 1
+            while i < len(src):
+                if src[i] == "(":
+                    depth += 1
+                elif src[i] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            calls.append(src[m.end():i])
+        self.assertTrue(calls, "main.py 中未找到 policy.TurnContext 构造点")
+        for body in calls:
+            self.assertIn("full_access=", body, f"漏传 full_access：{body[:120]}")
+
+    def test_full_access_requires_mode_and_local_entry(self):
+        """full_access 只有真的在 full 档、且不是远程入口时才生效"""
+        local = policy.TurnContext(sid="s", turn_id="t", user_text="",
+                                   boot_id="b", full_access=True)
+        self.assertTrue(policy._is_full_access(local))
+        remote = policy.TurnContext(sid="s", turn_id="t", user_text="",
+                                    boot_id="b", full_access=True,
+                                    force_confirm=True)
+        self.assertFalse(policy._is_full_access(remote))
 
 
 class RuleTableTest(unittest.TestCase):
