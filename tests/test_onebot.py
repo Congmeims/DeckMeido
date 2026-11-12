@@ -1482,6 +1482,12 @@ class QqArchiveFlowTest(unittest.IsolatedAsyncioTestCase):
         index = (self.archive_root() / "inbox_index.jsonl").read_text(encoding="utf-8")
         self.assertIn("img1", index)
         self.assertIn("存图成功", json.dumps(bot.logs(20), ensure_ascii=False))
+        # 回复里只能有短文件名：不能出现绝对路径、QQ 号、消息 ID
+        self.assertTrue(await wait_until(lambda: "保存成功" in sent_text(ws)))
+        reply = sent_text(ws)
+        self.assertRegex(reply, r"保存成功，文件名 \d{4}_[0-9a-f]{2}")
+        self.assertNotIn(str(self.archive_root()), reply)
+        self.assertNotIn("img1", reply)
 
     async def test_save_image_group_uses_group_id(self):
         bot, ws, _ = await start_bot()
