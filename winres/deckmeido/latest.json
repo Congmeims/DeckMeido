@@ -1,10 +1,10 @@
 {
   "tag": "0.8.19",
   "name": "DeckMeido 0.8.19",
-  "notes": "# DeckMeido 0.8.19\n\n- fix(installer): sudo 统一走 sdo（带 -A），修复无 tty 下插件目录建不动\n- chore(release): 0.8.19\n- fix(installer): 去掉 sudo -n，它不认 SUDO_ASKPASS\n- chore(release): 0.8.19\n- fix(installer): 无终端时不再向 /dev/tty 刷错误\n- chore(release): 0.8.19\n- fix(installer): 无终端时用 askpass 维持 sudo 凭据\n- chore(release): 0.8.19\n- fix(installer): 修无终端安装拿不到 sudo、检测漏判、自带包缺失\n- chore(release): 0.8.19\n- fix(installer): 修卸载守卫误拦，自带包缺失话术分开\n- chore(release): 0.8.19\n- fix(installer): SteamOS 自带包缺失时才补装，不再计入缺失\n- chore(release): 0.8.19\n- fix(installer): 按 SteamOS 出厂归属裁剪内置包\n- chore(release): 0.8.18\n- feat(installer): 内置 8 个系统包到 vendor/，系统控件这步可离线完成\n- chore(release): 0.8.17\n- fix(installer): 代理结论挪到真正下载前再报，不再顶在首屏\n- chore(release): 0.8.16\n",
-  "published_at": "2026-11-13T22:39:49+08:00",
+  "notes": "# DeckMeido 0.8.19\n\n- fix(installer): 第7步自行 warmup sudo，依赖已齐时无人要过权限\n- chore(release): 0.8.19\n- fix(installer): sudo 统一走 sdo（带 -A），修复无 tty 下插件目录建不动\n- chore(release): 0.8.19\n- fix(installer): 去掉 sudo -n，它不认 SUDO_ASKPASS\n- chore(release): 0.8.19\n- fix(installer): 无终端时不再向 /dev/tty 刷错误\n- chore(release): 0.8.19\n- fix(installer): 无终端时用 askpass 维持 sudo 凭据\n- chore(release): 0.8.19\n- fix(installer): 修无终端安装拿不到 sudo、检测漏判、自带包缺失\n- chore(release): 0.8.19\n- fix(installer): 修卸载守卫误拦，自带包缺失话术分开\n- chore(release): 0.8.19\n- fix(installer): SteamOS 自带包缺失时才补装，不再计入缺失\n- chore(release): 0.8.19\n- fix(installer): 按 SteamOS 出厂归属裁剪内置包\n- chore(release): 0.8.18\n- feat(installer): 内置 8 个系统包到 vendor/，系统控件这步可离线完成\n- chore(release): 0.8.17\n",
+  "published_at": "2026-11-13T22:45:13+08:00",
   "files": {
     "tarball": "deckmeido-0.8.19.tar.gz",
-    "sha256": "75efa2941593199b4449638516ed2a40ed6484ea0a5dd89963549d82b715c2be"
+    "sha256": "3ad543d510e0b1fd8022ebbd6599ab5da3aa547ff0e436e124d79f33d349ec33"
   }
 }

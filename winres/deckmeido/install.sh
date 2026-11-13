@@ -4015,14 +4015,22 @@ plugin_install_zip() {
     src="$tmpzip"
   fi
   need_cmd unzip || { dim "缺少 unzip，跳过"; return 1; }
+  # 插件根目录是 root:root，装插件必须 root。系统控件那一步已装齐时不会走
+  # 依赖安装，也就没人调用过 sudo_warmup——这里必须自己补要一次权限，
+  # 否则无 tty 安装到这一步直接「建不动」（2026-11-13 真机复现）。
+  sdo_cached true 2>/dev/null || sudo_warmup || { dim "拿不到 root 权限，Decky 插件跳过"; return 1; }
   # 旧版可能是软链接：先删链接本身，别顺着链接删到安装目录
   if [ -L "$target" ]; then
     rm -f "$target" 2>/dev/null || sdo rm -f "$target"
   fi
   # 插件根目录 root:root，普通用户建不了，借一次 sudo。
-  # 这里不能写 `sudo -n`：-n 表示「绝不询问」，即使 SUDO_ASKPASS 已设好
-  # 也直接失败（实测），无 tty 的安装就卡在这一步（2026-11-13 真机复现）。
-  sdo mkdir -p "$target" 2>/dev/null || { dim "建不动 $target"; [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
+  # 无 tty 安装靠 warmup 建好的 askpass 助手，sdo 会自动带 -A。
+  local _err
+  if ! _err="$(sdo mkdir -p "$target" 2>&1)"; then
+    dim "建不动 $target：$_err"
+    dim "askpass=${SUDO_ASKPASS:-（未设置）} cansudo=$(sdo -n true 2>&1 && echo yes || echo no)"
+    [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1
+  fi
   # zip 里没有的旧文件（改名模块）会让 Decky 加载过期代码，先清空
   safe_rm_target "$target" || { dim "拒绝清理插件目录（$target）"; [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
   dim "清理旧插件目录（只删本插件自己的目录，不会动别的插件与用户数据）：$target"
