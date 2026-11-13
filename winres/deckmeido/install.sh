@@ -1701,9 +1701,14 @@ dep_record_migrate() {
 }
 
 install_pacman_deps() {
-  local todo=() reinstall=() installed=()
+  local todo=() reinstall=() installed=() restore=()
   DEPS_MISSING_AFTER=()
   for p in "${DEPS_PACMAN[@]}"; do
+    if is_stock_pkg "$p"; then
+      # SteamOS 出厂自带的：不主动装，只有换镜像冲掉 /usr 时才补回来
+      dep_present "$p" || restore+=("$p")
+      continue
+    fi
     if pacman -Qq "$p" >/dev/null 2>&1; then
       # 记录在 ≠ 文件在：SteamOS 换镜像会重建 /usr，须再验命令
       if dep_present "$p"; then installed+=("$p"); else reinstall+=("$p"); fi
@@ -1711,7 +1716,9 @@ install_pacman_deps() {
       todo+=("$p")
     fi
   done
-  [ ${#todo[@]} -gt 0 ] || [ ${#reinstall[@]} -gt 0 ] || {
+  [ ${#restore[@]} -gt 0 ] && \
+    warn "以下包 SteamOS 自带但当前缺失（镜像更新冲掉了 /usr），重新装回：${restore[*]}"
+  [ ${#todo[@]} -gt 0 ] || [ ${#reinstall[@]} -gt 0 ] || [ ${#restore[@]} -gt 0 ] || {
     dim "pacman 包已齐全：${installed[*]}"; return 0; }
   if [ ${#reinstall[@]} -gt 0 ]; then
     warn "以下包记录在但命令找不到（镜像更新冲掉了 /usr），重装：${reinstall[*]}"
@@ -1744,6 +1751,8 @@ install_pacman_deps() {
       pkgs=(${rest[@]+"${rest[@]}"})
     fi
   fi
+  # 自带包被镜像冲掉的补装：不内置，只能联网，一并进这次事务
+  [ ${#restore[@]} -gt 0 ] && pkgs+=("${restore[@]}")
 
   if [ ${#pkgs[@]} -gt 0 ]; then
     if log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
@@ -1797,7 +1806,7 @@ install_pacman_deps() {
   fi
   # 装完实测，防「pacman 说装了但命令不在」
   local bad=()
-  for p in "${todo[@]}" "${reinstall[@]}"; do dep_present "$p" || bad+=("$p"); done
+  for p in "${todo[@]}" "${reinstall[@]}" "${restore[@]}"; do dep_present "$p" || bad+=("$p"); done
   # qdbus6 被拆包到 qt5-tools 的发行版：按需补装
   if printf '%s\n' "${bad[@]}" | grep -qx 'qt6-tools'; then
     if sudo pacman -Sy --needed --noconfirm qt5-tools </dev/null >/dev/null 2>&1 \
@@ -1815,7 +1824,7 @@ install_pacman_deps() {
   # 重装项必须一并记：SteamOS 换镜像冲掉 /usr 后，它们其实已经不在系统里了，
   # 是安装器重新带回来的，不记就会在卸载时被当成「用户原有的」留在机器上。
   local done_now=()
-  for p in "${todo[@]}" "${reinstall[@]}"; do dep_present "$p" && done_now+=("$p"); done
+  for p in "${todo[@]}" "${reinstall[@]}" "${restore[@]}"; do dep_present "$p" && done_now+=("$p"); done
   [ ${#done_now[@]} -gt 0 ] && record_deps "${done_now[@]}"
   record_deps_build
   [ ${#bad[@]} -eq 0 ] || return 1

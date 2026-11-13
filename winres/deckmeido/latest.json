@@ -1,10 +1,10 @@
 {
   "tag": "0.8.19",
   "name": "DeckMeido 0.8.19",
-  "notes": "# DeckMeido 0.8.19\n\n- fix(installer): 按 SteamOS 出厂归属裁剪内置包\n- chore(release): 0.8.18\n- feat(installer): 内置 8 个系统包到 vendor/，系统控件这步可离线完成\n- chore(release): 0.8.17\n- fix(installer): 代理结论挪到真正下载前再报，不再顶在首屏\n- chore(release): 0.8.16\n- fix(installer): 卸载汇总移到 Decky 重启之后，修卡片框线漂移与 Decky 停止超时\n- chore(release): 0.8.15\n- 把这些包当成安装器带来的：安装时主动装、卸载时按清单收走\n- chore(release): 0.8.13\n- chore(release): 0.8.13\n- 修复代理探测把 clash 的 502 当成「没有代理」\n- chore(release): 0.8.12\n- chore(release): 0.8.12\n- fix(install): 下载走本地代理、卸载不再假失败、告别带上人设昵称\n- fix(tools): 干净检查放过出包产物，避免第二次出包被上次产物挡住\n- chore(release): 0.8.11\n- fix(tools): 出包提交只加真正入库的产物，dist 已被忽略\n- fix(pad): 虚拟手柄用完即销毁，避免抢走虚拟键盘输入; fix(ui): 输入法选词时的 Enter 不再误触发提交\n- chore: 归档目录不入库\n",
-  "published_at": "2026-11-13T20:51:03+08:00",
+  "notes": "# DeckMeido 0.8.19\n\n- fix(installer): SteamOS 自带包缺失时才补装，不再计入缺失\n- chore(release): 0.8.19\n- fix(installer): 按 SteamOS 出厂归属裁剪内置包\n- chore(release): 0.8.18\n- feat(installer): 内置 8 个系统包到 vendor/，系统控件这步可离线完成\n- chore(release): 0.8.17\n- fix(installer): 代理结论挪到真正下载前再报，不再顶在首屏\n- chore(release): 0.8.16\n- fix(installer): 卸载汇总移到 Decky 重启之后，修卡片框线漂移与 Decky 停止超时\n- chore(release): 0.8.15\n- 把这些包当成安装器带来的：安装时主动装、卸载时按清单收走\n- chore(release): 0.8.13\n- chore(release): 0.8.13\n- 修复代理探测把 clash 的 502 当成「没有代理」\n- chore(release): 0.8.12\n- chore(release): 0.8.12\n- fix(install): 下载走本地代理、卸载不再假失败、告别带上人设昵称\n- fix(tools): 干净检查放过出包产物，避免第二次出包被上次产物挡住\n- chore(release): 0.8.11\n- fix(tools): 出包提交只加真正入库的产物，dist 已被忽略\n",
+  "published_at": "2026-11-13T21:31:47+08:00",
   "files": {
     "tarball": "deckmeido-0.8.19.tar.gz",
-    "sha256": "d0faa24df1046616bbfacb0cae30471c598b429ff681d768dcf89f9cb87090e3"
+    "sha256": "fcdeadd36146e05da4a39a238c949d3b2e22b0a1ca98aafd9cbec75cd43f0204"
   }
 }
