@@ -1104,11 +1104,67 @@ PY
   fi
 }
 
+# ---------- 本地代理探测 ----------
+# Deck 上常驻 DeckyClash / Clash Verge 之类的代理，它们在本机开 HTTP 端口
+# （默认 7890，Clash Verge / Mihomo 新版多为 7897），但不会自动写成环境变量。
+# 安装脚本里所有下载都走 curl / pip，只要导出 http_proxy 就会全部跟着走——
+# 镜像站下不动的包（GitHub、nltk 数据、PyPI 大包）因此能借道代理拿到。
+# 只探测「本机回环」，不外发任何请求到公网；探测失败就静默跳过，不影响安装。
+PROXY_PORTS="7897 7890 7891 1080"
+# 探测到的本地代理（空 = 直连）；仅供收尾汇总与排障展示
+PROXY_ACTIVE=""
+# 本地地址与局域网不走代理：后端/客户端的 127.0.0.1 请求不能被塞进代理
+PROXY_BYPASS="localhost,127.0.0.1,::1,0.0.0.0,10.*,192.168.*,172.16.*,172.17.*,172.18.*,172.19.*,172.2*,*.local"
+
+# 端口上有没有 HTTP 代理在应答。用 curl 直连一个必然匹配的地址，
+# 能拿到 2xx/4xx 就说明是 HTTP 代理（clash 对任何域名都会先回自己的响应头）。
+_proxy_alive() {
+  local host="$1" port="$2"
+  # 先看端口通不通：nc 不一定装了，用 bash 的 /dev/tcp 兜底
+  if ! (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null; then
+    return 1
+  fi
+  local code
+  code=$(curl -s -o /dev/null -m 3 -w '%{http_code}' \
+    --proxy "http://$host:$port" "http://proxy-probe.invalid/" 2>/dev/null || true)
+  case "$code" in
+    2*|3*|4*) return 0 ;;
+  esac
+  return 1
+}
+
+# 探测并导出代理；已经手动设了 *_proxy 就不再覆盖（用户的设置优先）
+detect_proxy() {
+  if [ -n "${http_proxy:-}${HTTP_PROXY:-}${https_proxy:-}${HTTPS_PROXY:-}" ]; then
+    dim "已手动设置代理：${http_proxy:-${HTTP_PROXY:-}}（沿用）"
+    export no_proxy="${no_proxy:-$PROXY_BYPASS}"
+    export NO_PROXY="$no_proxy"
+    PROXY_ACTIVE="${http_proxy:-${HTTP_PROXY:-}}"
+    return 0
+  fi
+  local port
+  for port in $PROXY_PORTS; do
+    if _proxy_alive 127.0.0.1 "$port"; then
+      PROXY_ACTIVE="http://127.0.0.1:$port"
+      export http_proxy="$PROXY_ACTIVE" https_proxy="$PROXY_ACTIVE" \
+             HTTP_PROXY="$PROXY_ACTIVE" HTTPS_PROXY="$PROXY_ACTIVE"
+      export no_proxy="$PROXY_BYPASS" NO_PROXY="$PROXY_BYPASS"
+      dim "检测到本地代理 $PROXY_ACTIVE，本次安装的下载会走它"
+      return 0
+    fi
+  done
+  PROXY_ACTIVE=""
+  dim "未检测到本地代理（试过 $PROXY_PORTS），按直连下载"
+  return 1
+}
+
 # 装前预检：提前把「装到一半才炸」的情况暴露出来，而不是等 venv 建好、
 # 依赖下完之后才因为磁盘满/端口被占而失败
 preflight() {
   local problems=0
   dim "机型：$(deck_model)"
+  # 0. 本地代理：入口处已经探过一次，这里是兜底（被 source 调用等少见路径）
+  [ -n "${PROXY_PROBED:-}" ] || { detect_proxy || true; PROXY_PROBED=1; }
   # 1. 磁盘空间：具体要多少由 print_capacity_plan 按本次实际要装的项逐项算，
   #    这里只兜一个硬底线
   local avail_mb=""
@@ -4035,7 +4091,8 @@ decky_service_unit() {
 decky_port_probe() {
   local code
   if need_cmd curl; then
-    code="$(curl -s -o /dev/null -m 3 -w '%{http_code}' 'http://127.0.0.1:1337/' 2>/dev/null || true)"
+    # -m 放到 5 秒：Decky 刚起时 1337 偶有短暂卡顿，3 秒在高负载下会误判成「不应答」
+    code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' 'http://127.0.0.1:1337/' 2>/dev/null || true)"
     case "$code" in ''|000|0000) ;; *) return 0 ;; esac
   fi
   if need_cmd timeout; then
@@ -4149,15 +4206,23 @@ decky_health() {
 # （2026-11-08 实测 271 次，还把 Decky Music 拖到 10GB），期间 is-active 恒为 active。
 # 判定：15 秒内 NRestarts 增长，或近 30 秒 journal 出现 1337 address already in use。
 # 命中只置 DECKY_LOOP_NOTE 并返回 1，不中断流程（此时流程可能已做了一半）。
+# 等待方式：按 0.5 秒轮询，只要发现 NRestarts 涨了或 1337 已应答就提前收工。
+# 以前无条件 sleep 15，卸载最后一步干等十几秒——这正是「很慢」的主因。
 decky_restart_loop_note() {
-  local unit="$1" before after hits why
+  local unit="$1" before after hits why i
   case "$unit" in ''|*' '*) return 0 ;; esac
   command -v systemctl >/dev/null 2>&1 || return 0
   before="$(systemctl show -p NRestarts --value "$unit" 2>/dev/null || true)"
   case "$before" in ''|*[!0-9]*) return 0 ;; esac
-  sleep 15
-  after="$(systemctl show -p NRestarts --value "$unit" 2>/dev/null || true)"
-  case "$after" in ''|*[!0-9]*) return 0 ;; esac
+  for i in $(seq 1 30); do
+    sleep 0.5
+    after="$(systemctl show -p NRestarts --value "$unit" 2>/dev/null || true)"
+    case "$after" in ''|*[!0-9]*) after="$before" ;; esac
+    # 计数已经涨了就是循环，不用再等满 15 秒
+    [ "$after" -gt "$before" ] && break
+    # 服务稳定应答即可提前返回；journal 里更早的 bind 失败也算证据，仍需检查一次
+    [ "$i" -ge 4 ] && decky_port_probe && break
+  done
   hits="$(journalctl -u "$unit" --since '30 seconds ago' --no-pager 2>/dev/null |
     grep -c '1337.*address already in use' 2>/dev/null || true)"
   case "$hits" in ''|*[!0-9]*) hits=0 ;; esac
@@ -4276,16 +4341,20 @@ decky_safe_reload() {
     DECKY_SAFE_NOTE="Decky 启动后状态是「${state:-unknown}」，不是 active；请重启 Deck"
     return 1
   fi
-  # 回读一：NRestarts 15 秒内不得增长，journal 不能有新的 1337 bind 失败
+  # 回读一：NRestarts 不得增长、journal 不能有新的 1337 bind 失败；
+  # 这一函数内部已轮询 1337 是否应答，服务一稳定就提前返回，不再硬等 15 秒
   if ! decky_restart_loop_note "$unit"; then
     DECKY_SAFE_STATE="failed"
     DECKY_SAFE_NOTE="$DECKY_LOOP_NOTE"
     return 1
   fi
-  # 回读二：1337 必须真的应答（不是「有 LISTEN」就算数）
-  for i in $(seq 1 6); do
+  # 回读二：再确认一次 1337 真的应答（不是「有 LISTEN」就算数）。
+  # Decky 的 start 返回不代表插件加载完毕：它先拉起主进程，再逐个加载插件，
+  # 1337 往往要再过几秒才开始监听。以前这里只等 3 秒就判失败，于是出现
+  # 「报失败、其实过一会儿就好了」——卸载最后一步的假失败就是这么来的。
+  for i in $(seq 1 24); do
     decky_port_probe && { DECKY_SAFE_STATE="ok"; break; }
-    sleep 0.5
+    sleep 1
   done
   if [ "$DECKY_SAFE_STATE" != "ok" ]; then
     DECKY_SAFE_STATE="failed"
@@ -6127,6 +6196,27 @@ sys_kept_pkgs() {
   printf '%s' "${out:-无}"
 }
 
+# 读人设里的称呼（设置页「怎么称呼你」，存在 meidosoul.json 的 style.address）。
+# 用 sed 而不是调 python：卸载可能发生在 venv 已经删掉之后。
+# 读不到或为空就返回「主人」，保证告别句永远是通顺的。
+persona_address_name() {
+  local addr=""
+  if [ -r "$DATA_PERSONA" ]; then
+    addr="$(sed -n 's/.*"address"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+      "$DATA_PERSONA" 2>/dev/null | head -n 1)"
+    addr="$(printf '%s' "$addr" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  fi
+  printf '%s' "${addr:-主人}"
+}
+
+# 卸载告别：只用文字，称呼跟随用户在人设里指定的昵称。
+uninstall_byebye() {
+  printf '\n'
+  printf '  DeckMeido 已卸载，谢谢一路以来的陪伴。\n'
+  printf '  想回来的时候，执行同一条安装命令就行。\n'
+  printf '  再见，%s。\n\n' "${BYE_WHO:-主人}"
+}
+
 # 收尾汇总：成功、失败、保留、回收站、日志，一次说清楚
 uninstall_summary() {
   local aborted="${1:-0}" l title="卸载完成"
@@ -6188,6 +6278,9 @@ uninstall_summary() {
   fi
   if [ ${#UNINSTALL_FAILS[@]} -gt 0 ]; then
     warn "本次有 ${#UNINSTALL_FAILS[@]} 项失败，见上方 ✗ 行；文件类失败可以直接重跑卸载"
+  elif [ "$aborted" = 0 ] && [ "$DRY_RUN" != 1 ]; then
+    # 干净卸载才道别：有失败项或中途中止时，用户需要的是按提示处理，不是祝福
+    uninstall_byebye
   fi
   return 0
 }
@@ -6299,6 +6392,8 @@ EOF
   echo
   TRASH_COUNT=0
   TRASH_FAILED=0
+  # 称呼要在第 3 步把 userdata 搬走之前读出来，否则最后告别时人设文件已经不在原位
+  BYE_WHO="$(persona_address_name)"
 
   # ---------- 1 停客户端/后端 ----------
   un_step "停止客户端与后端"
@@ -6533,6 +6628,13 @@ smart_default() {
     *) die "无效选择：$choice（输入 1 升级 / 2 卸载 / 0 退出）" ;;
   esac
 }
+
+# 代理探测要早于任何下载：一行命令自举（do_from_piped）和 do_from_mirror
+# 在 preflight 之前就要拉安装包，晚一步就等于没设。
+if need_cmd curl; then
+  detect_proxy || true
+  PROXY_PROBED=1
+fi
 
 # 通过「curl -sL ... | sh -」管道执行时，脚本不在本地磁盘上，这里直接自举：
 # 下载最新发布包到临时目录再交给正常的 install 流程。这样用户记住一行命令，
