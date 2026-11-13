@@ -1226,6 +1226,7 @@ system_notes() {
 # 包名≠命令名的项在 dep_cmd 里映射；检测一律按命令名（need_cmd），不用 pacman -Q。
 # 取舍：base 自带（bash/systemd/procps/iproute2/glib2/sudo）不列；
 # 纯兜底（ffmpeg/paplay/aplay/lsof/pdftotext）不列，缺了主路径仍可用。
+# 以下全部**不是 SteamOS 自带**，安装器必须主动从仓库装（联网）：
 #   tmux       命令面板/Agent 终端整条链路依赖（非 base，SteamOS 无）
 #   qt6-tools  qdbus6 写 Klipper 剪贴板，中文输入唯一通道
 #   gstreamer / gst-plugin-pipewire  gst-launch-1.0 与 pipewiresrc 抓帧
@@ -1279,223 +1280,6 @@ dep_scan_missing() {
   done
 }
 
-# 离线包：仅随包带小且依赖浅的 ydotool/wtype/fakeroot。
-# espeak-ng（依赖 libsonic/pcaudiolib）与 AUR 的 kdotool 走镜像站。
-# 清单见 tools/fetch_offline_deps.sh，需同步。SteamOS 换镜像会重建 /usr 并清空
-# pacman 缓存，故另带一份。
-OFFLINE_DIR="$HERE/deploy/deps"
-# 只覆盖 deploy/deps/*.pkg.tar.zst，与 dist/SHA256SUMS 互不替代
-OFFLINE_MANIFEST="$OFFLINE_DIR/SHA256SUMS"
-
-# 离线包装成功的包名记录（供 offline_stale / 镜像更新后重装判断）
-offline_stamp() { printf '%s' "$CONFIG_DIR/.deps-offline"; }
-
-# 哈希校验：清单必须列出该文件且实算一致。不符一律拒装：
-# pacman -U 以 root 运行，来源不明包 = 提权入口。
-offline_hash_ok() {
-  local f="$1" base want got
-  [ -f "$OFFLINE_MANIFEST" ] || return 1
-  base="$(basename "$f")"
-  want="$(awk -v n="$base" '($2==n)||($2=="*" n){print $1}' "$OFFLINE_MANIFEST" 2>/dev/null | head -n1)"
-  [ -n "$want" ] || return 1
-  got="$(sha256sum "$f" 2>/dev/null | awk '{print $1}')"
-  [ "$got" = "$want" ]
-}
-
-# 已装版本更新时跳过错离线包，避免降级
-pkg_is_downgrade() {
-  local f="$1" p="$2" fv iv
-  fv="$(pacman -Qp "$f" 2>/dev/null | awk '{print $2}')"
-  iv="$(pacman -Q "$p" 2>/dev/null | awk '{print $2}')"
-  [ -n "$fv" ] && [ -n "$iv" ] || return 1
-  need_cmd vercmp || return 1
-  [ "$(vercmp "$fv" "$iv" 2>/dev/null)" -lt 0 ]
-}
-
-# 从发布包自带的 deploy/deps 挑出某个包最新的那一份。
-# 三条硬条件：包名回读一致（防 kdotool / kdotool-bin 这类前缀串包）、
-# 哈希对得上清单、不构成降级。不满足就当没有这一层。
-offline_bundle_file() {
-  local p="$1" f best="" base
-  [ -d "$OFFLINE_DIR" ] || return 0
-  for f in "$OFFLINE_DIR/$p"-*.pkg.tar.zst; do
-    [ -f "$f" ] || continue
-    base="$(basename "$f")"
-    [ "$(pacman -Qp "$f" 2>/dev/null | awk 'NR==1{print $1}')" = "$p" ] || continue
-    if ! offline_hash_ok "$f"; then
-      warn "离线包哈希校验失败，已跳过：$base"
-      continue
-    fi
-    pkg_is_downgrade "$f" "$p" && { dim "已装版本比离线包新，跳过 $p"; continue; }
-    if [ -z "$best" ] || [ "$(printf '%s\n%s\n' "$(basename "$best")" "$base" | sort -V | tail -n1)" = "$base" ]; then
-      best="$f"
-    fi
-  done
-  [ -n "$best" ] && printf '%s' "$best"
-  return 0
-}
-
-# 用本地包直接装，不碰网络。缺点是不会自动补齐依赖树以外的版本约束，
-# 所以装完仍然实测一遍命令在不在。
-offline_pacman_install() {
-  local want=("$@") files=() p hit
-  [ -d "$OFFLINE_DIR" ] || return 1
-  for p in "${want[@]}"; do
-    hit="$(offline_bundle_file "$p")"
-    [ -n "$hit" ] && files+=("$hit")
-  done
-  [ ${#files[@]} -gt 0 ] || return 1
-  info "从发布包自带离线包安装：$(printf '%s ' "${files[@]##*/}")"
-  local log
-  if log=$(sudo pacman -U --noconfirm --needed "${files[@]}" </dev/null 2>&1); then
-    info "离线包安装完成"
-  else
-    warn "离线包安装失败，稍后回退联网"
-    dim "$(printf '%s' "$log" | tail -12)"
-    return 1
-  fi
-  # 记录装成的那几个（包名从包元数据回读，不靠文件名猜）
-  local names=() base
-  for p in "${files[@]}"; do
-    base="$(pacman -Qp "$p" 2>/dev/null | awk 'NR==1{print $1}')"
-    [ -n "$base" ] && names+=("$base")
-  done
-  mkdir -p "$CONFIG_DIR" 2>/dev/null || true
-  printf '%s\n' "${names[*]}" > "$(offline_stamp)" 2>/dev/null || true
-  return 0
-}
-
-# 离线包是不是比系统仓库还旧。SteamOS 换镜像后 holo 仓库里的 espeak-ng
-# 之类可能已经升级过一轮，再用旧包装回去会被 pacman 判成降级。
-# 这里只做提示，不拦着装——离线优先本来就是用在断网场景。
-offline_check_fresh() {
-  [ -d "$OFFLINE_DIR" ] || return 0
-  need_cmd expac || return 0
-  local p f lv
-  for f in "$OFFLINE_DIR"/*.pkg.tar.zst; do
-    [ -e "$f" ] || continue
-    p=$(basename "$f")
-    p="${p%%-[0-9]*}"
-    lv=$(expac -S '%v' "$p" 2>/dev/null | head -n1)
-    [ -n "$lv" ] || continue
-    local have
-    have=$(basename "$f" .pkg.tar.zst)
-    have="${have#"$p"-}"
-    have="${have%-*}"
-    if [ "$(printf '%s\n%s\n' "$have" "$lv" | sort -V | tail -n1)" = "$lv" ] && [ "$have" != "$lv" ]; then
-      warn "离线包 $p $have 比系统仓库的 $lv 旧"
-      dim "断网时装它仍可用；联网时建议让它走仓库：重跑 bash install.sh install"
-    fi
-  done
-}
-
-# ---------- 数据库同步失败时的三层兜底 ----------
-# ① /var/cache/pacman/pkg ② deploy/deps ③ $MIRROR/deps。每层只装能拿到的，
-# 装完实测命令，缺的继续下一层；全拿不到就如实报缺，不打勾。
-
-# pacman -U 一批本地包。needed=1 跳过已装版本；needed=0 强制覆盖重装。
-pacman_u_batch() {
-  local needed="$1"; shift
-  local log
-  local -a opts=(--noconfirm)
-  [ "$needed" = 1 ] && opts+=(--needed)
-  if log=$(sudo pacman -U "${opts[@]}" "$@" </dev/null 2>&1); then
-    return 0
-  fi
-  warn "pacman -U 失败："
-  dim "$(printf '%s' "$log" | tail -12)"
-  return 1
-}
-
-# 从镜像站 deps/ 取某个包：先拿清单（一次任务只下一次），再下包，
-# 哈希与包名都校验通过才返回路径；任何一步不放心就返回空。
-mirror_fetch_pkg() {
-  local p="$1" dest="$2" man="$2/SHA256SUMS" base want got
-  if [ ! -s "$man" ]; then
-    curl -fsSL --connect-timeout 8 --max-time 25 "$MIRROR/deps/SHA256SUMS" -o "$man" 2>/dev/null || return 0
-  fi
-  # 清单行是 `sha256 名称`；Windows 生成的清单会带 `*` 前缀（sha256sum -b），
-  # 这里先剥掉再按前缀挑版本最新的一份
-  base="$(awk -v p="$p" '{n=$2; sub(/^\*/, "", n); if (n ~ ("^" p "-")) print n}' "$man" | sort -V | tail -n1)"
-  [ -n "$base" ] || return 0
-  case "$base" in
-    *.pkg.tar.zst|*.pkg.tar.xz|*.pkg.tar.gz) ;;
-    *) return 0 ;;
-  esac
-  # 只接受平铺文件名：清单若被改成 ../ 之类，不能让它写/读到别处
-  case "$base" in */*|*..*) return 0 ;; esac
-  curl -fsSL --connect-timeout 10 --max-time 300 "$MIRROR/deps/$base" -o "$dest/$base" 2>/dev/null || return 0
-  want="$(awk -v n="$base" '($2==n)||($2=="*" n){print $1}' "$man" | head -n1)"
-  got="$(sha256sum "$dest/$base" 2>/dev/null | awk '{print $1}')"
-  if [ -z "$want" ] || [ "$got" != "$want" ]; then
-    warn "镜像站的 $base 哈希对不上清单，已丢弃"
-    rm -f "$dest/$base"
-    return 0
-  fi
-  if [ "$(pacman -Qp "$dest/$base" 2>/dev/null | awk 'NR==1{print $1}')" != "$p" ]; then
-    warn "镜像站的 $base 包名对不上（要的是 $p），已丢弃"
-    rm -f "$dest/$base"
-    return 0
-  fi
-  pkg_is_downgrade "$dest/$base" "$p" && { dim "已装版本比镜像包新，跳过 $p"; rm -f "$dest/$base"; return 0; }
-  printf '%s' "$dest/$base"
-  return 0
-}
-
-# 三层兜底入口。needed=1 补装缺失；needed=0 强制重装「记录在、命令没了」。
-# 全部满足才返回 0，否则 1（调用方负责把缺的包名报给用户）。
-pacman_rescue_install() {
-  local needed="${1:-1}"; shift
-  local -a names=("$@") files=() left=()
-  local p f tmp=""
-  [ ${#names[@]} -gt 0 ] || return 1
-
-  # ① 本机 pacman 缓存
-  for p in "${names[@]}"; do
-    f="$(pacman_cache_file "$p")"
-    [ -n "$f" ] && files+=("$f")
-  done
-  if [ ${#files[@]} -gt 0 ] && pacman_u_batch "$needed" "${files[@]}"; then
-    dim "已用本机 pacman 缓存装上 ${#files[@]} 个包"
-  fi
-  left=(); files=()
-  for p in "${names[@]}"; do dep_present "$p" || left+=("$p"); done
-  [ ${#left[@]} -eq 0 ] && return 0
-  names=("${left[@]}")
-
-  # ② 发布包自带离线包（哈希清单 + 包名回读 + 防降级）
-  for p in "${names[@]}"; do
-    f="$(offline_bundle_file "$p")"
-    [ -n "$f" ] && files+=("$f")
-  done
-  if [ ${#files[@]} -gt 0 ] && pacman_u_batch "$needed" "${files[@]}"; then
-    dim "已用发布包自带离线包装上 ${#files[@]} 个包"
-  fi
-  left=(); files=()
-  for p in "${names[@]}"; do dep_present "$p" || left+=("$p"); done
-  [ ${#left[@]} -eq 0 ] && return 0
-  names=("${left[@]}")
-
-  # ③ 镜像站 deps/
-  if need_cmd curl; then
-    tmp="$(mktemp -d)"
-    for p in "${names[@]}"; do
-      f="$(mirror_fetch_pkg "$p" "$tmp")"
-      [ -n "$f" ] && files+=("$f")
-    done
-    if [ ${#files[@]} -gt 0 ] && pacman_u_batch "$needed" "${files[@]}"; then
-      dim "已用镜像站离线包装上 ${#files[@]} 个包"
-    fi
-    rm -rf "$tmp"
-  else
-    dim "没有 curl，跳过镜像站这一层"
-  fi
-  left=()
-  for p in "${names[@]}"; do dep_present "$p" || left+=("$p"); done
-  [ ${#left[@]} -eq 0 ] && return 0
-  return 1
-}
-
 deps_intro() {
   local miss=()
   dep_scan_missing miss
@@ -1525,13 +1309,6 @@ deps_intro() {
   done
   echo
   [ ${#miss[@]} -gt 0 ] && dim "待安装：${miss[*]}（AUR 项需 paru/yay）"
-  if [ -d "$OFFLINE_DIR" ]; then
-    local n; n=$(find "$OFFLINE_DIR" -maxdepth 1 -name '*.pkg.tar.zst' 2>/dev/null | wc -l)
-    if [ "${n:-0}" -gt 0 ]; then
-      dim "包内自带离线依赖 ${n} 个（已逐个校验哈希），优先本地安装；装不上再依次退到本机缓存、镜像站、联网"
-      offline_check_fresh
-    fi
-  fi
   dim "安装系统包需 sudo 解除 SteamOS 根分区只读，不改动游戏与个人文件。"
   dim "ydotool 会注册用户级 ydotoold 守护进程并开机自启，无需手动配置。"
 }
@@ -1801,35 +1578,36 @@ sudo_warmup() {
 }
 
 # 记下「这次真的由安装器装上」的系统包：只有缺包时才会进 todo，
-# 用户原本就装好的、SteamOS 自带的都不入清单。卸载时按这份清单询问。
+# 用户原本就装好的都不入清单。清单格式「包名<TAB>安装时间」，安装时间是卸载时
+# 判断「这个包是不是我们带来的」的依据（见 uninstall_optional_deps）。
 record_deps() {
-  local p
+  local p ts
   [ ${#@} -gt 0 ] || return 0
   mkdir -p "$DATA_DIR" 2>/dev/null || return 0
+  dep_record_migrate
+  ts="$(date '+%Y-%m-%dT%H:%M:%S')"
   for p in "$@"; do
     [ -n "$p" ] || continue
-    grep -qxF -- "$p" "$DEP_RECORD" 2>/dev/null && continue
-    printf '%s\n' "$p" >> "$DEP_RECORD" 2>/dev/null || true
+    dep_recorded "$p" && continue
+    printf '%s\t%s\n' "$p" "$ts" >> "$DEP_RECORD" 2>/dev/null || true
   done
 }
 
-# 数据库同步失败（SteamOS 镜像 TLS 过期 / 断网）时 -Sy 必败，但包往往已在
-# /var/cache/pacman/pkg：直接 pacman -U 即可，不依赖数据库也不联网。
-# （2026-11-08 装机 ydotool/wtype 就卡在这里。）
-pacman_cache_file() {
-  local p="$1" f best=""
-  for f in /var/cache/pacman/pkg/"$p"-*; do
-    [ -f "$f" ] || continue
-    case "$f" in
-      *.pkg.tar.zst|*.pkg.tar.xz|*.pkg.tar.gz) ;;
-      *) continue ;;
-    esac
-    # 前缀匹配会串到 kdotool-bin，必须回读包名确认
-    [ "$(pacman -Qp "$f" 2>/dev/null | awk '{print $1}')" = "$p" ] || continue
-    if [ -z "$best" ] || [ "$f" -nt "$best" ]; then best="$f"; fi
-  done
-  [ -n "$best" ] && printf '%s' "$best"
-  return 0
+# 某个包是否登记在安装器清单里（老版本清单只有包名一列，也要认）
+dep_recorded() {
+  [ -f "$DEP_RECORD" ] || return 1
+  awk -F'\t' -v n="$1" '$1==n{f=1} END{exit !f}' "$DEP_RECORD" 2>/dev/null
+}
+
+# 老版本清单是「一列包名」且不回读时间，升级上来后统一补成「包名<TAB>时间」，
+# 否则卸载时 Install Date 早于安装窗口的判定会把这些包误判成「用户原有的」。
+dep_record_migrate() {
+  [ -f "$DEP_RECORD" ] || return 0
+  awk -F'\t' 'NF>=2' "$DEP_RECORD" 2>/dev/null | grep -q . && return 0
+  local ts tmp; ts="$(date '+%Y-%m-%dT%H:%M:%S')"
+  tmp="$DEP_RECORD.tmp"
+  awk -F'\t' -v ts="$ts" 'NF{print $1 "\t" (NF>=2 && $2 != "" ? $2 : ts)}' \
+    "$DEP_RECORD" > "$tmp" 2>/dev/null && mv -f "$tmp" "$DEP_RECORD" 2>/dev/null || rm -f "$tmp"
 }
 
 install_pacman_deps() {
@@ -1865,51 +1643,29 @@ install_pacman_deps() {
   local log ok=1 pkgs=()
   [ ${#todo[@]} -gt 0 ] && pkgs+=("${todo[@]}")
 
-  # 离线优先，断网/仓库抽风时靠它
-  local still=()
-  if [ ${#pkgs[@]} -gt 0 ] && [ -d "$OFFLINE_DIR" ]; then
-    if offline_pacman_install "${pkgs[@]}"; then
-      local p
-      for p in "${pkgs[@]}"; do dep_present "$p" || still+=("$p"); done
-      if [ ${#still[@]} -eq 0 ]; then
-        pkgs=()
-      else
-        warn "离线包装完仍缺：${still[*]}，回退联网"
-        pkgs=("${still[@]}")
-      fi
-    fi
-  fi
-
   if [ ${#pkgs[@]} -gt 0 ]; then
     if log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
       info "pacman 安装完成"
     else
-      # 最常见失败：换镜像后 keyring 对不上；修不好不中止（后面有离线兜底）
+      # 最常见失败：换镜像后 keyring 对不上
       warn "pacman 安装失败，尝试修复 keyring 后重试"
       dim "$(printf '%s' "$log" | tail -5)"
       sudo pacman-key --init </dev/null >/dev/null 2>&1 || warn "pacman-key --init 失败"
       sudo pacman-key --populate archlinux holo </dev/null >/dev/null 2>&1 \
-        || warn "pacman-key --populate 失败（keyring 可能损坏，离线包也不一定能验签）"
+        || warn "pacman-key --populate 失败（keyring 可能损坏）"
       if log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
         info "修复 keyring 后安装成功"
       else
-        # 数据库同步失败（镜像 TLS 过期/断网）时 -Sy 必败，走三层兜底
-        if pacman_rescue_install 1 "${pkgs[@]}"; then
-          info "数据库同步失败，已改用离线包安装"
-        else
-          warn "pacman 安装仍然失败，三层离线兜底也凑不齐：${pkgs[*]}"
-          dim "$(printf '%s' "$log" | tail -20)"
-          dim "手动排查：sudo pacman -Sy ${pkgs[*]}"
-          ok=0
-        fi
+        warn "pacman 安装失败：${pkgs[*]}"
+        dim "$(printf '%s' "$log" | tail -20)"
+        dim "手动排查：sudo pacman -Sy ${pkgs[*]}"
+        ok=0
       fi
     fi
   fi
   if [ ${#reinstall[@]} -gt 0 ] && [ "$ok" = 1 ]; then
     if sudo pacman -S --noconfirm "${reinstall[@]}" </dev/null >/dev/null 2>&1; then
       info "重装完成：${reinstall[*]}"
-    elif pacman_rescue_install 0 "${reinstall[@]}"; then
-      info "改用离线包重装完成：${reinstall[*]}"
     else
       warn "重装失败：${reinstall[*]}"
       dim "手动排查：sudo pacman -S ${reinstall[*]}"
@@ -1931,9 +1687,11 @@ install_pacman_deps() {
     dim "重跑同一条安装命令即可补上：bash install.sh install"
     DEPS_MISSING_AFTER+=("${bad[@]}")
   fi
-  # 只记本次新装的（重装的老包不算安装器引入）
+  # 记录本次由安装器落地（新装 + 重装）的包，卸载时按这份清单收走。
+  # 重装项必须一并记：SteamOS 换镜像冲掉 /usr 后，它们其实已经不在系统里了，
+  # 是安装器重新带回来的，不记就会在卸载时被当成「用户原有的」留在机器上。
   local done_now=()
-  for p in "${todo[@]}"; do dep_present "$p" && done_now+=("$p"); done
+  for p in "${todo[@]}" "${reinstall[@]}"; do dep_present "$p" && done_now+=("$p"); done
   [ ${#done_now[@]} -gt 0 ] && record_deps "${done_now[@]}"
   record_deps_build
   [ ${#bad[@]} -eq 0 ] || return 1
@@ -2254,10 +2012,9 @@ install_deps() {
 
 # ---------- 代码同步 ----------
 # 反向对照：安装目录里有、源码里已无的代码文件要删，否则废弃模块会一直堆积。
-# 只处理 CODE_DIRS，*.log / VERSION / 缓存不动；deploy/deps 必须放过，
-# 否则升级会清空离线包。
+# 只处理 CODE_DIRS，*.log / VERSION / 缓存不动。
 CODE_DIRS=(server client assets deploy tools plugin)
-USER_DATA_RE='\.log$|(^|/)VERSION$|(^|/)__pycache__(/|$)|^deploy/deps/|(^|/)static/shots/[^/]+$'
+USER_DATA_RE='\.log$|(^|/)VERSION$|(^|/)__pycache__(/|$)|(^|/)static/shots/[^/]+$'
 
 prune_stale() {
   [ -d "$INSTALL_DIR" ] || return 0
@@ -3083,6 +2840,15 @@ stage_verify_all() {
       step_ok "系统控件全部就位"
     else
       step_fail "系统控件未就位：${DEPS_PROBE_FAILED[*]}"; bad=1
+      # 这几个包不是 SteamOS 自带的，必须由安装器装；缺哪个给哪条命令，
+      # 不要只说「未就位」让人无从下手
+      local p
+      for p in "${DEPS_PROBE_FAILED[@]}"; do
+        case "$p" in
+          kdotool) dim "  sudo pacman -S --needed fakeroot base-devel git && git clone https://aur.archlinux.org/kdotool-bin.git && cd kdotool-bin && makepkg -si" ;;
+          *)       dim "  sudo steamos-readonly disable && sudo pacman -S --needed $p" ;;
+        esac
+      done
     fi
   fi
   # 音箱录音通道
@@ -5392,17 +5158,18 @@ pac_classify_deps() {
 
 # 可选：卸载安装器亲自装过的系统包。默认卸载（回车=删，显式 n 才保留）；
 # 只认 DEP_RECORD 清单与 pacman 取证里「窗口内新装」的包，
-# 绝不碰 SteamOS 自带组件或用户原有的包，不用 -Rns 级联删。
+# 绝不碰安装前就有的包，不用 -Rns 级联删。
 # 删包前列清单并询问，--purge 也不静默删。do_ask=0 只在 dry-run 下用（只打印）。
 uninstall_optional_deps() {
   local t0="${1:-}" do_ask="${2:-1}"
-  local p ev line cls reason ver src
-  local -a cand_pkg=() cand_why=() keep_pkg=() keep_why=()
+  local p ev line cls reason ver src ts
+  local -a cand_pkg=() cand_why=() keep_pkg=() keep_why=() keep_rest=()
   local -a picked=() helper pkg_del=() aur_del=()
   local -A seen=()
 
+  dep_record_migrate
   if [ -f "$DEP_RECORD" ]; then
-    while IFS=$'\t' read -r p ev _ || [ -n "$p" ]; do
+    while IFS=$'\t' read -r p ts _ || [ -n "$p" ]; do
       [ -n "$p" ] || continue
       case "$p" in *[!A-Za-z0-9@._+-]*) continue ;; esac
       seen[$p]=1
@@ -5410,6 +5177,7 @@ uninstall_optional_deps() {
   fi
   local logfile=""
   logfile="$(pac_log_file || true)"
+  # 无安装清单的老安装（0.8.13 及以前）只能靠 pacman.log 取证，按时间窗口兜底
   if [ -n "$logfile" ] && [ -n "$t0" ]; then
     while IFS='|' read -r cls p ver reason; do
       [ -n "$p" ] || continue
@@ -5423,9 +5191,14 @@ uninstall_optional_deps() {
     return 0
   fi
   for p in $(printf '%s\n' "${!seen[@]}" | sort); do
-    pacman -Qq -- "$p" >/dev/null 2>&1 || continue
+    pacman -Qq -- "$p" >/dev/null 2>&1 || {
+      # 清单里有、系统里已经没了（用户手动删过 / SteamOS 换镜像冲掉）：无事可做，
+      # 但要告诉用户，否则「卸载完成」会让人以为包是我们漏删的
+      dep_recorded "$p" && keep_rest+=("$p")
+      continue
+    }
     ver="$(pacman -Q -- "$p" 2>/dev/null | awk '{print $2}')"
-    # 只有六个签名包在范围内，别的一律不碰
+    # 只在 DEPS_PACMAN / DEPS_AUR 名单内的包有资格删，别的一律不碰
     case " ${PAC_DEPS[*]} " in *" $p "*) ;; *) continue ;; esac
     # 交叉验证 1：日志事件分类（W/U/O/E）
     cls="E"
@@ -5437,9 +5210,12 @@ uninstall_optional_deps() {
         reason="${line##*|}"
       fi
     fi
-    # 交叉验证 2：pacman -Qi 的 Install Date 早于时间窗 → 原本就有，永不删
+    # 交叉验证 2：pacman -Qi 的 Install Date 早于时间窗 → 原本就有，永不删。
+    # 例外：DEP_RECORD 清单里登记过的包是安装器自己装上的（时间只能是它写的
+    # 安装时间），Install Date 再早也只能说明装完被重装/升级过，照样归我们收走。
     ev="$(pac_install_date "$p")"
-    if [ -n "$t0" ] && [ -n "$ev" ] && [[ "$ev" < "${t0:0:19}" ]]; then
+    if [ -n "$t0" ] && [ -n "$ev" ] && [[ "$ev" < "${t0:0:19}" ]] \
+       && ! dep_recorded "$p"; then
       keep_pkg+=("$p"); keep_why+=("Install Date $ev 早于安装时间，原本就有"); continue
     fi
     case "$cls" in
@@ -5458,19 +5234,22 @@ uninstall_optional_deps() {
     cand_pkg+=("$p"); cand_why+=("$reason")
   done
 
+  if [ ${#keep_rest[@]} -gt 0 ]; then
+    dim "已在系统里不存在的包（无需卸载）：${keep_rest[*]}"
+  fi
   if [ ${#keep_pkg[@]} -gt 0 ]; then
     echo
-    info "这些系统包 保留 不动（不是本次安装带来的）："
+    info "这些系统包 保留 不动（安装前就有，不是我们带来的）："
     for p in "${!keep_pkg[@]}"; do
       dim "  · ${keep_pkg[$p]}  ${keep_why[$p]}"
     done
   fi
   if [ ${#cand_pkg[@]} -eq 0 ]; then
-    [ ${#keep_pkg[@]} -eq 0 ] && dim "没有需要处理的系统包"
+    [ ${#keep_pkg[@]} -eq 0 ] && [ ${#keep_rest[@]} -eq 0 ] && dim "没有需要处理的系统包"
     return 0
   fi
   echo
-  info "可以删除的系统包（安装器窗口内新装，已三方核对）："
+  info "可以删除的系统包（安装器装上的，已三方核对）："
   local i
   for i in "${!cand_pkg[@]}"; do
     printf '  %s·%s %-12s %s%s%s\n' "$C_B" "$C_END" "${cand_pkg[$i]}" "$C_DIM" "${cand_why[$i]}" "$C_END"
@@ -5498,6 +5277,13 @@ uninstall_optional_deps() {
   # 已被删掉的 unit 的悬空软链（~/.config/systemd/user/default.target.wants/）
   if printf '%s\n' "${cand_pkg[@]}" | grep -qx ydotool; then
     disable_ydotool_unit
+  fi
+  # SteamOS 根分区默认只读，pacman -R / paru -R 会直接失败。
+  # 卸载流程在第 4 步之前已调用 readonly_guard_setup（异常退出由 trap 恢复），
+  # 这里再兜一次，避免单独调用本函数时被只读挡住。
+  if need_cmd steamos-readonly && [ "$(readonly_state 2>/dev/null || true)" != "disabled" ]; then
+    run_root steamos-readonly disable >/dev/null 2>&1 || \
+      warn "解除 SteamOS 只读失败，删包可能被拒绝"
   fi
   # 选中的集合：删预编译版还是源码版，看机器上实际装的是哪个
   picked=()

@@ -1,10 +1,10 @@
 {
-  "tag": "0.8.13",
-  "name": "DeckMeido 0.8.13",
-  "notes": "# DeckMeido 0.8.13\n\n- chore(release): 0.8.13\n- 修复代理探测把 clash 的 502 当成「没有代理」\n- chore(release): 0.8.12\n- chore(release): 0.8.12\n- fix(install): 下载走本地代理、卸载不再假失败、告别带上人设昵称\n- fix(tools): 干净检查放过出包产物，避免第二次出包被上次产物挡住\n- chore(release): 0.8.11\n- fix(tools): 出包提交只加真正入库的产物，dist 已被忽略\n- fix(pad): 虚拟手柄用完即销毁，避免抢走虚拟键盘输入; fix(ui): 输入法选词时的 Enter 不再误触发提交\n- chore: 归档目录不入库\n- chore(tools): 出包后自动提交并推送产物，不再只提交不推送\n- feat(qq): 回传文案集中到 qqtext 表，并支持在设置页自定义\n- 部署前拦住「删代码删掉主对话连接」：前端结构自检接入 deploy 门禁\n- test(web): 新增前端结构自检，防止大段删除时误删主对话连接与心跳\n- fix(web): 恢复被误删的主对话 WebSocket 与鉴权启动逻辑，掉线/配对页根因修复\n- fix(auth): bootAuth 通过后关闭配对遮罩\n- revert: 撤销 11-12 晚间的鉴权绕行与冷启动改动\n- fix(boot): 后端未就绪时不再弹「连不上服务」\n- fix(auth): Deck 本机客户端不再要求配对\n- fix(client): 客户端固定持久化 QWebEngine Profile\n",
-  "published_at": "2026-11-13T18:41:50+08:00",
+  "tag": "0.8.15",
+  "name": "DeckMeido 0.8.15",
+  "notes": "# DeckMeido 0.8.15\n\n- 把这些包当成安装器带来的：安装时主动装、卸载时按清单收走\n- chore(release): 0.8.13\n- chore(release): 0.8.13\n- 修复代理探测把 clash 的 502 当成「没有代理」\n- chore(release): 0.8.12\n- chore(release): 0.8.12\n- fix(install): 下载走本地代理、卸载不再假失败、告别带上人设昵称\n- fix(tools): 干净检查放过出包产物，避免第二次出包被上次产物挡住\n- chore(release): 0.8.11\n- fix(tools): 出包提交只加真正入库的产物，dist 已被忽略\n- fix(pad): 虚拟手柄用完即销毁，避免抢走虚拟键盘输入; fix(ui): 输入法选词时的 Enter 不再误触发提交\n- chore: 归档目录不入库\n- chore(tools): 出包后自动提交并推送产物，不再只提交不推送\n- feat(qq): 回传文案集中到 qqtext 表，并支持在设置页自定义\n- 部署前拦住「删代码删掉主对话连接」：前端结构自检接入 deploy 门禁\n- test(web): 新增前端结构自检，防止大段删除时误删主对话连接与心跳\n- fix(web): 恢复被误删的主对话 WebSocket 与鉴权启动逻辑，掉线/配对页根因修复\n- fix(auth): bootAuth 通过后关闭配对遮罩\n- revert: 撤销 11-12 晚间的鉴权绕行与冷启动改动\n- fix(boot): 后端未就绪时不再弹「连不上服务」\n",
+  "published_at": "2026-11-13T19:27:04+08:00",
   "files": {
-    "tarball": "deckmeido-0.8.13.tar.gz",
-    "sha256": "151eccf49f91613ee04559795c226793115e0c01b0b4c13f62eb7f4ad2607752"
+    "tarball": "deckmeido-0.8.15.tar.gz",
+    "sha256": "ca6da6fba297d2247df09735f7194d4d7080290b1541431adf8cfd08c7238e47"
   }
 }
