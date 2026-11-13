@@ -1116,8 +1116,8 @@ PROXY_ACTIVE=""
 # 本地地址与局域网不走代理：后端/客户端的 127.0.0.1 请求不能被塞进代理
 PROXY_BYPASS="localhost,127.0.0.1,::1,0.0.0.0,10.*,192.168.*,172.16.*,172.17.*,172.18.*,172.19.*,172.2*,*.local"
 
-# 端口上有没有 HTTP 代理在应答。用 curl 直连一个必然匹配的地址，
-# 能拿到 2xx/4xx 就说明是 HTTP 代理（clash 对任何域名都会先回自己的响应头）。
+# 端口上有没有 HTTP 代理在应答。用 curl 经该端口访问一个必然解析失败的内网域名，
+# 只要代理回了一个 3 位 HTTP 状态码，就说明流量确实进了代理。
 _proxy_alive() {
   local host="$1" port="$2"
   # 先看端口通不通：nc 不一定装了，用 bash 的 /dev/tcp 兜底
@@ -1125,10 +1125,13 @@ _proxy_alive() {
     return 1
   fi
   local code
+  # 用 .invalid 域名探测：代理一般会回自己的错误页，状态码不固定。
+  # clash/mihomo 实际回 502（域名解析失败），旧规则只认 2xx/3xx/4xx 会把它当「没有代理」。
+  # 只有 000（连不上代理）才算失败，其余 3 位状态码都说明流量确实进了代理。
   code=$(curl -s -o /dev/null -m 3 -w '%{http_code}' \
     --proxy "http://$host:$port" "http://proxy-probe.invalid/" 2>/dev/null || true)
   case "$code" in
-    2*|3*|4*) return 0 ;;
+    [1-5][0-9][0-9]) return 0 ;;
   esac
   return 1
 }
