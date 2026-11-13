@@ -45,6 +45,10 @@ SKIP_ANY = {
     "server/config.toml", "server/sessions", "server/uploads",
     "server/static/shots", "plugin/node_modules",
 }
+# 出包产物：打包前要放过（它们会被本次出包覆盖），打包后要自动提交。
+# dist/ 在 .gitignore 里不参与，真正入库的是 winres/deckmeido（只留当前版本）
+RELEASE_PATHS = ["winres/deckmeido", "plugin/package.json",
+                 "plugin/package-lock.json", "deploy/deckmeido-plugin.zip"]
 
 
 def sha256(path: Path) -> str:
@@ -349,10 +353,8 @@ def commit_and_push(ver: str, push: bool = True) -> None:
     装机日志里的 COMMIT 也对不上。推送失败直接退出，让问题当场暴露。
     """
     print("==> 提交出包产物")
-    # 只加产物目录与版本文件，不用 add -A：出包时工作区里可能还有别的手改。
-    # dist/ 在 .gitignore 里，真正入库的产物是 winres/deckmeido（只留当前版本）
-    paths = ["winres/deckmeido", "plugin/package.json",
-             "plugin/package-lock.json", "deploy/deckmeido-plugin.zip"]
+    # 只加产物目录与版本文件，不用 add -A：出包时工作区里可能还有别的手改
+    paths = RELEASE_PATHS
     git("add", "-A", *paths)
     staged = git("diff", "--cached", "--name-only").stdout.strip()
     if not staged:
@@ -392,9 +394,15 @@ def main():
         ["git", "-C", str(ROOT), "status", "--porcelain"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     ).stdout.strip()
-    if dirty:
+    # 产物目录不算「未提交改动」：它们是上一次出包留下的，本来就要被这次
+    # 出包覆盖掉再统一提交。把它们算进去的话，第二次出包永远过不了这一关。
+    dirt = [
+        line for line in dirty.splitlines()
+        if not any(p in line for p in RELEASE_PATHS)
+    ]
+    if dirt:
         sys.exit("工作区有未提交改动，构建号（COMMIT）会和包内容对不上。先提交再出包：\n"
-                 + "\n".join("    " + line for line in dirty.splitlines()[:10]))
+                 + "\n".join("    " + line for line in dirt[:10]))
     if not (ROOT / "plugin" / "dist" / "index.js").exists():
         sys.exit("plugin/dist/index.js 不存在，先 cd plugin && npm run build")
 
