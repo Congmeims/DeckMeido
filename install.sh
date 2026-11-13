@@ -1117,6 +1117,10 @@ PY
 PROXY_PORTS="7897 7890 7891 1080"
 # 探测到的本地代理（空 = 直连）；仅供收尾汇总与排障展示
 PROXY_ACTIVE=""
+# 探测结论（manual / local / none），入口处探测时不打印，留到下载前再报
+PROXY_SOURCE=""
+# 手动设置时沿用的地址，延迟提示用
+PROXY_MANUAL=""
 # 本地地址与局域网不走代理：后端/客户端的 127.0.0.1 请求不能被塞进代理
 PROXY_BYPASS="localhost,127.0.0.1,::1,0.0.0.0,10.*,192.168.*,172.16.*,172.17.*,172.18.*,172.19.*,172.2*,*.local"
 
@@ -1141,28 +1145,53 @@ _proxy_alive() {
 }
 
 # 探测并导出代理；已经手动设了 *_proxy 就不再覆盖（用户的设置优先）
+# $1 = quiet：只探测并导出，不打印结论（入口处用，结论由 proxy_report 在下载前报）
 detect_proxy() {
+  local quiet="${1:-}"
   if [ -n "${http_proxy:-}${HTTP_PROXY:-}${https_proxy:-}${HTTPS_PROXY:-}" ]; then
-    dim "已手动设置代理：${http_proxy:-${HTTP_PROXY:-}}（沿用）"
+    PROXY_MANUAL="${http_proxy:-${HTTP_PROXY:-}}"
+    PROXY_SOURCE="manual"
+    [ -n "$quiet" ] || dim "已手动设置代理：${PROXY_MANUAL}（沿用）"
     export no_proxy="${no_proxy:-$PROXY_BYPASS}"
     export NO_PROXY="$no_proxy"
-    PROXY_ACTIVE="${http_proxy:-${HTTP_PROXY:-}}"
+    PROXY_ACTIVE="$PROXY_MANUAL"
     return 0
   fi
   local port
   for port in $PROXY_PORTS; do
     if _proxy_alive 127.0.0.1 "$port"; then
       PROXY_ACTIVE="http://127.0.0.1:$port"
+      PROXY_SOURCE="local"
       export http_proxy="$PROXY_ACTIVE" https_proxy="$PROXY_ACTIVE" \
              HTTP_PROXY="$PROXY_ACTIVE" HTTPS_PROXY="$PROXY_ACTIVE"
       export no_proxy="$PROXY_BYPASS" NO_PROXY="$PROXY_BYPASS"
-      dim "检测到本地代理 $PROXY_ACTIVE，本次安装的下载会走它"
+      [ -n "$quiet" ] || dim "检测到本地代理 $PROXY_ACTIVE，本次安装的下载会走它"
       return 0
     fi
   done
   PROXY_ACTIVE=""
-  dim "未检测到本地代理（试过 $PROXY_PORTS），按直连下载"
+  PROXY_SOURCE="none"
+  [ -n "$quiet" ] || dim "未检测到本地代理（试过 $PROXY_PORTS），按直连下载"
   return 1
+}
+
+# 代理用的结论推迟到真正要下载的那一步再报：放在入口处会顶到首屏，
+# 和「检查环境」「磁盘空间」这些挨在一起，读起来像安装一开始就得先处理代理。
+# 只报一次：自举流程（do_from_piped / do_from_mirror）已经报过就跳过，
+# 否则子脚本会把同一行再打一遍，两行一样的结论挨在一起。
+PROXY_REPORTED=""
+proxy_report() {
+  [ -n "${PROXY_REPORTED:-}" ] && return 0
+  PROXY_REPORTED=1
+  if [ -n "${PROXY_ACTIVE:-}" ]; then
+    case "${PROXY_SOURCE:-}" in
+      manual) dim "代理：沿用已设置的 $PROXY_ACTIVE" ;;
+      *)      dim "代理：检测到本地代理 $PROXY_ACTIVE，下载走它" ;;
+    esac
+  else
+    dim "代理：未检测到（试过 $PROXY_PORTS），按直连下载"
+  fi
+  export PROXY_REPORTED
 }
 
 # 装前预检：提前把「装到一半才炸」的情况暴露出来，而不是等 venv 建好、
@@ -1170,8 +1199,8 @@ detect_proxy() {
 preflight() {
   local problems=0
   dim "机型：$(deck_model)"
-  # 0. 本地代理：入口处已经探过一次，这里是兜底（被 source 调用等少见路径）
-  [ -n "${PROXY_PROBED:-}" ] || { detect_proxy || true; PROXY_PROBED=1; }
+  # 0. 本地代理：入口处已经探过一次（静默），这里是兜底（被 source 调用等少见路径）
+  [ -n "${PROXY_PROBED:-}" ] || { detect_proxy quiet || true; PROXY_PROBED=1; }
   # 1. 磁盘空间：具体要多少由 print_capacity_plan 按本次实际要装的项逐项算，
   #    这里只兜一个硬底线
   local avail_mb=""
@@ -2854,6 +2883,10 @@ stage_detect_all() {
 # 按检测结果一次装完。中途只报进度，不做复查（复查属 [6/8]）。
 stage_install_all() {
   local py="$1" want_deps="${2:-}" rc=0
+  # 下载从这里开始，代理结论在这里报（入口处只探测不打印）
+  case "$DETECT_NEED_SYS$DETECT_NEED_PY$DETECT_NEED_STT_MODEL$DETECT_NEED_TTS_MODEL$DETECT_NEED_WAKE_MODEL$DETECT_NEED_WAKE_TEXT$DETECT_NEED_TTS_DATA" in
+    *1*) proxy_report ;;
+  esac
   # 系统层：包（含 parec/pw-record、busctl）一次装完
   if [ "$DETECT_NEED_SYS" = 1 ]; then
     module_sys "$want_deps" || rc=1
@@ -4991,6 +5024,8 @@ do_from_mirror() {
 
   print_banner
   info "镜像站：$MIRROR"
+  # 安装包本身就要从这里下，代理结论在这一步报
+  proxy_report
   local tag; tag="$(mirror_latest_tag || true)"
   [ -n "$tag" ] || die "读不到镜像站的版本信息（$MIRROR/latest.json），请检查网络或稍后再试"
   info "最新版本：v$tag"
@@ -5019,6 +5054,8 @@ do_from_piped() {
   # 动作先问（会再调一次 print_banner，已由上面的去重挡掉），再报网络进度，
   # 这样首屏先出大字+菜单，而不是先刷两行版本信息再把 logo 顶走。
   remote_action_or_exit
+  # 下面就要拉安装包，代理结论在这里报
+  proxy_report
   # 临时目录用脚本级变量：trap 要等脚本退出才执行，那时函数里的 local
   # 已经出栈，set -u 下展开 $tmp 会报「tmp: 未绑定的变量」（用户看到的
   # 就是按 A 结束后闪出的一条 bash 报错）。改用全局变量 + :- 兜底。
@@ -6491,8 +6528,10 @@ smart_default() {
 
 # 代理探测要早于任何下载：一行命令自举（do_from_piped）和 do_from_mirror
 # 在 preflight 之前就要拉安装包，晚一步就等于没设。
+# 这里只探测+导出，不打印结论——结论由 proxy_report 在真正开始下载那一步报，
+# 否则提示会顶到首屏，和「检查环境」「磁盘空间」混在一起。
 if need_cmd curl; then
-  detect_proxy || true
+  detect_proxy quiet || true
   PROXY_PROBED=1
 fi
 
