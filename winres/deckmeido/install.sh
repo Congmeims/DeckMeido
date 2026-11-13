@@ -1259,18 +1259,26 @@ system_notes() {
 # 包名≠命令名的项在 dep_cmd 里映射；检测一律按命令名（need_cmd），不用 pacman -Q。
 # 取舍：base 自带（bash/systemd/procps/iproute2/glib2/sudo）不列；
 # 纯兜底（ffmpeg/paplay/aplay/lsof/pdftotext）不列，缺了主路径仍可用。
-# 以下全部**不是 SteamOS 自带**，安装器必须主动从仓库装（联网）：
-#   tmux       命令面板/Agent 终端整条链路依赖（非 base，SteamOS 无）
-#   qt6-tools  qdbus6 写 Klipper 剪贴板，中文输入唯一通道
-#   gstreamer / gst-plugin-pipewire  gst-launch-1.0 与 pipewiresrc 抓帧
-#   gst-plugins-base/good  videoconvert/pngenc/jpegenc
-#   wireplumber  wpctl 音量（缺了退 pactl，故属降级可用）
-#   libpulse   parec：唤醒词/录音首选采集，缺了才退 pw-record。parec 归 libpulse，
-#             别再写 pulseaudio-utils——SteamOS 3.9 没有这个包名，整批 pacman
-#             事务会因为「未找到目标」全部回滚，把 ydotool/wtype 一起拖挂。
+# 归属已按 SteamOS 3.9.5（build 20261023.100）官方 manifest.pacman 逐条核对：
+#   SteamOS 出厂自带（只检测，不装）：tmux / wireplumber / libpulse / pipewire /
+#   gstreamer / gst-plugin-pipewire / gst-plugins-base / gst-plugins-good
+#     换镜像冲掉 /usr 时它们仍会被重装，走的是下面的重装路径。
+#   非出厂自带（安装器负责装，也是内置包清单）：
+#     ydotool / wtype   模拟输入（wtype 覆盖 ydotool 不支持中文的场景）
+#     fakeroot          makepkg 编 AUR（kdotool）
+#     espeak-ng         TTS 兜底
+#     spectacle         截图
+#     qt6-tools         qdbus6 写 Klipper 剪贴板，中文输入唯一通道
+#   libpulse 的 parec 是唤醒词/录音首选采集，缺了才退 pw-record。
+#   别再写 pulseaudio-utils——SteamOS 3.9 没有这个包名，整批 pacman 事务会
+#   因为「未找到目标」全部回滚。
 DEPS_PACMAN=(espeak-ng ydotool wtype fakeroot spectacle libpulse pipewire wireplumber
              gstreamer gst-plugin-pipewire gst-plugins-base
              gst-plugins-good tmux qt6-tools)
+# SteamOS 出厂自带、安装器只检测不装的包：不进内置包，不记进依赖清单
+# （记了就会在卸载时被当成「我们带来的」删掉，而这正是 2026-11-13 的误判来源）
+STOCK_PACMAN=(tmux wireplumber libpulse pipewire gstreamer
+              gst-plugin-pipewire gst-plugins-base gst-plugins-good)
 # 部分发行版 qt6-tools 拆包，qdbus6 也可能在 qt5-tools（DEPS_PACMAN 装不上时补这个）
 # AUR 无 kdotool-bin 时回落到源码包 kdotool
 DEPS_AUR=(kdotool-bin)
@@ -1279,16 +1287,22 @@ DEPS_AUR_FALLBACK=(kdotool)
 DEPS_MISSING_AFTER=()
 
 # ---------- 随包内置的系统包 ----------
-# 这 8 个加起来约 1.7MB，直接打进发布包的 vendor/pkgs/，用 pacman -U 从本地装：
-#   ydotool / wtype / fakeroot / tmux / wireplumber / libpulse
-#   gst-plugin-pipewire / gst-plugins-base
-# 好处是不论镜像站还提不提供这些包、也无论能不能联网都能装上；它们的依赖闭包
-# 在 SteamOS 上自洽（实测去掉这 8 个后整批离线装回成功），所以不会牵出别的东西。
-# 大件（spectacle 2MB+30 个 KDE 依赖、qt6-tools 6.6MB、espeak-ng 7MB）不内置，
-# 仍走 pacman -Sy 联网装。
+# 只内置「非 SteamOS 出厂自带」的小包，用 pacman -U 从本地装：
+#   ydotool / wtype / fakeroot
+# 好处是不论镜像站还提不提供、也无论能不能联网都能装上；它们的依赖闭包在
+# SteamOS 上自洽，不会牵出别的东西。
+# 其余不内置：SteamOS 自带的（tmux / wireplumber / libpulse / gst-*）出厂就有，
+# 大件（spectacle 2MB+30 个 KDE 依赖、qt6-tools 6.6MB、espeak-ng 7MB）走
+# pacman -Sy 联网装。
 # 绝不能再退回 pulseaudio-utils 那种「包名在这套系统里根本不存在」的写法：
 # pacman 是整批事务，一个名字错了会把同批其它包一起回滚。
 VENDOR_PKG_DIR="$HERE/vendor/pkgs"
+
+# 该包是否 SteamOS 出厂自带（只检测，绝不记进依赖清单）
+is_stock_pkg() {
+  case " ${STOCK_PACMAN[*]} " in *" $1 "*) return 0 ;; esac
+  return 1
+}
 
 # $1=包名 → 内置包文件路径（没有就输出空）
 vendor_pkg() {
@@ -1653,6 +1667,8 @@ sudo_warmup() {
 # 记下「这次真的由安装器装上」的系统包：只有缺包时才会进 todo，
 # 用户原本就装好的都不入清单。清单格式「包名<TAB>安装时间」，安装时间是卸载时
 # 判断「这个包是不是我们带来的」的依据（见 uninstall_optional_deps）。
+# SteamOS 出厂自带的包一律不记：它们本就属于系统，卸载时删掉会破坏系统
+# （2026-11-13 就因为清单里混进了 wireplumber/libpulse/gst-* 才有过一次误判）。
 record_deps() {
   local p ts
   [ ${#@} -gt 0 ] || return 0
@@ -1661,6 +1677,7 @@ record_deps() {
   ts="$(date '+%Y-%m-%dT%H:%M:%S')"
   for p in "$@"; do
     [ -n "$p" ] || continue
+    is_stock_pkg "$p" && continue
     dep_recorded "$p" && continue
     printf '%s\t%s\n' "$p" "$ts" >> "$DEP_RECORD" 2>/dev/null || true
   done
@@ -5381,6 +5398,8 @@ uninstall_optional_deps() {
     ver="$(pacman -Q -- "$p" 2>/dev/null | awk '{print $2}')"
     # 只在 DEPS_PACMAN / DEPS_AUR 名单内的包有资格删，别的一律不碰
     case " ${PAC_DEPS[*]} " in *" $p "*) ;; *) continue ;; esac
+    # SteamOS 出厂自带的一律不删：老清单里可能混着（2026-11-13 之前会记进去）
+    is_stock_pkg "$p" && continue
     # 交叉验证 1：日志事件分类（W/U/O/E）
     cls="E"
     reason="pacman.log 里查不到安装记录"
