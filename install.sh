@@ -301,8 +301,15 @@ safe_rm_target() {
     return 0
   fi
   if [ "$abs" = "$HERE" ]; then
-    echo "[删除守卫] 拒绝：目标就是脚本所在目录（源码工作区）" >&2
-    return 1
+    # 例外：脚本就在安装目录里（bash ~/DeckMeido/install.sh uninstall 的常规用法，
+    # 以及 deck 上只有一份安装、没有单独源码目录的情况）。有安装标记就认，
+    # 没标记才按源码工作区拒——2026-11-13 真机卸载就被这条误拦过。
+    if [ "$abs" = "$INSTALL_DIR" ] && [ -f "$abs/.deckmeido-install" ]; then
+      :
+    else
+      echo "[删除守卫] 拒绝：目标就是脚本所在目录（源码工作区）" >&2
+      return 1
+    fi
   fi
   if [ -d "$abs/.git" ] || [ -f "$abs/.git" ]; then
     echo "[删除守卫] 拒绝：目标是 Git 源码工作区（$abs）" >&2
@@ -1816,7 +1823,17 @@ install_pacman_deps() {
     fi
   fi
   if [ ${#bad[@]} -gt 0 ]; then
-    warn "以下包装完仍找不到命令，可能是镜像更新冲掉了 /usr：${bad[*]}"
+    # 自带包缺失是「镜像/网络没取回来」，不是安装器装漏了，话术要分开
+    local stock_bad=() other_bad=()
+    for p in "${bad[@]}"; do
+      if is_stock_pkg "$p"; then stock_bad+=("$p"); else other_bad+=("$p"); fi
+    done
+    if [ ${#stock_bad[@]} -gt 0 ]; then
+      warn "SteamOS 自带但当前缺失（多半是换镜像冲掉了 /usr，或刚连不上软件源）：${stock_bad[*]}"
+    fi
+    if [ ${#other_bad[@]} -gt 0 ]; then
+      warn "以下组件没装上：${other_bad[*]}"
+    fi
     dim "重跑同一条安装命令即可补上：bash install.sh install"
     DEPS_MISSING_AFTER+=("${bad[@]}")
   fi
