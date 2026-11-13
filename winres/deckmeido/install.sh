@@ -604,7 +604,7 @@ write_install_records() {
     printf 'refreshed_at=%s\n' "$now"
     printf 'unit:ydotool.service enabled_before=%s active_before=%s\n' "$en" "$ac"
   } > "$tmp"
-  for it in .venv client assets deploy tools plugin; do
+  for it in .venv client assets deploy tools plugin vendor; do
     [ -d "$INSTALL_DIR/$it" ] && printf 'dir:%s\tpreexisting=0\n' "$it" >> "$tmp"
   done
   # 安装目录本身也记账：默认卸载只删它里面的条目（用户数据一并保留），
@@ -1265,9 +1265,11 @@ system_notes() {
 #   gstreamer / gst-plugin-pipewire  gst-launch-1.0 与 pipewiresrc 抓帧
 #   gst-plugins-base/good  videoconvert/pngenc/jpegenc
 #   wireplumber  wpctl 音量（缺了退 pactl，故属降级可用）
-#   pulseaudio-utils  parec：唤醒词/录音首选采集，缺了才退 pw-record
+#   libpulse   parec：唤醒词/录音首选采集，缺了才退 pw-record。parec 归 libpulse，
+#             别再写 pulseaudio-utils——SteamOS 3.9 没有这个包名，整批 pacman
+#             事务会因为「未找到目标」全部回滚，把 ydotool/wtype 一起拖挂。
 DEPS_PACMAN=(espeak-ng ydotool wtype fakeroot spectacle libpulse pipewire wireplumber
-             pulseaudio-utils gstreamer gst-plugin-pipewire gst-plugins-base
+             gstreamer gst-plugin-pipewire gst-plugins-base
              gst-plugins-good tmux qt6-tools)
 # 部分发行版 qt6-tools 拆包，qdbus6 也可能在 qt5-tools（DEPS_PACMAN 装不上时补这个）
 # AUR 无 kdotool-bin 时回落到源码包 kdotool
@@ -1276,12 +1278,51 @@ DEPS_AUR_FALLBACK=(kdotool)
 # 装完仍缺的包名 → 汇总如实报缺，不假打勾
 DEPS_MISSING_AFTER=()
 
+# ---------- 随包内置的系统包 ----------
+# 这 8 个加起来约 1.7MB，直接打进发布包的 vendor/pkgs/，用 pacman -U 从本地装：
+#   ydotool / wtype / fakeroot / tmux / wireplumber / libpulse
+#   gst-plugin-pipewire / gst-plugins-base
+# 好处是不论镜像站还提不提供这些包、也无论能不能联网都能装上；它们的依赖闭包
+# 在 SteamOS 上自洽（实测去掉这 8 个后整批离线装回成功），所以不会牵出别的东西。
+# 大件（spectacle 2MB+30 个 KDE 依赖、qt6-tools 6.6MB、espeak-ng 7MB）不内置，
+# 仍走 pacman -Sy 联网装。
+# 绝不能再退回 pulseaudio-utils 那种「包名在这套系统里根本不存在」的写法：
+# pacman 是整批事务，一个名字错了会把同批其它包一起回滚。
+VENDOR_PKG_DIR="$HERE/vendor/pkgs"
+
+# $1=包名 → 内置包文件路径（没有就输出空）
+vendor_pkg() {
+  local name="$1" f
+  [ -d "$VENDOR_PKG_DIR" ] || return 0
+  for f in "$VENDOR_PKG_DIR/${name}-"*.pkg.tar.zst; do
+    [ -f "$f" ] || continue
+    printf '%s' "$f"; return 0
+  done
+}
+
+# 用内置包装一批包；任一项没有内置包就返回 1，交给网络仓库那条路
+vendor_install() {
+  local files=() p f
+  for p in "$@"; do
+    f="$(vendor_pkg "$p")"
+    [ -n "$f" ] || return 1
+    files+=("$f")
+  done
+  [ ${#files[@]} -gt 0 ] || return 1
+  if sudo pacman -U --noconfirm --needed "${files[@]}" </dev/null >/dev/null 2>&1; then
+    info "已用内置包安装：$*"
+    return 0
+  fi
+  warn "内置包安装失败，改用网络仓库：$*"
+  return 1
+}
+
+
 # $1=包名 → 打印一个「已装则必有」的命令名（无映射则同名）
 dep_cmd() {
   case "$1" in
     libpulse)         echo pactl ;;
     pipewire)         echo pw-record ;;
-    pulseaudio-utils) echo parec ;;
     wireplumber)      echo wpctl ;;
     gstreamer)        echo gst-launch-1.0 ;;
     gst-plugin-pipewire) echo gst-inspect-1.0 ;;
@@ -1328,9 +1369,8 @@ deps_intro() {
       espeak-ng)        table_row "$p" "$st  espeak-ng TTS 兜底" ;;
       fakeroot)         table_row "$p" "$st  makepkg 编 AUR（kdotool）" ;;
       spectacle)        table_row "$p" "$st  截图（tools.py / depcheck）" ;;
-      libpulse)         table_row "$p" "$st  pactl（音量）" ;;
+      libpulse)         table_row "$p" "$st  pactl / parec（音量、唤醒词录音）" ;;
       pipewire)         table_row "$p" "$st  pw-record（录音兜底 / pw-play 播放）" ;;
-      pulseaudio-utils) table_row "$p" "$st  parec（唤醒词 / 录音首选）" ;;
       wireplumber)      table_row "$p" "$st  wpctl（音量，优先 pactl）" ;;
       gstreamer)        table_row "$p" "$st  gst-launch-1.0（抓帧）" ;;
       gst-plugin-pipewire) table_row "$p" "$st  pipewiresrc（游戏模式抓帧）" ;;
@@ -1676,6 +1716,18 @@ install_pacman_deps() {
   local log ok=1 pkgs=()
   [ ${#todo[@]} -gt 0 ] && pkgs+=("${todo[@]}")
 
+  # 先试内置包：这几种小工具没必要为几十 KB 去连镜像站。装成功的从网络清单
+  # 里摘掉，剩下的才走 pacman -Sy。内置包也走 root，所以必须放在关只读之后。
+  if [ ${#todo[@]} -gt 0 ]; then
+    local bundled=() rest=()
+    for p in "${todo[@]}"; do
+      if [ -n "$(vendor_pkg "$p")" ]; then bundled+=("$p"); else rest+=("$p"); fi
+    done
+    if [ ${#bundled[@]} -gt 0 ] && vendor_install "${bundled[@]}"; then
+      pkgs=(${rest[@]+"${rest[@]}"})
+    fi
+  fi
+
   if [ ${#pkgs[@]} -gt 0 ]; then
     if log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
       info "pacman 安装完成"
@@ -1689,10 +1741,32 @@ install_pacman_deps() {
       if log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
         info "修复 keyring 后安装成功"
       else
-        warn "pacman 安装失败：${pkgs[*]}"
-        dim "$(printf '%s' "$log" | tail -20)"
-        dim "手动排查：sudo pacman -Sy ${pkgs[*]}"
-        ok=0
+        # 「未找到目标：xxx」= 清单里某个包名在当前系统不存在。pacman 是整批
+        # 事务，一个名字错了就把其余全部回滚（2026-11-13 就是 pulseaudio-utils
+        # 拖挂了 ydotool/wtype/fakeroot）。剔掉找不到的，用剩下的再试一次。
+        local ghost=() keep=()
+        # 中英文报错都认：pacman 输出语言随 locale 变
+        ghost=($(printf '%s\n' "$log" \
+                 | sed -n -e 's/.*未找到目标：//p' -e 's/.*target not found: *//p' \
+                 | tr ' ' '\n' | grep -v '^$' || true))
+        if [ ${#ghost[@]} -gt 0 ]; then
+          warn "清单里有不存在的包名：${ghost[*]}，剔除后重试其余包"
+          local g
+          for p in "${pkgs[@]}"; do
+            for g in "${ghost[@]}"; do [ "$p" = "$g" ] && continue 2; done
+            keep+=("$p")
+          done
+          pkgs=(${keep[@]+"${keep[@]}"})
+        fi
+        if [ ${#pkgs[@]} -gt 0 ] \
+           && log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
+          info "剔除无效包名后安装成功：${pkgs[*]}"
+        else
+          warn "pacman 安装失败：${pkgs[*]:-（清单里已无不存在的包名）}"
+          dim "$(printf '%s' "$log" | tail -20)"
+          dim "手动排查：sudo pacman -Sy ${pkgs[*]}"
+          ok=0
+        fi
       fi
     fi
   fi
@@ -2046,7 +2120,7 @@ install_deps() {
 # ---------- 代码同步 ----------
 # 反向对照：安装目录里有、源码里已无的代码文件要删，否则废弃模块会一直堆积。
 # 只处理 CODE_DIRS，*.log / VERSION / 缓存不动。
-CODE_DIRS=(server client assets deploy tools plugin)
+CODE_DIRS=(server client assets deploy tools plugin vendor)
 USER_DATA_RE='\.log$|(^|/)VERSION$|(^|/)__pycache__(/|$)|(^|/)static/shots/[^/]+$'
 
 prune_stale() {
@@ -2094,7 +2168,7 @@ sync_files() {
     info "安装到 $INSTALL_DIR"
   fi
   mkdir -p "$INSTALL_DIR"
-  local items=(server client assets deploy tools plugin requirements.txt requirements-gui.txt requirements-stt.txt requirements-tts.txt README.md install.sh)
+  local items=(server client assets deploy tools plugin vendor requirements.txt requirements-gui.txt requirements-stt.txt requirements-tts.txt README.md install.sh)
   # RELEASE-NOTES.md 只在发布包里存在，有就一起带上，方便用户在安装目录里查更新内容
   [ -f "$HERE/RELEASE-NOTES.md" ] && items+=(RELEASE-NOTES.md)
   # git clone 出来的源码里没有 plugin/dist/（插件自己的 .gitignore 排除），
