@@ -1,10 +1,10 @@
 {
-  "tag": "0.8.19",
-  "name": "DeckMeido 0.8.19",
-  "notes": "# DeckMeido 0.8.19\n\n- fix(uninstaller): 卸载开始前先 warmup sudo，无 tty 下不再全线失败\n- chore(release): 0.8.19\n- fix(installer): 第7步自行 warmup sudo，依赖已齐时无人要过权限\n- chore(release): 0.8.19\n- fix(installer): sudo 统一走 sdo（带 -A），修复无 tty 下插件目录建不动\n- chore(release): 0.8.19\n- fix(installer): 去掉 sudo -n，它不认 SUDO_ASKPASS\n- chore(release): 0.8.19\n- fix(installer): 无终端时不再向 /dev/tty 刷错误\n- chore(release): 0.8.19\n- fix(installer): 无终端时用 askpass 维持 sudo 凭据\n- chore(release): 0.8.19\n- fix(installer): 修无终端安装拿不到 sudo、检测漏判、自带包缺失\n- chore(release): 0.8.19\n- fix(installer): 修卸载守卫误拦，自带包缺失话术分开\n- chore(release): 0.8.19\n- fix(installer): SteamOS 自带包缺失时才补装，不再计入缺失\n- chore(release): 0.8.19\n- fix(installer): 按 SteamOS 出厂归属裁剪内置包\n- chore(release): 0.8.18\n",
-  "published_at": "2026-11-13T22:51:02+08:00",
+  "tag": "0.8.20",
+  "name": "DeckMeido 0.8.20",
+  "notes": "# DeckMeido 0.8.20\n\n- fix(installer): 只读层覆盖 pacman+AUR 两步，AUR helper 走 askpass\n- chore(release): 0.8.19\n- fix(uninstaller): 卸载开始前先 warmup sudo，无 tty 下不再全线失败\n- chore(release): 0.8.19\n- fix(installer): 第7步自行 warmup sudo，依赖已齐时无人要过权限\n- chore(release): 0.8.19\n- fix(installer): sudo 统一走 sdo（带 -A），修复无 tty 下插件目录建不动\n- chore(release): 0.8.19\n- fix(installer): 去掉 sudo -n，它不认 SUDO_ASKPASS\n- chore(release): 0.8.19\n- fix(installer): 无终端时不再向 /dev/tty 刷错误\n- chore(release): 0.8.19\n- fix(installer): 无终端时用 askpass 维持 sudo 凭据\n- chore(release): 0.8.19\n- fix(installer): 修无终端安装拿不到 sudo、检测漏判、自带包缺失\n- chore(release): 0.8.19\n- fix(installer): 修卸载守卫误拦，自带包缺失话术分开\n- chore(release): 0.8.19\n- fix(installer): SteamOS 自带包缺失时才补装，不再计入缺失\n- chore(release): 0.8.19\n",
+  "published_at": "2026-11-13T23:42:45+08:00",
   "files": {
-    "tarball": "deckmeido-0.8.19.tar.gz",
-    "sha256": "4ed5cdb9f6ef3064d9842bb17c266e75367b4649f463ca3f9f8d48cf569c15fc"
+    "tarball": "deckmeido-0.8.20.tar.gz",
+    "sha256": "67567bcd9148529f7e0a7d5a41c9a7a992ed18613c9866f38e2f321089efc870"
   }
 }

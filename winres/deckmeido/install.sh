@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # DeckMeido 一键安装 / 升级 / 卸载
-#   bash install.sh [install|upgrade|check|uninstall|from-mirror|speedtest|menu] [--deps|--no-deps|--gui]
+#   bash install.sh [install|upgrade|check|uninstall|from-mirror|speedtest|menu] [--deps|--no-deps]
+#   upgrade 另支持 --gui：只补桌面客户端（PySide6），不动别的
 #   无参数：未装则安装，已装则询问（升级/卸载/退出）
 #   默认全装且不再询问档位；模块统一「检测→下载→安装→复查」，已装的自动跳过，
 #   半路失败重跑同一命令即可补齐，无单独补装开关。
@@ -60,8 +61,7 @@ DEPS_PROBE_FAILED=()
 # Decky 重启后被判定卡在重启循环时的说明（decky_restart_loop_note 写入）。
 # 必须单列进收尾汇总：否则「已重载」会让用户以为插件已生效，实际上一轮都没加载成功。
 DECKY_LOOP_NOTE=""
-# 动手前的 Decky 体检结果：ok / broken / unknown（decky_health 写入）
-DECKY_HEALTH="unknown"
+# 动手前的 Decky 体检结论（decky_health 写入；返回值给判定，这里存可读说明）
 DECKY_HEALTH_NOTE=""
 DECKY_UNIT=""
 # 安全重载结果：ok / failed / pending（decky_safe_reload 写入）
@@ -396,7 +396,6 @@ decky_music_present() {
 # dry-run 只打印计划，不建目录不移动。
 TRASH_FALLBACK_DIR=""   # 本次实际使用的回收站根（手工模式）
 TRASH_COUNT=0           # 移走（或 dry-run 计划移走）的条目数
-TRASH_FAILED=0          # 权限不足、没能移走的条目数
 DRY_RUN=0               # 1 = 只列计划，零改动
 # 系统包卸载结果，收尾汇总必须如实区分「按选择保留」与「以为删了其实没删」
 UNINSTALL_KEPT_PKGS=""  # 用户显式选择保留的包
@@ -460,7 +459,6 @@ trash_path() {
   TRASH_FALLBACK_DIR="$root"
   mkdir -p "$root/files" "$root/info" 2>/dev/null || {
     warn "无法创建回收站目录：$root（未删除 $p）"
-    TRASH_FAILED=$((TRASH_FAILED + 1))
     return 1
   }
   dest="$(_trash_dest_for "$p")"
@@ -483,7 +481,6 @@ trash_path() {
       warn "未能移走：$p"
       # 收掉可能建了一半的目标
       [ -e "$dest" ] && [ -z "$(find "$dest" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ] && rmdir "$dest" 2>/dev/null || true
-      TRASH_FAILED=$((TRASH_FAILED + 1))
       return 1
     fi
   fi
@@ -788,7 +785,6 @@ purge_pip_cache() {
 # 完成卡片：带边框的结果汇总
 # 宽度跟着终端走；单行超过内宽时按显示宽度折行，右边的 │ 不会再被顶出屏幕。
 card() {
-  CARD_COL=0
   if card_fits; then
     local inner n
     inner=$(card_inner); n=$((inner + 1))
@@ -802,7 +798,6 @@ card() {
 # 一行算错就把后面所有行的 │ 推歪。所以真终端里不靠空格补，直接「移到固定列」：
 # 每次重画先回到行首、清掉整行，再在算好的列上画右框线，物理对齐。
 # $1=文本 $2=内宽 $3=是否加粗
-CARD_COL=0
 card_row() {
   local text="$1" inner="$2" bold="${3:-0}"
   if [ "$OUT_IS_TTY" = 1 ]; then
@@ -815,8 +810,7 @@ card_row() {
       printf '%s│%s %s' "$C_C" "$C_END" "$text"
     fi
     # 右框线的绝对列号：左框 1 列 + 空格 1 列 + 内宽，再 +1（列号从 1 起）。
-    # 不靠 CARD_COL 累加——那张卡画完后它就不该再被后面的卡继承，
-    # 否则第二张卡的框线会整条右移。
+    # 用绝对列而不是累加：否则第二张卡的框线会整条右移。
     printf '\033[%dG%s│%s\n' "$((inner + 3))" "$C_C" "$C_END"
     return 0
   fi
@@ -892,8 +886,6 @@ card_end() {
     local inner n
     inner=$(card_inner); n=$((inner + 1))
     # 底框必须从第 1 列开始画，和 card() 的顶框对齐。
-    # 以前这里用 CARD_COL 定位，可 card_row 每行都会把 CARD_COL 往上累加，
-    # 底框就整条往右漂，越到后面越歪，看起来像「盖不住」。
     if [ "$OUT_IS_TTY" = 1 ]; then
       printf '\r\033[K%s└%s┘%s\n' "$C_C" \
         "$(printf '─%.0s' $(seq 1 "$n"))" "$C_END"
@@ -1235,7 +1227,7 @@ preflight() {
   local problems=0
   dim "机型：$(deck_model)"
   # 0. 本地代理：入口处已经探过一次（静默），这里是兜底（被 source 调用等少见路径）
-  [ -n "${PROXY_PROBED:-}" ] || { detect_proxy quiet || true; PROXY_PROBED=1; }
+  detect_proxy quiet || true
   # 1. 磁盘空间：具体要多少由 print_capacity_plan 按本次实际要装的项逐项算，
   #    这里只兜一个硬底线
   local avail_mb=""
@@ -1756,6 +1748,37 @@ dep_record_migrate() {
     "$DEP_RECORD" > "$tmp" 2>/dev/null && mv -f "$tmp" "$DEP_RECORD" 2>/dev/null || rm -f "$tmp"
 }
 
+# SteamOS 根分区只读：pacman 和 AUR（makepkg -si 最后要 pacman -U）都需要可写。
+# 必须在「两步之外」统一开关——放 install_pacman_deps 里用 trap EXIT 会在该函数
+# 返回时就把 /usr 恢复只读，紧跟着的 AUR 安装随即
+# 「failed to init transaction (Read-only file system)」（2026-11-13 kdotool-bin）。
+# $@ = 需要写 /usr 的命令。
+ro_deps() {
+  local disabled=0
+  if [ -f /etc/steamos-readonly.conf ] || need_cmd steamos-readonly; then
+    if sdo steamos-readonly disable </dev/null 2>/dev/null; then
+      disabled=1
+    else
+      warn "关闭 SteamOS 只读保护失败，系统包与 AUR 包都装不了"
+      dim "手动执行：sudo steamos-readonly disable   然后再重跑本次命令"
+      return 1
+    fi
+  fi
+  if [ "$disabled" = 1 ]; then
+    trap 'sdo steamos-readonly enable >/dev/null 2>&1 || \
+          printf "\033[33m⚠ 恢复 SteamOS 只读保护失败，请手动执行：sudo steamos-readonly enable\033[0m\n" >&2; \
+          trap - EXIT INT TERM' EXIT INT TERM
+  fi
+  "$@"
+  local rc=$?
+  if [ "$disabled" = 1 ]; then
+    sdo steamos-readonly enable </dev/null >/dev/null 2>&1 \
+      || printf '\033[33m⚠ 恢复 SteamOS 只读保护失败，请手动执行：sudo steamos-readonly enable\033[0m\n' >&2
+    trap - EXIT INT TERM
+  fi
+  return "$rc"
+}
+
 install_pacman_deps() {
   local todo=() reinstall=() installed=() restore=()
   DEPS_MISSING_AFTER=()
@@ -1780,19 +1803,6 @@ install_pacman_deps() {
     warn "以下包记录在但命令找不到（镜像更新冲掉了 /usr），重装：${reinstall[*]}"
   fi
   [ ${#todo[@]} -gt 0 ] && info "用 pacman 安装：${todo[*]}"
-  # SteamOS 根分区只读，装包前必须关；旧代码 `|| true` 吞错导致 pacman 报无关错
-  if [ -f /etc/steamos-readonly.conf ] || need_cmd steamos-readonly; then
-    if ! sdo steamos-readonly disable </dev/null 2>/dev/null; then
-      warn "关闭 SteamOS 只读保护失败，系统包无法安装"
-      dim "手动执行：sudo steamos-readonly disable   然后再重跑本次命令"
-      return 1
-    fi
-    # 装完（含失败/Ctrl-C）必须恢复只读，trap 兜住
-    # trap 里用 sdo：有 askpass 时才能免交互恢复（无 tty 安装的唯一办法）
-    trap 'sdo steamos-readonly enable >/dev/null 2>&1 || \
-          printf "\033[33m⚠ 恢复 SteamOS 只读保护失败，请手动执行：sudo steamos-readonly enable\033[0m\n" >&2; \
-          trap - EXIT INT TERM' EXIT INT TERM
-  fi
   # -Sy 不 -Syu：避免顺带滚系统。reinstall 不能带 --needed
   local log ok=1 pkgs=()
   [ ${#todo[@]} -gt 0 ] && pkgs+=("${todo[@]}")
@@ -1897,6 +1907,26 @@ install_pacman_deps() {
   [ ${#bad[@]} -eq 0 ] || return 1
 }
 
+# AUR helper（paru / yay）自己调 sudo，不会走 run_root；无终端安装时必须把
+# askpass 传进去，否则报「sudo: a terminal is required」直接失败（2026-11-13
+# kdotool-bin 就是这么装不上的）。--sudoloop 免去长编译中途再次要密码；
+# stdin 一律喂 /dev/null，防止 paru 的「Proceed? [Y/n]」把脚本尾巴吃掉。
+aur_run() {
+  local helper="$1"; shift
+  local -a flags=()
+  case "$helper" in
+    # 只有走 askpass 时才强加 -A：有终端时 sudo 自己能弹密码框，加 -A 反而必须依赖 askpass
+    paru|yay)
+      if [ -n "${SUDO_ASKPASS:-}" ] && [ -x "${SUDO_ASKPASS}" ]; then
+        flags=(--sudoflags -A --sudoloop)
+      else
+        flags=(--sudoloop)
+      fi
+      ;;
+  esac
+  "$helper" "${flags[@]}" "$@" </dev/null
+}
+
 install_aur_deps() {
   local todo=() helper
   need_cmd kdotool || todo=("${DEPS_AUR[@]}")
@@ -1922,12 +1952,12 @@ install_aur_deps() {
   fi
   info "用 $helper 安装：${todo[*]}"
   local log
-  if log=$("$helper" -S --needed --noconfirm "${todo[@]}" 2>&1); then
+  if log=$(aur_run "$helper" -S --needed --noconfirm "${todo[@]}" 2>&1); then
     info "$helper 安装完成"
   else
     warn "$helper 安装失败，改用源码版（需要编译，耗时较久）：${DEPS_AUR_FALLBACK[*]}"
     dim "$(printf '%s' "$log" | tail -8)"
-    if log=$("$helper" -S --needed --noconfirm "${DEPS_AUR_FALLBACK[@]}" 2>&1); then
+    if log=$(aur_run "$helper" -S --needed --noconfirm "${DEPS_AUR_FALLBACK[@]}" 2>&1); then
       info "$helper 安装源码版完成"
     else
       warn "$helper 安装失败："
@@ -1943,6 +1973,14 @@ install_aur_deps() {
       record_deps kdotool
     fi
   fi
+}
+
+# 组合步骤：pacman 与 AUR 必须在同一次只读层关闭区间内完成（见 ro_deps）。
+_deps_pacman_then_aur() {
+  local rc=0
+  install_pacman_deps || rc=1
+  install_aur_deps || rc=1
+  return "$rc"
 }
 
 # ydotoold 是 ydotool 的守护进程，不跑的话点击/输入用不了。
@@ -2137,8 +2175,7 @@ do_check() {
   if [ "$fix" = 1 ]; then
     info "尝试自动修复"
     sudo_warmup || return 0
-    install_pacman_deps
-    install_aur_deps
+    ro_deps _deps_pacman_then_aur
     setup_ydotoold
     echo
     do_check
@@ -2176,8 +2213,7 @@ maybe_autorepair_after_image_update() {
   fi
   warn "以下控件已被冲掉：$broken"
   sudo_warmup || return 0
-  install_pacman_deps
-  install_aur_deps
+  ro_deps _deps_pacman_then_aur
   setup_ydotoold
   record_deps_build
   local left; left="$(deps_broken)"
@@ -2195,8 +2231,7 @@ install_deps() {
   # 用户进设置页却发现控件全缺——和「装上了但没用」是同一类假成功。
   sudo_warmup || return 2
   local pk_rc=0
-  install_pacman_deps || pk_rc=1
-  install_aur_deps
+  ro_deps _deps_pacman_then_aur || pk_rc=1
   setup_ydotoold
   # 装完跑一遍实测，把「记录在、命令没了」的情况直接暴露出来
   local broken; broken="$(deps_broken)"
@@ -3176,7 +3211,6 @@ wake_model_present() {
 
 # 以下三个只做「下载 + 解包」，不含检测与复查（由全局三阶段负责）。
 module_stt_download() {
-  local py="$INSTALL_DIR/.venv/bin/python"
   mod_begin "语音识别模型（SenseVoice）"
   mkdir -p "$DATA_MODELS" 2>/dev/null || true
   if ! _retry_download "SenseVoice 模型，约 $(mb_text "$(dep_mb stt_model)")" _prefetch_stt_once; then
@@ -3189,7 +3223,6 @@ module_stt_download() {
 }
 
 module_tts_download() {
-  local py="$INSTALL_DIR/.venv/bin/python"
   mod_begin "语音合成模型（月读酱）"
   mkdir -p "$DATA_MODELS" 2>/dev/null || true
   if ! _retry_download "つくよみちゃん模型，约 $(mb_text "$(dep_mb tts_model)")" _prefetch_tts_once; then
@@ -3203,7 +3236,6 @@ module_tts_download() {
 }
 
 module_wake_download() {
-  local py="$INSTALL_DIR/.venv/bin/python"
   mod_begin "唤醒词模型（KWS + VAD）"
   mkdir -p "$DATA_MODELS" 2>/dev/null || true
   if ! _retry_download "KWS + silero VAD，约 $(mb_text "$(dep_mb wake_model)")" _prefetch_wake_once; then
@@ -4195,7 +4227,6 @@ decky_wait_stopped() {
 # 只看 is-active 会被重启循环骗过（循环期它一直是 active）。
 decky_health() {
   local unit state nr hits
-  DECKY_HEALTH="unknown"
   DECKY_HEALTH_NOTE=""
   if ! need_cmd systemctl; then
     DECKY_HEALTH_NOTE="没有 systemctl，无法检查 Decky"
@@ -4212,21 +4243,17 @@ decky_health() {
   hits="$(decky_bind_fail_hits "$unit" '2 minutes ago')"
   if [ "$state" != "active" ]; then
     # 只是没在跑（没启动 / 被停用），不等于坏了：文件照常部署，随后 start 即可
-    DECKY_HEALTH="down"
     DECKY_HEALTH_NOTE="Decky 服务没有在运行（${state:-unknown}）"
     return 3
   fi
   if [ "$hits" -gt 0 ]; then
-    DECKY_HEALTH="broken"
     DECKY_HEALTH_NOTE="近 2 分钟 bind 1337 失败 ${hits} 次（NRestarts=${nr:-未知}），正卡在重启循环"
     return 1
   fi
   if ! decky_port_probe; then
-    DECKY_HEALTH="broken"
     DECKY_HEALTH_NOTE="服务显示 active，但 127.0.0.1:1337 不应答（NRestarts=${nr:-未知}），疑似卡在重启循环"
     return 1
   fi
-  DECKY_HEALTH="ok"
   DECKY_HEALTH_NOTE="active，1337 可连，NRestarts=${nr:-未知}"
   return 0
 }
@@ -4515,7 +4542,6 @@ fi
 # 本脚本住在安装目录里，install.sh 的删除守卫会把它当「脚本所在目录」拒绝。
 # 这个变量是唯一的口子：只放行安装目录本身，仍然拒绝 .git 源码工作区。
 export DECKMEIDO_INSTALL_DIR_UNINSTALL=1
-export DECKMEIDO_UNINSTALL_ENTRY="$HERE/uninstall.sh"
 exec bash "$SELF" uninstall "$@"
 EOS
   chmod +x "$INSTALL_DIR/uninstall.sh"
@@ -4713,12 +4739,11 @@ do_install() {
   # 以前这里是 "--deps" 字样，而 module_sys 判的是 = "1"，导致
   # [4/8] 检测能检出缺包（只看非空）、[5/8] 却走「本次未选择系统控件」
   # 跳过、[6/8] 复查又报失败——安装永远过不去。
-  local deps=1 gui_only=0
+  local deps=1
   for a in "$@"; do
     case "$a" in
       --deps) deps=1 ;;
       --no-deps) deps="" ;;   # 仅调试用：显式不装系统控件
-      --gui)  gui_only=1 ;;   # 只补装桌面客户端（PySide6），不动别的
     esac
   done
   check_user
@@ -5389,7 +5414,7 @@ pac_install_date() {
 # 分类：W=窗口内新装 U=窗口内升级 O=窗口外 E=查不到
 pac_classify_deps() {
   local logfile="$1" t0="$2" p ver ev t action
-  local -A first_ever=() inst_in_win=() ver_of=() ever=()
+  local -A first_ever=() inst_in_win=() ever=()
   [ -n "$logfile" ] || { return 0; }
   while IFS= read -r line; do
     case "$line" in
@@ -5417,7 +5442,6 @@ pac_classify_deps() {
         [ -n "$t0" ] && [[ ! "$t" < "$t0" ]] && inst_in_win[$p]=1
         ;;
     esac
-    [ -n "$ver" ] && ver_of[$p]="$ver"
   done < "$logfile"
   for p in "${PAC_DEPS[@]}"; do
     need_cmd pacman && pacman -Qq -- "$p" >/dev/null 2>&1 || continue
@@ -5445,7 +5469,7 @@ pac_classify_deps() {
 # 删包前列清单并询问，--purge 也不静默删。do_ask=0 只在 dry-run 下用（只打印）。
 uninstall_optional_deps() {
   local t0="${1:-}" do_ask="${2:-1}"
-  local p ev line cls reason ver src ts
+  local p ev cls reason ver src ts
   local -a cand_pkg=() cand_why=() keep_pkg=() keep_why=() keep_rest=()
   local -a picked=() helper pkg_del=() aur_del=()
   local -A seen=()
@@ -5460,13 +5484,18 @@ uninstall_optional_deps() {
   fi
   local logfile=""
   logfile="$(pac_log_file || true)"
-  # 无安装清单的老安装（0.8.13 及以前）只能靠 pacman.log 取证，按时间窗口兜底
+  # 取证只跑一次：uninstall_optional_deps 每个包都要查日志，逐包重扫全量
+  # pacman.log 既慢，grep -m1 提前退出还会触发上游 printf 的 SIGPIPE 报错。
+  local -A cls_of=() why_of=()
   if [ -n "$logfile" ] && [ -n "$t0" ]; then
     while IFS='|' read -r cls p ver reason; do
       [ -n "$p" ] || continue
-      case "$cls" in W) seen[$p]=1 ;; esac
-      [ "$cls" = W ] && case "$p" in kdotool*) seen[kdotool-bin]=1 ;; esac
+      cls_of[$p]="$cls"
+      why_of[$p]="$reason"
+      [ "$cls" = W ] && seen[$p]=1
     done < <(pac_classify_deps "$logfile" "$t0")
+    # 无安装清单的老安装（0.8.13 及以前）只能靠 pacman.log 取证，按时间窗口兜底
+    [ "${cls_of[kdotool]:-}" = W ] && seen[kdotool-bin]=1
   fi
 
   if ! need_cmd pacman; then
@@ -5486,15 +5515,8 @@ uninstall_optional_deps() {
     # SteamOS 出厂自带的一律不删：老清单里可能混着（2026-11-13 之前会记进去）
     is_stock_pkg "$p" && continue
     # 交叉验证 1：日志事件分类（W/U/O/E）
-    cls="E"
-    reason="pacman.log 里查不到安装记录"
-    if [ -n "$logfile" ]; then
-      line="$(pac_classify_deps "$logfile" "$t0" | grep -F -m1 -- "|$p|" || true)"
-      if [ -n "$line" ]; then
-        cls="${line%%|*}"
-        reason="${line##*|}"
-      fi
-    fi
+    cls="${cls_of[$p]:-E}"
+    reason="${why_of[$p]:-pacman.log 里查不到安装记录}"
     # 交叉验证 2：pacman -Qi 的 Install Date 早于时间窗 → 原本就有，永不删。
     # 例外：DEP_RECORD 清单里登记过的包是安装器自己装上的（时间只能是它写的
     # 安装时间），Install Date 再早也只能说明装完被重装/升级过，照样归我们收走。
@@ -5601,10 +5623,15 @@ uninstall_optional_deps() {
       fi
     done
   fi
+  # 只读层在一次运行里可能被别的步骤恢复回来，AUR 删包前再兜一次
+  if [ ${#aur_del[@]} -gt 0 ] && need_cmd steamos-readonly \
+     && [ "$(readonly_state 2>/dev/null || true)" != "disabled" ]; then
+    run_root steamos-readonly disable >/dev/null 2>&1 || true
+  fi
   for p in "${aur_del[@]}"; do
-    # </dev/null：paru / yay 的确认提示会读 stdin；上一次卸载日志里就出现过
-    # 「:: 打算删除这些软件包吗？[Y/n]」——它会跟脚本抢输入。明确喂 EOF。
-    if "$helper" -R --noconfirm -- "$p" </dev/null; then
+    # paru / yay 提权只认自己的 sudo 途径，必须走 run_root：直接调会绕过
+    # sdo/-A，无终端场景下报「a terminal is required」（2026-11-13 kdotool-bin）。
+    if run_root "$helper" -R --noconfirm -- "$p"; then
       info "已卸载（$helper）：$p"
       UNINSTALL_REMOVED_PKGS="${UNINSTALL_REMOVED_PKGS:+$UNINSTALL_REMOVED_PKGS }$p"
     else
@@ -5850,7 +5877,7 @@ fi' EXIT INT TERM
 # root 拥有的目标（插件目录等）：先走普通回收站，失败再提权搬进回收站。
 # 不用 rm -rf —— 搬走的东西仍然能从回收站拿回来。
 trash_path_root() {
-  local p="${1:-}" root dest info tried=0
+  local p="${1:-}" root dest info
   [ -n "$p" ] || return 1
   [ -e "$p" ] || [ -L "$p" ] || return 0
   if [ "$DRY_RUN" = 1 ]; then
@@ -5861,17 +5888,13 @@ trash_path_root() {
   # 父目录自己不可写（root 所有的插件目录）就别先试普通回收站，
   # 否则会先打印一条「未能移走」的假警告，再提权成功，用户看着矛盾
   if [ -w "$(dirname -- "$p")" ]; then
-    tried=1
     trash_path "$p" && return 0
   fi
-  # 普通回收站已经记过一次失败，这里改成提权成功后就把它撤销，别让汇总多报一项
-  [ "$tried" = 1 ] && [ "${TRASH_FAILED:-0}" -gt 0 ] && TRASH_FAILED=$((TRASH_FAILED - 1))
   root="$(trash_root)"
   TRASH_FALLBACK_DIR="$root"
   mkdir -p "$root/files" "$root/info" 2>/dev/null || return 1
   dest="$(_trash_dest_for "$p")"
   if ! run_root mv -- "$p" "$dest"; then
-    TRASH_FAILED=$((TRASH_FAILED + 1))
     return 1
   fi
   # 回收站归当前用户所有：root 搬进来的也交还给他，否则清空回收站时还要再要一次密码
@@ -6360,7 +6383,7 @@ uninstall_summary() {
 }
 
 do_uninstall() {
-  local purge=0 arg p t0="" ws="" have_install=0 residue=0 abort=0 i left=""
+  local purge=0 arg p t0="" ws="" have_install=0 residue=0 abort=0 i
   for arg in "$@"; do
     case "$arg" in
       --purge) purge=1 ;;
@@ -6395,9 +6418,11 @@ EOF
   check_user
 
   [ -d "$INSTALL_DIR" ] && have_install=1
+  # 不能 break：提前退出会让进程替换里的 printf 收到 SIGPIPE，终端冒出
+  # 「printf: write error: Broken pipe」。这里只置标记，让生成端自然跑完。
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    if [ -e "$p" ] || [ -L "$p" ]; then residue=1; break; fi
+    if [ -e "$p" ] || [ -L "$p" ]; then residue=1; fi
   done < <(uninstall_residue_paths)
 
   if [ "$have_install" = 0 ] && [ "$residue" = 0 ]; then
@@ -6465,7 +6490,6 @@ EOF
   fi
   echo
   TRASH_COUNT=0
-  TRASH_FAILED=0
   # 卸载有多处要 root（停插件进程、卸系统包、搬 root 目录、重载 Decky）。
   # 没有终端时（SSH / 自动化）必须在这里先备好 askpass 助手，否则每一步都失败
   # 报「sudo 被拒绝或权限不足」（2026-11-13 真机卸载复现）。
@@ -6716,7 +6740,6 @@ smart_default() {
 # 否则提示会顶到首屏，和「检查环境」「磁盘空间」混在一起。
 if need_cmd curl; then
   detect_proxy quiet || true
-  PROXY_PROBED=1
 fi
 
 # 通过「curl -sL ... | sh -」管道执行时，脚本不在本地磁盘上，这里直接自举：
