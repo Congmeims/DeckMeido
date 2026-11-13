@@ -159,21 +159,26 @@
   /* QQ 会话头部的 OneBot 状态灯 + 快捷面板 */
   .qq-sess-wrap { position: relative; display: inline-flex; flex: 0 0 auto; }
   .qq-sess-wrap[hidden] { display: none; }
+  /* 按钮本身就是一个胶囊，和右边的 .badge（会话标记）同口径：
+     12px 字号 × 1.55 行高 + 4px 上下内边距 + 1px 边框 = 28.6px 高 */
   .qq-sess-btn {
-    width: 26px; height: 26px; padding: 0;
-    display: inline-flex; align-items: center; justify-content: center;
-    border: 1px solid var(--line); border-radius: 50%;
-    background: var(--surface-2); cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 999px;
+    font-size: 12px; line-height: 1.55; color: var(--muted);
+    background: var(--surface-2); border: 1px solid var(--line);
+    cursor: pointer; white-space: nowrap;
   }
+  .qq-sess-btn:hover { color: var(--text); }
+  /* 状态灯收成胶囊前的圆点，不再单独占一个圆按钮 */
   .qq-sess-dot {
-    width: 10px; height: 10px; border-radius: 50%;
-    background: #7b8194; box-shadow: 0 0 0 2px rgba(127,127,127,.16);
+    width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
+    background: #7b8194;
   }
   .qq-sess-dot.on { background: #2fa8ff; box-shadow: 0 0 8px rgba(47,168,255,.8); }
   .qq-sess-dot.wait { background: #e6b422; animation: qqBreathe 1.4s ease-in-out infinite; }
   @keyframes qqBreathe { 0%,100% { opacity: 1; } 50% { opacity: .38; } }
   .qq-sess-panel {
-    position: absolute; top: 32px; right: 0; z-index: 60;
+    position: absolute; top: 34px; right: 0; z-index: 60;
     width: 220px; max-width: calc(100vw - 20px);
     padding: 10px 12px;
     background: var(--surface-2); color: var(--text);
@@ -388,9 +393,9 @@
   #shareBar .grow { flex: 1; font-size: 13px; color: var(--muted); }
 
   /* markdown 内容 */
-  .msg pre { background: var(--code-bg); padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 6px 0; font-size: 13px; }
-  .msg code { background: var(--code-bg); padding: 2px 6px; border-radius: 5px; font-size: 13px; font-family: var(--font-mono); }
-  .msg pre code { background: none; padding: 0; }
+  .msg pre, .md-doc pre { background: var(--code-bg); padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 6px 0; font-size: 13px; }
+  .msg code, .md-doc code { background: var(--code-bg); padding: 2px 6px; border-radius: 5px; font-size: 13px; font-family: var(--font-mono); }
+  .msg pre code, .md-doc pre code { background: none; padding: 0; }
   /* 用户气泡是蓝底：里面的行内代码/代码块若还用主题的代码底色，
      浅色主题下就是「浅灰块 + 继承来的白字」，整段看不见。
      这里单独给一套半透明白底 + 白字，两个主题下都成立 */
@@ -398,7 +403,9 @@
   .msg.user pre { background: rgba(255, 255, 255, .16); color: #fff; }
   .msg.user pre code { background: none; color: #fff; }
   .msg.user h3, .msg.user h4, .msg.user a { color: #fff; }
-  .msg h3, .msg h4 { margin: 8px 0 4px; color: var(--brand); }
+  .msg h3, .msg h4, .md-doc h3, .md-doc h4 { margin: 8px 0 4px; color: var(--brand); }
+  .msg h3, .md-doc h3 { font-size: 16px; }
+  .msg h4, .md-doc h4 { font-size: 15px; }
   /* markdown 表格：气泡内自适应；列太多/单元格太长时整表横向滚动，不撑破气泡 */
   .md-table {
     max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
@@ -417,8 +424,8 @@
     .md-table table { font-size: 13px; }
     .md-table th, .md-table td { padding: 4px 6px; }
   }
-  .msg ul { padding-left: 20px; margin: 4px 0; }
-  .msg a { color: var(--brand); }
+  .msg ul, .md-doc ul { padding-left: 20px; margin: 4px 0; }
+  .msg a, .md-doc a { color: var(--brand); }
 
   /* 操作流水（Trae 式时间线：思考 / 工具调用 / 文件改动） */
   .events {
@@ -2009,6 +2016,38 @@
   .chip-name { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chip-id { color: var(--muted); font-size: 11px; }
   .chip-empty { font-size: 12px; color: var(--muted); }
+  /* QQ 回传文案：按组列出，每条一个可留空的输入框，灰色字即当前内置文案 */
+  .qqtext-list { margin-top: 6px; max-height: 420px; overflow-y: auto; }
+  .qqtext-group + .qqtext-group { margin-top: 10px; }
+  .qqtext-group-name {
+    font-size: 12px; font-weight: 600; color: var(--muted);
+    padding: 2px 0 4px; border-bottom: 1px solid var(--ri-line);
+  }
+  .qqtext-item { padding: 6px 0; }
+  .qqtext-item + .qqtext-item { border-top: 1px dashed var(--ri-line); }
+  .qqtext-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .qqtext-name { font-size: 12.5px; color: var(--ri-fg); }
+  .qqtext-ph {
+    font-family: Consolas, monospace; font-size: 11px; color: var(--muted);
+    padding: 0 4px; border: 1px solid var(--ri-line); border-radius: 4px;
+  }
+  .qqtext-badge {
+    font-size: 11px; padding: 0 6px; line-height: 1.6; border-radius: 999px;
+    color: var(--brand); border: 1px solid var(--brand);
+  }
+  .qqtext-revert {
+    margin-left: auto; border: 0; background: transparent; color: var(--muted);
+    font-size: 11.5px; cursor: pointer; padding: 0 2px;
+  }
+  .qqtext-revert:hover { color: var(--brand); }
+  .qqtext-input {
+    width: 100%; margin-top: 4px; box-sizing: border-box; resize: vertical;
+    font-size: 12.5px; line-height: 1.5; font-family: inherit;
+  }
+  .qqtext-item.bad .qqtext-input { border-color: #e05555; }
+  .qqtext-item.bad .qqtext-name::after {
+    content: '（缺占位符）'; color: #e05555; font-size: 11px;
+  }
   /* QQ 事件日志：并入状态气泡的下半段，只留一条分组分隔线，不再单独套外框 */
   .qq-logs {
     margin-top: 10px; padding-top: 10px;
@@ -2710,9 +2749,10 @@
     direction: rtl; text-align: left;
   }
   .ai-bar .ai-sub:empty { display: none; }
+  /* 与 #fbWarn 等高的胶囊：11px × 1.4 行高 + 上下 2px + 1px 边框 = 19.4px */
   .ai-bar .ai-follow {
-    flex: 0 0 auto; font: inherit; font-size: 11px; line-height: 1;
-    padding: 4px 8px; border-radius: 999px; cursor: pointer;
+    flex: 0 0 auto; font: inherit; font-size: 11px; line-height: 1.4;
+    box-sizing: border-box; padding: 2px 8px; border-radius: 999px; cursor: pointer;
     border: 1px solid var(--line); background: transparent; color: var(--muted);
     transition: color .18s ease, border-color .18s ease, background .18s ease;
   }
@@ -2735,6 +2775,8 @@
     cursor: pointer;
   }
   #fbFollow.show { display: flex; }
+  /* 路径是唯一可被挤掉的部分：前后两段文案不收缩，长路径省略号在左侧 */
+  #fbFollow .t { flex: 0 0 auto; }
   #fbFollow .p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     direction: rtl; text-align: left; }
   /* AI 跟随跳转时列表的一次淡入过渡：替换「清空→闪白→重绘」的生硬切换 */
@@ -2760,10 +2802,13 @@
   }
   #fbPath::-webkit-scrollbar { display: none; }
   /* 路径分区胶囊：工作区绿色；谨慎区黄色；危险区/禁浏览红色。
-     和状态徽章同一套圆角/字号，不换行、不挤路径 */
+     和状态徽章同一套圆角/字号，不换行、不挤路径。
+     「跟随」胶囊（.ai-bar .ai-follow）要与它视觉一致：
+     同一个 11.5px 字号（跟 #fbPath 一致）、999px 圆角，内外边距加起来
+     得一样高（19.4px），否则上下两条并排时一高一矮非常明显。 */
   #fbWarn {
-    flex: 0 0 auto; font-size: 11px; line-height: 1.4;
-    padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+    flex: 0 0 auto; font-size: 11.5px; line-height: 1.4;
+    box-sizing: border-box; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
     color: #e0a33a; border: 1px solid rgba(224,163,58,.55);
     background: rgba(224,163,58,.12);
   }
@@ -2782,7 +2827,8 @@
      左边圆角提示区，右边品牌蓝「上传」按钮（点击弹文件选择框，也支持直接拖文件进来） */
   #fbDropBar {
     flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
-    margin: 4px 8px 8px;
+    /* 与 #termBar 同一圈外边距，切页时上传条/输入条位置不跳 */
+    margin: 8px;
   }
   #fbDrop {
     flex: 1; min-width: 0; min-height: 44px;
@@ -3117,6 +3163,14 @@
     max-width: 88vw; overflow: auto;
   }
   #fbViewer .fv-note { color: var(--muted); font-size: 13px; padding: 24px; text-align: center; }
+  /* Markdown 预览：复用对话区 .msg 的排版，只是把外框撑满预览区 */
+  #fbViewer .fv-body.md {
+    display: block; align-items: stretch; padding: 0;
+  }
+  #fbViewer .fv-body.md > .md-doc {
+    align-self: stretch; margin: 0; max-width: none; width: 100%;
+    border: 0; border-radius: 0; background: transparent; padding: 16px 20px;
+  }
 
   /* 终端 */
   #termList { flex: 1 1 auto; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }

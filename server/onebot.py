@@ -40,7 +40,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from . import groupmemo, menu, memory, netmode, paths, policy, redact
+from . import groupmemo, menu, memory, netmode, paths, policy, qqtext, redact
 
 # ---------- 图片链接安全校验 ----------
 # NapCat 传来的图片地址是外部输入：必须挡住 file:// 等本地协议、
@@ -121,6 +121,7 @@ DEFAULT_RECONNECT_MAX = 60.0
 DEFAULT_PING_INTERVAL = 30.0
 DEFAULT_PING_TIMEOUT = 15.0
 MAX_REPLY_CHUNKS = DEFAULT_MAX_REPLY_CHUNKS
+# 截断提示：文案表里的默认值，调用点用 qqtext.get("truncated_note")
 TRUNCATED_NOTE = "\n……（内容过长，已截断）"
 MAX_ALIAS_CHARS = 12           # 去掉标点后的整句长度上限，超过就不当别名
 MAX_GUEST_PROMPT = 2000        # 群友提示词硬上限（字符）
@@ -937,8 +938,8 @@ class RateGate:
     一分钟最多收到一次），避免被限流后每发一条都收到一遍「太快了」。
     """
 
-    NOTICE_USER = "发得太快啦，缓一分钟再来。"
-    NOTICE_GROUP = "群里消息太密了，大家先缓一下。"
+    # 截断提示的默认原文（文案可在设置页覆盖，取值一律走 qqtext.get）
+    TRUNCATED_NOTE = qqtext.DEFAULTS["truncated_note"]
 
     def __init__(self, per_user: int, per_group: int, window: float = 60.0,
                  notice_every: float = 60.0, clock=time.monotonic):
@@ -960,12 +961,13 @@ class RateGate:
         """返回 (是否放行, 提示文案)；放行或提示被节流时文案为空"""
         key = str(uin or "")
         if not self._user.allow(key):
-            return False, (self.NOTICE_USER if self._should_notice("u:" + key) else "")
+            return False, (qqtext.get("rate_user")
+                           if self._should_notice("u:" + key) else "")
         # 按人限流通过后才记群配额：被限流的人不该把整群的名额吃掉
         if group_id:
             gkey = str(group_id)
             if not self._group.allow(gkey):
-                return False, (self.NOTICE_GROUP
+                return False, (qqtext.get("rate_group")
                                if self._should_notice("g:" + gkey) else "")
         return True, ""
 
@@ -1000,7 +1002,7 @@ def split_reply(text: str, limit: int = DEFAULT_REPLY_CHUNK_CHARS,
             chunks.append(piece)
         rest = rest[cut:].lstrip("\n")
     if rest and chunks:
-        chunks[-1] = chunks[-1] + TRUNCATED_NOTE
+        chunks[-1] = chunks[-1] + qqtext.get("truncated_note")
     return chunks
 
 
@@ -1555,7 +1557,7 @@ class OneBotClient:
         chunks = split_reply(text, cfg.reply_chunk_chars,
                              cfg.max_reply_chunks)
         if not chunks:
-            chunks = ["（这一轮没有回复）"]
+            chunks = [qqtext.get("empty_reply")]
         for i, chunk in enumerate(chunks):
             await self._send_text(ev, chunk, at=(i == 0), chunk=chunk)
         # 语音只发一条，且放在全部分段之后：文字先落地，语音失败也吞不掉回复
@@ -1690,7 +1692,7 @@ class OneBotClient:
             self._log_blocked(ev, "图片")
             return False
         if not blob:
-            await self._send_text(ev, "图片是空的，这次没发出去。")
+            await self._send_text(ev, qqtext.get("image_empty"))
             return False
         b64 = base64.b64encode(blob).decode("ascii")
         if len(b64) > IMAGE_SEND_MAX_BASE64 and self._image_optimizer is not None:
@@ -1706,7 +1708,7 @@ class OneBotClient:
         if len(b64) > IMAGE_SEND_MAX_BASE64:
             self._log("error", "图片发送失败",
                       f"base64 {len(b64)} 字节超限")
-            await self._send_text(ev, "这张图太大了，压缩后还是发不出去；先不发图了。")
+            await self._send_text(ev, qqtext.get("image_too_big"))
             return False
         seg_image = {"type": "image", "data": {"file": f"base64://{b64}"}}
         seg_text = {"type": "text", "data": {"text": self._redactor.apply(caption)}}
@@ -1728,7 +1730,7 @@ class OneBotClient:
         except Exception as e:
             self._log("error", "图片发送失败", type(e).__name__)
             try:
-                await self._send_text(ev, "图片没发出去（详情见设备日志）。")
+                await self._send_text(ev, qqtext.get("image_fail"))
             except Exception as exc:
                 devlog.debug("onebot._send_image", error=repr(exc))
                 pass
@@ -1750,7 +1752,7 @@ class OneBotClient:
             traceback.print_exc(file=sys.stderr)
             # 异常细节不外泄：QQ 上只说一句笼统的，详情留着本地日志
             try:
-                await self._send_text(ev, "出了点问题，这一条没处理成功（详情见设备日志）。")
+                await self._send_text(ev, qqtext.get("dispatch_fail"))
             except Exception as exc:
                 devlog.debug("onebot._dispatch", error=repr(exc))
                 pass
@@ -1825,8 +1827,8 @@ class OneBotClient:
             self._stats["ignored"] += 1
             self._log("info", "未知指令", route.text)
             await self._send_text(
-                ev, f"没有这条指令：{route.text}；发 {menu.prefix_for(nickname)} 菜单"
-                    " 看可用指令。")
+                ev, qqtext.get("unknown_cmd", text=route.text,
+                               prefix=menu.prefix_for(nickname)))
             return
         if route.action == "command":
             self._stats["commands"] += 1
@@ -1846,14 +1848,14 @@ class OneBotClient:
                 self._log("warn", "危险命令待确认", route.kind)
                 phrase = "确认执行" if spec.hard else "确认"
                 await self._send_text(
-                    ev, f"这是危险操作，需要回复「{phrase}」才会执行；说别的就取消。")
+                    ev, qqtext.get("need_confirm", phrase=phrase))
                 return
             handler = self._command_handler(route.kind)
             if handler is None:
                 # 命令表与分发表不一致属于编程错误：也必须在这里结束，
                 # 绝不能让同一条消息继续掉进 AI 回合再回一次
                 self._log("error", "命令未分发", route.kind)
-                await self._send_text(ev, "这条指令暂时不可用，请稍后再试。")
+                await self._send_text(ev, qqtext.get("cmd_unavailable"))
                 return
             await handler(ev)
             return
@@ -1890,19 +1892,18 @@ class OneBotClient:
         if self._clock() >= pending.get("expires_at", 0):
             self._menu_conf.pop(device, None)
             self._log("warn", "危险命令确认超时", kind)
-            await self._send_text(ev, "确认已超时，这次操作已作废。")
+            await self._send_text(ev, qqtext.get("confirm_timeout"))
             return False
         spec = menu.spec_for(kind)
         verdict = menu.confirm_decision(spec, ev.text)
         if verdict == "ask_hard":
-            await self._send_text(
-                ev, "这项操作风险较高，需要回复「确认执行」才会执行；说别的就取消。")
+            await self._send_text(ev, qqtext.get("need_hard_confirm"))
             return True
         self._menu_conf.pop(device, None)
         handler = self._command_handler(kind)
         if verdict != "execute" or handler is None:
             self._log("info", "危险命令已取消", kind)
-            await self._send_text(ev, "已取消，这次操作没有执行。")
+            await self._send_text(ev, qqtext.get("confirm_cancelled"))
             return True
         self._log("info", "危险命令执行", kind)
         # 待确认时暂存的参数挂回事件上，供 /memory clear group 这类命令使用
@@ -1944,19 +1945,16 @@ class OneBotClient:
             return
         prefix = menu.prefix_for(self._nickname())
         if self._busy():
-            await self._send_text(ev, f"上一件事还在处理，稍等一下；要停下就发 {prefix} 停。")
+            await self._send_text(ev, qqtext.get("busy", prefix=prefix))
             return
         device = device_tag(ev)
         sid = session_sid(ev)
         text = (route.text or "").strip()
         if not text and route.readonly:
-            await self._send_text(
-                ev, f"想聊什么直接 @ 我，或者发「{prefix} 想说的话」。")
+            await self._send_text(ev, qqtext.get("chat_at_empty", prefix=prefix))
             return
         if not text:
-            await self._send_text(
-                ev, f"在昵称后面跟一句要聊的话，例如「{prefix} 在吗」；"
-                    f"发「{prefix} 菜单」看可用指令。")
+            await self._send_text(ev, qqtext.get("chat_prefix_empty", prefix=prefix))
             return
         turn_id = ""
         tracked = self._pending_conf.get(device)
@@ -1969,16 +1967,14 @@ class OneBotClient:
                     except Exception as e:
                         print(f"[DeckMeido][onebot] 清理超时挂起操作失败：{e!r}", file=sys.stderr)
                 self._log("warn", "确认超时", device)
-                await self._send_text(ev, "确认已超时，这次操作已作废。")
+                await self._send_text(ev, qqtext.get("confirm_timeout"))
                 return
             if tracked.get("hard"):
                 # 高危操作只认「确认执行」，普通「好/确认」不算
                 if is_hard_confirm(text):
                     turn_id = str(tracked.get("turn_id") or "")
                 elif is_confirm_text(text):
-                    await self._send_text(
-                        ev, "这项操作风险较高，需要回复「确认执行」才会执行；"
-                            "说别的就取消。")
+                    await self._send_text(ev, qqtext.get("need_hard_confirm"))
                     return
                 else:
                     self._pending_conf.pop(device, None)
@@ -2048,7 +2044,7 @@ class OneBotClient:
             if task.cancelled():
                 # 是 /cancel 或 stop() 掐掉了这一轮，给用户一个明确结论
                 try:
-                    await self._send_text(ev, "已终止当前操作。")
+                    await self._send_text(ev, qqtext.get("turn_cancelled"))
                 except Exception as exc:
                     devlog.debug("onebot._do_chat", error=repr(exc))
                     pass
@@ -2094,7 +2090,7 @@ class OneBotClient:
             # 这里不再重复发一条
             task.cancel()
             return
-        await self._send_text(ev, "现在没有正在执行的任务。")
+        await self._send_text(ev, qqtext.get("idle"))
 
     async def _do_status(self, ev: MessageEvent) -> None:
         info: dict = {}
@@ -2103,15 +2099,15 @@ class OneBotClient:
         except Exception as e:
             print(f"[DeckMeido][onebot] 取设备状态失败：{e!r}", file=sys.stderr)
         lines = [
-            "设备状态",
-            f"核心：{info.get('core') or '运行中'}",
-            f"模式：{info.get('mode') or '未知'}",
-            f"QQ：{_state_cn(self._state)}",
+            qqtext.get("status_title"),
+            qqtext.get("status_core", core=info.get('core') or '运行中'),
+            qqtext.get("status_mode", mode=info.get('mode') or '未知'),
+            qqtext.get("status_qq", state=_state_cn(self._state)),
         ]
         if info.get("version"):
-            lines.append(f"版本：{info['version']}")
+            lines.append(qqtext.get("status_version", version=info["version"]))
         if self._pending_conf:
-            lines.append("有一项操作在等确认（发「确认」执行，说别的取消）。")
+            lines.append(qqtext.get("status_pending"))
         await self._send_text(ev, "\n".join(lines))
 
     async def _do_help(self, ev: MessageEvent) -> None:
@@ -2120,11 +2116,12 @@ class OneBotClient:
     async def _do_memo_clear(self, ev: MessageEvent) -> None:
         """管理员清除本群常识缓存（只清当前群，不碰别的群）"""
         if not ev.group_id:
-            await self._send_text(ev, "这个指令在本群里发才有效；私聊没有群缓存。")
+            await self._send_text(ev, qqtext.get("memo_private"))
             return
         n = self._memo.clear(ev.group_id)
         self._log("info", "群缓存清除", f"group={ev.group_id} 条数={n}")
-        await self._send_text(ev, f"已清除本群缓存（{n} 条）。" if n else "本群没有缓存。")
+        await self._send_text(ev, qqtext.get("memo_cleared", n=n) if n
+                              else qqtext.get("memo_empty"))
 
     # ---------- 长期记忆 scope（与 groupmemo 的群常识缓存无关） ----------
 
@@ -2140,17 +2137,17 @@ class OneBotClient:
             return primary, "本群" if ev.group_id else "私聊"
         if word in ("group", "群", "本群", "群记忆"):
             if not ev.group_id:
-                return None, "私聊里没有群记忆；回群里查看或清空。"
+                return None, qqtext.get("memory_private_group")
             return memory.scope_group(ev.group_id), "本群"
         if word in ("person", "人", "个人", "对方", "发言人"):
             if not str(ev.uin or "").strip():
-                return None, "拿不到发言人 QQ，无法定位个人记忆。"
+                return None, qqtext.get("memory_no_uin")
             return memory.scope_person(ev.uin), "个人"
         if word in ("private", "私聊", "主人"):
             if ev.group_id:
-                return None, "私聊记忆只能在私聊里查看或清空，避免在群里泄露。"
+                return None, qqtext.get("memory_private_only")
             return memory.SCOPE_PRIVATE, "私聊"
-        return None, "scope 只认：群 / 人 / 私聊 / all。"
+        return None, qqtext.get("memory_bad_scope")
 
     def _memory_targets(self, ev: MessageEvent,
                         arg: str) -> tuple[tuple[str, ...] | None, str]:
@@ -2175,18 +2172,19 @@ class OneBotClient:
             items += memory.list_scope(scope)
         items.sort(key=lambda x: (list(memory.KINDS).index(x["kind"]), x["created"]))
         if not items:
-            await self._send_text(ev, f"{label}还没有长期记忆。")
+            await self._send_text(ev, qqtext.get("memory_none", label=label))
             return
-        lines = [f"{label}的长期记忆（{len(items)} 条）："]
+        lines = [qqtext.get("memory_head", label=label, n=len(items))]
         for i, it in enumerate(items[:10], 1):
             text = it["text"]
             if len(text) > 80:
                 text = text[:80] + "…"
-            lines.append(f"{i}. [{memory.KINDS[it['kind']]}] {text}")
+            lines.append(qqtext.get("memory_item", i=i,
+                                    kind=memory.KINDS[it['kind']], text=text))
         if len(items) > 10:
-            lines.append(f"只显示前 10 条，共 {len(items)} 条。")
+            lines.append(qqtext.get("memory_more", n=len(items)))
         prefix = menu.prefix_for(self._nickname())
-        lines.append(f"清空：{prefix} 清空记忆 [群/人/私聊/all]，需管理员确认。")
+        lines.append(qqtext.get("memory_clear_hint", prefix=prefix))
         await self._send_text(ev, "\n".join(lines))
 
     async def _do_memory_clear(self, ev: MessageEvent) -> None:
@@ -2200,9 +2198,9 @@ class OneBotClient:
         self._log("info", "长期记忆清除",
                   f"scopes={','.join(scopes)} 条数={n}")
         if n:
-            await self._send_text(ev, f"已清空{label}记忆（{n} 条）。")
+            await self._send_text(ev, qqtext.get("memory_cleared", label=label, n=n))
         else:
-            await self._send_text(ev, f"{label}没有可清空的记忆。")
+            await self._send_text(ev, qqtext.get("memory_nothing", label=label))
 
     async def _do_deps(self, ev: MessageEvent) -> None:
         """检查依赖：只回报状态，不安装、不改环境"""
@@ -2211,45 +2209,47 @@ class OneBotClient:
             report = await asyncio.to_thread(depcheck.summary, True)
         except Exception as e:
             self._log("warn", "依赖检查失败", repr(e))
-            await self._send_text(ev, f"依赖检查失败：{e}")
+            await self._send_text(ev, qqtext.get("deps_fail", error=e))
             return
         items = report.get("items") or []
         ok = int(report.get("ok") or 0)
         total = int(report.get("total") or 0)
         na = int(report.get("na") or 0)
         lines = [
-            f"依赖检查：{ok}/{total} 项可用" + (f"，{na} 项不适用" if na else ""),
-            "（只检测，不会安装任何东西）",
+            qqtext.get("deps_head", ok=ok, total=total, na=na),
+            qqtext.get("deps_note"),
         ]
         for it in items:
             label = str(it.get("label") or it.get("key") or "?")
             state = "不适用" if it.get("na") else ("正常" if it.get("ok") else "缺少")
             detail = str(it.get("detail") or "").strip()
-            lines.append(f"- {label}：{state}" + (f"（{detail}）" if detail else ""))
+            lines.append(qqtext.get("deps_item", label=label, state=state,
+                                    detail=f"（{detail}）" if detail else ""))
         yd = report.get("ydotoold") or {}
         if yd and not yd.get("enabled"):
-            lines.append("- 注意：ydotoold 未设为开机自启，重启后会失效。")
+            lines.append(qqtext.get("deps_ydotool"))
         self._log("info", "依赖检查", f"{ok}/{total} 可用")
         await self._send_text(ev, "\n".join(lines))
 
     async def _do_shot(self, ev: MessageEvent) -> None:
         if self._busy():
-            await self._send_text(ev, "正在处理上一条，稍后再截图。")
+            await self._send_text(ev, qqtext.get("shot_busy"))
             return
         try:
             blob, note = await self._screenshot()
         except Exception as e:
             self._log("error", "截图抓帧", f"异常 {type(e).__name__}")
             print(f"[DeckMeido][onebot] 截图失败：{e!r}", file=sys.stderr)
-            await self._send_text(ev, "没截到当前画面（详情见设备日志）。")
+            await self._send_text(ev, qqtext.get("shot_failed"))
             return
         if not blob:
             self._log("error", "截图抓帧", note or "截图不可用")
-            await self._send_text(ev, f"没截到当前画面：{note or '截图不可用'}")
+            await self._send_text(
+                ev, qqtext.get("shot_failed_reason", note=note or "截图不可用"))
             return
         self._log("info", "截图抓帧", f"{len(blob)} 字节")
         # 「正在发送」不单独发：直接一条 [文字, 图]，更省时也不刷屏
-        await self._send_image(ev, blob, "截图已奉上")
+        await self._send_image(ev, blob, qqtext.get("shot_caption"))
 
     # -- 图片：收图 / 存图 / 看图 / 引用 --
 
@@ -2437,11 +2437,11 @@ class OneBotClient:
     async def _do_save_image(self, ev: MessageEvent) -> None:
         cfg = self._cfg
         if not cfg.allow_image:
-            await self._send_text(ev, "图片功能没开（allow_image=false），这次没存。")
+            await self._send_text(ev, qqtext.get("save_image_off"))
             return
         item = await self._resolve_save_image(ev)
         if not item:
-            await self._send_text(ev, "最近没有可保存的图片；发一张图、或者引用一张图再发「存图」。")
+            await self._send_text(ev, qqtext.get("save_image_none"))
             return
         index_root, images_root = image_archive(cfg)
         day = datetime.now().strftime("%Y-%m-%d")
@@ -2467,7 +2467,7 @@ class OneBotClient:
                 }, ensure_ascii=False) + "\n")
         except Exception as e:
             self._log("error", "存图失败", f"{type(e).__name__}: {e}")
-            await self._send_text(ev, f"没存成功：{e}")
+            await self._send_text(ev, qqtext.get("save_image_fail", error=e))
             return
         self._log("info", "存图成功",
                   f"文件={target.name} 来源={item.get('source') or '未知'} "
@@ -2475,7 +2475,7 @@ class OneBotClient:
         # 只回一句「保存成功~」：不回文件名也不回绝对路径。群里任何人都在看，
         # 哪怕只是 mmdd+短哈希这种短名，也容易被追问「在哪个目录」而泄露设备结构；
         # 真实文件名只留在设备日志与索引文件里
-        await self._send_text(ev, "保存成功~")
+        await self._send_text(ev, qqtext.get("save_ok"))
 
     async def group_names(self, group_ids: list[str]) -> dict[str, str]:
         """按群号批量取群名，仅供设置页辅助展示。
@@ -2514,20 +2514,18 @@ class OneBotClient:
 
     async def _do_save_text(self, ev: MessageEvent) -> None:
         if not ev.reply_id:
-            await self._send_text(
-                ev, "引用要保存的那条消息，再发「保存文本」；当前这条不会被保存。")
+            await self._send_text(ev, qqtext.get("save_text_no_reply"))
             return
         payload = await self._reply_payload(ev)
         if payload is None:
-            await self._send_text(ev, "引用的那条消息我没取到（可能已撤回），这次没有保存。")
+            await self._send_text(ev, qqtext.get("save_text_missing"))
             return
         text, _ats, images, _rid = _segments(payload.get("message"))
         body = text.strip()
         if images:
             body = (body + " [含图片]").strip() if body else "[含图片]"
         if not body:
-            await self._send_text(
-                ev, "引用的消息里没有文本；引用一条文字消息，再发「保存文本」。")
+            await self._send_text(ev, qqtext.get("save_text_no_text"))
             return
         sender_uin = str(payload.get("user_id") or "").strip() or ev.uin
         sender = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
@@ -2548,12 +2546,12 @@ class OneBotClient:
                 fh.write(line + "\n\n")
         except Exception as e:
             self._log("error", "保存文本失败", f"{type(e).__name__}: {e}")
-            await self._send_text(ev, f"没保存成功：{e}")
+            await self._send_text(ev, qqtext.get("save_text_fail", error=e))
             return
         self._log("info", "保存文本成功",
                   f"文件={path.name} message_id={payload.get('message_id') or ev.reply_id}")
         # 同样不回文件名、不回路径，只回一句保存成功
-        await self._send_text(ev, "保存成功~")
+        await self._send_text(ev, qqtext.get("save_ok"))
 
     # -- 工具 --
 

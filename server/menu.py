@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from . import qqtext
+
 DEFAULT_PREFIX = "meido"
 # 去掉标点后的整句长度上限：超过就不当别名（长句明显是聊天）
 MAX_ALIAS_CHARS = 12
@@ -335,10 +337,10 @@ def help_name(spec: Spec) -> str:
 def help_text(nickname: str = "") -> str:
     """帮助文案：只列中文指令，写成「昵称 + 空格 + 指令」"""
     prefix = prefix_for(nickname)
-    lines = [f"可用指令（发「{prefix} 指令」即可，不经过 AI）："]
+    lines = [qqtext.get("help_title", prefix=prefix)]
     for spec in SPECS:
         flag = "（危险操作，需确认）" if spec.dangerous else ""
-        lines.append(f"{help_name(spec)} —— {spec.summary}{flag}")
-    lines.append(f"触发方式：{prefix} + 空格 + 指令（例：{prefix} 菜单）；"
-                 f"{prefix} 后面接别的话就当闲聊。")
+        lines.append(qqtext.get("help_item", name=help_name(spec),
+                                summary=spec.summary, flag=flag))
+    lines.append(qqtext.get("help_trigger", prefix=prefix))
     return "\n".join(lines)

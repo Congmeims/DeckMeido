@@ -12,7 +12,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from . import apicfg, audit, audiomute, devlog, memory, netcfg, netmode, paths, persona, presets, remote_input, sleepmode, status_line, tools, updater
+from . import apicfg, audit, audiomute, devlog, memory, netcfg, netmode, paths, persona, presets, qqtext, remote_input, sleepmode, status_line, tools, updater
 from .tts import LANGUAGES, SPEAKER_LABELS, normalize_speaker, speaker_from_legacy
 
 router = APIRouter()
@@ -458,3 +458,28 @@ def init(require_auth, client_ip, get_main) -> None:
                 # 离线模式保存即生效
                 "offline_mode": netmode.enabled(),
                 "restart_required": bool(req.lan_enable is not None or req.port is not None)}
+
+    # -- QQ 回传文案：和 config.toml 分开存（数据根 qqtexts.json），保存即生效 --
+
+    class QQTextSave(BaseModel):
+        # key -> 新文案；空串或与默认值相同都表示「恢复默认」
+        items: dict[str, str]
+
+    @router.get("/api/qqtext", dependencies=auth)
+    async def api_get_qqtext():
+        return qqtext.view()
+
+    @router.post("/api/qqtext", dependencies=auth)
+    async def api_save_qqtext(req: QQTextSave, request: Request):
+        qqtext.save(req.items)
+        audit.record("config", "qqtext", "ok", ip=client_ip(request),
+                     detail=f"keys={len(req.items)}")
+        data = qqtext.view()
+        return {"ok": True, "count": data["count"],
+                "overridden": sorted(k for k in qqtext.DEFAULTS if qqtext.is_overridden(k))}
+
+    @router.post("/api/qqtext/reset", dependencies=auth)
+    async def api_reset_qqtext(request: Request):
+        qqtext.reset()
+        audit.record("config", "qqtext", "ok", ip=client_ip(request), detail="reset all")
+        return {"ok": True, "count": len(qqtext.DEFAULTS), "overridden": []}

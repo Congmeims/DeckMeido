@@ -121,6 +121,7 @@
     <div class="qq-sess-wrap" id="qqSessWrap" hidden>
       <button type="button" class="qq-sess-btn" id="qqSessBtn" title="OneBot 状态与语音开关">
         <span class="qq-sess-dot" id="qqSessDot"></span>
+        <span class="qq-sess-label" id="qqSessLabel">QQ</span>
       </button>
       <div class="qq-sess-panel" id="qqSessPanel" hidden>
         <div class="qq-sess-head">
@@ -1009,10 +1010,26 @@
               </div>
             </div>
             </details>
-            <div class="mem-foot">
-              <span class="field-hint" id="qqPrefixHint">当前昵称前缀：meido（指令写成「meido 菜单」）</span>
-              <button id="qqSave" class="mini-btn primary" type="button">保存</button>
-            </div>
+            <details class="set-fold" id="qqTextFold">
+              <summary>回传文案（发给群里的提示语）</summary>
+              <div class="field-hint" style="margin-top:0">
+                机器人回给 QQ 的各种提示语。默认走内置文案，只填想改的那几条即可，
+                改完点下面的「保存文案」立刻生效，不用重启。留空 = 用内置文案。
+              </div>
+              <div class="field">
+                <div class="chip-add">
+                  <input id="qqTextSearch" type="text" placeholder="搜索文案内容或名称"
+                         autocomplete="off" spellcheck="false">
+                  <button id="qqTextResetAll" class="mini-btn" type="button">全部恢复默认</button>
+                </div>
+                <div class="field-hint" id="qqTextHint">正在读取…</div>
+              </div>
+              <div id="qqTextList" class="qqtext-list"></div>
+              <div class="mem-foot">
+                <span class="field-hint" id="qqTextCount"></span>
+                <button id="qqTextSave" class="mini-btn primary" type="button">保存文案</button>
+              </div>
+            </details>
             <div id="qqHint" class="field-hint"></div>
           </div>
 
@@ -1228,7 +1245,7 @@
 
   <div class="rb-pane on" id="rbPaneFile">
     <!-- 用户手动点过别处后不再跟着 AI 跑，这条横幅就是「点此回到跟随」的入口 -->
-    <div id="fbFollow"><span>AI 正在看：</span><span class="p" id="fbFollowPath"></span><span>· 点此跟随</span></div>
+    <div id="fbFollow"><span class="t">AI 正在看：</span><span class="p" id="fbFollowPath"></span><span class="t">· 点此跟随</span></div>
     <!-- AI 状态条：与终端页同构（同一个 .ai-bar 组件），左侧圆点表示忙闲，右侧是跟随开关。
          跟随开着时：AI 跑命令切到终端页，AI 进新目录切回这里并停在它所在的目录 -->
     <div class="ai-bar" id="fbAiBar">
@@ -3066,6 +3083,7 @@
     rbEl('fbViewer').classList.remove('term-mode');
     // 清掉 body：视频/音频不销毁就会在后台继续播
     rbEl('fvBody').innerHTML = '';
+    rbEl('fvBody').classList.remove('md');
     fvCur = null;
   }
 
@@ -3100,6 +3118,7 @@
     rbEl('fvMeta').textContent = '读取中…';
     var body = rbEl('fvBody');
     body.innerHTML = '';
+    body.classList.remove('md');
     var src = '/api/preview?path=' + encodeURIComponent(path);
     fetch(src).then(function (r) { return r.json(); }).then(function (d) {
       if (!d || d.error || !d.kind) {
@@ -3112,8 +3131,14 @@
       // 媒体和文本都走同一个地址，只是浏览器自己按类型解码。
       // raw=1 让后端吐文件本体（带 Range 支持），视频/音频才能拖进度条
       var url = src + '&raw=1&v=' + Math.round((d.mtime || 0) * 1000);
+      var isMd = /\.(md|markdown)$/i.test(name || d.path || '');
       var el;
-      if (d.kind === 'image') {
+      if (d.kind === 'text' && isMd) {
+        // Markdown 走对话区同一套渲染器：标题/列表/表格/代码块都和聊天里一致，
+        // 而不是把源码原样塞进 <pre>
+        body.classList.add('md');
+        body.innerHTML = '<div class="md-doc">' + renderMd(d.text || '（空文件）') + '</div>';
+      } else if (d.kind === 'image') {
         el = document.createElement('img');
         el.src = url;
         el.alt = name;
@@ -8616,6 +8641,7 @@
   var qqSessPanel = document.getElementById('qqSessPanel');
   var qqSessDot = document.getElementById('qqSessDot');
   var qqSessDot2 = document.getElementById('qqSessDot2');
+  var qqSessLabel = document.getElementById('qqSessLabel');
   var qqSessStateText = document.getElementById('qqSessState');
   var qsVoice = document.getElementById('qsVoice');
   var qsVoiceMembers = document.getElementById('qsVoiceMembers');
@@ -10608,6 +10634,16 @@
   });
 
   // ---------- 远程连接页：Onebot 通道 ----------
+  // 顶栏胶囊里的短词（位置窄，只放 2-4 个字；完整文案在面板里）
+  var QQ_SESS_SHORT = {
+    connected: '已连接',
+    connecting: '连接中',
+    reconnecting: '重连中',
+    stopped: '未连接',
+    misconfigured: '未配置',
+    disabled: '已关闭'
+  };
+
   var QQ_STATE_TEXT = {
     disabled: '已关闭',
     misconfigured: '配置不完整，未连接',
@@ -10941,6 +10977,10 @@
     else if (state === 'connecting' || state === 'reconnecting') cls += ' wait';
     if (qqSessDot) qqSessDot.className = cls;
     if (qqSessDot2) qqSessDot2.className = cls;
+    // 胶囊里跟一个短词，光一个小圆点太抽象；未知状态只留「QQ」
+    if (qqSessLabel) {
+      qqSessLabel.textContent = s ? (QQ_SESS_SHORT[state] || 'QQ') : 'QQ';
+    }
     if (qqSessStateText) {
       qqSessStateText.textContent = s
         ? (QQ_STATE_TEXT[state] || state || '未知') : '读不到状态';
@@ -10978,6 +11018,8 @@
       if (qqSessPanel) qqSessPanel.hidden = true;
       return;
     }
+    // 刚亮出来时先按「未连接」占位，免得胶囊宽度空着再跳一下
+    if (!qqSessState) renderQqSessState(null);
     refreshQqSessState();
     if (!qqSessTimer) {
       qqSessTimer = setInterval(function () {
@@ -11312,6 +11354,212 @@
   }
   if (qqLogsRefresh) {
     qqLogsRefresh.addEventListener('click', function () { void loadQqLogs(); });
+  }
+
+  // ---- QQ 回传文案：默认值由后端下发，这里只显示「被改过」的那几条 ----
+  var qqTextFold = document.getElementById('qqTextFold');
+  var qqTextList = document.getElementById('qqTextList');
+  var qqTextSearch = document.getElementById('qqTextSearch');
+  var qqTextHint = document.getElementById('qqTextHint');
+  var qqTextCount = document.getElementById('qqTextCount');
+  var qqTextSaveBtn = document.getElementById('qqTextSave');
+  var qqTextResetAllBtn = document.getElementById('qqTextResetAll');
+  var qqTextData = null;      // 后端 /api/qqtext 的完整结构
+  var qqTextDirty = {};       // key -> 正在编辑但未保存的值
+
+  // 占位符高亮提示：用户改文案时最容易删掉 {{...}}
+  function qqTextPlaceholderWarn(value, placeholders) {
+    var missing = (placeholders || []).filter(function (p) {
+      return value.indexOf('{{' + p + '}}') < 0;
+    });
+    return missing;
+  }
+
+  function qqTextItemNode(group, item) {
+    var wrap = document.createElement('div');
+    wrap.className = 'qqtext-item' + (item.overridden ? ' dirty' : '');
+    wrap.dataset.key = item.key;
+    wrap.dataset.search = (group + ' ' + item.label + ' ' + item.value).toLowerCase();
+
+    var head = document.createElement('div');
+    head.className = 'qqtext-head';
+    var name = document.createElement('span');
+    name.className = 'qqtext-name';
+    name.textContent = item.label;
+    head.appendChild(name);
+    if (item.placeholders.length) {
+      var ph = document.createElement('span');
+      ph.className = 'qqtext-ph';
+      ph.textContent = item.placeholders.map(function (p) { return '{{' + p + '}}'; }).join(' ');
+      ph.title = '这些占位符会被替换成实际内容，请保留在文案里';
+      head.appendChild(ph);
+    }
+    if (item.overridden) {
+      var badge = document.createElement('span');
+      badge.className = 'qqtext-badge';
+      badge.textContent = '已修改';
+      head.appendChild(badge);
+    }
+    var revert = document.createElement('button');
+    revert.type = 'button';
+    revert.className = 'qqtext-revert';
+    revert.textContent = '恢复默认';
+    revert.addEventListener('click', function () {
+      input.value = '';
+      qqTextDirty[item.key] = '';
+      item.overridden = false;
+      wrap.classList.remove('dirty');
+      wrap.classList.remove('bad');
+      var badge = wrap.querySelector('.qqtext-badge');
+      if (badge) badge.remove();
+      qqTextRefreshState();
+    });
+    head.appendChild(revert);
+    wrap.appendChild(head);
+
+    var input = document.createElement('textarea');
+    input.className = 'qqtext-input';
+    input.rows = 2;
+    input.value = item.overridden ? item.value : '';
+    input.placeholder = item.value;
+    input.spellcheck = false;
+    input.addEventListener('input', function () {
+      qqTextDirty[item.key] = input.value;
+      var miss = qqTextPlaceholderWarn(input.value, item.placeholders);
+      wrap.classList.toggle('bad', miss.length > 0);
+      qqTextRefreshState();
+    });
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+  function qqTextRender() {
+    if (!qqTextData || !qqTextList) return;
+    var q = (qqTextSearch && qqTextSearch.value || '').trim().toLowerCase();
+    qqTextList.innerHTML = '';
+    var shown = 0;
+    qqTextData.groups.forEach(function (g) {
+      var frag = document.createDocumentFragment();
+      var count = 0;
+      g.items.forEach(function (it) {
+        var node = qqTextItemNode(g.name, it);
+        if (q && node.dataset.search.indexOf(q) < 0) return;
+        frag.appendChild(node);
+        count += 1;
+      });
+      if (!count) return;
+      var wrap = document.createElement('div');
+      wrap.className = 'qqtext-group';
+      var title = document.createElement('div');
+      title.className = 'qqtext-group-name';
+      title.textContent = g.name + '（' + count + '）';
+      wrap.appendChild(title);
+      wrap.appendChild(frag);
+      qqTextList.appendChild(wrap);
+      shown += count;
+    });
+    if (!shown) {
+      qqTextList.innerHTML = '<div class="field-hint">没有匹配的文案</div>';
+    }
+    qqTextRefreshState();
+  }
+
+  function qqTextRefreshState() {
+    // 统计走数据本身而不是 DOM：搜索时只有部分条目被渲染出来
+    var changed = 0;
+    var bad = 0;
+    if (qqTextData) {
+      qqTextData.groups.forEach(function (g) {
+        g.items.forEach(function (it) {
+          var val = it.key in qqTextDirty ? qqTextDirty[it.key] : '';
+          if (val && val.trim()) changed += 1;
+          if (val && qqTextPlaceholderWarn(val, it.placeholders).length) bad += 1;
+        });
+      });
+    }
+    if (qqTextCount) {
+      qqTextCount.textContent = '共 ' + (qqTextData ? qqTextData.count : 0) + ' 条，已自定义 '
+        + changed + ' 条' + (bad ? '，' + bad + ' 条缺占位符' : '');
+      qqTextCount.style.color = bad ? '#e05555' : '';
+    }
+    if (qqTextSaveBtn) qqTextSaveBtn.disabled =
+      bad > 0 || !changed;
+  }
+
+  function loadQqText() {
+    if (!qqTextFold) return Promise.resolve(null);
+    return memFetch('/api/qqtext', {}).then(function (d) {
+      qqTextData = d;
+      qqTextDirty = {};
+      if (qqTextHint) {
+        qqTextHint.textContent = '按组列出全部提示语；输入框留空表示用内置文案，'
+          + '灰色字就是当前生效的内置文案。';
+      }
+      qqTextRender();
+      return d;
+    }).catch(function (err) {
+      if (qqTextHint) qqTextHint.textContent = '读取文案失败：' + ((err && err.message) || '未知错误');
+      return null;
+    });
+  }
+
+  if (qqTextFold) {
+    // 折叠区第一次展开才去读，避免进设置页就多一个请求
+    qqTextFold.addEventListener('toggle', function () {
+      if (qqTextFold.open && !qqTextData) void loadQqText();
+    });
+  }
+  if (qqTextSearch) {
+    qqTextSearch.addEventListener('input', function () { qqTextRender(); });
+  }
+  if (qqTextSaveBtn) {
+    qqTextSaveBtn.addEventListener('click', function () {
+      if (!qqTextData) return;
+      var items = {};
+      qqTextList.querySelectorAll('.qqtext-item').forEach(function (el) {
+        var key = el.dataset.key;
+        if (key in qqTextDirty) items[key] = qqTextDirty[key];
+      });
+      if (!Object.keys(items).length) {
+        qqTextHint.textContent = '没有改动';
+        return;
+      }
+      qqTextSaveBtn.disabled = true;
+      memFetch('/api/qqtext', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: items })
+      }).then(function (r) {
+        var over = {};
+        (r.overridden || []).forEach(function (k) { over[k] = true; });
+        qqTextData.groups.forEach(function (g) {
+          g.items.forEach(function (it) {
+            it.overridden = !!over[it.key];
+            if (it.overridden) it.value = items[it.key] || it.value;
+            else it.value = it.default;
+          });
+        });
+        qqTextDirty = {};
+        qqTextRender();
+        qqTextHint.textContent = '已保存，' + (r.overridden || []).length
+          + ' 条自定义文案已生效（不用重启）';
+      }).catch(function (err) {
+        qqTextHint.textContent = '保存失败：' + ((err && err.message) || '未知错误');
+        qqTextSaveBtn.disabled = false;
+      });
+    });
+  }
+  if (qqTextResetAllBtn) {
+    qqTextResetAllBtn.addEventListener('click', function () {
+      if (!confirm('把所有回传文案恢复成内置默认？')) return;
+      memFetch('/api/qqtext/reset', { method: 'POST' }).then(function () {
+        return loadQqText();
+      }).then(function () {
+        if (qqTextHint) qqTextHint.textContent = '已全部恢复默认';
+      }).catch(function (err) {
+        if (qqTextHint) qqTextHint.textContent = '恢复失败：' + ((err && err.message) || '未知错误');
+      });
+    });
   }
 
   // 令牌默认掩码显示；点「显示」才切成明文，再点切回

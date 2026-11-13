@@ -31,7 +31,7 @@ from starlette.background import BackgroundTask
 
 from .llm import LLMClient
 from . import approval
-from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, media, memory, menu, netcfg, netmode, onebot, pairing, paths, persona, policy, power, presets, prompts, remote_input, selfcheck, singleton, sleepmode, status_line, sudo_auth, tools, updater, usage, wake
+from . import apicfg, audit, authguard, audiomute, depcheck, devlog, fszones, i18n, media, memory, menu, netcfg, netmode, onebot, pairing, paths, persona, policy, power, presets, prompts, qqtext, remote_input, selfcheck, singleton, sleepmode, status_line, sudo_auth, tools, updater, usage, wake
 from .session_store import store
 from . import session_store
 from . import routes_config, routes_logs, routes_sessions, routes_system
@@ -5033,7 +5033,7 @@ async def _guest_reply(hist: list[dict], sys_prompt: str, text: str,
     if onebot.looks_like_injection(text):
         _qq_log("warn", "injection_suspect", "群友消息命中提示注入关键词")
     if not llm.configured:
-        return "（还没配置模型，等主人配好我再来陪你聊。）"
+        return qqtext.get("guest_no_model")
     msgs = [{"role": "system", "content": sys_prompt or onebot.DEFAULT_GUEST_PROMPT}]
     items = hist or []
     if p.history_max_messages > 0:
@@ -5049,13 +5049,13 @@ async def _guest_reply(hist: list[dict], sys_prompt: str, text: str,
         out = await llm.chat(msgs)
     except Exception as e:
         print(f"[DeckMeido][onebot] 群友轮次失败：{e!r}", file=sys.stderr)
-        return "这一轮没接上，稍后再试。"
+        return qqtext.get("guest_llm_fail")
     out, changed = onebot.redact_output(str(out or ""))
     if changed:
         _qq_log("info", "output_redacted", "群友回复命中脱敏规则")
     # 回复长度是群档策略的一部分，必须在代码层兜底，不能只靠提示词
     out = onebot.clip_guest_reply(out)
-    return out or "嗯，我在。"
+    return out or qqtext.get("guest_empty")
 
 
 async def handle_chat(text: str, announce: bool = True,
@@ -5114,8 +5114,7 @@ async def handle_chat(text: str, announce: bool = True,
     # 图片解析失败不能静默丢掉：用户以为「发了张图」，模型却只收到了文字
     image_blob = _pack_image(image)[1] if image else None
     if image and not image_blob:
-        return {"reply": "附带的画面没能解析成图片（只支持 PNG / JPEG / WebP），这一轮没有发送。",
-                "events": []}
+        return {"reply": qqtext.get("image_bad_input"), "events": []}
     # 同一次调用取一个时间戳，同时用于「广播给界面的 ts」和「历史里的 ts」。
     # 前端删除消息时靠这个 ts 找回后端对应的那条：两处各自 time.time() 会差几毫秒，
     # 按 ts 精确匹配就永远对不上，删除按钮会退化成「删最后一条同角色消息」
@@ -5280,9 +5279,9 @@ async def handle_chat(text: str, announce: bool = True,
         # 用户也看不到到底跑过什么。这里把已执行的步骤和结果补成正文
         digest = _tool_results_digest(tool_log)
         if not killed_text.strip():
-            killed_text = ("（已终止，这一轮还没生成正文）"
-                           + (f"\n\n终止前已经执行的步骤：\n{digest}" if digest
-                              else "\n\n（还没有执行任何工具）"))
+            killed_text = qqtext.get("killed_empty") + (
+                qqtext.get("error_steps", digest=digest) if digest
+                else qqtext.get("steps_none"))
         # 无论有没有留下正文，都要落一条带 aborted_turn 的 assistant 消息：
         # 它带着这一轮做过哪些工具，下一轮靠它告诉模型「已经终止，别接着做」
         # （见 _aborted_note）。以前只在有正文时才落，于是刚开跑就被终止的
@@ -5301,12 +5300,12 @@ async def handle_chat(text: str, announce: bool = True,
         # 一直是 True，后面所有前端的「本轮归属」判定都跟着错。
         # 统一在这里收成一条带错误说明的回复，走与成功路径相同的收尾
         print(f"[DeckMeido] 本轮异常：{e}", file=sys.stderr)
-        reply = f"（出错了：{e}）"
+        reply = qqtext.get("error_wrap", error=e)
         digest = _tool_results_digest(tool_log)
         if digest:
-            reply += f"\n\n出错前已经执行的步骤：\n{digest}"
+            reply += qqtext.get("error_steps", digest=digest)
         elif events:
-            reply += "\n\n（上面这些步骤已经执行，结果未完整汇总）"
+            reply += qqtext.get("steps_unsummarized")
     finally:
         set_overlay(False)
 
@@ -6238,10 +6237,9 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
     except asyncio.TimeoutError:
         # 超时不能只丢一句「超时了」：这一轮里已经跑完的命令、改过的文件全都要留下，
         # 否则用户既看不到结果，下一轮模型也会把同样的活重做一遍
-        note = ("（这轮处理超时了——可能是模型响应慢或命令太久。任务可能已在后台执行，"
-                "换个问法或让我检查下结果）")
+        note = qqtext.get("timeout")
         digest = _tool_results_digest(tool_log)
-        return note + (f"\n\n超时前已经执行的步骤：\n{digest}" if digest else "")
+        return note + (qqtext.get("timeout_steps", digest=digest) if digest else "")
     # 系统层兜底：full 模式下模型空口拒绝（没调任何工具）→ 注入纠正指令重试一次。
     # 群友档零工具，「拒绝」是正常回答，不做这套纠正
     if (PERMISSION_MODE == "full" and not pol.readonly
@@ -6255,7 +6253,7 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
                 _shot_lock=shot_lock, surface=surface, turn_policy=pol,
             ), timeout=agent_timeout)
         except asyncio.TimeoutError:
-            return "（重试也超时了，请再发一次）"
+            return qqtext.get("retry_timeout")
     return reply
 
 
@@ -6278,33 +6276,22 @@ def _llm_error_text(e: Exception) -> str:
     except ValueError:
         host = ""
     label = f"「{name}」" + (f"（{host}）" if host else "")
-    # 先分辨「连不上」和「连上了但服务慢」：两者都可能是超时，但下一步完全不同。
-    # 局域网端点连接阶段只等 2 秒（见 LLMClient），这里照实说出来。
+    # 先分辨「连不上」和「连上了但服务慢」：两者都可能是超时，但下一步完全不同
     if isinstance(e, (httpx.ConnectTimeout, httpx.ConnectError)):
-        wait = "2 秒内连不上" if netmode.is_local_url(str(getattr(llm, "base_url", "") or "")) \
-            else "连接失败"
-        return (f"LLM 调用失败：{label} {wait}。请确认模型服务已启动、地址与端口可访问；"
-                "如果这是局域网模型，检查设备是否还在同一网络")
+        # 局域网端点连接阶段只等 2 秒（见 LLMClient），照实说出来
+        local = netmode.is_local_url(str(getattr(llm, "base_url", "") or ""))
+        return qqtext.get("llm_connect", label=label,
+                          wait=qqtext.get("llm_wait_local" if local else "llm_wait_remote"))
     if isinstance(e, httpx.ReadTimeout):
-        return (f"LLM 调用失败：{label} 已连上，但等待生成响应超时；"
-                "服务可能正在计算或负载较高，稍后再试，或在设置里调大超时")
-    hints = {
-        401: "API Key 无效或已过期",
-        402: "账户余额不足",
-        403: "服务商拒绝了这次请求（权限或地区限制）",
-        404: "接口路径不存在，请检查 base_url",
-        429: "请求被限流，请稍后再试",
-        500: "服务商内部错误",
-        502: "网关错误，服务商暂时不可用",
-        503: "服务商暂时不可用（上游模型服务异常，或该模型暂无可用节点）",
-        504: "服务商响应超时",
-    }
+        return qqtext.get("llm_read_timeout", label=label)
     if status:
-        msg = f"LLM 调用失败：{label} {hints.get(status, '服务商返回错误')}（HTTP {status}）"
+        # 没有单独一条文案的状态码（408/409 等）退回通用说法
+        hint = qqtext.get(f"llm_hint_{status}") or qqtext.get("llm_hint_other")
+        msg = qqtext.get("llm_status", label=label, hint=hint, status=status)
     else:
         brief = raw[:240] + ("…" if len(raw) > 240 else "")
-        msg = f"LLM 调用失败：{label} {brief}"
-    return msg + "。可在设置页「接口账户」里切换账户，或换一个模型后重试"
+        msg = qqtext.get("llm_raw", label=label, brief=brief)
+    return msg + qqtext.get("llm_hint_suffix")
 
 
 async def run_agent(events: list[dict], extra_system: str = "",
@@ -6702,11 +6689,10 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     continue
                 # 续写后仍被截断：内容已经流式显示给用户了，别丢，末尾加一句说明
                 if msg.get("finish_reason") == "length":
-                    note = ("\n\n（以上内容到了输出上限，续写也没能收尾；"
-                            "要我接着写就说「继续」。）")
+                    note = qqtext.get("output_limit")
                     return (body + note) if body else note.strip()
                 print("[DeckMeido] 本轮收尾：模型没有再调用工具")
-                return body or "（没有回复内容）"
+                return body or qqtext.get("empty_answer")
 
             # 带图这轮只答一次：模型拿到工具结果后常常再截一张确认，
             # 于是又对着新画面续一轮，用户看到一条提问连着好几张图和好几段回答。
@@ -7069,12 +7055,11 @@ async def run_agent(events: list[dict], extra_system: str = "",
             thought_ev = {"type": "thought", "text": msg["reasoning_content"]}
             events.append(thought_ev)
         answer = (msg.get("content") or "").strip()
-        limit_note = (f"（已经连续执行 {MAX_TOOL_ROUNDS} 步，到了单轮上限，后面的步骤没有继续。"
-                      f"要接着做的话说一声，或把 max_tool_rounds 调大）")
+        limit_note = qqtext.get("tool_limit", rounds=MAX_TOOL_ROUNDS)
         # 收尾时模型经常什么都不写：这不是正常答复，要把「为什么停」说清楚
         return f"{answer}\n\n{limit_note}" if answer else limit_note
     except Exception as e:
-        # 把失败当正常回复返回，下一轮模型会在自己的历史里读到一句「LLM 调用失败」，
+        # 把失败当正常回复返回，下一轮模型会在自己的历史里读到一句「模型调用失败」，
         # 于是把这句话当成它说过的话继续往下聊。明确标成中断，交给上层提示
         friendly = _llm_error_text(e)
         print(f"[DeckMeido] {friendly}", file=sys.stderr)
@@ -7335,14 +7320,13 @@ async def _qq_maybe_launch_after_install(events: list) -> dict:
                 start_new_session=True, cwd=str(Path.home()))
         except Exception as e:
             _qq_log("error", "自动启动失败", f"{type(e).__name__}: {e}")
-            return {"reply": f"已装好，但没能自动打开 {exe}（{type(e).__name__}）。"}
+            return {"reply": qqtext.get("launch_fail", exe=exe, error=type(e).__name__)}
         _qq_log("info", "自动启动", f"{exe}")
         blob, _note = await _qq_screenshot()
-        caption = (f"已装好：{target}，已经自动打开了。"
-                   f"游戏模式下窗口可能看不到，切回桌面看一眼。")
+        caption = qqtext.get("launch_ok", target=target)
         if blob:
             return {"reply": caption, "caption": caption, "image": blob}
-        return {"reply": caption + "\n（截图没抓到，就不附图了。）"}
+        return {"reply": caption + qqtext.get("shot_missing", caption="")}
     return {}
 
 
@@ -7394,8 +7378,7 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
     # 本地端正在跑另一轮时不要插进来：store.turn / pending_action 都是全局单份的，
     # 两边同时跑会把「这一轮是谁提的」搅乱。等本地这轮结束再发即可
     if (store.turn.get("active") and (store.turn.get("client") or "") != "qq"):
-        return {"reply": "设备正在处理本地端发起的操作，等它结束再发；这一条没有提交。",
-                "busy": True}
+        return {"reply": qqtext.get("local_busy"), "busy": True}
     # QQ 的会话独立于本地当前会话：历史从它自己的文件读，不碰 store.history
     if sid in store.deleted_sids:
         # 这个 sid 之前被用户删过。QQ 的 sid 是按 uin/群号算死的，
@@ -7403,8 +7386,7 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
         # 绝不能把删掉那轮的内容（或它的摘要）再带回来
         active_sid = str(store.turn.get("sid") or "") if store.turn.get("active") else ""
         if not store.allow_fresh(sid, active_sid):
-            return {"reply": "上一条会话还在收尾，等它结束再发；这一条没有提交。",
-                    "busy": True}
+            return {"reply": qqtext.get("session_closing"), "busy": True}
         hist = []
     elif sid == store.current_sid:
         hist = store.history
@@ -7457,7 +7439,7 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
         blob = await asyncio.to_thread(_turn_screenshot_blob, turn_started)
         if blob:
             out["image"] = blob
-            out["caption"] = out.get("caption") or out["reply"] or "截图已奉上"
+            out["caption"] = out.get("caption") or out["reply"] or qqtext.get("shot_caption")
             _qq_log("info", "回合附图", f"{len(blob)} 字节")
     return out
 
