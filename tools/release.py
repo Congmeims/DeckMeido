@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""本地发版构建：打 tar.gz + 插件 zip + latest.json，不在任何地方上传。
+"""本地发版构建：打 tar.gz + 插件 zip + latest.json。
 
 用法（仓库根目录）：
     python tools/release.py            # 版本号读 plugin/package.json
     python tools/release.py 0.8.6      # 显式指定版本
     python tools/release.py --no-check 跳过安装器自检（不建议）
+    python tools/release.py --no-push  出包后只提交、不推送（不建议）
 
 产物写到 dist/，并自动同步到 winres/deckmeido/（该目录只保留当前版本产物）。
-剩下的发布步骤是人工的：
-  1. 提交 winres/deckmeido/ 里的产物；
-  2. 用 gh release 把 tar.gz / 插件 zip / sha256 / latest.json / install.sh
-     作为资产传到 GitHub。
+打包完成后脚本自己把产物提交并推送到远端：出包必须和云端一致，
+否则别人按 tag 拉下来的仍是旧代码，装机日志里的 COMMIT 也对不上。
+推送失败会直接报错退出，不会留下「本地有包、云端没有」的状态。
+最后一步仍是人工的：用 gh release 把 tar.gz / 插件 zip / sha256 /
+latest.json / install.sh 作为资产传到 GitHub。
 """
 import hashlib
 import json
@@ -328,9 +330,53 @@ def check_installer():
                  "先删干净再出包（或用 --no-check 强行跳过）：\n" + "\n".join(hits))
 
 
+def git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    """在仓库根目录跑一条 git；失败时把 git 的原始输出带出来，不然排障只能靠猜"""
+    res = subprocess.run(
+        ["git", "-C", str(ROOT), *args],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    if check and res.returncode != 0:
+        detail = (res.stderr or res.stdout or "").strip()
+        sys.exit(f"git {' '.join(args)} 失败：\n{detail}")
+    return res
+
+
+def commit_and_push(ver: str, push: bool = True) -> None:
+    """把本次出包的产物提交并推送到远端
+
+    出包和云端必须一致：只提交不推送的话，别人按 tag 拉到的还是旧代码，
+    装机日志里的 COMMIT 也对不上。推送失败直接退出，让问题当场暴露。
+    """
+    print("==> 提交出包产物")
+    # 只加产物目录与版本文件，不用 add -A：出包时工作区里可能还有别的手改
+    paths = ["winres/deckmeido", "plugin/package.json",
+             "plugin/package-lock.json", "dist"]
+    git("add", "-A", *paths)
+    staged = git("diff", "--cached", "--name-only").stdout.strip()
+    if not staged:
+        print("    产物无变化，跳过提交")
+    else:
+        git("commit", "-m", f"chore(release): {ver}")
+        print("    已提交：" + "、".join(staged.splitlines()[:6]))
+
+    if not push:
+        print("    已跳过推送（--no-push）；注意云端仍是旧代码")
+        return
+    print("==> 推送到远端")
+    branch = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    res = git("push", "origin", branch, check=False)
+    if res.returncode != 0:
+        print((res.stderr or res.stdout or "").strip())
+        sys.exit("推送失败，本次出包中止。修好远端后再推送，"
+                 "确认 `git status` 与远端一致后才能打 tag 发版。")
+    print(f"    已推送 {branch}")
+
+
 def main():
-    argv = [a for a in sys.argv[1:] if a != "--no-check"]
+    argv = [a for a in sys.argv[1:] if a not in ("--no-check", "--no-push")]
     skip_check = "--no-check" in sys.argv[1:]
+    no_push = "--no-push" in sys.argv[1:]
     ver = argv[0] if argv else json.loads(
         (ROOT / "plugin" / "package.json").read_text(encoding="utf-8")
     )["version"]
@@ -397,8 +443,12 @@ def main():
     print("==> 打包完成")
     print(f"    {tar}")
     print(f"    {z}")
-    print("    产物已写入 dist/ 与 winres/deckmeido/，没有上传步骤")
-    print("    下一步：提交 winres/deckmeido/，再打 tag 并用 gh release 上传资产")
+
+    # 产物落盘后再提交推送：云端代码与装机包里的 COMMIT 必须是同一个提交
+    commit_and_push(ver, push=not no_push)
+
+    print("    产物已写入 dist/ 与 winres/deckmeido/")
+    print("    下一步：打 tag 并用 gh release 上传资产")
 
 
 if __name__ == "__main__":
