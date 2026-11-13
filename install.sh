@@ -74,6 +74,29 @@ UN_BACKEND_STATE=""
 UN_PLUGIN_STATE=""
 UN_DECKY_STATE=""
 
+# ---------- sudo 入口 ----------
+# 放在最前面：删除守卫、只读层 trap、pacman、Decky 插件目录都要用。
+# 2026-11-13 真机实测：sudo 只在带 -A 时才去问 SUDO_ASKPASS；光设环境变量、
+# 不带 -A 仍报「a terminal is required」。无 tty 安装（SSH / systemd-run）里
+# 直接 `sudo xxx` 会全部失败——Decky 插件目录就是这么「建不动」的。
+# 凡安装器内部要 root 的地方一律走这里，别直接写 sudo。
+sdo() {
+  if [ -n "${SUDO_ASKPASS:-}" ] && [ -x "${SUDO_ASKPASS}" ]; then
+    sudo -A "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+# 只要缓存有效、不弹窗：用于「能免密就直接干」的地方
+sdo_cached() {
+  if [ -n "${SUDO_ASKPASS:-}" ] && [ -x "${SUDO_ASKPASS}" ]; then
+    sudo -A -n "$@"
+  else
+    sudo -n "$@"
+  fi
+}
+
 # 可执行位自愈：Windows/NTFS 打包或 git 导出常丢 0644，桌面项直接执行时会
 # 「缺少运行权限」；用 bash 调用不受影响。补不动就算了。
 heal_exec_bits() {
@@ -300,19 +323,21 @@ safe_rm_target() {
     # 由安装目录内 uninstall.sh 转发：HERE 即安装目录，属预期；.git 仓库仍拒
     return 0
   fi
-  if [ "$abs" = "$HERE" ]; then
-    # 例外：脚本就在安装目录里（bash ~/DeckMeido/install.sh uninstall 的常规用法，
-    # 以及 deck 上只有一份安装、没有单独源码目录的情况）。有安装标记就认，
-    # 没标记才按源码工作区拒——2026-11-13 真机卸载就被这条误拦过。
-    if [ "$abs" = "$INSTALL_DIR" ] && [ -f "$abs/.deckmeido-install" ]; then
-      :
-    else
-      echo "[删除守卫] 拒绝：目标就是脚本所在目录（源码工作区）" >&2
-      return 1
-    fi
+  # 本身就是安装目录且带安装标记：脚本就在安装目录里（bash ~/DeckMeido/install.sh
+  # uninstall 的常规用法，Deck 上也常常只有这一份），属预期。
+  # 这一段必须排在「$HERE 的上级」判断之前：$HERE 就是安装目录时，前者也会命中。
+  # 2026-11-13 真机卸载先后被这两条误拦过。.git 仓库仍单独拒。
+  local is_install_dir=0
+  if [ "$abs" = "$INSTALL_DIR" ] && [ -f "$abs/.deckmeido-install" ]; then
+    is_install_dir=1
   fi
   if [ -d "$abs/.git" ] || [ -f "$abs/.git" ]; then
     echo "[删除守卫] 拒绝：目标是 Git 源码工作区（$abs）" >&2
+    return 1
+  fi
+  [ "$is_install_dir" = 1 ] && return 0
+  if [ "$abs" = "$HERE" ]; then
+    echo "[删除守卫] 拒绝：目标就是脚本所在目录（源码工作区）" >&2
     return 1
   fi
   case "$HERE/" in
@@ -442,7 +467,7 @@ trash_path() {
   info="$root/info/$(basename -- "$dest").trashinfo"
   if mv -- "$p" "$dest" 2>/dev/null; then
     :
-  elif [ ! -w "$(dirname -- "$p")" ] && need_cmd sudo && sudo mv -- "$p" "$dest" </dev/null 2>/dev/null; then
+  elif [ ! -w "$(dirname -- "$p")" ] && need_cmd sudo && sdo mv -- "$p" "$dest" </dev/null 2>/dev/null; then
     :
   else
     # Windows 的 git-bash 等环境里 mv 会假成功（目标目录建了、源没动），
@@ -1333,7 +1358,7 @@ vendor_install() {
     files+=("$f")
   done
   [ ${#files[@]} -gt 0 ] || return 1
-  if sudo pacman -U --noconfirm --needed "${files[@]}" </dev/null >/dev/null 2>&1; then
+  if sdo pacman -U --noconfirm --needed "${files[@]}" </dev/null >/dev/null 2>&1; then
     info "已用内置包安装：$*"
     return 0
   fi
@@ -1656,11 +1681,8 @@ ask_choice() {
 
 sudo_warmup() {
   need_cmd sudo || { warn "没有 sudo，跳过系统依赖安装"; return 1; }
-  # 已授权就直接用，别重复要密码（注意 -n 不认 SUDO_ASKPASS，有 askpass 时用 -A）
-  if [ -n "${SUDO_ASKPASS:-}" ] && [ -x "${SUDO_ASKPASS}" ]; then
-    sudo -A -n true 2>/dev/null && return 0
-  fi
-  sudo -n true 2>/dev/null && return 0
+  # 已授权就直接用，别重复要密码（-n 不认 SUDO_ASKPASS，有 askpass 时用 -A -n）
+  sdo_cached true 2>/dev/null && return 0
   # 密码必须从终端读：curl | bash 时 stdin 是脚本本身，sudo 从 stdin 读会直接失败。
   # 装系统包、写 Decky 插件目录都靠它，这里没拿到就一路静默失败。
   if (: < /dev/tty) 2>/dev/null; then
@@ -1760,13 +1782,14 @@ install_pacman_deps() {
   [ ${#todo[@]} -gt 0 ] && info "用 pacman 安装：${todo[*]}"
   # SteamOS 根分区只读，装包前必须关；旧代码 `|| true` 吞错导致 pacman 报无关错
   if [ -f /etc/steamos-readonly.conf ] || need_cmd steamos-readonly; then
-    if ! sudo steamos-readonly disable </dev/null 2>/dev/null; then
+    if ! sdo steamos-readonly disable </dev/null 2>/dev/null; then
       warn "关闭 SteamOS 只读保护失败，系统包无法安装"
       dim "手动执行：sudo steamos-readonly disable   然后再重跑本次命令"
       return 1
     fi
     # 装完（含失败/Ctrl-C）必须恢复只读，trap 兜住
-    trap 'sudo steamos-readonly enable >/dev/null 2>&1 || \
+    # trap 里用 sdo：有 askpass 时才能免交互恢复（无 tty 安装的唯一办法）
+    trap 'sdo steamos-readonly enable >/dev/null 2>&1 || \
           printf "\033[33m⚠ 恢复 SteamOS 只读保护失败，请手动执行：sudo steamos-readonly enable\033[0m\n" >&2; \
           trap - EXIT INT TERM' EXIT INT TERM
   fi
@@ -1789,16 +1812,16 @@ install_pacman_deps() {
   [ ${#restore[@]} -gt 0 ] && pkgs+=("${restore[@]}")
 
   if [ ${#pkgs[@]} -gt 0 ]; then
-    if log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
+    if log=$(sdo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
       info "pacman 安装完成"
     else
       # 最常见失败：换镜像后 keyring 对不上
       warn "pacman 安装失败，尝试修复 keyring 后重试"
       dim "$(printf '%s' "$log" | tail -5)"
-      sudo pacman-key --init </dev/null >/dev/null 2>&1 || warn "pacman-key --init 失败"
-      sudo pacman-key --populate archlinux holo </dev/null >/dev/null 2>&1 \
+      sdo pacman-key --init </dev/null >/dev/null 2>&1 || warn "pacman-key --init 失败"
+      sdo pacman-key --populate archlinux holo </dev/null >/dev/null 2>&1 \
         || warn "pacman-key --populate 失败（keyring 可能损坏）"
-      if log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
+      if log=$(sdo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
         info "修复 keyring 后安装成功"
       else
         # 「未找到目标：xxx」= 清单里某个包名在当前系统不存在。pacman 是整批
@@ -1819,7 +1842,7 @@ install_pacman_deps() {
           pkgs=(${keep[@]+"${keep[@]}"})
         fi
         if [ ${#pkgs[@]} -gt 0 ] \
-           && log=$(sudo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
+           && log=$(sdo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
           info "剔除无效包名后安装成功：${pkgs[*]}"
         else
           warn "pacman 安装失败：${pkgs[*]:-（清单里已无不存在的包名）}"
@@ -1831,7 +1854,7 @@ install_pacman_deps() {
     fi
   fi
   if [ ${#reinstall[@]} -gt 0 ] && [ "$ok" = 1 ]; then
-    if sudo pacman -S --noconfirm "${reinstall[@]}" </dev/null >/dev/null 2>&1; then
+    if sdo pacman -S --noconfirm "${reinstall[@]}" </dev/null >/dev/null 2>&1; then
       info "重装完成：${reinstall[*]}"
     else
       warn "重装失败：${reinstall[*]}"
@@ -1843,7 +1866,7 @@ install_pacman_deps() {
   for p in "${todo[@]}" "${reinstall[@]}" "${restore[@]}"; do dep_present "$p" || bad+=("$p"); done
   # qdbus6 被拆包到 qt5-tools 的发行版：按需补装
   if printf '%s\n' "${bad[@]}" | grep -qx 'qt6-tools'; then
-    if sudo pacman -Sy --needed --noconfirm qt5-tools </dev/null >/dev/null 2>&1 \
+    if sdo pacman -Sy --needed --noconfirm qt5-tools </dev/null >/dev/null 2>&1 \
        && dep_present qt6-tools; then
       info "qdbus6 来自 qt5-tools，已补装"
       bad=("${bad[@]/qt6-tools/}"); bad=(${bad[@]+"${bad[@]}"})
@@ -1893,7 +1916,7 @@ install_aur_deps() {
   if ! need_cmd fakeroot; then
     warn "缺少 fakeroot，AUR 编译会失败，先补装"
     # 必须喂 </dev/null：piped 安装时 stdin 还挂着外层管道，sudo 会把脚本尾巴吃掉
-    if ! sudo pacman -S --needed --noconfirm fakeroot </dev/null >/dev/null 2>&1; then
+    if ! sdo pacman -S --needed --noconfirm fakeroot </dev/null >/dev/null 2>&1; then
       warn "补装 fakeroot 失败，AUR 编译大概率会失败（稍后会给出手动命令）"
     fi
   fi
@@ -3447,7 +3470,7 @@ ensure_workspace_owner() {
   cur="$(id -u)"
   owner="$(stat -c %u "$ws" 2>/dev/null || true)"
   [ "$owner" = "$cur" ] && return 0
-  if need_cmd sudo && sudo chown "$(id -u):$(id -g)" "$ws" </dev/null 2>/dev/null; then
+  if need_cmd sudo && sdo chown "$(id -u):$(id -g)" "$ws" </dev/null 2>/dev/null; then
     step_note "已把工作区归属修正为当前用户：$ws"
   else
     step_note "工作区属主不是当前用户，且无法免密修正：$ws（可能需要 sudo chown）"
@@ -3994,18 +4017,18 @@ plugin_install_zip() {
   need_cmd unzip || { dim "缺少 unzip，跳过"; return 1; }
   # 旧版可能是软链接：先删链接本身，别顺着链接删到安装目录
   if [ -L "$target" ]; then
-    rm -f "$target" 2>/dev/null || sudo rm -f "$target"
+    rm -f "$target" 2>/dev/null || sdo rm -f "$target"
   fi
   # 插件根目录 root:root，普通用户建不了，借一次 sudo。
   # 这里不能写 `sudo -n`：-n 表示「绝不询问」，即使 SUDO_ASKPASS 已设好
   # 也直接失败（实测），无 tty 的安装就卡在这一步（2026-11-13 真机复现）。
-  sudo mkdir -p "$target" 2>/dev/null || { dim "建不动 $target"; [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
+  sdo mkdir -p "$target" 2>/dev/null || { dim "建不动 $target"; [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
   # zip 里没有的旧文件（改名模块）会让 Decky 加载过期代码，先清空
   safe_rm_target "$target" || { dim "拒绝清理插件目录（$target）"; [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
   dim "清理旧插件目录（只删本插件自己的目录，不会动别的插件与用户数据）：$target"
-  sudo rm -rf "$target" 2>/dev/null || true
-  sudo mkdir -p "$target" || { [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
-  sudo unzip -oq "$src" -d "$root"; local _zrc=$?
+  sdo rm -rf "$target" 2>/dev/null || true
+  sdo mkdir -p "$target" || { [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
+  sdo unzip -oq "$src" -d "$root"; local _zrc=$?
   [ -n "$tmpdir" ] && rm -rf "$tmpdir"
   [ "$_zrc" = 0 ] || return 1
   # zip 顶层目录名是 DeckMeido，解到 $root 下正好生成 $target
@@ -5660,10 +5683,10 @@ run_root() {
   elif ! need_cmd sudo; then
     un_log "  RC=127 root: $*（没有 sudo）"
     return 127
-  elif sudo -n true >/dev/null 2>&1; then
+  elif sdo_cached true >/dev/null 2>&1; then
     # </dev/null 必须：piped 执行时 stdin 挂着外层管道，子进程（pacman/paru）
     # 读 stdin 会吃掉剩余脚本，表现为「静默退出、提示符直接回来」
-    sudo -n "$@" </dev/null; rc=$?
+    sdo_cached "$@" </dev/null; rc=$?
   elif [ -t 0 ] || { true </dev/tty; } 2>/dev/null; then
     # 密码框由 sudo 自己从 /dev/tty 读，不占 stdin，所以这里重定向是安全的
     sudo "$@" </dev/null; rc=$?
@@ -5811,7 +5834,7 @@ if [ "${UN_ABORT:-0}" = 1 ]; then
   printf "\033[33m    卸载日志：%s\033[0m\n" "${UNINSTALL_LOG:-（dry-run 不写）}" >&2
 fi
 if need_cmd steamos-readonly && [ "$(readonly_state)" != "enabled" ]; then
-  sudo steamos-readonly enable </dev/null >/dev/null 2>&1 || \
+  sdo steamos-readonly enable </dev/null >/dev/null 2>&1 || \
     printf "\033[33m[!] 恢复 SteamOS 只读层失败，请手动执行：sudo steamos-readonly enable\033[0m\n" >&2
 fi' EXIT INT TERM
 }
