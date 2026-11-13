@@ -55,44 +55,6 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def verify_deps_bundle(deps: Path) -> None:
-    """离线包必须带 SHA256SUMS 且逐个对得上，否则拒绝发版。
-
-    清单只覆盖 deploy/deps/ 下的 .pkg.tar.zst（install.sh 在 Deck 上按它
-    逐个校验），与 dist/SHA256SUMS（覆盖发布 tar.gz）是两套东西。
-    清单与包不一致时，宁可停下重跑 fetch_offline_deps.sh，也不发一个
-    装上去会被哈希拦掉的包。
-    """
-    pkgs = sorted(deps.glob("*.pkg.tar.zst"))
-    if not pkgs:
-        return
-    manifest = deps / "SHA256SUMS"
-    if not manifest.is_file():
-        raise SystemExit(
-            "deploy/deps 里有离线包但缺 SHA256SUMS：先跑 bash tools/fetch_offline_deps.sh"
-        )
-    want: dict[str, str] = {}
-    for line in manifest.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split(None, 1)
-        if len(parts) != 2:
-            raise SystemExit(f"deploy/deps/SHA256SUMS 行格式不对：{line}")
-        want[parts[1].lstrip("*")] = parts[0].lower()
-    names = {f.name for f in pkgs}
-    for f in pkgs:
-        if f.name not in want:
-            raise SystemExit(f"deploy/deps/SHA256SUMS 没登记 {f.name}")
-        if sha256(f) != want[f.name]:
-            raise SystemExit(
-                f"deploy/deps/{f.name} 与清单里的哈希不一致（清单过期？重跑 fetch_offline_deps.sh）"
-            )
-    unused = sorted(set(want) - names)
-    if unused:
-        raise SystemExit(f"deploy/deps/SHA256SUMS 登记了不存在的包：{unused}")
-
-
 def build_tarball(ver: str) -> Path:
     name = f"deckmeido-{ver}"
     stage_root = Path(tempfile.mkdtemp(prefix="deckmeido-rel-"))
@@ -115,14 +77,6 @@ def build_tarball(ver: str) -> Path:
             shutil.rmtree(p, ignore_errors=True)
         elif p.exists():
             p.unlink()
-    # 离线依赖包：有就带上（先复核哈希清单），没有不影响发版
-    deps = ROOT / "deploy" / "deps"
-    if deps.is_dir() and any(deps.glob("*.pkg.tar.zst")):
-        verify_deps_bundle(deps)
-        (stage / "deploy" / "deps").mkdir(parents=True, exist_ok=True)
-        for f in deps.glob("*.pkg.tar.zst"):
-            shutil.copy2(f, stage / "deploy" / "deps" / f.name)
-        shutil.copy2(deps / "SHA256SUMS", stage / "deploy" / "deps" / "SHA256SUMS")
 
     (stage / "VERSION").write_text(ver + "\n", encoding="utf-8", newline="\n")
     # 构建标记：发布包也带上当时的短提交号，解包安装（没有 .git）时
@@ -431,11 +385,6 @@ def main():
     shutil.copy2(ROOT / "install.sh", DIST / "install.sh")
     print(f"    {tar.name} {tar.stat().st_size // 1024} KB")
     print(f"    {z.name} {z.stat().st_size // 1024} KB")
-    ddir = ROOT / "deploy" / "deps"
-    if (ddir / "SHA256SUMS").is_file():
-        n = len(list(ddir.glob("*.pkg.tar.zst")))
-        print(f"    自带离线包 {n} 个（SHA256SUMS 已随包）；"
-              "镜像站第三层：把 deploy/deps/ 同步到 /deckmeido/deps/")
 
     # 出包前先查一遍包里有没有账号密码，命中就不出包
     print("==> 凭据检查")
