@@ -694,11 +694,14 @@ disp_len() {
 # 窄终端上框线就会越界，所以 stty 走 /dev/tty 而不是 stdout。
 term_cols() {
   local c="${COLUMNS:-}" sz
+  # 没有终端时（SSH 无 tty、CI）别去碰 /dev/tty：重定向失败会在 stderr
+  # 刷一堆「没有那个设备或地址」，把收尾卡片冲得没法看（2026-11-13 实测）。
+  if [ ! -c /dev/tty ]; then printf '80'; return 0; fi
   if [ -z "$c" ] || ! [[ "$c" =~ ^[0-9]+$ ]]; then
-    sz=$(stty size < /dev/tty 2>/dev/null | awk '{print $2}')
+    sz=$({ stty size < /dev/tty; } 2>/dev/null | awk '{print $2}')
     c="${sz:-}"
   fi
-  [ -n "$c" ] || c=$(tput cols < /dev/tty 2>/dev/null || echo 80)
+  [ -n "$c" ] || c=$({ tput cols < /dev/tty; } 2>/dev/null || echo 80)
   printf '%s' "${c:-80}"
 }
 # 开场大字/分区标题需要 72 列；结果卡片窄一点也能画（>=44 列）
