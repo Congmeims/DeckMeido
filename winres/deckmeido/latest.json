@@ -1,10 +1,10 @@
 {
-  "tag": "0.8.10",
-  "name": "DeckMeido 0.8.10",
-  "notes": "# DeckMeido 0.8.10\n\n- chore: 版本升到 0.8.10\n- fix(安装器): 组件清单检测到已装项后安装静默退出\n- release: 0.8.9 产物\n- chore: 版本升到 0.8.9\n- chore(发布): 重新打包 0.8.8，包含终端面板 full_access 修复\n- fix(审批): 终端面板补上 full_access，与对话构造点保持同步\n- refactor(前端): 上传辅助纯函数拆到 upload-helpers.js，测试改读新文件\n- refactor(前端): 将 index.html 内联样式提取为 static/app.css\n- refactor(路由): 状态/二维码/设备接口拆到 routes_system\n- refactor(路由): 会话与检查点接口拆到 routes_sessions\n- refactor(路由): 配置读写接口拆到 routes_config，main.py 继续瘦身\n- refactor(路由): 日志与诊断接口拆到 routes_logs，main.py 分批瘦身\n- chore(日志): 静默异常统一落调试日志，debug 文件按天复用\n- feat(审批): 审批判断收敛为唯一入口，新增四级风险分级\n- feat: 长任务进度提示、侧栏音乐控制与 QQ 主动接话配置\n- feat(QQ): 指令改为「昵称 + 空格 + 中文指令」，新增主动接话概率\n- fix(唤醒): 麦克风只在智能音箱模式内长期采集\n- fix(跨屏键鼠): 小键盘数字键在接管时失效\n- release: 0.8.8 产物\n- chore: 版本升到 0.8.8\n",
-  "published_at": "2026-11-12T14:28:14+08:00",
+  "tag": "0.8.11",
+  "name": "DeckMeido 0.8.11",
+  "notes": "# DeckMeido 0.8.11\n\n- fix(pad): 虚拟手柄用完即销毁，避免抢走虚拟键盘输入; fix(ui): 输入法选词时的 Enter 不再误触发提交\n- chore: 归档目录不入库\n- chore(tools): 出包后自动提交并推送产物，不再只提交不推送\n- feat(qq): 回传文案集中到 qqtext 表，并支持在设置页自定义\n- 部署前拦住「删代码删掉主对话连接」：前端结构自检接入 deploy 门禁\n- test(web): 新增前端结构自检，防止大段删除时误删主对话连接与心跳\n- fix(web): 恢复被误删的主对话 WebSocket 与鉴权启动逻辑，掉线/配对页根因修复\n- fix(auth): bootAuth 通过后关闭配对遮罩\n- revert: 撤销 11-12 晚间的鉴权绕行与冷启动改动\n- fix(boot): 后端未就绪时不再弹「连不上服务」\n- fix(auth): Deck 本机客户端不再要求配对\n- fix(client): 客户端固定持久化 QWebEngine Profile\n- 统一文件页与终端页的 AI 状态条，并给文件页补上跟随开关\n- 移除网页端远程终端，QQ 存图回复只回「保存成功~」\n- fix(qq): 存图/存文本的回复不再回绝对路径\n- fix(sudo): 授权通过后自动续跑被拦下的命令\n- fix(终端): 执行记录按会话清空，历史命令折叠成可展开的一行式清单\n- fix(电源): 息屏抑制改为常驻 KDE cookie 并清理残留抑制进程\n- fix(agent): 单轮超时从 280 秒放宽到 900 秒，不再主动掐断长任务\n- fix(stt): 空闲回收改由后台线程执行，阈值 10 分钟缩短到 5 分钟\n",
+  "published_at": "2026-11-13T13:37:49+08:00",
   "files": {
-    "tarball": "deckmeido-0.8.10.tar.gz",
-    "sha256": "d1b21a1d2b532767de9bde239db92c19b85f312e09acd16e223d377bd4d54186"
+    "tarball": "deckmeido-0.8.11.tar.gz",
+    "sha256": "ab2b2637b9f48c46e7e34cc8755a220ac10bc7d94641a80e913f9f636fbe1f1c"
   }
 }

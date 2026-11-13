@@ -2825,19 +2825,6 @@ venv_install() {
         dim "手动指定源：DECKMEIDO_PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple bash install.sh upgrade"
         return 1
       fi
-      # ptyprocess 是远程终端 / 真 PTY 面板的硬依赖，requirements.txt 里已经列了，
-      # 但镜像缺包或老 venv 升级时仍可能漏装。这里单独补一次；终端只是可选能力，
-      # 装不上只给明确提示与手动命令，不让整个安装失败，也不影响后端启动。
-      if ! have_py_module "$py" "ptyprocess"; then
-        if "$py" -m pip install -q 'ptyprocess>=0.7,<0.8' \
-             -i "${PIP_INDEXES[$start]}" >"$INSTALL_DIR/pip-ptyprocess.log" 2>&1; then
-          phase_ok "安装" "远程终端依赖（ptyprocess）"
-        else
-          phase_fail "安装" "远程终端依赖（ptyprocess）未装上：终端面板不可用，其余功能正常"
-          dim "安装日志：$INSTALL_DIR/pip-ptyprocess.log"
-          dim "手动补齐：$py -m pip install 'ptyprocess>=0.7,<0.8'"
-        fi
-      fi
     fi
     # 语音输入是可选能力：单独询问，失败不影响主流程
     install_stt_deps "$py" "$start"
