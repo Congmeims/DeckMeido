@@ -442,7 +442,7 @@ trash_path() {
   info="$root/info/$(basename -- "$dest").trashinfo"
   if mv -- "$p" "$dest" 2>/dev/null; then
     :
-  elif [ ! -w "$(dirname -- "$p")" ] && need_cmd sudo && sudo -n mv -- "$p" "$dest" 2>/dev/null; then
+  elif [ ! -w "$(dirname -- "$p")" ] && need_cmd sudo && sudo mv -- "$p" "$dest" </dev/null 2>/dev/null; then
     :
   else
     # Windows 的 git-bash 等环境里 mv 会假成功（目标目录建了、源没动），
@@ -1656,7 +1656,10 @@ ask_choice() {
 
 sudo_warmup() {
   need_cmd sudo || { warn "没有 sudo，跳过系统依赖安装"; return 1; }
-  # 已授权就直接用，别重复要密码
+  # 已授权就直接用，别重复要密码（注意 -n 不认 SUDO_ASKPASS，有 askpass 时用 -A）
+  if [ -n "${SUDO_ASKPASS:-}" ] && [ -x "${SUDO_ASKPASS}" ]; then
+    sudo -A -n true 2>/dev/null && return 0
+  fi
   sudo -n true 2>/dev/null && return 0
   # 密码必须从终端读：curl | bash 时 stdin 是脚本本身，sudo 从 stdin 读会直接失败。
   # 装系统包、写 Decky 插件目录都靠它，这里没拿到就一路静默失败。
@@ -3444,7 +3447,7 @@ ensure_workspace_owner() {
   cur="$(id -u)"
   owner="$(stat -c %u "$ws" 2>/dev/null || true)"
   [ "$owner" = "$cur" ] && return 0
-  if need_cmd sudo && sudo -n chown "$(id -u):$(id -g)" "$ws" 2>/dev/null; then
+  if need_cmd sudo && sudo chown "$(id -u):$(id -g)" "$ws" </dev/null 2>/dev/null; then
     step_note "已把工作区归属修正为当前用户：$ws"
   else
     step_note "工作区属主不是当前用户，且无法免密修正：$ws（可能需要 sudo chown）"
@@ -3993,9 +3996,10 @@ plugin_install_zip() {
   if [ -L "$target" ]; then
     rm -f "$target" 2>/dev/null || sudo rm -f "$target"
   fi
-  # 插件根目录 root:root，普通用户建不了，借一次 sudo
-  sudo -n mkdir -p "$target" 2>/dev/null ||
-    sudo mkdir -p "$target" 2>/dev/null || { dim "建不动 $target"; [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
+  # 插件根目录 root:root，普通用户建不了，借一次 sudo。
+  # 这里不能写 `sudo -n`：-n 表示「绝不询问」，即使 SUDO_ASKPASS 已设好
+  # 也直接失败（实测），无 tty 的安装就卡在这一步（2026-11-13 真机复现）。
+  sudo mkdir -p "$target" 2>/dev/null || { dim "建不动 $target"; [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
   # zip 里没有的旧文件（改名模块）会让 Decky 加载过期代码，先清空
   safe_rm_target "$target" || { dim "拒绝清理插件目录（$target）"; [ -n "$tmpdir" ] && rm -rf "$tmpdir"; return 1; }
   dim "清理旧插件目录（只删本插件自己的目录，不会动别的插件与用户数据）：$target"
@@ -5807,7 +5811,7 @@ if [ "${UN_ABORT:-0}" = 1 ]; then
   printf "\033[33m    卸载日志：%s\033[0m\n" "${UNINSTALL_LOG:-（dry-run 不写）}" >&2
 fi
 if need_cmd steamos-readonly && [ "$(readonly_state)" != "enabled" ]; then
-  sudo -n steamos-readonly enable >/dev/null 2>&1 || \
+  sudo steamos-readonly enable </dev/null >/dev/null 2>&1 || \
     printf "\033[33m[!] 恢复 SteamOS 只读层失败，请手动执行：sudo steamos-readonly enable\033[0m\n" >&2
 fi' EXIT INT TERM
 }
