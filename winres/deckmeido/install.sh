@@ -6466,6 +6466,12 @@ EOF
   echo
   TRASH_COUNT=0
   TRASH_FAILED=0
+  # 卸载有多处要 root（停插件进程、卸系统包、搬 root 目录、重载 Decky）。
+  # 没有终端时（SSH / 自动化）必须在这里先备好 askpass 助手，否则每一步都失败
+  # 报「sudo 被拒绝或权限不足」（2026-11-13 真机卸载复现）。
+  if [ "$DRY_RUN" != 1 ]; then
+    sudo_warmup || dim "拿不到 root 权限：停插件进程、卸系统包、重载 Decky 会跳过"
+  fi
   # 称呼要在第 3 步把 userdata 搬走之前读出来，否则最后告别时人设文件已经不在原位
   BYE_WHO="$(persona_address_name)"
 
