@@ -1666,21 +1666,29 @@ sudo_warmup() {
     sudo -A -v || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
   elif [ -r /dev/stdin ]; then
     # 没有 tty 但 stdin 有内容（< 文件 / echo 密码 | bash install.sh）：
-    # 交给 sudo -S 从 stdin 读一行密码。远程复现安装全靠这条路。
+    # 读一行密码做成 SUDO_ASKPASS 助手，后续 sudo 一律走 -A。
+    # 只做一次 `sudo -S -v` 不够：缓存 5 分钟就过期，续期子进程 `sudo -n`
+    # 续不上，长安装跑到一半就「需要密码」——2026-11-13 真机模拟安装里
+    # tmux / kdotool 就是这么全挂的。
     info "没有终端，从标准输入读取 sudo 密码"
-    if sudo -S -v <&0 2>/dev/null; then
-      :
-    else
-      warn "sudo 授权失败，跳过系统依赖安装"
-      return 1
-    fi
+    local pw ask
+    IFS= read -r pw || true
+    [ -n "$pw" ] || { warn "标准输入没读到密码，跳过系统依赖安装"; return 1; }
+    ask="$(mktemp "${TMPDIR:-/tmp}/deckmeido-askpass.XXXXXX")" || return 1
+    { printf '#!/bin/sh\n'; printf 'printf %%s %s\n' "'$pw'"; } > "$ask"
+    chmod 700 "$ask"
+    export SUDO_ASKPASS="$ask"
+    SUDO_ASKPASS_HELPER="$ask"
+    # 密码落在临时文件里，退出时一定要删（即使安装中途失败）
+    trap '[ -n "${SUDO_ASKPASS_HELPER:-}" ] && rm -f "$SUDO_ASKPASS_HELPER"' EXIT INT TERM
+    sudo -A -v 2>/dev/null || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
   else
     warn "当前没有终端，无法输入密码；系统依赖与 Decky 插件将跳过"
     dim "装完可补：bash $INSTALL_DIR/install.sh check --fix"
     return 1
   fi
   # 安装过程可能超过 sudo 默认的 5 分钟缓存，后台续期，避免中途再次要密码
-  ( while kill -0 "$$" 2>/dev/null; do sudo -n true 2>/dev/null || exit; sleep 50; done ) &
+  ( while kill -0 "$$" 2>/dev/null; do sudo -n true 2>/dev/null || sudo -A -v 2>/dev/null || exit; sleep 50; done ) &
   return 0
 }
 
