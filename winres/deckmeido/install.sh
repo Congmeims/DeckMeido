@@ -779,8 +779,10 @@ card_row() {
     else
       printf '%s│%s %s' "$C_C" "$C_END" "$text"
     fi
-    printf '\033[%dG%s│%s\n' "$((CARD_COL + inner + 3))" "$C_C" "$C_END"
-    CARD_COL=$((CARD_COL + inner + 3))
+    # 右框线的绝对列号：左框 1 列 + 空格 1 列 + 内宽，再 +1（列号从 1 起）。
+    # 不靠 CARD_COL 累加——那张卡画完后它就不该再被后面的卡继承，
+    # 否则第二张卡的框线会整条右移。
+    printf '\033[%dG%s│%s\n' "$((inner + 3))" "$C_C" "$C_END"
     return 0
   fi
   local pad
@@ -854,9 +856,11 @@ card_end() {
   if card_fits; then
     local inner n
     inner=$(card_inner); n=$((inner + 1))
-    # 底框和顶框一样，按上面记下的左边距对齐（真终端里 CARD_COL 恒为 0）
+    # 底框必须从第 1 列开始画，和 card() 的顶框对齐。
+    # 以前这里用 CARD_COL 定位，可 card_row 每行都会把 CARD_COL 往上累加，
+    # 底框就整条往右漂，越到后面越歪，看起来像「盖不住」。
     if [ "$OUT_IS_TTY" = 1 ]; then
-      printf '\033[%dG%s└%s┘%s\n' "$((CARD_COL + 1))" "$C_C" \
+      printf '\r\033[K%s└%s┘%s\n' "$C_C" \
         "$(printf '─%.0s' $(seq 1 "$n"))" "$C_END"
     else
       printf '%s└%s┘%s\n' "$C_C" "$(printf '─%.0s' $(seq 1 "$n"))" "$C_END"
@@ -2105,27 +2109,66 @@ PIP_INDEXES=(
 )
 
 # 探最快 pip 源，返回索引；全不通返回 -1。不用 ping：ICMP 只证明能到，
-# 与 HTTPS 下载速率无关且多数源禁 ICMP。直接拉同一段真实文件实测速率。
-PROBE_BYTES=65536      # 每源取 64KB，够分辨快慢又不费流量
-PROBE_MAX=4            # 单个源最多等 4 秒
+# 与 HTTPS 下载速率无关且多数源禁 ICMP。
+#
+# 采样对象必须是「真实的大文件」，不能是 /simple/ 索引首页：
+# 首页是几百 KB 的 HTML，国内的 CDN 节点几十毫秒就吐完，算出来的
+# speed_download 只反映首包延迟；官方 PyPI 的索引页既大又要过代理握手，
+# 在这套算法下必然垫底——于是「有代理也永远选国内源」。实测时国内镜像
+# 拉大 wheel 常年只有几百 KB/s、还会卡住换节点，而官方走代理反而能上
+# 几 MB/s。下面直接对每个源拉同一个 wheel 的前 1MB 来比。
+PROBE_BYTES=1048576    # 每源取 1MB：够压出真实吞吐，又不至于太费流量
+PROBE_MAX=8            # 单个源最多等 8 秒（代理链路首包慢，4 秒容易误判成连不上）
+# 采样文件：任一镜像与官方都有的 wheel（项目名 / 文件名）。轮询几个候选，
+# 第一个能下的就用它，保证四个源比的是同一份文件；否则体积、压缩率不同，
+# 比出来的值没有可比性。
+PROBE_FILES=(
+  "packaging|packaging-24.2-py3-none-any.whl"
+  "urllib3|urllib3-2.2.3-py3-none-any.whl"
+)
+
+# 从索引页里抠出某个文件的真实 URL（镜像页里是 ../../packages/xx/yy/<file> 相对链）
+# $1=索引根  $2=项目名  $3=文件名；取不到返回空
+probe_file_url() {
+  local index="${1%/}" proj="$2" file="$3" href
+  href=$(curl -sS -L -m "$PROBE_MAX" "$index/$proj/" 2>/dev/null |
+    grep -o 'href="[^"#]*'"$file"'"' 2>/dev/null | head -n1 |
+    sed -e 's/^href="//' -e 's/"$//') || return 0
+  [ -n "$href" ] || return 0
+  case "$href" in
+    http*) printf '%s' "$href" ;;                       # 绝对地址（官方走 files.pythonhosted）
+    /*)    printf '%s' "${index%%/simple*}${href}" ;;   # 站内绝对路径
+    *)     printf '%s/%s' "${index%%/simple*}/simple" "$href" ;;  # 相对路径
+  esac
+}
 
 # 返回「字节/秒」，失败返回 0
 probe_speed() {
-  local url="$1" out
-  out=$(curl -sS -L -m "$PROBE_MAX" -r 0-$((PROBE_BYTES - 1)) \
-        -o /dev/null -w '%{speed_download} %{size_download}' \
-        "${url%/}/" 2>/dev/null) || return 1
-  local spd size
-  spd=${out%% *}
-  size=${out##* }
-  size=${size%%.*}
-  # 只回了几个字节的说明是错误页，不算数
-  if [ -n "$size" ] && [ "$size" -lt 1024 ] 2>/dev/null; then
-    printf '0'
-    return 0
-  fi
-  spd=${spd%%.*}
-  printf '%s' "${spd:-0}"
+  local index="${1%/}" out spd size rel proj file url code
+  for rel in "${PROBE_FILES[@]}"; do
+    proj=${rel%%|*}
+    file=${rel#*|}
+    url=$(probe_file_url "$index" "$proj" "$file")
+    [ -n "$url" ] || continue
+    # -r 区间请求：只取前 PROBE_BYTES 字节。镜像与官方都会回 206，
+    # 体积一致所以 speed_download 之间可以直接比较
+    out=$(curl -sS -L -m "$PROBE_MAX" -r 0-$((PROBE_BYTES - 1)) \
+          -o /dev/null -w '%{speed_download} %{size_download} %{http_code}' \
+          "$url" 2>/dev/null) || continue
+    code=${out##* }
+    out=${out% *}
+    spd=${out%% *}
+    size=${out##* }
+    size=${size%%.*}
+    # 404/403 或错误页都不算数；至少拿到 256KB 才认为这是真在传文件
+    case "$code" in 200|206) ;; *) continue ;; esac
+    if [ -n "$size" ] && [ "$size" -ge 262144 ] 2>/dev/null; then
+      spd=${spd%%.*}
+      printf '%s' "${spd:-0}"
+      return 0
+    fi
+  done
+  printf '0'
 }
 
 # 容量预估时实测过网速（est_net_rate 调的就是本函数，结果表见 _PIP_SPD）。
@@ -2660,11 +2703,13 @@ venv_install() {
 }
 
 # 模块：系统控件（清单见 DEPS_PACMAN / DEPS_AUR_FALLBACK）
-# $1=1 本次要装；其它只打「跳过」。只负责安装，复查由 stage_verify_all 统一做。
+# $1 非空表示本次要装；空表示用户显式跳过。只负责安装，复查由 stage_verify_all 统一做。
 module_sys() {
-  local want="${1:-0}" miss=()
+  local want="${1:-}" miss=()
   mod_begin "系统控件（pacman / AUR）"
-  if [ "$want" != "1" ]; then
+  # 判「非空」而不是 = "1"：与 stage_detect_all 的判据保持一致。
+  # 两处判据不一致过一次，结果检测说有缺、这里却当作用户跳过，静默漏装。
+  if [ -z "$want" ]; then
     phase_skip "检测" "本次未选择系统控件"
     return 0
   fi
@@ -3899,6 +3944,14 @@ decky_residual_procs() {
   # 全是这样）。只按名字找会漏掉它们 → start 一上来就撞端口 → 重启循环。
   if command -v pgrep >/dev/null 2>&1; then
     cands="$cands $(pgrep -f 'PluginLoader|plugin_loader' 2>/dev/null || true)"
+    # plugin_loader.service 是 KillMode=process：systemctl stop 只杀主进程，
+    # 各插件的 Python 子进程（DeckyClash / Decky Music / Mako / Reroll …）全都
+    # 留在 cgroup 里继续跑。它们既不占 1337、命令行里也没有 PluginLoader 字样，
+    # 以前就被漏判成「停干净了」→ 紧接着 start，新旧两拨抢端口，
+    # systemd 侧 stop 拖到 TimeoutStopSec 超时、整个服务被标 failed
+    # （2026-11-13 卸载实测：Duration 2min44s，Result: timeout）。
+    # 这里按「命令行里带 ~/homebrew/plugins/ 路径」把插件子进程一并算作残留。
+    cands="$cands $(pgrep -f "$HOME/homebrew/plugins/" 2>/dev/null || true)"
   fi
   for pid in $(printf '%s\n' $cands | sort -u); do
     [ "$pid" = "$$" ] && continue
@@ -4052,9 +4105,21 @@ decky_safe_reload() {
       [ "$pid" = "$$" ] && continue
       case " $orph " in *" $pid "*) ;; *) orph="$orph $pid" ;; esac
     done
+    # KillMode=process 下 systemd 只杀主进程，其它插件的子进程（DeckyClash /
+    # Decky Music / Mako / Reroll …）会一直留在 cgroup 里。不主动结束它们，
+    # 就只能干等 systemd 把 stop 判成 timeout（实测 2 分 44 秒，服务标 failed）。
+    if command -v pgrep >/dev/null 2>&1; then
+      for pid in $(pgrep -f "$HOME/homebrew/plugins/" 2>/dev/null || true); do
+        [ "$pid" = "$$" ] && continue
+        case " $orph " in *" $pid "*) ;; *) orph="$orph $pid" ;; esac
+      done
+    fi
     orph="${orph# }"
     if [ -n "$orph" ]; then
-      un_stop_pids "$orph" >/dev/null 2>&1 || true
+      # 探针用 decky_residual_procs 而不是默认的 _deckmeido_pids_all：
+      # 后者只认本程序的进程，插件子进程不在里面，探测会立刻报「已清空」，
+      # 提前 return 0，实际上 TERM 还没生效。这里要等残余真正消失。
+      un_stop_pids "$orph" "decky_residual_procs" >/dev/null 2>&1 || true
     fi
     # 等它真正停干净。上限取服务自己的 TimeoutStopSec（15s），再长也没意义
     tmo="$(systemctl show -p TimeoutStopSec --value "$unit" 2>/dev/null || true)"
@@ -4435,10 +4500,14 @@ print_done() {
 # 七步顺序按依赖排死，不可颠倒；每步只输出结论行，原始输出进
 # userdata/logs/install-<时间>.log。依赖必须早于模型早于复查（试合成/试唤醒）。
 do_install() {
-  local deps="--deps" gui_only=0
+  # deps 就是「要不要装系统控件」，取值只有 1 / 空。
+  # 以前这里是 "--deps" 字样，而 module_sys 判的是 = "1"，导致
+  # [4/8] 检测能检出缺包（只看非空）、[5/8] 却走「本次未选择系统控件」
+  # 跳过、[6/8] 复查又报失败——安装永远过不去。
+  local deps=1 gui_only=0
   for a in "$@"; do
     case "$a" in
-      --deps) deps="--deps" ;;
+      --deps) deps=1 ;;
       --no-deps) deps="" ;;   # 仅调试用：显式不装系统控件
       --gui)  gui_only=1 ;;   # 只补装桌面客户端（PySide6），不动别的
     esac
@@ -4590,10 +4659,11 @@ stop_client() {
 }
 
 do_upgrade() {
-  local deps="--deps" gui_only=0
+  # 同 do_install：1 / 空，不要写 "--deps" 字样
+  local deps=1 gui_only=0
   for a in "$@"; do
     case "$a" in
-      --deps) deps="--deps" ;;
+      --deps) deps=1 ;;
       --no-deps) deps="" ;;
       --gui)  gui_only=1 ;;
     esac
@@ -6297,23 +6367,13 @@ EOF
   un_step "恢复只读层"
   restore_readonly
 
-  # ---------- 8 汇总 ----------
-  un_step "汇总"
-  uninstall_summary 0
-  un_step_close
-  # 实质工作已经全部结束：即使后面的 Decky 重启把当前终端带走，
-  # 也只剩「重启 Decky」这一件可有可无的事没做完。
-  UN_ABORT=0
-  [ "$DRY_RUN" = 0 ] && trap - EXIT INT TERM
-
-  # ---------- 9 重启 Decky（best-effort，必须放最后） ----------
+  # ---------- 8 重启 Decky（best-effort，必须放最后一件「干活」的事） ----------
   # 2026-11-08 实测：此处停在 stop 后、start 前静默退出，汇总未打印、只读层
   # 未恢复。放最后且不中断失败，才能保证「卸载要么全做完，要么只差这一步」。
   un_step "重启 Decky"
   if ! restart_decky; then
     warn "Decky 重启没成功；插件文件已经移走，重启 Deck 后 QAM 入口自然会消失"
   fi
-  un_step_close
   if [ "$DRY_RUN" = 0 ]; then
     # 实测插件目录被移走后，Decky 重启又会建出一个空目录来，这里回读一次
     while IFS= read -r p; do
@@ -6321,6 +6381,17 @@ EOF
       warn "Decky 重启后又被创建：$p（再跑一次卸载即可移走）"
     done < <(uninstall_residue_paths)
   fi
+  un_step_close
+
+  # ---------- 9 汇总（必须在重启 Decky 之后） ----------
+  # 以前汇总排在第 8 步、重启 Decky 排第 9 步：汇总框一打印就写着「卸载完成」，
+  # 紧接着重启 Decky 把终端刷屏/带崩，框被顶出可视区、位置也歪了，用户以为
+  # 重启没做。现在把最后一件实事做完再收尾，框永远在屏幕最下面。
+  un_step "汇总"
+  uninstall_summary 0
+  un_step_close
+  UN_ABORT=0
+  [ "$DRY_RUN" = 0 ] && trap - EXIT INT TERM
   return 0
 }
 
