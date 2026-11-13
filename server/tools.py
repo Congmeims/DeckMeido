@@ -2680,19 +2680,22 @@ def _notify_pad_order(action: str) -> None:
 
 
 class _VirtualPad:
-    """一个懒创建、闲置自动销毁的虚拟手柄。
+    """一个懒创建、用完立刻销毁的虚拟手柄。
 
-    一直挂着设备会让 Steam 认为接了手柄（可能强制切成手柄导航），
-    所以闲置 _IDLE 秒后销毁。
+    设备只要挂在系统里，Steam Input 就会把它当成「接了另一只手柄」：
+    游戏模式下调出虚拟键盘打字时，按键会先进这只假手柄，上屏变成候选词序号。
+    所以这里不做长驻——注入完这一下就销毁，闲置也只是一小段兜底。
     """
 
-    _IDLE = 90.0
+    _IDLE = 3.0
 
     def __init__(self):
         self._fd: int | None = None
         self._lock = asyncio.Lock()
         self._idle: asyncio.Task | None = None
         self._gen = 0
+        # 本次建出来的设备有没有被换到 1P（决定销毁时要不要广播 revert）
+        self._swapped = False
 
     def _emit(self, typ: int, code: int, value: int):
         # input_event 的 timeval 两个字段都是 64 位 long，所以用 qq 不用 ll
@@ -2747,9 +2750,6 @@ class _VirtualPad:
         # AI 操纵游戏时，日志里必须能看出设备是这一刻才建出来的：
         # 新建的设备游戏要重新枚举，紧接着按下去的键往往收不到
         print(f"[DeckMeido] 虚拟手柄已创建（fd {fd}）")
-        # 新插上的手柄在 Steam 里排在物理手柄后面（就是 2P），
-        # 不换到 1P 的话游戏根本不看它的输入
-        _notify_pad_order("to1p")
 
     def _destroy(self):
         if self._fd is None:
@@ -2770,10 +2770,14 @@ class _VirtualPad:
         _PAD_STICK[0] = _PAD_STICK[1] = 0
         _PAD_STICK_R[0] = _PAD_STICK_R[1] = 0
         _PAD_TRIG["lt"] = _PAD_TRIG["rt"] = 0
-        print("[DeckMeido] 虚拟手柄已闲置销毁")
+        print("[DeckMeido] 虚拟手柄已销毁")
         # 虚拟手柄没了，槽位会自动前移，但 Steam 的排序不一定跟着回；
-        # 让前端确认一遍物理手柄仍在 1P，免得下次开机游戏认不到手柄
-        _notify_pad_order("revert")
+        # 让前端确认一遍物理手柄仍在 1P，免得下次开机游戏认不到手柄。
+        # 只有真换过 1P 才通知：一次按键建了又删，每次都广播会让 Steam
+        # 的控制器列表反复抖动，虚拟键盘的按键也跟着错位
+        if self._swapped:
+            self._swapped = False
+            _notify_pad_order("revert")
 
     def _touch(self):
         if self._idle is not None:
@@ -2814,6 +2818,7 @@ class _VirtualPad:
         # 设备刚出现时 Steam 才把它枚举进去，换序要再等一会儿才有东西可换
         # （前端那边也有重试，这里只是别让它第一次必然扑空）
         await asyncio.sleep(0.3)
+        self._swapped = True
         _notify_pad_order("to1p")
 
     async def key(self, name: str, hold_ms: int = 80) -> str:
@@ -2834,7 +2839,9 @@ class _VirtualPad:
             except PermissionError:
                 print("[DeckMeido] 手柄注入失败：没权限写 /dev/uinput", file=sys.stderr)
                 return "手柄注入失败：没有写 /dev/uinput 的权限（需要 root）"
-            self._touch()
+            # 按键是「按一下就好」的：注入完立刻把设备摘掉，
+            # 别让它留在系统里抢虚拟键盘的输入
+            self._destroy()
         hold = max(30, min(hold_ms, 5000))
         print(f"[DeckMeido] 手柄按键 {name}（{hold}ms）")
         return f"已按下手柄键 {name}（{hold}ms）"
@@ -2858,7 +2865,11 @@ class _VirtualPad:
                 return "摇杆注入失败：没有写 /dev/uinput 的权限（需要 root）"
             state = _PAD_STICK_R if right else _PAD_STICK
             state[0], state[1] = vx, vy
-            self._touch()
+            # 回中 = 这一轮操作结束，设备没必要再留着抢键盘
+            if vx == 0 and vy == 0:
+                self._destroy()
+            else:
+                self._touch()
         print(f"[DeckMeido] 手柄{'右' if right else '左'}摇杆 ({x:.2f}, {y:.2f})")
         return f"{'右' if right else '左'}摇杆已推到 ({x:.2f}, {y:.2f})"
 
@@ -2880,7 +2891,11 @@ class _VirtualPad:
                 print("[DeckMeido] 扳机注入失败：没权限写 /dev/uinput", file=sys.stderr)
                 return "扳机注入失败：没有写 /dev/uinput 的权限（需要 root）"
             _PAD_TRIG[name] = level
-            self._touch()
+            # 松开 = 这一轮操作结束，设备没必要再留着抢键盘
+            if level == 0:
+                self._destroy()
+            else:
+                self._touch()
         print(f"[DeckMeido] 手柄{name.upper()} 扳机 {value:.2f}")
         return f"{name.upper()} 扳机力度 {value:.2f}"
 

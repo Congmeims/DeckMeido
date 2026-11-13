@@ -2534,7 +2534,8 @@
     free.placeholder = '或者，直接说说你想怎么办…';
     free.autocomplete = 'off';
     free.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' && !e.isComposing) {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Enter') {
         e.preventDefault();
         answer(free.value);
       }
@@ -3186,6 +3187,8 @@
     if (e.target === rbEl('fbViewer')) fbDismiss();
   });
   document.addEventListener('keydown', function (e) {
+    // Steam 虚拟键盘（手柄 X 键）用 IME 上屏候选词时，按 Enter 会同时走这里
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Escape' && rbEl('fbViewer').classList.contains('show')) fbDismiss();
   });
   rbEl('fvRef').addEventListener('click', function () {
@@ -5724,6 +5727,7 @@
 
   rbEl('termRun').addEventListener('click', termRunCmd);
   rbEl('termCmd').addEventListener('keydown', function (e) {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') { e.preventDefault(); termRunCmd(); }
   });
 
@@ -9768,6 +9772,8 @@
       saveBtn.hidden = !dirty;
     });
     input.addEventListener('keydown', function (e) {
+      // 输入法选词时的 Enter 属于上屏，不能拿来保存/提交
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Enter') { input.blur(); saveBtn.click(); }
       if (e.key === 'Escape') { input.value = it.text; input.blur(); input.dispatchEvent(new Event('input')); }
     });
@@ -9819,7 +9825,11 @@
   }
 
   document.getElementById('memAdd').addEventListener('click', addMemory);
-  memText.addEventListener('keydown', function (e) { if (e.key === 'Enter') addMemory(); });
+  memText.addEventListener('keydown', function (e) {
+    // 输入法选词时的 Enter 是上屏，不是提交
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') addMemory();
+  });
   document.getElementById('memClear').addEventListener('click', function () {
     if (!Number(memCount.dataset.n)) return;
     if (!confirm('确定清空全部长期记忆？清空后之前的教学就都没了。')) return;
@@ -10074,6 +10084,8 @@
 
   settingsSearch.addEventListener('input', applySettingsSearch);
   settingsSearch.addEventListener('keydown', function (e) {
+    // 输入法选词时的 Enter/Escape 属于上屏，不能拿来跳转或清词
+    if (e.isComposing || e.keyCode === 229) return;
     // 只清搜索词，不把整个设置页关掉
     if (e.key === 'Escape' && settingsSearch.value) {
       e.stopPropagation();
@@ -10700,6 +10712,7 @@
     if (opts.addBtn) opts.addBtn.addEventListener('click', add);
     if (opts.input) {
       opts.input.addEventListener('keydown', function (e) {
+        if (e.isComposing || e.keyCode === 229) return;
         if (e.key === 'Enter') { e.preventDefault(); add(); }
       });
       opts.input.addEventListener('input', function () {
