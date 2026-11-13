@@ -73,6 +73,9 @@ server/static/_logo_prev.png
 .apk_extract/
 ouo-face.html
 
+# 本地归档资料（用户自己的表格、草稿，不入库）
+归档/
+
 # 一次性调试样本、本地工具缓存、TTS 试听样音
 .samples/
 .workbuddy/
