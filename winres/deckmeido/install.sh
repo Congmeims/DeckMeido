@@ -1575,8 +1575,11 @@ optional_downloads() {
     dim "系统控件依赖：DECKMEIDO_NO_DEPS=1，显式跳过"
     export DECKMEIDO_INSTALL_DEPS=0
   else
-    local deps_present=""
-    need_cmd ydotool && need_cmd wtype && deps_present="ydotool/wtype 已在 PATH"
+    local deps_present="" _dmiss=()
+    # 必须按完整清单判，不能只看 ydotool/wtype：这两个在、tmux 缺时这里会
+    # 误报「已存在」，用户以为全好了（2026-11-13 真机模拟安装踩到）。
+    dep_scan_missing _dmiss
+    [ ${#_dmiss[@]} -eq 0 ] && deps_present="系统控件全部就位"
     opt_download "系统控件依赖" "模拟点击/输入、截图等系统能力，需 sudo 走 pacman/AUR" \
       "$(mb_text "$(dep_mb sys)")" "$deps_present" || true
     export DECKMEIDO_INSTALL_DEPS=1
@@ -1661,6 +1664,16 @@ sudo_warmup() {
     # 没有终端但有 askpass（SSH 远程装、自动化）：sudo 从 SUDO_ASKPASS 取密码
     info "没有终端，改用 SUDO_ASKPASS 获取 root 权限"
     sudo -A -v || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
+  elif [ -r /dev/stdin ]; then
+    # 没有 tty 但 stdin 有内容（< 文件 / echo 密码 | bash install.sh）：
+    # 交给 sudo -S 从 stdin 读一行密码。远程复现安装全靠这条路。
+    info "没有终端，从标准输入读取 sudo 密码"
+    if sudo -S -v <&0 2>/dev/null; then
+      :
+    else
+      warn "sudo 授权失败，跳过系统依赖安装"
+      return 1
+    fi
   else
     warn "当前没有终端，无法输入密码；系统依赖与 Decky 插件将跳过"
     dim "装完可补：bash $INSTALL_DIR/install.sh check --fix"
