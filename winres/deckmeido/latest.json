@@ -1,10 +1,10 @@
 {
   "tag": "0.8.19",
   "name": "DeckMeido 0.8.19",
-  "notes": "# DeckMeido 0.8.19\n\n- fix(installer): 无终端时用 askpass 维持 sudo 凭据\n- chore(release): 0.8.19\n- fix(installer): 修无终端安装拿不到 sudo、检测漏判、自带包缺失\n- chore(release): 0.8.19\n- fix(installer): 修卸载守卫误拦，自带包缺失话术分开\n- chore(release): 0.8.19\n- fix(installer): SteamOS 自带包缺失时才补装，不再计入缺失\n- chore(release): 0.8.19\n- fix(installer): 按 SteamOS 出厂归属裁剪内置包\n- chore(release): 0.8.18\n- feat(installer): 内置 8 个系统包到 vendor/，系统控件这步可离线完成\n- chore(release): 0.8.17\n- fix(installer): 代理结论挪到真正下载前再报，不再顶在首屏\n- chore(release): 0.8.16\n- fix(installer): 卸载汇总移到 Decky 重启之后，修卡片框线漂移与 Decky 停止超时\n- chore(release): 0.8.15\n- 把这些包当成安装器带来的：安装时主动装、卸载时按清单收走\n- chore(release): 0.8.13\n- chore(release): 0.8.13\n- 修复代理探测把 clash 的 502 当成「没有代理」\n",
-  "published_at": "2026-11-13T22:10:22+08:00",
+  "notes": "# DeckMeido 0.8.19\n\n- fix(installer): 无终端时不再向 /dev/tty 刷错误\n- chore(release): 0.8.19\n- fix(installer): 无终端时用 askpass 维持 sudo 凭据\n- chore(release): 0.8.19\n- fix(installer): 修无终端安装拿不到 sudo、检测漏判、自带包缺失\n- chore(release): 0.8.19\n- fix(installer): 修卸载守卫误拦，自带包缺失话术分开\n- chore(release): 0.8.19\n- fix(installer): SteamOS 自带包缺失时才补装，不再计入缺失\n- chore(release): 0.8.19\n- fix(installer): 按 SteamOS 出厂归属裁剪内置包\n- chore(release): 0.8.18\n- feat(installer): 内置 8 个系统包到 vendor/，系统控件这步可离线完成\n- chore(release): 0.8.17\n- fix(installer): 代理结论挪到真正下载前再报，不再顶在首屏\n- chore(release): 0.8.16\n- fix(installer): 卸载汇总移到 Decky 重启之后，修卡片框线漂移与 Decky 停止超时\n- chore(release): 0.8.15\n- 把这些包当成安装器带来的：安装时主动装、卸载时按清单收走\n- chore(release): 0.8.13\n",
+  "published_at": "2026-11-13T22:17:28+08:00",
   "files": {
     "tarball": "deckmeido-0.8.19.tar.gz",
-    "sha256": "3d07a25739d9883e04142a00ef367fc7ef5667c11ead84983008e0098eb1eec1"
+    "sha256": "0bb1e4f79a8b69a800eb573c14a2df3e5749d5595b5ed973c0ff2effe616bdd4"
   }
 }
