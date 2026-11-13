@@ -349,9 +349,10 @@ def commit_and_push(ver: str, push: bool = True) -> None:
     装机日志里的 COMMIT 也对不上。推送失败直接退出，让问题当场暴露。
     """
     print("==> 提交出包产物")
-    # 只加产物目录与版本文件，不用 add -A：出包时工作区里可能还有别的手改
+    # 只加产物目录与版本文件，不用 add -A：出包时工作区里可能还有别的手改。
+    # dist/ 在 .gitignore 里，真正入库的产物是 winres/deckmeido（只留当前版本）
     paths = ["winres/deckmeido", "plugin/package.json",
-             "plugin/package-lock.json", "dist"]
+             "plugin/package-lock.json", "deploy/deckmeido-plugin.zip"]
     git("add", "-A", *paths)
     staged = git("diff", "--cached", "--name-only").stdout.strip()
     if not staged:
