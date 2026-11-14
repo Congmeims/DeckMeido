@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -286,6 +286,9 @@
                  的「使用中 / 删除」对齐（行内右内边距 10px） -->
             <div class="api-foot">
               <div id="apiProfileHint" class="field-hint">同一时间只有一条生效；切换后立即使用新的那组。</div>
+              <!-- 就地保存：以前这里只有页面最底部一个「保存」，在「模型接入」里
+                   填完 Key 的人常常找不到该点哪里，以为保存不了 -->
+              <button id="apiProfileSave" class="mini-btn primary" type="button">保存接口</button>
               <button id="apiProfileAdd" class="mini-btn" type="button">新增一组</button>
             </div>
           </div>
@@ -590,6 +593,9 @@
                 <option value="off">关闭：只监听 127.0.0.1（仅本机）</option>
                 <option value="on">开启：监听 0.0.0.0（局域网可访问）</option>
               </select>
+              <div class="field-hint">
+                开启后仍然监听下面这个服务端口（默认 18765）。用 0.0.0.0 访问时改填掌机的局域网 IP，地址见下一栏。
+              </div>
               <div id="lanWarn" class="field-hint"></div>
             </div>
             <div class="set-grid">
@@ -1374,6 +1380,10 @@
 
   // 设备配对登录：Cookie 已经生效时即可连接（回环访问由后端直接放行）
   var deviceSession = false;
+  // 本机判定：首页由后端按请求来源注入 data-home="1"。掌机自己打开的页面
+  // 永远不该走配对，哪怕某一刻 authenticated 暂时是 false（后端刚重启、
+  // 还没拿到 /api/auth/session 的回包，或者代理把来源改写了），也不弹配对页。
+  var isHomePage = document.body.dataset.home === '1';
 
   var ws = null;
   var typingEl = null;
@@ -5357,7 +5367,7 @@
 
   // 终止当前这条：后端砍进程树 + 取消正在等它的对话轮次
   function termStopCmd(it, btn) {
-    if (!deviceSession) return;
+    if (!deviceSession && !isHomePage) return;
     if (btn) btn.disabled = true;
     // 手动命令（it.xt）：走 WS stop 帧；AI 命令：走 /api/terminal/stop
     if (it.xt) {
@@ -5609,7 +5619,7 @@
   }
 
   function termPoll() {
-    if (!deviceSession) return;
+    if (!deviceSession && !isHomePage) return;
     // 只在真有命令在跑时才轮询；页面在后台时跳过（回来时下一次 tick 会补上）
     if (document.hidden) return;
     fetch('/api/terminal')
@@ -5733,7 +5743,7 @@
 
   function connect() {
     // 已配对设备靠 HttpOnly Cookie 认证；本机回环访问后端直接放行
-    if (!deviceSession) { showAuth(''); return; }
+    if (!deviceSession && !isHomePage) { showAuth(''); return; }
     // 防重入：已有连接正在建/已建立时不要再开一条，
     // 否则两条 ws 同时收消息、onclose 互相打架，重连风暴会打乱忙碌态
     if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
@@ -6303,11 +6313,15 @@
       // 只清内存不动 localStorage：后端真被杀时，盘上那份缓存才是补回的依据
       turnCache.segs = []; turnCache.cur = '';
       if (ev.code === 4401) {
-        // 设备凭据被拒：清掉本地状态并停在鉴权页，不要继续重连
-        deviceSession = false;
-        clearTimeout(reconnectTimer);
-        showAuth('登录已失效，请重新配对');
-        return;
+        // 设备凭据被拒：清掉本地状态并停在鉴权页，不要继续重连。
+        // 本机页面例外：它的来源就是掌机自己，4401 只可能是后端刚重启、
+        // 配置还没读完这类瞬时状态，照常按退避重连即可。
+        if (!isHomePage) {
+          deviceSession = false;
+          clearTimeout(reconnectTimer);
+          showAuth('登录已失效，请重新配对');
+          return;
+        }
       }
       reconnectTimer = setTimeout(function () { reconnectTimer = null; connect(); }, backoff);
       backoff = Math.min(backoff * 2, 10000);
@@ -6528,6 +6542,15 @@
   }
 
   function showAuth(err) {
+    // 掌机自己打开的页面永远不弹配对：服务端已把本机来源当成已授权。
+    // 这里要在 setConnected 之前返回 —— 否则任何一条「顺路」调用它的路径
+    // （例如某个接口回 401、WS 回 4401）都会把状态灯按成红的、把发送键禁掉，
+    // 主人在掌机上看到的就成了「明明在用，却显示掉线」。
+    if (isHomePage) {
+      authOverlay.classList.remove('show');
+      authErr.textContent = '';
+      return;
+    }
     setConnected(false);
     authErr.textContent = err || '';
     authOverlay.classList.add('show');
@@ -6564,6 +6587,13 @@
           return;
         }
         // 真的未配对（局域网新设备）：这才进入配对页
+        if (isHomePage) {
+          // 掌机本机页面：后端按来源判过 local=true，即便这一拍回的是 false
+          // （例如刚重启、配置还没读完），也不弹配对页，直接建连由后端再判
+          authOverlay.classList.remove('show');
+          if (!bootedSession) { bootedSession = true; connect(); }
+          return;
+        }
         showAuth('');
       })
       .catch(function () {
@@ -8287,6 +8317,7 @@
   var apiProfileList = document.getElementById('apiProfileList');
   var apiProfileHint = document.getElementById('apiProfileHint');
   var apiProfileAdd = document.getElementById('apiProfileAdd');
+  var apiProfileSave = document.getElementById('apiProfileSave');
   var apiProfilesState = { profiles: [], current: '' };
   // 设置页还没成功拉到配置时不允许整表提交，避免网络闪断把已有 Key 冲掉
   var apiProfilesLoaded = false;
@@ -8670,7 +8701,6 @@
   var qqLogsBody = document.getElementById('qqLogsBody');
   var qqLogsRefresh = document.getElementById('qqLogsRefresh');
   var qqTokenReveal = document.getElementById('qqTokenReveal');
-  var qqSaveBtn = document.getElementById('qqSave');
   var qqReconnectBtn = document.getElementById('qqReconnect');
   var qqStatusInfo = document.getElementById('qqStatusInfo');
   var qqPrefixHint = document.getElementById('qqPrefixHint');
@@ -9113,7 +9143,7 @@
     var items = apiProfilesState.profiles;
     apiProfileList.innerHTML = '';
     if (!items.length) {
-      apiProfileList.innerHTML = '<div class="api-empty">未配置接口。点下面「新增一组」，填好地址和 Key 再保存。</div>';
+      apiProfileList.innerHTML = '<div class="api-empty">未配置接口。点下面「新增一组」，填好地址和 Key 再点「保存接口」。</div>';
       apiProfileHint.textContent = '未配置时无法对话；至少添加一组地址与 Key。';
       return;
     }
@@ -9171,7 +9201,7 @@
         row.querySelector('.api-current').classList.add('on');
         apiProfilesState.current = p.id;
         if (p.temp) {
-          apiProfileHint.textContent = '这条还没保存，点「保存」后才会成为当前使用';
+          apiProfileHint.textContent = '这条还没保存，点「保存接口」后才会成为当前使用';
           return;
         }
         switchApiProfile(p.id, p.name);
@@ -9179,7 +9209,7 @@
       row.querySelector('.api-remove').addEventListener('click', function () {
         var at = apiProfilesState.profiles.indexOf(p);
         if (at < 0) return;
-        if (!confirm('删除接口配置「' + (p.name || '未命名') + '」？点「保存」后生效，历史用量统计不会删除。')) return;
+        if (!confirm('删除接口配置「' + (p.name || '未命名') + '」？点「保存接口」后生效，历史用量统计不会删除。')) return;
         apiProfilesState.profiles.splice(at, 1);
         if (apiProfilesState.current === p.id) {
           apiProfilesState.current = apiProfilesState.profiles.length
@@ -9187,7 +9217,7 @@
         }
         paintApiProfiles();
         syncUsageApiOptions(apiProfilesState.profiles, apiProfilesState.current);
-        apiProfileHint.textContent = '已删除，点「保存」生效（当前使用会自动回退到剩余第一条）';
+        apiProfileHint.textContent = '已删除，点「保存接口」生效（当前使用会自动回退到剩余第一条）';
       });
       apiProfileList.appendChild(row);
     });
@@ -9249,8 +9279,12 @@
     if (wasEmpty) apiProfilesState.current = apiProfilesState.profiles[0].id;
     paintApiProfiles();
     syncUsageApiOptions(apiProfilesState.profiles, apiProfilesState.current);
-    apiProfileHint.textContent = '填好后点页面底部「保存」；新增的这条保存后才能切换为当前使用';
+    apiProfileHint.textContent = '填好地址和 Key 后点右边「保存接口」（或页面底部的「保存」）；新增的这条保存后才能切换为当前使用';
   });
+
+  // 就地保存：跟底部「保存」走同一条路径（含权限档位确认），
+  // 省掉「填完 Key 还要翻到页面最底部找按钮」这一步
+  apiProfileSave.addEventListener('click', cfgPermGateThenSave);
 
   // ---------- 用量与余额（设置 → 模型接入） ----------
   // 后端 /api/usage 只读本地聚合（userdata/usage/*.json），/api/usage/balance
@@ -9664,7 +9698,11 @@
         updSourceHint.textContent = c.update_mirror ? '镜像地址：' + c.update_mirror : '';
         // 没配 Key 时直接把设置页顶到最显眼的位置当首次引导
         if (!c.llm_configured) {
-          cfgHint.textContent = '首次使用：填好上面的 API 地址和 Key，保存后就能开始对话';
+          cfgHint.textContent = '首次使用：填好上面的 API 地址和 Key，点「保存接口」后就能开始对话';
+          apiProfileHint.style.color = '';
+          apiProfileHint.textContent = c.api_profiles && c.api_profiles.length
+            ? '还没有可用的 Key：展开那一组，填好 API Key 后点「保存接口」'
+            : '还没有配置接口：点「新增一组」，填好地址和 Key 后点「保存接口」';
         }
       })
       .catch(function (e) {
@@ -10238,7 +10276,7 @@
     permCustom.hidden = (cfgPerm.value !== 'custom');
   });
 
-  saveCfg.addEventListener('click', function () {
+  function cfgPermGateThenSave() {
     // 从非 full 切到 full 时先过风险确认，没同意就不提交这次保存
     if (cfgPerm.value === 'full' && cfgPerm.dataset.prev !== 'full') {
       confirmFullAccess().then(function (ok) {
@@ -10256,19 +10294,92 @@
     }
     cfgPerm.dataset.prev = cfgPerm.value;
     doSaveCfg();
-  });
+  }
+
+  saveCfg.addEventListener('click', cfgPermGateThenSave);
+
+  // 保存前把表单校验一遍，返回第一条错误文案（'' = 通过）。
+  // 以前端口校验失败只写进「局域网访问」面板里的 #portHint 就 return：
+  // 用户在「模型接入」里点保存，只会看到底部提示从「保存中…」变回空白，
+  // 实际一个请求都没发出去（局域网日志里看不到 POST /api/config 就是这么来的）。
+  function validateCfgForm() {
+    var portRaw = String(cfgPort.value || '').trim();
+    var port = parseInt(portRaw, 10);
+    // 端口没读到（配置加载失败 / 输入框被清空）时不能拦住整次保存：
+    // 服务端口和接口 Key 是两件事，Key 该存还得存。只有用户真填了非法值
+    // 才报错并指向「局域网接入」；空值按「不改端口」处理（返回 0）
+    if (portRaw && !(port >= 1024 && port <= 65535)) {
+      return '服务端口需为 1024-65535 之间的整数（见「局域网接入」）';
+    }
+    if (!(port >= 1024 && port <= 65535)) port = 0;
+    if (apiProfilesLoaded) {
+      var rows = collectApiProfiles();
+      for (var i = 0; i < rows.length; i++) {
+        var label = rows[i].name || ('第 ' + (i + 1) + ' 组');
+        if (!rows[i].base_url) {
+          return label + ' 还缺接口地址（base_url），例如 https://api.deepseek.com';
+        }
+        if (!/^https?:\/\/[^\s/]+/i.test(rows[i].base_url)) {
+          return label + ' 的接口地址要以 http:// 或 https:// 开头';
+        }
+        // 打码串是回显的旧 Key（只用于对照），不算「用户填了新 Key」
+        var typed = rowTypedKey(i);
+        if (typed && typed !== rows[i].api_key) {
+          if (/\s/.test(typed)) return label + ' 的 API Key 里不能有空格或换行';
+          if (typed.length < 8) return label + ' 的 API Key 太短，请检查是否复制完整';
+          if (/[…]|\.\.\./.test(typed)) return label + ' 的 API Key 里含有省略号，请重新粘贴完整的 Key';
+        }
+      }
+    }
+    return '';
+  }
+
+  // 第 i 行输入框里「用户自己敲进去」的 Key；留空或与回显的打码串相同都视为没改
+  function rowTypedKey(i) {
+    var rows = apiProfileList.querySelectorAll('.api-profile');
+    var el = rows[i] && rows[i].querySelector('.api-key');
+    var val = el ? String(el.value || '').trim() : '';
+    var shown = (apiProfilesState.profiles[i] || {}).masked || '';
+    if (!val || (shown && val === shown)) return '';
+    return val;
+  }
+
+  // 保存失败的统一出口：底部提示 + 「模型接入」里的就地提示都要说话，
+  // 校验没过时再把按钮所在的设置分区切到出错的那一页
+  function cfgSaveFail(msg, pane) {
+    cfgHint.textContent = msg;
+    apiProfileHint.style.color = '#e06c75';
+    if (pane === 'model') {
+      apiProfileHint.textContent = msg;
+    } else {
+      // 不是模型配置的问题（端口等）：别让「模型接入」停在「保存中…」
+      apiProfileHint.style.color = '';
+      apiProfileHint.textContent = '本次没有保存：' + msg;
+    }
+    if (pane) showSetPane(pane);
+  }
 
   function doSaveCfg() {
+    var err = validateCfgForm();
+    if (err) {
+      // 两条线索都要给：底栏那句马上能看见，出错的分区也自动切过去；
+      // 端口在「外部接管」分区（data-pane="external"）里，同时写进 #portHint
+      var isPort = /端口/.test(err);
+      cfgSaveFail(err, isPort ? 'external' : 'model');
+      if (isPort) {
+        portHint.style.color = '#e06c75';
+        portHint.textContent = err;
+        cfgPort.focus();
+      }
+      return;
+    }
     cfgHint.textContent = '保存中…';
+    apiProfileHint.style.color = 'var(--muted)';
+    apiProfileHint.textContent = '保存中…';
     // 只有输入框里真有内容才提交 api_key：留空表示「保持原样」。
     // 旧逻辑无条件回传输入框的值，而新设备打开设置页时输入框是空的，
     // 于是任何一次保存（哪怕只改了端口）都会把 Key 抹掉。
-    var port = parseInt(cfgPort.value, 10);
-    if (!(port >= 1024 && port <= 65535)) {
-      portHint.textContent = '端口需为 1024-65535 之间的整数';
-      portHint.style.color = '#e06c75';
-      return;
-    }
+    var port = parseInt(String(cfgPort.value || '').trim(), 10) || 0;
     var payload = {
       // 整表提交：新增/改名/删除/切换都在这里；每行的 Key 留空或打码 = 保持原值
       api_profiles: apiProfilesLoaded ? collectApiProfiles() : null,
@@ -10311,7 +10422,7 @@
       remote_input_max_minutes: parseInt(cfgRiMax.value, 10) || 30,
       // 局域网开关与端口：写入 [server]，绑定地址/端口需重启后端生效
       lan_enable: cfgLanEnable.value === 'on',
-      port: port,
+      port: port || undefined,
       // 开发者模式：写入 [runtime]，保存即生效（日志级别与细节记录不用重启）
       dev_mode: cfgDevMode ? (cfgDevMode.value === 'on') : false,
       // 离线模式：写入 [runtime]，保存即生效；所有出网入口下一次调用就快速失败
@@ -10366,7 +10477,17 @@
         cfgHint.textContent = res.llm_configured
           ? ('已保存，正在拉取模型列表…' + restartNote)
           : ('已保存（API Key 为空，对话暂不可用）' + restartNote);
+        // 「模型接入」里的就地提示跟着走：在这个面板点保存的人不用回头看页面底部
+        apiProfileHint.style.color = '';
+        if (!res.llm_configured) apiProfileHint.textContent = '已保存，但还没有可用的 Key —— 填好地址和 Key 再保存一次';
         if (res.restart_required) {
+          // 回填后端认定的端口：输入框被清空过、或只改了局域网开关时，
+          // 这里把真实值放回去，不会留下一个空白的「服务端口」
+          if (res.port) {
+            cfgPort.value = res.port;
+            lanUrl.value = 'http://' + (String(lanUrl.value || '')
+              .replace(/^https?:\/\//, '').split(':')[0] || '127.0.0.1') + ':' + res.port;
+          }
           portHint.style.color = '#e0a33a';
           portHint.textContent = '已保存，需重启后端生效';
         }
@@ -10377,6 +10498,10 @@
         }
         return reloadModels().then(function (list) {
           cfgHint.textContent = list.length ? ('已保存并生效，共 ' + list.length + ' 个模型') : '已保存，但没拉到模型列表';
+          if (res.api_profiles) {
+            apiProfileHint.textContent = '已保存并生效，当前使用：' + currentApiName()
+              + (list.length ? '（共 ' + list.length + ' 个模型）' : '（没拉到模型列表）');
+          }
           loadToolbar();  // 刷新右上角当前模型显示
         });
       })
@@ -10385,7 +10510,18 @@
         // 这不是给主人看的文案。服务端回的错（上面 throw 的）才有 message 可言
         var msg = (err && err.message) || '';
         var offline = /Failed to fetch|NetworkError|Load failed/i.test(msg);
-        cfgHint.textContent = offline ? '连不上服务，请稍等几秒重试' : (msg || '保存失败');
+        var text = offline ? '连不上服务，请稍等几秒重试' : (msg || '保存失败');
+        // 401 = 设备 Cookie 过期 / 没配对：只说「失败」用户无法自救，直接引导重新配对
+        if (/401|未配对|重新配对/.test(msg)) {
+          text = '保存失败：这台设备还没配对或配对已失效，请重新配对后再保存';
+          apiProfileHint.textContent = text;
+          cfgHint.textContent = text;
+          showAuth(text);
+          return;
+        }
+        cfgHint.textContent = text;
+        apiProfileHint.style.color = '#e06c75';
+        apiProfileHint.textContent = text;
       });
   }
 
@@ -11290,7 +11426,7 @@
     });
   }
 
-  qqSaveBtn.addEventListener('click', function () { void submitQq(false); });
+  // 「重新连接」按当前已保存的配置重连（不碰设置页里未保存的其它项）
   qqReconnectBtn.addEventListener('click', function () { void submitQq(true); });
 
   // QQ 会话头部面板：打开时现拉一次状态与语音开关（不碰设置页未保存的其它项）
@@ -11945,7 +12081,7 @@
   }
 
   function loadRemoteStatus() {
-    if (!deviceSession) return;
+    if (!deviceSession && !isHomePage) return;
     fetch('/api/remote-input/status')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (st) {
@@ -11964,7 +12100,7 @@
   }
 
   function riPostRelease() {
-    if (!deviceSession) return;
+    if (!deviceSession && !isHomePage) return;
     fetch('/api/remote-input/release', {
       method: 'POST'
     }).catch(function () { /* 释放失败也无所谓：WS 断开后服务端还会兜底 */ });
@@ -13052,7 +13188,7 @@
     document.getElementById('ctxVal').textContent = text;
   }
   function pollSys() {
-    if (!deviceSession) return;
+    if (!deviceSession && !isHomePage) return;
     // 页面在后台时别刷：手机切走/锁屏后每 5 秒一次请求只是白烧电和后端 CPU
     if (document.hidden) return;
     fetch('/api/sysinfo')
@@ -13181,7 +13317,7 @@
     renderMusicBar();
   }
   function pollMusic() {
-    if (!deviceSession) {
+    if (!deviceSession && !isHomePage) {
       musicCard.classList.remove('on');
       return;
     }
@@ -13254,7 +13390,7 @@
   // 已有列表时刷新失败不会走占位文字，单独提示一次即可，避免每次广播都刷屏
   var sessErrNotified = false;
   function loadSessions(retried) {
-    if (!deviceSession) return;
+    if (!deviceSession && !isHomePage) return;
     sessSkeleton('加载中…');
     fetch('/api/sessions')
       .then(function (r) {

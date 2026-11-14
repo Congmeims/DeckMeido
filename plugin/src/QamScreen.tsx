@@ -1282,6 +1282,8 @@ function useQamSession() {
 export default function QamScreen() {
   const s = useQamSession();
   const [tab, setTabState] = useState(lastTab);
+  // 有新配对请求时的待处理数：在非设置页签上顶一句提示，引导去设置页看 PIN
+  const [pairNotice, setPairNotice] = useState(0);
   // 设备改名草稿：按 device_id 保存输入框里的值，保存后才写回后端
   const [renameDrafts, setRenameDrafts] = useState<Record<string, string>>({});
   // 端口草稿与提示：保存后提示需重启，改一处另两处下次读取即生效
@@ -1349,6 +1351,27 @@ export default function QamScreen() {
     const timer = setInterval(() => void s.loadPairInfo(), 2000);
     return () => clearInterval(timer);
   }, [tab]);
+
+  // 有人在浏览器点「配对新设备」时插件会 emit 一次：主人不必先去点「配对」，
+  // 面板直接切到设置页签并拉一次带 PIN 的配对信息，焦点落到「允许」上
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+  useEffect(() => {
+    const onPairRequest = (count?: number) => {
+      // 数量只用来决定红点/提示条；配对列表仍以 loadPairInfo 的结果为准
+      setPairNotice(typeof count === "number" && count > 0 ? count : 1);
+      if (tabRef.current !== 2) setTab(2);
+      void s.loadPairInfo();
+    };
+    addEventListener<[number]>("deckmeido_pair_request", onPairRequest);
+    return () => removeEventListener("deckmeido_pair_request", onPairRequest);
+  }, []);
+  // 待配对列表是准绳：设置页每 2 秒刷它，处理完（列表空了）提示自动消失。
+  // 只在数量变化时写，避免每 2 秒拿新数组触发一次无意义的重渲染
+  const sessionCount = s.pairSessions.length;
+  useEffect(() => {
+    setPairNotice(sessionCount);
+  }, [sessionCount]);
 
   // L1 / R1 翻页：页签事件与大屏共用 tabNav 的同一套按键映射。
   // 原来这里按 6/7 判断（把 6 当 L1），实际 BUMPER_LEFT=5、BUMPER_RIGHT=6，
@@ -1480,7 +1503,10 @@ export default function QamScreen() {
       onCancelActionDescription="返回"
     >
       {padHint("‹", "L1")}
-      {TABS.map((name, i) => (
+      {TABS.map((name, i) => {
+        // 设置页签上的红点：有设备等着配对时，即使停在别的页签也看得见
+        const dot = i === 2 && pairNotice > 0 && tab !== 2;
+        return (
         <Focusable
           key={name}
           autoFocus={i === tab}
@@ -1503,8 +1529,21 @@ export default function QamScreen() {
           }}
         >
           {name}
+          {dot ? (
+            <span
+              style={{
+                width: 5,
+                height: 5,
+                marginLeft: 4,
+                borderRadius: 3,
+                background: PAIR_WARN,
+                flexShrink: 0,
+              }}
+            />
+          ) : null}
         </Focusable>
-      ))}
+        );
+      })}
       {padHint("›", "R1", true)}
     </Focusable>
   );
@@ -1554,6 +1593,29 @@ export default function QamScreen() {
   return shell(
     <>
       {tabRow}
+
+      {/* 有设备等着配对时，停在别的页签也顶一句；点一下就切到设置看 PIN */}
+      {pairNotice > 0 && tab !== 2 ? (
+        <Focusable
+          onActivate={() => setTab(2)}
+          onOKActionDescription="去配对"
+          onCancelActionDescription="返回"
+          style={{
+            flexShrink: 0,
+            width: "100%",
+            boxSizing: "border-box",
+            padding: "5px 8px",
+            borderRadius: 4,
+            fontSize: 11,
+            lineHeight: 1.4,
+            color: "#f3d9a8",
+            background: "rgba(224,163,58,.16)",
+            border: "1px solid rgba(224,163,58,.45)",
+          }}
+        >
+          {pairNotice} 台设备请求配对 · 按 A 看 PIN
+        </Focusable>
+      ) : null}
 
       {/* ================= 询问页 ================= */}
       {tab === 0 && (

@@ -411,7 +411,13 @@ def init(require_auth, client_ip, get_main) -> None:
         if sl:
             updates["sleep"] = sl
         if req.lan_enable is not None:
-            updates.setdefault("server", {})["lan_enable"] = bool(req.lan_enable)
+            server_updates = updates.setdefault("server", {})
+            server_updates["lan_enable"] = bool(req.lan_enable)
+            # 顺手把端口写实：旧配置若没有 [server].port，只写 lan_enable 会留下
+            # 一个「只有开关没有端口」的段，设置页回填端口时就成了空值
+            if "port" not in server_updates:
+                server_updates["port"] = netcfg.valid_port(
+                    (CFG.get("server") or {}).get("port")) or netcfg.DEFAULT_PORT
             audit.record("config", "lan", "ok", ip=client_ip(request),
                          detail="on" if req.lan_enable else "off")
         if req.port is not None:

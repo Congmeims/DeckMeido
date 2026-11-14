@@ -1848,7 +1848,7 @@ def require_auth(request: Request):
     受保护接口统一 401，不存在「页面能进但接口通不了」的中间态。
     """
     ip = _client_ip(request)
-    if netcfg.is_local(ip):
+    if netcfg.is_this_host(ip):
         return
     if _auth_device(request):
         return
@@ -1869,8 +1869,8 @@ def _ws_cookie_auth(ws: WebSocket) -> bool:
 
 
 def _ws_authorized(ws: WebSocket) -> bool:
-    # 回环来源（掌机自带客户端 / 插件 / 本地调试）直接放行；局域网必须已配对
-    if netcfg.is_local(ws.client.host if ws.client else ""):
+    # 掌机自己（含通过本机局域网 IP 访问的启动器 WebView）直接放行
+    if netcfg.is_this_host(ws.client.host if ws.client else ""):
         return True
     return _ws_cookie_auth(ws)
 
@@ -2086,7 +2086,7 @@ async def _lan_guard(request, call_next):
     """
     server_cfg = CFG.get("server", {})
     ip = request.client.host if request.client else ""
-    if not netcfg.lan_enabled(server_cfg) and not netcfg.is_loopback(ip):
+    if not netcfg.lan_enabled(server_cfg) and not netcfg.is_this_host(ip):
         return JSONResponse({"detail": "局域网访问未开启，请在掌机设置里启用"}, status_code=403)
     return await call_next(request)
 
@@ -3125,7 +3125,7 @@ async def ws_input(ws: WebSocket):
     client_ip = ws.client.host if ws.client else ""
     cfg = CFG.get("remote_input") or {}
     # 已配对浏览器走设备 Cookie，本机回环免验证；两者都算已授权
-    authed = _ws_cookie_auth(ws) or netcfg.is_local(client_ip)
+    authed = _ws_cookie_auth(ws) or netcfg.is_this_host(client_ip)
     code = remote_input.access_error(cfg, client_ip, authed)
     if code == remote_input.RI_UNAUTHORIZED:
         await ws.accept()
@@ -3718,7 +3718,7 @@ async def api_auth_session(request: Request):
 
     网页打开时先问一次，已配对就直接进主界面；未配对则弹 PIN 配对。
     """
-    local = netcfg.is_local(_client_ip(request))
+    local = netcfg.is_this_host(_client_ip(request))
     device = None if local else _cookie_device(request)
     authenticated = bool(local or device)
     return {
@@ -3839,6 +3839,17 @@ async def api_pair_confirm(req: PairConfirmRequest, request: Request,
     _set_device_cookie(response, request, token, bool(req.remember))
     return {"ok": True, "device": device, "remember": bool(req.remember),
             "device_days": _device_days()}
+
+
+@app.get("/api/pair/waiting")
+async def api_pair_waiting():
+    """掌机 QAM 用来「主动提醒」的轻量探测：只回待配对数量。
+
+    收不到这台掌机外的任何信息（不带 PIN / IP / UA，也不含设备列表），
+    所以不需要鉴权：QAM 在非设置页签、甚至面板没打开时也能每几秒问一次，
+    发现有新请求再提示主人去设置页看 PIN。
+    """
+    return {"ok": True, "count": len(pairing.manager.pending())}
 
 
 @app.get("/api/pair/pending", dependencies=[Depends(require_auth)])
@@ -4624,7 +4635,7 @@ async def api_stt_transcribe(req: Request):
 
 def _wake_local_only(request: Request) -> None:
     ip = request.client.host if request.client else ""
-    if not netcfg.is_loopback(ip):
+    if not netcfg.is_this_host(ip):
         raise HTTPException(status_code=403, detail="智能音箱模式只允许本机访问")
 
 
@@ -7816,10 +7827,21 @@ async def index_page(request: Request):
     - 其余（PC 浏览器经局域网访问、开发机）→ "pc"，恢复改动前的字体。
     """
     client = request.client.host if request.client else ""
-    runtime = "deck" if SERVING_ON_STEAMOS and netcfg.is_loopback(client) else "pc"
+    # 掌机自己打开页面：标记本机运行，前端据此绝不显示配对页
+    local = netcfg.is_this_host(client)
+    runtime = "deck" if SERVING_ON_STEAMOS and local else "pc"
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     html = html.replace("<html ", f'<html data-runtime="{runtime}" ', 1)
-    return HTMLResponse(html)
+    # <body> 单独成行时后面没有空格，两种写法都要认
+    home = f'data-home="{1 if local else 0}"'
+    if "<body " in html:
+        html = html.replace("<body ", f"<body {home} ", 1)
+    else:
+        html = html.replace("<body>", f"<body {home}>", 1)
+    # no-store：index.html 里带着 data-home / data-runtime 这类按请求注入的标记，
+    # 一旦被 WebView 或中间层缓存，换设备访问就会拿到别人的那份（掌机看到
+    # data-home="0" 又冒出配对页）。首页本来就小，禁止缓存最省心。
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 # 配置路由放在末尾挂载：routes_config 通过 get_main() 回读本模块的运行态，

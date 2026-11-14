@@ -5,6 +5,9 @@
 """
 from __future__ import annotations
 
+import socket
+import time
+
 DEFAULT_PORT = 18765
 LOOPBACK = "127.0.0.1"
 ANY = "0.0.0.0"
@@ -57,3 +60,43 @@ LOCAL_ADDRS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 def is_local(ip: str | None) -> bool:
     """鉴权用的严格回环判断：只有 127.0.0.1 / ::1 免验证。"""
     return (ip or "").strip().lower() in LOCAL_ADDRS
+
+
+_own_addrs: tuple[set[str], float] = (set(), 0.0)
+
+
+def own_addresses() -> set[str]:
+    """本机网卡上的 IPv4 地址（10 秒缓存，取不到就返回空集）。
+
+    掌机自带的客户端（启动器里的 WebView）访问 http://<本机局域网 IP>:18765，
+    连接源地址其实是本机自己的 IP，不是 127.0.0.1。严格按回环判断会把它
+    当成「局域网新设备」要求配对 —— 掌机自己网页版永远不该弹配对页。
+    """
+    global _own_addrs
+    addrs, at = _own_addrs
+    if addrs and time.time() - at < 10:
+        return addrs
+    found: set[str] = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.add(info[4][0])
+    except OSError:
+        pass
+    # 兜底：连一个外部地址（不发包）拿到默认路由选中的本机地址
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            found.add(s.getsockname()[0])
+    except OSError:
+        pass
+    found.discard("0.0.0.0")
+    _own_addrs = (found, time.time())
+    return found
+
+
+def is_this_host(ip: str | None) -> bool:
+    """回环 + 本机任一网卡地址：掌机自己打开的页面一律免配对。"""
+    if is_local(ip):
+        return True
+    value = (ip or "").strip()
+    return bool(value) and value in own_addresses()

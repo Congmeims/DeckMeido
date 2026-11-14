@@ -1514,6 +1514,13 @@
     font-size: 11.5px; white-space: nowrap;
   }
   .api-foot .mini-btn:hover { border-color: var(--brand); color: var(--brand); }
+  /* 「保存接口」是这一栏的主操作：沿用 .mini-btn.primary 的实心配色，
+     但覆盖掉上面那条次要按钮的透明底，否则会被压成灰字 */
+  .api-foot .mini-btn.primary {
+    border-color: var(--brand); background: var(--brand);
+    color: #fff; font-weight: 600;
+  }
+  .api-foot .mini-btn.primary:hover { color: #fff; filter: brightness(1.06); }
   /* 底栏的垂直尺寸要和侧栏那条 .sb-foot 完全一样（上 8 / 下 10 / 按钮 34），
      两个分隔线才会落在同一条水平线上，不然左右各画一条、高低差一截 */
   .set-foot {

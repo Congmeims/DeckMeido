@@ -2062,6 +2062,30 @@ async def _core_http(port: int, method: str, path: str,
         return {"ok": False, "error": "返回内容不是 JSON"}
 
 
+async def _pair_watch() -> None:
+    """后台盯待配对请求：一出现就主动通知 QAM，不用主人先去点「配对」
+
+    QAM 只有停在设置页才轮询完整配对信息（那才有 PIN）。这里用最小的
+    /api/pair/waiting 每 3 秒问一次数量，发现有新请求就 emit 事件，
+    前端据此把页签切到设置、拉 PIN。
+    """
+    last = 0
+    while True:
+        try:
+            port = int(_load_server_cfg().get("port", 18765))
+            r = await _core_http(port, "GET", "/api/pair/waiting", timeout=2.0)
+            if r.get("ok"):
+                count = int((r.get("data") or {}).get("count") or 0)
+                # 只在数量增加时提醒：已经看见的请求不反复弹，
+                # 又来一台新设备才算新的提醒
+                if count > last:
+                    decky.emit("deckmeido_pair_request", count)
+                last = count
+        except Exception as exc:
+            decky.logger.debug(f"配对提醒轮询失败：{exc}")
+        await asyncio.sleep(3)
+
+
 async def _core_status(port: int) -> dict:
     """问一次后端自己的 /api/status，确认女仆核心活着（在不在、什么模式）
 
@@ -2981,6 +3005,8 @@ class Plugin:
         # 游戏开始/退出的探测放后台：面板没开时也要能自动切换预设
         # 按住任务引用，避免 asyncio 只持弱引用时被回收
         self._preset_task = asyncio.get_running_loop().create_task(self._preset_watch())
+        # 配对提醒放后台：别人在浏览器点「配对新设备」时，掌机这边要主动冒出来
+        self._pair_task = asyncio.get_running_loop().create_task(_pair_watch())
 
     async def _autostart_backend(self, retries: int = 3) -> None:
         """插件加载时自动拉起后端（失败不提示，面板上的按钮仍可手动重试）
