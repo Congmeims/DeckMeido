@@ -324,6 +324,17 @@ class PairingManager:
                     for s in sorted(self._sessions.values(), key=lambda x: x["created_at"])
                     if include_finished or s["state"] in _ACTIVE]
 
+    def set_name(self, pair_id: str, name: str) -> None:
+        """用浏览器上报的计算机名覆盖 UA 推断出的设备名（配对确认前调用）。"""
+        label = (name or "").strip()
+        if not label:
+            return
+        with self._lock:
+            s = self._sessions.get(pair_id)
+            if not s:
+                return
+            s["name"] = label[:40]
+
     def refresh(self, pair_id: str) -> dict:
         with self._lock:
             self._expire_locked()

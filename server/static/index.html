@@ -460,9 +460,6 @@
                 <span class="slider"></span>
               </label>
             </div>
-            <div class="field-hint" style="margin-top:0">
-              本地离线听写，结果只填进输入框。需先装 sherpa-onnx 并下载约 250MB 模型；关闭会释放模型（约 100MB+）。
-            </div>
             <div class="field field-row">
               <label style="margin:0">录音时静音外放（录完恢复）</label>
               <label class="switch">
@@ -478,9 +475,6 @@
               </label>
             </div>
             <div id="sttHint" class="field-hint"></div>
-            <div class="field-hint">
-              按住 R1 录音，松开填入输入框，不自动发送；仅客户端窗口激活时生效。
-            </div>
           </div>
 
           <div class="card">
@@ -513,17 +507,22 @@
                 <button class="mini-btn speaker-btn active" data-speaker="maid" type="button" aria-pressed="true">月读酱</button>
               </div>
               <div class="tts-actions">
-                <button id="ttsPill" class="tts-pill" type="button">读取中…</button>
                 <button id="ttsPreview" class="mini-btn tts-preview" type="button">试听</button>
+                <button id="ttsPill" class="tts-pill" type="button">读取中…</button>
               </div>
             </div>
             <div id="ttsDownloadHint" class="field-hint tts-bytes"></div>
-            <div id="ttsCredit" class="field-hint">
-              <div class="tts-credit-line">■Piper Plus:つくよみちゃん</div>
-              <div class="tts-credit-line">音声：<a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener">■つくよみちゃんコーパス（CV.夢前黎）</a></div>
-              <div class="tts-credit-line">条款：<a href="https://tyc.rei-yumesaki.net/material/corpus/#terms3" target="_blank" rel="noopener">つくよみちゃんコーパス利用規約</a></div>
-              <div class="tts-credit-line">模型：<a href="https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan" target="_blank" rel="noopener">piper-plus-tsukuyomi-chan</a></div>
-            </div>
+            <!-- 素材署名是给来源和授权看的，平时不需要占版面：
+                 收进可展开的一行，默认只显示「模型 · 素材来源」 -->
+            <details class="tts-more">
+              <summary>模型与素材来源</summary>
+              <div id="ttsCredit" class="field-hint">
+                <div class="tts-credit-line">■Piper Plus:つくよみちゃん</div>
+                <div class="tts-credit-line">音声：<a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener">■つくよみちゃんコーパス（CV.夢前黎）</a></div>
+                <div class="tts-credit-line">条款：<a href="https://tyc.rei-yumesaki.net/material/corpus/#terms3" target="_blank" rel="noopener">つくよみちゃんコーパス利用規約</a></div>
+                <div class="tts-credit-line">模型：<a href="https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan" target="_blank" rel="noopener">piper-plus-tsukuyomi-chan</a></div>
+              </div>
+            </details>
           </div>
         </section>
 
@@ -533,7 +532,7 @@
           <h4 class="set-sect">本机访问</h4>
           <div class="card">
             <div class="card-title">权限与工作区</div>
-            <div class="set-grid">
+            <div class="set-grid perm-ws-grid">
               <div class="field">
                 <label>AI 控制权限</label>
                 <select id="cfgPerm" data-autosave class="cfg-select">
@@ -568,9 +567,6 @@
                 <input id="cfgWorkspace" data-autosave type="text" placeholder="~/MeidoSpace" autocomplete="off">
               </div>
             </div>
-            <div class="field-hint" style="margin-top:0">
-              语音输入、声控唤醒、语音播报在「语音引擎」；带画面询问在「插件设置」。
-            </div>
           </div>
           <div class="card ctrl-card">
             <div class="card-title">桌面控件自检</div>
@@ -579,9 +575,9 @@
                 <div class="ctrl-sub">控件实测</div>
                 <div class="ctrl-list" id="ctrlList"></div>
               </div>
-              <div class="ctrl-col">
+              <div class="ctrl-col ctrl-col-wide">
                 <div class="ctrl-sub">可补装组件</div>
-                <div class="ctrl-list" id="selfcheckList"></div>
+                <div class="ctrl-list ctrl-grid" id="selfcheckList"></div>
               </div>
             </div>
           </div>
@@ -593,9 +589,6 @@
                 <option value="off">关闭：只监听 127.0.0.1（仅本机）</option>
                 <option value="on">开启：监听 0.0.0.0（局域网可访问）</option>
               </select>
-              <div class="field-hint">
-                开启后仍然监听下面这个服务端口（默认 18765）。用 0.0.0.0 访问时改填掌机的局域网 IP，地址见下一栏。
-              </div>
               <div id="lanWarn" class="field-hint"></div>
             </div>
             <div class="set-grid">
@@ -614,7 +607,6 @@
                   <input id="lanUrl" type="text" readonly autocomplete="off">
                   <button id="lanUrlCopy" class="mini-btn" type="button">复制</button>
                 </div>
-                <div class="field-hint">打开后点「配对新设备」，按掌机上的 PIN 配对一次；之后浏览器会记住这台设备。</div>
               </div>
             </div>
           </div>
@@ -667,10 +659,6 @@
                 <input id="cfgRiMax" data-autosave type="number" min="1" max="120" step="1" value="30">
               </div>
             </div>
-            <div class="field-hint" style="color:#e0a33a">
-              开启后，局域网内任何已配对设备都能控制这台机器，仅限可信网络。
-            </div>
-            <div class="field-hint" id="riCfgState">当前状态：未接管</div>
           </div>
 
           <div class="card" id="sleepCard">
@@ -696,7 +684,6 @@
                 <input id="cfgSleepCountdown" data-autosave type="number" min="10" max="600" step="1" value="60">
               </div>
             </div>
-            <div class="field-hint" id="sleepCfgState">当前状态：未开启</div>
           </div>
 
           <h4 class="set-sect">OneBot 通道</h4>
@@ -4072,8 +4059,21 @@
     if (!box) return;
     box.innerHTML = '';
     fbUploadTasks.forEach(function (task) { box.appendChild(fbTaskCard(task)); });
+    fbSyncQueueScrollbar();
     fbDropHint();
   }
+
+  // 上传卡要和下面的文件行左右贴齐：队列出现竖向滚动条时，内容区会窄一条滚动条，
+  // 卡片右边缘就会比文件行多缩进一段。把实测宽度写进 --fb-sb，CSS 用它补回这块
+  function fbSyncQueueScrollbar() {
+    var box = rbEl('fbQueue');
+    if (!box) return;
+    var sb = box.offsetWidth - box.clientWidth;
+    box.style.setProperty('--fb-sb', Math.max(0, sb) + 'px');
+  }
+
+  // 窗宽变化后滚动条可能消失/出现，重新量一次
+  window.addEventListener('resize', fbSyncQueueScrollbar);
 
   // 进度刷新只改当前卡的几个数字，不重绘整张卡（展开明细时滚动位置不会被重置）
   function fbTaskPaint(task) {
@@ -6711,6 +6711,29 @@
       });
   }
 
+  // 浏览器拿不到系统主机名：优先用用户在设置里填的计算机名，
+  // 没填就退回平台名（Windows / macOS / Linux），最后才用浏览器代号。
+  // 配对时发给掌机，设备列表里显示的就是这台机器，而不是「Chrome / Windows」
+  function localDeviceName() {
+    try {
+      var own = localStorage.getItem('dm_device_name');
+      if (own) return own;
+    } catch (e) {}
+    var ua = navigator.userAgent || '';
+    var os = null;
+    if (/Mac OS X|Macintosh/i.test(ua)) os = 'Mac';
+    else if (/iPhone|iPad|iPod/i.test(ua)) os = 'iOS';
+    else if (/Android/i.test(ua)) os = 'Android';
+    else if (/Windows/i.test(ua)) os = 'Windows';
+    else if (/Linux/i.test(ua)) os = 'Linux';
+    if (os) {
+      // 平台名 + 设备类别，至少能分出「这是哪台电脑上的浏览器」
+      var kind = /Mobi/i.test(ua) ? '手机' : (os === 'Windows' || os === 'Mac' || os === 'Linux' ? '电脑' : '');
+      return kind ? os + ' ' + kind : os;
+    }
+    return '';
+  }
+
   function pairSubmit() {
     if (pairBusy) return;
     var pin = pinValue();
@@ -6723,7 +6746,8 @@
     apiFetch('/api/pair/confirm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pair_id: pairingId, pin: pin, remember: true }),
+      body: JSON.stringify({ pair_id: pairingId, pin: pin, remember: true,
+                             name: localDeviceName() }),
     })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
@@ -6920,13 +6944,8 @@
       row.className = 'ctrl-row ' + ctrlTone(it);
       var lamp = document.createElement('span'); lamp.className = 'lamp';
       var nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = it.label;
-      var ds = document.createElement('span'); ds.className = 'ds';
-      // 正常不写字，异常/未开启只给原因，一眼就能看出哪一项有问题
-      var why = it.na ? (it.detail || '未开启') : (it.ok ? '' : (it.detail || '异常'));
-      ds.textContent = why;
-      if (why) ds.title = why;
-      var act = document.createElement('span'); act.className = 'act';
-      row.append(lamp, nm, ds, act);
+      // 左栏只留灯和名字：名字占满整行宽度，再长也不会被截成省略号
+      row.append(lamp, nm);
       item.appendChild(row);
       ctrlList.appendChild(item);
     });
@@ -7160,6 +7179,7 @@
     var job = data.job;
     scList.replaceChildren();
     scRows = {};
+    var wide = scList.classList.contains('ctrl-grid');
     (data.components || []).forEach(function (it) {
       var item = document.createElement('div');
       item.className = 'ctrl-item';
@@ -7171,11 +7191,16 @@
       lamp.className = 'lamp';
       var nm = document.createElement('span');
       nm.className = 'nm'; nm.textContent = it.name; nm.title = it.name;
-      // 不显示体积；就绪留白，未就绪只写原因，异常行本来就是红的
-      var ds = document.createElement('span');
-      ds.className = 'ds';
-      var sub = it.status === 'ready' ? '' : (it.detail || '未安装');
-      ds.textContent = sub; ds.title = sub;
+      var rowItems = [lamp, nm];
+      // 宽屏两列排布时，没装的项目名字被截断，原因另起一行写完整
+      if (!wide) {
+        // 不显示体积；就绪留白，未就绪只写原因，异常行本来就是红的
+        var ds = document.createElement('span');
+        ds.className = 'ds';
+        var sub = it.status === 'ready' ? '' : (it.detail || '未安装');
+        ds.textContent = sub; ds.title = sub;
+        rowItems.push(ds);
+      }
       // 右侧操作位固定宽度：未就绪给安装按钮，已就绪留空
       var act = document.createElement('span');
       act.className = 'act';
@@ -7188,11 +7213,17 @@
           && (job.state === 'running' || job.state === 'need_password'));
         act.appendChild(btn);
       }
-      row.append(lamp, nm, ds, act);
+      rowItems.push(act);
+      row.append.apply(row, rowItems);
 
       // 进度/失败说明：只在有任务或错误时出现，与名称左对齐
       var detail = document.createElement('div');
       detail.className = 'sc-detail';
+      if (wide && it.status !== 'ready') {
+        var wideSub = it.detail || '未安装';
+        detail.textContent = wideSub;
+        detail.title = wideSub;
+      }
 
       var cmd = null;
       if (!it.can_install && it.action !== 'package' && it.command) {
@@ -8504,8 +8535,10 @@
       ttsEngineHint = document.createElement('div');
       ttsEngineHint.id = 'ttsEngineHint';
       ttsEngineHint.className = 'field-hint';
-      if (ttsCredit && ttsCredit.parentNode) {
-        ttsCredit.parentNode.insertBefore(ttsEngineHint, ttsCredit);
+      // 署名已折进 <details>：错误提示要挂在 details 外面，否则默认收起时看不见
+      var anchor = ttsCredit ? ttsCredit.closest('.tts-more') || ttsCredit : null;
+      if (anchor && anchor.parentNode) {
+        anchor.parentNode.insertBefore(ttsEngineHint, anchor);
       }
     }
     ttsEngineHint.textContent = text;
@@ -8525,6 +8558,7 @@
     // 先复位，避免上一轮缩小后的字号影响这次测量
     ttsCredit.style.fontSize = '';
     var avail = ttsCredit.clientWidth;
+    // 署名收在默认折叠的 <details> 里，收起时量不到宽度，展开时再量一次
     if (!avail) return;
     var base = parseFloat(getComputedStyle(ttsCredit).fontSize) || 12;
     var needed = 0;
@@ -8762,14 +8796,13 @@
   var cfgSleepEnabled = document.getElementById('cfgSleepEnabled');
   var cfgSleepMinutes = document.getElementById('cfgSleepMinutes');
   var cfgSleepCountdown = document.getElementById('cfgSleepCountdown');
-  var sleepCfgState = document.getElementById('sleepCfgState');
+  var sleepCfgSwitch = document.querySelector('#sleepCard .switch');
   // 跨屏接管设置（单开关：开 = 允许局域网接管）
   var cfgRiEnabled = document.getElementById('cfgRiEnabled');
   var cfgRiSens = document.getElementById('cfgRiSens');
   var cfgRiSensVal = document.getElementById('cfgRiSensVal');
   var cfgRiMax = document.getElementById('cfgRiMax');
   var riEnableCard = document.getElementById('riEnableCard');
-  var riCfgState = document.getElementById('riCfgState');
   // Onebot 通道（远程连接页）：状态轮询 + 配置回填
   var cfgQqEnable = document.getElementById('cfgQqEnable');
   var cfgQqAutoConnect = document.getElementById('cfgQqAutoConnect');
@@ -10325,6 +10358,10 @@
     if (name === 'plugin') loadPresets();
   }
 
+  // 署名展开后再按实际宽度收缩字号
+  var ttsMore = document.querySelector('.tts-more');
+  if (ttsMore) ttsMore.addEventListener('toggle', fitTtsCredit);
+
   // 关掉设置 = 回到对话：主界面、侧栏会话列表、底部按钮文案都恢复原样
   function closeSettings() {
     // 还有点改动没落盘（比如刚打完字就点返回）：先抢存一次再走
@@ -10933,24 +10970,32 @@
     }
     var dl = ttsState.download || {};
     var root = ttsState.model_root || '';
-    // 只取路径末段当模型名，完整路径放 title，不再让长路径占一行
-    var modelName = root.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'tsukuyomi';
     // 胶囊只反映一个真实状态，不要「已下载」和「未就绪」同时出现
     if (ttsState.model) {
+      // 已就绪：按钮整块撤掉，模型名放到试听按钮的 title 上，
+      // 这一行只剩「发音人 + 试听」，不再有一个点不动的「已就绪」占位
+      ttsPill.hidden = true;
       ttsPill.className = 'tts-pill ready';
-      ttsPill.textContent = '已就绪';
+      ttsPill.textContent = '';
       ttsPill.disabled = true;
-      ttsPill.title = '月读酱语音模型已就绪';
-      setTtsModelHint('模型：' + modelName, root);
-      ttsDownloadHint.textContent = ttsState.loaded ? '已加载' : '首次播报时加载';
+      ttsPill.title = '';
+      if (ttsPreview) {
+        ttsPreview.title = '月读酱模型：' + (ttsState.loaded ? '已加载' : '首次试听时加载')
+          + '（' + root + '）';
+      }
+      setTtsModelHint('', '');
+      ttsDownloadHint.textContent = '';
     } else if (!ttsState.runtime) {
+      ttsPill.hidden = false;
       ttsPill.className = 'tts-pill off';
       ttsPill.textContent = '不可用';
       ttsPill.disabled = true;
-      ttsPill.title = '本机没装模型运行时';
-      setTtsModelHint('月读酱语音暂不可用', '本机没装模型运行时，可先选「机器人」');
+      ttsPill.title = '本机没装模型运行时，可先选「机器人」';
+      setTtsModelHint('', '');
       ttsDownloadHint.textContent = '';
+      if (ttsPreview) ttsPreview.title = '';
     } else if (dl.state === 'downloading' || dl.phase === 'cancelling') {
+      ttsPill.hidden = false;
       ttsPill.className = 'tts-pill busy';
       ttsPill.textContent = '下载中 ' + (dl.percent || 0).toFixed(0) + '%';
       ttsPill.disabled = false;
@@ -10961,14 +11006,17 @@
         ? (dl.done / 1048576).toFixed(1) + ' MB'
           + (dl.total > 0 ? ' / ' + (dl.total / 1048576).toFixed(1) + ' MB' : '')
         : '';
+      if (ttsPreview) ttsPreview.title = '';
     } else {
+      ttsPill.hidden = false;
       ttsPill.className = 'tts-pill missing';
       ttsPill.textContent = '未就绪 · 下载';
       ttsPill.disabled = false;
       ttsPill.title = '点击下载月读酱语音模型（约 38MB）';
-      setTtsModelHint('月读酱语音模型未下载', ttsState.reason || '约 38MB，默认走国内镜像');
+      setTtsModelHint('', '');
       ttsDownloadHint.textContent = dl.state === 'error'
         ? '下载失败' : dl.state === 'cancelled' ? '已取消' : '';
+      if (ttsPreview) ttsPreview.title = '';
     }
   }
 
@@ -12356,25 +12404,17 @@
   // 已经开始计时就显示还剩多久，倒计时中显示正在倒计时——这样能一眼看出
   // 「她是不是快要关机了」，而不是到点才突然黑屏。
   function renderSleepState(sl) {
-    if (!sleepCfgState) return;
+    if (!sleepCfgSwitch) return;
     sl = sl || {};
-    if (!sl.enabled) {
-      sleepCfgState.textContent = '当前状态：未开启';
-      return;
-    }
+    // 只有真的进入倒计时才动界面：关机前 60 秒把开关本身点亮成闪烁状态，
+    // 平时安静，不再在卡片底部堆一行「当前状态：…」的说明文字
     var left = sl.countdown_left;
-    if (left != null) {
-      sleepCfgState.textContent = '正在倒计时：' + left + ' 秒后关机（动一下鼠标或键盘即取消）';
-      return;
+    sleepCfgSwitch.classList.toggle('armed', sl.enabled && left != null);
+    if (sl.enabled && left != null) {
+      sleepCfgSwitch.title = left + ' 秒后关机（动一下鼠标或键盘即取消）';
+    } else {
+      sleepCfgSwitch.title = '闲置满指定时长后自动关机';
     }
-    var remain = sl.remain_sec;
-    if (remain != null) {
-      var m = Math.ceil(remain / 60);
-      sleepCfgState.textContent = '当前状态：音乐已停且无人使用，约 ' + m + ' 分钟后关机';
-      return;
-    }
-    sleepCfgState.textContent = '当前状态：等待闲置（' + (sl.idle_minutes || 60)
-      + ' 分钟内无人使用且音乐已停才会计时）';
   }
 
   // 单开关：从「关」切到「开」等于开放局域网接管，先明确提醒一次；
@@ -12405,12 +12445,6 @@
         : (riState.by
             ? ('正在接管 Deck · 来源 ' + riState.by + ' · 按 Esc 停止接管')
             : '正在接管 Deck · 按 Esc 停止接管');
-    }
-    if (riCfgState) {
-      riCfgState.textContent = riActive
-        ? ('当前状态：接管中' + (riState.by ? '（来源 ' + riState.by + '）' : '')
-           + (riState.remaining > 0 ? '，剩余约 ' + Math.ceil(riState.remaining / 60) + ' 分钟' : ''))
-        : '当前状态：未接管';
     }
   }
 

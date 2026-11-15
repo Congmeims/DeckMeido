@@ -3447,6 +3447,9 @@ class PairConfirmRequest(BaseModel):
     pin: str
     # 保持登录：勾选时设备令牌按 30 天有效期提示给客户端，否则浏览器关掉即视为可丢弃
     remember: bool = True
+    # 计算机名（可选）：浏览器读不到系统主机名，由前端从 WebUI 设置带上；
+    # 没有就用 UA 推断的代号兜底
+    name: str = ""
 
 
 class PairDecisionRequest(BaseModel):
@@ -3810,6 +3813,11 @@ async def api_pair_confirm(req: PairConfirmRequest, request: Request):
     """提交 PIN：一次性、60 秒有效、最多 3 次；成功后把设备令牌回给浏览器自己保存。"""
     ip = _client_ip(request)
     try:
+        # 浏览器在开始配对时就把计算机名报上来了（浏览器拿不到系统主机名，
+        # 只能读 WebUI 设置或让用户填），这里用它替换 UA 推断出来的
+        # 「Chrome / Windows」这种代号，设备列表里才认得出是哪台机器
+        if req.name:
+            pairing.manager.set_name(req.pair_id, req.name)
         device, token = pairing.manager.confirm(req.pair_id, req.pin, ip)
     except pairing.PairError as exc:
         # 不按 IP 计数：未允许 / 已过期 / 已失效都是正常流程状态。

@@ -1705,9 +1705,8 @@
     resize: vertical;
   }
   .field-hint { font-size: var(--set-hint-size); color: var(--muted); margin-top: var(--set-hint-gap); min-height: 0; line-height: var(--set-hint-lh); }
-  /* 素材署名（女仆人设 → 语音回复）：压成单行 nowrap，放不下时横向滚动。
-     日文句子从中间折行会读不通，所以先缩字号；缩到下限仍放不下时由横向滚动兜底。
-     字号由 fitTtsCredit() 按实际可用宽度算，默认 11px 见下方 #ttsCredit 规则 */
+  /* 素材署名（女仆人设 → 语音回复）收在可展开的 details 里：展开后正常换行，
+     不再需要缩字号或横向滚动 */
   #ttsCredit {
     min-height: 0;
     overflow-x: auto;
@@ -1715,6 +1714,7 @@
     scrollbar-width: thin;
   }
   #ttsCredit .tts-credit-line { white-space: nowrap; line-height: 1.45; }
+  .tts-more[open] #ttsCredit .tts-credit-line { white-space: normal; overflow-wrap: anywhere; }
   /* ---------- 语音回复卡：标题+开关 / 发音人+状态+试听 / 一行模型状态 ---------- */
   /* 这张卡只用三层：比其它卡片更矮，内边距和行距都收紧 */
   .tts-card { padding: 10px 14px 9px; margin-bottom: var(--set-card-gap); }
@@ -1725,17 +1725,34 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .card-head > .switch { flex: 0 0 auto; margin: 0 0 0 auto; }
-  /* 发音人一行：窄屏放不下时「状态+试听」整体换到下一行右对齐 */
-  .tts-row2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+  /* 发音人一行：标签 / 发音人 / 操作，三段等距排开，右侧不再挤成一堆。
+     就绪时右侧只剩「试听」，按钮靠内容区右边缘收口 */
+  .tts-row2 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
   .tts-label { flex: 0 0 auto; font-size: 13px; color: var(--muted); }
   .tts-row2 .speaker-row { flex: 1 1 160px; min-width: 118px; }
   /* 两个发音人按钮收矮一点：原先 min-height 42px 比旁边的试听高出一截 */
-  .tts-row2 .speaker-btn { min-height: var(--set-ctl-h); padding: 0 12px; font-size: 12.5px; }
+  .tts-row2 .speaker-btn { min-height: var(--set-ctl-h); padding: 0 16px; font-size: 12.5px; }
   .tts-actions {
     margin-left: auto; display: flex; align-items: center; justify-content: flex-end;
-    gap: 8px; flex: 0 1 auto; flex-wrap: wrap;
+    gap: 8px; flex: 0 0 auto;
   }
-  .tts-preview { min-height: var(--set-ctl-h); padding: 0 12px; font-size: 12.5px; }
+  .tts-preview { min-height: var(--set-ctl-h); padding: 0 18px; font-size: 12.5px; }
+  /* .tts-pill[hidden] 要盖过 .tts-pill 自己的 display：否则 hidden 属性失效，
+     已就绪时那个点不动的「已就绪」还会占着位置 */
+  .tts-pill[hidden] { display: none !important; }
+  /* 素材署名折进可展开的一行：summary 就是一行小字，点开才展开完整来源 */
+  .tts-more { margin-top: 2px; }
+  .tts-more > summary {
+    font-size: var(--set-hint-size); color: var(--muted);
+    line-height: 1.6; cursor: pointer; list-style: none;
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .tts-more > summary::-webkit-details-marker { display: none; }
+  .tts-more > summary::before {
+    content: '▸'; font-size: 10px; transition: transform .15s ease; display: inline-block;
+  }
+  .tts-more[open] > summary::before { transform: rotate(90deg); }
+  .tts-more > summary:hover { color: var(--text); }
   /* 模型状态胶囊：已就绪绿色、未就绪黄色（可点下载）、下载中蓝色（可点取消） */
   .tts-pill {
     flex: none; padding: 0 10px; min-height: 24px; border-radius: 999px;
@@ -1780,6 +1797,14 @@
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b91a3'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 11px center;
   }
+  /* 「权限与工作区」两栏上下对齐：下拉框和路径输入框的标签高度一致、
+     输入行顶边齐平，箭头位置也跟输入框的内边距同一条线 */
+  .perm-ws-grid > .field { display: flex; flex-direction: column; }
+  .perm-ws-grid > .field > label {
+    display: flex; align-items: flex-end; min-height: calc(var(--set-hint-size) * var(--set-hint-lh));
+    margin-bottom: 6px;
+  }
+  .perm-ws-grid > .field > input { margin-top: 0; }
   .cfg-select:focus, .field input:focus, .field textarea:focus, .mem-add input:focus {
     border-color: var(--brand);
   }
@@ -2554,12 +2579,11 @@
   .ctrl-list { display: flex; flex-direction: column; margin-bottom: 12px; }
   .ctrl-item { padding: 6px 2px; border-bottom: 1px solid var(--line); }
   .ctrl-item:last-child { border-bottom: none; }
+  /* 左栏只有「灯 + 名称」：名称直接吃掉整行剩余宽度，长名字也不会截断；
+     右栏（.ctrl-grid）另起两列网格，各自一套列宽，互不牵制 */
   .ctrl-row {
-    /* 左右两栏共用同一套列宽：灯 / 名称 / 说明 / 操作位。
-       名称和说明都不能按内容伸缩，否则右栏「语音识别」这类长名字会把说明
-       整体右推，两栏的列线就对不上了 */
-    display: grid; grid-template-columns: 9px minmax(0, 96px) minmax(0, 1fr) 84px;
-    align-items: center; column-gap: 10px; font-size: 14px;
+    display: grid; grid-template-columns: 9px minmax(0, 1fr);
+    align-items: center; column-gap: 8px; font-size: 13.5px;
   }
   .ctrl-row .lamp {
     width: 9px; height: 9px; border-radius: 50%;
@@ -2600,11 +2624,24 @@
   @media (max-width: 720px) {
     .ri-io-row { grid-template-columns: minmax(0, 1fr); }
   }
-  /* ---------- 桌面控件自检：两栏（左自检 / 右可补装组件） ---------- */
-  .ctrl-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+  /* ---------- 桌面控件自检：左窄右宽（左自检 / 右可补装组件） ---------- */
+  /* 左栏只有「灯 + 名称」，给固定窄宽；剩下的宽度全归右栏，
+     右栏再排两列组件，一行就能把整行铺满，不再空掉右半边 */
+  .ctrl-cols { display: grid; grid-template-columns: 158px minmax(0, 1fr); gap: 20px; align-items: start; }
   .ctrl-col { min-width: 0; }
   /* 分区标题只做子标题，不带容器边框或底色 */
   .ctrl-sub { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+  /* 可补装组件：两列瀑布流，组件少时也不会整行拉出一条超长空白 */
+  .ctrl-list.ctrl-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 20px; row-gap: 0; align-content: start;
+  }
+  .ctrl-grid .ctrl-item { min-width: 0; }
+  /* 两列模式下名称与按钮之外没有说明列，名称占满剩余宽度即可 */
+  .ctrl-grid .ctrl-row { grid-template-columns: 9px minmax(0, 1fr) auto; }
+  .ctrl-grid .ctrl-row .act .mini-btn { width: 64px; }
+  /* 两列时条目更窄：左右各收一点内边距，避免名称和按钮贴在一起 */
+  .ctrl-grid .ctrl-item { padding: 6px 0; }
   /* 右栏行内的附属内容（安装进度 / 密码授权 / 命令）与名称左对齐 */
   .sc-detail, .sc-cmd, .sc-auth, .sc-progress { margin-left: 19px; }
   .sc-detail {
@@ -2647,17 +2684,17 @@
   .sc-bar i { display: block; height: 100%; width: 0; background: #2ecc71; transition: width .25s; }
   .sc-pct { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
   @media (max-width: 420px) {
-    .ctrl-row {
-      grid-template-columns: 9px minmax(0, 78px) minmax(0, 1fr) 68px;
-      column-gap: 8px; font-size: 13.5px;
-    }
+    .ctrl-grid .ctrl-row { grid-template-columns: 9px minmax(0, 1fr) auto; }
     .ctrl-row .act .mini-btn { width: 68px; }
     .sc-auth-btn { width: 68px; }
     /* 360px 级窄屏：输入框独占一行，切换/确认换到下一行但保持一行对齐 */
     .sc-pw { flex: 1 1 100%; }
   }
+  /* 窄屏一栏堆叠时，右栏回到「灯 / 名称 / 说明 / 按钮」的单行排布 */
   @media (max-width: 720px) {
-    .ctrl-cols { grid-template-columns: 1fr; }
+    .ctrl-cols { grid-template-columns: minmax(0, 1fr); }
+    .ctrl-list.ctrl-grid { grid-template-columns: minmax(0, 1fr); }
+    .ctrl-grid .ctrl-row { grid-template-columns: 9px minmax(0, 1fr) 84px; }
   }
   /* 代码块全屏查看 */
   #codeView { display: none; position: fixed; inset: 0; z-index: 45; background: var(--overlay); align-items: center; justify-content: center; }
@@ -2841,22 +2878,30 @@
   @keyframes fbListIn { from { opacity: .2; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   @media (prefers-reduced-motion: reduce) { #fbList.fb-anim { animation: none !important; transition: none !important; } }
   #fbBar {
-    flex: 0 0 auto; display: flex; align-items: center; gap: 4px;
+    flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
     padding: 6px 8px; border-bottom: 1px solid var(--line);
   }
+  /* 上/主页按钮与路径条同高同圆角，三者连成一条控件带 */
   #fbBar button {
     flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
-    width: 22px; height: 22px; padding: 0;
+    width: 28px; height: 28px; padding: 0;
     border: 1px solid var(--line); background: var(--surface-2);
-    color: var(--muted); border-radius: 6px; cursor: pointer;
+    color: var(--muted); border-radius: 8px; cursor: pointer;
     transition: background .15s ease, color .15s ease, border-color .15s ease;
   }
   #fbBar button:hover { background: var(--hover); color: var(--brand); border-color: var(--brand); }
   #fbBar button svg { display: block; width: 14px; height: 14px; }
+  /* 路径条做成和两个图标按钮同样的「框」：边框、底色、圆角、高度全部对齐；
+     文字贴着框内边距滚动，不再是裸文字夹在两个按钮之间 */
   #fbPath {
     flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted);
+    box-sizing: border-box; height: 28px; line-height: 26px;
+    padding: 0 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--surface-2);
     overflow-x: auto; white-space: nowrap; scrollbar-width: none;
+    transition: border-color .15s ease;
   }
+  #fbPath:hover { border-color: var(--brand); }
   #fbPath::-webkit-scrollbar { display: none; }
   /* 路径分区胶囊：工作区绿色；谨慎区黄色；危险区/禁浏览红色。
      和状态徽章同一套圆角/字号，不换行、不挤路径。
@@ -2927,9 +2972,12 @@
      整批共用一个总进度；单文件失败收进卡内可展开的明细，不再各占一行。
      区域有固定高度上限、内部滚动，绝不会把下面的文件列表挤下去 */
   /* 横向边距和 #fbList 的内边距对齐，卡片边框才会和下面的文件行同一条竖线；
-     margin 放在内部（padding）而不是外层，滚动条的轨道就不会比卡片多出一块 */
+     margin 放在内部（padding）而不是外层，滚动条的轨道就不会比卡片多出一块。
+     右边缘还要让出一条滚动条宽度：这个面板的滚动条是浮在内容上的，
+     列表的文件行贴着右栏边框铺到底，卡片不补这一段就会比它们多缩进一截 */
   #fbQueue {
     flex: 0 1 auto; min-height: 0; padding: 0 6px;
+    padding-right: calc(6px + var(--fb-sb, 0px));
     max-height: min(192px, 34vh);
     overflow-y: auto; overscroll-behavior: contain;
     display: flex; flex-direction: column; gap: 6px;
