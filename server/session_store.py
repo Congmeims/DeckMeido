@@ -655,6 +655,53 @@ def normalize_origin(origin: str, sid: str = "", title: str = "") -> str:
 store = SessionStore()
 
 
+# ---------- UI 标记（引导是否看过等）----------
+#
+# 这类标记原先只存在前端 localStorage。网页端没问题，但桌面客户端的
+# WebEngine 配置目录在重启后不保留，每次启动 localStorage 都是空的，
+# 「跳过」等于没记。改放服务端数据目录，三端共用一份，重启也不丢。
+
+_META_FILE = "ui_meta.json"
+_meta_lock = threading.Lock()
+
+
+def _meta_path() -> Path:
+    return paths.data_dir() / _META_FILE
+
+
+def _meta_load() -> dict:
+    try:
+        with open(_meta_path(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def read_meta(key: str) -> str:
+    with _meta_lock:
+        return str(_meta_load().get(key) or "")
+
+
+def write_meta(key: str, value: str) -> None:
+    """写一段标记；value 为空即删除。整份小文件，直接覆盖写。"""
+    with _meta_lock:
+        data = _meta_load()
+        if value:
+            data[key] = value
+        else:
+            data.pop(key, None)
+        path = _meta_path()
+        tmp = path.with_suffix(".json.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False)
+            os.replace(tmp, path)
+        except OSError as exc:
+            devlog.debug("session_store.write_meta", error=repr(exc))
+
+
 def session_order(items) -> list[dict]:
     """侧栏排序：updated 倒序；同一时间戳再按 id 倒序
 

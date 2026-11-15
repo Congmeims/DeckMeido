@@ -24,6 +24,16 @@ class SwitchReq(BaseModel):
     id: str
 
 
+class MetaReq(BaseModel):
+    """一段 UI 标记的读写：键名 + 值（空字符串等于删掉）"""
+    value: str = ""
+
+    # 只有普通标记，没有敏感数据；限制长度防止被当成存储用
+    @classmethod
+    def clamp(cls, value: str) -> str:
+        return (value or "").strip()[:200]
+
+
 class MsgDeleteReq(BaseModel):
     ts: float | None = None          # 按消息时间戳定位（前端每条消息都带 data-ts）
     role: str = "assistant"          # 兜底：没有 ts 时按角色删最后一条
@@ -50,6 +60,21 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
                 row.get("origin") or "", row.get("id") or "", row.get("title") or "")
             items.append(row)
         return {"current": store.current_sid, "items": items}
+
+    @router.get("/api/meta/{key}", dependencies=auth)
+    async def api_meta_get(key: str):
+        """读一段 UI 标记（如「引导看过没有」）
+
+        这类标记以前只放前端 localStorage，而桌面客户端的 WebEngine 配置目录
+        在重启后不保留，于是每次启动都当新用户、引导反复弹。放到服务端数据目录
+        后，网页、客户端、局域网页面共用同一份。
+        """
+        return {"value": session_store.read_meta(key)}
+
+    @router.post("/api/meta/{key}", dependencies=auth)
+    async def api_meta_set(key: str, req: MetaReq):
+        session_store.write_meta(key, MetaReq.clamp(req.value))
+        return {"ok": True}
 
     def _current_session_untouched() -> bool:
         """当前会话是不是「一句话都没说过」的空会话

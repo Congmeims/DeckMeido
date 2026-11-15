@@ -13968,7 +13968,11 @@
   // ---------- 新手引导 ----------
   // 只在网页里出现，插件端（Decky QAM）不做；每个浏览器只弹一次，
   // 「跳过」和走完最后一页一样算看过，下次不再出现。
+  //
+  // 标记同时存两处：localStorage（网页端同步读，不闪）+ 服务端 /api/meta
+  // （客户端 WebEngine 的配置目录重启后不保留，只靠 localStorage 会每次重弹）
   var ONBOARD_KEY = 'deckmeido_onboarded';
+  var onboardSeen = false;
   // 每步可以带 pane：带的那一步会把卡片挪开、真的打开设置并切到对应分区，
   // 让主人看着真实界面听讲解；离开这步就退回对话，免得把设置页留在那
   // （导航名与 data-pane 都已核对：模型接入 model / 女仆人设 persona /
@@ -14105,7 +14109,14 @@
   function obDone() {
     obMask.hidden = true;
     obMask.classList.remove('peek');
+    onboardSeen = true;
     try { localStorage.setItem(ONBOARD_KEY, '1'); } catch (e) {}
+    // 服务端那份才是跨重启的，写失败也不影响本次体验
+    apiFetch('/api/meta/' + ONBOARD_KEY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: '1' })
+    }).catch(function () { });
     // 走完或跳过都别把主人留在设置页：来之前在哪就回哪
     if (!obWasSettings && document.body.classList.contains('settings-mode')) closeSettings();
   }
@@ -14137,12 +14148,25 @@
   // deviceSession 在局域网页面要等 /api/auth/session 回来才为真，所以只在
   // bootAuth / 配对成功的回调里调用，别在脚本加载时直接调
   function maybeOnboard() {
+    if (onboardSeen) return;
     var seen = false;
     try { seen = localStorage.getItem(ONBOARD_KEY) === '1'; } catch (e) {}
-    if (seen) return;
+    if (seen) { onboardSeen = true; return; }
     if (!deviceSession) return;
     if (!isHomePage && authOverlay.classList.contains('show')) return;
-    obStart();
+    // 服务端那份可能被别的端写过（客户端跳过、换个浏览器打开都算看过）
+    apiFetch('/api/meta/' + ONBOARD_KEY)
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (d && d.value === '1') {
+          onboardSeen = true;
+          try { localStorage.setItem(ONBOARD_KEY, '1'); } catch (e) {}
+          return;
+        }
+        obStart();
+      })
+      // 后端旧版本没有这个接口时退回只认 localStorage，别把人卡在引导外
+      .catch(function () { obStart(); });
   }
 
 })();
