@@ -8781,6 +8781,20 @@
   var chatVoiceOn = true;
   // 存储键沿用旧的 r2 名字：桌面端改读 R1 后，老用户之前设置的开关状态不丢
   var R2_PTT_KEY = 'deckmeido_r2_ptt';
+  // 接口卡片默认展开（第一次进来最常做的就是填地址和 Key）；
+  // 用户手动收起过哪几组就记下来，下次重绘 / 重开设置仍保持收起
+  var API_CLOSED_KEY = 'deckmeido_api_closed';
+  function apiClosedSet() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(API_CLOSED_KEY) || '[]');
+      return Array.isArray(raw) ? raw : [];
+    } catch (e) { return []; }
+  }
+  function apiSetClosed(id, closed) {
+    var list = apiClosedSet().filter(function (x) { return x !== id; });
+    if (closed) list.push(id);
+    try { localStorage.setItem(API_CLOSED_KEY, JSON.stringify(list)); } catch (e) {}
+  }
   function r2PttEnabled() {
     if (!chatVoiceOn) return false;
     try { return localStorage.getItem(R2_PTT_KEY) !== '0'; } catch (e) { return true; }
@@ -9152,8 +9166,10 @@
 
   function renderApiProfiles(c) {
     var rows = (c && c.api_profiles) || [];
-    // 重绘时保留展开状态，别保存一次就把用户正打开的那张卡收起来
+    // 重绘时保留折叠状态，别保存一次就把用户正打开的那张卡收起来；
+    // 没记录过的（含第一次进来）一律展开
     var prevOpen = {};
+    var closed = apiClosedSet();
     apiProfilesState.profiles.forEach(function (p) { if (p.open) prevOpen[p.id] = true; });
     apiProfilesState.profiles = rows.map(function (p) {
       return {
@@ -9163,7 +9179,7 @@
         key_set: !!p.api_key_set,
         masked: p.api_key_masked || p.api_key || '',
         temp: false,
-        open: !!prevOpen[p.id]
+        open: closed.indexOf(p.id) < 0 ? true : !!prevOpen[p.id]
       };
     });
     apiProfilesState.current = (c && c.current_api) || '';
@@ -9240,7 +9256,8 @@
         + (p.key_set ? '已配置：' + escapeHtml(p.masked) : '还没有配置 Key')
         + '</div>'
         + '</div>';
-      // 折叠只切 class，不重绘，避免把正在编辑的地址/Key 冲掉
+      // 折叠只切 class，不重绘，避免把正在编辑的地址/Key 冲掉；
+      // 同时把「收起」记进 localStorage，重绘 / 重开设置后保持用户的选择
       row.querySelector('.api-toggle').addEventListener('click', function () {
         p.open = !p.open;
         row.classList.toggle('open', !!p.open);
@@ -9249,6 +9266,7 @@
           row.querySelector('.api-host').textContent =
             apiHostOf(row.querySelector('.api-base').value);
         }
+        if (!p.temp) apiSetClosed(p.id, !p.open);
       });
       row.querySelector('.api-current input').addEventListener('change', function (ev) {
         if (!ev.target.checked) return;
@@ -9269,6 +9287,7 @@
         if (at < 0) return;
         if (!confirm('删除接口配置「' + (p.name || '未命名') + '」？点「保存接口」后生效，历史用量统计不会删除。')) return;
         apiProfilesState.profiles.splice(at, 1);
+        if (!p.temp) apiSetClosed(p.id, false);
         if (apiProfilesState.current === p.id) {
           apiProfilesState.current = apiProfilesState.profiles.length
             ? apiProfilesState.profiles[0].id : '';
