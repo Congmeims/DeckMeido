@@ -7419,6 +7419,23 @@ def _serving_on_steamos() -> bool:
 SERVING_ON_STEAMOS = _serving_on_steamos()
 
 
+def asset_ver() -> str:
+    """静态资源的版本串：运行版本 + static 目录里最新的改动时间（秒）。
+
+    任一 CSS/JS 被替换，时间戳就变，页面里引用它们的 URL 也跟着变，
+    浏览器和 QtWebEngine 的本地旧副本自然失效。
+    """
+    try:
+        newest = max(
+            (p.stat().st_mtime for p in STATIC_DIR.iterdir()
+             if p.suffix in (".css", ".js")),
+            default=0,
+        )
+    except OSError:
+        newest = 0
+    return f"{VERSION}-{int(newest)}"
+
+
 @app.get("/", include_in_schema=False)
 @app.get("/index.html", include_in_schema=False)
 async def index_page(request: Request):
@@ -7440,6 +7457,15 @@ async def index_page(request: Request):
         html = html.replace("<body ", f"<body {home} ", 1)
     else:
         html = html.replace("<body>", f"<body {home}>", 1)
+    # 静态资源带版本参数：CSS/JS 不带指纹时，浏览器和 QtWebEngine 会一直
+    # 用本地旧副本（改完样式看不到变化）。这里统一拼上运行版本 + 静态文件
+    # 的最新改动时间，内容一变链接就变，绕开所有中间缓存。
+    html = re.sub(
+        r'(href|src)="/(app\.css|xterm\.css|xterm\.min\.js|xterm-addon-fit\.min\.js'
+        r'|upload-helpers\.js)"',
+        lambda m: f'{m.group(1)}="/{m.group(2)}?v={asset_ver()}"',
+        html,
+    )
     # no-store：index.html 里带着 data-home / data-runtime 这类按请求注入的标记，
     # 一旦被 WebView 或中间层缓存，换设备访问就会拿到别人的那份（掌机看到
     # data-home="0" 又冒出配对页）。首页本来就小，禁止缓存最省心。
