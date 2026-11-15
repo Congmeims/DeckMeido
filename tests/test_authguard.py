@@ -1,6 +1,7 @@
 """请求来源校验（server/authguard.py）的单元测试。
 
-访问令牌已下线，这里只覆盖 Cookie 认证需要的同源 / Sec-Fetch-Site 判断。
+设备鉴权已改为 Bearer 令牌，Cookie 的 Sec-Fetch-Site 检查随之下线，
+这里只覆盖保留下来的同源判断。
 """
 from __future__ import annotations
 
@@ -19,13 +20,6 @@ class CsrfTest(unittest.TestCase):
         self.assertFalse(authguard.same_origin("https://evil.example", "127.0.0.1:18765"))
         self.assertFalse(authguard.same_origin("http://127.0.0.1:18765", ""))
         self.assertFalse(authguard.same_origin("file:///tmp/x", "127.0.0.1:18765"))
-
-    def test_sec_fetch_site(self):
-        self.assertTrue(authguard.same_site(None))
-        self.assertTrue(authguard.same_site("same-origin"))
-        self.assertTrue(authguard.same_site("none"))
-        self.assertFalse(authguard.same_site("cross-site"))
-        self.assertFalse(authguard.same_site("same-site"))
 
 
 if __name__ == "__main__":

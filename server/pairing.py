@@ -4,12 +4,16 @@
   1. 浏览器 POST /api/pair/start，拿到 pair_id（此时还没资格登录）；
   2. 掌机设置页看到待配对设备与 4 位 PIN，点「允许」并把 PIN 报给用户；
   3. 浏览器 POST /api/pair/confirm 提交 pair_id + pin；
-  4. 校验通过后签发设备专属 Cookie，服务端只保存 token 的哈希。
+  4. 校验通过后签发设备专属令牌，服务端只保存 token 的哈希，
+     浏览器把令牌存在自己本地（localStorage），之后每个请求放在
+     Authorization: Bearer <token> 请求头里。
 
 安全约定：
   - PIN 一次性、60 秒有效、最多 3 次尝试；错满 3 次本次配对作废，
     需要重新发起配对（不按 IP 封禁）；
-  - device token 只在下发那一刻存在于响应 Cookie 里，落盘的是 sha256；
+  - device token 只在签发那一刻出现在响应体里，落盘的是 sha256；
+    不用 Cookie —— Cookie 由浏览器自动携带，本机 WebView/重启后极易失效，
+    而请求头令牌只在显式发送时出现，顺带没有 CSRF 问题；
   - 审计日志只记 IP/UA 摘要/结果，绝不记录 PIN 或 token。
 """
 from __future__ import annotations
@@ -29,7 +33,6 @@ from . import audit, paths
 PIN_TTL_S = 60.0
 PIN_MAX_ATTEMPTS = 3
 DEFAULT_DEVICE_DAYS = 30
-COOKIE_NAME = "deckmeido_device"
 MAX_PENDING = 8
 
 STATE_PENDING = "pending"

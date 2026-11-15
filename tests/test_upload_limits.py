@@ -134,7 +134,7 @@ class UploadStreamApiTest(unittest.TestCase):
         cls._limit.start()
         cls.client = TestClient(main.app)
         cls.token = _paired_token()
-        cls.auth = {"Cookie": f"deckmeido_device={cls.token}"}
+        cls.auth = {"Authorization": f"Bearer {cls.token}"}
 
     @classmethod
     def tearDownClass(cls):

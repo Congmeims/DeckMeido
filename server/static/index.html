@@ -19,6 +19,23 @@
 </head>
 <body>
 
+<!-- 新手引导：整页浮层，卡片里写说明 + 一个示意按钮图。
+     只在页面里做，插件端不弹；每个浏览器只出现一次（跳过也算看过） -->
+<div id="onboardMask" hidden>
+  <div class="ob-card" role="dialog" aria-modal="true" aria-labelledby="obTitle">
+    <div class="ob-step" id="obStep">1 / 5</div>
+    <h2 class="ob-title" id="obTitle"></h2>
+    <div class="ob-body" id="obBody"></div>
+    <div class="ob-art" id="obArt" hidden></div>
+    <div class="ob-foot">
+      <button type="button" class="ob-btn ghost" id="obSkip">跳过</button>
+      <span class="ob-grow"></span>
+      <button type="button" class="ob-btn" id="obPrev">上一步</button>
+      <button type="button" class="ob-btn primary" id="obNext">下一步</button>
+    </div>
+  </div>
+</div>
+
 <div id="riBanner" hidden>
   <span class="ri-dot"></span>
   <span id="riBannerText">正在接管 Deck · 按 Esc 停止接管</span>
@@ -286,9 +303,8 @@
                  的「使用中 / 删除」对齐（行内右内边距 10px） -->
             <div class="api-foot">
               <div id="apiProfileHint" class="field-hint">同一时间只有一条生效；切换后立即使用新的那组。</div>
-              <!-- 就地保存：以前这里只有页面最底部一个「保存」，在「模型接入」里
-                   填完 Key 的人常常找不到该点哪里，以为保存不了 -->
-              <button id="apiProfileSave" class="mini-btn primary" type="button">保存接口</button>
+              <!-- 自动保存已接管：这里只留一个手动兜底的「立即保存」 -->
+              <button id="apiProfileSave" class="mini-btn" type="button" title="填完会自动保存，这里是立刻保存一次">立即保存</button>
               <button id="apiProfileAdd" class="mini-btn" type="button">新增一组</button>
             </div>
           </div>
@@ -296,7 +312,7 @@
             <div class="card-title">当前模型</div>
             <div class="field">
               <label>模型（和对话页顶栏、插件端共用）</label>
-              <select id="setModelSelect" class="cfg-select"></select>
+              <select id="setModelSelect" class="cfg-select" data-autosave></select>
               <div class="field-hint" id="setModelState">正在读取模型列表…</div>
             </div>
           </div>
@@ -338,11 +354,11 @@
             <div class="card-title">身份</div>
             <div class="field">
               <label>名字</label>
-              <input id="cfgPersonaName" type="text" placeholder="DeckMeido" autocomplete="off">
+              <input id="cfgPersonaName" data-autosave type="text" placeholder="DeckMeido" autocomplete="off">
             </div>
             <div class="field">
               <label>身份定位</label>
-              <textarea id="cfgPersonaTraits" rows="3" placeholder="日系女仆式助手：礼貌周到、称用户为主人，办事干练，偶尔带点俏皮的亲近感"></textarea>
+              <textarea id="cfgPersonaTraits" data-autosave rows="3" placeholder="日系女仆式助手：礼貌周到、称用户为主人，办事干练，偶尔带点俏皮的亲近感"></textarea>
               <div class="field-hint">这句会接在「你是 {名字}，」后面，最先影响她怎么理解自己。</div>
             </div>
           </div>
@@ -350,23 +366,23 @@
             <div class="card-title">称呼</div>
             <div class="field">
               <label>怎么称呼你</label>
-              <input id="cfgPersonaAddress" type="text" placeholder="主人" autocomplete="off">
+              <input id="cfgPersonaAddress" data-autosave type="text" placeholder="主人" autocomplete="off">
             </div>
           </div>
           <div class="card">
             <div class="card-title">语气</div>
             <div class="field">
               <label>说话方式</label>
-              <textarea id="cfgPersonaTone" rows="3" placeholder="礼貌、简洁、干练，偶尔一点俏皮，但不撒娇卖萌"></textarea>
+              <textarea id="cfgPersonaTone" data-autosave rows="3" placeholder="礼貌、简洁、干练，偶尔一点俏皮，但不撒娇卖萌"></textarea>
             </div>
             <div class="set-grid">
               <div class="field">
                 <label>句尾习惯（可留空）</label>
-                <input id="cfgPersonaEnding" type="text" placeholder="例如：说完结论就好，不加任何语气词" autocomplete="off">
+                <input id="cfgPersonaEnding" data-autosave type="text" placeholder="例如：说完结论就好，不加任何语气词" autocomplete="off">
               </div>
               <div class="field">
                 <label>落款（可留空）</label>
-                <input id="cfgPersonaSuffix" type="text" placeholder="例如：——女仆长" autocomplete="off">
+                <input id="cfgPersonaSuffix" data-autosave type="text" placeholder="例如：——女仆长" autocomplete="off">
               </div>
             </div>
             <div class="field">
@@ -385,7 +401,7 @@
             <div class="card-title">补充设定</div>
             <div class="field">
               <label>额外规则（可留空）</label>
-              <textarea id="cfgPersonaExtra" rows="5" placeholder="例如：称呼我「主人」，汇报事情先给结论再给过程；不主动开玩笑；涉及设备操作时先说清要做什么。"></textarea>
+              <textarea id="cfgPersonaExtra" data-autosave rows="5" placeholder="例如：称呼我「主人」，汇报事情先给结论再给过程；不主动开玩笑；涉及设备操作时先说清要做什么。"></textarea>
               <div class="field-hint">整段追加到系统提示词末尾，适合写上面表单装不下的规矩。</div>
             </div>
           </div>
@@ -439,7 +455,7 @@
             <div class="field field-row">
               <label style="margin:0">语音输入</label>
               <label class="switch">
-                <input id="cfgStt" type="checkbox">
+                <input id="cfgStt" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
@@ -450,7 +466,7 @@
               <div class="field field-row">
                 <label style="margin:0">录音时静音外放（录完自动恢复）</label>
                 <label class="switch">
-                  <input id="cfgSttDuck" type="checkbox">
+                  <input id="cfgSttDuck" data-autosave type="checkbox">
                   <span class="slider"></span>
                 </label>
               </div>
@@ -474,7 +490,7 @@
             <div class="field field-row">
               <label style="margin:0">智能音箱模式（声控唤醒「你好梅朵」）</label>
               <label class="switch">
-                <input id="cfgWake" type="checkbox">
+                <input id="cfgWake" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
@@ -487,7 +503,7 @@
             <div class="card-head">
               <div class="card-title">语音输出</div>
               <label class="switch" title="播报回复内容">
-                <input id="cfgTts" type="checkbox">
+                <input id="cfgTts" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
@@ -506,7 +522,7 @@
             <div class="field field-row" style="margin-top:8px">
               <label style="margin:0">播报音量临时抬升（播报期间自动提高音量，播完恢复）</label>
               <label class="switch">
-                <input id="cfgTtsBoost" type="checkbox" checked>
+                <input id="cfgTtsBoost" data-autosave type="checkbox" checked>
                 <span class="slider"></span>
               </label>
             </div>
@@ -528,7 +544,7 @@
             <div class="set-grid">
               <div class="field">
                 <label>AI 控制权限</label>
-                <select id="cfgPerm" class="cfg-select">
+                <select id="cfgPerm" data-autosave class="cfg-select">
                   <option value="manual">手动审批（每条命令都问你）</option>
                   <option value="auto">自动审批（只有危险命令才问你）</option>
                   <option value="full" class="opt-danger">完全访问（不再询问，风险自负）</option>
@@ -538,26 +554,26 @@
                 <div class="perm-custom" id="permCustom" hidden>
                   <label class="perm-custom-row">
                     <span>读取文件</span>
-                    <input type="checkbox" id="permCustomRead" data-k="read">
+                    <input type="checkbox" id="permCustomRead" data-k="read" data-autosave>
                   </label>
                   <label class="perm-custom-row">
                     <span>修改文件</span>
-                    <input type="checkbox" id="permCustomWrite" data-k="write">
+                    <input type="checkbox" id="permCustomWrite" data-k="write" data-autosave>
                   </label>
                   <label class="perm-custom-row">
                     <span>系统命令</span>
-                    <input type="checkbox" id="permCustomCmd" data-k="cmd">
+                    <input type="checkbox" id="permCustomCmd" data-k="cmd" data-autosave>
                   </label>
                   <label class="perm-custom-row">
                     <span>联网操作</span>
-                    <input type="checkbox" id="permCustomNet" data-k="net">
+                    <input type="checkbox" id="permCustomNet" data-k="net" data-autosave>
                   </label>
                   <div class="perm-custom-hint">勾选 = 这类操作先问你；取消勾选 = 直接执行。</div>
                 </div>
               </div>
               <div class="field">
                 <label>工作区目录（编程/文件任务默认位置）</label>
-                <input id="cfgWorkspace" type="text" placeholder="~/MeidoSpace" autocomplete="off">
+                <input id="cfgWorkspace" data-autosave type="text" placeholder="~/MeidoSpace" autocomplete="off">
               </div>
             </div>
             <div class="field-hint" style="margin-top:0">
@@ -589,7 +605,7 @@
             <div class="card-title">局域网访问</div>
             <div class="field">
               <label>局域网访问开关（切换后需重启后端生效）</label>
-              <select id="cfgLanEnable" class="cfg-select">
+              <select id="cfgLanEnable" data-autosave class="cfg-select">
                 <option value="off">关闭：只监听 127.0.0.1（仅本机）</option>
                 <option value="on">开启：监听 0.0.0.0（局域网可访问）</option>
               </select>
@@ -602,7 +618,7 @@
               <div class="field">
                 <label>服务端口（1024-65535，重启后端生效）</label>
                 <div class="token-row">
-                  <input id="cfgPort" type="number" min="1024" max="65535" step="1" autocomplete="off">
+                  <input id="cfgPort" data-autosave type="number" min="1024" max="65535" step="1" autocomplete="off">
                   <button id="savePort" class="mini-btn" type="button">保存端口</button>
                   <button id="restartPort" class="mini-btn" type="button">重启后端</button>
                 </div>
@@ -649,7 +665,7 @@
             <div class="card-head">
               <div class="card-title">睡眠模式</div>
               <label class="switch" title="闲置满指定时长后自动关机">
-                <input id="cfgSleepEnabled" type="checkbox">
+                <input id="cfgSleepEnabled" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
@@ -661,11 +677,11 @@
             <div class="ri-io-row">
               <div class="field">
                 <label>闲置多久后关机（分钟）</label>
-                <input id="cfgSleepMinutes" type="number" min="5" max="720" step="1" value="60">
+                <input id="cfgSleepMinutes" data-autosave type="number" min="5" max="720" step="1" value="60">
               </div>
               <div class="field">
                 <label>关机前倒计时（秒）</label>
-                <input id="cfgSleepCountdown" type="number" min="10" max="600" step="1" value="60">
+                <input id="cfgSleepCountdown" data-autosave type="number" min="10" max="600" step="1" value="60">
               </div>
             </div>
             <div class="field-hint" id="sleepCfgState">当前状态：未开启</div>
@@ -675,7 +691,7 @@
             <div class="card-head">
               <div class="card-title">跨屏键鼠（远程接管）</div>
               <label class="switch" title="允许局域网设备接管">
-                <input id="cfgRiEnabled" type="checkbox">
+                <input id="cfgRiEnabled" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
@@ -687,12 +703,12 @@
             <div class="ri-io-row">
               <div class="field">
                 <label>指针灵敏度 <span id="cfgRiSensVal" class="field-hint">1.5×</span></label>
-                <input id="cfgRiSens" type="range" min="0.5" max="3" step="0.1" value="1.5"
+                <input id="cfgRiSens" data-autosave type="range" min="0.5" max="3" step="0.1" value="1.5"
                        style="width:100%">
               </div>
               <div class="field">
                 <label>单次接管上限（分钟）</label>
-                <input id="cfgRiMax" type="number" min="1" max="120" step="1" value="30">
+                <input id="cfgRiMax" data-autosave type="number" min="1" max="120" step="1" value="30">
               </div>
             </div>
             <div class="field-hint" style="color:#e0a33a">
@@ -1052,14 +1068,14 @@
             <div class="card-head">
               <div class="card-title">对话开关</div>
               <label class="switch" title="关闭后这一组功能整体停用">
-                <input id="cfgChatVoice" type="checkbox" checked>
+                <input id="cfgChatVoice" data-autosave type="checkbox" checked>
                 <span class="slider"></span>
               </label>
             </div>
             <div class="field field-row">
               <label style="margin:0">带画面询问（截图随消息一起发）</label>
               <label class="switch">
-                <input id="cfgWithShot" type="checkbox">
+                <input id="cfgWithShot" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
@@ -1072,7 +1088,7 @@
             </p>
             <div class="field">
               <label>截屏询问提示词</label>
-              <textarea id="cfgAskTemplate" rows="4" placeholder="留空保存即恢复默认"></textarea>
+              <textarea id="cfgAskTemplate" data-autosave rows="4" placeholder="留空保存即恢复默认"></textarea>
               <div class="mem-foot">
                 <span class="field-hint">插件端点「截屏询问」时发给模型的提问。</span>
                 <button id="askTplReset" class="mini-btn" type="button">恢复默认</button>
@@ -1080,7 +1096,7 @@
             </div>
             <div class="field">
               <label>截屏翻译提示词</label>
-              <textarea id="cfgTranslateTemplate" rows="4" placeholder="留空保存即恢复默认"></textarea>
+              <textarea id="cfgTranslateTemplate" data-autosave rows="4" placeholder="留空保存即恢复默认"></textarea>
               <div class="mem-foot">
                 <span class="field-hint">插件端点「截屏翻译」时的翻译指令。</span>
                 <button id="trnTplReset" class="mini-btn" type="button">恢复默认</button>
@@ -1118,7 +1134,7 @@
             <div class="card-title">界面语言</div>
             <div class="field">
               <label>Language</label>
-              <select id="cfgLang" class="cfg-select">
+              <select id="cfgLang" data-autosave class="cfg-select">
                 <option value="zh">简体中文（默认）</option>
                 <option value="en">English（机翻）</option>
               </select>
@@ -1132,7 +1148,7 @@
             <div class="field field-row">
               <label style="margin:0">只在本机运行，不发起外网请求</label>
               <label class="switch">
-                <input id="cfgOfflineMode" type="checkbox">
+                <input id="cfgOfflineMode" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
@@ -1151,7 +1167,7 @@
             <div class="field field-row" style="margin-top:10px">
               <label style="margin:0">同时探测 GitHub（关掉只用国内镜像）</label>
               <label class="switch">
-                <input id="cfgUpdGithub" type="checkbox">
+                <input id="cfgUpdGithub" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
@@ -1166,7 +1182,7 @@
             <div class="card-title">开发者模式</div>
             <div class="field">
               <label>详细调试日志（保存后立即生效，不用重启后端）</label>
-              <select id="cfgDevMode" class="cfg-select">
+              <select id="cfgDevMode" data-autosave class="cfg-select">
                 <option value="off">关闭：保持现在的日志量</option>
                 <option value="on">开启：记录请求 / 模型 / 工具 / 语音细节</option>
               </select>
@@ -1193,9 +1209,11 @@
 
       </div>
     </div>
+    <!-- 设置改为自动保存：底栏只留状态与一个手动兜底按钮 -->
     <div class="set-foot">
+      <span class="set-auto-tag">自动保存</span>
       <div id="cfgHint"></div>
-      <button id="saveCfg" type="button">保存</button>
+      <button id="saveCfg" type="button" title="改完会自动保存，这里只是手动立刻保存一次">立即保存</button>
     </div>
   </div>
 </div>
@@ -1378,12 +1396,36 @@
   var pairConfirm = document.getElementById('pairConfirm');
   var pairCancel = document.getElementById('pairCancel');
 
-  // 设备配对登录：Cookie 已经生效时即可连接（回环访问由后端直接放行）
+  // 设备配对登录：已配对时把设备令牌存在浏览器本地，每个请求显式带在
+  // Authorization 头里（不用 Cookie）。本机访问由后端按来源直接放行。
   var deviceSession = false;
+  var DEVICE_TOKEN_KEY = 'deckmeido_device_token';
   // 本机判定：首页由后端按请求来源注入 data-home="1"。掌机自己打开的页面
   // 永远不该走配对，哪怕某一刻 authenticated 暂时是 false（后端刚重启、
   // 还没拿到 /api/auth/session 的回包，或者代理把来源改写了），也不弹配对页。
   var isHomePage = document.body.dataset.home === '1';
+
+  function deviceToken() {
+    try { return localStorage.getItem(DEVICE_TOKEN_KEY) || ''; } catch (e) { return ''; }
+  }
+  function setDeviceToken(tk) {
+    try {
+      if (tk) localStorage.setItem(DEVICE_TOKEN_KEY, tk);
+      else localStorage.removeItem(DEVICE_TOKEN_KEY);
+    } catch (e) {}
+  }
+  // 统一出口：所有后端请求都从 apiFetch 走，设备令牌自动带上，
+  // 不会再出现「某个接口忘了带凭据 → 401 → 界面以为掉登录」的情况
+  function apiFetch(url, opt) {
+    var o = {};
+    for (var k in (opt || {})) o[k] = opt[k];
+    var h = {};
+    for (var hk in (o.headers || {})) h[hk] = o.headers[hk];
+    var tk = deviceToken();
+    if (tk) h['Authorization'] = 'Bearer ' + tk;
+    o.headers = h;
+    return fetch(url, o);
+  }
 
   var ws = null;
   var typingEl = null;
@@ -1500,14 +1542,20 @@
     if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
     return (n / 1073741824).toFixed(1) + ' GB';
   }
-  // 静态资源的 <img src> 与下载链接都走 GET；鉴权靠同源 Cookie（已配对设备），
-  // 地址本身不再需要拼令牌。
+  // 浏览器不会给 <img>/<a>/<audio> 加自定义请求头，所以这些 GET 资源把设备令牌
+  // 拼在 ?token= 上（后端对这种只读地址额外接受查询参数令牌）
+  function deviceTokenQuery(url) {
+    var tk = deviceToken();
+    if (!tk) return url;
+    return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(tk);
+  }
+  // 静态资源的 <img src> 与下载链接都走 GET；鉴权靠设备令牌（查询参数）。
   function fileCardHtml(label, path) {
     var name = label || path.split('/').pop() || path;
     var ext = (name.split('.').pop() || '').toLowerCase();
     var url = '/files/' + path.split('/').map(encodeURIComponent).join('/');
-    // 下载走 GET，鉴权由同源 Cookie 完成（浏览器不会给 <a> 加自定义头）
-    var href = url;
+    // 下载走 GET，鉴权由设备令牌完成（浏览器不会给 <a> 加自定义头）
+    var href = deviceTokenQuery(url);
     // 卡片带文件路径属性，挂载后再去问大小（列表渲染是同步的，不能在里面 await）
     return '<div class="file-card" data-path="' + escapeHtml(path) + '">'
          + '<span class="fc-icon">' + (FILE_ICONS[ext] || '📄') + '</span>'
@@ -1529,7 +1577,7 @@
     });
     addZipBtn(root, cards);
     if (!paths.length) return;
-    fetch('/api/file_stat_batch', {
+    apiFetch('/api/file_stat_batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ paths: paths })
@@ -1561,9 +1609,9 @@
     a.className = 'fc-zip';
     a.textContent = '打包下载（' + n + ' 个文件）';
     // 下载走 GET，只能把路径放进查询参数（浏览器不会给 <a> 加自定义头）
-    a.href = '/api/zip?name=files.zip'
+    a.href = deviceTokenQuery('/api/zip?name=files.zip'
            + cards.filter(function (c) { return c.dataset.path; })
-                  .map(function (c) { return '&path=' + encodeURIComponent(c.dataset.path); }).join('');
+                  .map(function (c) { return '&path=' + encodeURIComponent(c.dataset.path); }).join(''));
     a.setAttribute('download', 'files.zip');
     host.appendChild(a);
   }
@@ -1724,8 +1772,8 @@
       return fileCardHtml(label, href.slice('/files/'.length).split('?')[0]);
     });
     s = s.replace(/!\[([^\]]*)\]\((\/uploads\/[^)\s]+)\)/g, function (m, alt, href) {
-      // 上传的图在 /uploads/ 下，鉴权由同源 Cookie（已配对设备）完成
-      return '<img class="chat-img" alt="' + alt + '" src="' + href + '">';
+      // 上传的图在 /uploads/ 下，鉴权由设备令牌（查询参数）完成
+      return '<img class="chat-img" alt="' + alt + '" src="' + deviceTokenQuery(href) + '">';
     });
     // 4) 表格（此时代码块已经抽走，不会被误判）
     s = mdTables(s, stash);
@@ -1784,7 +1832,7 @@
       });
   }
   function loadI18n(cb) {
-    fetch('/api/i18n').then(function (r) { return r.json(); }).then(function (d) {
+    apiFetch('/api/i18n').then(function (r) { return r.json(); }).then(function (d) {
       if (d && d.language === 'en' && d.strings) {
         UI_LANG = 'en';
         I18N_MAP = d.strings;
@@ -2068,7 +2116,7 @@
       if (!(ev && ev.type === 'screenshot' && ev.image)) return;
       var shot = document.createElement('img');
       shot.className = 'msg-shot';
-      shot.src = ev.image;
+      shot.src = deviceTokenQuery(ev.image);
       shot.alt = ev.summary || '附带的画面';
       shot.title = '点开看原图';
       // 先按 16:9 占位，图解码完再交回自适应，避免气泡先瘦后胖
@@ -2191,7 +2239,7 @@
     body.className = 'tl-body pic';
     var img = document.createElement('img');
     img.className = 'shot thumb';
-    img.src = ev.image;
+    img.src = deviceTokenQuery(ev.image);
     img.alt = '附带的画面';
     // 解码前先按 16:9 占好位置，别让气泡先瘦后胖（同下方截图行的处理）
     img.width = 280; img.height = 158;
@@ -2239,7 +2287,7 @@
   function postDebugRender(sid, chars, segs) {
     if (!serverDevMode || !sid) return;
     try {
-      fetch('/api/debug/render', {
+      apiFetch('/api/debug/render', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sid: sid, reasoning_chars: chars, segments: segs })
@@ -2301,7 +2349,7 @@
     // QAM / Steam WebKit 对 <audio> 不稳：改让后端用本机播放器放
     var btn = bubble.querySelector('.voice-play');
     if (btn) btn.textContent = '…';
-    fetch('/api/voice/play', {
+    apiFetch('/api/voice/play', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: meta.url })
@@ -2331,7 +2379,7 @@
     }
     voiceCur = bubble;
     bubble.classList.add('playing');
-    audio.src = url;
+    audio.src = deviceTokenQuery(url);
     var p = audio.play();
     if (p && p.catch) {
       p.catch(function () { voiceFallback(bubble, meta); });
@@ -2448,7 +2496,7 @@
       } else if (ev.image) {
         var img = document.createElement('img');
         img.className = 'shot';
-        img.src = ev.image;
+        img.src = deviceTokenQuery(ev.image);
         img.alt = '屏幕截图';
         // 图解码出来之前，按 16:9 的固有尺寸先占住位置。
         // 不占的话气泡先按 0 宽画一遍，图片一落地再把气泡撑开——
@@ -2839,7 +2887,7 @@
 
   function requestBackendRestart() {
     if (typeof addSystem === 'function') addSystem('已请求重启后端，请稍候…');
-    fetch('/api/restart', { method: 'POST', credentials: 'same-origin' })
+    apiFetch('/api/restart', { method: 'POST' })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
         if (!d) return;
@@ -3105,7 +3153,7 @@
   function fbDownload(path, name) {
     fbToast('正在下载：' + name, 'file');
     var url = '/api/preview?path=' + encodeURIComponent(path) + '&raw=1';
-    fetch(url).then(function (r) {
+    apiFetch(url).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.blob();
     }).then(function (blob) {
@@ -3131,7 +3179,7 @@
     body.innerHTML = '';
     body.classList.remove('md');
     var src = '/api/preview?path=' + encodeURIComponent(path);
-    fetch(src).then(function (r) { return r.json(); }).then(function (d) {
+    apiFetch(src).then(function (r) { return r.json(); }).then(function (d) {
       if (!d || d.error || !d.kind) {
         body.innerHTML = '<div class="fv-note">' + (d && d.error ? d.error : '预览失败') + '</div>';
         rbEl('fvMeta').textContent = '';
@@ -3258,7 +3306,7 @@
         error: fbWriteBlockedText()
       });
     }
-    return fetch('/api/fs', {
+    return apiFetch('/api/fs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ op: op, path: path, path2: path2 || '' })
@@ -3488,7 +3536,7 @@
       fbToast('已添加到输入框', 'chat');
     });
     fbCtxItem('新会话提问', function () {
-      fetch('/api/sessions/create', { method: 'POST' })
+      apiFetch('/api/sessions/create', { method: 'POST' })
         .then(function (r) { return r.json(); })
         .then(function (d) {
           if (d && d.ok) { doSend(text); }
@@ -3783,7 +3831,7 @@
 
   // 统一的 /api/browse 请求：非 JSON（500 的纯文本、网关错误页）不能直接 r.json()
   function fbFetchList(url) {
-    return fetch(url).then(function (r) {
+    return apiFetch(url).then(function (r) {
       return r.json().catch(function () {
         return { error: '读取失败（HTTP ' + r.status + '）' };
       }).then(function (data) {
@@ -4166,7 +4214,7 @@
       cb();
       return;
     }
-    fetch('/api/upload-limit?dir=' + encodeURIComponent(task.base || ''))
+    apiFetch('/api/upload-limit?dir=' + encodeURIComponent(task.base || ''))
       .then(function (r) { return r.json().catch(function () { return {}; }); })
       .then(function (j) {
         var lim = (j && typeof j.limit === 'number') ? j.limit : null;
@@ -4255,7 +4303,7 @@
       var hit = fbMkdirCache[full];
       if (hit === true) { cur = full; step(null); return; }
       if (hit && hit.error) { cb(hit.error); return; }
-      fetch('/api/fs', {
+      apiFetch('/api/fs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ op: 'mkdir', path: cur, path2: seg })
@@ -4883,10 +4931,12 @@
     var mounted = !!host;
     if (host) { try { term.open(host); fit.fit(); } catch (e) {} }
 
-    // 连 WebSocket：同源连接，终端鉴权由设备 Cookie / 回环来源决定
+    // 连 WebSocket：同源连接，终端鉴权由设备令牌（?token=）/ 本机来源决定
     function wsUrl() {
       var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      return proto + '://' + location.host + '/ws/terminal';
+      var tk = deviceToken();
+      return proto + '://' + location.host + '/ws/terminal'
+        + (tk ? '?token=' + encodeURIComponent(tk) : '');
     }
     function connect() {
       try { ws = new WebSocket(wsUrl()); } catch (e) { return; }
@@ -5386,7 +5436,7 @@
       return;
     }
     // AI 命令走旧路径
-    fetch('/api/terminal/stop', { method: 'POST' })
+    apiFetch('/api/terminal/stop', { method: 'POST' })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         it.running = false;
@@ -5622,7 +5672,7 @@
     if (!deviceSession && !isHomePage) return;
     // 只在真有命令在跑时才轮询；页面在后台时跳过（回来时下一次 tick 会补上）
     if (document.hidden) return;
-    fetch('/api/terminal')
+    apiFetch('/api/terminal')
       .then(function (r) { return r.json(); })
       .then(function (d) { termApplyState(d.state); })
       .catch(function () {});
@@ -5680,7 +5730,7 @@
     inp.value = '';
     var it = termAdd('me', cmd, '');
     rbEl('termRun').disabled = true;
-    fetch('/api/terminal/run', {
+    apiFetch('/api/terminal/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command: cmd, cols: 120, rows: 30 })
@@ -5742,13 +5792,15 @@
   });
 
   function connect() {
-    // 已配对设备靠 HttpOnly Cookie 认证；本机回环访问后端直接放行
+    // 已配对设备靠设备令牌认证（WebSocket 带在 ?token= 上）；本机来源后端直接放行
     if (!deviceSession && !isHomePage) { showAuth(''); return; }
     // 防重入：已有连接正在建/已建立时不要再开一条，
     // 否则两条 ws 同时收消息、onclose 互相打架，重连风暴会打乱忙碌态
     if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
     var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(proto + '://' + location.host + '/ws');
+    var tk = deviceToken();
+    ws = new WebSocket(proto + '://' + location.host + '/ws'
+      + (tk ? '?token=' + encodeURIComponent(tk) : ''));
 
     ws.onopen = function () {
       connInfo.closeCount = 0;
@@ -6313,11 +6365,12 @@
       // 只清内存不动 localStorage：后端真被杀时，盘上那份缓存才是补回的依据
       turnCache.segs = []; turnCache.cur = '';
       if (ev.code === 4401) {
-        // 设备凭据被拒：清掉本地状态并停在鉴权页，不要继续重连。
+        // 设备令牌被拒：清掉本地令牌并停在鉴权页，不要继续重连。
         // 本机页面例外：它的来源就是掌机自己，4401 只可能是后端刚重启、
-        // 配置还没读完这类瞬时状态，照常按退避重连即可。
+        // 配置还没读完或代理改写了来源这类瞬时状态，照常按退避重连即可。
         if (!isHomePage) {
           deviceSession = false;
+          setDeviceToken('');
           clearTimeout(reconnectTimer);
           showAuth('登录已失效，请重新配对');
           return;
@@ -6445,7 +6498,7 @@
 
   function pairPoll() {
     if (!pairingId) return;
-    fetch('/api/pair/status?pair_id=' + encodeURIComponent(pairingId))
+    apiFetch('/api/pair/status?pair_id=' + encodeURIComponent(pairingId))
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
         var d = res.d || {};
@@ -6480,7 +6533,7 @@
     pairBtn.hidden = true;
     pairApproved = false;
     pinClear(false);
-    fetch('/api/pair/start', { method: 'POST' })
+    apiFetch('/api/pair/start', { method: 'POST' })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
         if (!res.ok) {
@@ -6505,7 +6558,7 @@
     pairBusy = true;
     pairConfirm.disabled = true;
     pairMsg.textContent = '';
-    fetch('/api/pair/confirm', {
+    apiFetch('/api/pair/confirm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pair_id: pairingId, pin: pin, remember: true }),
@@ -6527,12 +6580,14 @@
           }
           return;
         }
-        // 服务端已下发 HttpOnly Cookie；进入主界面
+        // 服务端已签发设备令牌：存本地，之后的请求与 WebSocket 都带上它
+        if (res.d && res.d.token) setDeviceToken(res.d.token);
         deviceSession = true;
         pairReset();
         authOverlay.classList.remove('show');
         reconnectNow();
         loadSessions();
+        maybeOnboard();
       })
       .catch(function () {
         pairBusy = false;
@@ -6558,7 +6613,7 @@
     setTimeout(function () { pairBtn.focus(); }, 50);
   }
 
-  // 启动时先问后端：Cookie 已配对或本机回环就直接进主界面。
+  // 启动时先问后端：已配对（本地存有设备令牌）或本机来源就直接进主界面。
   // 后端刚拉起的那几百毫秒里页面已经加载完、端口还没 listen，fetch 会失败；
   // 这不是鉴权失败，不能弹配对页，静默退避重试（0.3s → 3s 封顶）。
   var bootAuthTries = 0;
@@ -6566,14 +6621,14 @@
   var bootedSession = false;
   function bootAuth() {
     clearTimeout(bootAuthTimer);
-    fetch('/api/auth/session', { cache: 'no-store' })
+    apiFetch('/api/auth/session', { cache: 'no-store' })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         bootAuthTries = 0;
         deviceSession = !!(d && d.authenticated);
-        // 连接面板里的「鉴权方式」：回环免验证 / 设备配对凭据
-        connInfo.authMode = d && d.local ? '本机回环（免验证）'
-          : (d && d.device ? '设备配对凭据' : '未登录');
+        // 连接面板里的「鉴权方式」：本机来源免验证 / 设备令牌
+        connInfo.authMode = d && d.local ? '本机来源（免验证）'
+          : (d && d.device ? '设备令牌' : '未登录');
         if (deviceSession) {
           authOverlay.classList.remove('show');
           if (d.version_display || d.version) {
@@ -6583,6 +6638,7 @@
           if (!bootedSession) {
             bootedSession = true;
             connect();
+            maybeOnboard();
           }
           return;
         }
@@ -6591,7 +6647,7 @@
           // 掌机本机页面：后端按来源判过 local=true，即便这一拍回的是 false
           // （例如刚重启、配置还没读完），也不弹配对页，直接建连由后端再判
           authOverlay.classList.remove('show');
-          if (!bootedSession) { bootedSession = true; connect(); }
+          if (!bootedSession) { bootedSession = true; connect(); maybeOnboard(); }
           return;
         }
         showAuth('');
@@ -6612,7 +6668,7 @@
   function loadAuthVersion() {
     if (authVerLoaded) return;
     authVerLoaded = true;
-    fetch('/api/version')
+    apiFetch('/api/version')
       .then(function (r) { return r.json(); })
       .then(function (v) { authVer.textContent = 'v' + (v.version_display || v.version || '?'); })
       .catch(function () { authVer.textContent = '未知'; });
@@ -6752,7 +6808,7 @@
   }
 
   function fetchCtrl(force) {
-    return fetch('/api/controls?force=' + (force ? 1 : 0))
+    return apiFetch('/api/controls?force=' + (force ? 1 : 0))
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (c) {
         if (!c) { ctrlHint.textContent = '读取失败'; return null; }
@@ -6767,7 +6823,7 @@
     ctrlFixBtn.disabled = true;
     ctrlHint.textContent = '处理中…';
     ctrlLog.textContent = '';
-    fetch('/api/controls/fix', { method: 'POST' })
+    apiFetch('/api/controls/fix', { method: 'POST' })
       .then(function (r) { return r.json(); })
       .then(function (res) {
         var lines = (res.results || []).map(function (x) {
@@ -6844,7 +6900,7 @@
       if (pw.type === 'text') { pw.type = 'password'; eye.textContent = '显示'; }
       btn.disabled = true;
       err.textContent = '正在验证管理员密码…';
-      fetch('/api/sudo/password', {
+      apiFetch('/api/sudo/password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: value })
@@ -6885,7 +6941,7 @@
       }
     };
     loadSudoAuth = function () {
-      fetch('/api/sudo/status').then(function (r) { return r.json(); })
+      apiFetch('/api/sudo/status').then(function (r) { return r.json(); })
         .then(function (res) {
           if (!res || !res.ok) return;
           var pending = res.pending;
@@ -6938,7 +6994,7 @@
     btn.disabled = true;
     pw.disabled = true;
     scHint.textContent = '正在验证管理员密码…';
-    fetch('/api/selfcheck/password', {
+    apiFetch('/api/selfcheck/password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ component: key, password: value })
@@ -6989,7 +7045,7 @@
     btn.disabled = true;
     btn.textContent = '卸载中…';
     scHint.textContent = '正在卸载 ' + it.name + '…';
-    fetch('/api/selfcheck/uninstall?component=' + encodeURIComponent(it.key),
+    apiFetch('/api/selfcheck/uninstall?component=' + encodeURIComponent(it.key),
           { method: 'POST' })
       .then(function (r) {
         return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; },
@@ -7179,7 +7235,7 @@
   }
 
   loadSelfcheck = function () {
-    return fetch('/api/selfcheck')
+    return apiFetch('/api/selfcheck')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
         if (!d || !d.components) { scHint.textContent = '读取组件清单失败'; return; }
@@ -7198,7 +7254,7 @@
     scPollTimer = setInterval(function () {
       // 进度本来就走 WS 实时推送，这里的 HTTP 只是兜底：页面在后台时不必再拉
       if (document.hidden) return;
-      fetch('/api/selfcheck/progress')
+      apiFetch('/api/selfcheck/progress')
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
           var job = d && d.job;
@@ -7215,7 +7271,7 @@
 
   function installComponent(key) {
     scHint.textContent = '正在启动安装…';
-    fetch('/api/selfcheck/install?component=' + encodeURIComponent(key), { method: 'POST' })
+    apiFetch('/api/selfcheck/install?component=' + encodeURIComponent(key), { method: 'POST' })
       .then(function (r) { return r.json(); })
       .then(function (res) {
         if (!res || !res.ok) {
@@ -7528,7 +7584,7 @@
     if (!item) return;
     if (!busy) { doSend(item.text); return; }
     forceSendAfterCancel = item.text;
-    fetch('/api/cancel?client=' + encodeURIComponent(myClient()) + '&device=' + encodeURIComponent(DEVICE_ID), { method: 'POST' })
+    apiFetch('/api/cancel?client=' + encodeURIComponent(myClient()) + '&device=' + encodeURIComponent(DEVICE_ID), { method: 'POST' })
       .catch(function () {});
   }
 
@@ -7637,7 +7693,7 @@
     var gap = connected ? 3000 : 10000;
     if (now - lastPollAt < gap) return;
     lastPollAt = now;
-    fetch('/api/status')
+    apiFetch('/api/status')
       .then(function (r) {
         connInfo.httpOk = r.ok;
         return r.ok ? r.json() : null;
@@ -7701,7 +7757,7 @@
         extra = sib;
       }
     }
-    return fetch('/api/messages/delete', {
+    return apiFetch('/api/messages/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ts: ts, role: isUser ? 'user' : 'assistant', with_reply: isUser })
@@ -7888,7 +7944,7 @@
     }
     setBusy(true);
     showTyping();
-    fetch('/api/retry', { method: 'POST' })
+    apiFetch('/api/retry', { method: 'POST' })
       .then(function (r) { if (!r.ok) { hideTyping(); setBusy(false); addSystem('没有可重试的消息'); } })
       .catch(function () { hideTyping(); setBusy(false); });
   }
@@ -7963,7 +8019,7 @@
     cancelGuardUntil = Date.now() + 5000;
     // 带上调用方：后端日志里会写成「终止请求：client=… device=… ip=…」，
     // 自动终止的来源（遮罩、别的端、插件）一查就知道，不用再靠猜
-    fetch('/api/cancel?client=' + encodeURIComponent(myClient()) + '&device=' + encodeURIComponent(DEVICE_ID), { method: 'POST' })
+    apiFetch('/api/cancel?client=' + encodeURIComponent(myClient()) + '&device=' + encodeURIComponent(DEVICE_ID), { method: 'POST' })
       .catch(function () {});
     setBusy(false);
     hideTyping();
@@ -8061,7 +8117,7 @@
   function duckOutput(on) {
     // 后端静默降级：工具缺失/命令失败都不影响录音，这里忽略一切错误
     try {
-      fetch('/api/stt/duck?on=' + (on ? 'true' : 'false'), { method: 'POST' })
+      apiFetch('/api/stt/duck?on=' + (on ? 'true' : 'false'), { method: 'POST' })
         .catch(function () {});
     } catch (e) {}
   }
@@ -8114,7 +8170,7 @@
     if (!IS_NATIVE || micState !== 'idle') return;
     micBtn.classList.add('busy');
     try {
-      var st = await (await fetch('/api/stt')).json();
+      var st = await (await apiFetch('/api/stt')).json();
       sttReady = !!(st.enable !== false && st.runtime && st.model);
       if (!sttReady) {
         fbToast('语音输入未启用或模型未下载：到设置 → 语音引擎里开启并下载模型', 'chat', true);
@@ -8188,7 +8244,7 @@
     duckOutput(false);
     try {
       var wav = encodeWav(chunks, rate);
-      var res = await fetch('/api/stt/transcribe', {
+      var res = await apiFetch('/api/stt/transcribe', {
         method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav
       });
       var d = {};
@@ -8475,7 +8531,7 @@
   // 结果由后端缓存（约 2 秒上限），所以这里不需要再设超时。
   function checkNetworkHint() {
     if (!netHintBanner) return;
-    fetch('/api/net/probe').then(readApiResponse).then(function (res) {
+    apiFetch('/api/net/probe').then(readApiResponse).then(function (res) {
       var d = res && res.data;
       if (!d || !res.ok || d.state === 'online') return;
       if (netHintDismissed) return;
@@ -8492,7 +8548,7 @@
 
   function enableOfflineFromHint() {
     if (netHintText) netHintText.textContent = '正在切换…';
-    fetch('/api/config', {
+    apiFetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ offline_mode: true })
@@ -8539,7 +8595,7 @@
   // 日志占用：清空后立即重拉，不等轮询
   function refreshLogUsage() {
     if (!devLogUsage) return;
-    fetch('/api/logs/usage').then(readApiResponse).then(function (res) {
+    apiFetch('/api/logs/usage').then(readApiResponse).then(function (res) {
       if (res.data) applyLogUsage(res.data);
     }).catch(function () {});
   }
@@ -8555,7 +8611,7 @@
   function clearLogCategory(category, label) {
     if (!window.confirm('确定清空' + label + '？清空后不可恢复。\n只清日志，不碰配置、会话、记忆和模型。')) return;
     logClearNoteText('正在清空' + label + '…', 0);
-    fetch('/api/logs/clear', {
+    apiFetch('/api/logs/clear', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ category: category })
@@ -8784,7 +8840,7 @@
   function loadVersion() {
     if (verLoaded) return;
     verLoaded = true;
-    fetch('/api/version')
+    apiFetch('/api/version')
       .then(function (r) { return r.json(); })
       .then(function (v) {
         var disp = v.version_display || v.version || '';
@@ -8811,7 +8867,7 @@
   var brandVer = document.getElementById('brandVer');
   function loadBrandVersion() {
     if (!brandVer) return;
-    fetch('/api/version')
+    apiFetch('/api/version')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (v) {
         // version_display 已是「0.7.5-f2931ae」，网页只管前面加 v，不再自己拆/拼
@@ -8829,7 +8885,7 @@
     updNote.textContent = '正在同时查询镜像与 GitHub…';
     updApply.style.display = 'none';
     updCheck.disabled = true;
-    fetch('/api/update/check')
+    apiFetch('/api/update/check')
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
       .then(function (res) {
         updCheck.disabled = false;
@@ -8871,7 +8927,7 @@
   updApply.addEventListener('click', function () {
     updApply.disabled = true;
     updNote.textContent = '正在开始升级…';
-    fetch('/api/update/apply', { method: 'POST' })
+    apiFetch('/api/update/apply', { method: 'POST' })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
       .then(function (res) {
         if (!res.ok) {
@@ -8904,7 +8960,7 @@
   }
 
   function pairPost(path, body) {
-    fetch(path, {
+    apiFetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {}),
@@ -8920,9 +8976,9 @@
   function loadPairInfo() {
     var q = '';
     Promise.all([
-      fetch('/api/pair/pending?history=1').then(function (r) { return r.json(); }),
-      fetch('/api/devices' + q).then(function (r) { return r.json(); }),
-      fetch('/api/audit?limit=50')
+      apiFetch('/api/pair/pending?history=1').then(function (r) { return r.json(); }),
+      apiFetch('/api/devices' + q).then(function (r) { return r.json(); }),
+      apiFetch('/api/audit?limit=50')
         .then(function (r) { return r.json(); }),
     ])
       .then(function (all) {
@@ -9160,7 +9216,8 @@
         + '<button class="api-toggle" type="button" aria-label="展开/收起" aria-expanded="'
         + (p.open ? 'true' : 'false') + '">›</button>'
         + '<input class="api-name" type="text" maxlength="40" aria-label="名称/备注"'
-        + ' placeholder="名称/备注" value="' + escapeHtml(p.name) + '">'
+        + ' data-autosave placeholder="名称/备注" value="' + escapeHtml(p.name) + '"'
+        + ' data-asv="' + escapeHtml(p.name) + '">'
         + '<div class="api-sum">'
         + '<span class="api-host">' + escapeHtml(apiHostOf(p.base_url)) + '</span>'
         + '<span class="api-mask">' + escapeHtml(p.key_set ? p.masked : '未配置 Key') + '</span>'
@@ -9173,10 +9230,12 @@
         + '</div>'
         + '<div class="api-detail set-grid">'
         + '<div class="field"><label>接口地址（base_url）</label>'
-        + '<input class="api-base" type="text" autocomplete="off" placeholder="https://api.deepseek.com"'
-        + ' value="' + escapeHtml(p.base_url) + '"></div>'
+        + '<input class="api-base" type="text" autocomplete="off" data-autosave'
+        + ' placeholder="https://api.deepseek.com"'
+        + ' value="' + escapeHtml(p.base_url) + '"'
+        + ' data-asv="' + escapeHtml(p.base_url) + '"></div>'
         + '<div class="field"><label>API Key</label>'
-        + '<input class="api-key" type="password" autocomplete="off" placeholder="'
+        + '<input class="api-key" type="password" autocomplete="off" data-autosave placeholder="'
         + escapeHtml(p.key_set ? (p.masked + '（已配置，留空不改）') : 'sk-…') + '"></div>'
         + '<div class="field-hint grid-full">'
         + (p.key_set ? '已配置：' + escapeHtml(p.masked) : '还没有配置 Key')
@@ -9240,7 +9299,7 @@
   // 只切当前使用：不动其它字段，后端保存后 apply_config 立刻更新 LLMClient
   function switchApiProfile(id, name) {
     apiProfileHint.textContent = '正在切换到「' + (name || '未命名') + '」…';
-    fetch('/api/config', {
+    apiFetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ current_api: id })
@@ -9279,12 +9338,12 @@
     if (wasEmpty) apiProfilesState.current = apiProfilesState.profiles[0].id;
     paintApiProfiles();
     syncUsageApiOptions(apiProfilesState.profiles, apiProfilesState.current);
-    apiProfileHint.textContent = '填好地址和 Key 后点右边「保存接口」（或页面底部的「保存」）；新增的这条保存后才能切换为当前使用';
+    apiProfileHint.textContent = '填好地址和 Key 后会自动保存；新增的这条保存后才能切换为当前使用';
   });
 
-  // 就地保存：跟底部「保存」走同一条路径（含权限档位确认），
-  // 省掉「填完 Key 还要翻到页面最底部找按钮」这一步
-  apiProfileSave.addEventListener('click', cfgPermGateThenSave);
+  // 接口行的「保存接口」按钮：新增的一组要先落盘才能被切换为当前使用。
+  // 平时不用点——填完停手会自动保存；保留它作为手动立刻保存的出口
+  apiProfileSave.addEventListener('click', function () { cfgPermGateThenSave(); });
 
   // ---------- 用量与余额（设置 → 模型接入） ----------
   // 后端 /api/usage 只读本地聚合（userdata/usage/*.json），/api/usage/balance
@@ -9430,7 +9489,7 @@
 
   function loadUsageStats() {
     var target = usageApi || (apiProfilesState.current || 'all');
-    return fetch('/api/usage?days=14&api=' + encodeURIComponent(target))
+    return apiFetch('/api/usage?days=14&api=' + encodeURIComponent(target))
       .then(function (r) {
         if (!r.ok) {
           throw new Error(r.status === 401 ? '登录已失效，请重新配对'
@@ -9463,7 +9522,7 @@
     usageBalanceEl.style.color = 'var(--muted)';
     usageBalanceHint.textContent = '正在查询'
       + (wantName ? '「' + wantName + '」' : '当前账户') + '的余额…';
-    return fetch('/api/usage/balance' + q)
+    return apiFetch('/api/usage/balance' + q)
       .then(function (r) { return r.json(); })
       .then(function (b) {
         // 账户名以后端实际查询的那一组为准，避免界面写 A、实际查 B
@@ -9531,7 +9590,7 @@
   });
 
   document.getElementById('usageExport').addEventListener('click', function () {
-    fetch('/api/usage/export')
+    apiFetch('/api/usage/export')
       .then(function (r) {
         if (!r.ok) throw new Error('导出失败（HTTP ' + r.status + '）');
         return r.blob();
@@ -9554,7 +9613,7 @@
 
   document.getElementById('usageClear').addEventListener('click', function () {
     if (!confirm('清空本地用量统计？余额与配置不受影响。')) return;
-    fetch('/api/usage/clear', { method: 'POST' })
+    apiFetch('/api/usage/clear', { method: 'POST' })
       .then(function (r) {
         if (!r.ok) throw new Error('清空失败（HTTP ' + r.status + '）');
         return r.json();
@@ -9584,6 +9643,9 @@
     // 每次打开都从第一页开始；上次停在哪页容易让人以为设置不见了
     showSetPane('model');
     cfgHint.textContent = '';
+    // 打开设置就开自动保存；等 loadCfgForm 回填完并记下基准值后才真正生效
+    autoSaving = false;
+    autoSavePending = false;
     loadMemory();
     loadVersion();
     loadCfgForm();
@@ -9602,7 +9664,9 @@
   // 读一次配置填进设置页表单。导入备份改了人设之后也要再填一遍，
   // 所以单独拆出来
   function loadCfgForm() {
-    fetch('/api/config')
+    // 回填期间先挂起自动保存，免得读到一半的值被当成用户改的
+    autoSaving = false;
+    apiFetch('/api/config')
       .then(function (r) {
         if (!r.ok) throw new Error(r.status === 401 ? '登录已失效，请重新配对' : '读取失败');
         return r.json();
@@ -9698,16 +9762,19 @@
         updSourceHint.textContent = c.update_mirror ? '镜像地址：' + c.update_mirror : '';
         // 没配 Key 时直接把设置页顶到最显眼的位置当首次引导
         if (!c.llm_configured) {
-          cfgHint.textContent = '首次使用：填好上面的 API 地址和 Key，点「保存接口」后就能开始对话';
+          cfgHint.textContent = '首次使用：填好上面的 API 地址和 Key，停手就会自动保存，之后就能开始对话';
           apiProfileHint.style.color = '';
           apiProfileHint.textContent = c.api_profiles && c.api_profiles.length
-            ? '还没有可用的 Key：展开那一组，填好 API Key 后点「保存接口」'
-            : '还没有配置接口：点「新增一组」，填好地址和 Key 后点「保存接口」';
+            ? '还没有可用的 Key：展开那一组，填好 API Key 后会立即自动保存'
+            : '还没有配置接口：点「新增一组」，填好地址和 Key 后会自动保存';
         }
+        // 回填完再记一遍基准值：自动保存只提交之后真的改动过的项
+        rememberAutoSave();
+        autoSaving = true;
       })
       .catch(function (e) {
         var msg = (e && e.message) || '';
-        if (/401/.test(msg)) { showAuth('登录已失效，请重新配对'); }
+        if (/401/.test(msg) && !isHomePage) { showAuth('登录已失效，请重新配对'); }
         // 同「保存」：fetch 层失败只给一句人话，别把 Failed to fetch 摆到界面上
         else if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
           cfgHint.textContent = '连不上服务，请稍等几秒重试';
@@ -9725,7 +9792,7 @@
   var memKinds = [];      // [{id,name}]，顺序由后端给，列表分组也按它排
 
   function memFetch(path, opt) {
-    return fetch(path, opt)
+    return apiFetch(path, opt)
       .then(function (r) {
         // 不查状态码的话，401/500 返回的 {"detail": ...} 会被当成成功结果
         // 往下走，界面上表现为「点了没反应」或列表空白但没报错
@@ -10166,6 +10233,8 @@
 
   // 关掉设置 = 回到对话：主界面、侧栏会话列表、底部按钮文案都恢复原样
   function closeSettings() {
+    // 还有点改动没落盘（比如刚打完字就点返回）：先抢存一次再走
+    if (typeof flushAutoSave === 'function') flushAutoSave();
     document.body.classList.remove('settings-mode');
     document.body.classList.remove('sb-open');
     // 搜索词不跨次保留：下次打开设置还是正常的分区视图
@@ -10208,7 +10277,7 @@
       return;
     }
     portHint.textContent = '保存中…';
-    fetch('/api/config', {
+    apiFetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ port: port }),
@@ -10227,7 +10296,7 @@
   restartPort.addEventListener('click', function () {
     portHint.style.color = 'var(--muted)';
     portHint.textContent = '正在请求重启…';
-    fetch('/api/restart', { method: 'POST' })
+    apiFetch('/api/restart', { method: 'POST' })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
         if (!res.ok) { portHint.textContent = res.d.detail || '重启请求失败'; return; }
@@ -10239,12 +10308,12 @@
       .catch(function () { portHint.textContent = '连不上服务，请稍后重试'; });
   });
 
-  // 开关只改界面提示；真正落盘要点底部「保存」
+  // 开关只改界面提示；停手后由自动保存落盘（lan_enable 需要重启后端生效）
   cfgLanEnable.addEventListener('change', function () {
     var on = cfgLanEnable.value === 'on';
     lanWarn.textContent = on
-      ? '局域网内已启用访问，可随时关闭。点「保存」后需重启后端生效。'
-      : '关闭后只监听 127.0.0.1（仅本机）。点「保存」后需重启后端生效。';
+      ? '局域网内已启用访问，可随时关闭。保存后需重启后端生效。'
+      : '关闭后只监听 127.0.0.1（仅本机）。保存后需重启后端生效。';
     lanWarn.style.color = on ? '#e0a33a' : 'var(--muted)';
   });
 
@@ -10276,7 +10345,8 @@
     permCustom.hidden = (cfgPerm.value !== 'custom');
   });
 
-  function cfgPermGateThenSave() {
+  // done(ok)：自动保存用同一个入口，靠回调知道自己这次到底存没存成
+  function cfgPermGateThenSave(done) {
     // 从非 full 切到 full 时先过风险确认，没同意就不提交这次保存
     if (cfgPerm.value === 'full' && cfgPerm.dataset.prev !== 'full') {
       confirmFullAccess().then(function (ok) {
@@ -10285,18 +10355,144 @@
           syncPermDanger(cfgPerm);
           cfgHint.textContent = '已取消：仍为「' +
             cfgPerm.options[cfgPerm.selectedIndex].text + '」';
+          if (done) done(false);
           return;
         }
         cfgPerm.dataset.prev = 'full';
-        doSaveCfg();
+        doSaveCfg(done);
       });
       return;
     }
     cfgPerm.dataset.prev = cfgPerm.value;
-    doSaveCfg();
+    doSaveCfg(done);
   }
 
-  saveCfg.addEventListener('click', cfgPermGateThenSave);
+  // 底栏的「立即保存」只是兜底：正常改动停手就会自动落盘（见 scheduleAutoSave），
+  // 这里给一个「我就是要马上存」的出口，走同一条路径
+  saveCfg.addEventListener('click', function () { cfgPermGateThenSave(); });
+
+  // ---------- 设置页自动保存 ----------
+  // 改完就存：输入框停手 800ms 后提交，开关/下拉/失焦立刻提交。
+  // 一次只允许一个 /api/config 在飞，期间的改动合并到下一次；
+  // 保存期间正在打字的那一格会跳过，等它失焦或被一起带进下一次。
+  var AUTO_SAVE_MS = 800;
+  var autoSaveTimer = null;
+  var autoSaveBusy = false;
+  var autoSaveAgain = false;
+  var autoSaving = false;
+  // 还等着自动保存的改动：关设置页 / 离开页面前要抢存一次，
+  // 否则最后一个字打完就切走会丢
+  var autoSavePending = false;
+  // 每类控件怎么判定「这次改动需要提交」：
+  //   开关/单选        → 立刻存
+  //   下拉             → 选完（change）再存
+  //   单行文本         → 失焦再存，正在输入时只排一个延时
+  //   多行文本（人设） → 边打边排延时，免得整段话打完才落盘
+  var AUTO_SAVE_RULES = [
+    { sel: 'input[type="checkbox"], input[type="radio"]', on: 'change', now: true },
+    { sel: 'select', on: 'change', now: true },
+    { sel: 'input[type="range"]', on: 'change', now: true },
+    { sel: 'textarea', on: 'input', now: false },
+    { sel: 'input[type="text"], input[type="password"], input[type="number"], input[type="search"]',
+      on: 'input', now: false, blur: true }
+  ];
+
+  // 打开设置页时把当前值记下来：自动保存只提交「真的变了」的改动，
+  // 否则光是打开 / 切分区就会被误判成修改
+  function rememberAutoSave() {
+    var setPaneEls = document.querySelectorAll('[data-autosave]');
+    for (var i = 0; i < setPaneEls.length; i++) {
+      var el = setPaneEls[i];
+      el.dataset.asv = el.type === 'checkbox' ? (el.checked ? '1' : '0') : String(el.value || '');
+    }
+  }
+
+  function autoSaveDirty() {
+    var els = document.querySelectorAll('[data-autosave]');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (!el.dataset.asv) continue;   // 还没记过初始值的（动态行）不参与
+      var cur = el.type === 'checkbox' ? (el.checked ? '1' : '0') : String(el.value || '');
+      if (cur !== el.dataset.asv) return true;
+    }
+    return false;
+  }
+
+  // 输入框里还有没提交的字：保存前端校验会因为「Key 太短 / 地址不全」报错，
+  // 而这些是打字过程中的中间态，等用户停手就行，不该弹红字
+  function autoSaveTyping() {
+    var el = document.activeElement;
+    if (!el || !el.matches) return false;
+    return el.matches('input[type="text"], input[type="password"], input[type="number"], '
+      + 'input[type="search"], textarea');
+  }
+
+  function scheduleAutoSave(delay) {
+    if (!autoSaving) return;
+    // 模型列表还在加载时不要动：那会把「还没拉到名字」的临时行当成真改动提交
+    if (!apiProfilesLoaded) return;
+    autoSavePending = true;
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = setTimeout(runAutoSave, typeof delay === 'number' ? delay : AUTO_SAVE_MS);
+  }
+
+  function runAutoSave() {
+    autoSaveTimer = null;
+    autoSavePending = false;
+    if (!autoSaving) return;
+    if (!autoSaveDirty()) return;
+    if (autoSaveBusy) { autoSaveAgain = autoSavePending = true; return; }
+    if (autoSaveTyping()) { scheduleAutoSave(AUTO_SAVE_MS); return; }
+    autoSaveBusy = true;
+    autoSaveAgain = false;
+    cfgPermGateThenSave(function (ok) {
+      autoSaveBusy = false;
+      if (ok) rememberAutoSave();
+      if (autoSaveAgain) scheduleAutoSave(0);   // 保存期间又改了：接着存
+    });
+  }
+
+  // 关设置页 / 离开页面时抢存：正在打字的那一格不算中间态，直接提交，
+  // 不然切走之后最后一个字就丢了
+  function flushAutoSave() {
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = null;
+    if (!autoSaving || !autoSavePending) return;
+    autoSavePending = false;
+    if (!autoSaveDirty()) return;
+    autoSaveBusy = true;
+    cfgPermGateThenSave(function (ok) {
+      autoSaveBusy = false;
+      if (ok) rememberAutoSave();
+    });
+  }
+  window.addEventListener('pagehide', flushAutoSave);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') flushAutoSave();
+  });
+
+  AUTO_SAVE_RULES.forEach(function (rule) {
+    ['input', 'change'].forEach(function (evt) {
+      document.addEventListener(evt, function (e) {
+        var el = e.target;
+        if (!el || !el.matches || !el.matches('[data-autosave]')) return;
+        if (!el.matches(rule.sel)) return;
+        var hit = (evt === rule.on);
+        if (rule.blur && evt === 'change') return;   // 单行文本只认失焦和延时
+        if (!hit) return;
+        // 先排一次自动保存：有错会在提交时把提示打到 #cfgHint 上，
+        // 不用等到最后才发现没存成
+        scheduleAutoSave(rule.now ? 0 : AUTO_SAVE_MS);
+      }, true);
+    });
+    if (rule.blur) {
+      document.addEventListener('focusout', function (e) {
+        var el = e.target;
+        if (!el || !el.matches || !el.matches('[data-autosave]') || !el.matches(rule.sel)) return;
+        scheduleAutoSave(0);
+      }, true);
+    }
+  });
 
   // 保存前把表单校验一遍，返回第一条错误文案（'' = 通过）。
   // 以前端口校验失败只写进「局域网访问」面板里的 #portHint 就 return：
@@ -10359,7 +10555,7 @@
     if (pane) showSetPane(pane);
   }
 
-  function doSaveCfg() {
+  function doSaveCfg(done) {
     var err = validateCfgForm();
     if (err) {
       // 两条线索都要给：底栏那句马上能看见，出错的分区也自动切过去；
@@ -10371,6 +10567,7 @@
         portHint.textContent = err;
         cfgPort.focus();
       }
+      if (done) done(false);
       return;
     }
     cfgHint.textContent = '保存中…';
@@ -10428,7 +10625,7 @@
       // 离线模式：写入 [runtime]，保存即生效；所有出网入口下一次调用就快速失败
       offline_mode: cfgOfflineMode ? !!cfgOfflineMode.checked : false
     };
-    fetch('/api/config', {
+    apiFetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -10448,6 +10645,7 @@
         if (cfgLang && cfgLang.value !== UI_LANG) {
           cfgHint.textContent = '语言已切换，正在重载界面…';
           setTimeout(function () { location.reload(); }, 200);
+          if (done) done(true);
           return null;
         }
         // 开关可能刚改过：先按表单值立刻更新本地判断，再拉一次服务端状态校准
@@ -10475,11 +10673,11 @@
         // 用量与余额已由上面的 renderApiProfiles 按新的当前使用刷新过
         var restartNote = res.restart_required ? '（局域网开关/端口需重启后端生效）' : '';
         cfgHint.textContent = res.llm_configured
-          ? ('已保存，正在拉取模型列表…' + restartNote)
+          ? ('已保存' + restartNote)
           : ('已保存（API Key 为空，对话暂不可用）' + restartNote);
-        // 「模型接入」里的就地提示跟着走：在这个面板点保存的人不用回头看页面底部
+        // 「模型接入」里的就地提示跟着走：在这个面板改的人不用回头看页面底部
         apiProfileHint.style.color = '';
-        if (!res.llm_configured) apiProfileHint.textContent = '已保存，但还没有可用的 Key —— 填好地址和 Key 再保存一次';
+        if (!res.llm_configured) apiProfileHint.textContent = '已保存，但还没有可用的 Key —— 填好地址和 Key 会自动保存';
         if (res.restart_required) {
           // 回填后端认定的端口：输入框被清空过、或只改了局域网开关时，
           // 这里把真实值放回去，不会留下一个空白的「服务端口」
@@ -10494,15 +10692,36 @@
         if (!res.llm_configured) {
           // 全屏设置页不再自动关闭：主人可能还要接着改下一项，
           // 想退出点「关闭」或按 Esc 即可
+          if (done) done(true);
+          return null;
+        }
+        // 只有接口真的变了才去拉模型列表：以前每次保存（哪怕只改个开关、
+        // 或者自动保存每停手一次）都会请求一遍 /api/models，白白打服务商接口。
+        // 判据：当前接口换了、地址/Key 改了，或者本机会话里还没拉到过列表
+        var key = apiFingerprint(res);
+        if (modelsPromise && modelsApiKey === key) {
+          // 已经有同一份清单了，直接复用；顺手按最新接口重画一次下拉，
+          // 免得「当前模型」里还留着上一组接口的模型名
+          modelsApiKey = key;
+          if (modelsCache.length) fillModelSelect(modelsCache);
+          loadToolbar();  // 右上角当前模型显示跟着换
+          if (done) done(true);
           return null;
         }
         return reloadModels().then(function (list) {
+          modelsApiKey = apiFingerprint(null);
           cfgHint.textContent = list.length ? ('已保存并生效，共 ' + list.length + ' 个模型') : '已保存，但没拉到模型列表';
           if (res.api_profiles) {
             apiProfileHint.textContent = '已保存并生效，当前使用：' + currentApiName()
               + (list.length ? '（共 ' + list.length + ' 个模型）' : '（没拉到模型列表）');
           }
           loadToolbar();  // 刷新右上角当前模型显示
+          if (done) done(true);
+        }, function (err) {
+          // 配置本身已经存下了，只是拉模型列表失败：算保存成功，
+          // 失败原因照旧走下面的 catch 打提示
+          if (done) done(true);
+          throw err;
         });
       })
       .catch(function (err) {
@@ -10511,17 +10730,21 @@
         var msg = (err && err.message) || '';
         var offline = /Failed to fetch|NetworkError|Load failed/i.test(msg);
         var text = offline ? '连不上服务，请稍等几秒重试' : (msg || '保存失败');
-        // 401 = 设备 Cookie 过期 / 没配对：只说「失败」用户无法自救，直接引导重新配对
+        // 401 = 设备令牌未配对/已失效：只说「失败」用户无法自救，直接引导重新配对。
+        // 本机页面不可能因为鉴权失败（后端按来源放行），这里不弹配对页，
+        // 只提示重试 —— 免得掌机上保存时被误判成「需要配对」
         if (/401|未配对|重新配对/.test(msg)) {
           text = '保存失败：这台设备还没配对或配对已失效，请重新配对后再保存';
           apiProfileHint.textContent = text;
           cfgHint.textContent = text;
-          showAuth(text);
+          if (!isHomePage) showAuth(text);
+          if (done) done(false);
           return;
         }
         cfgHint.textContent = text;
         apiProfileHint.style.color = '#e06c75';
         apiProfileHint.textContent = text;
+        if (done) done(false);
       });
   }
 
@@ -10533,7 +10756,7 @@
   var sttStatusPromise = null;
   function loadSttStatus(force) {
     if (sttStatusPromise && !force) return sttStatusPromise;
-    sttStatusPromise = fetch('/api/stt')
+    sttStatusPromise = apiFetch('/api/stt')
       .then(function (r) { return r.json(); })
       .then(function (d) {
         sttReady = !!(d && d.enable !== false && d.runtime && d.model);
@@ -10639,7 +10862,7 @@
   }
 
   function loadTtsStatus() {
-    fetch('/api/tts')
+    apiFetch('/api/tts')
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -10664,7 +10887,7 @@
     var dl = ttsState && ttsState.download;
     if (!dl || dl.state !== 'downloading') return;
     ttsPollTimer = setTimeout(function () {
-      fetch('/api/tts')
+      apiFetch('/api/tts')
         .then(function (r) { return r.json(); })
         .then(function (d) {
           ttsState = d;
@@ -10679,7 +10902,7 @@
   // 只提交发音人：切换/试听前先存下来，不用等整页保存
   // opts 可带 signal：试听那边超时会中止整条请求链
   function saveTtsQuick(opts) {
-    return fetch('/api/config', {
+    return apiFetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tts_speaker: ttsSpeaker }),
@@ -10695,7 +10918,7 @@
     var running = dl && (dl.state === 'downloading' || dl.phase === 'cancelling');
     var url = running ? '/api/tts/download/cancel' : '/api/tts/download';
     ttsPill.disabled = true;
-    fetch(url, { method: 'POST' })
+    apiFetch(url, { method: 'POST' })
       .then(function (r) { return r.json(); })
       .then(function () { loadTtsStatus(); })
       .catch(function () {
@@ -10748,7 +10971,7 @@
 
     saveTtsQuick({ signal: ctrl && ctrl.signal })
       .then(function () {
-        return fetch('/api/tts/preview', {
+        return apiFetch('/api/tts/preview', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({}),
@@ -10893,7 +11116,7 @@
     });
     if (!ids.length) { qqGroupNames = {}; return; }
     var seq = ++qqGroupNamesSeq;
-    fetch('/api/qq/group-names?ids=' + encodeURIComponent(ids.join(',')))
+    apiFetch('/api/qq/group-names?ids=' + encodeURIComponent(ids.join(',')))
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (seq !== qqGroupNamesSeq) return;
@@ -12082,7 +12305,7 @@
 
   function loadRemoteStatus() {
     if (!deviceSession && !isHomePage) return;
-    fetch('/api/remote-input/status')
+    apiFetch('/api/remote-input/status')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (st) {
         if (!st) return;
@@ -12101,7 +12324,7 @@
 
   function riPostRelease() {
     if (!deviceSession && !isHomePage) return;
-    fetch('/api/remote-input/release', {
+    apiFetch('/api/remote-input/release', {
       method: 'POST'
     }).catch(function () { /* 释放失败也无所谓：WS 断开后服务端还会兜底 */ });
   }
@@ -12506,7 +12729,7 @@
     // 串行化：快速连点（拖滑条、连切模型）会并发 POST，后发先至时后端的
     // 最终值就成了先点的那一个，界面显示和实际配置对不上
     var job = function () {
-      return fetch('/api/config', {
+      return apiFetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch)
@@ -12569,7 +12792,7 @@
 
   var modelsErrShown = false;   // 模型列表失败只提示一次，成功后再重置
   function loadToolbar() {
-    fetch('/api/config')
+    apiFetch('/api/config')
       .then(function (r) { return r.json(); })
       .then(function (c) {
         if (c.permission_mode) {
@@ -12657,11 +12880,35 @@
   // 缓存按账户隔离：切换 current_api 后必须丢掉上一家的列表，
   // 否则模型下拉会继续显示/合并另一家服务商的模型
   var modelsPromiseApi = '';
+  // 当前这份缓存对应的接口指纹：同一家服务商改了地址或换了 Key，指纹就会变，
+  // 保存后才知道结果可能不一样了，需要重新拉（见 doSaveCfg）
+  var modelsApiKey = '';
+  // 已经拉成功的列表：接口没变时保存后直接复用它重画下拉，不再打服务商接口
+  var modelsCache = [];
+  // 指纹只取「会影响模型列表」的东西：当前用的是哪一组、它的地址和 Key 有没有换。
+  // source 传 null 时按本地表单状态算（保存成功后调用）
+  function apiFingerprint(source) {
+    var list = (source && Array.isArray(source.api_profiles))
+      ? source.api_profiles : apiProfilesState.profiles;
+    var cur = (source && source.current_api) || apiProfilesState.current || '';
+    var p = null;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === cur) { p = list[i]; break; }
+    }
+    if (!p) return cur ? ('missing:' + cur) : '';
+    return [p.id || '', p.base_url || '', p.key_set ? 'k' : '-', p.masked || ''].join('|');
+  }
   function fetchModels() {
     var apiId = apiProfilesState.current || '';
-    if (!modelsPromise || modelsPromiseApi !== apiId) {
-      modelsPromiseApi = apiId;
-      modelsPromise = fetch('/api/models')
+    // 接口指纹没变就直接复用上次的结果：以前只按 apiId 判断，同一组里
+    // 改了地址或换了 Key 也会拿旧列表，或者反过来每次都重拉
+    if (modelsPromise && modelsPromiseApi === apiId
+        && modelsApiKey === apiFingerprint(null)) {
+      return modelsPromise;
+    }
+    modelsPromiseApi = apiId;
+    modelsApiKey = apiFingerprint(null);
+    modelsPromise = apiFetch('/api/models')
         .then(function (r) {
           return r.text().then(function (t) {
             var d = null;
@@ -12676,11 +12923,16 @@
             return d.models;
           });
         })
+        .then(function (list) {
+          modelsCache = list;   // 留着给「接口没变」的保存复用
+          return list;
+        })
         .catch(function (err) {
           modelsPromise = null;   // 允许下次重试，不要把错误缓存成空数组
+          modelsApiKey = '';
+          modelsCache = [];
           throw err;
         });
-    }
     return modelsPromise;
   }
   permSelect.addEventListener('change', function () {
@@ -12809,7 +13061,7 @@
   function uploadOne(file) {
     var fd = new FormData();
     fd.append('file', file);
-    return fetch('/api/upload', { method: 'POST', body: fd })
+    return apiFetch('/api/upload', { method: 'POST', body: fd })
       .then(function (r) { return r.json(); })
       .then(function (res) {
         if (!res || (!res.url && !res.path)) throw new Error('bad response');
@@ -12988,7 +13240,7 @@
   document.getElementById('pmFile').addEventListener('click', function (e) {
     e.stopPropagation();
     plusMenu.classList.remove('show');
-    fetch('/api/files')
+    apiFetch('/api/files')
       .then(function (r) { return r.json(); })
       .then(function (res) {
         fileList.innerHTML = '';
@@ -13191,7 +13443,7 @@
     if (!deviceSession && !isHomePage) return;
     // 页面在后台时别刷：手机切走/锁屏后每 5 秒一次请求只是白烧电和后端 CPU
     if (document.hidden) return;
-    fetch('/api/sysinfo')
+    apiFetch('/api/sysinfo')
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d.error) return;
@@ -13322,7 +13574,7 @@
       return;
     }
     if (document.hidden) return;
-    fetch('/api/music/now')
+    apiFetch('/api/music/now')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) { if (d) renderMusic(d); })
       .catch(function () {});
@@ -13334,7 +13586,7 @@
     btn.addEventListener('click', function () {
       var act = btn.dataset.act;
       btn.disabled = true;
-      fetch('/api/music/action', {
+      apiFetch('/api/music/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: act })
@@ -13392,7 +13644,7 @@
   function loadSessions(retried) {
     if (!deviceSession && !isHomePage) return;
     sessSkeleton('加载中…');
-    fetch('/api/sessions')
+    apiFetch('/api/sessions')
       .then(function (r) {
         // 非 2xx / 非 JSON 必须抛出：以前直接 r.json() 再取 d.items，
         // 后端报错时拿到空数组，界面看起来像「一个会话都没有」
@@ -13437,7 +13689,7 @@
               setTimeout(function () { del.classList.remove('confirm'); del.textContent = '删除'; }, 2500);
               return;
             }
-            fetch('/api/sessions/' + s.id + '', { method: 'DELETE' })
+            apiFetch('/api/sessions/' + s.id + '', { method: 'DELETE' })
               .then(function (r) {
                 // 失败也要有反馈：以前不管成没成都刷新列表，删除被服务端拒绝时
                 // 界面上什么都没变，看起来像「点了没反应」
@@ -13456,7 +13708,7 @@
           row.appendChild(del);
           row.addEventListener('click', function () {
             if (s.id === currentSid || busy) return;
-            fetch('/api/sessions/switch', {
+            apiFetch('/api/sessions/switch', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ id: s.id })
@@ -13496,7 +13748,7 @@
     // 失败时这里补一句提示，别让按钮看起来彻底没反应。
     // 后端在「当前会话本来就一句没说」时不会新建（防止刷出一排空会话），
     // 这时也不会广播，得自己说一声，否则按钮看起来毫无反应
-    fetch('/api/sessions/create', { method: 'POST' })
+    apiFetch('/api/sessions/create', { method: 'POST' })
       .then(function (r) {
         if (!r.ok) { addSystem('新建会话失败（HTTP ' + r.status + '）'); return null; }
         return r.json();
@@ -13510,7 +13762,7 @@
   function openImage(url) {
     if (IS_NATIVE) {
       // 原生客户端：用系统默认工具打开（xdg-open → Gwenview 等）
-      fetch('/api/open_file', {
+      apiFetch('/api/open_file', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: url })
@@ -13545,7 +13797,7 @@
   // 只在设置页/语音按钮里拉的话，客户端重启后第一次按 R1 会被当成不可用直接忽略。
   // 网页端不跑，免得白拉一个用不上的请求；失败静默、不阻塞下面的启动流程
   if (IS_NATIVE) loadSttStatus();
-  bootAuth();  // 先确认设备 Cookie / 本机回环，再连主对话 WebSocket
+  bootAuth();  // 先确认设备令牌 / 本机来源，再连主对话 WebSocket
 
   // 连上之后才知道有没有令牌；文件面板首屏在这里补加载一次
   setTimeout(function () {
@@ -13558,7 +13810,7 @@
   function compactContext() {
     if (busy) { addSystem('正在执行任务，等这一轮结束再压缩'); return; }
     var u = '/api/compact';
-    fetch(u + '?preview=true', { method: 'POST' })
+    apiFetch(u + '?preview=true', { method: 'POST' })
       .then(function (r) { return r.json(); })
       .then(function (p) {
         if (!p.ok) { addSystem('压缩失败：' + (p.detail || '未知错误')); return; }
@@ -13567,7 +13819,7 @@
           + p.tokens + ' token）压成摘要，最近 ' + (p.total - p.count)
           + ' 条与当前这一轮完整保留，聊天记录不会消失。';
         if (!window.confirm(msg + '\n\n要现在压缩吗？')) return;
-        return fetch(u, { method: 'POST' })
+        return apiFetch(u, { method: 'POST' })
           .then(function (r) { return r.json(); })
           .then(function (r2) {
             addSystem(r2.ok ? '压缩完成' : '压缩失败：' + (r2.detail || '未知错误'));
@@ -13602,6 +13854,186 @@
     fileList.classList.add('show');
   });
   });
+
+  // ---------- 新手引导 ----------
+  // 只在网页里出现，插件端（Decky QAM）不做；每个浏览器只弹一次，
+  // 「跳过」和走完最后一页一样算看过，下次不再出现。
+  var ONBOARD_KEY = 'deckmeido_onboarded';
+  // 每步可以带 pane：带的那一步会把卡片挪开、真的打开设置并切到对应分区，
+  // 让主人看着真实界面听讲解；离开这步就退回对话，免得把设置页留在那
+  // （导航名与 data-pane 都已核对：模型接入 model / 女仆人设 persona /
+  //   语音引擎 voice / 外部连接 external / 插件设置 plugin / 关于更新 about）
+  var OB_STEPS = [
+    {
+      title: '欢迎回来，主人',
+      body: '我是 DeckMeido，从今天起由我来伺候这台掌机。<br>'
+        + '聊天、看屏幕、整理文件、跑命令，这些粗活都交给我；'
+        + '主人只要先花一分钟，给我起个名字、认认您、再给我接上「脑子」就好。<br>'
+        + '下面我会一步步带着做，随时可以点左下角「跳过」。',
+    },
+    {
+      title: '① 请给女仆起个名字',
+      body: '进门先在「女仆人设」登记一下：<ul>'
+        + '<li><b>名字</b>：这是我要用的名字，主人想怎么叫我就填什么，'
+        + '随时喊这个名字我都应</li>'
+        + '<li><b>身份定位</b>：一句话写清我是什么样的女仆，会接在「你是…」后面</li>'
+        + '<li>不用点保存：填完停手就会自动存下，我马上换名字应声</li></ul>'
+        + '下面的语气、句尾习惯和禁用的词句也能一起调，慢慢来，不急。',
+      pane: 'persona',
+      art: ['女仆人设', '名字', '身份定位', '自动保存'],
+      focus: 'cfgPersonaName',
+    },
+    {
+      title: '② 再告诉我，该怎么称呼您',
+      body: '称呼定好了，这一页的下一格就是主人的称呼：<ul>'
+        + '<li>在 <b>称呼 → 怎么称呼你</b> 里填上您喜欢的叫法，比如「主人」「老板」</li>'
+        + '<li>以后每次开口，我都按这个称呼来叫您</li>'
+        + '<li>这一格同样自动保存，不用找按钮，填完就生效</li></ul>',
+      pane: 'persona',
+      art: ['称呼：怎么称呼你', '主人', '自动保存'],
+      focus: 'cfgPersonaAddress',
+    },
+    {
+      title: '③ 再给我接上「脑子」',
+      body: '人的称呼有了，接下来得有脑子才能干活——去「模型接入」填 API：<ul>'
+        + '<li>照服务商给的填 <b>接口地址</b> 和 <b>API Key</b>，填完停手就自动保存</li>'
+        + '<li>再在下面的 <b>当前模型</b> 里挑一个能用的，选完也是自动生效</li></ul>'
+        + '保存后立刻生效，顶栏的模型下拉和插件端读的都是这一份。',
+      pane: 'model',
+      art: ['模型接入', '接口地址 + API Key', '自动保存', '选择模型'],
+      focus: 'apiProfileList',
+    },
+    {
+      title: '④ 想让我说话，就开语音',
+      body: '在「语音引擎」里，我能把回复念出来，也能听主人说话：<ul>'
+        + '<li><b>语音回复</b>：打开后每次回答都会朗读</li>'
+        + '<li><b>语音输入</b>：按住说话，识别结果填进输入框，不自动发送</li>'
+        + '<li>智能音箱模式（唤醒词）也在这一页</li></ul>',
+      pane: 'voice',
+      art: ['语音引擎', '语音回复', '语音输入', '唤醒词'],
+    },
+    {
+      title: '⑤ 剩下的，交给主人随手点',
+      body: '侧栏那排就是全部设置：<ul>'
+        + '<li><b>外部连接</b>：手机、外接设备、端口</li>'
+        + '<li><b>插件设置</b>：Decky 插件端与大屏页</li>'
+        + '<li><b>关于更新</b>：版本、界面语言、离线模式、检查更新</li></ul>'
+        + '以后想找我，点侧栏底部的 <b>设置</b> 就行；随时按「跳过」我也不会多嘴。',
+      art: ['外部连接', '插件设置', '关于更新'],
+    },
+    {
+      title: '⑥ 那么，主人请吩咐',
+      body: '回到对话页，底部输入框打字、回车发送：<ul>'
+        + '<li>输入 <b>@</b> 把工作区里的文件递给我看</li>'
+        + '<li>输入 <b>/</b> 使用固定命令</li>'
+        + '<li>左边的 <b>＋</b> 能附图、引用文件或截图</li>'
+        + '<li>点顶栏 <b>工具</b> 拉开右栏，文件管理器和终端都在里面</li></ul>'
+        + '都记住了就点 <b>开始使用</b>，我这就去准备。',
+      art: ['@ 加文件', '/ 命令', '＋ 附件', '工具：文件 / 终端'],
+    },
+  ];
+  var obIdx = 0;
+  var obMask = document.getElementById('onboardMask');
+  var obStepEl = document.getElementById('obStep');
+  var obTitleEl = document.getElementById('obTitle');
+  var obBodyEl = document.getElementById('obBody');
+  var obArtEl = document.getElementById('obArt');
+  var obPrev = document.getElementById('obPrev');
+  var obNext = document.getElementById('obNext');
+  // 引导进来之前是不是已经在设置页：离开引导时按这个还原，不硬塞回对话页
+  var obWasSettings = false;
+
+  // 把某一步对应的设置分区真的打开，并把这一项滚到可视区、描一圈高亮，
+  // 证明「跳转确实落在这里」。元素找不到就只切页，不报错
+  function obGotoPane(name) {
+    openSettings();
+    showSetPane(name);
+    if (!name) return;
+    var tab = setNav.querySelector('.set-tab[data-pane="' + name + '"]');
+    if (tab) tab.classList.add('ob-hit');
+    setTimeout(function () { if (tab) tab.classList.remove('ob-hit'); }, 1600);
+  }
+  function obFocusTarget(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    var box = el.closest('.card') || el;
+    box.classList.add('ob-hit');
+    setTimeout(function () { box.classList.remove('ob-hit'); }, 2000);
+  }
+
+  function obRender() {
+    var s = OB_STEPS[obIdx];
+    obStepEl.textContent = (obIdx + 1) + ' / ' + OB_STEPS.length;
+    obTitleEl.textContent = s.title;
+    obBodyEl.innerHTML = s.body;
+    obArtEl.innerHTML = '';
+    if (s.art && s.art.length) {
+      s.art.forEach(function (t) {
+        var c = document.createElement('span');
+        c.className = 'ob-chip' + (t === '自动保存' || t === '选择模型' ? ' on' : '');
+        c.textContent = t;
+        obArtEl.appendChild(c);
+      });
+      obArtEl.hidden = false;
+    } else {
+      obArtEl.hidden = true;
+    }
+    obPrev.disabled = obIdx === 0;
+    obNext.textContent = obIdx === OB_STEPS.length - 1 ? '开始使用' : '下一步';
+    // 有 pane 的步骤：打开设置停在对应分区；没 pane 的步骤回到对话页
+    if (s.pane) {
+      obMask.classList.add('peek');
+      obGotoPane(s.pane);
+      if (s.focus) setTimeout(function () { obFocusTarget(s.focus); }, 260);
+    } else {
+      obMask.classList.remove('peek');
+      if (document.body.classList.contains('settings-mode') && !obWasSettings) closeSettings();
+    }
+  }
+
+  function obDone() {
+    obMask.hidden = true;
+    obMask.classList.remove('peek');
+    try { localStorage.setItem(ONBOARD_KEY, '1'); } catch (e) {}
+    // 走完或跳过都别把主人留在设置页：来之前在哪就回哪
+    if (!obWasSettings && document.body.classList.contains('settings-mode')) closeSettings();
+  }
+
+  function obStart() {
+    obIdx = 0;
+    obWasSettings = document.body.classList.contains('settings-mode');
+    obRender();
+    obMask.hidden = false;
+    obNext.focus();
+  }
+
+  document.getElementById('obSkip').addEventListener('click', obDone);
+  obPrev.addEventListener('click', function () {
+    if (obIdx > 0) { obIdx--; obRender(); }
+  });
+  obNext.addEventListener('click', function () {
+    if (obIdx < OB_STEPS.length - 1) { obIdx++; obRender(); return; }
+    obDone();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (obMask.hidden) return;
+    if (e.key === 'Escape') { obDone(); return; }
+    if (e.key === 'ArrowRight') obNext.click();
+    if (e.key === 'ArrowLeft') obPrev.click();
+  });
+
+  // 只在已经进得去主界面（本机来源或已配对）时弹一次；配对页自己的流程不动。
+  // deviceSession 在局域网页面要等 /api/auth/session 回来才为真，所以只在
+  // bootAuth / 配对成功的回调里调用，别在脚本加载时直接调
+  function maybeOnboard() {
+    var seen = false;
+    try { seen = localStorage.getItem(ONBOARD_KEY) === '1'; } catch (e) {}
+    if (seen) return;
+    if (!deviceSession) return;
+    if (!isHomePage && authOverlay.classList.contains('show')) return;
+    obStart();
+  }
 
 })();
 </script>
