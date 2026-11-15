@@ -1743,7 +1743,11 @@
   #ttsCredit { font-size: 11px; }
   /* 设置页里的下拉框：和输入框同一套外观，别再各写一份内联样式 */
   .cfg-select {
-    width: 100%; height: var(--set-ctl-h); padding: 0 32px 0 10px;
+    /* 和 .field input 同一个盒子模型：不加 box-sizing 时上下 1px 边框会
+       额外撑高 2px，同一行里和旁边的输入框/按钮看着不齐 */
+    width: 100%; height: var(--set-ctl-h); box-sizing: border-box;
+    margin: 0; line-height: var(--set-ctl-h);
+    padding: 0 32px 0 10px;
     border: 1px solid var(--line); border-radius: var(--set-radius);
     background: var(--surface-2); color: var(--text);
     font-size: 14px; font-family: inherit; outline: none;
