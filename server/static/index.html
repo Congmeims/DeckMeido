@@ -578,12 +578,10 @@
               <div class="ctrl-col">
                 <div class="ctrl-sub">控件实测</div>
                 <div class="ctrl-list" id="ctrlList"></div>
-                <div class="ctrl-yd" id="ctrlYd"></div>
               </div>
               <div class="ctrl-col">
                 <div class="ctrl-sub">可补装组件</div>
                 <div class="ctrl-list" id="selfcheckList"></div>
-                <div id="selfcheckHint" class="upd-note"></div>
               </div>
             </div>
           </div>
@@ -6910,7 +6908,6 @@
 
   // ---------- 控件自检（挂在「设置 → 本地连接」子模块里） ----------
   var ctrlList = document.getElementById('ctrlList');
-  var ctrlYd = document.getElementById('ctrlYd');
   var lastControls = null;
 
   function fillCtrlPanel(c) {
@@ -7087,7 +7084,6 @@
   });
   safeInit('自检组件面板', function () {
   var scList = rbEl('selfcheckList');
-  var scHint = rbEl('selfcheckHint');
   var scRows = {};
   var scPollTimer = null;
 
@@ -7096,7 +7092,6 @@
       if (job.state === 'running') return '进行中…';
       if (job.state === 'need_password') return '等待授权';
     }
-    if (it.status === 'ready') return '可用';
     if (!it.can_install) return it.command ? '复制命令' : '安装';
     return it.key === 'ydotoold' ? '修复' : '安装';
   }
@@ -7104,11 +7099,11 @@
   function copyCmd(text) {
     if (!text) return;
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(function () {
-        scHint.textContent = '命令已复制，到终端执行即可';
-      }).catch(function () { scHint.textContent = '复制失败：' + text; });
+      navigator.clipboard.writeText(text).catch(function () {
+        window.prompt('复制失败，请手动复制：', text);
+      });
     } else {
-      scHint.textContent = '请手动复制：' + text;
+      window.prompt('请手动复制：', text);
     }
   }
 
@@ -7124,7 +7119,6 @@
     if (pw.type === 'text') { pw.type = 'password'; r.eye.textContent = '显示'; }
     btn.disabled = true;
     pw.disabled = true;
-    scHint.textContent = '正在验证管理员密码…';
     apiFetch('/api/selfcheck/password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -7137,13 +7131,11 @@
       pw.disabled = false;
       btn.disabled = false;
       if (x.ok && x.j && x.j.ok) {
-        scHint.textContent = '授权通过，正在安装…';
         return;
       }
       // 密码不留在输入框里；错误放在授权行内，页面提示保持安静
       r.authErr.textContent = (x.j && (x.j.error || x.j.reason))
         || ('授权失败 HTTP ' + x.status);
-      scHint.textContent = '';
       if (x.j && x.j.reason === 'not_waiting') loadSelfcheck();
       else pw.focus();
     }).catch(function () {
@@ -7326,15 +7318,13 @@
     return apiFetch('/api/selfcheck')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
-        if (!d || !d.components) { scHint.textContent = '读取组件清单失败'; return; }
+        if (!d || !d.components) return;
         renderSelfcheck(d);
-        scHint.textContent = '可用 ' + d.ready + '/' + d.total
-          + '。缺失的系统包会在本页自动下载安装，需要时按提示输入管理员密码。';
         if (d.job && (d.job.state === 'running' || d.job.state === 'need_password')) {
           startScPoll();
         }
       })
-      .catch(function () { scHint.textContent = '读取组件清单失败（连接异常）'; });
+      .catch(function () {});
   }
 
   function startScPoll() {
@@ -7358,21 +7348,17 @@
   }
 
   function installComponent(key) {
-    scHint.textContent = '正在启动安装…';
     apiFetch('/api/selfcheck/install?component=' + encodeURIComponent(key), { method: 'POST' })
       .then(function (r) { return r.json(); })
       .then(function (res) {
         if (!res || !res.ok) {
-          scHint.textContent = res && res.reason === 'busy'
-            ? '已有安装任务在进行，请等它完成' : '安装请求失败';
           if (res && res.job) applyScProgress(res.job);
           return;
         }
-        scHint.textContent = '安装已开始，进度会实时更新';
         if (res.job) applyScProgress(res.job);
         startScPoll();
       })
-      .catch(function () { scHint.textContent = '安装请求失败（连接异常）'; });
+      .catch(function () {});
   }
 
   onSelfcheckProgress = function (msg) {
