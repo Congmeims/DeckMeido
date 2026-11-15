@@ -226,9 +226,17 @@ def _probe_wake_ack() -> tuple[bool, str]:
     svc = _main_attr("wake_service")
     if svc is None:
         return False, "唤醒服务未初始化"
-    ack = svc.status().get("ack") or {}
+    try:
+        st = svc.status()
+    except Exception as exc:
+        return False, f"状态读取失败：{exc}"
+    ack = st.get("ack") or {}
     if ack.get("ready"):
         return True, ""
+    # 合成只在 arm/重建时预跑；总开关关着时压根不会合成，此时报「未合成」
+    # 会把用户引到语音合成上去，实际该先去开总开关
+    if not st.get("enabled"):
+        return None, "未开启（设置 → 语音引擎）"
     return False, ack.get("error") or "回应语音未合成（检查语音合成是否可用）"
 
 
