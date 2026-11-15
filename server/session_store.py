@@ -166,7 +166,10 @@ class SessionStore:
         # 目前只用于侧栏索引与排障，不再参与「有没有 _streaming 残留」的判断
         # （流式正文已经搬到副档案，清理就是删一个文件）
         self.wrote_map: dict[str, tuple[float, int]] = {}
-        # 侧栏索引 {sid: {id,title,updated,messages}}，启动时由 load_index 填充
+        # 会话来源 {sid: origin}：侧栏按它自动分组（web/mobile/client/qam/qq/wake）。
+        # 一轮对话在 handle_chat 里认出来源后写进来，随落盘一起进会话文件与索引
+        self.origin_map: dict[str, str] = {}
+        # 侧栏索引 {sid: {id,title,updated,messages,origin}}，启动时由 load_index 填充
         self._index: dict[str, dict] = {}
         # 待落盘的索引定时器（防抖用，见 _index_schedule）
         self._index_timer: threading.Timer | None = None
@@ -228,6 +231,7 @@ class SessionStore:
             self.compact_map.pop(sid, None)
             self.intent_map.pop(sid, None)
             self.created_map.pop(sid, None)
+            self.origin_map.pop(sid, None)
             self.wrote_map.pop(sid, None)
             self.flushed_sids.discard(sid)
 
@@ -339,6 +343,10 @@ class SessionStore:
             intent = self.intent_map.get(sid)
             if isinstance(intent, dict) and intent:
                 data["pending_intent"] = dict(intent)
+            # 来源跟着会话落盘：重启后光靠索引也不丢分组，老会话还能按标题回退推断
+            origin = self.origin_map.get(sid)
+            if origin:
+                data["origin"] = origin
             self.created_map[sid] = data["created"]
             # 指纹里带上这次写入的 updated（排障用：能看出最近一次整份写入是什么时候）
             self.wrote_map[sid] = (data["updated"], len(hist))
@@ -462,7 +470,8 @@ class SessionStore:
             self._index[sid] = {"id": sid,
                                 "title": data.get("title") or "会话",
                                 "updated": data.get("updated") or time.time(),
-                                "messages": len(data.get("history") or [])}
+                                "messages": len(data.get("history") or []),
+                                "origin": data.get("origin") or ""}
         self._index_schedule()
 
     def _index_schedule(self) -> None:
@@ -515,6 +524,10 @@ class SessionStore:
             with self.lock:
                 self.created_map.setdefault(sid, float(data["created"]))
         intent = data.get("pending_intent")
+        origin = normalize_origin(data.get("origin") or "", sid, data.get("title") or "")
+        if origin:
+            with self.lock:
+                self.origin_map.setdefault(sid, origin)
         with self.lock:
             if isinstance(intent, dict) and intent:
                 self.intent_map[sid] = dict(intent)
@@ -553,6 +566,14 @@ class SessionStore:
             items = []
         if isinstance(items, list) and items:
             self._index = {str(i.get("id")): i for i in items if i.get("id")}
+            # 老索引没有 origin：按 sid / 标题就地补齐，不用重写索引文件，
+            # 下一次 _index_save 自然带上
+            for sid, it in self._index.items():
+                if not it.get("origin"):
+                    o = normalize_origin("", sid, it.get("title") or "")
+                    if o:
+                        it["origin"] = o
+                        self.origin_map.setdefault(sid, o)
             return
         # 没有索引（首次升级到这个版本）：扫一遍会话文件重建。
         # 只做一次，之后每次落盘都会顺带更新
@@ -564,9 +585,13 @@ class SessionStore:
             sid = d.get("id") or p.stem
             if d.get("created"):
                 self.created_map.setdefault(sid, float(d["created"]))
+            o = normalize_origin(d.get("origin") or "", sid, d.get("title") or "")
+            if o:
+                self.origin_map.setdefault(sid, o)
             self._index[sid] = {"id": sid, "title": d.get("title") or "会话",
                                 "updated": d.get("updated") or 0,
-                                "messages": len(d.get("history") or [])}
+                                "messages": len(d.get("history") or []),
+                                "origin": o}
         try:
             path.write_text(json.dumps(list(self._index.values()), ensure_ascii=False),
                             encoding="utf-8")
@@ -578,6 +603,7 @@ class SessionStore:
         """会话被删：从索引里摘掉并重写索引文件（删除是低频操作，同步写没问题）"""
         with self.lock:
             self._index.pop(sid, None)
+            self.origin_map.pop(sid, None)
             self.created_map.pop(sid, None)
             self.intent_map.pop(sid, None)
             self.wrote_map.pop(sid, None)
@@ -587,8 +613,43 @@ class SessionStore:
     def index_put_mem(self, sid: str, title: str, updated: float, messages: int) -> None:
         """只更新内存里的索引（改标题这类小改动，落盘交给会话文件那次写入）"""
         with self.lock:
+            # 来源必须跟着带上：整条记录是替换而不是合并，漏了就会把分组清空
+            origin = self.origin_map.get(sid) \
+                or (self._index.get(sid) or {}).get("origin") or ""
             self._index[sid] = {"id": sid, "title": title or "会话",
-                                "updated": updated, "messages": messages}
+                                "updated": updated, "messages": messages,
+                                "origin": origin}
+
+
+# 会话来源的规范取值（侧栏按它分组）。老会话没有这个字段时按 sid / 标题回退推断
+ORIGINS = ("web", "mobile", "client", "qam", "qq", "wake")
+
+
+def normalize_origin(origin: str, sid: str = "", title: str = "") -> str:
+    """把各种来源写法收敛成固定几个值，推断不出来就返回空串
+
+    - `qq-` 前缀是 QQ 通道自己算出来的固定 sid（见 qq_session_title）
+    - wake 是智能音箱（唤醒链路），qam 是 Decky 插件
+    - 老会话没存 origin，只能看标题：QQ 的标题都以「QQ」开头
+    """
+    o = str(origin or "").strip().lower()
+    if o in ORIGINS:
+        return o
+    if o in ("plugin", "decky"):
+        return "qam"
+    if o in ("deck", "desktop", "native"):
+        return "client"
+    if o in ("onebot", "qqtext"):
+        return "qq"
+    if o in ("voice", "speaker", "wakeup"):
+        return "wake"
+    s = str(sid or "")
+    if s.startswith("qq-"):
+        return "qq"
+    t = str(title or "")
+    if t.startswith("QQ"):
+        return "qq"
+    return ""
 
 
 store = SessionStore()

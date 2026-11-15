@@ -1005,6 +1005,19 @@ def _write_session(sid: str, hist: list[dict]):
     store.write_session(sid, hist)
 
 
+def _set_session_origin(sid: str, client: str | None) -> None:
+    """按发起端给会话打来源标记（侧栏分组用）
+
+    client 为空（重试这类内部链路）时不动：沿用这个会话原来的来源，
+    否则一点「重试」就把分组刷成「其它」。
+    """
+    if not sid or not client:
+        return
+    o = session_store.normalize_origin(client, sid)
+    if o:
+        store.origin_map[sid] = o
+
+
 # ---------- 流式正文的增量落盘 ----------
 # 正文原本是「整轮生成完才落盘」的，而一轮回答可能长达几分钟；这期间进程被杀
 # （客户端退出、升级、OOM）就整段消失，用户看到的就是「我的回复不见了」。
@@ -4706,7 +4719,14 @@ async def handle_chat(text: str, announce: bool = True,
     # 本轮归属快照：整轮全程只认这份 sid/epoch，中途别的端新建/切换会话也不影响它
     # sid 可由外部通道（QQ）显式指定：QQ 用自己的独立会话，不往本地会话里写
     turn_sid = sid or store.current_sid
+    if not turn_sid:
+        # 会话列表被删干净了（current_sid 为空）：新消息落到一个全新会话里，
+        # 侧栏按来源把它分到对应组，而不是强留一个空会话占位
+        turn_sid = store.current_sid = _fresh_sid()
     turn_epoch = store.epoch
+    # 本轮来源：侧栏据此把会话自动分到网页 / Deck / 插件 / Onebot / 智能音响几组。
+    # 同一会话里换了端发问（网页接着插件说）也照样跟着最近一轮走。
+    _set_session_origin(turn_sid, client)
     store.turn.update({"sid": turn_sid, "epoch": turn_epoch, "active": True,
                        "turn_id": turn_id,
                        # 本轮开始时刻：/api/status 的 running_since 用它，

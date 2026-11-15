@@ -42,8 +42,14 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         而且全在事件循环里。索引只存四行字段，落盘时顺带更新。
         """
         # 次级键用 id：同一秒落盘的多个会话顺序固定，强刷不会来回抖
-        return {"current": store.current_sid,
-                "items": session_store.session_order(store.index().values())}
+        # origin 给前端做自动分组；老会话没有就按 sid / 标题回退推断一次
+        items = []
+        for it in session_store.session_order(store.index().values()):
+            row = dict(it)
+            row["origin"] = session_store.normalize_origin(
+                row.get("origin") or "", row.get("id") or "", row.get("title") or "")
+            items.append(row)
+        return {"current": store.current_sid, "items": items}
 
     def _current_session_untouched() -> bool:
         """当前会话是不是「一句话都没说过」的空会话
@@ -293,10 +299,12 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
                     nxt = d
                     break
             if nxt is None:
-                store.current_sid = m._fresh_sid()
+                # 全删干净了就别再自动造一个空会话：用户要的是「删干净」，
+                # 以前这里必然新建一个，侧栏永远至少挂着一条。
+                # 当前会话号先空着，下一条消息进来时会分配新 sid（见 main.handle_chat）
+                store.current_sid = ""
                 store.history = []
                 m._ctx_used = 0
-                m.save_current_session()
             else:
                 store.current_sid = nxt.get("id") or m._fresh_sid()
                 # 换对象而不是原地 clear：在跑的那一轮仍持有旧列表引用

@@ -2460,6 +2460,14 @@
   }
   .sess:hover { background: var(--hover); }
   .sess.current { background: var(--surface-2); }
+  /* 组标题：小一号、发灰，右侧带本组条数；组与组之间靠上边距分开 */
+  .sess-group {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 10px 3px; font-size: 11px; color: var(--muted);
+    letter-spacing: .02em; user-select: none;
+  }
+  .sess-group:first-child { padding-top: 2px; }
+  .sess-group-n { font-size: 10px; opacity: .7; }
   .sess.sess-placeholder {
     color: var(--muted); font-size: 13px; padding: 10px 12px;
     justify-content: flex-start;

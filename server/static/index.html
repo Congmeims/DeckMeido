@@ -13672,6 +13672,69 @@
   }
   // 已有列表时刷新失败不会走占位文字，单独提示一次即可，避免每次广播都刷屏
   var sessErrNotified = false;
+  // 会话自动分组：键是后端给 origin（见 session_store.normalize_origin），
+  // 声明顺序就是侧栏里的组顺序；认不出来的来源归到「其它」，有才显示
+  var SESS_GROUP = {
+    web: { name: '网页' },
+    mobile: { name: '手机' },
+    client: { name: 'Deck' },
+    qam: { name: '插件' },
+    qq: { name: 'Onebot' },
+    wake: { name: '智能音响' },
+    other: { name: '其它' }
+  };
+  // 单条会话行：标题 + 删除，点行切换（分组只是外面套一层组标题）
+  function sessRow(s, cur) {
+    var row = document.createElement('div');
+    row.className = 'sess' + (s.id === cur ? ' current' : '');
+    var title = document.createElement('span');
+    title.className = 's-title';
+    title.textContent = s.title || '会话';
+    title.title = (s.title || '会话') + ' · ' + s.messages + ' 条消息';
+    row.appendChild(title);
+    var del = document.createElement('button');
+    del.className = 's-del';
+    del.textContent = '删除';
+    del.title = '删除会话';
+    del.addEventListener('click', function (e) {
+      e.stopPropagation();
+      // 二次确认：第一击变红，2.5 秒内再击才删除
+      if (!del.classList.contains('confirm')) {
+        del.classList.add('confirm');
+        del.textContent = '确认?';
+        setTimeout(function () { del.classList.remove('confirm'); del.textContent = '删除'; }, 2500);
+        return;
+      }
+      apiFetch('/api/sessions/' + s.id + '', { method: 'DELETE' })
+        .then(function (r) {
+          // 失败也要有反馈：以前不管成没成都刷新列表，删除被服务端拒绝时
+          // 界面上什么都没变，看起来像「点了没反应」
+          if (!r.ok) {
+            addSystem('删除会话失败（HTTP ' + r.status + '）');
+          } else {
+            addSystem('会话已移入回收站（userdata/trash），需要时可手工找回');
+            // 删的是当前会话：右栏的命令记录也跟着清掉，
+            // 否则对话框空了、右边还挂着一屏上一个会话的执行记录
+            if (s.id === currentSid) termResetList();
+          }
+          loadSessions();
+        })
+        .catch(function () { addSystem('删除会话失败：连不上后端'); });
+    });
+    row.appendChild(del);
+    row.addEventListener('click', function () {
+      if (s.id === currentSid || busy) return;
+      apiFetch('/api/sessions/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: s.id })
+      }).then(function (r) {
+        if (!r.ok) addSystem('切换会话失败（HTTP ' + r.status + '）');
+      }).catch(function () { addSystem('切换会话失败'); });
+      closeDrawers();
+    });
+    return row;
+  }
   function loadSessions(retried) {
     if (!deviceSession && !isHomePage) return;
     sessSkeleton('加载中…');
@@ -13698,57 +13761,28 @@
         syncQqSessButton();
         sessList.innerHTML = '';
         var curTitle = '';
+        // 按来源自动分组：会话从哪来就归哪组，空组整组不出现。
+        // 组顺序固定，组内沿用后端给的 updated 倒序（后端已排好，这里不再排）
+        var groups = {};
         (d.items || []).forEach(function (s) {
           if (s.id === d.current) curTitle = s.title;
-          var row = document.createElement('div');
-          row.className = 'sess' + (s.id === d.current ? ' current' : '');
-          var title = document.createElement('span');
-          title.className = 's-title';
-          title.textContent = s.title || '会话';
-          title.title = (s.title || '会话') + ' · ' + s.messages + ' 条消息';
-          row.appendChild(title);
-          var del = document.createElement('button');
-          del.className = 's-del';
-          del.textContent = '删除';
-          del.title = '删除会话';
-          del.addEventListener('click', function (e) {
-            e.stopPropagation();
-            // 二次确认：第一击变红，2.5 秒内再击才删除
-            if (!del.classList.contains('confirm')) {
-              del.classList.add('confirm');
-              del.textContent = '确认?';
-              setTimeout(function () { del.classList.remove('confirm'); del.textContent = '删除'; }, 2500);
-              return;
-            }
-            apiFetch('/api/sessions/' + s.id + '', { method: 'DELETE' })
-              .then(function (r) {
-                // 失败也要有反馈：以前不管成没成都刷新列表，删除被服务端拒绝时
-                // 界面上什么都没变，看起来像「点了没反应」
-                if (!r.ok) {
-                  addSystem('删除会话失败（HTTP ' + r.status + '）');
-                } else {
-                  addSystem('会话已移入回收站（userdata/trash），需要时可手工找回');
-                  // 删的是当前会话：右栏的命令记录也跟着清掉，
-                  // 否则对话框空了、右边还挂着一屏上一个会话的执行记录
-                  if (s.id === currentSid) termResetList();
-                }
-                loadSessions();
-              })
-              .catch(function () { addSystem('删除会话失败：连不上后端'); });
-          });
-          row.appendChild(del);
-          row.addEventListener('click', function () {
-            if (s.id === currentSid || busy) return;
-            apiFetch('/api/sessions/switch', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ id: s.id })
-            }).then(function (r) {
-              if (!r.ok) addSystem('切换会话失败（HTTP ' + r.status + '）');
-            }).catch(function () { addSystem('切换会话失败'); });
-            closeDrawers();
-          });
-          sessList.appendChild(row);
+          var g = SESS_GROUP[s.origin] ? s.origin : 'other';
+          (groups[g] || (groups[g] = [])).push(s);
+        });
+        Object.keys(SESS_GROUP).forEach(function (g) {
+          var list = groups[g];
+          if (!list || !list.length) return;
+          var head = document.createElement('div');
+          head.className = 'sess-group';
+          var nm = document.createElement('span');
+          nm.textContent = SESS_GROUP[g].name;
+          var cnt = document.createElement('span');
+          cnt.className = 'sess-group-n';
+          cnt.textContent = String(list.length);
+          head.appendChild(nm);
+          head.appendChild(cnt);
+          sessList.appendChild(head);
+          list.forEach(function (s) { sessList.appendChild(sessRow(s, d.current)); });
         });
         setHdrTitle(curTitle);
         curSessTitle = curTitle || '';
