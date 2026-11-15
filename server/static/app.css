@@ -3005,7 +3005,9 @@
      右边缘还要让出一条滚动条宽度：这个面板的滚动条是浮在内容上的，
      列表的文件行贴着右栏边框铺到底，卡片不补这一段就会比它们多缩进一截 */
   #fbQueue {
-    flex: 0 1 auto; min-height: 0; padding: 0 6px;
+    flex: 0 1 auto; min-height: 0;
+    /* 上边距留出一点缝：卡片顶部不再贴着路径条的下边框 */
+    padding: 6px 6px 0;
     padding-right: calc(6px + var(--fb-sb, 0px));
     max-height: min(192px, 34vh);
     overflow-y: auto; overscroll-behavior: contain;
