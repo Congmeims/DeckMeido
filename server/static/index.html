@@ -645,33 +645,6 @@
 
         <section class="set-pane" data-pane="external">
           <h4 class="set-sect">远程接管</h4>
-          <p class="pane-desc">从别的设备把鼠标键盘接管到这台 Deck。</p>
-
-          <div class="card" id="sleepCard">
-            <div class="card-head">
-              <div class="card-title">睡眠模式</div>
-              <label class="switch" title="闲置满指定时长后自动关机">
-                <input id="cfgSleepEnabled" data-autosave type="checkbox">
-                <span class="slider"></span>
-              </label>
-            </div>
-            <p class="pane-desc" style="margin-top:0">
-              听歌听着睡着了，机器自己关机。需要同时满足两件事并持续满设定时长：
-              <b>音乐已经停了</b>，而且<b>这台机器没人用</b>（没有按键、触摸、鼠标移动，也没在玩游戏）。
-              歌还在放时绝不关机，不会打断还在听的人；有人在用时也不关机。
-            </p>
-            <div class="ri-io-row">
-              <div class="field">
-                <label>闲置多久后关机（分钟）</label>
-                <input id="cfgSleepMinutes" data-autosave type="number" min="5" max="720" step="1" value="60">
-              </div>
-              <div class="field">
-                <label>关机前倒计时（秒）</label>
-                <input id="cfgSleepCountdown" data-autosave type="number" min="10" max="600" step="1" value="60">
-              </div>
-            </div>
-            <div class="field-hint" id="sleepCfgState">当前状态：未开启</div>
-          </div>
 
           <div class="card" id="riEnableCard">
             <div class="card-head">
@@ -702,6 +675,32 @@
               都能控制这台机器。只在可信网络里用，用完及时关闭。
             </div>
             <div class="field-hint" id="riCfgState">当前状态：未接管</div>
+          </div>
+
+          <div class="card" id="sleepCard">
+            <div class="card-head">
+              <div class="card-title">睡眠模式</div>
+              <label class="switch" title="闲置满指定时长后自动关机">
+                <input id="cfgSleepEnabled" data-autosave type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <p class="pane-desc" style="margin-top:0">
+              听歌听着睡着了，机器自己关机。需要同时满足两件事并持续满设定时长：
+              <b>音乐已经停了</b>，而且<b>这台机器没人用</b>（没有按键、触摸、鼠标移动，也没在玩游戏）。
+              歌还在放时绝不关机，不会打断还在听的人；有人在用时也不关机。
+            </p>
+            <div class="ri-io-row">
+              <div class="field">
+                <label>闲置多久后关机（分钟）</label>
+                <input id="cfgSleepMinutes" data-autosave type="number" min="5" max="720" step="1" value="60">
+              </div>
+              <div class="field">
+                <label>关机前倒计时（秒）</label>
+                <input id="cfgSleepCountdown" data-autosave type="number" min="10" max="600" step="1" value="60">
+              </div>
+            </div>
+            <div class="field-hint" id="sleepCfgState">当前状态：未开启</div>
           </div>
 
           <h4 class="set-sect">OneBot 通道</h4>
