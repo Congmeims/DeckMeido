@@ -76,3 +76,11 @@ ouo-face.html
 .samples/
 .workbuddy/
 tts-demo/
+
+# Android 端：反编译解包产物与 Gradle / 本机 SDK 配置（体积大且含本机路径，不入库）
+.apk_extract/
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/app/build/
+
