@@ -718,22 +718,18 @@ class ExecInstallTest(SelfcheckBase):
             self.assertEqual(run.call_args.args[0][:len(expect)], expect)
 
 
-class UninstallPlanTest(unittest.TestCase):
-    """卸载只覆盖我们自己管理的东西，系统包一律拒绝"""
+class NoComponentUninstallTest(unittest.TestCase):
+    """网页端不允许卸载任何单独组件：入口与后端能力一并移除"""
 
-    def test_系统包不允许卸载(self):
-        plan = sc.uninstall_plan("grim")
-        self.assertFalse(plan["allowed"])
-        self.assertIn("不支持", plan["reason"])
+    def test_不再暴露卸载接口(self):
+        self.assertFalse(hasattr(sc, "uninstall_plan"))
+        self.assertFalse(hasattr(sc, "start_uninstall"))
+        self.assertFalse(hasattr(sc, "UNINSTALLABLE"))
 
-    def test_守护进程只撤销自启不删包(self):
-        plan = sc.uninstall_plan("ydotoold")
-        self.assertTrue(plan["allowed"])
-        self.assertEqual(plan["paths"], [])
-        self.assertIn("ydotool.service", plan["target"])
-
-    def test_未知组件不允许卸载(self):
-        self.assertFalse(sc.uninstall_plan("nope")["allowed"])
+    def test_状态项不再带卸载字段(self):
+        out = sc._public(sc.COMPONENTS[0])
+        self.assertNotIn("can_uninstall", out)
+        self.assertNotIn("uninstall", out)
 
 
 if __name__ == "__main__":

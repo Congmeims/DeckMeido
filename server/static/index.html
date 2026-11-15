@@ -6840,7 +6840,8 @@
       ds.textContent = it.na ? (it.detail || '当前环境不适用')
                              : (it.ok ? '可用' : (it.detail || '缺失'));
       if (!it.ok && it.detail) ds.title = it.detail;
-      row.append(lamp, nm, ds);
+      var act = document.createElement('span'); act.className = 'act';
+      row.append(lamp, nm, ds, act);
       item.appendChild(row);
       ctrlList.appendChild(item);
     });
@@ -7005,7 +7006,7 @@
       if (job.state === 'running') return '进行中…';
       if (job.state === 'need_password') return '等待授权';
     }
-    if (it.status === 'ready') return it.can_uninstall ? '卸载' : '可用';
+    if (it.status === 'ready') return '可用';
     if (!it.can_install) return it.command ? '复制命令' : '安装';
     return it.key === 'ydotoold' ? '修复' : '安装';
   }
@@ -7073,43 +7074,6 @@
     r.authErr.textContent = '';
   }
 
-  // 卸载：只允许我们自己管理的组件；确认框里写清删什么、多大，
-  // 卸完状态立刻刷新成缺失，按钮变成「下载 / 安装 / 修复」，原地就能装回来
-  function uninstallComponent(it, btn) {
-    var plan = it.uninstall || {};
-    var lines = ['确认卸载「' + it.name + '」？', ''];
-    if (plan.target) lines.push(plan.target);
-    if (plan.size && plan.size !== '0') lines.push('占用约 ' + plan.size + '。');
-    lines.push('卸载后可随时在本页重新安装。');
-    if (!window.confirm(lines.join('\n'))) return;
-    btn.disabled = true;
-    btn.textContent = '卸载中…';
-    scHint.textContent = '正在卸载 ' + it.name + '…';
-    apiFetch('/api/selfcheck/uninstall?component=' + encodeURIComponent(it.key),
-          { method: 'POST' })
-      .then(function (r) {
-        return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; },
-                              function () { return { ok: false, status: r.status, j: null }; });
-      })
-      .then(function (x) {
-        if (!x.ok || !x.j || !x.j.ok) {
-          scHint.textContent = '卸载失败：'
-            + ((x.j && (x.j.error || x.j.reason)) || ('HTTP ' + x.status));
-          btn.disabled = false;
-          btn.textContent = '卸载';
-          return;
-        }
-        scHint.textContent = '卸载已开始，完成后可直接在本页重新安装';
-        if (x.j.job) applyScProgress(x.j.job);
-        startScPoll();
-      })
-      .catch(function () {
-        scHint.textContent = '卸载失败（连接异常）';
-        btn.disabled = false;
-        btn.textContent = '卸载';
-      });
-  }
-
   function renderSelfcheck(data) {
     var job = data.job;
     scList.replaceChildren();
@@ -7134,7 +7098,7 @@
       var act = document.createElement('span');
       act.className = 'act';
       var btn = null;
-      if (it.status === 'ready' && !it.can_uninstall) {
+      if (it.status === 'ready') {
         var st = document.createElement('span');
         st.className = 'sc-state'; st.textContent = '可用';
         act.appendChild(st);
@@ -7202,9 +7166,7 @@
       });
 
       if (btn) {
-        if (it.status === 'ready' && it.can_uninstall) {
-          btn.addEventListener('click', function () { uninstallComponent(it, btn); });
-        } else if (!it.can_install && it.command) {
+        if (!it.can_install && it.command) {
           btn.addEventListener('click', function () { copyCmd(it.command); });
         } else {
           btn.addEventListener('click', function () { installComponent(it.key); });

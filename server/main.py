@@ -3916,29 +3916,6 @@ async def api_selfcheck_install(component: str = Query(...)):
     return selfcheck.start(component, hook)
 
 
-@app.post("/api/selfcheck/uninstall", dependencies=[Depends(require_auth)])
-async def api_selfcheck_uninstall(component: str = Query(...)):
-    """后台卸载我们自己管理的组件（模型 / nltk 数据 / 守护进程托管）。
-
-    系统包不在可卸载范围内：包由 pacman 管理，卸载要用户自己决定。
-    """
-    loop = asyncio.get_running_loop()
-
-    def hook(payload: dict) -> None:
-        try:
-            asyncio.run_coroutine_threadsafe(
-                manager.broadcast({"type": "selfcheck_progress", **payload}), loop)
-        except Exception as exc:
-            devlog.debug("main.hook", error=repr(exc))
-            pass
-
-    res = selfcheck.start_uninstall(component, hook)
-    if not res.get("ok"):
-        code = 409 if res.get("reason") == "busy" else 400
-        return JSONResponse(res, status_code=code)
-    return res
-
-
 class SelfcheckPasswordBody(BaseModel):
     component: str
     password: str
