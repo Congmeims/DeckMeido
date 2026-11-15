@@ -594,8 +594,11 @@
     ctx.restore();
 
     // ---- 连接提示：只有断线，不显示错误详情 ----
-    notice.classList.toggle("on", state.offline);
+    // 断线优先；否则进入中的「正在准备」也用它占位，免得切过来只看到一只静止的脸
+    const starting = state.name === "starting";
+    notice.classList.toggle("on", state.offline || starting);
     if (state.offline) notice.textContent = "与后端断开，正在重连…";
+    else if (starting) notice.textContent = "正在进入智能音箱模式，请稍候…";
   }
   requestAnimationFrame(frame);
 })();

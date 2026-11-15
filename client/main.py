@@ -748,6 +748,14 @@ class R1Trigger(QObject):
 # 再给客户端退出/拉起留 1 秒，倒计时提示按 9 秒走。
 RESTART_BUDGET_SEC = 9
 
+# 置顶提示卡片的统一外观：重启、进入智能音箱模式等「等一会儿」的场景都用同一块，
+# 避免每个提示各写一套样式、在掌机小屏上看着不一样
+TOAST_STYLE = (
+    "RestartToast, WakeToast { background: rgba(16,18,26,0.96);"
+    " border: 1px solid rgba(120,200,255,0.85); border-radius: 12px; }"
+    "QLabel { color: #eaf4ff; font-size: 13px; }"
+)
+
 
 class RestartToast(QWidget):
     """重启倒计时提示（无边框、置顶）
@@ -764,10 +772,7 @@ class RestartToast(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setStyleSheet(
-            "RestartToast { background: rgba(16,18,26,0.96);"
-            " border: 1px solid rgba(120,200,255,0.85); border-radius: 12px; }"
-            "QLabel { color: #eaf4ff; font-size: 13px; }")
+        self.setStyleSheet(TOAST_STYLE)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 14, 18, 14)
         self._label = QLabel("", self)
@@ -845,6 +850,63 @@ class RestartToast(QWidget):
     def mousePressEvent(self, event) -> None:
         """失败/超时提示常驻，点击卡片即关闭；倒计时与成功态不响应点击"""
         if self._mode in ("failure", "overdue"):
+            self.close()
+            return
+        super().mousePressEvent(event)
+
+
+class WakeToast(QWidget):
+    """进入智能音箱模式时的等待提示（外观与重启提示同一块卡片）
+
+    进入要探测唤醒模型、抢麦克风，实测要 7 秒以上；这段时间界面还没切到眼睛页，
+    不加提示就和卡死一样。这里只负责「正在进入…」一条：
+    - 进入成功：0.6 秒后自动关掉，眼睛页随即显示；
+    - 进入失败：换成失败原因并常驻，点击卡片关闭。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(TOAST_STYLE)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 14, 18, 14)
+        self._label = QLabel("", self)
+        self._label.setWordWrap(True)
+        self._label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        lay.addWidget(self._label)
+        self._failed = False
+
+    def _show(self, text: str) -> None:
+        self._label.setText(text)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            geo = screen.availableGeometry()
+            self.adjustSize()
+            self.move(geo.center().x() - self.width() // 2,
+                      geo.top() + max(24, geo.height() // 5))
+        self.show()
+        self.raise_()
+
+    def start(self) -> None:
+        self._failed = False
+        self._label.setStyleSheet("")
+        self._show("正在进入智能音箱模式…\n首次加载唤醒模型可能需要几十秒，请稍候")
+
+    def finish(self) -> None:
+        if not self._failed:
+            self.close()
+
+    def fail(self, message: str) -> None:
+        """失败提示常驻：不自动消失，点击卡片关闭，避免把失败一闪而过"""
+        self._failed = True
+        self._label.setStyleSheet("color: #ff8f86;")
+        self._show("进入智能音箱模式失败：" + str(message) + "\n点击此卡片关闭")
+
+    def mousePressEvent(self, event) -> None:
+        if self._failed:
             self.close()
             return
         super().mousePressEvent(event)
@@ -1343,6 +1405,9 @@ def main() -> int:
 
     restart_toast = RestartToast()
     app.aboutToQuit.connect(restart_toast.close)
+    # 进入智能音箱模式的等待提示（与重启提示同一块卡片）
+    wake_toast = WakeToast()
+    app.aboutToQuit.connect(wake_toast.close)
 
     restart_notice = NativeRestartNotice()
     app.aboutToQuit.connect(restart_notice.stop)
@@ -1512,15 +1577,14 @@ def main() -> int:
 
     def _wake_enter_done(result) -> None:
         if isinstance(result, Exception):
-            tray.showMessage("DeckMeido", f"进入智能音箱模式失败：{result}", icon, 6000)
+            wake_toast.fail(result)
             return
         if result.get("state") == "error":
-            tray.showMessage(
-                "DeckMeido",
-                f"智能音箱模式不可用：{result.get('last_error') or '未知原因'}",
-                icon, 6000)
+            wake_toast.fail(result.get("last_error") or "未知原因")
             return
+        # 眼睛页进入中会自己显示「正在准备」，先切过去再收卡片，避免中间闪一下主界面
         _enter_eyes()
+        QTimer.singleShot(600, wake_toast.finish)
 
     def _wake_exit_work():
         return _wake_api("/api/wake/exit")
@@ -1545,6 +1609,8 @@ def main() -> int:
         if eyes_state["active"]:
             run_worker(_wake_exit_work, _wake_exit_done, app)
         else:
+            # 进入前先亮出等待提示：模型准备 + 抢麦克风要好几秒，界面在这期间没任何变化
+            wake_toast.start()
             run_worker(_wake_enter_work, _wake_enter_done, app)
 
     def stop_wake() -> None:

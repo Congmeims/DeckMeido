@@ -804,7 +804,7 @@ stt = STT(
 # 设置里可关；工具缺失时 audiomute 自己静默降级，不影响录音
 audiomute.set_enabled(bool(_stt_cfg.get("duck_output", True)))
 
-# 智能音箱模式：常驻唤醒检测在后台跑，默认关闭（[wake] enabled=false）。
+# 智能音箱模式：常驻唤醒检测在后台跑，默认开启（[wake] enabled=true）。
 # 只复用现有 STT/TTS/对话入口，不新起独立进程；状态通过 /api/wake/state 与 WS 广播。
 wake_service = wake.WakeService(
     model_root=paths.wake_model_dir(),

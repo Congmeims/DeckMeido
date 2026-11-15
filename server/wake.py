@@ -58,7 +58,8 @@ VAD_URL = (
 VAD_NAME = "silero_vad.onnx"
 
 DEFAULTS = {
-    "enabled": False,
+    # 默认开启：装好就能从托盘直接进智能音箱模式，不用先去设置页打开
+    "enabled": True,
     "wake_words": ["你好梅朵"],
     "keywords_threshold": 0.25,
     "chunk_size": 8,
@@ -78,8 +79,9 @@ DEFAULTS = {
     "local_intent": False,
 }
 
-STATES = ("disarmed", "armed", "waking", "listening", "thinking", "speaking",
-          "error")
+# starting = 正在准备模型/采集（arm 过程中的中间态），眼睛页和托盘都靠它显示等待提示
+STATES = ("disarmed", "starting", "armed", "waking", "listening", "thinking",
+          "speaking", "error")
 
 _MESSAGES = {
     "no_capture": "缺少 parec / pw-record（PipeWire 录音工具），无法常驻监听",
@@ -783,6 +785,9 @@ class WakeService:
             if self._state in ("waking", "listening", "thinking", "speaking"):
                 return self.status()
             self._last_error = ""
+            # 先亮出「正在进入」：探测模型/抢麦克风要好几秒，眼睛页和客户端
+            # 都靠这个状态决定显示加载提示，不能等 arm 全部跑完才变
+            self._set_state("starting")
             try:
                 if self._detector is None:
                     await self._start_detector()
