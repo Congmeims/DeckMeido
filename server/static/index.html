@@ -4336,6 +4336,10 @@
     // 原始请求体就是文件本身，后端边收边写盘；文件名走查询参数（避免 multipart 临时文件）
     xhr.open('POST', '/api/upload-stream?dir=' + encodeURIComponent(full) +
              '&name=' + encodeURIComponent(item.name));
+    // 这是唯一没走 apiFetch 的写接口：少了这一行，局域网的已配对设备
+    // 每个文件都会被 require_auth 判成「未配对」回 401（界面就会喊去配对）
+    var tk = deviceToken();
+    if (tk) xhr.setRequestHeader('Authorization', 'Bearer ' + tk);
     xhr.setRequestHeader('X-File-Size', String(item.size || 0));
     xhr.upload.onprogress = function (e) {
       if (!e.lengthComputable || e.total <= 0) return;
@@ -4360,6 +4364,11 @@
         try { d = JSON.parse(xhr.responseText) || {}; } catch (e2) { d = {}; }
         // 403 只读拦截的文案在 error 里，普通 HTTPException 在 detail 里
         item.err = d.detail || d.error || ('HTTP ' + xhr.status);
+        // 后端 401 的 detail 是「未配对设备：请先在设置页配对」，但这里失败
+        // 往往只是令牌没带上/已失效，直接给一句能自救的原因
+        if (xhr.status === 401) {
+          item.err = '这台设备的配对已失效或令牌丢失，请重新配对后再重试';
+        }
       }
       fbTaskRender();
       fbTaskPump();

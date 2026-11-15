@@ -64,6 +64,17 @@ def _inline_scripts() -> list[str]:
     return re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", _html(), re.S)
 
 
+class 上传流接口带设备令牌Test(unittest.TestCase):
+    """上传走裸 XHR，不经过 apiFetch；漏带 Authorization 时已配对设备也会被 401"""
+
+    def test_upload_stream_带令牌(self):
+        html = HTML.read_text(encoding="utf-8")
+        i = html.index("xhr.open('POST', '/api/upload-stream")
+        seg = html[i:i + 500]
+        self.assertIn("Authorization", seg)
+        self.assertIn("deviceToken()", seg)
+
+
 class FrontendWiringTest(unittest.TestCase):
     def test_inline_scripts_parse(self):
         """内联脚本必须语法合法：大段删除后最容易留下半截代码"""

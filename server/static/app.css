@@ -2933,12 +2933,13 @@
   /* 上传任务卡：一次拖入 / 多选（含整个文件夹）合并成一张卡，
      整批共用一个总进度；单文件失败收进卡内可展开的明细，不再各占一行。
      区域有固定高度上限、内部滚动，绝不会把下面的文件列表挤下去 */
+  /* 横向边距和 #fbList 的内边距对齐，卡片边框才会和下面的文件行同一条竖线；
+     margin 放在内部（padding）而不是外层，滚动条的轨道就不会比卡片多出一块 */
   #fbQueue {
-    flex: 0 1 auto; min-height: 0; margin: 0 6px;
+    flex: 0 1 auto; min-height: 0; padding: 0 6px;
     max-height: min(192px, 34vh);
     overflow-y: auto; overscroll-behavior: contain;
     display: flex; flex-direction: column; gap: 6px;
-    padding-right: 2px;
   }
   #fbQueue:empty { display: none; }
   .fbt-card {
