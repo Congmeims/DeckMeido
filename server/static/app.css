@@ -2089,10 +2089,17 @@
     font-size: 11.5px; cursor: pointer; padding: 0 2px;
   }
   .qqtext-revert:hover { color: var(--brand); }
+  /* 和设置页其它输入框（.field textarea）同一套外观：面板底色 + 1px 描边 */
   .qqtext-input {
     width: 100%; margin-top: 4px; box-sizing: border-box; resize: vertical;
-    font-size: 12.5px; line-height: 1.5; font-family: inherit;
+    padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: var(--set-radius);
+    background: var(--surface-2); color: var(--text);
+    font-size: 14px; line-height: 1.45; font-family: inherit;
+    outline: none;
   }
+  .qqtext-input::placeholder { color: var(--muted); }
+  .qqtext-input:focus { border-color: var(--brand); }
   .qqtext-item.bad .qqtext-input { border-color: #e05555; }
   .qqtext-item.bad .qqtext-name::after {
     content: '（缺占位符）'; color: #e05555; font-size: 11px;
