@@ -6395,6 +6395,39 @@
     turnCache.cur = '';
   }
 
+  // 本机缓存落盘的长度上限：补回时只用得上最后的收尾部分
+  var TURN_CACHE_TAIL = 20000;
+
+  // 立刻按当前积攒的内容写一份到 localStorage。
+  // 流式阶段每条增量都写一次会把 localStorage 打满（同步 IO，Deck 上很卡），
+  // 所以走 turnCacheSchedule 节流；收尾 / 页面隐藏这类关键时刻再直接落盘
+  function turnCacheFlushNow() {
+    if (turnCacheTimer) { clearTimeout(turnCacheTimer); turnCacheTimer = null; }
+    var sid = turnCache.sid || currentSid;
+    var text = turnCache.segs.concat(turnCache.cur ? [turnCache.cur] : []).join('\n\n');
+    if (!sid || !text.trim()) return;
+    if (text.length > TURN_CACHE_TAIL) text = text.slice(-TURN_CACHE_TAIL);
+    try {
+      localStorage.setItem('deckmeido_turn_cache',
+        JSON.stringify({ sid: sid, ts: Date.now(), text: text }));
+    } catch (e) { /* 配额满 / 隐私模式：补回能力降级，不影响对话 */ }
+  }
+
+  // 节流落盘：流式输出期间最多每 1 秒写一次
+  function turnCacheSchedule() {
+    if (turnCacheTimer) return;
+    turnCacheTimer = setTimeout(function () {
+      turnCacheTimer = null;
+      turnCacheFlushNow();
+    }, 1000);
+  }
+
+  window.addEventListener('pagehide', turnCacheFlushNow);
+  document.addEventListener('visibilitychange', function () {
+    // 切后台 / 关页面前把这一轮已显示的内容落一份：进程随后被杀也补得回来
+    if (document.visibilityState === 'hidden') turnCacheFlushNow();
+  });
+
   // 心跳：PING_MS 内一条消息都没收到就发 ping，再一个周期还没动静就判死重连。
   // 只发 ping 不断连：真的还有流在走（工具跑得久）时服务端不会回，但也别误杀
   function startHeartbeat() {
