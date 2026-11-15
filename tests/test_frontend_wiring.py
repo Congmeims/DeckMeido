@@ -74,6 +74,16 @@ class 上传流接口带设备令牌Test(unittest.TestCase):
         self.assertIn("Authorization", seg)
         self.assertIn("deviceToken()", seg)
 
+    def test_同名冲突先问再覆盖(self):
+        """409 不能直接判失败：要挂起整批、弹确认，确认后才带 overwrite=1 重传"""
+        html = HTML.read_text(encoding="utf-8")
+        self.assertIn("xhr.status === 409", html)
+        self.assertIn("fbTaskAskOverwrite(task)", html)
+        self.assertIn("&overwrite=1", html)
+        # 挂起期间不能再取下一个文件，否则会边问边传
+        i = html.index("function fbTaskNextItem(task)")
+        self.assertIn("task.dupAsk", html[i:i + 400])
+
 
 class FrontendWiringTest(unittest.TestCase):
     def test_inline_scripts_parse(self):

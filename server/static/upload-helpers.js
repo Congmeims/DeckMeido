@@ -28,7 +28,7 @@ function fbMidPath(p, max) {
 // 整批汇总：文件数 / 成功数 / 失败数 / 总字节 / 已传字节 / 当前文件 / 百分比
 function fbTaskStats(task) {
   var files = (task && task.files) || [];
-  var out = { total: files.length, done: 0, failed: 0, cancelled: 0,
+  var out = { total: files.length, done: 0, failed: 0, cancelled: 0, skipped: 0,
               totalBytes: 0, sentBytes: 0, percent: 0, current: '' };
   for (var i = 0; i < files.length; i++) {
     var f = files[i] || {};
@@ -40,6 +40,9 @@ function fbTaskStats(task) {
     } else if (f.status === 'fail') {
       out.failed++;
       out.sentBytes += Number(f.loaded) || 0;
+    } else if (f.status === 'skip') {
+      // 同名被跳过：既不算成功也不算失败
+      out.skipped++;
     } else if (f.status === 'cancelled') {
       out.cancelled++;
     } else if (f.status === 'uploading') {
@@ -50,7 +53,7 @@ function fbTaskStats(task) {
   if (out.totalBytes > 0) {
     // 四舍五入到 0.1%，避免浮点误差让 55 变成 55.00000000000001
     out.percent = Math.min(100, Math.round(out.sentBytes / out.totalBytes * 1000) / 10);
-  } else if (out.total > 0 && out.done === out.total) {
+  } else if (out.total > 0 && out.done + out.skipped === out.total) {
     out.percent = 100;
   }
   return out;
@@ -64,6 +67,7 @@ function fbTaskSummary(task) {
   if (task && task.status === 'cancelled') parts.push('已取消');
   // 成功/失败放在同一段里，符合「37 成功 1 失败」的读法
   var tail = st.done + ' 成功';
+  if (st.skipped > 0) tail += ' ' + st.skipped + ' 已存在';
   if (st.failed > 0) tail += ' ' + st.failed + ' 失败';
   parts.push(tail);
   return parts.join(' · ');

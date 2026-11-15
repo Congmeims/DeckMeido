@@ -3380,15 +3380,25 @@
   }
 
   // 删除确认：面板内居中的气泡卡片，替代原生 confirm()
-  function fbConfirmDelete(msg, onYes) {
+  // opt 可改按钮文案（上传覆盖复用同一张卡片，按钮是「覆盖 / 跳过」）
+  function fbConfirmDelete(msg, onYes, opt) {
     var mask = rbEl('fbConfirmMask');
+    var yes = rbEl('fbConfirmYes'), no = rbEl('fbConfirmNo');
+    opt = opt || {};
     rbEl('fbConfirmText').textContent = msg;
+    yes.textContent = opt.yes || '删除';
+    no.textContent = opt.no || '取消';
+    // 危险动作用红按钮；覆盖/跳过这种二选一用普通主色，别都染成删掉的红色
+    yes.classList.toggle('danger', !opt.neutral);
     mask.classList.add('show');
-    rbEl('fbConfirmYes').onclick = function () {
+    yes.onclick = function () {
       mask.classList.remove('show');
       onYes();
     };
-    rbEl('fbConfirmNo').onclick = function () { mask.classList.remove('show'); };
+    no.onclick = function () {
+      mask.classList.remove('show');
+      if (opt.onNo) opt.onNo();
+    };
   }
 
   function fbCtxDelete(path, isDir) {
@@ -3963,7 +3973,8 @@
       return f.file && (f.status === 'fail' || f.status === 'cancelled');
     }).length;
     var problems = task.files.filter(function (f) {
-      return f.status === 'fail' || f.status === 'cancelled';
+      // 跳过的同名项也列进明细：用户点了「跳过」，得能看到哪些没覆盖
+      return f.status === 'fail' || f.status === 'cancelled' || f.status === 'skip';
     });
     var card = document.createElement('div');
     card.className = 'fbt-card ' +
@@ -4049,7 +4060,8 @@
       row.appendChild(top);
       var why = document.createElement('div');
       why.className = 'why';
-      why.textContent = f.err || (f.status === 'cancelled' ? '已取消' : '失败');
+      why.textContent = f.err || (f.status === 'cancelled' ? '已取消'
+                                  : (f.status === 'skip' ? '已存在，已跳过' : '失败'));
       row.appendChild(why);
       detail.appendChild(row);
     });
@@ -4129,6 +4141,9 @@
   }
 
   function fbTaskNextItem(task) {
+    // 有同名冲突待确认时整批停住：先问清楚「覆盖还是跳过」再继续，
+    // 不然会一边弹问一边把后面的文件传上去，用户没法整体决定
+    if (task.dupAsk) return null;
     for (var i = 0; i < task.files.length; i++) {
       if (task.files[i].status === 'wait') return task.files[i];
     }
@@ -4163,7 +4178,11 @@
     // 还在遍历文件夹：等列表读完再开传，别和目录遍历抢主线程
     if (task.preparing) return;
     var item = fbTaskNextItem(task);
-    if (!item) { fbTaskFinish(task); fbTaskPump(); return; }
+    if (!item) {
+      // 挂起等确认 / 还有文件在传：都不算结束
+      if (task.dupAsk) { fbTaskRelease(task); return; }
+      fbTaskFinish(task); fbTaskPump(); return;
+    }
     task.status = 'running';
     fbUploadBusy = true;
     fbUploadOwner = task;
@@ -4236,8 +4255,12 @@
       task.phaseText = '';
     }
     task.files.forEach(function (f) {
-      if (f.status === 'wait' || f.status === 'uploading') f.status = 'cancelled';
+      if (f.status === 'wait' || f.status === 'uploading' || f.status === 'dup') {
+        f.status = 'cancelled';
+      }
     });
+    // 取消时如果正弹着「覆盖还是跳过」，把挂起标记一起清掉，否则会卡在等待
+    task.dupAsk = false;
     var xhr = task.xhr;
     task.xhr = null;
     if (xhr) { try { xhr.abort(); } catch (e) {} }
@@ -4255,7 +4278,8 @@
     task.files.forEach(function (f, i) {
       if (onlyIndex != null && i !== onlyIndex) return;
       if (!f.file) return;   // 遍历阶段就失败的条目没有 File 对象，重试也拿不到
-      if (f.status === 'fail' || f.status === 'cancelled') {
+      // skip（用户选了跳过同名）也算可重试：重试会再问一次是否覆盖
+      if (f.status === 'fail' || f.status === 'cancelled' || f.status === 'skip') {
         f.status = 'wait';
         f.loaded = 0;
         f.err = '';
@@ -4267,6 +4291,7 @@
     task.finished = false;
     task.expanded = false;
     task.cancelled = false;
+    task.dupAsk = false;
     task.limit = undefined;
     fbTaskRender();
     fbTaskPump();
@@ -4282,6 +4307,51 @@
     if (!rel) return dir || '';
     var head = (dir || '').replace(/\/+$/, '');
     return head + '/' + rel.replace(/^\/+/, '');
+  }
+
+  // 同名冲突：整批先停下问一句。覆盖 = 这些文件重传（带 overwrite=1），
+  // 跳过 = 标记为已存在、其余文件继续。一次只弹一张，避免批量时弹成弹窗风暴。
+  function fbTaskAskOverwrite(task) {
+    if (task.dupAsk) return;
+    var dups = task.files.filter(function (f) { return f.status === 'dup'; });
+    if (!dups.length) return;
+    task.dupAsk = true;
+    var one = dups.length === 1;
+    var first = dups[0];
+    var where = (first.parent ? first.parent + '/' : '') + first.name;
+    var msg = (one ? '「' + where + '」已存在。' : '有 ' + dups.length + ' 个同名文件已存在（如 ' + where + '）。') +
+              (dups.length < task.files.length
+                ? '覆盖会替换原文件，其余 ' + (task.files.length - dups.length) + ' 个会正常上传。'
+                : '覆盖会替换原文件。');
+    fbConfirmDelete(msg, function () {
+      // 覆盖：只把当前批次的冲突项重排一次，还没传到的同名项也一并带上标记
+      task.files.forEach(function (f) {
+        if (f.status === 'dup') {
+          f.status = 'wait';
+          f.loaded = 0;
+          f.err = '';
+          f.overwrite = true;
+        } else if (f.status === 'wait') {
+          f.overwrite = true;
+        }
+      });
+      task.dupAsk = false;
+      task.phaseText = '';
+      fbTaskRender();
+      fbTaskPump();
+    }, {
+      yes: '覆盖', no: '跳过', neutral: true,
+      onNo: function () {
+        // 跳过：冲突项标成已存在（不算失败），后面的文件照常继续
+        task.files.forEach(function (f) {
+          if (f.status === 'dup') { f.status = 'skip'; f.err = ''; }
+        });
+        task.dupAsk = false;
+        task.phaseText = '';
+        fbTaskRender();
+        fbTaskPump();
+      }
+    });
   }
 
   // 逐段重建拖进来的相对目录：/api/fs mkdir 的 path 是父目录、path2 是目录名。
@@ -4335,7 +4405,8 @@
     var lastPaint = 0;
     // 原始请求体就是文件本身，后端边收边写盘；文件名走查询参数（避免 multipart 临时文件）
     xhr.open('POST', '/api/upload-stream?dir=' + encodeURIComponent(full) +
-             '&name=' + encodeURIComponent(item.name));
+             '&name=' + encodeURIComponent(item.name) +
+             (item.overwrite ? '&overwrite=1' : ''));
     // 这是唯一没走 apiFetch 的写接口：少了这一行，局域网的已配对设备
     // 每个文件都会被 require_auth 判成「未配对」回 401（界面就会喊去配对）
     var tk = deviceToken();
@@ -4368,6 +4439,13 @@
         // 往往只是令牌没带上/已失效，直接给一句能自救的原因
         if (xhr.status === 401) {
           item.err = '这台设备的配对已失效或令牌丢失，请重新配对后再重试';
+        }
+        // 同名冲突不直接判失败：整批挂起，问过用户再决定覆盖还是跳过
+        //（同名目录也会回 409，但那是真不能覆盖，按普通失败展示）
+        if (xhr.status === 409 && String(item.err).indexOf('已存在同名文件') === 0) {
+          item.status = 'dup';
+          item.err = '已存在同名文件';
+          fbTaskAskOverwrite(task);
         }
       }
       fbTaskRender();
@@ -6841,23 +6919,26 @@
     (c.items || []).forEach(function (it) {
       var item = document.createElement('div'); item.className = 'ctrl-item';
       var row = document.createElement('div');
-      // 三态：可用（绿）/ 缺失（黄，与右栏可补装同色）/ 环境不适用（灰空心）
-      row.className = 'ctrl-row ' + (it.na ? 'na' : (it.ok ? 'ok' : 'warn'));
+      // 只有灯色说话：正常绿 / 未开启黄 / 异常红
+      row.className = 'ctrl-row ' + ctrlTone(it);
       var lamp = document.createElement('span'); lamp.className = 'lamp';
       var nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = it.label;
       var ds = document.createElement('span'); ds.className = 'ds';
-      ds.textContent = it.na ? (it.detail || '当前环境不适用')
-                             : (it.ok ? '可用' : (it.detail || '缺失'));
-      if (!it.ok && it.detail) ds.title = it.detail;
+      // 正常不写字，异常/未开启只给原因，一眼就能看出哪一项有问题
+      var why = it.na ? (it.detail || '未开启') : (it.ok ? '' : (it.detail || '异常'));
+      ds.textContent = why;
+      if (why) ds.title = why;
       var act = document.createElement('span'); act.className = 'act';
       row.append(lamp, nm, ds, act);
       item.appendChild(row);
       ctrlList.appendChild(item);
     });
+  }
 
-    var yd = c.ydotoold || {};
-    ctrlYd.textContent = 'ydotoold：' + (yd.active ? '运行中' : '未运行')
-      + (yd.enabled ? '，已设开机自启（重启后自动恢复）' : '，未设开机自启（重启后会失效）');
+  // 左栏灯色：正常绿 / 未开启（后端 na）黄 / 异常红
+  function ctrlTone(it) {
+    if (it.na) return 'warn';
+    return it.ok ? 'ok' : 'bad';
   }
 
   var ctrlScrollSeq = 0;
@@ -7091,27 +7172,23 @@
       var item = document.createElement('div');
       item.className = 'ctrl-item';
       var row = document.createElement('div');
-      // 与左栏同一套三态：可用绿 / 缺失提示色 / 任务失败红
-      row.className = 'ctrl-row ' + (it.status === 'ready' ? 'ok' : 'warn');
+      // 与左栏同一套灯色：就绪绿 / 未安装（待补装）黄 / 异常红
+      row.className = 'ctrl-row ' + (it.status === 'ready' ? 'ok'
+        : (it.status === 'mismatch' ? 'bad' : 'warn'));
       var lamp = document.createElement('span');
       lamp.className = 'lamp';
       var nm = document.createElement('span');
       nm.className = 'nm'; nm.textContent = it.name; nm.title = it.name;
-      // 次要信息：已就绪给体积，未就绪优先给缺失原因；同一层级的小号灰字
+      // 不显示体积；就绪留白，未就绪只写原因，异常行本来就是红的
       var ds = document.createElement('span');
       ds.className = 'ds';
-      var sub = it.status === 'ready' ? (it.size || '')
-                                      : (it.detail || it.size || '缺失');
+      var sub = it.status === 'ready' ? '' : (it.detail || '未安装');
       ds.textContent = sub; ds.title = sub;
-      // 右侧操作位固定宽度：未就绪给安装按钮，已就绪给统一静态文字
+      // 右侧操作位固定宽度：未就绪给安装按钮，已就绪留空
       var act = document.createElement('span');
       act.className = 'act';
       var btn = null;
-      if (it.status === 'ready') {
-        var st = document.createElement('span');
-        st.className = 'sc-state'; st.textContent = '可用';
-        act.appendChild(st);
-      } else {
+      if (it.status !== 'ready') {
         btn = document.createElement('button');
         btn.className = 'mini-btn'; btn.type = 'button';
         btn.textContent = scBtnLabel(it, job);

@@ -2549,13 +2549,17 @@ async def api_upload_limit(dir: str = ""):
 
 
 @app.post("/api/upload-stream", dependencies=[Depends(require_auth)])
-async def api_upload_stream(request: Request, dir: str = "", name: str = ""):
+async def api_upload_stream(request: Request, dir: str = "", name: str = "",
+                           overwrite: bool = False):
     """原始流上传：请求体就是文件本身，边收边写盘。
 
     网页文件管理器走这条路径。multipart 解析会把整份内容先落到临时文件，
     大文件等于多占一份磁盘、也多了「先落整份拷贝」这一步；这里直接读
     request.stream()，1MB 一块写进目标文件，内存占用恒定。
     权限判定仍走 _fs_denied_response（危险区/只读挂载一律 403，不能绕过）。
+
+    同名文件的默认行为仍是 409 拒绝；只有前端先问过用户、显式带上
+    overwrite=1 时才覆盖（覆盖是把目标文件截断重写，不是先删再建）。
     """
     target_dir = _upload_target_dir(dir)
     denied = _fs_denied_response(target_dir)
@@ -2565,8 +2569,10 @@ async def api_upload_stream(request: Request, dir: str = "", name: str = ""):
     if not fn or fn in (".", ".."):
         raise HTTPException(status_code=400, detail="文件名为空")
     dest = target_dir / fn
-    if dest.exists():
+    if dest.exists() and not overwrite:
         raise HTTPException(status_code=409, detail=f"已存在同名文件：{fn}")
+    if dest.is_dir():
+        raise HTTPException(status_code=409, detail=f"同名目录已存在，无法覆盖：{fn}")
     caps = upload_limits(target_dir)
     limit = caps["limit"]
     try:
