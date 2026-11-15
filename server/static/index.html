@@ -520,13 +520,6 @@
               </div>
             </div>
             <div id="ttsDownloadHint" class="field-hint tts-bytes"></div>
-            <div class="field field-row" style="margin-top:8px">
-              <label style="margin:0">播报音量临时抬升（播报期间自动提高音量，播完恢复）</label>
-              <label class="switch">
-                <input id="cfgTtsBoost" data-autosave type="checkbox" checked>
-                <span class="slider"></span>
-              </label>
-            </div>
             <div id="ttsCredit" class="field-hint">
               <div class="tts-credit-line">■Piper Plus:つくよみちゃん</div>
               <div class="tts-credit-line">音声：<a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener">■つくよみちゃんコーパス（CV.夢前黎）</a></div>
@@ -8387,8 +8380,6 @@
   // 设置页「模型接入 → 当前模型」下拉；和对话页顶栏共用同一个模型键
   var setModelSelect = document.getElementById('setModelSelect');
   var setModelState = document.getElementById('setModelState');
-  // 播报音量临时抬升的开关（[tts] boost_volume，默认开）
-  var cfgTtsBoost = document.getElementById('cfgTtsBoost');
   // 语音回复卡（「女仆人格」下面）：两个发音人 + 试听 + 模型下载
   var ttsSpeakerRow = document.getElementById('ttsSpeakerRow');
   var ttsSpeakerBtns = ttsSpeakerRow ? Array.prototype.slice.call(
@@ -9685,8 +9676,6 @@
         apiProfilesLoaded = true;
         if (setModelSelect && c.model) setModelSelect.value = c.model;
         cfgTts.checked = c.tts_enable;
-        // 播报音量抬升：老配置没有这项，后端缺省即开
-        if (cfgTtsBoost) cfgTtsBoost.checked = c.tts_boost_volume !== false;
         // 发音人只有两个选项：新键优先，老配置没有 speaker 时按引擎映射
         setTtsSpeaker(c.tts_speaker
           || (c.tts_engine === 'espeak-ng' ? 'robot' : 'maid'));
@@ -10608,7 +10597,6 @@
       current_api: apiProfilesState.current || '',
       tts_enable: cfgTts.checked,
       tts_speaker: ttsSpeaker,
-      tts_boost_volume: cfgTtsBoost ? !!cfgTtsBoost.checked : true,
       with_shot: !!cfgWithShot.checked,
       chat_voice: cfgChatVoice ? !!cfgChatVoice.checked : true,
       stt_enable: !!cfgStt.checked,

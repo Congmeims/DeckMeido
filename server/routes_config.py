@@ -50,8 +50,6 @@ class ConfigUpdate(BaseModel):
     tts_speed_scale: float | None = None
     tts_noise_scale: float | None = None
     tts_length_scale: float | None = None
-    # 播报音量过低时临时抬升（[tts] boost_volume，默认开）
-    tts_boost_volume: bool | None = None
     # 语音输入开关：和 tts_enable 一样走热更新，插件端 /api/stt/toggle 写的是同一份 [stt]
     stt_enable: bool | None = None
     # 录音期间静音外放：写入 [stt] duck_output
@@ -158,7 +156,6 @@ def init(require_auth, client_ip, get_main) -> None:
             "tts_speed": tts.speed,
             "tts_speed_scale": tts.speed_scale,
             "tts_noise_scale": tts.noise_scale,
-            "tts_boost_volume": tts.boost_volume,
             # 带画面询问的开关：面板重开后按它恢复，不能只存在前端内存里。
             # 对外给「有效值」：总开关关闭时插件端据此不再附加截图；
             # 分项原始值另给 with_shot_pref，设置页回显不被总开关污染
@@ -323,8 +320,6 @@ def init(require_auth, client_ip, get_main) -> None:
             tts_updates["noise_scale"] = round(max(0.0, min(1.0, float(req.tts_noise_scale))), 3)
         if req.tts_length_scale is not None:
             tts_updates["length_scale"] = round(max(0.4, min(3.0, float(req.tts_length_scale))), 2)
-        if req.tts_boost_volume is not None:
-            tts_updates["boost_volume"] = bool(req.tts_boost_volume)
         if tts_updates:
             updates["tts"] = tts_updates
         if req.stt_enable is not None:

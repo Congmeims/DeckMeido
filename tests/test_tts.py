@@ -998,11 +998,10 @@ class _FakeMixer:
         return None
 
 
-class BoostVolumeTest(unittest.TestCase):
-    """播报音量临时抬升：低于下限才抬、播完（含异常/取消）恢复、关掉后不动系统音量。"""
+class SinkSnapshotTest(unittest.TestCase):
+    """播报前后一律不改系统音量（改音量会弹音量条、打断正在放的声音）。"""
 
     def setUp(self):
-        ttsmod.boost_reset()
         self.mixer = _FakeMixer()
         tool = mock.patch.object(ttsmod, "_volume_tool", return_value="pactl")
         run = mock.patch.object(ttsmod, "_run_volume", side_effect=self.mixer.run)
@@ -1014,50 +1013,14 @@ class BoostVolumeTest(unittest.TestCase):
         self.addCleanup(self._td.cleanup)
         self.root = Path(self._td.name)
 
-    def tearDown(self):
-        ttsmod.boost_reset()
-
-    def test_音量过低时临时抬高并在退出时恢复(self):
-        snapshot = ttsmod.boost_enter(True)
-        self.assertTrue(snapshot["boosted"])
+    def test_快照只读默认_sink(self):
+        snapshot = ttsmod._sink_snapshot()
         self.assertEqual(snapshot["volume"], 20)
-        self.assertEqual(self.mixer.volume, 55)
-        ttsmod.boost_exit()
-        self.assertEqual(self.mixer.volume, 20)
-        self.assertEqual(self.mixer.sets, [55, 20])
-
-    def test_音量本来就够时不碰系统音量(self):
-        self.mixer.volume = 70
-        snapshot = ttsmod.boost_enter(True)
-        self.assertFalse(snapshot["boosted"])
-        ttsmod.boost_exit()
-        self.assertEqual(self.mixer.volume, 70)
-        self.assertEqual(self.mixer.sets, [])
-
-    def test_关掉开关后完全不动系统音量(self):
-        snapshot = ttsmod.boost_enter(False)
-        self.assertFalse(snapshot["boosted"])
-        ttsmod.boost_exit()
+        self.assertFalse(snapshot["muted"])
         self.assertEqual(self.mixer.volume, 20)
         self.assertEqual(self.mixer.sets, [])
 
-    def test_用户中途调音量不被恢复覆盖(self):
-        ttsmod.boost_enter(True)
-        self.mixer.volume = 40  # 用户自己调到了 40%
-        ttsmod.boost_exit()
-        self.assertEqual(self.mixer.volume, 40)
-
-    def test_并发播报只在最后一个退出时恢复(self):
-        ttsmod.boost_enter(True)
-        ttsmod.boost_enter(True)
-        self.assertEqual(self.mixer.volume, 55)
-        ttsmod.boost_exit()
-        self.assertEqual(self.mixer.volume, 55)
-        ttsmod.boost_exit()
-        self.assertEqual(self.mixer.volume, 20)
-        self.assertEqual(self.mixer.sets, [55, 20])
-
-    def test_播放失败也恢复原音量(self):
+    def test_播放失败也不动系统音量(self):
         t = ttsmod.TTS(enable=True, speaker="robot", model_root=self.root)
 
         async def boom(wav, event):
@@ -1067,21 +1030,9 @@ class BoostVolumeTest(unittest.TestCase):
         with self.assertRaises(ttsmod.TTSError):
             _run(t.play_bytes(b"RIFF0000WAVE"))
         self.assertEqual(self.mixer.volume, 20)
-        self.assertEqual(self.mixer.sets, [55, 20])
+        self.assertEqual(self.mixer.sets, [])
 
-    def test_播放被取消也恢复原音量(self):
-        t = ttsmod.TTS(enable=True, speaker="robot", model_root=self.root)
-
-        async def cancelled(wav, event):
-            raise asyncio.CancelledError()
-
-        t._play = cancelled
-        with self.assertRaises(asyncio.CancelledError):
-            _run(t.play_bytes(b"RIFF0000WAVE"))
-        self.assertEqual(self.mixer.volume, 20)
-        self.assertEqual(self.mixer.sets, [55, 20])
-
-    def test_播报日志带上_sink_音量与抬升标记(self):
+    def test_播报日志带上_sink_音量(self):
         t = ttsmod.TTS(enable=True, speaker="robot", model_root=self.root)
         events = []
         recorder = mock.patch.object(
@@ -1095,11 +1046,11 @@ class BoostVolumeTest(unittest.TestCase):
         recorder.start()
         self.addCleanup(recorder.stop)
         _run(t.speak("你好"))
-        boost = dict(events)["tts.boost"]
-        self.assertEqual(boost["sink_volume"], 20)
-        self.assertFalse(boost["sink_mute"])
-        self.assertTrue(boost["boosted"])
+        start = dict(events)["tts.speak.start"]
+        self.assertEqual(start["sink_volume"], 20)
+        self.assertNotIn("boosted", start)
         self.assertEqual(self.mixer.volume, 20)
+        self.assertEqual(self.mixer.sets, [])
 
 
 class ModelPinTest(unittest.TestCase):

@@ -785,8 +785,6 @@ tts = TTS(
     language=str(_tts_cfg.get("language", "auto") or "auto"),
     model_source=str(_tts_cfg.get("model_source", "auto") or "auto"),
     idle_unload_sec=float(_tts_cfg.get("idle_unload_sec", 600)),
-    # 播报时系统音量过低就临时抬到可听水平，播完恢复（[tts] boost_volume）
-    boost_volume=bool(_tts_cfg.get("boost_volume", True)),
     # 可选日文汉字词表："石川由依,東京大学" —— 中文句里的日文专名按 ja 读
     ja_terms=str(_tts_cfg.get("ja_terms", "") or ""),
 )
