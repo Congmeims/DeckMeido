@@ -16,6 +16,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 
@@ -33,6 +34,9 @@ CONTROLS = [
     ("ydotool", "点击输入", True),
     ("kdotool", "窗口聚焦", True),
     ("espeak", "语音播报", False),
+    ("sherpa", "本地语音", False),
+    ("wake_ack", "唤醒回应", False),
+    ("wake", "智能音箱", False),
     ("fakeroot", "构建依赖", False),
     ("spectacle", "截图工具", False),
 ]
@@ -196,11 +200,67 @@ def _probe_spectacle() -> tuple[bool, str]:
     return True, ""
 
 
+def _main_attr(name: str):
+    """读主模块里的实例（stt / wake_service）；主模块还没加载时返回 None"""
+    mod = sys.modules.get("server.main") or sys.modules.get("main")
+    return getattr(mod, name, None) if mod is not None else None
+
+
+def _probe_sherpa() -> tuple[bool, str]:
+    """本地语音：sherpa-onnx 运行时 + SenseVoice 识别模型
+
+    语音输入和唤醒检测都跑在它上面，缺哪个就说哪个，别只报一句「未安装」
+    """
+    engine = _main_attr("stt")
+    if engine is None:
+        return False, "语音引擎未初始化"
+    if not engine.installed():
+        return False, "未安装 sherpa-onnx（pip install -r requirements-stt.txt）"
+    if not engine.model_ready():
+        return False, "识别模型未下载（设置 → 语音引擎里下载，约 250MB）"
+    return True, ""
+
+
+def _probe_wake_ack() -> tuple[bool, str]:
+    """唤醒回应：命中唤醒词时那句「我在」的预合成缓存"""
+    svc = _main_attr("wake_service")
+    if svc is None:
+        return False, "唤醒服务未初始化"
+    ack = svc.status().get("ack") or {}
+    if ack.get("ready"):
+        return True, ""
+    return False, ack.get("error") or "回应语音未合成（检查语音合成是否可用）"
+
+
+def _probe_wake() -> tuple[bool, str]:
+    """智能音箱：总开关与当前待机状态
+
+    「关了」是用户自己的选择，不算故障（灰灯），不拉低可用数
+    """
+    svc = _main_attr("wake_service")
+    if svc is None:
+        return False, "唤醒服务未初始化"
+    try:
+        st = svc.status()
+    except Exception as exc:
+        return False, f"状态读取失败：{exc}"
+    if not st.get("enabled"):
+        return None, "未开启（设置 → 语音引擎）"
+    if st.get("last_error"):
+        return False, str(st["last_error"])
+    if st.get("armed"):
+        return True, ""
+    return False, f"当前状态：{st.get('state') or '未知'}"
+
+
 PROBES = {
     "ydotool": _probe_ydotool,
     "kdotool": _probe_kdotool,
     "wtype": _probe_wtype,
     "espeak": _probe_espeak,
+    "sherpa": _probe_sherpa,
+    "wake_ack": _probe_wake_ack,
+    "wake": _probe_wake,
     "fakeroot": _probe_fakeroot,
     "spectacle": _probe_spectacle,
 }

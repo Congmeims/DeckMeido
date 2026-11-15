@@ -43,8 +43,7 @@
   html[data-runtime="pc"] .sys-val,
   html[data-runtime="pc"] #fbPath,
   html[data-runtime="pc"] .fb-item .sz,
-  html[data-runtime="pc"] #fbViewer .fv-meta,
-  html[data-runtime="pc"] .ctrl-log { font-family: ui-monospace, monospace; }
+  html[data-runtime="pc"] #fbViewer .fv-meta { font-family: ui-monospace, monospace; }
   html[data-runtime="pc"] .qq-logs-body {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
@@ -1656,7 +1655,7 @@
   .mini-btn.danger:hover {
     color: var(--danger); border-color: var(--danger); background: rgba(228,80,80,.12);
   }
-  /* 修复守护进程这类要等后台的按钮，置灰表示正在处理，避免重复点 */
+  /* 后台任务进行中时按钮置灰，避免重复点 */
   .mini-btn:disabled { opacity: .5; cursor: default; }
   .mini-btn:disabled:hover { border-color: var(--line); color: var(--text); }
   /* 发音人二选一：两个等宽按钮并排，选中项蓝底，窄屏也不换行 */
@@ -2552,14 +2551,6 @@
     line-height: 1.55; margin-bottom: 12px;
   }
   .ctrl-card .upd-note { font-size: 12.5px; margin-top: 8px; }
-  /* 卡片底部操作统一靠右；主操作与次操作同高，不再一左一右 */
-  .ctrl-actions { display: flex; justify-content: flex-end; gap: 8px; }
-  .ctrl-actions button { flex: 0 0 auto; }
-  .ctrl-log {
-    margin-top: 10px; font-size: 11.5px;
-    color: var(--muted); white-space: pre-wrap; word-break: break-word;
-    max-height: 160px; overflow: auto;
-  }
   /* 跨屏键鼠：灵敏度 4 : 1 接管上限同一行，标签/控件按底对齐；
      窄屏自动上下堆叠，避免数字框被压到没法输入 */
   .ri-io-row {

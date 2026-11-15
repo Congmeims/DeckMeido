@@ -579,12 +579,6 @@
                 <div class="ctrl-sub">控件实测</div>
                 <div class="ctrl-list" id="ctrlList"></div>
                 <div class="ctrl-yd" id="ctrlYd"></div>
-                <div class="ctrl-actions">
-                  <button id="ctrlFix" class="mini-btn" type="button">修复守护进程</button>
-                  <button id="ctrlReflash" class="mini-btn" type="button">重新实测</button>
-                </div>
-                <div id="ctrlHint" class="upd-note"></div>
-                <div id="ctrlLog" class="ctrl-log"></div>
               </div>
               <div class="ctrl-col">
                 <div class="ctrl-sub">可补装组件</div>
@@ -6740,9 +6734,6 @@
   // ---------- 控件自检（挂在「设置 → 本地连接」子模块里） ----------
   var ctrlList = document.getElementById('ctrlList');
   var ctrlYd = document.getElementById('ctrlYd');
-  var ctrlHint = document.getElementById('ctrlHint');
-  var ctrlLog = document.getElementById('ctrlLog');
-  var ctrlFixBtn = document.getElementById('ctrlFix');
   var lastControls = null;
 
   function fillCtrlPanel(c) {
@@ -6767,12 +6758,6 @@
     var yd = c.ydotoold || {};
     ctrlYd.textContent = 'ydotoold：' + (yd.active ? '运行中' : '未运行')
       + (yd.enabled ? '，已设开机自启（重启后自动恢复）' : '，未设开机自启（重启后会失效）');
-
-    // 网页端只修不需要 root 的部分（ydotoold 托管）；装系统包要 sudo 密码，
-    // 后台进程接不了终端输入，一律引导到终端，由 sudo 自己提示
-    ctrlFixBtn.textContent = '修复守护进程';
-    ctrlHint.textContent = '网页这边只修 ydotoold 守护进程。'
-      + '要补装控件请在终端执行：bash install.sh check --fix（会提示输入 sudo 密码）';
   }
 
   var ctrlScrollSeq = 0;
@@ -6794,51 +6779,23 @@
     // 跳转到「设置 → 本地连接」里的自检子模块，而不是弹独立窗口
     if (!document.body.classList.contains('settings-mode')) openSettings();
     showSetPane('device');
-    ctrlLog.textContent = '';
-    ctrlHint.textContent = '正在实测…';
     scrollSetBodyBottom();
-    return fetchCtrl(true).then(scrollSetBodyBottom);
+    return fetchCtrl().then(scrollSetBodyBottom);
   }
 
-  function fetchCtrl(force) {
-    return apiFetch('/api/controls?force=' + (force ? 1 : 0))
+  function fetchCtrl() {
+    return apiFetch('/api/controls?force=1')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (c) {
-        if (!c) { ctrlHint.textContent = '读取失败'; return null; }
+        if (!c) return null;
         fillCtrlPanel(c);
         renderControls(c);
         return c;
       })
-      .catch(function () { ctrlHint.textContent = '读取失败（连接异常）'; return null; });
-  }
-
-  function runCtrlFix() {
-    ctrlFixBtn.disabled = true;
-    ctrlHint.textContent = '处理中…';
-    ctrlLog.textContent = '';
-    apiFetch('/api/controls/fix', { method: 'POST' })
-      .then(function (r) { return r.json(); })
-      .then(function (res) {
-        var lines = (res.results || []).map(function (x) {
-          return (x.ok ? '✓ ' : '✗ ') + x.message;
-        });
-        ctrlLog.textContent = lines.join('\n');
-        if (res.hint) ctrlHint.textContent = res.hint;
-        if (res.controls) { fillCtrlPanel(res.controls); renderControls(res.controls); }
-      })
-      .catch(function () { ctrlLog.textContent = '修复请求失败（连接异常）'; })
-      .then(function () { ctrlFixBtn.disabled = false; });
+      .catch(function () { return null; });
   }
 
   ctrlBadge.addEventListener('click', openCtrlPanel);
-  document.getElementById('ctrlReflash').addEventListener('click', function () {
-    ctrlHint.textContent = '重新实测中…';
-    fetchCtrl(true);
-  });
-  ctrlFixBtn.addEventListener('click', function () {
-    // 只修守护进程；装系统包走终端（后端会回一条提示）
-    runCtrlFix();
-  });
 
   // ---------- 右栏：可补装组件 ----------
   // 组件清单由后端注册表实测得出；安装是后台单任务，进度走 WS selfcheck_progress，

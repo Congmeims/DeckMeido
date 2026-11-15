@@ -5712,28 +5712,6 @@ async def api_controls(force: int = Query(default=0)):
     return await asyncio.to_thread(depcheck.summary, bool(force))
 
 
-@app.post("/api/controls/fix", dependencies=[Depends(require_auth)])
-async def api_controls_fix():
-    """修复控件：只做不需要 root 的那半——把 ydotoold 交给 systemd 用户单元托管。
-
-    装系统包需要 sudo 密码，而这里是 systemd 托管的后台进程，接不了终端输入，
-    也没有可用的免密策略，所以一律引导用户到终端执行 install.sh。
-    """
-    out: dict = {"results": []}
-
-    ok, msg = await asyncio.to_thread(depcheck.fix_ydotoold)
-    out["results"].append({"key": "ydotoold", "ok": ok, "message": msg})
-    out["need_sudo"] = True
-    out["hint"] = ("安装系统控件需要 root 权限。请在终端执行："
-                   "bash install.sh check --fix（会提示输入 sudo 密码）")
-
-    # 走线程：刚点完修复就要再跑一遍全套探针，同步跑会把事件循环卡住
-    out["controls"] = await asyncio.to_thread(depcheck.summary, True)
-    # 刚修完控件必须给最新的：跳过 TTL 缓存
-    await manager.broadcast({"type": "status", "data": await status_async(force=True)})
-    return out
-
-
 @app.get("/api/overlay_state", dependencies=[Depends(require_auth)])
 async def api_overlay_state(ack: int = 0, hidden: int = 1):
     # 遮罩进程带 ack=1 轮询时，表示它已经按本次返回的状态生效过了。
