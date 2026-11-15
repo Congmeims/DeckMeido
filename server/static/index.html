@@ -14149,12 +14149,10 @@
   // bootAuth / 配对成功的回调里调用，别在脚本加载时直接调
   function maybeOnboard() {
     if (onboardSeen) return;
-    var seen = false;
-    try { seen = localStorage.getItem(ONBOARD_KEY) === '1'; } catch (e) {}
-    if (seen) { onboardSeen = true; return; }
     if (!deviceSession) return;
     if (!isHomePage && authOverlay.classList.contains('show')) return;
-    // 服务端那份可能被别的端写过（客户端跳过、换个浏览器打开都算看过）
+    // 谁看过都不该再弹：以服务端那份为准，别的端（客户端 / 另一个浏览器）
+    // 跳过或走完都会写到服务端，本机的 localStorage 只是快速确认
     apiFetch('/api/meta/' + ONBOARD_KEY)
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
@@ -14166,7 +14164,12 @@
         obStart();
       })
       // 后端旧版本没有这个接口时退回只认 localStorage，别把人卡在引导外
-      .catch(function () { obStart(); });
+      .catch(function () {
+        var seen = false;
+        try { seen = localStorage.getItem(ONBOARD_KEY) === '1'; } catch (e) {}
+        if (seen) { onboardSeen = true; return; }
+        obStart();
+      });
   }
 
 })();
