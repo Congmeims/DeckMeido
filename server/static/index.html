@@ -289,6 +289,7 @@
      不用抄一遍，也就不会出现「设置页的顶栏比对话页丑一截」 -->
 <div id="settingsPanel">
   <div class="set-main">
+    <div id="toastSet" class="toast"></div>
     <div class="set-body">
       <div class="set-inner">
         <div id="settingsNoMatch" class="set-no-match" hidden>没有找到匹配的设置项</div>
@@ -10339,6 +10340,21 @@
     if (el && el._dd && el._dd.refresh) el._dd.refresh();
   }
 
+  // 自动保存成功的浮窗：底栏那行字太靠边，改口吻、改端口这类没有就地提示的
+  // 设置项看不出「到底存没存」。只在自动保存成功时弹，手动点「立即保存」不弹。
+  var toastSetEl = document.getElementById('toastSet');
+  var toastSetTimer = null;
+  function showSetSaved() {
+    if (!toastSetEl) return;
+    toastSetEl.textContent = '设置项已保存';
+    toastSetEl.classList.remove('err');
+    toastSetEl.classList.add('show');
+    clearTimeout(toastSetTimer);
+    toastSetTimer = setTimeout(function () {
+      toastSetEl.classList.remove('show');
+    }, 1600);
+  }
+
   cfgPerm.addEventListener('change', function () {
     syncPermDanger(cfgPerm);
     // 只有选中「自定义」时才展开四组开关，切到别的档隐藏
@@ -10447,7 +10463,10 @@
     autoSaveAgain = false;
     cfgPermGateThenSave(function (ok) {
       autoSaveBusy = false;
-      if (ok) rememberAutoSave();
+      if (ok) {
+        rememberAutoSave();
+        showSetSaved();
+      }
       if (autoSaveAgain) scheduleAutoSave(0);   // 保存期间又改了：接着存
     });
   }

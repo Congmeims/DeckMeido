@@ -1218,7 +1218,15 @@
   .set-main {
     flex: 1; min-width: 0; min-height: 0;
     display: flex; flex-direction: column;
+    position: relative;
   }
+  /* 自动保存成功的浮窗：挂在设置主区域底部居中，盖在底栏上方，
+     不挤占任何一行布局；改口吻/端口这类没有就地提示的项也能看见反馈 */
+  #toastSet {
+    position: absolute; left: 50%; bottom: 56px;
+    transform: translateX(-50%) translateY(4px);
+  }
+  #toastSet.show { transform: translateX(-50%) translateY(0); }
   /* ---------- 设置页视觉密度规范 ----------
      所有卡片共用这一组变量：改密度只改这里，不在单张卡上另写内联值。
      控件统一 32px 高，说明文字统一 11.5/1.45，圆角统一 10（卡片 12） */
