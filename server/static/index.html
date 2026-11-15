@@ -461,28 +461,25 @@
               </label>
             </div>
             <div class="field-hint" style="margin-top:0">
-              控制桌面客户端「语音」按钮的听写：录音在本地完成，整段音频交给后端离线识别，文字只填进输入框、不会自动发送。需要先装 sherpa-onnx 运行时并下载约 250MB 的 SenseVoice 模型；关掉后会释放已加载的识别模型（约 100MB+），语音识别随之停用。
+              本地离线听写，结果只填进输入框。需先装 sherpa-onnx 并下载约 250MB 模型；关闭会释放模型（约 100MB+）。
             </div>
-            <div class="set-grid">
-              <div class="field field-row">
-                <label style="margin:0">录音时静音外放（录完自动恢复）</label>
-                <label class="switch">
-                  <input id="cfgSttDuck" data-autosave type="checkbox">
-                  <span class="slider"></span>
-                </label>
-              </div>
-              <div class="field field-row" id="r2PttRow">
-                <label style="margin:0">R1 按住说话（桌面客户端）</label>
-                <label class="switch">
-                  <input id="cfgR2Ptt" type="checkbox" checked>
-                  <span class="slider"></span>
-                </label>
-              </div>
+            <div class="field field-row">
+              <label style="margin:0">录音时静音外放（录完恢复）</label>
+              <label class="switch">
+                <input id="cfgSttDuck" data-autosave type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="field field-row" id="r2PttRow">
+              <label style="margin:0">R1 按住说话（桌面客户端）</label>
+              <label class="switch">
+                <input id="cfgR2Ptt" type="checkbox" checked>
+                <span class="slider"></span>
+              </label>
             </div>
             <div id="sttHint" class="field-hint"></div>
             <div class="field-hint">
-              按住右肩键（R1）开始录音，松开后把识别文字填入输入框，不自动发送。
-              只在客户端窗口激活且语音输入可用时响应，关掉后 R1 不做任何处理。
+              按住 R1 录音，松开填入输入框，不自动发送；仅客户端窗口激活时生效。
             </div>
           </div>
 
@@ -496,7 +493,8 @@
               </label>
             </div>
             <div class="field-hint" style="margin-top:0">
-              默认关闭。打开后后端常驻监听唤醒词，命中后进入一轮「听 → 想 → 说」，直接发送并朗读；支持 Esc / 托盘 / 屏幕按钮随时停止。唤醒与识别全在本机，音频不落盘、不上传，只有识别出的文字会进入现有对话链路（LLM 仍在远端）。首次启用会下载约 38MB 的唤醒模型；游戏模式不保证全屏覆盖，v1 只面向桌面模式。
+              常驻监听「你好梅朵」，命中后进入一轮听 → 想 → 说，自动发送并朗读；Esc 或托盘可随时停止。
+              唤醒与识别全在本机，音频不落盘。首次启用下载约 38MB 模型；目前只支持桌面模式。
             </div>
           </div>
 
