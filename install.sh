@@ -6100,8 +6100,26 @@ _deckmeido_pids_all() {
 # $1 = 要结束的 pid 列表；$2 = 判定「还没死」的探测命令（默认是本程序进程扫描）。
 # 卸载各步杀的对象不同（后端 / 插件进程 / 端口持有者），探测必须能换，
 # 否则「后端进程杀完了，但插件进程还在」会被误判成 success。
+#
+# 把「PID 字符串」清洗成纯数字列表：kill 只要收到一个非法参数（空串、带换行、
+# 被 pgrep 带出来的多余列）就整体报 usage 错误并返回 64，日志里就出现
+# 「RC=64 root: kill -TERM 22900 …」这种看着像失败、其实只是参数脏了的噪音。
+_clean_pids() {
+  local pid out=""
+  for pid in $1; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    [ "$pid" -gt 1 ] 2>/dev/null || continue
+    [ "$pid" = "$$" ] && continue
+    case " $out " in *" $pid "*) continue ;; esac
+    out="${out:+$out }$pid"
+  done
+  printf '%s' "$out"
+}
+
 un_stop_pids() {
-  local pids="$1" probe="${2:-_deckmeido_pids_all}" i left
+  local pids probe="${2:-_deckmeido_pids_all}" i left
+  # shellcheck disable=SC2086
+  pids="$(_clean_pids "$1")"
   [ -n "$pids" ] || return 0
   # shellcheck disable=SC2086
   kill -TERM $pids 2>/dev/null || true
@@ -6110,21 +6128,32 @@ un_stop_pids() {
     [ -z "$left" ] && return 0
     sleep 0.3
   done
+  # 提到 root 再杀一遍时重新清洗：第一轮 TERM 之后这些 PID 大多已经退出，
+  # 还在的才算「杀不掉」的。-- 保证名单再脏也不会被当成 kill 的选项。
   # shellcheck disable=SC2086
-  run_root kill -TERM $pids >/dev/null 2>&1 || true
+  pids="$(_clean_pids "$pids")"
+  if [ -n "$pids" ]; then
+    # shellcheck disable=SC2086
+    run_root kill -TERM -- $pids >/dev/null 2>&1 || true
+  fi
   for i in $(seq 1 10); do
     left="$($probe)"
     [ -z "$left" ] && return 0
     sleep 0.3
   done
   # shellcheck disable=SC2086
-  run_root kill -KILL $pids >/dev/null 2>&1 || true
+  pids="$(_clean_pids "$pids")"
+  if [ -n "$pids" ]; then
+    # shellcheck disable=SC2086
+    run_root kill -KILL -- $pids >/dev/null 2>&1 || true
+  fi
   sleep 0.5
   left="$($probe)"
   # 父进程被杀后子进程会换新 pid，第二轮按新 pid 再杀一遍（覆盖 root 拉起的孙进程）
+  left="$(_clean_pids "$left")"
   if [ -n "$left" ]; then
     # shellcheck disable=SC2086
-    run_root kill -KILL $left >/dev/null 2>&1 || true
+    run_root kill -KILL -- $left >/dev/null 2>&1 || true
     sleep 0.5
     left="$($probe)"
   fi
@@ -6187,7 +6216,7 @@ un_stop_backend() {
 
 kill_plugin_process() {
   local pids i
-  pids="$(plugin_pids)"
+  pids="$(_clean_pids "$(plugin_pids)")"
   if [ -z "$pids" ]; then
     un_skip "没有发现 Decky 插件进程"
     UN_PLUGIN_STATE="已确认无进程"
@@ -6201,15 +6230,15 @@ kill_plugin_process() {
   un_note "结束插件进程（需要 root）：$pids"
   # 按 PID 杀，不用 pkill -f：sudo 自己的命令行里也会带上模式串，容易误伤
   # shellcheck disable=SC2086
-  run_root kill -TERM $pids >/dev/null 2>&1 || true
+  run_root kill -TERM -- $pids >/dev/null 2>&1 || true
   for i in $(seq 1 10); do
     [ -z "$(plugin_pids)" ] && break
     sleep 0.3
   done
-  pids="$(plugin_pids)"
+  pids="$(_clean_pids "$(plugin_pids)")"
   if [ -n "$pids" ]; then
     # shellcheck disable=SC2086
-    run_root kill -KILL $pids >/dev/null 2>&1 || true
+    run_root kill -KILL -- $pids >/dev/null 2>&1 || true
     for i in $(seq 1 10); do
       [ -z "$(plugin_pids)" ] && break
       sleep 0.3
