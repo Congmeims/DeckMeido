@@ -1249,17 +1249,17 @@ preflight() {
   else
     warn "端口 $PORT 被占用，且不是本程序的后端"
     _port_holder_report "$PORT"
-    dim "先关掉它，或换端口：DECKMEIDO_PORT=18766 bash install.sh"
+    dim "先关掉它，或换端口：DECKMEIDO_PORT=18766 bash install.sh install"
     problems=1
   fi
 
   # 3. 图形会话：客户端要靠它把窗口开出来，缺了就只能从桌面手动启动
   if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "${XDG_RUNTIME_DIR:-}" ]; then
-    warn "XDG_RUNTIME_DIR 不存在，装完后请从桌面图标启动客户端"
+    warn "XDG_RUNTIME_DIR 不存在，安装后请从桌面图标启动客户端"
     problems=1
   fi
   [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || \
-    warn "当前环境没有 DISPLAY / WAYLAND_DISPLAY，装完不会自动打开界面"
+    warn "当前环境没有 DISPLAY / WAYLAND_DISPLAY，安装后不会自动打开界面"
 
   [ "$problems" = 1 ] || dim "预检通过"
 }
@@ -1269,7 +1269,7 @@ system_notes() {
   dep_scan_missing miss
   if [ ${#miss[@]} -gt 0 ]; then
     warn "以下系统包缺失，相关功能不可用：${miss[*]}"
-    dim "重跑安装命令即可补上：bash install.sh install"
+    dim "重跑安装即可补上：bash install.sh install"
     # SteamOS 换镜像会冲掉 /usr 里 pacman 装的包
     if [ -n "${BUILD_ID:-}" ] && [ -f "$HOME/.config/deckmeido/.deps-build-id" ]; then
       local prev; prev="$(cat "$HOME/.config/deckmeido/.deps-build-id" 2>/dev/null || true)"
@@ -1278,7 +1278,7 @@ system_notes() {
   fi
   # ydotool 在但 ydotoold 没跑 → socket 报错
   if need_cmd ydotool && ! pgrep -x ydotoold >/dev/null 2>&1; then
-    warn "ydotoold 未运行，模拟点击/输入会失败；重跑 bash install.sh install"
+    warn "ydotoold 未运行，模拟点击/输入会失败；重跑安装即可启动：bash install.sh install"
   fi
 }
 
@@ -1351,10 +1351,10 @@ vendor_install() {
   done
   [ ${#files[@]} -gt 0 ] || return 1
   if sdo pacman -U --noconfirm --needed "${files[@]}" </dev/null >/dev/null 2>&1; then
-    info "已用内置包安装：$*"
+    info "安装系统包完成（内置包）：$*"
     return 0
   fi
-  warn "内置包安装失败，改用网络仓库：$*"
+  warn "安装系统包失败（内置包），改用网络仓库：$*"
   return 1
 }
 
@@ -1675,11 +1675,16 @@ sudo_warmup() {
   need_cmd sudo || { warn "没有 sudo，跳过系统依赖安装"; return 1; }
   # 已授权就直接用，别重复要密码（-n 不认 SUDO_ASKPASS，有 askpass 时用 -A -n）
   sdo_cached true 2>/dev/null && return 0
+  if [ "$UNINSTALLING" = 1 ]; then
+    info "卸载需要 root 权限，请输入系统密码"
+  elif [ "$(id -u)" != "0" ]; then
+    info "安装需要 root 权限，请输入系统密码"
+  fi
   # 密码必须从终端读：curl | bash 时 stdin 是脚本本身，sudo 从 stdin 读会直接失败。
   # 装系统包、写 Decky 插件目录都靠它，这里没拿到就一路静默失败。
   if (: < /dev/tty) 2>/dev/null; then
-    info "安装系统依赖需要 root 权限，请输入密码"
-    ( exec 0</dev/tty; sudo -v ) || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
+    # 提示已经在上面按安装/卸载分开说过，这里不再重复
+    ( exec 0</dev/tty; sudo -p '[sudo] 系统密码: ' -v ) || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
   elif [ -n "${SUDO_ASKPASS:-}" ] && [ -x "${SUDO_ASKPASS}" ]; then
     # 没有终端但有 askpass（SSH 远程装、自动化）：sudo 从 SUDO_ASKPASS 取密码
     info "没有终端，改用 SUDO_ASKPASS 获取 root 权限"
@@ -1690,10 +1695,10 @@ sudo_warmup() {
     # 只做一次 `sudo -S -v` 不够：缓存 5 分钟就过期，续期子进程 `sudo -n`
     # 续不上，长安装跑到一半就「需要密码」——2026-11-13 真机模拟安装里
     # tmux / kdotool 就是这么全挂的。
-    info "没有终端，从标准输入读取 sudo 密码"
+    info "没有终端，从标准输入读取系统密码"
     local pw ask
     IFS= read -r pw || true
-    [ -n "$pw" ] || { warn "标准输入没读到密码，跳过系统依赖安装"; return 1; }
+    [ -n "$pw" ] || { warn "标准输入没读到系统密码，跳过系统依赖安装"; return 1; }
     ask="$(mktemp "${TMPDIR:-/tmp}/deckmeido-askpass.XXXXXX")" || return 1
     { printf '#!/bin/sh\n'; printf 'printf %%s %s\n' "'$pw'"; } > "$ask"
     chmod 700 "$ask"
@@ -1704,7 +1709,7 @@ sudo_warmup() {
     sudo -A -v 2>/dev/null || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
   else
     warn "当前没有终端，无法输入密码；系统依赖与 Decky 插件将跳过"
-    dim "装完可补：bash $INSTALL_DIR/install.sh check --fix"
+    dim "重跑安装即可补上：bash $INSTALL_DIR/install.sh check --fix"
     return 1
   fi
   # 安装过程可能超过 sudo 默认的 5 分钟缓存，后台续期，避免中途再次要密码
@@ -1823,16 +1828,16 @@ install_pacman_deps() {
 
   if [ ${#pkgs[@]} -gt 0 ]; then
     if log=$(sdo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
-      info "pacman 安装完成"
+      info "安装系统包完成：${pkgs[*]}"
     else
       # 最常见失败：换镜像后 keyring 对不上
-      warn "pacman 安装失败，尝试修复 keyring 后重试"
+      warn "安装系统包失败，尝试修复 keyring 后重试"
       dim "$(printf '%s' "$log" | tail -5)"
-      sdo pacman-key --init </dev/null >/dev/null 2>&1 || warn "pacman-key --init 失败"
+      sdo pacman-key --init </dev/null >/dev/null 2>&1 || warn "修复 keyring 失败（pacman-key --init）"
       sdo pacman-key --populate archlinux holo </dev/null >/dev/null 2>&1 \
-        || warn "pacman-key --populate 失败（keyring 可能损坏）"
+        || warn "修复 keyring 失败（pacman-key --populate，keyring 可能损坏）"
       if log=$(sdo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
-        info "修复 keyring 后安装成功"
+        info "安装系统包完成（已修复 keyring）：${pkgs[*]}"
       else
         # 「未找到目标：xxx」= 清单里某个包名在当前系统不存在。pacman 是整批
         # 事务，一个名字错了就把其余全部回滚（2026-11-13 就是 pulseaudio-utils
@@ -1853,9 +1858,9 @@ install_pacman_deps() {
         fi
         if [ ${#pkgs[@]} -gt 0 ] \
            && log=$(sdo pacman -Sy --needed --noconfirm "${pkgs[@]}" </dev/null 2>&1); then
-          info "剔除无效包名后安装成功：${pkgs[*]}"
+          info "安装系统包完成（已剔除无效包名）：${pkgs[*]}"
         else
-          warn "pacman 安装失败：${pkgs[*]:-（清单里已无不存在的包名）}"
+          warn "安装系统包失败：${pkgs[*]:-（清单里已无不存在的包名）}"
           dim "$(printf '%s' "$log" | tail -20)"
           dim "手动排查：sudo pacman -Sy ${pkgs[*]}"
           ok=0
@@ -1865,9 +1870,9 @@ install_pacman_deps() {
   fi
   if [ ${#reinstall[@]} -gt 0 ] && [ "$ok" = 1 ]; then
     if sdo pacman -S --noconfirm "${reinstall[@]}" </dev/null >/dev/null 2>&1; then
-      info "重装完成：${reinstall[*]}"
+      info "安装系统包完成（补装被镜像冲掉的）：${reinstall[*]}"
     else
-      warn "重装失败：${reinstall[*]}"
+      warn "安装系统包失败：${reinstall[*]}"
       dim "手动排查：sudo pacman -S ${reinstall[*]}"
     fi
   fi
@@ -1889,12 +1894,12 @@ install_pacman_deps() {
       if is_stock_pkg "$p"; then stock_bad+=("$p"); else other_bad+=("$p"); fi
     done
     if [ ${#stock_bad[@]} -gt 0 ]; then
-      warn "SteamOS 自带但当前缺失（多半是换镜像冲掉了 /usr，或刚连不上软件源）：${stock_bad[*]}"
+      warn "安装系统包失败（SteamOS 自带但当前缺失，多半是换镜像冲掉了 /usr，或刚连不上软件源）：${stock_bad[*]}"
     fi
     if [ ${#other_bad[@]} -gt 0 ]; then
-      warn "以下组件没装上：${other_bad[*]}"
+      warn "安装系统包失败：${other_bad[*]}"
     fi
-    dim "重跑同一条安装命令即可补上：bash install.sh install"
+    dim "重跑安装即可补上：bash install.sh install"
     DEPS_MISSING_AFTER+=("${bad[@]}")
   fi
   # 记录本次由安装器落地（新装 + 重装）的包，卸载时按这份清单收走。
@@ -1950,17 +1955,17 @@ install_aur_deps() {
       warn "补装 fakeroot 失败，AUR 编译大概率会失败（稍后会给出手动命令）"
     fi
   fi
-  info "用 $helper 安装：${todo[*]}"
+  info "安装 AUR 包（$helper）：${todo[*]}"
   local log
   if log=$(aur_run "$helper" -S --needed --noconfirm "${todo[@]}" 2>&1); then
-    info "$helper 安装完成"
+    info "安装 AUR 包完成（$helper）：${todo[*]}"
   else
-    warn "$helper 安装失败，改用源码版（需要编译，耗时较久）：${DEPS_AUR_FALLBACK[*]}"
+    warn "安装 AUR 包失败（$helper），改用源码版，需要编译，耗时较久：${DEPS_AUR_FALLBACK[*]}"
     dim "$(printf '%s' "$log" | tail -8)"
     if log=$(aur_run "$helper" -S --needed --noconfirm "${DEPS_AUR_FALLBACK[@]}" 2>&1); then
-      info "$helper 安装源码版完成"
+      info "安装 AUR 源码版完成（$helper）：${DEPS_AUR_FALLBACK[*]}"
     else
-      warn "$helper 安装失败："
+      warn "安装 AUR 包失败（$helper，源码版）：${DEPS_AUR_FALLBACK[*]}"
       dim "$(printf '%s' "$log" | tail -15)"
       dim "手动装法：git clone https://aur.archlinux.org/kdotool-bin.git && cd kdotool-bin && makepkg -si"
     fi
@@ -2168,19 +2173,19 @@ do_check() {
   # ydotoold 托管状态决定「重启后还能不能用」
   need_cmd ydotool && { printf '  %-10s %s\n' "ydotoold" "$(ydotoold_state)"; echo; }
   if [ ${#broken[@]} -eq 0 ]; then
-    info "全部正常"
+    info "检查控件完成：全部正常"
     return 0
   fi
-  warn "异常项：${broken[*]}"
+  warn "检查控件完成：异常项 ${broken[*]}"
   if [ "$fix" = 1 ]; then
-    info "尝试自动修复"
+    info "修复控件：开始自动修复"
     sudo_warmup || return 0
     ro_deps _deps_pacman_then_aur
     setup_ydotoold
     echo
     do_check
   else
-    dim "自动修复：bash install.sh check --fix"
+    dim "修复控件：bash install.sh check --fix"
   fi
 }
 
@@ -2203,30 +2208,30 @@ maybe_autorepair_after_image_update() {
   [ -f "$stamp" ] || return 0
   local prev; prev="$(cat "$stamp" 2>/dev/null || true)"
   [ "$prev" = "$BUILD_ID" ] && return 0
-  info "检测到 SteamOS 镜像已更新（${prev:-未知} → $BUILD_ID）"
-  dim "镜像更新会重建 /usr，之前装的控件可能已被冲掉，现在重新检查一遍"
+  info "检测到 SteamOS 镜像已更新（${prev:-未知} → $BUILD_ID），重新检查控件"
+  dim "镜像更新会重建 /usr，之前装的控件可能已被冲掉"
   local broken; broken="$(deps_broken)"
   if [ -z "$broken" ]; then
-    dim "实测控件都还在，无需重装"
+    dim "检查控件完成：都还在，无需重装"
     record_deps_build
     return 0
   fi
-  warn "以下控件已被冲掉：$broken"
+  warn "安装控件：以下控件已被冲掉，现在补装 $broken"
   sudo_warmup || return 0
   ro_deps _deps_pacman_then_aur
   setup_ydotoold
   record_deps_build
   local left; left="$(deps_broken)"
   if [ -n "$left" ]; then
-    warn "重装后仍不可用：$left"
+    warn "安装控件失败（重装后仍不可用）：$left"
     dim "逐个看原因：bash install.sh check"
   else
-    info "控件已全部恢复"
+    info "安装控件完成：全部可用"
   fi
 }
 
 install_deps() {
-  info "检查可选系统依赖（模拟点击/输入、截图、语音播报）"
+  info "检查控件：模拟点击/输入、截图、语音播报"
   # 拿不到 sudo 时返回 2（跳过），不能返回 0：否则调用方会照旧打「✓ 已处理」，
   # 用户进设置页却发现控件全缺——和「装上了但没用」是同一类假成功。
   sudo_warmup || return 2
@@ -2236,7 +2241,7 @@ install_deps() {
   # 装完跑一遍实测，把「记录在、命令没了」的情况直接暴露出来
   local broken; broken="$(deps_broken)"
   if [ -n "$broken" ]; then
-    warn "以下控件装完仍不可用：$broken"
+    warn "安装控件失败（装完仍不可用）：$broken"
     dim "逐个看原因：bash install.sh check"
   fi
   system_notes
@@ -2290,7 +2295,7 @@ sync_files() {
     return
   fi
   if [ -d "$INSTALL_DIR" ]; then
-    info "同步代码到 $INSTALL_DIR"
+    info "安装到 $INSTALL_DIR（覆盖已有文件）"
     prune_stale
   else
     info "安装到 $INSTALL_DIR"
@@ -5132,7 +5137,7 @@ curl_progress() {
   if [ "$OUT_IS_TTY" = 1 ]; then printf '\r\033[K'; fi
   [ "$rc" = 0 ] || return "$rc"
   if [ ! -s "$dest" ]; then
-    warn "下载得到的文件是空的：$url"
+    warn "下载结果为空文件：$url"
     return 1
   fi
   return 0
@@ -5156,10 +5161,10 @@ fetch_pkg() {
     }
     dim "sha256 校验通过"
   elif [ "$require_sha" = 1 ]; then
-    warn "拿不到校验文件：$url.sha256"
+    warn "下载校验文件失败：$url.sha256"
     return 1
   else
-    warn "没有拿到校验文件，跳过校验：$url.sha256"
+    warn "下载校验文件失败，跳过校验：$url.sha256"
   fi
   return 0
 }
@@ -5542,11 +5547,11 @@ uninstall_optional_deps() {
   done
 
   if [ ${#keep_rest[@]} -gt 0 ]; then
-    dim "已在系统里不存在的包（无需卸载）：${keep_rest[*]}"
+    dim "跳过已不存在于系统的包：${keep_rest[*]}"
   fi
   if [ ${#keep_pkg[@]} -gt 0 ]; then
     echo
-    info "这些系统包 保留 不动（安装前就有，不是我们带来的）："
+    info "保留系统包（安装前就有，不是我们带来的）："
     for p in "${!keep_pkg[@]}"; do
       dim "  · ${keep_pkg[$p]}  ${keep_why[$p]}"
     done
@@ -5571,7 +5576,7 @@ uninstall_optional_deps() {
   # 事后又分不清是「跳过了」还是「忘了删」。
   if ! ask_yn "要卸载上面这些包吗？" y "卸载"; then
     UNINSTALL_KEPT_PKGS="${cand_pkg[*]}"
-    warn "已保留：$UNINSTALL_KEPT_PKGS（按你的选择没有卸载，系统与这些包均未改动）"
+    warn "保留系统包：$UNINSTALL_KEPT_PKGS（按要求不卸载，系统与这些包均未改动）"
     # 选择写进保留说明里，以后翻到就知道是主动留下的（userdata 可能已经搬到 MeidoSpace）
     local keep_note="${DATA_AT:-$DATA_DIR}/README-KEPT.txt"
     if [ -f "$keep_note" ]; then
@@ -5615,10 +5620,10 @@ uninstall_optional_deps() {
     # 用户看不出是哪个；逐个删出错时也只影响那一个
     for p in "${pkg_del[@]}"; do
       if run_root pacman -R --noconfirm -- "$p"; then
-        info "已卸载：$p"
+        info "卸载系统包完成：$p"
         UNINSTALL_REMOVED_PKGS="${UNINSTALL_REMOVED_PKGS:+$UNINSTALL_REMOVED_PKGS }$p"
       else
-        warn "卸载 $p 失败（可能有别的包依赖它）。手动处理：sudo pacman -R $p"
+        warn "卸载系统包失败：$p（可能有别的包依赖它）。手动处理：sudo pacman -R $p"
         UNINSTALL_FAILS+=("系统包卸载失败：$p（手动：sudo pacman -R $p）")
       fi
     done
@@ -5632,10 +5637,10 @@ uninstall_optional_deps() {
     # paru / yay 提权只认自己的 sudo 途径，必须走 run_root：直接调会绕过
     # sdo/-A，无终端场景下报「a terminal is required」（2026-11-13 kdotool-bin）。
     if run_root "$helper" -R --noconfirm -- "$p"; then
-      info "已卸载（$helper）：$p"
+      info "卸载 AUR 包完成（$helper）：$p"
       UNINSTALL_REMOVED_PKGS="${UNINSTALL_REMOVED_PKGS:+$UNINSTALL_REMOVED_PKGS }$p"
     else
-      warn "卸载 $p 失败。手动处理：$helper -R $p"
+      warn "卸载 AUR 包失败（$helper）：$p。手动处理：$helper -R $p"
       UNINSTALL_FAILS+=("系统包卸载失败：$p（手动：$helper -R $p）")
     fi
   done
@@ -5729,7 +5734,7 @@ run_root() {
     # 没有终端但有 askpass（SSH 远程卸载、自动化）
     sudo -A "$@" </dev/null; rc=$?
   else
-    un_log "  RC=127 root: $*（没有终端，无法输入 sudo 密码）"
+    un_log "  RC=127 root: $*（没有终端，无法输入系统密码）"
     return 127
   fi
   un_log "  RC=$rc root: $*"
@@ -5990,7 +5995,7 @@ move_userdata_to_workspace() {
     return 1
   fi
   DATA_AT="$dst"
-  un_ok "已保留用户数据：$dst（${count_src} 个文件，已校验）"
+  un_ok "保留用户数据完成：$dst（${count_src} 个文件，已校验）"
   # 依赖清单/安装基线随 userdata 一起搬走了，后面的包判定要读新位置
   DEP_RECORD="$dst/.deckmeido-deps"
   BASELINE_FILE="$dst/.deckmeido-baseline"
@@ -6133,7 +6138,7 @@ un_stop_backend() {
     UN_BACKEND_STATE="仍在运行（${left:-端口 $PORT 被占用}）"
     return 1
   fi
-  un_ok "客户端与后端已停止（pgrep + 端口回读确认）"
+  un_ok "停止客户端与后端完成（pgrep + 端口回读确认）"
   UN_BACKEND_STATE="已停止（pgrep + 端口回读确认）"
   return 0
 }
@@ -6187,7 +6192,7 @@ kill_plugin_process() {
     un_note "插件拉起的进程仍在运行（$orph），一并结束"
     un_stop_pids "$orph" >/dev/null 2>&1 || true
   fi
-  un_ok "已结束插件进程（回读确认）"
+  un_ok "结束插件进程完成（回读确认）"
   UN_PLUGIN_STATE="已结束（回读确认）"
   return 0
 }
@@ -6276,7 +6281,7 @@ cleanup_tmp_leftovers() {
     un_note "有 $skipped 项 /tmp 残留不属于本用户且看不出 DeckMeido 痕迹，未动"
   fi
   if [ "$n" -gt 0 ]; then
-    un_ok "已清理 /tmp 残留 $n 项"
+    un_ok "清理 /tmp 残留完成：$n 项"
   elif [ "$failed" -eq 0 ] && [ "$skipped" -eq 0 ]; then
     un_skip "没有发现 /tmp 残留"
   fi
@@ -6383,6 +6388,8 @@ uninstall_summary() {
 }
 
 do_uninstall() {
+  # sudo_warmup 靠它区分「安装要密码」和「卸载要密码」
+  UNINSTALLING=1
   local purge=0 arg p t0="" ws="" have_install=0 residue=0 abort=0 i
   for arg in "$@"; do
     case "$arg" in
@@ -6460,31 +6467,31 @@ EOF
   local data_ws="$HOME/MeidoSpace"
 
   # ---------- 先说清楚要发生什么，再确认 ----------
-  info "将要发生的事"
+  info "即将执行的操作"
   if [ "$have_install" = 1 ]; then
     if [ "$purge" = 1 ]; then
-      dim "· 用户数据 $DATA_DIR 随安装目录一起移入回收站（--purge）"
+      dim "· 卸载用户数据：$DATA_DIR 随安装目录一起移入回收站（--purge）"
     else
-      dim "· 用户数据 $DATA_DIR → $data_ws/userdata-<时间>，校验通过后才删代码"
+      dim "· 保留用户数据：$DATA_DIR → $data_ws/userdata-<时间>，校验通过后才删代码"
     fi
-    dim "· 安装目录 $INSTALL_DIR 整目录移入回收站（含代码、install.sh、VERSION、清单）"
+    dim "· 卸载安装目录：$INSTALL_DIR 整目录移入回收站（含代码、install.sh、VERSION、清单）"
   else
     warn "安装目录 $INSTALL_DIR 已不存在：只清理残留，不会重建它"
   fi
-  dim "· Decky 插件目录、settings/data/logs、$CONFIG_DIR、$CACHE_DIR、桌面快捷方式 → 回收站"
-  dim "· 结束 root 插件进程并重启 Decky（都会回读确认，失败会报）"
+  dim "· 清理 Decky 插件目录、settings/data/logs、$CONFIG_DIR、$CACHE_DIR、桌面快捷方式 → 回收站"
+  dim "· 重启 Decky：先结束 root 插件进程，都会回读确认，失败会报"
   local dep_list=""
   if [ -f "$DEP_RECORD" ]; then
     dep_list="$(awk -F'\t' 'NF{print $1}' "$DEP_RECORD" 2>/dev/null | sort -u | tr '\n' ' ')"
   fi
-  dim "· 系统包（默认卸载，输入 n 才保留）：${dep_list:-没有安装记录，跳过}"
+  dim "· 卸载系统包（默认卸载，输入 n 才保留）：${dep_list:-没有安装记录，跳过}"
   dim "· 恢复 SteamOS 只读层为 enabled"
   dim "· 全部走回收站，不永久删除"
   echo
   if [ "$DRY_RUN" = 1 ]; then
     info "dry-run：只列步骤，不询问、不改动"
   elif ! ask_yn "确认开始卸载吗？" y "卸载"; then
-    info "已取消，未做任何改动"
+    info "卸载取消：未做任何改动"
     un_log "用户取消，未做任何改动"
     return 0
   fi
@@ -6535,10 +6542,10 @@ EOF
   readonly_guard_setup
   uninstall_optional_deps "$t0" "$([ "$DRY_RUN" = 1 ] && echo 0 || echo 1)"
   if [ -n "$UNINSTALL_REMOVED_PKGS" ]; then
-    un_ok "系统包已移除：$UNINSTALL_REMOVED_PKGS"
+    un_ok "卸载系统包完成：$UNINSTALL_REMOVED_PKGS"
   fi
   if [ -n "${UNINSTALL_KEPT_PKGS:-}" ]; then
-    un_skip "已保留系统包（按你的选择）：$UNINSTALL_KEPT_PKGS"
+    un_skip "保留系统包（按要求不卸载）：$UNINSTALL_KEPT_PKGS"
   fi
   if [ -n "${UNINSTALL_LEFT_PKGS:-}" ]; then
     un_fail "系统包复检仍在：$UNINSTALL_LEFT_PKGS"
@@ -6555,9 +6562,9 @@ EOF
   else
     if [ "$have_install" = 1 ]; then
       if trash_path "$INSTALL_DIR"; then
-        un_ok "已移入回收站：$INSTALL_DIR（整目录）"
+        un_ok "移入回收站完成：$INSTALL_DIR（整目录）"
       else
-        un_fail "没能把 $INSTALL_DIR 移入回收站（权限不足或文件被占用）"
+        un_fail "移入回收站失败：$INSTALL_DIR（权限不足或文件被占用）"
       fi
     else
       un_skip "安装目录已不存在：$INSTALL_DIR"
@@ -6565,9 +6572,9 @@ EOF
     while IFS= read -r p; do
       [ -e "$p" ] || [ -L "$p" ] || continue
       if trash_path_root "$p"; then
-        un_ok "已移入回收站：$p"
+        un_ok "移入回收站完成：$p"
       else
-        un_fail "没能移走：$p"
+        un_fail "移入回收站失败：$p"
       fi
     done < <(uninstall_residue_paths)
     # --purge 时数据目录可能被 DECKMEIDO_DATA_DIR 指到安装目录之外
@@ -6575,8 +6582,8 @@ EOF
       case "$DATA_DIR" in
         "$INSTALL_DIR"/*|"$INSTALL_DIR") ;;
         *) if [ -d "$DATA_DIR" ]; then
-             if trash_path "$DATA_DIR"; then un_ok "已移入回收站：$DATA_DIR（用户数据）"
-             else un_fail "没能移走用户数据：$DATA_DIR"; fi
+             if trash_path "$DATA_DIR"; then un_ok "移入回收站完成：$DATA_DIR（用户数据）"
+             else un_fail "移入回收站失败：$DATA_DIR（用户数据）"; fi
            fi ;;
       esac
     fi
@@ -6595,9 +6602,9 @@ EOF
       if [ "$DRY_RUN" = 1 ]; then
         printf '[计划] 移入回收站：%s（工作区）\n' "$ws"
       elif trash_path "$ws"; then
-        un_ok "已移入回收站：$ws（工作区）"
+        un_ok "移入回收站完成：$ws（工作区）"
       else
-        un_fail "没能移走工作区：$ws"
+        un_fail "移入回收站失败：$ws（工作区）"
       fi
     fi
   else
