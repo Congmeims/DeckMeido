@@ -6428,6 +6428,18 @@
     if (document.visibilityState === 'hidden') turnCacheFlushNow();
   });
 
+  // 关闭页面二次确认：浏览器走 beforeunload 的系统弹窗，点了「留在此页」就不关。
+  // 只在真正的关页动作里拦（刷新、关标签、Cmd+W），页面内切视图不会误触。
+  // 注意：没有用户交互过（没点过页面）的标签页，浏览器会静默忽略这个弹窗，
+  // 所以「刚打开就关」不弹是浏览器行为，不是这里失效。
+  window.addEventListener('beforeunload', function (e) {
+    turnCacheFlushNow();
+    e.preventDefault();
+    // 老浏览器只认 returnValue，新浏览器忽略提示文案、显示自己的通用文案
+    e.returnValue = '';
+    return '';
+  });
+
   // 心跳：PING_MS 内一条消息都没收到就发 ping，再一个周期还没动静就判死重连。
   // 只发 ping 不断连：真的还有流在走（工具跑得久）时服务端不会回，但也别误杀
   function startHeartbeat() {
