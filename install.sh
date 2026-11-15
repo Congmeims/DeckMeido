@@ -1675,11 +1675,16 @@ sudo_warmup() {
   need_cmd sudo || { warn "没有 sudo，跳过系统依赖安装"; return 1; }
   # 已授权就直接用，别重复要密码（-n 不认 SUDO_ASKPASS，有 askpass 时用 -A -n）
   sdo_cached true 2>/dev/null && return 0
+  if [ "$UNINSTALLING" = 1 ]; then
+    info "卸载需要 root 权限，请输入系统密码"
+  elif [ "$(id -u)" != "0" ]; then
+    info "安装需要 root 权限，请输入系统密码"
+  fi
   # 密码必须从终端读：curl | bash 时 stdin 是脚本本身，sudo 从 stdin 读会直接失败。
   # 装系统包、写 Decky 插件目录都靠它，这里没拿到就一路静默失败。
   if (: < /dev/tty) 2>/dev/null; then
-    info "安装系统依赖需要 root 权限，请输入密码"
-    ( exec 0</dev/tty; sudo -v ) || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
+    # 提示已经在上面按安装/卸载分开说过，这里不再重复
+    ( exec 0</dev/tty; sudo -p '[sudo] 系统密码: ' -v ) || { warn "sudo 授权失败，跳过系统依赖安装"; return 1; }
   elif [ -n "${SUDO_ASKPASS:-}" ] && [ -x "${SUDO_ASKPASS}" ]; then
     # 没有终端但有 askpass（SSH 远程装、自动化）：sudo 从 SUDO_ASKPASS 取密码
     info "没有终端，改用 SUDO_ASKPASS 获取 root 权限"
@@ -1690,10 +1695,10 @@ sudo_warmup() {
     # 只做一次 `sudo -S -v` 不够：缓存 5 分钟就过期，续期子进程 `sudo -n`
     # 续不上，长安装跑到一半就「需要密码」——2026-11-13 真机模拟安装里
     # tmux / kdotool 就是这么全挂的。
-    info "没有终端，从标准输入读取 sudo 密码"
+    info "没有终端，从标准输入读取系统密码"
     local pw ask
     IFS= read -r pw || true
-    [ -n "$pw" ] || { warn "标准输入没读到密码，跳过系统依赖安装"; return 1; }
+    [ -n "$pw" ] || { warn "标准输入没读到系统密码，跳过系统依赖安装"; return 1; }
     ask="$(mktemp "${TMPDIR:-/tmp}/deckmeido-askpass.XXXXXX")" || return 1
     { printf '#!/bin/sh\n'; printf 'printf %%s %s\n' "'$pw'"; } > "$ask"
     chmod 700 "$ask"
@@ -5729,7 +5734,7 @@ run_root() {
     # 没有终端但有 askpass（SSH 远程卸载、自动化）
     sudo -A "$@" </dev/null; rc=$?
   else
-    un_log "  RC=127 root: $*（没有终端，无法输入 sudo 密码）"
+    un_log "  RC=127 root: $*（没有终端，无法输入系统密码）"
     return 127
   fi
   un_log "  RC=$rc root: $*"
@@ -6383,6 +6388,8 @@ uninstall_summary() {
 }
 
 do_uninstall() {
+  # sudo_warmup 靠它区分「安装要密码」和「卸载要密码」
+  UNINSTALLING=1
   local purge=0 arg p t0="" ws="" have_install=0 residue=0 abort=0 i
   for arg in "$@"; do
     case "$arg" in
