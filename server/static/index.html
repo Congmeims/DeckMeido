@@ -304,8 +304,8 @@
                  的「使用中 / 删除」对齐（行内右内边距 10px） -->
             <div class="api-foot">
               <div id="apiProfileHint" class="field-hint">同一时间只有一条生效；切换后立即使用新的那组。</div>
-              <!-- 自动保存已接管：这里只留一个手动兜底的「立即保存」 -->
-              <button id="apiProfileSave" class="mini-btn" type="button" title="填完会自动保存，这里是立刻保存一次">立即保存</button>
+              <!-- 自动保存已接管：这里只留一个手动兜底的「保存」 -->
+              <button id="apiProfileSave" class="mini-btn" type="button" title="填完会自动保存，这里是立刻保存一次">保存</button>
               <button id="apiProfileAdd" class="mini-btn" type="button">新增一组</button>
             </div>
           </div>
@@ -1210,11 +1210,12 @@
 
       </div>
     </div>
-    <!-- 设置改为自动保存：底栏只留状态与一个手动兜底按钮 -->
+    <!-- 设置改为自动保存：底栏只留「自动保存」胶囊和保存按钮；
+         出错/进行中的提示由 setCfgHint 临时显示，平时不占位 -->
     <div class="set-foot">
       <span class="set-auto-tag">自动保存</span>
-      <div id="cfgHint"></div>
-      <button id="saveCfg" type="button" title="改完会自动保存，这里只是手动立刻保存一次">立即保存</button>
+      <div id="cfgHint" hidden></div>
+      <button id="saveCfg" type="button" title="改完会自动保存，这里只是手动立刻保存一次">保存</button>
     </div>
   </div>
 </div>
@@ -8493,6 +8494,12 @@
   var pairPollTimer = 0;
   var saveCfg = document.getElementById('saveCfg');
   var cfgHint = document.getElementById('cfgHint');
+  // 底栏默认只留「自动保存」胶囊和保存按钮，平时不占一行字；
+  // 只有真的需要说话（保存中 / 保存失败 / 导出结果）才临时显出来，说完再收回
+  function setCfgHint(msg) {
+    cfgHint.textContent = msg || '';
+    cfgHint.hidden = !msg;
+  }
   var cfgDevMode = document.getElementById('cfgDevMode');
   // 离线模式开关与顶部横幅：横幅在两种视图下都存在，开关在「关于更新」里
   var cfgOfflineMode = document.getElementById('cfgOfflineMode');
@@ -9605,10 +9612,10 @@
         a.click();
         a.remove();
         setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-        cfgHint.textContent = '已导出本地用量统计';
+        setCfgHint('已导出本地用量统计');
       })
       .catch(function (e) {
-        cfgHint.textContent = '导出失败：' + ((e && e.message) || e);
+        setCfgHint('导出失败：' + ((e && e.message) || e));
       });
   });
 
@@ -9620,11 +9627,11 @@
         return r.json();
       })
       .then(function (d) {
-        cfgHint.textContent = '已清空本地用量统计（删除 ' + (d.removed || 0) + ' 个文件）';
+        setCfgHint('已清空本地用量统计（删除 ' + (d.removed || 0) + ' 个文件）');
         loadUsage();
       })
       .catch(function (e) {
-        cfgHint.textContent = '清空失败：' + ((e && e.message) || e);
+        setCfgHint('清空失败：' + ((e && e.message) || e));
       });
   });
 
@@ -9643,7 +9650,7 @@
     settingsBtn.title = '返回对话';
     // 每次打开都从第一页开始；上次停在哪页容易让人以为设置不见了
     showSetPane('model');
-    cfgHint.textContent = '';
+    setCfgHint('');
     // 打开设置就开自动保存；等 loadCfgForm 回填完并记下基准值后才真正生效
     autoSaving = false;
     autoSavePending = false;
@@ -9761,9 +9768,8 @@
         ddRefreshAll();
         syncPermDanger(cfgPerm);
         updSourceHint.textContent = c.update_mirror ? '镜像地址：' + c.update_mirror : '';
-        // 没配 Key 时直接把设置页顶到最显眼的位置当首次引导
+        // 没配 Key 时把「模型接入」那张卡当成首次引导；底栏不再常驻说明文字
         if (!c.llm_configured) {
-          cfgHint.textContent = '首次使用：填好上面的 API 地址和 Key，停手就会自动保存，之后就能开始对话';
           apiProfileHint.style.color = '';
           apiProfileHint.textContent = c.api_profiles && c.api_profiles.length
             ? '还没有可用的 Key：展开那一组，填好 API Key 后会立即自动保存'
@@ -9778,8 +9784,8 @@
         if (/401/.test(msg) && !isHomePage) { showAuth('登录已失效，请重新配对'); }
         // 同「保存」：fetch 层失败只给一句人话，别把 Failed to fetch 摆到界面上
         else if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
-          cfgHint.textContent = '连不上服务，请稍等几秒重试';
-        } else { cfgHint.textContent = msg || '读取配置失败'; }
+          setCfgHint('连不上服务，请稍等几秒重试');
+        } else { setCfgHint(msg || '读取配置失败'); }
       });
   }
 
@@ -10341,7 +10347,7 @@
   }
 
   // 自动保存成功的浮窗：底栏那行字太靠边，改口吻、改端口这类没有就地提示的
-  // 设置项看不出「到底存没存」。只在自动保存成功时弹，手动点「立即保存」不弹。
+  // 设置项看不出「到底存没存」。只在自动保存成功时弹，手动点「保存」不弹。
   var toastSetEl = document.getElementById('toastSet');
   var toastSetTimer = null;
   function showSetSaved() {
@@ -10369,8 +10375,8 @@
         if (!ok) {
           cfgPerm.value = cfgPerm.dataset.prev || 'auto';
           syncPermDanger(cfgPerm);
-          cfgHint.textContent = '已取消：仍为「' +
-            cfgPerm.options[cfgPerm.selectedIndex].text + '」';
+          setCfgHint('已取消：仍为「' +
+            cfgPerm.options[cfgPerm.selectedIndex].text + '」');
           if (done) done(false);
           return;
         }
@@ -10383,7 +10389,7 @@
     doSaveCfg(done);
   }
 
-  // 底栏的「立即保存」只是兜底：正常改动停手就会自动落盘（见 scheduleAutoSave），
+  // 底栏的「保存」只是兜底：正常改动停手就会自动落盘（见 scheduleAutoSave），
   // 这里给一个「我就是要马上存」的出口，走同一条路径
   saveCfg.addEventListener('click', function () { cfgPermGateThenSave(); });
 
@@ -10562,7 +10568,7 @@
   // 保存失败的统一出口：底部提示 + 「模型接入」里的就地提示都要说话，
   // 校验没过时再把按钮所在的设置分区切到出错的那一页
   function cfgSaveFail(msg, pane) {
-    cfgHint.textContent = msg;
+    setCfgHint(msg);
     apiProfileHint.style.color = '#e06c75';
     if (pane === 'model') {
       apiProfileHint.textContent = msg;
@@ -10589,7 +10595,7 @@
       if (done) done(false);
       return;
     }
-    cfgHint.textContent = '保存中…';
+    setCfgHint('保存中…');
     apiProfileHint.style.color = 'var(--muted)';
     apiProfileHint.textContent = '保存中…';
     // 只有输入框里真有内容才提交 api_key：留空表示「保持原样」。
@@ -10662,7 +10668,7 @@
       .then(function (res) {
         // 界面语言刚改过：文案由后端下发的替换表处理，重载一次最干净
         if (cfgLang && cfgLang.value !== UI_LANG) {
-          cfgHint.textContent = '语言已切换，正在重载界面…';
+          setCfgHint('语言已切换，正在重载界面…');
           setTimeout(function () { location.reload(); }, 200);
           if (done) done(true);
           return null;
@@ -10691,9 +10697,8 @@
         refreshLogUsage();
         // 用量与余额已由上面的 renderApiProfiles 按新的当前使用刷新过
         var restartNote = res.restart_required ? '（局域网开关/端口需重启后端生效）' : '';
-        cfgHint.textContent = res.llm_configured
-          ? ('已保存' + restartNote)
-          : ('已保存（API Key 为空，对话暂不可用）' + restartNote);
+        // 底栏平时不占字：保存成功就把那句提示收回，结果由「模型接入」就地说明
+        setCfgHint(res.restart_required ? '已保存（局域网开关/端口需重启后端生效）' : '');
         // 「模型接入」里的就地提示跟着走：在这个面板改的人不用回头看页面底部
         apiProfileHint.style.color = '';
         if (!res.llm_configured) apiProfileHint.textContent = '已保存，但还没有可用的 Key —— 填好地址和 Key 会自动保存';
@@ -10729,7 +10734,8 @@
         }
         return reloadModels().then(function (list) {
           modelsApiKey = apiFingerprint(null);
-          cfgHint.textContent = list.length ? ('已保存并生效，共 ' + list.length + ' 个模型') : '已保存，但没拉到模型列表';
+          // 底栏常驻只留「自动保存」胶囊和保存按钮，成功状态不再刷一行字；
+          // 具体结果改由「模型接入」那张卡就地说明
           if (res.api_profiles) {
             apiProfileHint.textContent = '已保存并生效，当前使用：' + currentApiName()
               + (list.length ? '（共 ' + list.length + ' 个模型）' : '（没拉到模型列表）');
@@ -10755,12 +10761,12 @@
         if (/401|未配对|重新配对/.test(msg)) {
           text = '保存失败：这台设备还没配对或配对已失效，请重新配对后再保存';
           apiProfileHint.textContent = text;
-          cfgHint.textContent = text;
+          setCfgHint(text);
           if (!isHomePage) showAuth(text);
           if (done) done(false);
           return;
         }
-        cfgHint.textContent = text;
+        setCfgHint(text);
         apiProfileHint.style.color = '#e06c75';
         apiProfileHint.textContent = text;
         if (done) done(false);
