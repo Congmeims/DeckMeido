@@ -44,6 +44,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # stage_verify_all 写入，安装收尾汇总按它单列一行——避免「语音依赖已就绪」
 # 被误读成「音色可用」，上次装完才发现模型根本没下载就栽在这。
 TTS_MODEL_STATE="unknown"
+# 当前是否在卸载流程：sudo_warmup 要按它挑提示语，而 set -u 下引用未定义变量会直接报错
+UNINSTALLING=0
 # 语音识别模型状态：unknown / ready / failed（stage_verify_all 写入）
 STT_MODEL_STATE="unknown"
 # 系统控件在本次安装里没装好（DEPS_FAILED=1 时收尾汇总会提示重跑）
@@ -1675,7 +1677,7 @@ sudo_warmup() {
   need_cmd sudo || { warn "没有 sudo，跳过系统依赖安装"; return 1; }
   # 已授权就直接用，别重复要密码（-n 不认 SUDO_ASKPASS，有 askpass 时用 -A -n）
   sdo_cached true 2>/dev/null && return 0
-  if [ "$UNINSTALLING" = 1 ]; then
+  if [ "${UNINSTALLING:-0}" = 1 ]; then
     info "卸载需要 root 权限，请输入系统密码"
   elif [ "$(id -u)" != "0" ]; then
     info "安装需要 root 权限，请输入系统密码"
