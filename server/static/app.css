@@ -1041,6 +1041,7 @@
   }
   .auth-primary:hover { filter: brightness(1.06); }
   .auth-primary:disabled { opacity: .45; cursor: default; filter: none; }
+  .auth-primary[hidden] { display: none; }
   .auth-link {
     align-self: center;
     border: none; background: none; color: var(--muted);
@@ -1049,8 +1050,32 @@
   .auth-link:hover { color: var(--text); }
   .pair-box { width: 100%; display: flex; flex-direction: column; gap: 12px; }
   .pair-box[hidden] { display: none; }
+  /* 分两步：先等掌机允许，允许后才出现 PIN 输入。
+     没轮到的步骤压暗，避免同时抛两件事让人不知道先做哪件 */
+  .pair-step {
+    display: flex; align-items: flex-start; gap: 8px;
+    font-size: 13px; line-height: 19px;
+    color: var(--muted); text-align: left;
+    transition: color .15s ease;
+  }
+  .pair-step.on { color: var(--text); }
+  .pair-step-no {
+    flex: 0 0 auto; width: 18px; height: 18px; margin-top: 1px;
+    border-radius: 50%; border: 1px solid var(--line);
+    font-size: 11px; line-height: 16px; text-align: center;
+    color: var(--muted);
+  }
+  .pair-step.on .pair-step-no {
+    background: var(--brand); border-color: var(--brand); color: #fff;
+  }
+  .pair-wait {
+    font-size: 13px; color: var(--muted); text-align: center;
+    padding: 8px 0;
+  }
+  .pair-wait[hidden] { display: none; }
   /* 4 位 PIN：一框一位，等宽等距，窄屏自动收缩不溢出 */
   .pin-row { display: flex; gap: 10px; width: 100%; justify-content: center; }
+  .pin-row[hidden] { display: none; }
   .pin-digit {
     flex: 1 1 0; min-width: 0; max-width: 62px; height: 64px;
     border: 1px solid var(--line); border-radius: 12px;

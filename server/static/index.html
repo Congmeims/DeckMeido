@@ -1224,7 +1224,16 @@
     <h1>DeckMeido <small>控制台</small></h1>
     <button id="pairBtn" class="auth-primary" type="button">配对新设备</button>
     <div id="pairBox" class="pair-box" hidden>
-      <div class="pin-row" id="pinRow">
+      <div class="pair-step" id="pairStep1">
+        <span class="pair-step-no">1</span>
+        <span>请求已发出，请在 Deck 的设置 → 本地连接 → 设备配对里点「允许」。</span>
+      </div>
+      <div class="pair-step" id="pairStep2">
+        <span class="pair-step-no">2</span>
+        <span>把 Deck 上显示的 4 位 PIN 填进下面，完成后自动配对。</span>
+      </div>
+      <div class="pair-wait" id="pairWait">等待 Deck 上点「允许」…</div>
+      <div class="pin-row" id="pinRow" hidden>
         <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="PIN 第 1 位">
         <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN 第 2 位">
         <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN 第 3 位">
@@ -1378,6 +1387,9 @@
   var pairBtn = document.getElementById('pairBtn');
   var pairBox = document.getElementById('pairBox');
   var pairMsg = document.getElementById('pairMsg');
+  var pairStep1 = document.getElementById('pairStep1');
+  var pairStep2 = document.getElementById('pairStep2');
+  var pairWait = document.getElementById('pairWait');
   var pinRow = document.getElementById('pinRow');
   var pinDigits = Array.prototype.slice.call(pinRow.querySelectorAll('.pin-digit'));
   var pairConfirm = document.getElementById('pairConfirm');
@@ -6442,7 +6454,8 @@
   }
 
   function pinSync() {
-    pairConfirm.disabled = pairBusy || pinValue().length !== 4;
+    // 掌机还没允许时按钮一直灰着（此时输入框整行藏起来，也不会看到它）
+    pairConfirm.disabled = pairBusy || !pairApproved || pinValue().length !== 4;
   }
 
   function pinClear(focus) {
@@ -6462,12 +6475,9 @@
   }
 
   function maybeAutoSubmit() {
-    if (pinValue().length !== 4) return;
-    if (!pairApproved) {
-      // 掌机还没点允许，先别提交：否则只会换来一条 409，还得重输
-      pairMsg.textContent = '等待 Deck 上点「允许」';
-      return;
-    }
+    if (!pairApproved || pinValue().length !== 4) return;
+    // 已经点了「配对」就等结果，不要因为状态轮询又把请求重发一遍
+    if (pairBusy) return;
     setTimeout(pairSubmit, 0);
   }
 
@@ -6479,34 +6489,68 @@
     pairBusy = false;
     pairBox.hidden = true;
     pairBtn.hidden = false;
+    pinRow.hidden = true;
+    pairWait.hidden = true;
+    pairConfirm.hidden = false;
+    pairStep1.classList.remove('on');
+    pairStep2.classList.remove('on');
     pairMsg.textContent = '';
     pinClear(false);
   }
 
+  // 掌机允许前：只显示等待说明，PIN 输入框整行藏起来。
+  // 先看到输入框却点不了，比什么都不显示更让人困惑
+  function pairShowWaiting() {
+    pairApproved = false;
+    pairStep1.classList.add('on');
+    pairStep2.classList.remove('on');
+    pinRow.hidden = true;
+    pairConfirm.hidden = true;
+    pairWait.hidden = false;
+    pairConfirm.disabled = true;
+    pairMsg.textContent = '';
+  }
+
+  function pairShowPinEntry() {
+    pairApproved = true;
+    pairStep1.classList.add('on');
+    pairStep2.classList.add('on');
+    pairWait.hidden = true;
+    pinRow.hidden = false;
+    pairConfirm.hidden = false;
+    pairSync();
+    pairMsg.textContent = pinValue().length === 4 ? '' : '已允许，请输入 Deck 上显示的 4 位 PIN';
+    pinDigits[0].focus();
+    maybeAutoSubmit();
+  }
+
   function pairPoll() {
     if (!pairingId) return;
+    clearTimeout(pairTimer);
     apiFetch('/api/pair/status?pair_id=' + encodeURIComponent(pairingId))
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
         var d = res.d || {};
         if (!res.ok) { pairMsg.textContent = d.detail || '配对请求已失效'; return; }
         if (d.state === 'approved') {
-          pairApproved = true;
-          pairMsg.textContent = pinValue().length === 4 ? '' : 'Deck 已允许，请输入 PIN';
+          // 掌机点了允许，这时才把 PIN 输入框亮出来
+          if (!pairApproved) pairShowPinEntry();
           pairTimer = setTimeout(pairPoll, 2000);
-          maybeAutoSubmit();
         } else if (d.state === 'failed') {
           pairReset();
           authErr.textContent = 'PIN 错误次数过多，请重新发起配对';
           pairBtn.focus();
         } else if (d.state === 'denied') {
-          pairMsg.textContent = 'Deck 已拒绝这次配对';
+          pairReset();
+          authErr.textContent = 'Deck 已拒绝这次配对';
+          pairBtn.focus();
         } else if (d.state === 'expired') {
-          pairMsg.textContent = 'PIN 已过期，请重新发起配对';
+          pairShowWaiting();
+          pairMsg.textContent = 'PIN 已过期，请在 Deck 上点「刷新 PIN」';
+          pairTimer = setTimeout(pairPoll, 2000);
         } else if (d.state === 'paired') {
           pairMsg.textContent = '配对成功';
         } else {
-          pairMsg.textContent = '等待 Deck 上点「允许」';
           pairTimer = setTimeout(pairPoll, 2000);
         }
       })
@@ -6518,8 +6562,8 @@
     pairMsg.textContent = '正在创建配对请求…';
     pairBox.hidden = false;
     pairBtn.hidden = true;
-    pairApproved = false;
     pinClear(false);
+    pairShowWaiting();
     apiFetch('/api/pair/start', { method: 'POST' })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
@@ -6530,17 +6574,21 @@
           return;
         }
         pairingId = res.d.pair_id || '';
-        pairMsg.textContent = '等待 Deck 上点「允许」';
+        pairMsg.textContent = '';
         pairTimer = setTimeout(pairPoll, 1000);
-        pinDigits[0].focus();
       })
-      .catch(function () { pairMsg.textContent = '连不上服务，请稍后重试'; });
+      .catch(function () {
+        pairMsg.textContent = '连不上服务，请稍后重试';
+        pairBtn.hidden = false;
+        pairBox.hidden = true;
+      });
   }
 
   function pairSubmit() {
     if (pairBusy) return;
     var pin = pinValue();
     if (!pairingId) { pairMsg.textContent = '请先点「配对新设备」'; return; }
+    if (!pairApproved) return;
     if (pin.length !== 4) { pairMsg.textContent = '请输入 4 位 PIN'; return; }
     pairBusy = true;
     pairConfirm.disabled = true;
@@ -6579,7 +6627,7 @@
       .catch(function () {
         pairBusy = false;
         pairMsg.textContent = '连不上服务，请稍后重试';
-        pinSync();
+        pairSync();
       });
   }
 
