@@ -2051,7 +2051,8 @@ async def _no_cache_html(request, call_next):
     index.html 是全局唯一的前端入口，改完必须立刻生效。默认 StaticFiles 只带
     ETag + Last-Modified，而 QtWebEngine（原生客户端）和部分浏览器会拿旧副本，
     导致改完代码后客户端里还是老界面，看着像"改动没生效"。
-    这里只对 HTML 文档关缓存，静态资源（图片/CSS/JS）照常走 ETag，不影响性能。
+    CSS/JS 也一起走 no-cache（只带 ETag 校验，内容没变仍是 304）：
+    否则 HTML 更新了、样式还是旧副本，界面会错位。
     """
     resp = await call_next(request)
     ctype = resp.headers.get("content-type", "")
@@ -2059,6 +2060,9 @@ async def _no_cache_html(request, call_next):
         resp.headers["Cache-Control"] = "no-store, must-revalidate"
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
+    elif any(t in ctype for t in ("text/css", "javascript")):
+        # 每次都回源问一句：没变就 304，变了立刻拿新的
+        resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 

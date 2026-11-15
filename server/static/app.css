@@ -1005,44 +1005,63 @@
     .qchip .q-act { opacity: 1; }
   }
 
-  /* 登录 / 配对遮罩：只保留 PIN 一种入口 */
+  /* 登录 / 配对遮罩：只保留 PIN 一种入口。
+     底色不是纯背景色，而是一层很淡的品牌光晕，卡片浮在上面才不像白纸 */
   #authOverlay {
     position: fixed; inset: 0;
-    background: var(--bg);
+    background:
+      radial-gradient(120% 80% at 50% -10%, rgba(26,159,255,.12), transparent 60%),
+      var(--bg);
     display: none;
     align-items: center;
     justify-content: center;
-    padding: 24px;
+    padding: 24px 20px;
     z-index: 10;
   }
   #authOverlay.show { display: flex; }
   .auth-card {
-    display: flex; flex-direction: column; align-items: center;
-    gap: 18px; width: 100%; max-width: 340px;
+    width: 100%; max-width: 380px;
+    display: flex; flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.34), 0 2px 8px rgba(0,0,0,.16);
+    overflow: hidden;
+  }
+  /* 卡片头：logo + 名称 + 一句用途，左对齐成一条基线，不再居中堆叠 */
+  .auth-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 18px 20px 14px;
   }
   .auth-logo {
-    width: 76px; height: 76px; border-radius: 20px;
-    box-shadow: 0 6px 20px rgba(0,0,0,.14);
+    width: 44px; height: 44px; border-radius: 12px; flex: 0 0 auto;
+    box-shadow: 0 4px 14px rgba(0,0,0,.18);
   }
-  .auth-card h1 {
-    font-size: 22px; letter-spacing: .5px; margin: 0;
-    display: flex; align-items: center; gap: 8px;
+  .auth-title { min-width: 0; }
+  .auth-title h1 {
+    font-size: 18px; font-weight: 600; letter-spacing: .2px;
+    line-height: 1.3;
   }
-  .auth-card h1 small {
-    font-size: 12px; font-weight: 400; color: var(--muted);
-    border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px;
+  .auth-title p {
+    margin-top: 2px; font-size: 12.5px; color: var(--muted); line-height: 1.45;
+  }
+  .auth-body {
+    display: flex; flex-direction: column; gap: 12px;
+    padding: 0 20px 18px;
   }
   .auth-err {
-    color: #e5484d; font-size: 13px; line-height: 18px;
-    min-height: 18px; text-align: center;
+    color: #e5484d; font-size: 12.5px; line-height: 1.5;
+    text-align: center;
   }
+  /* 空的时候整块收掉，避免卡片里多出一条空白 */
+  .auth-err:empty { display: none; }
   /* 主操作：与界面里的蓝色主色保持一致，不再是浏览器默认按钮 */
   .auth-primary {
     width: 100%;
-    padding: 13px 20px;
-    border: none; border-radius: 12px;
+    height: 42px; padding: 0 20px;
+    border: none; border-radius: 11px;
     background: var(--brand); color: #fff;
-    font-size: 15px; font-weight: 600;
+    font-size: 14.5px; font-weight: 600;
     cursor: pointer;
     transition: filter .15s ease, opacity .15s ease;
   }
@@ -1050,54 +1069,91 @@
   .auth-primary:disabled { opacity: .45; cursor: default; filter: none; }
   .auth-primary[hidden] { display: none; }
   .auth-link {
-    align-self: center;
     border: none; background: none; color: var(--muted);
-    font-size: 13px; padding: 2px 8px; cursor: pointer;
+    font-size: 12px; padding: 2px 4px; cursor: pointer;
   }
   .auth-link:hover { color: var(--text); }
+  /* 卡片底：左说明 右操作 右版本，用顶部分隔线和内容分开 */
+  .auth-foot {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 16px 10px 20px;
+    border-top: 1px solid var(--line);
+    background: var(--surface-2);
+    font-size: 12px; color: var(--muted);
+  }
+  .auth-foot .auth-link { margin-left: auto; }
+  .auth-ver {
+    font-size: 11.5px; color: var(--muted); opacity: .8;
+    font-variant-numeric: tabular-nums;
+  }
   .pair-box { width: 100%; display: flex; flex-direction: column; gap: 12px; }
   .pair-box[hidden] { display: none; }
-  /* 分两步：先等掌机允许，允许后才出现 PIN 输入。
-     没轮到的步骤压暗，避免同时抛两件事让人不知道先做哪件 */
+  /* 两步做成一条时间线：左侧编号 + 贯穿竖线，当前步亮、后续步压暗，
+     避免同时抛两件事让人不知道先做哪件 */
+  .pair-steps {
+    list-style: none; display: flex; flex-direction: column;
+    padding: 2px 0 0;
+  }
   .pair-step {
-    display: flex; align-items: flex-start; gap: 8px;
-    font-size: 13px; line-height: 19px;
-    color: var(--muted); text-align: left;
+    position: relative;
+    display: flex; align-items: flex-start; gap: 10px;
+    padding-bottom: 12px;
+    font-size: 12.5px; line-height: 1.6;
+    color: var(--muted);
     transition: color .15s ease;
   }
+  .pair-step:last-child { padding-bottom: 0; }
+  /* 贯穿线：从圆点下沿接到下一条，最后一条不画 */
+  .pair-step:not(:last-child)::before {
+    content: ''; position: absolute; left: 8px; top: 20px; bottom: 2px;
+    width: 1px; background: var(--line);
+  }
   .pair-step.on { color: var(--text); }
+  .pair-step.on:not(:last-child)::before { background: rgba(26,159,255,.45); }
+  .pair-step-tx b { font-weight: 600; color: inherit; }
   .pair-step-no {
-    flex: 0 0 auto; width: 18px; height: 18px; margin-top: 1px;
+    flex: 0 0 auto; width: 17px; height: 17px; margin-top: 2px;
     border-radius: 50%; border: 1px solid var(--line);
-    font-size: 11px; line-height: 16px; text-align: center;
+    background: var(--surface);
+    font-size: 10.5px; line-height: 15px; text-align: center;
     color: var(--muted);
+    font-variant-numeric: tabular-nums;
   }
   .pair-step.on .pair-step-no {
     background: var(--brand); border-color: var(--brand); color: #fff;
   }
+  /* 等待允许：一颗呼吸的蓝点 + 一行字，靠左和上面的步骤对齐 */
   .pair-wait {
-    font-size: 13px; color: var(--muted); text-align: center;
-    padding: 8px 0;
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 12px; border-radius: 10px;
+    background: var(--surface-2); border: 1px solid var(--line);
+    font-size: 12.5px; color: var(--muted);
   }
   .pair-wait[hidden] { display: none; }
+  .pair-wait-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
+    background: var(--brand);
+    animation: pairBreathe 1.4s ease-in-out infinite;
+  }
+  @keyframes pairBreathe { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) { .pair-wait-dot { animation: none; } }
   /* 4 位 PIN：一框一位，等宽等距，窄屏自动收缩不溢出 */
   .pin-row { display: flex; gap: 10px; width: 100%; justify-content: center; }
   .pin-row[hidden] { display: none; }
   .pin-digit {
-    flex: 1 1 0; min-width: 0; max-width: 62px; height: 64px;
+    flex: 1 1 0; min-width: 0; max-width: 62px; height: 58px;
     border: 1px solid var(--line); border-radius: 12px;
-    background: var(--surface); color: var(--text);
-    font-size: 28px; font-weight: 600; line-height: 1;
+    background: var(--surface-2); color: var(--text);
+    font-size: 26px; font-weight: 600; line-height: 1;
     text-align: center; font-variant-numeric: tabular-nums;
     outline: none; caret-color: var(--brand);
     transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
   }
   .pin-digit:focus {
     border-color: var(--brand);
-    background: var(--surface-2);
+    background: var(--surface);
     box-shadow: 0 0 0 3px rgba(26,159,255,.16);
   }
-  .auth-tip { font-size: 12px; color: var(--muted); text-align: center; line-height: 1.6; }
 
   /* 设置按钮与面板 */
   /* 侧栏底部品牌区：logo + DeckMeido 字标 */

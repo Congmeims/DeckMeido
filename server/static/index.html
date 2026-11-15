@@ -1202,31 +1202,48 @@
 
 <div id="authOverlay">
   <div class="auth-card">
-    <img class="auth-logo" src="logo.png" alt="DeckMeido">
-    <h1>DeckMeido <small>控制台</small></h1>
-    <button id="pairBtn" class="auth-primary" type="button">配对新设备</button>
-    <div id="pairBox" class="pair-box" hidden>
-      <div class="pair-step" id="pairStep1">
-        <span class="pair-step-no">1</span>
-        <span>请求已发出，请在 Deck 的设置 → 本地连接 → 设备配对里点「允许」。</span>
+    <div class="auth-head">
+      <img class="auth-logo" src="logo.png" alt="DeckMeido">
+      <div class="auth-title">
+        <h1>DeckMeido</h1>
+        <p>把这台设备连到 Deck</p>
       </div>
-      <div class="pair-step" id="pairStep2">
-        <span class="pair-step-no">2</span>
-        <span>把 Deck 上显示的 4 位 PIN 填进下面，完成后自动配对。</span>
-      </div>
-      <div class="pair-wait" id="pairWait">等待 Deck 上点「允许」…</div>
-      <div class="pin-row" id="pinRow" hidden>
-        <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="PIN 第 1 位">
-        <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN 第 2 位">
-        <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN 第 3 位">
-        <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN 第 4 位">
-      </div>
-      <div id="pairMsg" class="auth-err" role="status"></div>
-      <button id="pairConfirm" class="auth-primary" type="button" disabled>配对</button>
-      <button id="pairCancel" class="auth-link" type="button">重新发起</button>
     </div>
-    <div id="authErr" class="auth-err"></div>
-    <div class="auth-tip">PIN 显示在 Deck 设置里 · <span id="authVer">…</span></div>
+    <div class="auth-body">
+      <button id="pairBtn" class="auth-primary" type="button">配对新设备</button>
+      <div id="pairBox" class="pair-box" hidden>
+        <!-- 两步竖排成一条时间线：左侧圆点 + 竖线，当前步亮、后续步压暗 -->
+        <ol class="pair-steps">
+          <li class="pair-step" id="pairStep1">
+            <span class="pair-step-no">1</span>
+            <span class="pair-step-tx">请求已发出。在 Deck 上打开
+              <b>设置 → 本地连接 → 设备配对</b>，点「允许」。</span>
+          </li>
+          <li class="pair-step" id="pairStep2">
+            <span class="pair-step-no">2</span>
+            <span class="pair-step-tx">把 Deck 上显示的 4 位 PIN 填进来，填完自动配对。</span>
+          </li>
+        </ol>
+        <div class="pair-wait" id="pairWait">
+          <span class="pair-wait-dot"></span>
+          <span id="pairWaitText">等待 Deck 上点「允许」…</span>
+        </div>
+        <div class="pin-row" id="pinRow" hidden>
+          <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="PIN 第 1 位">
+          <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN 第 2 位">
+          <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN 第 3 位">
+          <input class="pin-digit" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN 第 4 位">
+        </div>
+        <div id="pairMsg" class="auth-err" role="status"></div>
+        <button id="pairConfirm" class="auth-primary" type="button" disabled>配对</button>
+      </div>
+      <div id="authErr" class="auth-err"></div>
+    </div>
+    <div class="auth-foot">
+      <span>PIN 显示在 Deck 设置里</span>
+      <button id="pairCancel" class="auth-link" type="button" hidden>重新发起</button>
+      <span class="auth-ver" id="authVer">…</span>
+    </div>
   </div>
 </div>
 </main>
@@ -6616,6 +6633,7 @@
     pairBusy = false;
     pairBox.hidden = true;
     pairBtn.hidden = false;
+    pairCancel.hidden = true;
     pinRow.hidden = true;
     pairWait.hidden = true;
     pairConfirm.hidden = false;
@@ -6633,9 +6651,10 @@
     pairStep2.classList.remove('on');
     pinRow.hidden = true;
     pairConfirm.hidden = true;
-    pairWait.hidden = false;
+    // 等待条只在「还没允许、也没出错」时出现；PIN 已过期这类情况
+    // 只把原因写进 pairMsg，不要再叠一条「等待允许」自相矛盾
+    pairWait.hidden = !!(pairMsg.textContent || '').trim();
     pairConfirm.disabled = true;
-    pairMsg.textContent = '';
   }
 
   function pairShowPinEntry() {
@@ -6689,15 +6708,19 @@
     pairMsg.textContent = '正在创建配对请求…';
     pairBox.hidden = false;
     pairBtn.hidden = true;
+    pairCancel.hidden = false;
     pinClear(false);
     pairShowWaiting();
     apiFetch('/api/pair/start', { method: 'POST' })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
         if (!res.ok) {
-          pairMsg.textContent = res.d.detail || '创建配对请求失败';
+          // 起不了配对就退回空卡片，底部「重新发起」随之收起
+          pairMsg.textContent = '';
+          authErr.textContent = res.d.detail || '创建配对请求失败';
           pairBtn.hidden = false;
           pairBox.hidden = true;
+          pairCancel.hidden = true;
           return;
         }
         pairingId = res.d.pair_id || '';
@@ -6705,9 +6728,11 @@
         pairTimer = setTimeout(pairPoll, 1000);
       })
       .catch(function () {
-        pairMsg.textContent = '连不上服务，请稍后重试';
+        pairMsg.textContent = '';
+        authErr.textContent = '连不上服务，请稍后重试';
         pairBtn.hidden = false;
         pairBox.hidden = true;
+        pairCancel.hidden = true;
       });
   }
 
