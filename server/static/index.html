@@ -573,7 +573,7 @@
             <div class="ctrl-cols">
               <div class="ctrl-col">
                 <div class="ctrl-sub">控件实测</div>
-                <div class="ctrl-list" id="ctrlList"></div>
+                <div class="ctrl-list" id="ctrlList"><div class="ctrl-empty">读取中…</div></div>
               </div>
               <div class="ctrl-col ctrl-col-wide">
                 <div class="ctrl-sub">可补装组件</div>
@@ -6937,6 +6937,13 @@
   function fillCtrlPanel(c) {
     if (!c || !c.items) return;
     ctrlList.replaceChildren();
+    if (!c.items.length) {
+      var empty = document.createElement('div');
+      empty.className = 'ctrl-empty';
+      empty.textContent = '这台机器上没有可测的控件';
+      ctrlList.appendChild(empty);
+      return;
+    }
     (c.items || []).forEach(function (it) {
       var item = document.createElement('div'); item.className = 'ctrl-item';
       var row = document.createElement('div');
@@ -7179,6 +7186,13 @@
     var job = data.job;
     scList.replaceChildren();
     scRows = {};
+    if (!(data.components || []).length) {
+      var scEmpty = document.createElement('div');
+      scEmpty.className = 'ctrl-empty';
+      scEmpty.textContent = '没有需要补装的组件';
+      scList.appendChild(scEmpty);
+      return;
+    }
     var wide = scList.classList.contains('ctrl-grid');
     (data.components || []).forEach(function (it) {
       var item = document.createElement('div');
@@ -7192,14 +7206,14 @@
       var nm = document.createElement('span');
       nm.className = 'nm'; nm.textContent = it.name; nm.title = it.name;
       var rowItems = [lamp, nm];
-      // 宽屏两列排布时，没装的项目名字被截断，原因另起一行写完整
+      // 宽屏两列排布时，没装的项目名字被截断，原因另起一行（只在有内容时出现）
       if (!wide) {
         // 不显示体积；就绪留白，未就绪只写原因，异常行本来就是红的
         var ds = document.createElement('span');
         ds.className = 'ds';
         var sub = it.status === 'ready' ? '' : (it.detail || '未安装');
         ds.textContent = sub; ds.title = sub;
-        rowItems.push(ds);
+        if (sub) rowItems.push(ds);
       }
       // 右侧操作位固定宽度：未就绪给安装按钮，已就绪留空
       var act = document.createElement('span');
@@ -11033,7 +11047,9 @@
         scheduleTtsPoll();
       })
       .catch(function () {
-        setTtsModelHint('读取语音合成状态失败（服务可能正在重启）');
+        // 读不到状态时不再另起一行报错；话直接落到试听按钮的 title 上，
+        // 卡片始终保持「发音人 + 试听」一行
+        if (ttsPreview) ttsPreview.title = '读取语音合成状态失败（服务可能正在重启）';
       });
   }
 

@@ -809,14 +809,21 @@
   .dd-item.sel { color: var(--brand); font-weight: 600; }
   /* 设置页里宽度撑满的 select，包装层也要跟着撑满 */
   .field .dd { display: block; width: 100%; }
+  /* 设置页里的自绘下拉要和 .field input 一模一样：同高、同内边距、同字号、
+     同圆角，箭头换成和 .cfg-select 同一枚背景箭头（原生 select 用的就是它）。
+     原来单独放一枚定位 svg，箭头位置永远比输入框里的偏，两个控件看着不像一套 */
   .field .dd-trigger {
-    width: 100%; height: auto; font-size: 15px;
-    padding: 12px 34px 12px 14px;
+    width: 100%; height: var(--set-ctl-h); box-sizing: border-box;
+    padding: 0 32px 0 10px;
+    font-size: 14px;
+    border-radius: var(--set-radius);
+    color: var(--text);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b91a3'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 11px center;
   }
-  .field .dd-trigger svg { right: 13px; }
+  .field .dd-trigger svg { display: none; }
   .mem-add .dd { flex: none; display: flex; }
-  .mem-add .dd-trigger { height: auto; font-size: 13px; align-self: stretch; }
-  .mem-add .dd-trigger svg { right: 10px; }
+  .mem-add .dd-trigger { height: auto; font-size: 13px; align-self: stretch; background: var(--surface-2); }
   /* 模型下拉原本 240px 宽，包装后 trigger 要继承这个宽度，避免缩成内容宽 */
   .dd-model { width: 240px; min-width: 180px; }
   .dd-model .dd-trigger { width: 100%; }
@@ -1797,14 +1804,16 @@
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b91a3'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 11px center;
   }
-  /* 「权限与工作区」两栏上下对齐：下拉框和路径输入框的标签高度一致、
-     输入行顶边齐平，箭头位置也跟输入框的内边距同一条线 */
+  /* 「权限与工作区」两栏上下对齐：标签统一按底对齐，控件行顶边齐平。
+     下拉是 .dd 包装层，路径是裸 input，两者都撑满同一行高 */
   .perm-ws-grid > .field { display: flex; flex-direction: column; }
   .perm-ws-grid > .field > label {
     display: flex; align-items: flex-end; min-height: calc(var(--set-hint-size) * var(--set-hint-lh));
     margin-bottom: 6px;
   }
-  .perm-ws-grid > .field > input { margin-top: 0; }
+  .perm-ws-grid > .field > input,
+  .perm-ws-grid > .field > .dd,
+  .perm-ws-grid > .field > .cfg-select { margin-top: 0; }
   .cfg-select:focus, .field input:focus, .field textarea:focus, .mem-add input:focus {
     border-color: var(--brand);
   }
@@ -2576,7 +2585,7 @@
   /* ---------- 桌面控件自检：整卡统一行样式 ----------
      一行 = 状态灯 + 名称 + 次要信息 + 右侧操作；行与行之间只有一条淡分隔线，
      左右两栏不再用不同的方块/底色区分 */
-  .ctrl-list { display: flex; flex-direction: column; margin-bottom: 12px; }
+  .ctrl-list { display: flex; flex-direction: column; margin-bottom: 4px; }
   .ctrl-item { padding: 6px 2px; border-bottom: 1px solid var(--line); }
   .ctrl-item:last-child { border-bottom: none; }
   /* 左栏只有「灯 + 名称」：名称直接吃掉整行剩余宽度，长名字也不会截断；
@@ -2624,17 +2633,30 @@
   @media (max-width: 720px) {
     .ri-io-row { grid-template-columns: minmax(0, 1fr); }
   }
-  /* ---------- 桌面控件自检：左窄右宽（左自检 / 右可补装组件） ---------- */
+  /* ---------- 桌面控件自检：左窄右宽（左控件实测 / 右可补装组件） ---------- */
   /* 左栏只有「灯 + 名称」，给固定窄宽；剩下的宽度全归右栏，
-     右栏再排两列组件，一行就能把整行铺满，不再空掉右半边 */
-  .ctrl-cols { display: grid; grid-template-columns: 158px minmax(0, 1fr); gap: 20px; align-items: start; }
+     右栏再排两列组件，一行就能把整行铺满，不再空掉右半边。
+     两栏之间是一条竖分隔线，分区标题和下边线同高，读起来像一张表的两列 */
+  .ctrl-cols {
+    display: grid; grid-template-columns: 150px minmax(0, 1fr);
+    column-gap: 16px; align-items: stretch;
+  }
   .ctrl-col { min-width: 0; }
-  /* 分区标题只做子标题，不带容器边框或底色 */
-  .ctrl-sub { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+  .ctrl-col + .ctrl-col {
+    padding-left: 16px;
+    border-left: 1px solid var(--line);
+  }
+  /* 分区标题右侧带一条横线，把「控件实测 / 可补装组件」拉成表头 */
+  .ctrl-sub {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12.5px; color: var(--muted);
+    margin-bottom: 4px; white-space: nowrap;
+  }
+  .ctrl-sub::after { content: ''; flex: 1 1 auto; height: 1px; background: var(--line); }
   /* 可补装组件：两列瀑布流，组件少时也不会整行拉出一条超长空白 */
   .ctrl-list.ctrl-grid {
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-    column-gap: 20px; row-gap: 0; align-content: start;
+    column-gap: 18px; row-gap: 0; align-content: start;
   }
   .ctrl-grid .ctrl-item { min-width: 0; }
   /* 两列模式下名称与按钮之外没有说明列，名称占满剩余宽度即可 */
@@ -2642,6 +2664,10 @@
   .ctrl-grid .ctrl-row .act .mini-btn { width: 64px; }
   /* 两列时条目更窄：左右各收一点内边距，避免名称和按钮贴在一起 */
   .ctrl-grid .ctrl-item { padding: 6px 0; }
+  /* 空态：接口没回来或这一栏没有条目时给一句话，不留一片空白 */
+  .ctrl-empty { padding: 6px 0 8px; font-size: 12px; color: var(--muted); }
+  /* 两栏都空时卡片不会被两个小标题撑成一条细缝 */
+  .ctrl-card { min-height: 72px; }
   /* 右栏行内的附属内容（安装进度 / 密码授权 / 命令）与名称左对齐 */
   .sc-detail, .sc-cmd, .sc-auth, .sc-progress { margin-left: 19px; }
   .sc-detail {
@@ -2693,6 +2719,9 @@
   /* 窄屏一栏堆叠时，右栏回到「灯 / 名称 / 说明 / 按钮」的单行排布 */
   @media (max-width: 720px) {
     .ctrl-cols { grid-template-columns: minmax(0, 1fr); }
+    .ctrl-col + .ctrl-col {
+      margin-top: 10px; padding-left: 0; border-left: 0;
+    }
     .ctrl-list.ctrl-grid { grid-template-columns: minmax(0, 1fr); }
     .ctrl-grid .ctrl-row { grid-template-columns: 9px minmax(0, 1fr) 84px; }
   }
