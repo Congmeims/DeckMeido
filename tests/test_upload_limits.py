@@ -48,6 +48,15 @@ from server import main, pairing  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 
+def _force_lan_enabled(server_cfg: dict) -> None:
+    """别的测试模块可能先 import 了 server.main，_lan_guard 读的是那份配置。
+    这里直接改运行中的 CFG，保证本模块的用例不受导入顺序影响。"""
+    server_cfg["lan_enable"] = True
+
+
+_force_lan_enabled(main.CFG.setdefault("server", {}))
+
+
 def tearDownModule():
     for k, v in _OLD.items():
         if v is None:

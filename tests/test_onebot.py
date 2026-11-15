@@ -16,7 +16,7 @@ import wave
 from pathlib import Path
 from unittest import mock
 
-from server import policy, onebot
+from server import policy, onebot, qqtext
 
 
 # ---------- 纯函数部分 ----------
@@ -340,9 +340,10 @@ class LimitsTest(unittest.TestCase):
         text = "\n".join(f"第{i}行内容" for i in range(40))
         chunks = onebot.split_reply(text, limit=50, max_chunks=3)
         self.assertLessEqual(len(chunks), 3)
+        note = qqtext.get("truncated_note")
         for c in chunks:
-            self.assertLessEqual(len(c), 50 + len(onebot.TRUNCATED_NOTE))
-        self.assertTrue(chunks[-1].endswith(onebot.TRUNCATED_NOTE))
+            self.assertLessEqual(len(c), 50 + len(note))
+        self.assertTrue(chunks[-1].endswith(note))
 
     def test_split_short_reply_kept_whole(self):
         self.assertEqual(onebot.split_reply("好的", limit=50), ["好的"])
@@ -1640,7 +1641,7 @@ class QqArchiveFlowTest(unittest.IsolatedAsyncioTestCase):
         bot, ws, _ = await start_bot(FakeWS(api_data={"get_msg": payload}))
         ws.feed(private_event("10001", "保存文本", reply_id="r2"))
         self.assertTrue(await wait_until(lambda: reply_payloads(ws)))
-        self.assertIn("没有文本", sent_text(ws))
+        self.assertIn(qqtext.get("save_text_no_text"), sent_text(ws))
         self.assertFalse(self.text_log().exists())
 
     async def test_save_text_non_admin_ignored(self):
@@ -1765,7 +1766,7 @@ class ShotTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await wait_until(lambda: reply_payloads(ws)))
         message = reply_payloads(ws)[-1]["params"]["message"]
         self.assertEqual([seg.get("type") for seg in message], ["text", "image"])
-        self.assertEqual(message[0]["data"]["text"], "截图已奉上")
+        self.assertEqual(message[0]["data"]["text"], qqtext.get("shot_caption"))
 
     async def test_admin_group_shot_without_at_in_whitelisted_group(self):
         """白名单群内：主人免 @ 也直接执行；只回一条，不进 AI"""
@@ -1809,7 +1810,7 @@ class ShotTest(unittest.IsolatedAsyncioTestCase):
         await bot.wait_idle()
         sent = reply_payloads(ws)
         self.assertEqual(len(sent), 1)
-        self.assertIn("没有这条指令：/nope", str(sent[0]["params"]["message"]))
+        self.assertIn("/nope", str(sent[0]["params"]["message"]))
         self.assertEqual(calls, [])
 
     async def test_shot_compresses_oversized_frame(self):

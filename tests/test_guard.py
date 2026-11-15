@@ -4,7 +4,7 @@
 """
 import unittest
 
-from server import onebot, redact
+from server import onebot, qqtext, redact
 
 
 class FakeClock:
@@ -134,7 +134,7 @@ class SplitReplyLimitTest(unittest.TestCase):
         chunks = onebot.split_reply("字" * 1000)
         self.assertEqual(len(chunks), 3)
         self.assertEqual(len(chunks[0]), 300)
-        self.assertTrue(chunks[-1].endswith(onebot.TRUNCATED_NOTE))
+        self.assertTrue(chunks[-1].endswith(qqtext.DEFAULTS["truncated_note"]))
 
     def test_short_text_single_chunk(self):
         self.assertEqual(onebot.split_reply("好的"), ["好的"])
