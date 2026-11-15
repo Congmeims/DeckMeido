@@ -1,10 +1,10 @@
 {
-  "tag": "0.8.22",
-  "name": "DeckMeido 0.8.22",
-  "notes": "# DeckMeido 0.8.22\n\n- fix(install): 修复 sudo_warmup 在 set -u 下引用未定义 UNINSTALLING 导致安装中断\n- chore(release): 0.8.21\n- test: 文案改用 qqtext 实际值，修复跨模块导入导致的用例污染；bump 0.8.21\n- feat(settings): 自动保存后弹「设置项已保存」浮窗，统一安装器文案\n- fix(installer): 卸载与安装的 sudo 提示统一为「系统密码」\n- refactor(auth): 局域网设备鉴权由 Cookie 改为 Bearer 令牌\n- refactor: 移除 Android 客户端与二维码配对\n- fix: 掌机本机来源免配对，并把待配对请求主动推到 QAM\n- chore(release): 0.8.20\n- fix(installer): 只读层覆盖 pacman+AUR 两步，AUR helper 走 askpass\n- chore(release): 0.8.19\n- fix(uninstaller): 卸载开始前先 warmup sudo，无 tty 下不再全线失败\n- chore(release): 0.8.19\n- fix(installer): 第7步自行 warmup sudo，依赖已齐时无人要过权限\n- chore(release): 0.8.19\n- fix(installer): sudo 统一走 sdo（带 -A），修复无 tty 下插件目录建不动\n- chore(release): 0.8.19\n- fix(installer): 去掉 sudo -n，它不认 SUDO_ASKPASS\n- chore(release): 0.8.19\n- fix(installer): 无终端时不再向 /dev/tty 刷错误\n",
-  "published_at": "2026-11-15T12:14:31+08:00",
+  "tag": "0.8.23",
+  "name": "DeckMeido 0.8.23",
+  "notes": "# DeckMeido 0.8.23\n\n- fix(install): 修复 pypi 测速恒为连不上与家目录可用空间误报 0MB\n- chore(release): 0.8.22\n- fix(install): 修复 sudo_warmup 在 set -u 下引用未定义 UNINSTALLING 导致安装中断\n- chore(release): 0.8.21\n- test: 文案改用 qqtext 实际值，修复跨模块导入导致的用例污染；bump 0.8.21\n- feat(settings): 自动保存后弹「设置项已保存」浮窗，统一安装器文案\n- fix(installer): 卸载与安装的 sudo 提示统一为「系统密码」\n- refactor(auth): 局域网设备鉴权由 Cookie 改为 Bearer 令牌\n- refactor: 移除 Android 客户端与二维码配对\n- fix: 掌机本机来源免配对，并把待配对请求主动推到 QAM\n- chore(release): 0.8.20\n- fix(installer): 只读层覆盖 pacman+AUR 两步，AUR helper 走 askpass\n- chore(release): 0.8.19\n- fix(uninstaller): 卸载开始前先 warmup sudo，无 tty 下不再全线失败\n- chore(release): 0.8.19\n- fix(installer): 第7步自行 warmup sudo，依赖已齐时无人要过权限\n- chore(release): 0.8.19\n- fix(installer): sudo 统一走 sdo（带 -A），修复无 tty 下插件目录建不动\n- chore(release): 0.8.19\n- fix(installer): 去掉 sudo -n，它不认 SUDO_ASKPASS\n",
+  "published_at": "2026-11-15T12:41:37+08:00",
   "files": {
-    "tarball": "deckmeido-0.8.22.tar.gz",
-    "sha256": "5acf2599da0743d121e16c3c86a8109d3dfe9e2dc3c6203ca408f8c843cb520d"
+    "tarball": "deckmeido-0.8.23.tar.gz",
+    "sha256": "543fc1761f97b4c67591046255c5687031b8d9dfe193d13d83d4df211b18e353"
   }
 }

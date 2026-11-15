@@ -280,6 +280,16 @@ start_install_log() {
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# $HOME 所在分区可用空间（MB），取不到输出空。
+# 不能用 `df -Pm | sed -n '2s/.* //p'`：SteamOS 的 df 会把超长设备名折到下一行，
+# 第 2 行只剩个设备名，抠出来是空串 → 表里显示「可用 0MB」并误报空间偏紧。
+# 改为「按行尾定位」：df -P 的挂载点是最后一列，它前面那列 Availability 才是可用空间；
+# 折行造成的残缺行字段不够，自然被跳过。
+df_avail_mb() {
+  df -Pm "${1:-$HOME}" 2>/dev/null |
+    awk 'NF >= 5 && $(NF-2) ~ /^[0-9]+$/ {print $(NF-2); exit}'
+}
+
 # ---------- 删除守卫 ----------
 # 2026-11-04 事故：卸载把源码工作区当安装目录，rm -rf 清空整个仓库（含 .git）。
 # 所有删除前必须过 safe_rm_target：拒绝源码工作区（含 .git）、$HERE 及其上级、
@@ -1038,7 +1048,7 @@ print_capacity_plan() {
     sizes+=("$(dep_mb "$k")")
     if [ "$(dep_mb "$k")" -gt "$big_mb" ]; then big_mb=$(dep_mb "$k"); big="$k"; fi
   done
-  free_mb=$(df -Pm "$HOME" 2>/dev/null | sed -n '2s/.* //p')
+  free_mb=$(df_avail_mb "$HOME")
   free_mb=${free_mb//[!0-9]/}
   free_mb=${free_mb:-0}
   # 只有模型 + 程序包是纯下载；pip 依赖一半下载、一半本机解包编译，按 50% 折算
@@ -1090,9 +1100,12 @@ print_capacity_plan() {
   fi
   printf '      %s其中 %s 最费时（%s）%s\n' \
     "$C_DIM" "$(dep_label "$big")" "$(mb_text "$big_mb")" "$C_END"
-  printf '      %s当前 %s 可用 %s%s\n' "$C_DIM" "$HOME" "$(mb_text "$free_mb")" "$C_END"
-  if [ "$free_mb" -gt 0 ] &&
-     [ "$free_mb" -lt $((total + EST_SCRATCH_MB + EST_MIN_FREE_MB)) ]; then
+  printf '      %s当前 %s 可用 %s%s\n' "$C_DIM" "$HOME" \
+    "$([ -n "$free_mb" ] && mb_text "$free_mb" || printf '未知')" "$C_END"
+  # 取不到就只写「未知」，不要拿 0 当事实去喊「空间偏紧」
+  if [ -z "$free_mb" ]; then
+    printf '      %s磁盘剩余空间没读出来，建议装前自行确认一下%s\n' "$C_DIM" "$C_END"
+  elif [ "$free_mb" -lt $((total + EST_SCRATCH_MB + EST_MIN_FREE_MB)) ]; then
     warn "磁盘空间偏紧：建议先腾出 $(mb_text $((total + EST_SCRATCH_MB + EST_MIN_FREE_MB))) 空闲空间"
   fi
   PLAN_TOTAL_MB=$total
@@ -1233,12 +1246,12 @@ preflight() {
   # 1. 磁盘空间：具体要多少由 print_capacity_plan 按本次实际要装的项逐项算，
   #    这里只兜一个硬底线
   local avail_mb=""
-  avail_mb=$(df -Pm "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+  avail_mb=$(df_avail_mb "$HOME")
   if [ -n "$avail_mb" ] && [ "$avail_mb" -lt "$EST_MIN_FREE_MB" ]; then
     warn "家目录剩余 ${avail_mb}MB，低于最低要求 ${EST_MIN_FREE_MB}MB"
     problems=1
   else
-    dim "磁盘空间：剩余 ${avail_mb:-未知}MB"
+    dim "磁盘空间：${avail_mb:+剩余 ${avail_mb}MB}${avail_mb:-未知}"
   fi
 
   # 2. 端口占用：与 stop_backend 共用 _port_owned_by_us / _pid_is_ours 这一套
@@ -2360,23 +2373,48 @@ PROBE_MAX=8            # 单个源最多等 8 秒（代理链路首包慢，4 �
 # 采样文件：任一镜像与官方都有的 wheel（项目名 / 文件名）。轮询几个候选，
 # 第一个能下的就用它，保证四个源比的是同一份文件；否则体积、压缩率不同，
 # 比出来的值没有可比性。
+# 必须挑体积够大的 wheel（≥ 2MB）：以前用 packaging（只有 65KB），
+# 整个文件一次就下完，采样量凑不到门槛，四个源会被一律判成「连不上」。
 PROBE_FILES=(
-  "packaging|packaging-24.2-py3-none-any.whl"
-  "urllib3|urllib3-2.2.3-py3-none-any.whl"
+  "numpy|numpy-2.1.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+  "pyyaml|PyYAML-6.0.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
 )
+
+# 把 a/b/../../c 这类相对路径按 URL 规则归一化（纯 bash，不依赖 realpath）
+norm_url_path() {
+  local p="$1" out="" seg
+  local -a parts=()
+  IFS='/' read -ra parts <<< "$p"
+  for seg in "${parts[@]}"; do
+    case "$seg" in
+      ''|'.') ;;                                # 根前缀 / 多余的斜杠 / 当前目录
+      '..')   out="${out%/*}" ;;                # 退一级，退到根就停在根
+      *)      out="$out/$seg" ;;
+    esac
+  done
+  printf '%s' "${out:-/}"
+}
 
 # 从索引页里抠出某个文件的真实 URL（镜像页里是 ../../packages/xx/yy/<file> 相对链）
 # $1=索引根  $2=项目名  $3=文件名；取不到返回空
+# 两处坑，都是真机上「四个源全部测速失败、日志一律显示连不上」的原因：
+# 1. href 后面跟着 `#sha256=...` 锚点，字符类里排除 `#` 就永远匹配不到；
+# 2. 镜像给的是带 `../..` 的相对链，直接拼成 <origin>/simple/../../packages/…
+#    服务器会 400，必须先按 URL 规则归一化再请求。
 probe_file_url() {
-  local index="${1%/}" proj="$2" file="$3" href
+  local index="${1%/}" proj="$2" file="$3" href origin
   href=$(curl -sS -L -m "$PROBE_MAX" "$index/$proj/" 2>/dev/null |
-    grep -o 'href="[^"#]*'"$file"'"' 2>/dev/null | head -n1 |
+    grep -o "href=\"[^\"]*${file}[^\"]*\"" 2>/dev/null | head -n1 |
     sed -e 's/^href="//' -e 's/"$//') || return 0
   [ -n "$href" ] || return 0
+  href=${href%%#*}   # 去掉 #sha256= 锚点，只留下载地址
+  origin=${index%%/simple*}
   case "$href" in
-    http*) printf '%s' "$href" ;;                       # 绝对地址（官方走 files.pythonhosted）
-    /*)    printf '%s' "${index%%/simple*}${href}" ;;   # 站内绝对路径
-    *)     printf '%s/%s' "${index%%/simple*}/simple" "$href" ;;  # 相对路径
+    http*) printf '%s' "$href" ;;                              # 绝对地址（官方走 files.pythonhosted）
+    /*)    printf '%s%s' "$origin" "$href" ;;                  # 站内绝对路径
+    *)     # 相对路径要相对于「索引页地址」解析：页面是 /simple/<proj>/，
+           # 里面的 ../../packages/… 就是从 /simple/<proj>/ 往上两级
+           printf '%s%s' "$origin" "$(norm_url_path "/simple/$proj/$href")" ;;
   esac
 }
 
@@ -2398,9 +2436,11 @@ probe_speed() {
     spd=${out%% *}
     size=${out##* }
     size=${size%%.*}
-    # 404/403 或错误页都不算数；至少拿到 256KB 才认为这是真在传文件
+    # 404/403 或错误页都不算数。门槛取「够 32KB」而不是固定 256KB：
+    # 候选文件万一比采样量还小（整份只有几十 KB），真实的传输也应当被承认，
+    # 否则会把能连通的源一律判成「连不上」。错误页通常只有几 KB，仍会被挡掉。
     case "$code" in 200|206) ;; *) continue ;; esac
-    if [ -n "$size" ] && [ "$size" -ge 262144 ] 2>/dev/null; then
+    if [ -n "$size" ] && [ "$size" -ge 32768 ] 2>/dev/null; then
       spd=${spd%%.*}
       printf '%s' "${spd:-0}"
       return 0
