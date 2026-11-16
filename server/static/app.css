@@ -1323,6 +1323,11 @@
     --set-field-gap: 9px;
     --set-label-gap: 4px;
     --set-hint-gap: 3px;
+    /* 卡片内的「说明文字」与它上方元素的距离，以及这张说明自身的下边距。
+       卡片里不要再套 .pane-desc（那是页首说明，带 12px 下边距），统一用 .card-desc */
+    --set-desc-gap: 8px;
+    /* 卡片内「字段/列表 → 按钮行」的上间距，以及列表/芯片区上间距 */
+    --set-foot-gap: 8px;
     --set-ctl-h: 32px;
     --set-hint-size: 11.5px;
     --set-hint-lh: 1.45;
@@ -1412,13 +1417,14 @@
   /* OneBot 内部的五个折叠子块：默认收起，标题一行可点 */
   details.set-fold {
     border-top: 1px solid var(--line);
-    margin-top: 8px; padding-top: 6px;
+    margin-top: var(--set-foot-gap); padding-top: 6px;
   }
-  details.set-fold:first-of-type { border-top: 0; margin-top: 2px; padding-top: 0; }
+  /* 折叠块是标题行下面的第一块内容时，不再额外留白（间距由 .card-head 的 7px 负责） */
+  details.set-fold:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
   details.set-fold > summary {
     cursor: pointer; list-style: none;
     display: flex; align-items: center; gap: 8px;
-    padding: 3px 0; font-size: 12.5px; font-weight: 600; color: var(--text);
+    padding: 3px 0; font-size: 13px; font-weight: 600; color: var(--text);
   }
   details.set-fold > summary::-webkit-details-marker { display: none; }
   details.set-fold > summary::before {
@@ -1429,17 +1435,20 @@
     content: '展开'; margin-left: auto; font-weight: 400; color: var(--muted); font-size: 11.5px;
   }
   details.set-fold[open] > summary::after { content: '收起'; }
-  details.set-fold > *:not(summary) { margin-top: 3px; }
+  /* 折叠块里的内容不再各自加 3px 上间距：间距交给 .field-hint / .mem-foot 等自身变量，
+     否则展开后每一块都会多出一点，和卡片外的同一批控件对不齐 */
+  details.set-fold > *:not(summary) { margin-top: 0; }
   .set-pane > h3 {
     font-size: 17px; font-weight: 600; margin-bottom: 2px;
   }
   .set-pane > .pane-desc {
     font-size: 12.5px; color: var(--muted); margin-bottom: 12px; line-height: 1.5;
   }
-  /* 页内小节标题（如「女仆人设」里的长期记忆）：比卡片标题重一点，比页标题轻 */
+  /* 页内小节标题（如「女仆人设」里的长期记忆）：比卡片标题重一点，比页标题轻。
+     和 .set-sect 同属「页内分区」，只是不给左侧色条——两者不混用在同一个列表里 */
   .set-sub {
     font-size: 14px; font-weight: 600; color: var(--text);
-    margin: 18px 0 3px; padding-top: 12px; border-top: 1px solid var(--line);
+    margin: 18px 0 var(--set-desc-gap); padding-top: 12px; border-top: 1px solid var(--line);
   }
   .set-sub + .pane-desc {
     font-size: 12.5px; color: var(--muted); margin-bottom: 10px; line-height: 1.5;
@@ -1453,9 +1462,17 @@
     margin-bottom: var(--set-card-gap);
   }
   .card > .card-title {
-    font-size: 12.5px; font-weight: 600; color: var(--text);
+    font-size: 13px; font-weight: 600; color: var(--text);
     margin-bottom: var(--set-title-gap); letter-spacing: .02em;
   }
+  /* 卡片内的说明文字：跟 .field-hint 同一口径（11.5 / 1.45 灰字），
+     上下各 8px，代替原先塞 .pane-desc + 内联 margin-top:0 的写法 */
+  .card-desc {
+    font-size: var(--set-hint-size); color: var(--muted);
+    margin: 0 0 var(--set-desc-gap); line-height: var(--set-hint-lh);
+  }
+  .card > .card-title + .card-desc { margin-top: 0; }
+  .card > .card-desc:last-child { margin-bottom: 0; }
   .card > .field:last-child { margin-bottom: 0; }
   /* 字段网格：单行控件（开关 / 数字 / 下拉 / 短文本）并排成一栏或两栏，
      说明文字仍在各自控件下方的小字里；长文本域不要放进网格 */
@@ -1475,7 +1492,7 @@
   .usage-balance { font-size: 20px; font-weight: 600; line-height: 1.25; }
   .usage-tables { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 4px; }
   .usage-tables > div { flex: 1 1 300px; min-width: 0; }
-  .usage-caption { font-size: 12px; font-weight: 600; color: var(--text); margin: 8px 0 2px; }
+  .usage-caption { font-size: 13px; font-weight: 600; color: var(--text); margin: 8px 0 2px; }
   .usage-table { width: 100%; border-collapse: collapse; font-size: 12px; }
   .usage-table th, .usage-table td {
     padding: 3px 6px; text-align: right; white-space: nowrap;
@@ -1591,7 +1608,7 @@
      不设 flex-wrap：窄屏只让说明文字换行，按钮 flex:none 永远留在右侧 */
   .api-foot {
     display: flex; align-items: center; gap: 10px;
-    margin-top: 8px; padding-right: 10px;
+    margin-top: var(--set-foot-gap); padding-right: 10px;
   }
   .api-foot .field-hint {
     flex: 1 1 auto; min-width: 0;
@@ -1786,12 +1803,19 @@
   #ttsCredit .tts-credit-line { white-space: nowrap; line-height: 1.45; }
   .tts-more[open] #ttsCredit .tts-credit-line { white-space: normal; overflow-wrap: anywhere; }
   /* ---------- 语音回复卡：标题+开关 / 发音人+状态+试听 / 一行模型状态 ---------- */
-  /* 这张卡只用三层：比其它卡片更矮，内边距和行距都收紧 */
-  .tts-card { padding: 10px 14px 9px; margin-bottom: var(--set-card-gap); }
+  /* 这张卡的结构和其它卡一致：内边距、标题到内容、底栏间距都走共用变量，
+     不再单独缩一档（缩了整页扫下来会比邻居矮一截） */
+  .tts-card { margin-bottom: var(--set-card-gap); }
   /* 子卡片标题行统一：标题靠左，总开关贴内容区右边缘并垂直居中；标题过长省略 */
-  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-bottom: var(--set-title-gap);
+  }
+  /* 带总开关的标题行里的标题和普通卡片标题同一套字：字号/字重/颜色都显式对齐，
+     不靠继承（.card-head .card-title 不在 .card > .card-title 选择器覆盖范围内） */
   .card-head .card-title {
     margin: 0; min-width: 0;
+    font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: .02em;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .card-head > .switch { flex: 0 0 auto; margin: 0 0 0 auto; }
@@ -1811,7 +1835,7 @@
      已就绪时那个点不动的「已就绪」还会占着位置 */
   .tts-pill[hidden] { display: none !important; }
   /* 素材署名折进可展开的一行：summary 就是一行小字，点开才展开完整来源 */
-  .tts-more { margin-top: 2px; }
+  .tts-more { margin-top: var(--set-hint-gap); }
   .tts-more > summary {
     font-size: var(--set-hint-size); color: var(--muted);
     line-height: 1.6; cursor: pointer; list-style: none;
@@ -1941,7 +1965,7 @@
 
   /* 长期记忆：新增行 = 下拉 + 输入框 + 按钮，三者同高同圆角，
      输入框直接套 `field` 里的那套外观，别再单独写一份 */
-  .mem-add { display: flex; gap: 8px; align-items: stretch; margin-top: 8px; }
+  .mem-add { display: flex; gap: 8px; align-items: stretch; margin-top: var(--set-foot-gap); }
   .mem-add input {
     flex: 1; min-width: 0;
     height: var(--set-ctl-h); padding: 0 10px;
@@ -1963,7 +1987,7 @@
   .mem-kind:focus { border-color: var(--brand); }
   /* 和输入框一样高：用 stretch 对齐，不再写死 44px */
   .mem-add .mini-btn { height: auto; padding: 0 12px; }
-  .mem-list { margin-top: 10px; }
+  .mem-list { margin-top: var(--set-foot-gap); }
   .mem-empty { font-size: 13px; color: var(--muted); padding: 10px 0; }
   .mem-group {
     font-size: 12px; font-weight: 600; color: var(--muted);
@@ -1983,7 +2007,7 @@
   .mem-item.editing { border-color: var(--brand); }
   .mem-item .mini-btn { height: 26px; padding: 0 8px; font-size: 12px; }
   .mem-del:hover { border-color: #e5534b; color: #e5534b; }
-  .mem-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .mem-foot { display: flex; align-items: center; gap: 8px; margin-top: var(--set-foot-gap); }
   .mem-foot .field-hint { margin: 0; flex: 1; }
   /* 脚注行里的小按钮也跟着一行高，别再用 mini-btn 的 min-height 顶起来 */
   .mem-foot .mini-btn { min-height: var(--set-ctl-h); font-size: 12.5px; }
@@ -2144,7 +2168,7 @@
   .chip-add { display: flex; gap: 8px; align-items: stretch; }
   .chip-add input { flex: 1; min-width: 0; }
   .chip-list {
-    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
+    display: flex; flex-wrap: wrap; gap: 6px; margin-top: var(--set-foot-gap);
     max-height: 120px; overflow-y: auto; overflow-x: hidden;
   }
   .chip {
@@ -2163,7 +2187,7 @@
   .chip-id { color: var(--muted); font-size: 11px; }
   .chip-empty { font-size: 12px; color: var(--muted); }
   /* QQ 回传文案：按组列出，每条一个可留空的输入框，灰色字即当前内置文案 */
-  .qqtext-list { margin-top: 6px; max-height: 420px; overflow-y: auto; }
+  .qqtext-list { margin-top: var(--set-foot-gap); max-height: 420px; overflow-y: auto; }
   .qqtext-group + .qqtext-group { margin-top: 10px; }
   .qqtext-group-name {
     font-size: 12px; font-weight: 600; color: var(--muted);

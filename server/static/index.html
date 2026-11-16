@@ -336,7 +336,7 @@
                 <div id="usageAccounts" class="usage-empty">暂无记录——先发起一次对话</div>
               </div>
             </div>
-            <div class="mem-foot" style="margin-top:10px;flex-wrap:wrap">
+            <div class="mem-foot" style="flex-wrap:wrap">
               <span class="field-hint" id="usageNote">费用按官方单价估算，以官方账单为准。</span>
               <button id="usageExport" class="mini-btn" type="button">导出 JSON</button>
               <button id="usageClear" class="mini-btn danger" type="button">清空统计</button>
@@ -431,7 +431,7 @@
           </div>
           <div class="card">
             <div class="card-title">备份</div>
-            <p class="pane-desc" style="margin-top:0">
+            <p class="card-desc">
               人设和上面的记忆就是「她这个人」的全部，导出一个 JSON 就能换机器、重装后恢复。
             </p>
             <div class="mem-foot">
@@ -450,21 +450,21 @@
           <div class="card">
             <div class="card-title">语音输入</div>
             <div class="field field-row">
-              <label style="margin:0">语音输入</label>
+              <label>语音输入</label>
               <label class="switch">
                 <input id="cfgStt" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
             <div class="field field-row">
-              <label style="margin:0">录音时静音外放（录完恢复）</label>
+              <label>录音时静音外放（录完恢复）</label>
               <label class="switch">
                 <input id="cfgSttDuck" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
             <div class="field field-row" id="r2PttRow">
-              <label style="margin:0">R1 按住说话（桌面客户端）</label>
+              <label>R1 按住说话（桌面客户端）</label>
               <label class="switch">
                 <input id="cfgR2Ptt" type="checkbox" checked>
                 <span class="slider"></span>
@@ -476,13 +476,13 @@
           <div class="card">
             <div class="card-title">智能音箱</div>
             <div class="field field-row">
-              <label style="margin:0">智能音箱模式（声控唤醒「你好梅朵」）</label>
+              <label>智能音箱模式（声控唤醒「你好梅朵」）</label>
               <label class="switch">
                 <input id="cfgWake" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
-            <div class="field-hint" style="margin-top:0">
+            <div class="card-desc">
               说「你好梅朵」唤醒，听你说完自动转文字发送。
               唤醒和语音识别都在本机离线完成，不消耗 Token，只在桌面模式可用。
             </div>
@@ -608,11 +608,11 @@
           </div>
           <div class="card">
             <div class="card-title">设备配对</div>
-            <div class="field-hint" style="margin-top:0">
+            <div class="card-desc">
               新设备打开局域网地址后点「配对新设备」，PIN 就会出现在下面。
               点「允许」后把 4 位 PIN 告诉对方；PIN 60 秒有效，最多试 3 次。
             </div>
-            <div class="mem-foot" style="margin-top:10px">
+            <div class="mem-foot">
               <span id="pairAuditSummary" class="field-hint"></span>
               <button id="pairHostStart" class="mini-btn" type="button">配对新设备</button>
             </div>
@@ -640,7 +640,7 @@
                 <span class="slider"></span>
               </label>
             </div>
-            <p class="pane-desc" style="margin-top:0">
+            <p class="card-desc">
               在电脑浏览器点左下角 logo 即可接管：鼠标与键盘移交到这台 Deck，可操作 Steam UI、游戏和本页。
               按 Esc、再点一次 logo，或在客户端点 logo 释放。
             </p>
@@ -665,7 +665,7 @@
                 <span class="slider"></span>
               </label>
             </div>
-            <p class="pane-desc" style="margin-top:0">
+            <p class="card-desc">
               听歌听着睡着了，机器自己关机。需要同时满足两件事并持续满设定时长：
               <b>音乐已经停了</b>，而且<b>这台机器没人用</b>（没有按键、触摸、鼠标移动，也没在玩游戏）。
               歌还在放时绝不关机，不会打断还在听的人；有人在用时也不关机。
@@ -717,7 +717,7 @@
               <button id="qqReconnect" class="mini-btn primary" type="button">连接</button>
             </div>
             <div class="field field-row">
-              <label style="margin:0">重启后自动连接</label>
+              <label>重启后自动连接</label>
               <label class="switch">
                 <input id="cfgQqAutoConnect" type="checkbox">
                 <span class="slider"></span>
@@ -903,14 +903,14 @@
               </div>
               <div class="set-grid">
                 <div class="field field-row">
-                  <label style="margin:0">群友也发语音（voice_group_members）</label>
+                  <label>群友也发语音（voice_group_members）</label>
                   <label class="switch">
                     <input id="cfgQqVoiceMembers" type="checkbox">
                     <span class="slider"></span>
                   </label>
                 </div>
                 <div class="field field-row">
-                  <label style="margin:0">只发语音（voice_only）</label>
+                  <label>只发语音（voice_only）</label>
                   <label class="switch">
                     <input id="cfgQqVoiceOnly" type="checkbox">
                     <span class="slider"></span>
@@ -980,7 +980,7 @@
               <summary>安装后自动打开</summary>
 
             <div class="field field-row">
-              <label style="margin:0">安装完成后自动打开程序</label>
+              <label>安装完成后自动打开程序</label>
               <label class="switch">
                 <input id="cfgQqAutoLaunch" type="checkbox">
                 <span class="slider"></span>
@@ -998,7 +998,7 @@
             </details>
             <details class="set-fold" id="qqTextFold">
               <summary>回传文案（发给群里的提示语）</summary>
-              <div class="field-hint" style="margin-top:0">
+              <div class="card-desc">
                 机器人回给 QQ 的各种提示语。默认走内置文案，只填想改的那几条即可，
                 改完点下面的「保存文案」立刻生效，不用重启。留空 = 用内置文案。
               </div>
@@ -1025,7 +1025,7 @@
           <h3>插件设置</h3>
           <p class="pane-desc">
             和 Decky 插件端（QAM 快捷面板 / 大屏页）共用同一份后端配置：这里保存后插件端读到的就是新值，
-            插件端改完回到这里也会显示新值。页面底部的「保存」管开关和表单，提示词模板在卡片里单独保存。
+            插件端改完回到这里也会显示新值。页面底部的「保存」管开关和表单，提示词模板改完自动保存。
           </p>
 
           <div class="card chat-voice-card" id="chatVoiceCard">
@@ -1037,7 +1037,7 @@
               </label>
             </div>
             <div class="field field-row">
-              <label style="margin:0">带画面询问（截图随消息一起发）</label>
+              <label>带画面询问（截图随消息一起发）</label>
               <label class="switch">
                 <input id="cfgWithShot" data-autosave type="checkbox">
                 <span class="slider"></span>
@@ -1047,7 +1047,7 @@
 
           <div class="card">
             <div class="card-title">提示词模板</div>
-            <p class="pane-desc" style="margin-top:0">
+            <p class="card-desc">
               和插件端「截屏询问 / 截屏翻译」是同一份配置。留空保存即恢复默认，默认值由后端下发。
             </p>
             <div class="field">
@@ -1073,7 +1073,7 @@
 
           <div class="card">
             <div class="card-title">按游戏提示词预设</div>
-            <p class="pane-desc" style="margin-top:0">
+            <p class="card-desc">
               游戏开始运行时自动套用对应预设，退出后恢复默认。预设只覆盖运行时的状态栏提示词，
               不会改动上面的全局配置。当前：<span id="presetNow">—</span>
             </p>
@@ -1106,7 +1106,7 @@
           <div class="card">
             <div class="card-title">离线模式</div>
             <div class="field field-row">
-              <label style="margin:0">只在本机运行，不发起外网请求</label>
+              <label>只在本机运行，不发起外网请求</label>
               <label class="switch">
                 <input id="cfgOfflineMode" data-autosave type="checkbox">
                 <span class="slider"></span>
@@ -1124,14 +1124,14 @@
               <span class="ver-summary" id="verSummary">正在读取版本信息…</span>
               <button id="updCheck" class="mini-btn" type="button">检查更新</button>
             </div>
-            <div class="field field-row" style="margin-top:10px">
-              <label style="margin:0">同时探测 GitHub（关掉只用国内镜像）</label>
+            <div class="field field-row">
+              <label>同时探测 GitHub（关掉只用国内镜像）</label>
               <label class="switch">
                 <input id="cfgUpdGithub" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
-            <div class="field" style="margin-top:2px">
+            <div class="field">
               <div class="field-hint" id="updSourceHint"></div>
             </div>
             <div class="upd-note" id="updNote"></div>
@@ -1156,7 +1156,7 @@
             <div class="field">
               <label>日志占用</label>
               <div id="devLogUsage" class="field-hint">统计中…</div>
-              <div class="mem-foot" style="margin-top:8px;flex-wrap:wrap">
+              <div class="mem-foot" style="flex-wrap:wrap">
                 <button id="logClearDebug" class="mini-btn danger" type="button">清空调试日志</button>
                 <button id="logClearRun" class="mini-btn danger" type="button">清空运行日志</button>
                 <button id="logClearInstall" class="mini-btn danger" type="button">清空安装日志</button>
