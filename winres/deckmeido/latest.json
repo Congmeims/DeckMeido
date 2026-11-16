@@ -1,10 +1,10 @@
 {
   "tag": "0.8.23",
   "name": "DeckMeido 0.8.23",
-  "notes": "# DeckMeido 0.8.23\n\n- fix(install): 修复 pypi 测速恒为连不上与家目录可用空间误报 0MB\n- chore(release): 0.8.22\n- fix(install): 修复 sudo_warmup 在 set -u 下引用未定义 UNINSTALLING 导致安装中断\n- chore(release): 0.8.21\n- test: 文案改用 qqtext 实际值，修复跨模块导入导致的用例污染；bump 0.8.21\n- feat(settings): 自动保存后弹「设置项已保存」浮窗，统一安装器文案\n- fix(installer): 卸载与安装的 sudo 提示统一为「系统密码」\n- refactor(auth): 局域网设备鉴权由 Cookie 改为 Bearer 令牌\n- refactor: 移除 Android 客户端与二维码配对\n- fix: 掌机本机来源免配对，并把待配对请求主动推到 QAM\n- chore(release): 0.8.20\n- fix(installer): 只读层覆盖 pacman+AUR 两步，AUR helper 走 askpass\n- chore(release): 0.8.19\n- fix(uninstaller): 卸载开始前先 warmup sudo，无 tty 下不再全线失败\n- chore(release): 0.8.19\n- fix(installer): 第7步自行 warmup sudo，依赖已齐时无人要过权限\n- chore(release): 0.8.19\n- fix(installer): sudo 统一走 sdo（带 -A），修复无 tty 下插件目录建不动\n- chore(release): 0.8.19\n- fix(installer): 去掉 sudo -n，它不认 SUDO_ASKPASS\n",
-  "published_at": "2026-11-15T12:41:37+08:00",
+  "notes": "# DeckMeido 0.8.23\n\n- 移除虚拟手柄的插件展示与后端死代码\n- 设置页 OneBot：补齐真正的「连接」入口，修保存回填时的空引用崩溃\n- 侧栏：空列表文案改为「暂无会话」；右栏两个跟随开关统一开闭\n- 修复会话列表空白与来源分组错乱\n- 统一各端的设置展示：保存配置后广播 config_changed\n- 目录不存在等提示在文件区居中显示\n- 修复跨屏接管提示成功但键鼠不动\n- 配对后重新拉取模型参数，修复设置页显示为空\n- 忽略 Android 侧的反编译产物与本机 Gradle 配置\n- 配对卡页脚版本号真正靠右\n- 静态资源加版本参数，改完样式不再被旧副本挡住\n- 配对/登录卡片重做：卡片化布局 + 步骤时间线 + 底部版本栏\n- 上传卡顶部留缝，不再贴着路径条下边框\n- 设置页排版收口：自检两栏成表、权限与工作区控件对齐、语音卡单行\n- 设置页排版整理：自检两列、语音卡收尾、配对名改用计算机名\n- 桌面控件自检只留灯色：去掉可用/大小与底部说明文字\n- 上传同名文件先询问再覆盖；悬浮提示条与面板边缘对齐\n- 修复局域网已配对设备上传全部 401，并让上传卡片与文件列表对齐\n- 检测区域两栏对齐改用网格列宽；移除网页端单组件卸载 两栏原先都是 flex：名称 max-width 按百分比、说明 flex:1 按内容伸缩， 右栏「语音识别」这类长名字会把说明列整体右推，两栏列线对不齐。 改为共用 grid 列模板（灯/名称/说明/操作位），左栏补空 act 占位。\n- 引导状态以服务端为准：任一端看过，其余端不再弹\n",
+  "published_at": "2026-11-16T20:00:43+08:00",
   "files": {
     "tarball": "deckmeido-0.8.23.tar.gz",
-    "sha256": "543fc1761f97b4c67591046255c5687031b8d9dfe193d13d83d4df211b18e353"
+    "sha256": "c3a9edb8278d6f089ff32c600009d2b4a17eec15a86b37afbc801692c31f88e0"
   }
 }
