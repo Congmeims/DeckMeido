@@ -2136,11 +2136,11 @@ async def _core_prefs(port: int) -> dict:
             "persona_name": str(d.get("persona_name") or "")}
 
 
-async def _session_post(what: str, path: str) -> dict:
+async def _session_post(what: str, path: str, body: dict | None = None) -> dict:
     """会话类操作共用的 POST：拿配置、确认后端活着、发请求"""
     cfg = _load_server_cfg()
     port = int(cfg.get("port", 18765))
-    r = await _core_http(port, "POST", path, timeout=8.0, body={})
+    r = await _core_http(port, "POST", path, timeout=8.0, body=body or {})
     if not r["ok"]:
         # 后端在跑但 reject 了，和根本没跑是两回事，错误里带上原始原因
         decky.logger.error(f"{what} 失败：{r.get('error')}")
@@ -2508,8 +2508,10 @@ class Plugin:
 
         走 HTTP 而不是 ws：后端受理后会向所有连接广播 history/session_changed，
         插件侧的 _read_loop 收到就自然刷新，不需要在这里额外处理返回值。
+        带上 client=qam：不传的话后端拿不到来源，这条会话只能落到「调试」组。
         """
-        return await _session_post("session_new", "/api/sessions/create")
+        return await _session_post("session_new", "/api/sessions/create",
+                                   body={"client": "qam"})
 
     async def set_tts(self, enabled: bool) -> dict:
         """切语音播报：交给后端写入 [tts] enable，热更新、不用重启"""

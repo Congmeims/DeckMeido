@@ -3544,7 +3544,12 @@
       fbToast('已添加到输入框', 'chat');
     });
     fbCtxItem('新会话提问', function () {
-      apiFetch('/api/sessions/create', { method: 'POST' })
+      apiFetch('/api/sessions/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // 带上发起端，新建的空会话在侧栏里就能按来源分组，不会落进「其它」
+        body: JSON.stringify({ client: myClient() })
+      })
         .then(function (r) { return r.json(); })
         .then(function (d) {
           if (d && d.ok) { doSend(text); }
@@ -6435,6 +6440,11 @@
           syncConfigChanged(msg.data || {});
           break;
         case 'session_changed':
+          // 广播里带着新的当前会话号：先对齐基线，否则后面别的端的
+          // 流式片段会拿旧 sid 去比对（见上面的会话代次过滤）
+          if (msg.current) currentSid = msg.current;
+          loadSessions();
+          break;
         case 'history':
           loadSessions();
           break;
@@ -6859,6 +6869,9 @@
             connect();
             maybeOnboard();
           }
+          // 页面初始化时 loadSessions 常常赶在这份回包之前，被守卫挡掉、
+          // 侧栏留一块空白。登录态一到位就补拉一次，不依赖调用顺序
+          if (!sessLoaded) loadSessions();
           return;
         }
         // 真的未配对（局域网新设备）：这才进入配对页
@@ -13882,17 +13895,40 @@
   }
   // 已有列表时刷新失败不会走占位文字，单独提示一次即可，避免每次广播都刷屏
   var sessErrNotified = false;
+  // 列表有没有成功拉到过一次：bootAuth 的回包比初始化那次 loadSessions 晚到时
+  // 用它判断要不要补拉，避免已经画好的列表被再刷一遍
+  var sessLoaded = false;
   // 会话自动分组：键是后端给 origin（见 session_store.normalize_origin），
-  // 声明顺序就是侧栏里的组顺序；认不出来的来源归到「其它」，有才显示
+  // 声明顺序就是侧栏里的组顺序；认不出来的来源归到「调试」，有才显示。
   var SESS_GROUP = {
     web: { name: '网页' },
     mobile: { name: '手机' },
-    client: { name: 'Deck' },
+    client: { name: '客户端' },
     qam: { name: '插件' },
     qq: { name: 'Onebot' },
-    wake: { name: '智能音响' },
-    other: { name: '其它' }
+    wake: { name: '智能音箱' },
+    // 后端对推断不出来源的老会话返回空串，这里兜底成「调试」：
+    // 这类会话基本都是早期自测留下的，叫「其它」反而让人猜是什么意思
+    other: { name: '调试' }
   };
+  // 折叠状态按组存在 localStorage：同一台机器上收起过的组刷新后仍是收起的。
+  // 客户端 WebEngine 的 localStorage 每次启动都是空的，那时默认全部展开，
+  // 不影响可用性，所以不做服务端持久化。
+  var SESS_COLLAPSED_KEY = 'dm.sess.collapsed';
+  var sessCollapsed = (function () {
+    try {
+      var raw = localStorage.getItem(SESS_COLLAPSED_KEY);
+      var arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; }
+  })();
+  function sessIsCollapsed(g) { return sessCollapsed.indexOf(g) >= 0; }
+  function sessToggleGroup(g) {
+    var i = sessCollapsed.indexOf(g);
+    if (i >= 0) sessCollapsed.splice(i, 1); else sessCollapsed.push(g);
+    try { localStorage.setItem(SESS_COLLAPSED_KEY, JSON.stringify(sessCollapsed)); } catch (e) {}
+    loadSessions();
+  }
   // 单条会话行：标题 + 删除，点行切换（分组只是外面套一层组标题）
   function sessRow(s, cur) {
     var row = document.createElement('div');
@@ -13946,7 +13982,14 @@
     return row;
   }
   function loadSessions(retried) {
-    if (!deviceSession && !isHomePage) return;
+    // 局域网页面要等 /api/auth/session 回来 deviceSession 才为真。初始化时
+    // 这一次调用常常赶在它之前，以前直接 return，侧栏就整块空白，
+    // 非得点一次「＋」才补出来。现在先给个占位并主动补一次登录态
+    if (!deviceSession && !isHomePage) {
+      sessSkeleton('正在加载会话列表…');
+      bootAuth();
+      return;
+    }
     sessSkeleton('加载中…');
     apiFetch('/api/sessions')
       .then(function (r) {
@@ -13967,9 +14010,14 @@
       })
       .then(function (d) {
         sessErrNotified = false;
+        sessLoaded = true;
         currentSid = d.current;
         syncQqSessButton();
         sessList.innerHTML = '';
+        if (!(d.items || []).length) {
+          sessSkeleton('还没有会话，点右上角「＋」开始一个');
+          return;
+        }
         var curTitle = '';
         // 按来源自动分组：会话从哪来就归哪组，空组整组不出现。
         // 组顺序固定，组内沿用后端给的 updated 倒序（后端已排好，这里不再排）
@@ -13982,16 +14030,30 @@
         Object.keys(SESS_GROUP).forEach(function (g) {
           var list = groups[g];
           if (!list || !list.length) return;
-          var head = document.createElement('div');
-          head.className = 'sess-group';
+          var folded = sessIsCollapsed(g);
+          var head = document.createElement('button');
+          head.type = 'button';
+          head.className = 'sess-group' + (folded ? ' folded' : '');
+          // 组标题是可点的折叠开关：整组收起/展开，收起状态记在本机
+          head.setAttribute('aria-expanded', folded ? 'false' : 'true');
+          head.title = (folded ? '展开' : '收起') + SESS_GROUP[g].name + '（' + list.length + '）';
+          var caret = document.createElement('span');
+          // 箭头表示折叠方向：展开时朝下，收起时朝右
+          caret.className = 'sess-group-caret';
+          caret.textContent = folded ? '▸' : '▾';
           var nm = document.createElement('span');
+          nm.className = 'sess-group-name';
           nm.textContent = SESS_GROUP[g].name;
           var cnt = document.createElement('span');
           cnt.className = 'sess-group-n';
           cnt.textContent = String(list.length);
+          head.appendChild(caret);
           head.appendChild(nm);
           head.appendChild(cnt);
+          head.addEventListener('click', function () { sessToggleGroup(g); });
           sessList.appendChild(head);
+          // 收起时不渲染组内会话行：条数仍然显示在标题上
+          if (folded) return;
           list.forEach(function (s) { sessList.appendChild(sessRow(s, d.current)); });
         });
         setHdrTitle(curTitle);
@@ -14023,12 +14085,22 @@
     // 失败时这里补一句提示，别让按钮看起来彻底没反应。
     // 后端在「当前会话本来就一句没说」时不会新建（防止刷出一排空会话），
     // 这时也不会广播，得自己说一声，否则按钮看起来毫无反应
-    apiFetch('/api/sessions/create', { method: 'POST' })
+    apiFetch('/api/sessions/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // 带上发起端，新建的空会话在侧栏里就能按来源分组，不会落进「其它」
+      body: JSON.stringify({ client: myClient() })
+    })
       .then(function (r) {
         if (!r.ok) { addSystem('新建会话失败（HTTP ' + r.status + '）'); return null; }
         return r.json();
       })
-      .then(function (d) { if (d && d.unchanged) addSystem('当前已经是新会话，可以开始聊天了~'); })
+      .then(function (d) {
+        if (d && d.unchanged) addSystem('当前已经是新会话，可以开始聊天了~');
+        // 不管有没有新建都重拉一次：后端在「当前就是空会话」时不会建新会话、
+        // 也就不会广播，列表会一直停在旧内容上，看起来像刷新没生效
+        loadSessions();
+      })
       .catch(function () { addSystem('新建会话失败：连不上后端'); });
   });
   loadSessions();

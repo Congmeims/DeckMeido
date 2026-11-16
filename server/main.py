@@ -2098,6 +2098,17 @@ async def _no_cache_html(request, call_next):
     return resp
 
 
+def client_from_ua(ua: str) -> str:
+    """按 UA 猜发起端：手机浏览器算 mobile，其余都算 web
+
+    ws 连接和 /api/sessions/create 共用这一份判断，两处口径必须一致：
+    同一台手机「说话时自动建的会话」和「点＋建的会话」要落进同一个分组。
+    插件（qam）和桌面客户端（client）不靠 UA，由调用方显式声明。
+    """
+    ua = ua or ""
+    return "mobile" if ("Mobile" in ua or "Android" in ua) else "web"
+
+
 @app.middleware("http")
 async def _lan_guard(request, call_next):
     """lan_enable 关闭时拒绝非本机来源。
@@ -6729,8 +6740,7 @@ async def ws_endpoint(ws: WebSocket):
     # ws_mode 用来记住「这条连接是在什么模式下连上的」：状态广播是全局的，
     # 游戏模式的判定（PipeWire 里的 gamescope 节点）对所有连着的端都成立，桌面网页就会
     # 跟着显示成「游戏模式」。所以按连接自己的会话判定，桌面网页永远是桌面
-    ua = ws.headers.get("user-agent", "")
-    ua_client = "mobile" if ("Mobile" in ua or "Android" in ua) else "web"
+    ua_client = client_from_ua(ws.headers.get("user-agent", ""))
     ws_mode = (await asyncio.to_thread(get_status))["mode"]
     # 这两项告诉前端「此刻后端进程里还在跑哪一轮」：
     # inflight = 流式已写过、还没收尾的会话（这一轮的正文还只在半路上，没进 history）

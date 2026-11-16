@@ -24,6 +24,11 @@ class SwitchReq(BaseModel):
     id: str
 
 
+class CreateReq(BaseModel):
+    """新建会话的发起端（client/mobile/qam/...），用于侧栏分组"""
+    client: str = ""
+
+
 class MetaReq(BaseModel):
     """一段 UI 标记的读写：键名 + 值（空字符串等于删掉）"""
     value: str = ""
@@ -82,14 +87,21 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         判据是历史里一条 user / assistant 消息都没有（系统提示、tool 消息不算）。
         只看 store.history 而不是磁盘：内存里的历史就是唯一真相，磁盘文件
         可能因为空写保护还没落盘。
+
+        current_sid 为空（上一个会话刚被删干净，见 delete 分支）时不算「空会话」：
+        这时压根没有会话，得走下面的新建分支分配一个 sid，否则点「＋」什么都不会发生。
         """
+        if not store.current_sid:
+            return False
         return not any(m.get("role") in ("user", "assistant") for m in store.history)
 
     @router.post("/api/sessions/create", dependencies=auth)
-    async def api_session_create():
+    async def api_session_create(req: CreateReq, request: Request):
         m = get_main()
-        # 只是要离开当前会话：内容照存，但不刷新 updated，避免旧会话被顶到首位
-        m.save_current_session(touch=False)
+        # 只是要离开当前会话：内容照存，但不刷新 updated，避免旧会话被顶到首位。
+        # current_sid 为空时没有可存的会话，空 sid 还会把自己写进索引（id 为空的脏行）
+        if store.current_sid:
+            m.save_current_session(touch=False)
         # 连点「新会话」会把侧栏刷成一排空会话，一个能用的都没有。
         # 已经在空会话里就原地不动，各端也不用重刷列表
         if _current_session_untouched():
@@ -103,6 +115,12 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         # 代次 +1：正在跑的那一轮会据此发现自己的会话已被换掉
         store.bump_epoch()
         store.turn["active"] = False
+        # 新建时就记下来源：否则这条会话在说第一句话之前 origin 是空的，
+        # 侧栏会把它归到「调试」，看不出是从客户端/网页/掌机面板建的。
+        # 前端没传（旧缓存页面）时按 UA 兜一层，和聊天链路 start_chat 的判断同源，
+        # 免得同一台手机「说话建的会话」和「点＋建的会话」落进不同分组
+        origin = req.client or m.client_from_ua(request.headers.get("user-agent", ""))
+        m._set_session_origin(store.current_sid, origin or None)
         m.save_current_session()
         await m.manager.broadcast({"type": "history", "messages": store.history,
                                    "sid": store.current_sid})

@@ -352,12 +352,18 @@ class SessionStore:
             self.wrote_map[sid] = (data["updated"], len(hist))
             created = data["created"]
         io_submit(self._write_file, sid, data, created)
-        if hist:
+        if hist or touch:
             # 索引当场更新（不等 IO 线程写完）：QQ 这类后台新建的会话在
             # session_changed 广播后，客户端会立刻拉 /api/sessions；如果索引
             # 还排在 IO 队列里，第一次刷新就会漏掉它，列表里一直看不到
             # （用户反馈「群聊会话不出现在客户端对话列表」）。
-            # 空历史仍然不建索引，保持「空会话不落盘」的老行为。
+            #
+            # 空历史也建索引的条件是 touch=True，也就是「新建会话」这条路径：
+            # 以前只有 hist 非空才建，于是在客户端新建、还没开口的时候，
+            # 这条会话在 /api/sessions 里根本不存在，网页端强刷也看不到它
+            # （用户反馈「客户端新建的会话，网页端强刷后看不到」）。
+            # 空历史 + touch=False 是「切走时收尾保存旧会话」，这时不建索引，
+            # 免得一个从没说过话的空会话被记进列表。
             self._index_put(sid, data)
         # 记一笔「这个会话已经发过整份写入」（排障用：能一眼看出磁盘上是否已有文件）
         with self.lock:
