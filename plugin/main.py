@@ -167,18 +167,6 @@ def _cfg_error_text() -> str:
     return _SERVER_CFG_ERROR or "配置里没有 [server] 段"
 
 
-def _gamepad_from_core(core: dict) -> dict:
-    """后端 /api/status 的手柄可用性 → 面板字段。
-
-    ok=None 表示后端没给这个字段（旧版本或后端没连上），前端据此显示「未知」，
-    绝不能默认可用于是给出一个错误绿灯。
-    """
-    data = (core or {}).get("data") or {}
-    ok = data.get("gamepad_ok")
-    return {"ok": ok if isinstance(ok, bool) else None,
-            "reason": str(data.get("gamepad_reason") or "")}
-
-
 # ---------- 插件状态目录 ----------
 #
 # 插件以 root 加载，但本机（QAM / 大屏）不再单独设解锁门：能加载插件就视为
@@ -1805,14 +1793,6 @@ async def _read_loop(bk: _Backend):
             _emit({"kind": "config_changed",
                    "prefs": msg.get("data") or {}})
             continue
-        if typ == "pad_order":
-            # 虚拟手柄的换序请求：全局广播、不属于某一轮，所以也要放在 sid 过滤前。
-            # 排序状态只在 Steam 进程里，后端改不了，只能交给前端去调
-            # SteamClient.Input.SwapControllerOrder（详见前端 swapPadOrder）
-            act = str(msg.get("action") or "")
-            decky.logger.info(f"收到后端 pad_order/{act}，转给前端")
-            _emit({"kind": "pad_order", "action": act})
-            continue
         if typ == "user_message":
             item = _thread_item({
                 "role": "user",
@@ -2165,7 +2145,6 @@ class Plugin:
         port = int(cfg.get("port", 18765))
         node, why = await _gamescope_pw_node()
         core = await _core_status(port)
-        gamepad = _gamepad_from_core(core)
         # 后端在、但插件这边没连着（比如后端重启过）就顺手补一条：
         # 换序这类全局广播全靠这条长连接，断了就静默丢消息
         if core.get("ok") and _BACKEND is None:
@@ -2290,11 +2269,6 @@ class Plugin:
             "preset_applied": bool(preset_state.get("applied")),
             "preset_id": str(preset_state.get("preset_id") or ""),
             "preset_title": str(preset_state.get("title") or ""),
-            # 虚拟手柄能不能用：只透传后端 /api/status 的判断（插件是 root，
-            # 它自己的权限不等于后端进程的权限）。后端没给这个字段（旧版本或
-            # 后端没连上）时保持 None，前端显示「未知」而不是假设可用。
-            "gamepad_ok": gamepad.get("ok"),
-            "gamepad_reason": gamepad.get("reason", ""),
             # 读不到后端配置：前端据此显示明确原因
             "config_error": "" if cfg else _cfg_error_text(),
         }
@@ -3082,8 +3056,8 @@ class Plugin:
         """插件加载后就把 WS 连上，并一直保持
 
         以前只在面板打开会话 / 发消息时才连，于是「AI 调工具时没人连在后端」
-        很常见：后端广播的 pad_order 这类全局事件就全丢了（手柄换序一直不生效
-        就是这么来的）。这里主动连一条，断了由 _read_loop 自己重连。
+        很常见：后端广播的全局事件（如别的端改了设置）就全丢了。
+        这里主动连一条，断了由 _read_loop 自己重连。
         """
         try:
             bk, why = await _ensure_backend()

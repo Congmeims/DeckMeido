@@ -2607,9 +2607,6 @@ async def _screenshot_gamescope(path: Path) -> str:
 # /dev/uinput 虚拟设备（Steam Input、Sunshine 走的都是这条）。这里直接建一个
 # 带 EV_KEY + EV_ABS 的手柄设备：键盘设备扛不了摇杆（ABS 是绝对值轴），
 # 手柄设备也发不出键盘字符，两类设备分工不同。
-#
-# 与 plugin/main.py 里的 _Gamepad 是同一套实现，但那份只服务 QAM 面板，
-# 后端跑在服务进程里拿不到它，所以这边必须自带一份。
 
 _UI_DEV_CREATE = 0x5501
 _UI_DEV_DESTROY = 0x5502
@@ -2653,31 +2650,6 @@ _PAD_TRIG = {"lt": 0, "rt": 0}
 _PAD_VID = 0x045E
 _PAD_PID = 0x02FD
 
-# 换序回调：后端 main.py 启动时接上（广播一条 pad_order 给 QAM 插件）。
-# 排序状态只存在 Steam 进程内存里，没有配置文件可写，只能在 Steam 页面
-# 上下文里调 SteamClient.Input.SwapControllerOrder —— 那条路只有插件前端有，
-# 所以这里只能把「刚建好 / 刚销毁」这件事喊出去，由前端去换。
-# 没接上（例如直接跑 tools 的单元测试）就什么都不做。
-_PAD_ORDER_HOOK = None
-
-
-def set_pad_order_hook(fn) -> None:
-    """注册换序回调：fn(action) -> awaitable，action 是 "to1p" / "revert"""
-    global _PAD_ORDER_HOOK
-    _PAD_ORDER_HOOK = fn
-
-
-def _notify_pad_order(action: str) -> None:
-    """喊一声「虚拟手柄来了 / 走了」，换序失败不能影响按键注入"""
-    if _PAD_ORDER_HOOK is None:
-        return
-    try:
-        res = _PAD_ORDER_HOOK(action)
-        if asyncio.iscoroutine(res):
-            asyncio.create_task(res)
-    except Exception as exc:
-        print(f"[DeckMeido] 手柄换序通知失败：{exc!r}", file=sys.stderr)
-
 
 class _VirtualPad:
     """一个懒创建、用完立刻销毁的虚拟手柄。
@@ -2694,8 +2666,6 @@ class _VirtualPad:
         self._lock = asyncio.Lock()
         self._idle: asyncio.Task | None = None
         self._gen = 0
-        # 本次建出来的设备有没有被换到 1P（决定销毁时要不要广播 revert）
-        self._swapped = False
 
     def _emit(self, typ: int, code: int, value: int):
         # input_event 的 timeval 两个字段都是 64 位 long，所以用 qq 不用 ll
@@ -2771,13 +2741,6 @@ class _VirtualPad:
         _PAD_STICK_R[0] = _PAD_STICK_R[1] = 0
         _PAD_TRIG["lt"] = _PAD_TRIG["rt"] = 0
         print("[DeckMeido] 虚拟手柄已销毁")
-        # 虚拟手柄没了，槽位会自动前移，但 Steam 的排序不一定跟着回；
-        # 让前端确认一遍物理手柄仍在 1P，免得下次开机游戏认不到手柄。
-        # 只有真换过 1P 才通知：一次按键建了又删，每次都广播会让 Steam
-        # 的控制器列表反复抖动，虚拟键盘的按键也跟着错位
-        if self._swapped:
-            self._swapped = False
-            _notify_pad_order("revert")
 
     def _touch(self):
         if self._idle is not None:
@@ -2815,11 +2778,8 @@ class _VirtualPad:
         for code in (_ABS_X, _ABS_Y, _ABS_RX, _ABS_RY, _ABS_Z, _ABS_RZ):
             self._emit(_EV_ABS, code, 0)
         self._syn()
-        # 设备刚出现时 Steam 才把它枚举进去，换序要再等一会儿才有东西可换
-        # （前端那边也有重试，这里只是别让它第一次必然扑空）
+        # 设备刚出现时 Steam 才把它枚举进去，等一会儿再按，别让第一次必然扑空
         await asyncio.sleep(0.3)
-        self._swapped = True
-        _notify_pad_order("to1p")
 
     async def key(self, name: str, hold_ms: int = 80) -> str:
         code = _PAD_KEYS.get(name)
@@ -2901,20 +2861,6 @@ class _VirtualPad:
 
 
 _PAD = _VirtualPad()
-
-
-def pad_available() -> tuple[bool, str]:
-    """后端这一侧能不能操作虚拟手柄（只看权限，不真的建设备）。
-
-    插件以 root 跑，它看到的是自己的权限；真正写 /dev/uinput 的是后端进程，
-    所以状态页必须以这里的判断为准，否则会出现「面板说可用、AI 一按就报没权限」。
-    不实际创建设备：那会让 Steam 误以为接了手柄，留下一个空设备。
-    """
-    if not os.path.exists("/dev/uinput"):
-        return False, "未加载 uinput 内核模块（没有 /dev/uinput）"
-    if not os.access("/dev/uinput", os.W_OK):
-        return False, "后端进程没有写 /dev/uinput 的权限（需要 root 或 udev 规则）"
-    return True, ""
 
 
 async def _gamepad(action: str, button: str = "", ms: int = 0,

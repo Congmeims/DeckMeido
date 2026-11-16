@@ -1793,20 +1793,6 @@ async def _broadcast_remote_input(state: dict):
 remote_input.manager.set_hook(_broadcast_remote_input)
 
 
-async def _broadcast_pad_order(action: str):
-    """虚拟手柄建好/销毁时喊 QAM 插件去换 Steam 的控制器排序
-
-    排序状态只在 Steam 进程内存里，只能在 Steam 页面上下文里调
-    SteamClient.Input.SwapControllerOrder，所以真正干活的是插件前端；
-    这里只要把消息广播出去（插件后端收到后再转给它自己的前端）。
-    """
-    n = len(manager.active)
-    print(f"[DeckMeido] 广播手柄换序 {action} → {n} 个客户端")
-    await manager.broadcast({"type": "pad_order", "action": action})
-
-
-tools.set_pad_order_hook(_broadcast_pad_order)
-
 # ---------- 认证 ----------
 
 
@@ -1933,8 +1919,6 @@ def get_status(gaming: bool | None = None) -> dict:
     win = context_window()
     used = _ctx_used or _cached_estimate()
     pct = round(min(used / win, 1.0) * 100, 1) if win else 0
-    # 虚拟手柄的可用性由后端自己判断（插件是 root，权限和这里不一样）
-    gamepad_ok, gamepad_reason = tools.pad_available()
     # 按游戏提示词预设：游戏是哪款由插件探测后上报，后端不再重复实现一套探测
     preset_state = presets.active_view()
     return {
@@ -1985,9 +1969,6 @@ def get_status(gaming: bool | None = None) -> dict:
         "security_note": _security_note(),
         "pending_pair": len(pairing.manager.pending()),
         "lan_enable": netcfg.lan_enabled(CFG.get("server") or {}),
-        # 虚拟手柄能不能用（后端视角）：给插件/大屏透传，避免靠 root 权限误判
-        "gamepad_ok": gamepad_ok,
-        "gamepad_reason": gamepad_reason,
         # 语音合成实际用哪个引擎、为什么降级：tts_engine / tts_ready / tts_error
         **tts.summary(),
         # 各端共用的偏好项（审批模式、带画面、语音输入等）：面板/大屏只轮询

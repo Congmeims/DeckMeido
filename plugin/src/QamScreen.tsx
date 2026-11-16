@@ -13,7 +13,6 @@ import {
 import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, MessageContent, TEXT, ThoughtRow, copyText } from "./ui";
 import { statusLineFor } from "./statusLine";
 import { bumpOnce, stepTab } from "./tabNav";
-import { applyPadOrder, steamClient } from "./padOrder";
 import { useVoiceInput } from "./useVoiceInput";
 import {
   BIG_SCREEN_ROUTE,
@@ -46,6 +45,12 @@ const INPUT_H = 32;
 const GAP = 8;
 
 const TABS = ["询问", "聊天", "设置"] as const;
+
+/** Steam 页面里的 SteamClient（插件后端够不着，只有跑在页面里的 JS 能调） */
+function steamClient(): any {
+  const w = window as any;
+  return w.SteamClient || w.SP?.SteamClient || null;
+}
 
 const TITLE = "#eaf2fb";
 /** 配对结果色：允许走绿、拒绝/失败走琥珀，与卡片现有配色同一套 */
@@ -1157,10 +1162,6 @@ function useQamSession() {
         setItems(msg.items);
         return;
       }
-      if (msg.kind === "pad_order") {
-        if (msg.action === "to1p" || msg.action === "revert") applyPadOrder(msg.action);
-        return;
-      }
       if (msg.kind === "status") {
         if (msg.running && !busyRef.current) {
           // 面板收起期间由别的入口发起：重开后接着显示这轮状态
@@ -1191,7 +1192,7 @@ function useQamSession() {
       if (msg.kind === "delta") {
         curRef.current += msg.text;
         flushAssistant();
-      } else {
+      } else if (msg.kind === "final") {
         curRef.current = msg.text;
         finishTurn(msg.cancelled);
       }

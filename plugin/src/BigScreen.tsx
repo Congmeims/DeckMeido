@@ -1373,18 +1373,6 @@ export default function BigScreen() {
               />
               <StatRow label="设备地址" value={s.status ? `${s.status.ip}:${s.status.port}` : "—"} />
               <StatRow
-                label="虚拟手柄"
-                value={
-                  !s.status
-                    ? "未知"
-                    : s.status.gamepad_ok === true
-                      ? "可用"
-                      : s.status.gamepad_ok === false
-                        ? `不可用${s.status.gamepad_reason ? `（${s.status.gamepad_reason}）` : ""}`
-                        : "未知（后端未上报）"
-                }
-              />
-              <StatRow
                 label="更新检测"
                 value={
                   !s.status

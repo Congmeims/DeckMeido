@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { addEventListener, call, removeEventListener } from "@decky/api";
 import { Navigation } from "@decky/ui";
-import { applyPadOrder } from "./padOrder";
 
 /** 大屏路由页地址：index.tsx 注册路由、这里截图后导航回来，只能有这一份 */
 export const BIG_SCREEN_ROUTE = "/deckmeido";
@@ -33,9 +32,6 @@ export type Status = {
   // 用户点过「关闭核心」且没再点「启动核心」：显示「已停止」并禁用重启核心
   core_stopped: boolean;
   workspace: string;
-  // 虚拟手柄可用性由后端判断：true/false 为后端结论，null = 后端没上报（显示「未知」）
-  gamepad_ok: boolean | null;
-  gamepad_reason?: string;
   tts: boolean;
   // 带画面询问：后端 [agent] with_shot，面板重开后按它恢复
   with_shot: boolean;
@@ -159,7 +155,6 @@ export type Delta =
   | { kind: "final"; text: string; cancelled?: boolean }
   | { kind: "tool"; text: string }
   | { kind: "status"; running: boolean; since?: number }
-  | { kind: "pad_order"; action: "to1p" | "revert" }
   // 别的端（网页/客户端）改了设置：prefs 是后端当时的偏好快照，前端据此重拉
   | { kind: "config_changed"; prefs?: Record<string, unknown> }
   | { kind: "thread"; items: Item[] };
@@ -901,10 +896,6 @@ export function useSession() {
     const onDelta = (msg: Delta) => {
       if (msg.kind === "thread") {
         setItems(msg.items);
-        return;
-      }
-      if (msg.kind === "pad_order") {
-        void applyPadOrder(msg.action);
         return;
       }
       if (msg.kind === "config_changed") {

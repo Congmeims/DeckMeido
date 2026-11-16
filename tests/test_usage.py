@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
 import httpx  # noqa: E402
 
 if not hasattr(httpx, "MockTransport"):
-    # test_shot_plugin / test_gamepad_status 在 Windows 上会往 sys.modules 塞占位 httpx；
+    # test_shot_plugin 在 Windows 上会往 sys.modules 塞占位 httpx；
     # 按 discover 的字母序它们先执行，这里换回真正的包，否则 MockTransport 不存在
     sys.modules.pop("httpx", None)
     import httpx  # noqa: F811
