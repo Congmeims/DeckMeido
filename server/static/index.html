@@ -2626,6 +2626,42 @@
   // 关掉 = 保留用户当前的滚动位置，新命令只亮一下未读角标，不把他拽走。
   var termFollow = { on: true, unread: 0 };
 
+  // 文件页和终端页的两个跟随开关共用同一份状态（dm.follow）：
+  // 两边本来就是「AI 动手时要不要把我拽过去」的同一个意图，分开存会出现
+  // 一边开着一边关着、看着矛盾的状态。任一页点开关，两边一起变
+  function aiFollowApply(on, save) {
+    termFollow.on = on;
+    fbTrack.on = on;
+    termFollow.unread = 0;
+    if (save) {
+      try { localStorage.setItem('dm.follow', on ? '1' : '0'); } catch (e) {}
+      try { localStorage.removeItem('dm.termFollow'); } catch (e) {}
+      try { localStorage.removeItem('dm.fbTrack'); } catch (e) {}
+    }
+    if (on) {
+      // 刚打开跟随：立刻对齐到 AI 当前的位置，不用等它下一次动手
+      var l = rbEl('termList');
+      if (l) l.scrollTop = l.scrollHeight;
+      if (typeof fbTrackFollowStart === 'function') fbTrackFollowStart();
+    }
+    termAiRender();
+    if (typeof fbTrackRender === 'function') fbTrackRender();
+  }
+
+  function aiFollowInit() {
+    var saved = null;
+    try {
+      saved = localStorage.getItem('dm.follow');
+      // 旧版本两个键各存各的：只要有一边是关的就按关处理，不擅自把用户关掉的打开
+      if (saved === null) {
+        var a = localStorage.getItem('dm.termFollow');
+        var b = localStorage.getItem('dm.fbTrack');
+        if (a === '0' || b === '0') saved = '0';
+      }
+    } catch (e) {}
+    if (saved === '0') { termFollow.on = false; fbTrack.on = false; }
+  }
+
   function termAiRender() {
     var dot = rbEl('termAiDot'), txt = rbEl('termAiText'), btn = rbEl('termFollow');
     if (!dot || !txt || !btn) return;
@@ -2666,22 +2702,11 @@
   }
 
   function termFollowToggle() {
-    termFollow.on = !termFollow.on;
-    try { localStorage.setItem('dm.termFollow', termFollow.on ? '1' : '0'); } catch (e) {}
-    termFollow.unread = 0;
-    if (termFollow.on) {
-      // 重新跟随：立刻跳到最新一条，之后继续跟着
-      var l = rbEl('termList');
-      if (l) l.scrollTop = l.scrollHeight;
-    }
-    termAiRender();
+    aiFollowApply(!termFollow.on, true);
   }
 
   (function () {
-    try {
-      var saved = localStorage.getItem('dm.termFollow');
-      if (saved === '0') termFollow.on = false;
-    } catch (e) {}
+    aiFollowInit();
     var btn = rbEl('termFollow');
     if (btn) btn.addEventListener('click', termFollowToggle);
     termAiRender();
@@ -3009,9 +3034,9 @@
     rbShowTab(tab);
   }
 
-  // 跟随开关：文件页和终端页各一个，默认都开（和旧版终端页一致）。
+  // 跟随开关：文件页和终端页各有一个按钮，但共用同一份状态（dm.follow）。
   // 文件页那个管「AI 动手时自动切页 + 停在它所在的目录」，
-  // 终端页那个只管「新命令来了要不要把列表滚到底」。
+  // 终端页那个只管「新命令来了要不要把列表滚到底」，开关本身是同一个。
   var fbTrack = { on: true };
 
   function rbPaneAnimate(pane, dir) {
@@ -4885,24 +4910,20 @@
   }
 
   function fbTrackToggle() {
-    fbTrack.on = !fbTrack.on;
-    try { localStorage.setItem('dm.fbTrack', fbTrack.on ? '1' : '0'); } catch (e) {}
-    fbTrackRender();
-    // 刚打开跟随：立刻对齐到 AI 当前所在的位置，不用等它下一次动手
-    if (fbTrack.on) {
-      fb.follow = true;
-      rbEl('fbFollow').classList.remove('show');
-      if (fb.aiPath) fbFocusAi(fb.aiPath, fb.aiIsDir);
-    }
+    aiFollowApply(!fbTrack.on, true);
+  }
+
+  // 跟随刚打开时要做的对齐（由 aiFollowApply 在开启时调用）
+  function fbTrackFollowStart() {
+    fb.follow = true;
+    rbEl('fbFollow').classList.remove('show');
+    if (fb.aiPath) fbFocusAi(fb.aiPath, fb.aiIsDir);
   }
 
   (function () {
-    try {
-      var saved = localStorage.getItem('dm.fbTrack');
-      if (saved === '0') fbTrack.on = false;
-    } catch (e) {}
     var btn = rbEl('fbAiFollow');
     if (btn) btn.addEventListener('click', fbTrackToggle);
+    // 状态已由上面的 aiFollowInit 读好，这里只画一次按钮，不重复读存储
     fbTrackRender();
   })();
 
@@ -14015,7 +14036,7 @@
         syncQqSessButton();
         sessList.innerHTML = '';
         if (!(d.items || []).length) {
-          sessSkeleton('还没有会话，点右上角「＋」开始一个');
+          sessSkeleton('暂无会话');
           return;
         }
         var curTitle = '';
