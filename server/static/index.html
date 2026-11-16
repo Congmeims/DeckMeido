@@ -13444,9 +13444,18 @@
     var fd = new FormData();
     fd.append('file', file);
     return apiFetch('/api/upload', { method: 'POST', body: fd })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        // 后端会以 413/400 说明原因（超过 20MB、读不出内容），照原话提示，
+        // 不然用户只看到「上传失败」不知道是自己那张图太大
+        if (!r.ok) {
+          return r.json().catch(function () { return {}; }).then(function (j) {
+            throw new Error((j && j.detail) || ('HTTP ' + r.status));
+          });
+        }
+        return r.json();
+      })
       .then(function (res) {
-        if (!res || (!res.url && !res.path)) throw new Error('bad response');
+        if (!res || (!res.url && !res.path)) throw new Error('响应里没有文件地址');
         return res;
       });
   }
@@ -13523,8 +13532,8 @@
         return uploadOne(f).then(function (res) {
           pendingAttach.push(attachMark(res, f.name));
           renderAttach();
-        }).catch(function () {
-          addSystem('上传失败：' + f.name);
+        }).catch(function (err) {
+          addSystem('上传失败：' + f.name + (err && err.message ? '（' + err.message + '）' : ''));
         });
       });
     });

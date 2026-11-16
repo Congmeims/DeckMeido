@@ -3421,7 +3421,8 @@ async def _list_dir(path: str = "") -> str:
 
 
 # 图片扩展名：read_file 等文本工具据此识别「不该当文本读」的文件
-_IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".avif", ".ico"}
+_IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".avif", ".ico",
+            ".heic", ".heif", ".tif", ".tiff"}
 
 
 async def _read_file(path: str, offset: int = 1, limit: int = 400) -> str:

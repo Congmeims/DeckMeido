@@ -535,6 +535,78 @@ _HIST_IMG_KEEP = 2
 # 一张游戏画面就有 1.8MB（base64 之后 240 万字符），稳稳越过上限被换成占位符。
 # 而压到 1024 宽 q75 只有 160KB，看图问答根本看不出差别，所以统一在这里压一遍
 _IMG_SOFT_BYTES = 300_000
+# 能直接塞给模型的格式。其它格式（AVIF/HEIF/BMP/TIFF/ICO/SVG…）上游网关多半不认，
+# 而浏览器也常有解不了的，统一先用 PIL 转成 JPEG 再发
+_LLM_IMG_MIME = {"png": "png", "jpg": "jpeg", "jpeg": "jpeg", "webp": "webp", "gif": "gif"}
+
+
+def _IMG_MAGIC(blob: bytes) -> str:
+    """按文件头认图片格式，认不出返回空串
+
+    粘贴/拖进来的文件常常没有扩展名，或者扩展名和内容对不上（png 改名 jpg），
+    只信后缀会把 data:image/xxx 写错，模型端直接 400。
+    """
+    if blob[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if blob[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if blob[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
+        return "webp"
+    if blob[:2] == b"BM":
+        return "bmp"
+    if blob[:4] in (b"II*\x00", b"MM\x00*"):
+        return "tiff"
+    if blob[:4] == b"\x00\x00\x01\x00":
+        return "ico"
+    if blob[4:12] in (b"ftypavif", b"ftypavis"):
+        return "avif"
+    if blob[4:8] == b"ftyp":
+        return "heic"
+    return ""
+
+
+def _image_part(blob: bytes, suffix: str = "") -> dict | None:
+    """把一份图片字节变成多模态 image_url 部件
+
+    统一在这里做三件事：认格式（不靠扩展名猜，改看文件头）、超过软门槛压成 JPEG、
+    上游不认的格式（AVIF/HEIF/BMP/TIFF/ICO…）转成 JPEG。
+    返回值直接可塞进 content 列表；真读不出来（损坏、PIL 没装）返回 None。
+    """
+    if not blob:
+        return None
+    magic = _IMG_MAGIC(blob)          # 文件头认出的格式，认不出为空
+    declared = (suffix or "").lower().lstrip(".").replace("jpg", "jpeg")
+    # 文件头优先：粘贴进来的图常常没有扩展名，或者扩展名和内容对不上
+    fmt = magic or declared
+    # PNG/JPEG/WEBP/GIF 原样发；其余（AVIF/HEIF/BMP/TIFF/ICO…）先转 JPEG
+    native = fmt in _LLM_IMG_MIME
+    if native and not magic:
+        # 扩展名说认得、文件头却认不出：多半是损坏或假扩展名，发出去上游会 400
+        return None
+    oversize = len(blob) > _IMG_SOFT_BYTES
+    # 格式不原生、或图太大（历史重发时省流量）都过一次 JPEG 转码
+    if not native or oversize:
+        packed = _jpeg_for_llm(blob)
+        if packed is not blob:
+            return {"type": "image_url",
+                    "image_url": {"url": "data:image/jpeg;base64,"
+                                         + base64.b64encode(packed).decode()}}
+        # 压不小（小图转 JPEG 反而更大）→ 原生格式原样发；不原生只能放弃
+        if not native:
+            return None
+    return {"type": "image_url",
+            "image_url": {"url": f"data:image/{fmt};base64,{base64.b64encode(blob).decode()}"}}
+
+
+def _read_image_part(fp: Path) -> dict | None:
+    """按路径读一张图并转成 image_url 部件（上传图片 / 工作区引用图片共用）"""
+    try:
+        blob = fp.read_bytes()
+    except OSError:
+        return None
+    return _image_part(blob, fp.suffix)
 
 
 def _shrink_oversized_images(content):
@@ -1447,7 +1519,9 @@ def clear_stream(sid: str = "") -> None:
     session_store.io_submit(_job)
 
 
-_UPLOAD_RE = re.compile(r"!\[[^\]]*\]\((/uploads/[^\s)]+\.(?:png|jpe?g|webp))\)", re.I)
+_UPLOAD_RE = re.compile(
+    r"!\[[^\]]*\]\((/uploads/[^\s)]+?\.(?:png|jpe?g|webp|gif|bmp|avif|heic|heif|tiff?|ico))\)",
+    re.I)
 # 随提问附带、已经落成本地文件的画面：文字里留一行标记，发给模型时按文件现读现编码。
 # 历史里因此不再躺着几 MB 的 base64 —— 那是最容易被裁掉的东西，一裁图就没了
 _SHOT_REF_RE = re.compile(r"\[SHOT:([^\]\s]+)\]")
@@ -1463,19 +1537,26 @@ def _shot_ref_path(name: str) -> Path | None:
 
 
 def _to_vision_content(text: str):
-    """消息里含上传图片引用时转成多模态 content（供 vision 模型看图）"""
+    """消息里含上传图片引用时转成多模态 content（供 vision 模型看图）
+
+    上传的图落在 userdata/uploads/，由 /uploads 静态挂载给浏览器看；
+    不能拿 STATIC_DIR 去拼，否则文件永远找不到、模型只收到一行「![图片](...)」。
+    格式不做限制：AVIF/HEIF/BMP 这类上游不认的，在 _read_image_part 里转成 JPEG。
+    """
     matches = _UPLOAD_RE.findall(text)
     if not matches:
         return text
     parts = []
     for url in matches:
-        fp = STATIC_DIR / url.lstrip("/")
+        fp = paths.uploads_dir() / Path(url).name
         if not fp.is_file():
+            devlog.log("upload_missing", path=url)
             continue
-        import base64
-        ext = "jpeg" if fp.suffix.lower() in (".jpg", ".jpeg") else fp.suffix.lstrip(".").lower()
-        b64 = base64.b64encode(fp.read_bytes()).decode()
-        parts.append({"type": "image_url", "image_url": {"url": f"data:image/{ext};base64,{b64}"}})
+        part = _read_image_part(fp)
+        if not part:
+            devlog.log("upload_unreadable", path=url)
+            continue
+        parts.append(part)
     if not parts:
         return text
     parts.append({"type": "text", "text": _UPLOAD_RE.sub("[图片]", text)})
@@ -1558,10 +1639,11 @@ def _img_ref_content(text: str):
             continue
         if not fp.is_file():
             continue
-        ext = "jpeg" if fp.suffix.lower() in (".jpg", ".jpeg") else fp.suffix.lstrip(".").lower()
-        b64 = base64.b64encode(fp.read_bytes()).decode()
-        parts.append({"type": "image_url",
-                      "image_url": {"url": f"data:image/{ext};base64,{b64}"}})
+        part = _read_image_part(fp)
+        if not part:
+            devlog.log("img_ref_unreadable", path=str(fp))
+            continue
+        parts.append(part)
     if not parts:
         return None
     # 标记本身换成占位符留在正文，模型知道这段文字对应那张图
@@ -2281,6 +2363,7 @@ def _jpeg_for_llm(blob: bytes, max_side: int = 1024, quality: int = 75) -> bytes
     「图片太大已略过」—— 模型只看到这句话，于是让用户重发，用户看到的就是
     「插件截的图传不上来」。而 PC 网页上传的小图没这个问题，所以只有插件中招。
     压到 1024 宽 q75 只有 160KB，看图问答看不出差别，重发历史也安全。
+    另一个用途：AVIF/HEIF/BMP/TIFF 这类上游网关不认的格式，也借这里转成 JPEG。
     压不动就原样返回，交给原来的保护逻辑兜底。
     """
     try:
@@ -2293,7 +2376,8 @@ def _jpeg_for_llm(blob: bytes, max_side: int = 1024, quality: int = 75) -> bytes
         buf = BytesIO()
         img.convert("RGB").save(buf, "JPEG", quality=quality, optimize=True)
         out = buf.getvalue()
-        # 压完反而更大（本来就小的图）就保留原样
+        # 压完反而更大（本来就小的图）就保留原样；转码格式时不能走这条路，
+        # 所以调用方拿返回值是否 is 原字节判断「转码失败」
         return out if len(out) < len(blob) else blob
     except Exception:
         return blob
@@ -2379,7 +2463,11 @@ def _expand_context(text: str, workspace: Path | None = None) -> str:
     return _CTX_RE.sub(repl, text) if "@{" in text else text
 
 
-_IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+# 按图片处理的扩展名：常见格式一律进 uploads 直接给模型看。
+# avif/heif 在 Deck 的浏览器里常解不了，但 PIL 能转，所以也收；
+# bmp/tiff/ico 同理。svg 不在此列（是文本/脚本，走工作区引用）
+_IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp",
+            ".avif", ".heic", ".heif", ".tif", ".tiff", ".ico"}
 _TEXT_EXT = {".txt", ".md", ".py", ".js", ".ts", ".json", ".csv", ".log", ".sh",
              ".yml", ".yaml", ".toml", ".ini", ".cfg", ".xml", ".html", ".css",
              ".c", ".h", ".cpp", ".rs", ".go", ".java", ".sql", ".conf"}
@@ -2479,7 +2567,7 @@ async def _extract_text(raw: bytes, ext: str):
 async def api_upload(file: UploadFile):
     """上传附件。
 
-    图片 → static/uploads/，返回 /uploads/xxx.png，前端插成 ![图片](url) 走多模态；
+    图片 → userdata/uploads/，返回 /uploads/xxx.png，前端插成 ![图片](url) 走多模态；
     其他文件 → 工作区 uploads/，返回相对工作区的路径，前端插成 @{uploads/xxx}，
     由 _expand_context 带上正文（文本类直接读，docx/pdf 现抽文字）。
     """
@@ -2655,7 +2743,8 @@ async def api_files():
 # 文件浏览器预览用的分类。只影响面板里显示什么图标、用哪种方式预览，
 # 和「能不能读」无关，所以放成白名单也无所谓
 _KIND_MAP = {
-    "image": {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif", ".ico"},
+    "image": {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif", ".ico",
+              ".heic", ".heif", ".tif", ".tiff"},
     "video": {".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi", ".ogv"},
     "audio": {".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".opus", ".oga"},
     "pdf": {".pdf"},
