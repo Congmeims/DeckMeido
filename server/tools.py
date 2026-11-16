@@ -43,6 +43,7 @@ TOOL_CN: dict[str, str] = {
     "screenshot": "截取屏幕",
     "list_dir": "查看目录",
     "read_file": "读取文件",
+    "ocr_image": "识别图片文字",
     "write_file": "写入文件",
     "edit_file": "编辑文件",
     "self_update": "更新软件",
@@ -315,6 +316,23 @@ TOOLS: list[dict] = [
                     "path": {"type": "string", "description": "文件路径"},
                     "offset": {"type": "integer", "description": "起始行号，默认 1"},
                     "limit": {"type": "integer", "description": "读取行数，默认 400"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ocr_image",
+            "description": ("用本机离线 OCR 识别图片里的文字（中日英混排都支持）。"
+                            "适合：用户给了图片路径想翻译/摘录文字、"
+                            "或当前模型看不到图但需要图里的字。"
+                            "只返回文字，不描述画面"),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "图片路径"},
                 },
                 "required": ["path"],
             },
@@ -796,7 +814,7 @@ CUSTOM_LABELS = {
 }
 
 _FILE_WRITE_TOOLS = {"write_file", "edit_file"}
-_FILE_READ_TOOLS = {"read_file", "list_dir"}
+_FILE_READ_TOOLS = {"read_file", "list_dir", "ocr_image"}
 _NET_TOOLS = {"web_search", "get_weather", "find_game"}
 
 
@@ -2117,6 +2135,9 @@ def summarize_tool(name: str, args: dict) -> str:
         return f"「{args.get('name', '')}」"
     if name == "install_game":
         return f"「{args.get('appid', '')}」"
+    if name == "ocr_image":
+        p = str(args.get("path", ""))
+        return p if len(p) <= 80 else "…" + p[-79:]
     if name == "desktop":
         act = args.get("action", "")
         if act == "focus":
@@ -3438,7 +3459,8 @@ async def _read_file(path: str, offset: int = 1, limit: int = 400) -> str:
     head = p.read_bytes()[:8192]
     if b"\x00" in head or p.suffix.lower() in _IMG_EXT:
         return (f"{p} 是二进制或图片文件，不能用文本方式读取。"
-                f"图片请用截图工具或 @{{{p.name}}} 引用；"
+                f"图片想取里面的文字就用 ocr_image 工具；"
+                f"只看画面请用截图工具或 @{{{p.name}}} 引用；"
                 f"其他二进制文件可用 run_command 的 file/xxd/strings 查看片段。")
     lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
     offset = max(1, offset)
@@ -3446,6 +3468,32 @@ async def _read_file(path: str, offset: int = 1, limit: int = 400) -> str:
     body = "\n".join(f"{offset + i}→{line}" for i, line in enumerate(chunk))
     note = f"（共 {len(lines)} 行，显示 {offset}-{offset - 1 + len(chunk)}）"
     return f"{p} {note}\n{body}"
+
+
+async def _ocr_image(path: str) -> str:
+    """本机离线 OCR：把图片里的文字取出来交给模型
+
+    模型自己看不了图（纯文本模型）或需要精确保留原文时用它；
+    只返回文字，不描述画面。
+    """
+    from . import ocr as ocr_mod
+
+    p = resolve_in_workspace(path)
+    if not p.is_file():
+        return f"图片不存在：{p}"
+    probe = ocr_mod.available()
+    if not probe["ok"]:
+        return ("离线 OCR 组件没安装，暂时无法识别图片文字。"
+                "可以告诉用户「设置页 → 语音引擎下方安装离线 OCR」，"
+                f"或直接运行 pip install -r requirements-ocr.txt（原因：{probe['reason']}）")
+    try:
+        # 识别是 CPU 密集的同步调用（约 1 秒），丢线程池免得堵住事件循环
+        text = await asyncio.to_thread(ocr_mod.OCR_ENGINE.recognize, p)
+    except Exception as exc:
+        return f"识别失败：{str(exc)[:200]}"
+    if not text.strip():
+        return f"{p} 里没有识别到文字（可能是纯画面、没有文字，或字号太小）。"
+    return f"{p} 的文字识别结果（{len(text)} 字）：\n{text}"
 
 
 def _atomic_write(p: Path, text: str) -> None:
@@ -3636,6 +3684,7 @@ EXECUTORS = {
     "screenshot": _screenshot,
     "list_dir": _list_dir,
     "read_file": _read_file,
+    "ocr_image": _ocr_image,
     "write_file": _write_file,
     "edit_file": _edit_file,
     "self_update": _self_update,
@@ -3655,7 +3704,7 @@ _OUTBOUND_TOOLS = {"get_weather", "web_search", "find_game", "self_update"}
 _NO_KEEP_AWAKE = {
     "get_weather", "web_search", "find_game", "list_installed_games",
     "list_emulator_roms", "check_system_updates", "screenshot", "remember",
-    "music_search", "music_play", "music_control", "task_status",
+    "music_search", "music_play", "music_control", "task_status", "ocr_image",
 }
 
 
@@ -3670,6 +3719,8 @@ _TOOL_TIMEOUT = {
     "list_installed_games": 60, "list_emulator_roms": 30,
     "check_system_updates": 60, "screenshot": 45, "task_status": 10,
     "read_file": 30, "write_file": 30, "edit_file": 30, "list_dir": 30,
+    # 首次调用要加载 30MB 模型，Deck 上约 1 秒识别，给足余量
+    "ocr_image": 90,
     # 曲库搜索/开播各有一次 RPC 超时（6 秒）兜底，再加回读确认
     "music_search": 30, "music_play": 40, "music_control": 20,
 }

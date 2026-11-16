@@ -661,7 +661,7 @@ write_install_records() {
     done < <(cd "$INSTALL_DIR/server" && find . -type f \
       ! -path './userdata/*' -printf '%P\n' 2>/dev/null)
   fi
-  for it in requirements.txt requirements-gui.txt requirements-stt.txt requirements-tts.txt README.md install.sh RELEASE-NOTES.md VERSION uninstall.sh pip-install.log; do
+  for it in requirements.txt requirements-gui.txt requirements-stt.txt requirements-tts.txt requirements-ocr.txt README.md install.sh RELEASE-NOTES.md VERSION uninstall.sh pip-install.log; do
     [ -f "$INSTALL_DIR/$it" ] && printf '%s\tpreexisting=0\n' "$it" >> "$tmp"
   done
   for it in "$DESKTOP_DIR/DeckMeido.desktop" "$DESKTOP_FOLDER/DeckMeido.desktop"; do
@@ -938,6 +938,7 @@ DEP_TABLE=(
   "stt_mod|语音输入运行库（sherpa-onnx）|60"
   "tts_mod|语音合成运行库（piper-plus）|120"
   "wake_mod|唤醒词分词依赖（sentencepiece / pypinyin）|30"
+  "ocr_mod|离线 OCR 运行库与模型（RapidOCR / PP-OCR）|90"
   "sys|系统控件（ydotool / wtype / kdotool 等）|60"
   "stt_model|语音识别模型（SenseVoice）|250"
   "tts_model|语音合成模型（つくよみちゃん）|38"
@@ -1597,6 +1598,12 @@ optional_downloads() {
     "$(mb_text "$(( $(dep_mb stt_mod) + $(dep_mb stt_model) ))")" \
     "$(have_py_module "$py" sherpa_onnx && [ -f "$stt_model" ] && echo "运行库与模型齐全" || true)" || true
   export DECKMEIDO_INSTALL_STT=1
+
+  # 3b. 离线 OCR（RapidOCR + PP-OCR 模型，中日英）
+  opt_download "离线 OCR" "识别图片里的中日英文字（纯文本模型、图片读不出时兜底）" \
+    "$(mb_text "$(dep_mb ocr_mod)")" \
+    "$(have_py_module "$py" rapidocr && echo "运行库与模型已就位" || true)" || true
+  export DECKMEIDO_INSTALL_OCR=1
 
   # 4. 语音合成（piper-plus + つくよみちゃん模型）
   local tts_model="$DATA_MODELS/tts/tsukuyomi/tsukuyomi-chan-6lang-fp16.onnx"
@@ -2316,7 +2323,7 @@ sync_files() {
     info "安装到 $INSTALL_DIR"
   fi
   mkdir -p "$INSTALL_DIR"
-  local items=(server client assets deploy tools plugin vendor requirements.txt requirements-gui.txt requirements-stt.txt requirements-tts.txt README.md install.sh)
+  local items=(server client assets deploy tools plugin vendor requirements.txt requirements-gui.txt requirements-stt.txt requirements-tts.txt requirements-ocr.txt README.md install.sh)
   # RELEASE-NOTES.md 只在发布包里存在，有就一起带上，方便用户在安装目录里查更新内容
   [ -f "$HERE/RELEASE-NOTES.md" ] && items+=(RELEASE-NOTES.md)
   # git clone 出来的源码里没有 plugin/dist/（插件自己的 .gitignore 排除），
@@ -2573,6 +2580,29 @@ install_stt_deps() {
     return 0
   fi
   phase_fail "安装" "语音输入依赖未装上，重跑 install.sh 可补装"
+  return 0
+}
+
+# 离线 OCR 依赖（RapidOCR + PP-OCR 模型）。$1 python，$2 起始源下标。
+# 模型随 pip 包一起下载到 site-packages/rapidocr/models，不需要 Docker。
+install_ocr_deps() {
+  local py="$1" start="${2:-0}"
+  [ -x "$py" ] || return 0
+  if have_py_module "$py" rapidocr; then
+    phase_skip "安装" "离线 OCR 已装（rapidocr）"
+    return 0
+  fi
+  case "${DECKMEIDO_INSTALL_OCR:-1}" in
+    1|yes|on|true) ;;
+    *)
+      phase_skip "安装" "离线 OCR（DECKMEIDO_INSTALL_OCR=${DECKMEIDO_INSTALL_OCR}）"
+      return 0 ;;
+  esac
+  if pip_install_with_switch "$py" requirements-ocr.txt "离线 OCR 依赖（RapidOCR）" "$start"; then
+    have_py_module "$py" rapidocr || phase_fail "复查" "rapidocr 装上了但导入失败"
+    return 0
+  fi
+  phase_fail "安装" "离线 OCR 依赖未装上，重跑 install.sh 可补装"
   return 0
 }
 
@@ -2953,6 +2983,11 @@ venv_install() {
     return 0
   fi
 
+  if [ "$only_gui" = "ocr" ]; then
+    install_ocr_deps "$py" "$start"
+    return 0
+  fi
+
   if [ "$only_gui" != "gui" ]; then
     if [ "${DECKMEIDO_SKIP_SERVER:-0}" = "1" ]; then
       phase_skip "安装" "服务端依赖（DECKMEIDO_SKIP_SERVER=1）"
@@ -2967,6 +3002,8 @@ venv_install() {
     install_stt_deps "$py" "$start"
     # 语音合成同理，且会先检查 Python 3.11+ 再决定是否安装
     install_tts_deps "$py" "$start"
+    # 离线 OCR：可选，缺了只是图片文字识别退回模型自己看
+    install_ocr_deps "$py" "$start"
   fi
 
   if [ -n "${DECKMEIDO_SKIP_GUI:-}" ]; then
@@ -3028,6 +3065,7 @@ _py_dep_check() {
     have_py_module "$py" sentencepiece || _missing+=("sentencepiece")
     have_py_module "$py" pypinyin || _missing+=("pypinyin")
   }
+  [ "${DECKMEIDO_OCR_MODE:-install}" = "install" ] && { have_py_module "$py" rapidocr || _missing+=("rapidocr"); }
   [ "${DECKMEIDO_SKIP_GUI:-0}" != "1" ] && { have_py_module "$py" PySide6 || _missing+=("PySide6"); }
   return 0
 }
@@ -4802,6 +4840,7 @@ do_install() {
   export DECKMEIDO_STT_MODE=$([ "${DECKMEIDO_INSTALL_STT:-1}" = "1" ] && echo install || echo skip)
   export DECKMEIDO_TTS_MODE=$([ "${DECKMEIDO_INSTALL_TTS:-1}" = "1" ] && echo install || echo skip)
   export DECKMEIDO_WAKE_MODE=$([ "${DECKMEIDO_INSTALL_SPEAKER:-1}" = "1" ] && echo install || echo skip)
+  export DECKMEIDO_OCR_MODE=$([ "${DECKMEIDO_INSTALL_OCR:-1}" = "1" ] && echo install || echo skip)
   # 系统控件同时受命令行开关与逐项勾选约束，两者取「都同意才装」
   [ "${DECKMEIDO_INSTALL_DEPS:-1}" = "1" ] || deps=""
   STEP_QUIET=1
@@ -4815,7 +4854,7 @@ do_install() {
   step_ok "安装目录 $INSTALL_DIR，端口 $PORT"
   # 容量预估：把本次要占多少、每项多少先说清楚，再动手。
   # 只算真正会装的模块——未勾选的项不会下载，报了反而让人以为非要那么大空间。
-  plan_keys="app server gui stt_mod tts_mod"
+  plan_keys="app server gui stt_mod tts_mod ocr_mod"
   [ -n "$deps" ] && plan_keys="$plan_keys sys"
   [ "${DECKMEIDO_SKIP_GUI:-0}" = "1" ] && plan_keys="${plan_keys/ gui/}"
   [ "$DECKMEIDO_STT_MODE" = "install" ] && plan_keys="$plan_keys stt_model"
@@ -4962,6 +5001,7 @@ do_upgrade() {
   export DECKMEIDO_STT_MODE=$([ "${DECKMEIDO_INSTALL_STT:-1}" = "1" ] && echo install || echo skip)
   export DECKMEIDO_TTS_MODE=$([ "${DECKMEIDO_INSTALL_TTS:-1}" = "1" ] && echo install || echo skip)
   export DECKMEIDO_WAKE_MODE=$([ "${DECKMEIDO_INSTALL_SPEAKER:-1}" = "1" ] && echo install || echo skip)
+  export DECKMEIDO_OCR_MODE=$([ "${DECKMEIDO_INSTALL_OCR:-1}" = "1" ] && echo install || echo skip)
   [ "${DECKMEIDO_INSTALL_DEPS:-1}" = "1" ] || deps=""
   STEP_QUIET=1
   reset_steps
@@ -4974,7 +5014,7 @@ do_upgrade() {
   step_ok "安装目录 $INSTALL_DIR，端口 $PORT"
   if [ "$gui_only" = 0 ]; then
     # 只算真正会装机 / 会下载的模块
-    plan_keys="server gui stt_mod tts_mod"
+    plan_keys="server gui stt_mod tts_mod ocr_mod"
     [ -n "$deps" ] && plan_keys="$plan_keys sys"
     [ "${DECKMEIDO_SKIP_GUI:-0}" = "1" ] && plan_keys="${plan_keys/ gui/}"
     [ "$DECKMEIDO_STT_MODE" = "install" ] && plan_keys="$plan_keys stt_model"

@@ -1,0 +1,5 @@
+# 离线 OCR（可选）：只有要识别图片里的文字时才装，缺了不影响后端启动
+# 对应 server/ocr.py；引擎是 RapidOCR（onnxruntime 后端），
+# 模型为 PaddleOCR / Umi-OCR 同款 PP-OCR 系列（Apache-2.0），
+# 首次识别时自动下载到 site-packages/rapidocr/models（约 31MB），无需 Docker
+rapidocr

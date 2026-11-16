@@ -31,7 +31,7 @@ from starlette.background import BackgroundTask
 
 from .llm import LLMClient
 from . import approval
-from . import apicfg, audit, audiomute, depcheck, devlog, fszones, i18n, media, memory, menu, netcfg, netmode, onebot, pairing, paths, persona, policy, power, presets, prompts, qqtext, remote_input, selfcheck, singleton, sleepmode, status_line, sudo_auth, tools, updater, usage, wake
+from . import apicfg, audit, audiomute, depcheck, devlog, fszones, i18n, media, memory, menu, netcfg, netmode, ocr, onebot, pairing, paths, persona, policy, power, presets, prompts, qqtext, remote_input, selfcheck, singleton, sleepmode, status_line, sudo_auth, tools, updater, usage, wake
 from .session_store import store
 from . import session_store
 from . import routes_config, routes_logs, routes_sessions, routes_system
@@ -1564,16 +1564,35 @@ def _upload_path(url: str) -> Path | None:
     return None
 
 
+def _ocr_text(fp: Path) -> str:
+    """本机离线 OCR：认出图里的文字，失败或没字返回空串
+
+    只在模型看不到图时才用（纯文本模型 / 图片读不出来），
+    所以这里吞掉异常，只记日志——OCR 是兜底，不能反过来把整轮对话搞挂。
+    """
+    try:
+        text = ocr.OCR_ENGINE.recognize(fp)
+    except Exception as exc:
+        devlog.log("ocr_failed", path=str(fp), error=str(exc)[:200])
+        return ""
+    devlog.log("ocr_done", path=str(fp), chars=len(text),
+               elapsed=round(ocr.OCR_ENGINE.last_elapsed, 2))
+    return text
+
+
 def _to_vision_content(text: str):
     """消息里含上传图片引用时转成多模态 content（供 vision 模型看图）
 
     上传的图落在 userdata/uploads/，由 /uploads 静态挂载给浏览器看；
     不能拿 STATIC_DIR 去拼，否则文件永远找不到、模型只收到一行「![图片](...)」。
     格式不做限制：AVIF/HEIF/BMP 这类上游不认的，在 _read_image_part 里转成 JPEG。
+    模型不支持视觉时不再走图片部件，改为本地 OCR 出文字附上（见 _blind_ocr_content）。
     """
     matches = _UPLOAD_RE.findall(text)
     if not matches:
         return text
+    if not llm.supports_vision:
+        return _blind_ocr_content(text, matches)
     parts = []
     lost = 0
     for url in matches:
@@ -1591,13 +1610,40 @@ def _to_vision_content(text: str):
     if not parts:
         # 图一张都没读出来：不能只把原文还给模型——它会以为图在别处，
         # 转头去 find 磁盘、装 OCR 工具乃至凭文件名瞎猜画面内容。
-        # 明确告诉它没收到图，并且不要自己去找
+        # 先试一次本地 OCR，认出来就当好文本给它；认不出再明确说没收到图
+        raw = "\n\n".join(t for t in (
+            _ocr_text(fp) for fp in (_upload_path(u) for u in matches) if fp
+        ) if t.strip())
+        if raw.strip():
+            return prompts.part("image_ocr").format(text=raw.strip())
         return prompts.part("image_missing").format(text=_UPLOAD_RE.sub("[图片]", text))
     if lost:
         devlog.log("upload_partial", lost=lost, total=len(matches))
         parts.append({"type": "text", "text": prompts.part("image_partial")})
     parts.append({"type": "text", "text": _UPLOAD_RE.sub("[图片]", text)})
     return parts
+
+
+def _blind_ocr_content(text: str, matches: list[str]) -> str:
+    """纯文本模型看到带图的消息：本机 OCR 出文字，拼成纯文本交给它
+
+    这一步是「翻译图片文字」在 DeepSeek 这类模型上唯一能走通的路：
+    直接塞 image_url 要么 400、要么被静默丢掉。OCR 认不出字时退回
+    「图片未能附上」，同样明确劝阻它翻磁盘。
+    """
+    blocks = []
+    for url in matches:
+        fp = _upload_path(url)
+        if not fp:
+            devlog.log("upload_missing", path=url)
+            continue
+        raw = _ocr_text(fp)
+        if raw.strip():
+            blocks.append(raw.strip())
+    body = _UPLOAD_RE.sub("[图片]", text)
+    if not blocks:
+        return prompts.part("image_missing").format(text=body)
+    return prompts.part("image_ocr").format(text="\n\n".join(blocks)) + "\n\n" + body
 
 
 def _blindify_images(msgs: list[dict]) -> None:
@@ -6702,7 +6748,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
                          "summary": summary, "files": files}
                 # 路径一律给全：AI 给的常常是相对工作区的路径，面板直接拿去
                 # 跳目录会落到后端进程的 cwd 上（一般是家目录），跟 AI 看的地方对不上
-                if name in ("read_file", "write_file", "edit_file", "list_dir"):
+                if name in ("read_file", "write_file", "edit_file", "list_dir",
+                            "ocr_image"):
                     raw_path = str(args.get("path", ""))
                     if raw_path:
                         # 相对路径按工作区解释（和文件工具一致），不按后端 cwd
