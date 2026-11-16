@@ -576,7 +576,11 @@ class SessionStore:
         except Exception:
             items = []
         if isinstance(items, list) and items:
-            self._index = {str(i.get("id")): i for i in items if i.get("id")}
+            # 只收合法 id：历史版本在 sid 为空时写出的 ".json" 会在索引里留下一条
+            # id=".json" 的记录，侧栏就多出一条点不开的空会话。这类条目直接丢掉
+            dirty = len(self._index) != len([i for i in items if i.get("id")])
+            self._index = {str(i.get("id")): i for i in items
+                           if i.get("id") and str(i["id"]) != ".json"}
             # 老索引没有 origin：按 sid / 标题就地补齐，不用重写索引文件，
             # 下一次 _index_save 自然带上
             for sid, it in self._index.items():
@@ -585,6 +589,9 @@ class SessionStore:
                     if o:
                         it["origin"] = o
                         self.origin_map.setdefault(sid, o)
+            if dirty:
+                # 滤掉了脏条目时把文件也重写一遍：否则磁盘上的旧条目下次启动又读回来
+                self._index_save()
             return
         # 没有索引（首次升级到这个版本）：扫一遍会话文件重建。
         # 只做一次，之后每次落盘都会顺带更新

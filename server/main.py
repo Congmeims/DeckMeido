@@ -1928,7 +1928,9 @@ def init_sessions():
     store.current_sid = _fresh_sid()
     store.history = []
     _ctx_used = 0
-    save_current_session()
+    # 只在内存里建，不落盘也不进索引：这个会话一句都没说过，写出去就是一条空会话，
+    # 而后端每次重启都会再建一条 —— 用户看到的就是侧栏里越堆越多、点进去全空的
+    # 「新会话 xx:xx」。等它真说了第一句话，正常落盘路径会带上来源和标题写出去。
 
 
 _init_sessions = init_sessions
