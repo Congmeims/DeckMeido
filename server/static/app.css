@@ -1405,14 +1405,18 @@
     30% { box-shadow: 0 0 0 4px rgba(26,159,255,.55); }
   }
   @media (prefers-reduced-motion: reduce) { .search-focus { animation: none; } }
-  /* 外部连接：三个子分区标题，左侧色条 + 浅底，和卡片标题明显区分 */
+  /* 页内分区标题：左侧色条 + 浅底气泡，和卡片标题明显区分。
+     全站设置页统一用它分组（外部连接 / 女仆人设 / 语音引擎 / 插件设置 / 关于更新），
+     底色跟着 --brand 走，浅色主题下自动变成淡蓝，不需要另写一套 */
   .set-sect {
     font-size: 14px; font-weight: 600; color: var(--text);
     margin: 18px 0 8px; padding: 7px 10px;
     border-left: 3px solid var(--brand);
-    background: rgba(26,159,255,.08);
+    background: color-mix(in srgb, var(--brand) 8%, transparent);
     border-radius: 7px;
   }
+  /* 分组标题下面紧跟的页首说明：属于这个分组，不用再顶出 12px */
+  .set-sect + .pane-desc { margin: 0 0 8px; }
   .set-sect:first-of-type { margin-top: 2px; }
   /* OneBot 内部的五个折叠子块：默认收起，标题一行可点 */
   details.set-fold {

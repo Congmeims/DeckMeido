@@ -296,6 +296,7 @@
         <section class="set-pane on" data-pane="model">
           <h3>模型接入</h3>
           <p class="pane-desc">填写服务商的接口地址与 Key，保存后立即生效。</p>
+          <h4 class="set-sect">接口与模型</h4>
           <div class="card">
             <div class="card-title">接口</div>
             <div id="apiProfileList"></div>
@@ -316,6 +317,7 @@
               <div class="field-hint" id="setModelState">正在读取模型列表…</div>
             </div>
           </div>
+          <h4 class="set-sect">用量统计</h4>
           <div class="card">
             <div class="card-title">用量与余额</div>
             <div class="usage-head">
@@ -347,6 +349,7 @@
         <section class="set-pane" data-pane="persona">
           <h3>女仆人设</h3>
           <p class="pane-desc">决定她是谁、怎么称呼你、用什么语气说话。改完保存立即生效，新会话也保持一致。</p>
+          <h4 class="set-sect">身份与语气</h4>
           <div class="card">
             <div class="card-title">身份</div>
             <div class="field">
@@ -404,7 +407,7 @@
           </div>
           <!-- 长期记忆并入这里：记的是「她记得你什么」，本来就是人设的一部分，
                单独占一格导航反而让设置页多出一层分类 -->
-          <h4 class="set-sub">长期记忆</h4>
+          <h4 class="set-sect">长期记忆</h4>
           <p class="pane-desc">
             记在这里的内容每次对话都会带上，重启也还在。对话里说「记住…」她也会自己记一条；
             纠正她的做法（「不对，应该…」）同样会记下来。只记你真想让她长期记住的，写多了会占掉上下文。
@@ -447,6 +450,7 @@
           <h3>语音引擎</h3>
           <p class="pane-desc">语音输入、声控唤醒与语音播报。识别与合成都在这台机器上完成，只有识别出的文字会进入对话链路。</p>
 
+          <h4 class="set-sect">语音输入</h4>
           <div class="card">
             <div class="card-title">语音输入</div>
             <div class="field field-row">
@@ -473,6 +477,7 @@
             <div id="sttHint" class="field-hint"></div>
           </div>
 
+          <h4 class="set-sect">声控唤醒</h4>
           <div class="card">
             <div class="card-title">智能音箱</div>
             <div class="field field-row">
@@ -488,6 +493,7 @@
             </div>
           </div>
 
+          <h4 class="set-sect">语音输出</h4>
           <div class="card tts-card">
             <div class="card-head">
               <div class="card-title">语音输出</div>
@@ -1028,6 +1034,7 @@
             插件端改完回到这里也会显示新值。页面底部的「保存」管开关和表单，提示词模板改完自动保存。
           </p>
 
+          <h4 class="set-sect">对话与插件</h4>
           <div class="card chat-voice-card" id="chatVoiceCard">
             <div class="card-head">
               <div class="card-title">对话开关</div>
@@ -1045,6 +1052,7 @@
             </div>
           </div>
 
+          <h4 class="set-sect">提示词</h4>
           <div class="card">
             <div class="card-title">提示词模板</div>
             <p class="card-desc">
@@ -1071,6 +1079,7 @@
             </div>
           </div>
 
+          <h4 class="set-sect">按游戏预设</h4>
           <div class="card">
             <div class="card-title">按游戏提示词预设</div>
             <p class="card-desc">
@@ -1093,6 +1102,7 @@
         <section class="set-pane" data-pane="about">
           <h3>关于更新</h3>
           <p class="pane-desc">版本信息与升级渠道。升级会保留配置、会话与长期记忆。</p>
+          <h4 class="set-sect">界面偏好</h4>
           <div class="card">
             <div class="card-title">界面语言</div>
             <div class="field">
@@ -1103,6 +1113,7 @@
               </select>
             </div>
           </div>
+          <h4 class="set-sect">运行与更新</h4>
           <div class="card">
             <div class="card-title">离线模式</div>
             <div class="field field-row">
@@ -10350,6 +10361,15 @@
             box.classList.add('search-hit-item');
           }
         }
+      });
+      // 分组标题：后面没有一个露出来的卡片就一起藏掉，否则搜索时页面会剩下几个空标题
+      Array.prototype.forEach.call(pane.querySelectorAll('.set-sect'), function (h) {
+        if (!q) { h.style.display = ''; return; }
+        var any = false;
+        for (var n = h.nextElementSibling; n && !n.classList.contains('set-sect'); n = n.nextElementSibling) {
+          if (n.style.display !== 'none') { any = true; break; }
+        }
+        h.style.display = any ? '' : 'none';
       });
       // 折叠块：有命中就自动展开，没命中就收起并藏掉
       Array.prototype.forEach.call(pane.querySelectorAll('details.set-fold'), function (d) {
