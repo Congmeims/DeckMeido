@@ -1805,12 +1805,14 @@ def init_sessions():
     # index.json 是侧栏索引，*.side.json 是流式正文的副档案：
     # 都不是会话文件，混进来的话会被当成坏文件反复改名
     files = session_store.all_session_files()
-    # 没有 id 的会话文件（典型是用户名为空时写出的 "sessions/.json"，stem 为空）
-    # 是历史遗留脏数据：它既不属于任何会话，也没法在侧栏点开，留着只会在
-    # 「恢复会话」时被当成一个无来源的空会话。启动时顺手清掉
+    # 没有 id 的会话文件（典型是 sid 为空时写出的 "sessions/.json"）是历史遗留
+    # 脏数据：它既不属于任何会话，也没法在侧栏点开，留着只会在「恢复会话」时
+    # 被当成一个无来源的空会话。启动时顺手清掉。
+    # 注意 Path(".json").stem 在 Python 里是 ".json" 而不是空串（点开头算隐藏文件名），
+    # 所以两种写法都要判
     keep: list[Path] = []
     for f in files:
-        if f.stem:
+        if f.stem and f.stem != ".json":
             keep.append(f)
             continue
         try:
