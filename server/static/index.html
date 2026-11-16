@@ -1070,7 +1070,6 @@
               </div>
             </div>
             <div class="mem-foot">
-              <span class="field-hint" id="tplHint"></span>
               <button id="tplSave" class="mini-btn primary" type="button">保存提示词</button>
             </div>
           </div>
@@ -9016,7 +9015,6 @@
   var cfgLang = document.getElementById('cfgLang');
   var cfgAskTemplate = document.getElementById('cfgAskTemplate');
   var cfgTranslateTemplate = document.getElementById('cfgTranslateTemplate');
-  var tplHint = document.getElementById('tplHint');
   var sttHint = document.getElementById('sttHint');
   // R1 只在语音真正可用时响应：运行时、模型、开关三者都满足才置 true
   var sttReady = false;
@@ -12319,8 +12317,10 @@
     if (!document.hidden) syncPromptTemplates();
   });
   window.addEventListener('focus', function () { setTimeout(syncPromptTemplates, 60); });
+  // 这两个框也带 data-autosave（改动即自动保存），「保存提示词」只是手动立刻写一次。
+  // 结果统一报到底栏那条提示里，卡片内不再单独挂一行状态文字。
   tplSave.addEventListener('click', function () {
-    tplHint.textContent = '保存中…';
+    setCfgHint('保存中…');
     Promise.all([
       saveTpl('/api/ask-template', cfgAskTemplate),
       saveTpl('/api/translate-template', cfgTranslateTemplate)
@@ -12328,20 +12328,20 @@
       // 保存成功：这两份内容已经是服务端最终值，后续前台同步以服务端为准
       tplDirtyAsk = false;
       tplDirtyTrn = false;
-      tplHint.textContent = '提示词已保存：插件端「截屏询问 / 截屏翻译」读到的就是这份';
+      setCfgHint('已保存：截屏询问 / 截屏翻译提示词');
     }).catch(function (err) {
       var msg = (err && err.message) || '';
       var offline = /Failed to fetch|NetworkError|Load failed/i.test(msg);
-      tplHint.textContent = '保存失败：' + (offline ? '连不上服务，请稍后重试' : (msg || '未知错误'));
+      setCfgHint('保存失败：' + (offline ? '连不上服务，请稍后重试' : (msg || '未知错误')));
     });
   });
   document.getElementById('askTplReset').addEventListener('click', function () {
     cfgAskTemplate.value = askTplDefault;
-    tplHint.textContent = '已填入默认的截屏提问，点「保存提示词」后生效';
+    setCfgHint('已填入默认的截屏询问提示词');
   });
   document.getElementById('trnTplReset').addEventListener('click', function () {
     cfgTranslateTemplate.value = trnTplDefault;
-    tplHint.textContent = '已填入默认的翻译提示词，点「保存提示词」后生效';
+    setCfgHint('已填入默认的截屏翻译提示词');
   });
 
   // ---------- 按游戏提示词预设 ----------
