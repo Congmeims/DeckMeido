@@ -11049,11 +11049,8 @@
       .then(function (d) {
         sttReady = !!(d && d.enable !== false && d.runtime && d.model);
         if (d && d.enable !== false && d.runtime && d.model) {
-          // 模型源按 [stt] model_source 显示：auto 是国内镜像优先、GitHub 兜底
-          var src = d.model_source === 'mirror' ? 'hf-mirror 镜像'
-            : d.model_source === 'github' ? 'GitHub'
-            : d.model_source ? '自定义源' : '国内镜像优先';
-          sttHint.textContent = '语音输入可用（下载源：' + src + '）';
+          // 可用时不在这里写任何文案：这一行只在不可用时说明原因
+          sttHint.textContent = '';
         } else if (d && d.enable === false) {
           sttHint.textContent = '语音输入已在上面关闭，打开后才能识别';
         } else if (d && !d.runtime) {
