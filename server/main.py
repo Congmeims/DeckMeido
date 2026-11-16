@@ -1580,6 +1580,21 @@ def _ocr_text(fp: Path) -> str:
     return text
 
 
+def _wait_upload(url: str, tries: int = 3, wait: float = 0.3) -> Path | None:
+    """等上传文件落盘：粘图后立刻回车时，消息可能比写盘早到几百毫秒
+
+    以前这种竞态只能退化成「图片未能附上」，用户看到的就是「明明传了却看不到图」。
+    总等待不超过 1 秒，超出仍按缺失处理。
+    """
+    fp = _upload_path(url)
+    for _ in range(tries):
+        if fp:
+            return fp
+        time.sleep(wait)
+        fp = _upload_path(url)
+    return fp
+
+
 def _to_vision_content(text: str):
     """消息里含上传图片引用时转成多模态 content（供 vision 模型看图）
 
@@ -1612,10 +1627,11 @@ def _to_vision_content(text: str):
         # 转头去 find 磁盘、装 OCR 工具乃至凭文件名瞎猜画面内容。
         # 先试一次本地 OCR，认出来就当好文本给它；认不出再明确说没收到图
         raw = "\n\n".join(t for t in (
-            _ocr_text(fp) for fp in (_upload_path(u) for u in matches) if fp
+            _ocr_text(fp) for fp in (_wait_upload(u) for u in matches) if fp
         ) if t.strip())
         if raw.strip():
             return prompts.part("image_ocr").format(text=raw.strip())
+        devlog.log("ocr_skip", paths=len(matches), reason="no_text")
         return prompts.part("image_missing").format(text=_UPLOAD_RE.sub("[图片]", text))
     if lost:
         devlog.log("upload_partial", lost=lost, total=len(matches))
@@ -1633,13 +1649,15 @@ def _blind_ocr_content(text: str, matches: list[str]) -> str:
     """
     blocks = []
     for url in matches:
-        fp = _upload_path(url)
+        fp = _wait_upload(url)
         if not fp:
-            devlog.log("upload_missing", path=url)
+            devlog.log("ocr_skip", path=url, reason="upload_missing")
             continue
         raw = _ocr_text(fp)
         if raw.strip():
             blocks.append(raw.strip())
+        else:
+            devlog.log("ocr_skip", path=str(fp), reason="no_text")
     body = _UPLOAD_RE.sub("[图片]", text)
     if not blocks:
         return prompts.part("image_missing").format(text=body)
