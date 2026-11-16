@@ -1805,6 +1805,20 @@ def init_sessions():
     # index.json 是侧栏索引，*.side.json 是流式正文的副档案：
     # 都不是会话文件，混进来的话会被当成坏文件反复改名
     files = session_store.all_session_files()
+    # 没有 id 的会话文件（典型是用户名为空时写出的 "sessions/.json"，stem 为空）
+    # 是历史遗留脏数据：它既不属于任何会话，也没法在侧栏点开，留着只会在
+    # 「恢复会话」时被当成一个无来源的空会话。启动时顺手清掉
+    keep: list[Path] = []
+    for f in files:
+        if f.stem:
+            keep.append(f)
+            continue
+        try:
+            f.unlink()
+            print(f"[DeckMeido] 已清理无 id 的会话文件 {f.name}", file=sys.stderr)
+        except OSError as e:
+            print(f"[DeckMeido] 清理无 id 的会话文件 {f.name} 失败：{e}", file=sys.stderr)
+    files = keep
     if not files:
         save_current_session()
         return
@@ -4966,7 +4980,14 @@ async def handle_chat(text: str, announce: bool = True,
     turn_epoch = store.epoch
     # 本轮来源：侧栏据此把会话自动分到网页 / Deck / 插件 / Onebot / 智能音响几组。
     # 同一会话里换了端发问（网页接着插件说）也照样跟着最近一轮走。
-    _set_session_origin(turn_sid, client)
+    # client 为空（重试、唤醒这类内部链路，或是老版本前端没带）时不能就这么空着：
+    # 先看上一轮是谁发起的（store.turn 里还没被本轮覆盖），再退回这个会话已经
+    # 记下的来源。两处都没有才真的留空 —— 那样侧栏会把它归到「调试」组，
+    # 用户换台电脑就冒出一条无主会话
+    origin_client = client or store.turn.get("client") or ""
+    if not origin_client:
+        origin_client = store.origin_map.get(turn_sid) or ""
+    _set_session_origin(turn_sid, origin_client)
     store.turn.update({"sid": turn_sid, "epoch": turn_epoch, "active": True,
                        "turn_id": turn_id,
                        # 本轮开始时刻：/api/status 的 running_since 用它，
