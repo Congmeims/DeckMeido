@@ -98,10 +98,16 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
     @router.post("/api/sessions/create", dependencies=auth)
     async def api_session_create(req: CreateReq, request: Request):
         m = get_main()
-        # 只是要离开当前会话：内容照存，但不刷新 updated，避免旧会话被顶到首位。
-        # current_sid 为空时没有可存的会话，空 sid 还会把自己写进索引（id 为空的脏行）
+        # 会话列表由索引维护，而索引没写过盘的会话只活在内存里
+        # （点「＋」新建、一句话没说就走了的那种）。它的内容从头到尾都在
+        # 内存和其它地方，这里再 save 一次只会把它变成磁盘上一条空会话 ——
+        # 返回给前端之前先把这类纯空会话从索引里摘掉，别让侧栏凭空多一条。
+        # 真正说过话的会话照旧存，touch=False 不刷新排序。
         if store.current_sid:
-            m.save_current_session(touch=False)
+            if _current_session_untouched():
+                store.index_drop_mem(store.current_sid)
+            else:
+                m.save_current_session(touch=False)
         # 连点「新会话」会把侧栏刷成一排空会话，一个能用的都没有。
         # 已经在空会话里就原地不动，各端也不用重刷列表
         if _current_session_untouched():
@@ -120,8 +126,12 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         # 前端没传（旧缓存页面）时按 UA 兜一层，和聊天链路 start_chat 的判断同源，
         # 免得同一台手机「说话建的会话」和「点＋建的会话」落进不同分组
         origin = req.client or m.client_from_ua(request.headers.get("user-agent", ""))
+        # 来源只记在内存里，等这一轮真说了话再随正常落盘写出去。
+        # 这里以前会 save_current_session()，于是每点一次「＋」就立刻在侧栏留下
+        # 一条点进去空空的「新会话」，而它本来就是为了「换一个干净的输入框」。
         m._set_session_origin(store.current_sid, origin or None)
-        m.save_current_session()
+        # 代次已经变了，前端要把当前会话号换掉；历史是空的，一起推一份让各端清屏。
+        # 不发 session_changed 老列表不会刷新，新建的那个会话号也传不出去
         await m.manager.broadcast({"type": "history", "messages": store.history,
                                    "sid": store.current_sid})
         await m.manager.broadcast({"type": "session_changed", "current": store.current_sid})

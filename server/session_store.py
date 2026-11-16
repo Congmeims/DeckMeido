@@ -628,6 +628,19 @@ class SessionStore:
             self.flushed_sids.discard(sid)
         self._index_save()
 
+    def index_drop_mem(self, sid: str) -> None:
+        """只从内存索引里摘掉一条（不删会话文件、不碰其它按 sid 记的状态）
+
+        用于「点＋新建、一句话没说就换下一个」的空会话：它没落过盘，索引里那条
+        记录就是凭空冒出来的，摘掉之后侧栏不会多出一条点进去空空的会话。
+        """
+        if not sid:
+            return
+        with self.lock:
+            self._index.pop(sid, None)
+            self.origin_map.pop(sid, None)
+        self._index_schedule()
+
     def index_put_mem(self, sid: str, title: str, updated: float, messages: int) -> None:
         """只更新内存里的索引（改标题这类小改动，落盘交给会话文件那次写入）"""
         with self.lock:
