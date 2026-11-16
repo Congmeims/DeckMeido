@@ -1821,8 +1821,13 @@ def init_sessions():
         except OSError as e:
             print(f"[DeckMeido] 清理无 id 的会话文件 {f.name} 失败：{e}", file=sys.stderr)
     files = keep
+    # 一个会话文件都没有：和上面「全部不可用」一样，只在内存里开一个新会话。
+    # 这里以前会立刻 save_current_session()，于是每次启动都留下一条空会话
+    # （id 还是固定的 "default"，多了会撞名），侧栏就全是点进去空空的「新会话」
     if not files:
-        save_current_session()
+        store.current_sid = _fresh_sid()
+        store.history = []
+        _ctx_used = 0
         return
 
     # 逐个试：以前只认 mtime 最新的那一个，它坏了就 history.clear() 整个重来，
