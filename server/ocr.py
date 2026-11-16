@@ -20,13 +20,14 @@ from pathlib import Path
 # 版权与来源（设置页和日志里展示用）
 ATTRIBUTION = "PP-OCRv6 (PaddleOCR) · RapidOCR · onnxruntime · Apache-2.0"
 
+# 模型体积（pip 下载 + 磁盘占用口径，与 install.sh 的 DEP_TABLE 保持一致）。
+# 外部调用方（安装包体提示、设置页自检）都用这两个数，不要各写各的。
+MODEL_MB = 31
+PACKAGE_MB = 300
+
 # 空闲多久卸载模型：Steam Deck 内存紧，OCR 不是每轮都用，
 # 五分钟没人找它就释放，下次用到再懒加载（0.5s 级）
 IDLE_UNLOAD_SEC = 300
-
-# 单张图最长边缩到这个尺寸再识别。手机截图动辄 2000+ px 宽，
-# 检测阶段是逐像素卷积，缩一半以上能省好几倍时间，准确率基本不掉
-MAX_SIDE = 1600
 
 
 class OCRError(RuntimeError):

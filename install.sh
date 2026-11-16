@@ -938,7 +938,7 @@ DEP_TABLE=(
   "stt_mod|语音输入运行库（sherpa-onnx）|60"
   "tts_mod|语音合成运行库（piper-plus）|120"
   "wake_mod|唤醒词分词依赖（sentencepiece / pypinyin）|30"
-  "ocr_mod|离线 OCR 运行库与模型（RapidOCR / PP-OCR）|90"
+  "ocr_mod|离线 OCR 运行库与模型（RapidOCR / PP-OCR）|300"
   "sys|系统控件（ydotool / wtype / kdotool 等）|60"
   "stt_model|语音识别模型（SenseVoice）|250"
   "tts_model|语音合成模型（つくよみちゃん）|38"

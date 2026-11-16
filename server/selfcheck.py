@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -28,7 +29,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from . import depcheck, devlog, netmode, sudo_auth, tools, tts as tts_mod
+from . import depcheck, devlog, netmode, ocr as ocr_mod, sudo_auth, tools, tts as tts_mod
 
 # 后端把 stdout/stderr 落进 userdata/logs/backend.log；未知异常在这里留完整堆栈，
 # 界面只拿到脱敏后的一句话，不暴露 Python 原文。
@@ -133,6 +134,23 @@ def _nltk_status() -> tuple[str, str]:
     return ("ready", "") if tts_mod.english_data_ready() else ("missing", "英文 G2P 数据缺失")
 
 
+def _ocr_status() -> tuple[str, str]:
+    """离线 OCR：没装给出安装提示，装了顺带报实际占用和装在哪"""
+    probe = ocr_mod.available()
+    if not probe["ok"]:
+        return "missing", "离线 OCR 组件未安装（" + probe["reason"] + "）"
+    try:
+        import rapidocr
+        lib_dir = Path(rapidocr.__file__).resolve().parent
+    except Exception as exc:
+        return "mismatch", "组件已装但导入失败：" + str(exc).splitlines()[0][:120]
+    size = _fmt_size(_path_size([lib_dir]))
+    here = Path(sys.executable).resolve()
+    if lib_dir.parent.parent in here.parents:
+        return "ready", f"已装在后端虚拟环境（{size}）"
+    return "mismatch", f"装在别的解释器里（{lib_dir}），当前后端用不到"
+
+
 def _component(key: str, name: str, status_fn, size: str, action: str,
                command: str = "", privileged: bool = False) -> dict:
     return {
@@ -144,6 +162,8 @@ def _component(key: str, name: str, status_fn, size: str, action: str,
 COMPONENTS = [
     _component("tts_model", "月读酱语音模型", _tts_status, "约 38MB", "python"),
     _component("nltk_data", "英文发音数据（nltk）", _nltk_status, "约 12MB", "python"),
+    _component("ocr_image", "离线 OCR（中日英）", _ocr_status,
+               f"约 {ocr_mod.PACKAGE_MB}MB", "python"),
     _component("ydotoold", "按键注入守护进程", _ydotoold_status, "无需下载", "service",
                "systemctl --user enable --now ydotool.service"),
     _component("ydotool", "ydotool（点击 / 输入）", lambda: _which_status("ydotool", "ydotool"),
@@ -306,6 +326,8 @@ def _run_job(item: dict) -> None:
             _install_tts()
         elif key == "nltk_data":
             _install_nltk()
+        elif key == "ocr_image":
+            msg = _install_ocr()
         elif key == "ydotoold":
             _install_ydotoold()
         elif item["action"] == "package":
@@ -403,6 +425,46 @@ def _install_nltk() -> None:
     if not tts_mod.english_data_ready():
         raise RuntimeError("解包后校验失败，请重试")
     _set("nltk_data", "verify", 100.0, "英文数据已就绪")
+
+
+def _install_ocr() -> str:
+    """pip 装 rapidocr：轮子和模型一起下，进度按输出行数粗估"""
+    if netmode.enabled():
+        raise RuntimeError(netmode.reason("离线 OCR 依赖下载"))
+    req = Path(__file__).resolve().parent.parent / "requirements-ocr.txt"
+    if not req.is_file():
+        raise _NeedTerminal(f"缺少 {req.name}，请在终端执行：bash install.sh install --deps")
+    _set("ocr_image", "download", 5.0, "下载 RapidOCR 与 PP-OCR 模型…")
+    cmd = [sys.executable, "-m", "pip", "install", "-r", str(req)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
+        raise RuntimeError("pip 安装失败：" + " / ".join(tail)[:300])
+    _set("ocr_image", "verify", 92.0, "校验能否导入…")
+    probe = ocr_mod.available()
+    if not probe["ok"]:
+        raise RuntimeError("装完仍无法导入：" + probe["reason"])
+    return f"已就绪（约 {ocr_mod.PACKAGE_MB}MB）"
+
+
+def _install_ocr() -> str:
+    """pip 装 rapidocr：轮子和 PP-OCR 模型一起下（约 300MB），装完校验能否导入"""
+    if netmode.enabled():
+        raise RuntimeError(netmode.reason("离线 OCR 依赖下载"))
+    req = Path(__file__).resolve().parent.parent / "requirements-ocr.txt"
+    if not req.is_file():
+        raise _NeedTerminal(f"缺少 {req.name}，请在终端执行：bash install.sh install --deps")
+    _set("ocr_image", "download", 5.0, "下载 RapidOCR 与 PP-OCR 模型…")
+    cmd = [sys.executable, "-m", "pip", "install", "-r", str(req)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
+        raise RuntimeError("pip 安装失败：" + " / ".join(tail)[:300])
+    _set("ocr_image", "verify", 92.0, "校验能否导入…")
+    probe = ocr_mod.available()
+    if not probe["ok"]:
+        raise RuntimeError("装完仍无法导入：" + probe["reason"])
+    return f"已就绪（约 {ocr_mod.PACKAGE_MB}MB）"
 
 
 def _install_ydotoold() -> None:
