@@ -10568,13 +10568,24 @@
     }
     var field = el.closest ? el.closest('.field') : null;
     var lab = field && field.querySelector('label');
-    if (lab && lab.textContent.trim()) return lab.textContent.trim().replace(/[（(].*$/, '');
+    // 名字里已经带了「已自动保存」的，不再包一层前缀（否则会出现两个「已自动保存：」）
+    var hasPrefix = function (s) { return /已自动保存/.test(s); };
+    if (lab && lab.textContent.trim()) {
+      var labName = lab.textContent.trim().replace(/[（(].*$/, '');
+      return hasPrefix(labName) ? '' : labName;
+    }
     var card = el.closest ? el.closest('.card') : null;
     var title = card && card.querySelector('.card-title');
-    if (title && title.textContent.trim()) return title.textContent.trim();
+    if (title && title.textContent.trim()) {
+      var cardName = title.textContent.trim();
+      return hasPrefix(cardName) ? '' : cardName;
+    }
     // 人设区域的 textarea：placeholder 就是这个设置项的用途说明
     var ph = String(el.getAttribute && el.getAttribute('placeholder') || '');
-    if (ph) return ph.length > 18 ? ph.slice(0, 18) + '…' : ph;
+    if (ph) {
+      if (hasPrefix(ph)) return '';
+      return ph.length > 18 ? ph.slice(0, 18) + '…' : ph;
+    }
     return '设置项';
   }
 
@@ -10593,6 +10604,22 @@
       }
     }
     return last ? cfgItemName(last) : '';
+  }
+
+  // 这次保存带上了局域网开关 / 端口时，底栏额外补一句需要重启后端。
+  // 以前是直接看后端回的 restart_required，可那个字段是「当前配置与运行中的
+  // 进程不一致」，改一次之后每次保存都会回 true，提示就一直挂着不走
+  function autoSaveNeedsRestart() {
+    var lan = document.getElementById('cfgLanEnable');
+    var port = document.getElementById('cfgPort');
+    var els = [lan, port];
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (!el || !el.dataset.asv) continue;
+      var cur = String(el.value || '');
+      if (cur !== el.dataset.asv) return true;
+    }
+    return false;
   }
 
   // 底栏的常驻提示：只写「已自动保存：<项目名>」，没有项目名就退成不带冒号的短句
@@ -10948,7 +10975,7 @@
         }
         refreshLogUsage();
         // 用量与余额已由上面的 renderApiProfiles 按新的当前使用刷新过
-        var restartNote = res.restart_required ? '（局域网开关/端口需重启后端生效）' : '';
+        var restartNote = autoSaveNeedsRestart() ? '（局域网开关/端口需重启后端生效）' : '';
         // 底栏常驻写「已自动保存：<刚改的那一项>」；需要重启时再补一句，
         // 具体结果由「模型接入」那张卡就地说明
         setCfgSavedHint(restartNote
