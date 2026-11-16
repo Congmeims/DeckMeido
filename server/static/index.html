@@ -717,8 +717,8 @@
               </div>
             </div>
             <div class="mem-foot" id="qqReconnectRow">
-              <span class="field-hint">连接参数改完先点下方「保存」，再点这里立即重连；保存本身不会建连。</span>
-              <button id="qqReconnect" class="mini-btn" type="button">重新连接</button>
+              <span class="field-hint" id="qqReconnectHint">还没连接：直接点右边「连接」，会先保存当前表单再建连，不用单独点保存。</span>
+              <button id="qqReconnect" class="mini-btn primary" type="button">连接</button>
             </div>
             <div class="field field-row">
               <label style="margin:0">重启后自动连接</label>
@@ -2625,6 +2625,10 @@
   // 那行在屏幕外。这里用一个常驻的状态条复述同一件事，并把「跟随」做成开关：
   // 关掉 = 保留用户当前的滚动位置，新命令只亮一下未读角标，不把他拽走。
   var termFollow = { on: true, unread: 0 };
+  // 文件页那侧的状态对象（真正的定义在下面「右栏跟随」一节）。
+  // 必须在这里先声明：下面那个初始化 IIFE 会跑 aiFollowInit / aiFollowApply，
+  // 而它们在 fbTrack 用 var 声明之前就被调用过，会抛 ReferenceError
+  var fbTrack = { on: true };
 
   // 文件页和终端页的两个跟随开关共用同一份状态（dm.follow）：
   // 两边本来就是「AI 动手时要不要把我拽过去」的同一个意图，分开存会出现
@@ -3034,10 +3038,10 @@
     rbShowTab(tab);
   }
 
-  // 跟随开关：文件页和终端页各有一个按钮，但共用同一份状态（dm.follow）。
+  // 跟随开关：文件页和终端页各有一个按钮，但共用同一份状态（dm.follow，见上面 termFollow 那段）。
   // 文件页那个管「AI 动手时自动切页 + 停在它所在的目录」，
   // 终端页那个只管「新命令来了要不要把列表滚到底」，开关本身是同一个。
-  var fbTrack = { on: true };
+  // （fbTrack 本身在上面已经声明过，这里不再重复声明）
 
   function rbPaneAnimate(pane, dir) {
     if (!pane || !dir) return;
@@ -8950,6 +8954,7 @@
   var qqLogsRefresh = document.getElementById('qqLogsRefresh');
   var qqTokenReveal = document.getElementById('qqTokenReveal');
   var qqReconnectBtn = document.getElementById('qqReconnect');
+  var qqReconnectHint = document.getElementById('qqReconnectHint');
   var qqStatusInfo = document.getElementById('qqStatusInfo');
   var qqPrefixHint = document.getElementById('qqPrefixHint');
   var qqHint = document.getElementById('qqHint');
@@ -11568,6 +11573,27 @@
       + '<div class="qq-status-col">' + rows.slice(4).map(cell).join('') + '</div>'
       + '</div>';
     if (qqPrefixHint) qqPrefixHint.textContent = qqPrefixText(s.prefix, !!s.guest_prompt_custom);
+    syncQqConnectBtn(state);
+  }
+
+  // 连接按钮跟着实际状态改文案：没连上时是「连接」，连上了才是「重新连接」。
+  // 以前固定叫「重新连接」，还没连过的人会找不到入口
+  function syncQqConnectBtn(state) {
+    if (!qqReconnectBtn) return;
+    if (state === 'connecting' || state === 'reconnecting') {
+      qqReconnectBtn.textContent = '连接中…';
+      if (qqReconnectHint) qqReconnectHint.textContent = '正在按当前表单连接 OneBot…';
+      return;
+    }
+    qqReconnectBtn.disabled = false;
+    var on = state === 'connected';
+    qqReconnectBtn.textContent = on ? '重新连接' : '连接';
+    qqReconnectBtn.classList.toggle('primary', !on);
+    if (qqReconnectHint) {
+      qqReconnectHint.textContent = on
+        ? '已连接。改了下方参数点这里会先保存再重连，不用单独点保存。'
+        : '还没连接：直接点右边「连接」，会先保存当前表单再建连，不用单独点保存。';
+    }
   }
 
   // 语音开关的单一来源：设置页和 QQ 会话面板都只改后端配置，
@@ -11687,6 +11713,8 @@
     }).catch(function () {
       // 状态读不到不弹错误条：页面其它部分照常可用，下一次轮询会自动重试
       renderQqStatus(null);
+      // 状态未知时仍要给出一个可点的连接入口，不能因为读不到状态就只剩「重新连接」字样
+      syncQqConnectBtn('');
       return null;
     });
   }
@@ -11775,15 +11803,18 @@
   /**
    * 提交 QQ 表单。保存按钮和「重新连接」按钮都走这里：
    * 后端 POST /api/qq/config 只写盘 + 热更新，不会触发连接；
-   * withReconnect 时才额外 POST /api/qq/connect，显式建连。
+   * withReconnect 时在这一步之后再 POST /api/qq/connect，用刚保存的配置建连。
    */
-  function submitQq(withReconnect) {
+  function submitQq(withReconnect, opts) {
+    opts = opts || {};
     // 配置没读回来时表单是空的，直接提交会把已有域名/令牌清空
     if (!qqConfigLoaded) {
       qqHint.textContent = '配置还没读到，先刷新页面或稍后重试';
       return;
     }
-    qqHint.textContent = withReconnect ? '正在按当前表单重新连接…' : '保存中…';
+    var savingText = opts.silent ? '正在连接…'
+      : (withReconnect ? '正在按当前表单重新连接…' : '保存中…');
+    if (!opts.silent) qqHint.textContent = savingText;
     var guestText = cfgQqGuestPrompt ? cfgQqGuestPrompt.value.trim() : '';
     if (guestText.length > QQ_GUEST_MAX) {
       qqHint.textContent = '群友提示词最多 ' + QQ_GUEST_MAX + ' 字（当前 '
@@ -11851,7 +11882,9 @@
         }
         updateQqGuestCount();
         renderQqGuestHint();
-        qqPrefixHint.textContent = qqPrefixText(res.config.prefix, qqGuestSaved);
+        // 这个提示元素只在部分视图里存在，其它两处都判了空，这里漏了会抛
+        // «Cannot set properties of null»，整条保存链断在这儿，看起来像「保存失败」
+        if (qqPrefixHint) qqPrefixHint.textContent = qqPrefixText(res.config.prefix, qqGuestSaved);
         // 以服务端归一后的结果回填，避免前端显示与真实配置不一致
         var savedAdmins = res.config.admin_qq || [];
         cfgQqAdmins.value = savedAdmins[0] || '';
@@ -11874,10 +11907,18 @@
       if (res && res.state) renderQqStatus(res.state);
       else loadQqStatus();
       if (withReconnect) {
-        // 保存不会建连；「重新连接」按钮在保存后再显式调一次 connect
+        // 保存不会建连；「重新连接」按钮在保存之后再显式调一次 connect，
+        // 用的是上面刚写进去的配置，不需要用户先点「保存」
         return memFetch('/api/qq/connect', { method: 'POST' }).then(function (r) {
           if (r && r.state) renderQqStatus(r.state);
-          qqHint.textContent = '已按当前表单重新连接；状态会在上方刷新';
+          var st = (r && r.state) || {};
+          if (st.connected) {
+            qqHint.textContent = '已连接';
+          } else if (st.last_error) {
+            qqHint.textContent = '配置已保存，但连接失败：' + st.last_error;
+          } else {
+            qqHint.textContent = '配置已保存；状态会在上方刷新';
+          }
           return res;
         }).catch(function (err) {
           var msg = (err && err.message) || '';
@@ -11885,6 +11926,7 @@
           return res;
         });
       }
+      if (opts.silent) return res;
       qqHint.textContent = autoChanged && !connectedNow
         ? '已保存；「重启后自动连接」已改为' + (autoNow ? '开启' : '关闭')
           + '，下次启动生效，当前仍未连接'
@@ -11899,7 +11941,8 @@
     });
   }
 
-  // 「重新连接」按当前已保存的配置重连（不碰设置页里未保存的其它项）
+  // 「连接 / 重新连接」：先按当前表单保存，再用刚保存的配置建连。
+  // 以前只保存“已保存的配置”再重连，用户改完参数直接点这里会用旧地址去连
   qqReconnectBtn.addEventListener('click', function () { void submitQq(true); });
 
   // QQ 会话头部面板：打开时现拉一次状态与语音开关（不碰设置页未保存的其它项）
