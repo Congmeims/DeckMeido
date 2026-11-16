@@ -144,10 +144,18 @@ def _ocr_status() -> tuple[str, str]:
         lib_dir = Path(rapidocr.__file__).resolve().parent
     except Exception as exc:
         return "mismatch", "组件已装但导入失败：" + str(exc).splitlines()[0][:120]
-    size = _fmt_size(_path_size([lib_dir]))
-    here = Path(sys.executable).resolve()
-    if lib_dir.parent.parent in here.parents:
-        return "ready", f"已装在后端虚拟环境（{size}）"
+    size = _fmt_size(_path_size([lib_dir, lib_dir / "models"]))
+    # 用 site-packages 判断：后端自己的 venv 下含该目录才算装对地方，
+    # 不能靠 sys.executable 的父目录推（bin/python 的父父级是 bin，不是 site-packages）
+    for sp in sys.path:
+        try:
+            sp_path = Path(sp).resolve()
+        except Exception:
+            continue
+        if sp_path.name != "site-packages":
+            continue
+        if lib_dir == sp_path or sp_path in lib_dir.parents:
+            return "ready", f"已装在后端虚拟环境（{size}）"
     return "mismatch", f"装在别的解释器里（{lib_dir}），当前后端用不到"
 
 
