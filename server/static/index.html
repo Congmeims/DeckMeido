@@ -6794,6 +6794,9 @@
         // 服务端已签发设备令牌：存本地，之后的请求与 WebSocket 都带上它
         if (res.d && res.d.token) setDeviceToken(res.d.token);
         deviceSession = true;
+        // 设置页若在配对前就打开过，表单里是空配置（当时还 401）；
+        // 配对成功后强制按新令牌重拉一遍，免得要手动保存一次才显示出模型参数
+        if (apiProfilesLoaded) { loadCfgForm(true); }
         pairReset();
         authOverlay.classList.remove('show');
         reconnectNow();
@@ -9832,10 +9835,15 @@
 
   // 读一次配置填进设置页表单。导入备份改了人设之后也要再填一遍，
   // 所以单独拆出来
-  function loadCfgForm() {
+  // force：新设备配对成功后强制重拉。配对前那次 /api/config 可能已经回填完，
+  // 只是当时设置页还没打开；若只在 !apiProfilesLoaded 时才重拉，换电脑配对后
+  // 打开设置看到的就是配对前的空表单（模型参数空白，但对话正常）。
+  // 自动保存那一刻会被重新打开，所以重拉期间仍要挂起它
+  function loadCfgForm(force) {
+    if (apiProfilesLoaded && !force) return;
     // 回填期间先挂起自动保存，免得读到一半的值被当成用户改的
     autoSaving = false;
-    apiFetch('/api/config')
+    apiFetch('/api/config', { cache: 'no-store' })
       .then(function (r) {
         if (!r.ok) throw new Error(r.status === 401 ? '登录已失效，请重新配对' : '读取失败');
         return r.json();
@@ -9939,6 +9947,9 @@
         autoSaving = true;
       })
       .catch(function (e) {
+        // 这次没填上：放行下一次 openSettings / 配对成功后的重拉，否则空表单
+        // 会一直留到手动刷新页面
+        apiProfilesLoaded = false;
         var msg = (e && e.message) || '';
         if (/401/.test(msg) && !isHomePage) { showAuth('登录已失效，请重新配对'); }
         // 同「保存」：fetch 层失败只给一句人话，别把 Failed to fetch 摆到界面上
