@@ -1056,11 +1056,11 @@
           <div class="card">
             <div class="card-title">提示词模板</div>
             <p class="card-desc">
-              和插件端「截屏询问 / 截屏翻译」是同一份配置。留空保存即恢复默认，默认值由后端下发。
+              和插件端「截屏询问 / 截屏翻译」是同一份配置。改完停手自动保存，留空即恢复默认，默认值由后端下发。
             </p>
             <div class="field">
               <label>截屏询问提示词</label>
-              <textarea id="cfgAskTemplate" data-autosave rows="4" placeholder="留空保存即恢复默认"></textarea>
+              <textarea id="cfgAskTemplate" data-autosave rows="4" placeholder="改动自动保存，留空即恢复默认"></textarea>
               <div class="mem-foot">
                 <span class="field-hint">插件端点「截屏询问」时发给模型的提问。</span>
                 <button id="askTplReset" class="mini-btn" type="button">恢复默认</button>
@@ -1068,14 +1068,11 @@
             </div>
             <div class="field">
               <label>截屏翻译提示词</label>
-              <textarea id="cfgTranslateTemplate" data-autosave rows="4" placeholder="留空保存即恢复默认"></textarea>
+              <textarea id="cfgTranslateTemplate" data-autosave rows="4" placeholder="改动自动保存，留空即恢复默认"></textarea>
               <div class="mem-foot">
                 <span class="field-hint">插件端点「截屏翻译」时的翻译指令。</span>
                 <button id="trnTplReset" class="mini-btn" type="button">恢复默认</button>
               </div>
-            </div>
-            <div class="mem-foot">
-              <button id="tplSave" class="mini-btn primary" type="button">保存提示词</button>
             </div>
           </div>
 
@@ -9023,7 +9020,6 @@
   var sttHint = document.getElementById('sttHint');
   // R1 只在语音真正可用时响应：运行时、模型、开关三者都满足才置 true
   var sttReady = false;
-  var tplSave = document.getElementById('tplSave');
   // 默认模板只存后端下发的值，不在前端硬编码；「恢复默认」先把值填回文本框
   var askTplDefault = '';
   var trnTplDefault = '';
@@ -10898,6 +10894,12 @@
     setCfgHint('保存中…');
     apiProfileHint.style.color = 'var(--muted)';
     apiProfileHint.textContent = '保存中…';
+    // 提示词模板带 data-autosave，改动后和别的设置项一起提交：只带真的改了的那个，
+    // 没改就不传（后端按「没传 = 不改」处理，避免把插件端刚改的值洗回去）
+    var askTplChanged = !!cfgAskTemplate && cfgAskTemplate.dataset.asv !== undefined
+      && String(cfgAskTemplate.value || '') !== cfgAskTemplate.dataset.asv;
+    var trnTplChanged = !!cfgTranslateTemplate && cfgTranslateTemplate.dataset.asv !== undefined
+      && String(cfgTranslateTemplate.value || '') !== cfgTranslateTemplate.dataset.asv;
     // 只有输入框里真有内容才提交 api_key：留空表示「保持原样」。
     // 旧逻辑无条件回传输入框的值，而新设备打开设置页时输入框是空的，
     // 于是任何一次保存（哪怕只改了端口）都会把 Key 抹掉。
@@ -10947,7 +10949,10 @@
       // 开发者模式：写入 [runtime]，保存即生效（日志级别与细节记录不用重启）
       dev_mode: cfgDevMode ? (cfgDevMode.value === 'on') : false,
       // 离线模式：写入 [runtime]，保存即生效；所有出网入口下一次调用就快速失败
-      offline_mode: cfgOfflineMode ? !!cfgOfflineMode.checked : false
+      offline_mode: cfgOfflineMode ? !!cfgOfflineMode.checked : false,
+      // 提示词模板：只有真改过才带上（空串由后端归一成默认模板）
+      ask_template: askTplChanged ? cfgAskTemplate.value : undefined,
+      translate_template: trnTplChanged ? cfgTranslateTemplate.value : undefined
     };
     apiFetch('/api/config', {
       method: 'POST',
@@ -10992,6 +10997,16 @@
         }
         if (offlineBanner) {
           offlineBanner.hidden = !res.offline_mode;
+        }
+        // 提示词刚存成功：标记为「已同步」，回到前台时的静默同步才会继续跟进服务端值。
+        // 空白的框后端会归一成默认模板，这里同步回填最终生效的文本
+        if (askTplChanged) {
+          tplDirtyAsk = false;
+          if (res.ask_template) cfgAskTemplate.value = res.ask_template;
+        }
+        if (trnTplChanged) {
+          tplDirtyTrn = false;
+          if (res.translate_template) cfgTranslateTemplate.value = res.translate_template;
         }
         refreshLogUsage();
         // 用量与余额已由上面的 renderApiProfiles 按新的当前使用刷新过
@@ -12316,18 +12331,6 @@
     qqTokenReveal.textContent = show ? '隐藏' : '显示';
   });
 
-  // 提示词模板走插件端同一条独立接口；空文本由后端归一成默认模板
-  function saveTpl(endpoint, box) {
-    return memFetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: box.value })
-    }).then(function (res) {
-      // 后端会把全空白归一成默认模板，这里回填服务端最终生效的文本
-      box.value = (res && res.text) || '';
-      return res;
-    });
-  }
   // 提示词是「唯一数据源」：网页/客户端与插件大屏/QAM 都读写同一份
   // userdata/config.toml（经 /api/config、/api/ask-template、/api/translate-template）。
   // 页面如果只在打开时读一次，在 Deck 上用插件改完回来就会看到旧换行/旧文本，
@@ -12358,31 +12361,18 @@
     if (!document.hidden) syncPromptTemplates();
   });
   window.addEventListener('focus', function () { setTimeout(syncPromptTemplates, 60); });
-  // 这两个框也带 data-autosave（改动即自动保存），「保存提示词」只是手动立刻写一次。
+  // 这两个框带 data-autosave：停手 800ms 就随其它设置项一起提交，不再单独挂保存按钮。
   // 结果统一报到底栏那条提示里，卡片内不再单独挂一行状态文字。
-  tplSave.addEventListener('click', function () {
-    setCfgHint('保存中…');
-    Promise.all([
-      saveTpl('/api/ask-template', cfgAskTemplate),
-      saveTpl('/api/translate-template', cfgTranslateTemplate)
-    ]).then(function () {
-      // 保存成功：这两份内容已经是服务端最终值，后续前台同步以服务端为准
-      tplDirtyAsk = false;
-      tplDirtyTrn = false;
-      setCfgHint('已保存：截屏询问 / 截屏翻译提示词');
-    }).catch(function (err) {
-      var msg = (err && err.message) || '';
-      var offline = /Failed to fetch|NetworkError|Load failed/i.test(msg);
-      setCfgHint('保存失败：' + (offline ? '连不上服务，请稍后重试' : (msg || '未知错误')));
-    });
-  });
+  // 「恢复默认」只把默认文本填进框里，同样由自动保存落盘。
   document.getElementById('askTplReset').addEventListener('click', function () {
     cfgAskTemplate.value = askTplDefault;
     setCfgHint('已填入默认的截屏询问提示词');
+    scheduleAutoSave(0);
   });
   document.getElementById('trnTplReset').addEventListener('click', function () {
     cfgTranslateTemplate.value = trnTplDefault;
     setCfgHint('已填入默认的截屏翻译提示词');
+    scheduleAutoSave(0);
   });
 
   // ---------- 按游戏提示词预设 ----------

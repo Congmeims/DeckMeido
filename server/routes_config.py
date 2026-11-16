@@ -81,6 +81,8 @@ class ConfigUpdate(BaseModel):
     persona_forbid: str | None = None
     # 「截屏询问」提示词模板：空字符串表示恢复默认
     ask_template: str | None = None
+    # 「截屏翻译」提示词模板：同样空字符串表示恢复默认
+    translate_template: str | None = None
     # 状态栏隐藏提示词：空字符串表示恢复默认（只影响 /api/status/line 的文风）
     status_prompt: str | None = None
     # 双源模式是否探测 GitHub（关掉就只用镜像）
@@ -360,6 +362,10 @@ def init(require_auth, client_ip, get_main) -> None:
             # 留成空串会让这个按钮发不出去任何内容
             tpl = req.ask_template.strip() or m.DEFAULT_ASK_TEMPLATE
             updates.setdefault("agent", {})["ask_template"] = tpl
+        if req.translate_template is not None:
+            # 同上：空串恢复默认，避免「截屏翻译」发不出指令
+            tpl = req.translate_template.strip() or m.DEFAULT_TRANSLATE_TEMPLATE
+            updates.setdefault("agent", {})["translate_template"] = tpl
         if req.status_prompt is not None:
             # 状态栏提示词同理：清空恢复默认，避免状态栏只剩一句空话
             updates.setdefault("agent", {})["status_prompt"] = \
