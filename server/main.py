@@ -231,15 +231,26 @@ def default_ask_template() -> str:
 ASK_TEMPLATE = str(CFG.get("agent", {}).get("ask_template") or "").strip() or default_ask_template()
 # 「截图翻译」的提示词模板。以前写死在插件前端，用户改不了；现在和截屏询问一样
 # 存进 [agent] translate_template，插件设置区保存后下一次翻译就用新的。
+# 定位是「文字转录 + 翻译」而不是「看图说话」：用户拿它翻论文、说明书、游戏外文，
+# 要的是原文和译文本身，不需要模型解读画面、猜剧情，也不该因为文字涉及暴力、
+# 医学、法律等学术内容就拒译或加免责声明。
 DEFAULT_TRANSLATE_TEMPLATE = (
-    "把画面上的外文原文先照抄出来，再逐句翻译成简体中文。"
-    "已经是中文就原样说明，不要翻译。"
-    "只翻译、不解释剧情、不剧透，保持原文的换行和顺序。"
+    "把图片里的文字识别出来，先原样抄一遍，再逐句翻译成简体中文。\n"
+    "只处理文字：不描述画面、不解释背景、不评价内容，也不要补充图里没有的信息。\n"
+    "这是纯文字转录和翻译任务，用于阅读和学习：按原文照实翻，不做内容审查，"
+    "不因题材严肃或敏感就省略、软化或拒绝翻译，也不要加提醒和免责声明。\n"
+    "已经是中文就原样抄出并说明无需翻译。保持原文的换行、段落和标点；"
+    "表格按行列对齐，公式和符号照抄不译。"
 )
 DEFAULT_TRANSLATE_TEMPLATE_EN = (
-    "Copy the original text on screen first, then translate it sentence by sentence into English. "
-    "If it is already English, say so and do not translate. "
-    "Translate only: no story explanation, no spoilers, keep the original line breaks and order."
+    "Recognize the text in the image, copy it out verbatim first, then translate it sentence by sentence into English.\n"
+    "Handle text only: do not describe the picture, explain context, or add anything not in the image.\n"
+    "This is a plain transcription and translation task for reading and study: translate faithfully, "
+    "do not censor, soften, omit, or refuse because the subject matter is serious or sensitive, "
+    "and do not add warnings or disclaimers.\n"
+    "If the text is already in English, just copy it and say no translation is needed. "
+    "Keep the original line breaks, paragraphs and punctuation; align tables by row and column, "
+    "and copy formulas and symbols without translating them."
 )
 
 
@@ -1536,6 +1547,23 @@ def _shot_ref_path(name: str) -> Path | None:
     return fp if fp.is_file() else None
 
 
+def _upload_path(url: str) -> Path | None:
+    """把 /uploads/xxx 这类链接还原成磁盘路径，找不到返回 None
+
+    主位置是 userdata/uploads/（新版上传全落这里，也由 /uploads 静态挂载）；
+    再兜一下 static/uploads/——老版本上传的图躺在那儿，历史消息里的链接还在，
+    只认新目录的话那些老图会永远显示「未能附上」。
+    """
+    name = Path(url).name
+    if not name:
+        return None
+    for base in (paths.uploads_dir(), STATIC_DIR / "uploads"):
+        fp = base / name
+        if fp.is_file():
+            return fp
+    return None
+
+
 def _to_vision_content(text: str):
     """消息里含上传图片引用时转成多模态 content（供 vision 模型看图）
 
@@ -1547,20 +1575,49 @@ def _to_vision_content(text: str):
     if not matches:
         return text
     parts = []
+    lost = 0
     for url in matches:
-        fp = paths.uploads_dir() / Path(url).name
-        if not fp.is_file():
+        fp = _upload_path(url)
+        if not fp:
             devlog.log("upload_missing", path=url)
+            lost += 1
             continue
         part = _read_image_part(fp)
         if not part:
             devlog.log("upload_unreadable", path=url)
+            lost += 1
             continue
         parts.append(part)
     if not parts:
-        return text
+        # 图一张都没读出来：不能只把原文还给模型——它会以为图在别处，
+        # 转头去 find 磁盘、装 OCR 工具乃至凭文件名瞎猜画面内容。
+        # 明确告诉它没收到图，并且不要自己去找
+        return prompts.part("image_missing").format(text=_UPLOAD_RE.sub("[图片]", text))
+    if lost:
+        devlog.log("upload_partial", lost=lost, total=len(matches))
+        parts.append({"type": "text", "text": prompts.part("image_partial")})
     parts.append({"type": "text", "text": _UPLOAD_RE.sub("[图片]", text)})
     return parts
+
+
+def _blindify_images(msgs: list[dict]) -> None:
+    """纯文本模型这一轮不看图：把每条消息里的图片部件就地换成一句说明
+
+    历史里 _build_llm_msgs 已经把旧图表过一遍，但本轮新展开的那张（用户刚上传、
+    刚引用的图）还是真的 image_url。纯文本模型收到它有两种坏结果：上游直接 400，
+    或者悄悄丢掉图、模型只看到一行「![图片]」，于是自己去找文件、装 OCR 猜内容。
+    换成明确的「看不到，告诉用户」文案，比让它瞎猜好。
+    """
+    note = {"type": "text", "text": prompts.part("image_blind")}
+    for m in msgs:
+        content = m.get("content")
+        if not isinstance(content, list):
+            continue
+        if not any(isinstance(p, dict) and p.get("type") == "image_url"
+                   for p in content):
+            continue
+        m["content"] = [note if isinstance(p, dict) and p.get("type") == "image_url"
+                        else p for p in content]
 
 
 def _shot_caption(seq: int) -> str:
@@ -6093,6 +6150,10 @@ async def run_agent(events: list[dict], extra_system: str = "",
     msgs = _build_llm_msgs(hist, sys_prompt, turn_sid,
                            hist_max=pol.history_max_messages,
                            item_max_chars=pol.history_item_max_chars)
+    if not llm.supports_vision:
+        # 纯文本模型：把图换成一句「没收到」，别让残留的图片部件把上游 400，
+        # 也别让它以为图在磁盘某处而自己去 find / 装 OCR
+        _blindify_images(msgs)
     hist_msgs = len(msgs)
     streaming = False  # 是否已开始向用户流式输出正文
     # 本轮正文累积：流式回调里按节流频率落盘，进程被杀最多丢一小段
