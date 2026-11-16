@@ -54,10 +54,11 @@ SPEAKERS = (
 PREVIEW_TIMEOUT = 20.0
 SPEAKER_LABELS = {item["id"]: item["label"] for item in SPEAKERS}
 
-# 试听默认句：按发音人选，各用单一语言，避免中英混排跨段
+# 试听默认句：两个发音人念同一句，只比声音，不比文案
+PREVIEW_TEXT = "你好，我是月读酱。"
 PREVIEW_TEXTS = {
-    SPEAKER_ROBOT: "你好，我是机器人语音。",
-    SPEAKER_MAID: "你好，我是月读酱。",
+    SPEAKER_ROBOT: PREVIEW_TEXT,
+    SPEAKER_MAID: PREVIEW_TEXT,
 }
 
 VOICE_ID = "tsukuyomi"

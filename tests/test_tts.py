@@ -844,18 +844,15 @@ class PreviewTextTest(unittest.TestCase):
         _run(t.preview(text))
         return captured.get("text", "")
 
-    def test_默认句按发音人区分(self):
+    def test_默认句两个发音人一致(self):
+        # 试听只用来比声音，两个发音人念同一句（与月读酱一致）
         robot_text = self._capture("robot")
         maid_text = self._capture("maid")
-        self.assertIn("机器人", robot_text)
-        self.assertNotIn("月读酱", robot_text)
-        self.assertIn("月读酱", maid_text)
-        self.assertNotIn("机器人", maid_text)
-        self.assertNotEqual(robot_text, maid_text)
+        self.assertEqual(robot_text, maid_text)
+        self.assertEqual(robot_text, ttsmod.PREVIEW_TEXT)
 
-    def test_默认句常量不含对方称呼(self):
-        self.assertNotIn("月读酱", ttsmod.PREVIEW_TEXTS["robot"])
-        self.assertNotIn("机器人", ttsmod.PREVIEW_TEXTS["maid"])
+    def test_默认句常量统一(self):
+        self.assertEqual(ttsmod.PREVIEW_TEXTS["robot"], ttsmod.PREVIEW_TEXTS["maid"])
 
     def test_传入文本优先(self):
         self.assertEqual(self._capture("robot", "自定义试听句"), "自定义试听句")
