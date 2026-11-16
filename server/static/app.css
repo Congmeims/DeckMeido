@@ -3294,7 +3294,16 @@
   .fb-item.sel { background: rgba(26,159,255,.18); box-shadow: inset 0 0 0 1px rgba(26,159,255,.55); }
   .fb-item.flash { animation: fbFlash 1.2s ease-out 2; }
   @keyframes fbFlash { 0%,100% { background: transparent; } 50% { background: rgba(26,159,255,.28); } }
+  /* 报错/空目录这类整块提示（目录不存在、读取失败、加载中）在文件区里居中：
+     它们替代的是整个列表而不是某一行，贴着左上角会显得像一条普通条目。
+     只对直接子级生效，「..」和真实文件行照旧左对齐排下来 */
+  #fbList { display: flex; flex-direction: column; }
+  #fbList > .fb-item { flex: none; }
   #fbList .fb-note { padding: 10px; font-size: 12px; color: var(--muted); }
+  #fbList > .fb-note {
+    flex: 1 1 auto; display: flex; align-items: center; justify-content: center;
+    padding: 24px 16px; text-align: center; line-height: 1.6;
+  }
   /* 终端面板的空状态：居中、带一枚大符号，比一行孤零零的灰字有视觉重心。
      挂在 #termList 直接子级时生效（有真实命令条目后不再有 fb-note） */
   #termList .fb-note {
