@@ -1795,6 +1795,25 @@
     return mdRestore(s, stash);
   }
 
+  // 正文里的上传图可能永远加载不出来：上传没落盘、文件被清理、浏览器不认这个格式。
+  // innerHTML 里挂不了 onerror，所以渲染完统一扫一遍：加载失败就换成一句说明，
+  // 别给用户留一个空白破图标（「传了却看不到图」最让人迷惑的就是这种）
+  function wireChatImages(root) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('img.chat-img').forEach(function (img) {
+      if (img.dataset.wired) return;
+      img.dataset.wired = '1';
+      img.addEventListener('error', function () {
+        var ph = document.createElement('div');
+        ph.className = 'chat-img-gone';
+        ph.textContent = '（这张图片没能加载：文件可能已被清理，或格式浏览器不支持，可以重新发一次）';
+        if (img.parentNode) img.parentNode.replaceChild(ph, img);
+      });
+      // 已经加载失败的图（缓存里直接失败）不会再触发 error，这里补一次判定
+      if (img.complete && img.naturalWidth === 0) img.dispatchEvent(new Event('error'));
+    });
+  }
+
   // 原生客户端标记：URL 带 native=1 时由 Deck 桌面版打开，图片等交互走系统工具。
   // 必须定义在 DEVICE_ID 之前 —— 后者要靠它决定用固定身份还是 localStorage
   var IS_NATIVE = new URLSearchParams(location.search).get('native') === '1';
@@ -2106,6 +2125,7 @@
     var shown = String(text || '').replace(/^[ \t]*@\{[^}\n]+\}[ \t]*$/gm, '')
       .replace(/\n{3,}/g, '\n\n').trim();
     body.innerHTML = renderMd(shown);
+    wireChatImages(body);
     el.appendChild(body);
     appendRefChips(el, text);
     // 随提问附带的画面（截屏询问）：缩略图直接嵌在气泡正文下面。
@@ -2301,6 +2321,7 @@
     var body = document.createElement('div');
     body.className = 'stream-body';
     body.innerHTML = renderMd(text);
+    wireChatImages(body);
     el.appendChild(body);
     return el;
   }
@@ -6304,7 +6325,7 @@
           if (streamEl && streamEl.parentNode) {
             if (msg.text) {
               var fb = streamEl.querySelector('.stream-body');
-              if (fb) fb.innerHTML = renderMd(msg.text);
+              if (fb) { fb.innerHTML = renderMd(msg.text); wireChatImages(fb); }
               fillFileSizes(streamEl);
               if (msg.ts) streamEl.dataset.ts = String(msg.ts);
               promoted = true;

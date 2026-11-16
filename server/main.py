@@ -1618,7 +1618,17 @@ def _to_vision_content(text: str):
             continue
         part = _read_image_part(fp)
         if not part:
-            devlog.log("upload_unreadable", path=url)
+            # 区分「文件不在」和「文件在但读不出图」：后者多半是格式怪或内容损坏。
+            # 统计与文件头都现读，读不到（刚被删/被清）就报 unknown，不在这里再抛
+            size = magic = 0
+            try:
+                size = fp.stat().st_size
+                with fp.open("rb") as fh:
+                    magic = _IMG_MAGIC(fh.read(16))
+            except OSError:
+                pass
+            devlog.log("image_bad_format", path=str(fp), suffix=fp.suffix,
+                       size=size, magic=magic or "unknown")
             lost += 1
             continue
         parts.append(part)

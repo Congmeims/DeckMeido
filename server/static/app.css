@@ -307,6 +307,12 @@
     cursor: zoom-in;
   }
   .msg .msg-shot-gone { margin-top: 8px; font-size: 12px; opacity: .7; }
+  /* 正文里的上传图加载失败：换成同样大小的说明块，不留破图标 */
+  .msg img.chat-img-gone {
+    display: block; margin: 6px 0; padding: 10px 12px;
+    border: 1px dashed var(--line); border-radius: 8px;
+    font-size: 12px; color: var(--muted);
+  }
   /* 点缩略图后的原图覆盖层 */
   .shot-viewer {
     position: fixed;
