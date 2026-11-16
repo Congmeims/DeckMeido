@@ -920,6 +920,35 @@ def reload_persona() -> dict:
     return PERSONA
 
 
+def config_prefs() -> dict:
+    """所有端共用的偏好项（网页/客户端/插件/大屏都用同一份口径）
+
+    /api/config 全量回显给设置页，/api/status 也带上一份：面板、大屏这类
+    只轮询状态的端据此显示"当前设置"，不用每次都去拉整份配置。
+    网页改了设置以后由 POST /api/config 广播 config_changed，
+    各端收到就重拉，避免"网页已经是自动审批、面板还显示手动审批"。
+    """
+    cfg_agent = CFG.get("agent") or {}
+    stt_cfg = CFG.get("stt") or {}
+    return {
+        # 审批模式：manual / auto / custom / full（自定义档的四组开关一起给）
+        "permission_mode": PERMISSION_MODE,
+        "permission_custom": dict(CUSTOM_PERM),
+        # 带画面询问：有效值 + 分项原始值（大屏按原始值回显开关）
+        "with_shot": chat_voice_enabled() and bool(cfg_agent.get("with_shot", True)),
+        "with_shot_pref": bool(cfg_agent.get("with_shot", True)),
+        # 语音输入 / 录音时静音外放
+        "stt_enable": stt.enable,
+        "stt_enable_pref": bool(stt_cfg.get("enable", True)),
+        "stt_duck_output": audiomute.enabled(),
+        # 「对话与语音」整组总开关
+        "chat_voice": chat_voice_enabled(),
+        "wake_enabled": wake_service.enabled,
+        "ui_language": UI_LANG,
+        "reasoning_effort": llm.reasoning_effort,
+    }
+
+
 # 权限模式：manual=所有命令手动审批 / custom=按四组开关 / auto=危险命令才审批
 # full=完全访问。custom 的四组开关见 tools.CUSTOM_GROUPS
 PERMISSION_MODE = approval.normalize_mode(
@@ -1961,6 +1990,9 @@ def get_status(gaming: bool | None = None) -> dict:
         "gamepad_reason": gamepad_reason,
         # 语音合成实际用哪个引擎、为什么降级：tts_engine / tts_ready / tts_error
         **tts.summary(),
+        # 各端共用的偏好项（审批模式、带画面、语音输入等）：面板/大屏只轮询
+        # 状态也能拿到真实设置，不会出现「网页已是自动审批、面板还显示手动」
+        **config_prefs(),
         # 当前游戏 / 当前提示词预设（状态区显示「当前预设：xxx」用）
         "game_appid": preset_state["game_appid"],
         "game_name": preset_state["game_name"],

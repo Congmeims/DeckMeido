@@ -49,6 +49,15 @@ export type Status = {
   update_has?: boolean;
   update_latest?: string;
   model: string;
+  // 审批模式：manual / auto / custom / full。网页端也能改，
+  // 面板每次 refreshStatus 都以后端现读值为准
+  permission_mode?: string;
+  // 自定义档的四组开关（True = 先问我）
+  permission_custom?: Record<string, boolean>;
+  // 「对话与语音」总开关 / 智能音箱模式 / 界面语言（网页端也能改）
+  chat_voice?: boolean;
+  wake_enabled?: boolean;
+  ui_language?: string;
   game_name: string;
   // 后端 persona 的昵称：状态行前缀用，缺失时前端退回默认称呼
   persona_name: string;
@@ -151,6 +160,8 @@ export type Delta =
   | { kind: "tool"; text: string }
   | { kind: "status"; running: boolean; since?: number }
   | { kind: "pad_order"; action: "to1p" | "revert" }
+  // 别的端（网页/客户端）改了设置：prefs 是后端当时的偏好快照，前端据此重拉
+  | { kind: "config_changed"; prefs?: Record<string, unknown> }
   | { kind: "thread"; items: Item[] };
 
 export type ActionKind = "" | "ask" | "translate" | "send";
@@ -229,6 +240,9 @@ export function useSession() {
   const busyRef = useRef(false);
   // 最近一次「用户主动终止」的时间（秒）。用来过滤后端迟到的旧 running=true
   const cancelAtRef = useRef(0);
+  // 后端 config_changed 广播要用最新的 refreshStatus（监听器只注册一次，
+  // 直接闭包会拿到旧函数），所以每次渲染都同步一份
+  const refreshStatusRef = useRef<(() => Promise<unknown>) | null>(null);
 
   const setRunningAction = (a: ActionKind) => {
     activeAction = a;
@@ -413,6 +427,8 @@ export function useSession() {
       setProbing(false);
     }
   };
+  // config_changed 广播里要用最新这一份（监听器只注册一次）
+  refreshStatusRef.current = refreshStatus;
 
   const startBackend = async () => {
     if (starting) return;
@@ -889,6 +905,12 @@ export function useSession() {
       }
       if (msg.kind === "pad_order") {
         void applyPadOrder(msg.action);
+        return;
+      }
+      if (msg.kind === "config_changed") {
+        // 网页/客户端刚改了设置（审批模式、带画面、语音输入等）：重拉一次状态，
+        // 面板上的开关才会跟着变，而不是停在打开面板那一刻的旧值
+        void refreshStatusRef.current?.();
         return;
       }
       if (msg.kind === "status") {

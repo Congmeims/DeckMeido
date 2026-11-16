@@ -6429,6 +6429,11 @@
         case 'system':
           addSystem(msg.text || '');
           break;
+        case 'config_changed':
+          // 别的端（另一台浏览器/桌面客户端/掌机面板）改了设置：
+          // 顶栏与设置页按后端现读值重显，别在这边继续显示旧选项
+          syncConfigChanged(msg.data || {});
+          break;
         case 'session_changed':
         case 'history':
           loadSessions();
@@ -12994,6 +12999,36 @@
       no.onclick = function () { cleanup(false); };
       document.addEventListener('keydown', onKey);
     });
+  }
+
+  // 后端广播的 config_changed：把顶栏和设置页里"别处也能改"的项同步成新值。
+  // 只动这几项，不碰输入框里正在写的内容，避免把用户正在编辑的表单冲掉
+  function syncConfigChanged(prefs) {
+    if (!prefs) return;
+    var mode = prefs.permission_mode;
+    if (mode) {
+      // 正在弹"完全访问"风险确认时先不动，等用户点完再按后端值落位
+      if (permSelect.value !== mode) {
+        permSelect.value = mode;
+        permSelect.dataset.prev = mode;
+        syncPermDanger(permSelect);
+      }
+      if (cfgPerm.value !== mode) {
+        cfgPerm.value = mode;
+        cfgPerm.dataset.prev = mode;
+        syncPermDanger(cfgPerm);
+      }
+      if (permCustom) {
+        permCustom.hidden = (mode !== 'custom');
+        var pc = prefs.permission_custom || {};
+        if (pc.read !== undefined) permCustomRead.checked = !!pc.read;
+        if (pc.write !== undefined) permCustomWrite.checked = !!pc.write;
+        if (pc.cmd !== undefined) permCustomCmd.checked = !!pc.cmd;
+        if (pc.net !== undefined) permCustomNet.checked = !!pc.net;
+      }
+    }
+    // 自绘下拉的 label 也要跟着刷新，否则显示的还是上一项的文字
+    ddRefreshAll();
   }
 
   var modelsErrShown = false;   // 模型列表失败只提示一次，成功后再重置

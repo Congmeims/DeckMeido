@@ -1797,6 +1797,14 @@ async def _read_loop(bk: _Backend):
             # 避免思考指示灭掉又被一条陈旧 running=true 点亮
             _emit({"kind": "status", "running": run, "since": _STREAM_SINCE})
             continue
+        if typ == "config_changed":
+            # 别的端（网页/客户端）改了设置：全局广播、不属于某一轮，
+            # 同样放在 sid 过滤之前。前端收到就重拉一次 get_status，
+            # 面板/大屏上的开关才不会停在旧值上
+            decky.logger.info("收到后端 config_changed，通知前端刷新设置")
+            _emit({"kind": "config_changed",
+                   "prefs": msg.get("data") or {}})
+            continue
         if typ == "pad_order":
             # 虚拟手柄的换序请求：全局广播、不属于某一轮，所以也要放在 sid 过滤前。
             # 排序状态只在 Steam 进程里，后端改不了，只能交给前端去调
@@ -2096,7 +2104,11 @@ async def _core_status(port: int) -> dict:
 
 
 async def _core_prefs(port: int) -> dict:
-    """读后端的偏好项（语音播报、带画面、版本号、当前模型），面板设置区要显示/切换这些"""
+    """读后端的偏好项（语音播报、带画面、审批模式、版本号、当前模型）
+
+    面板设置区要显示/切换这些；审批模式这类"别处也能改"的项必须现读，
+    不能只靠面板自己缓存，否则网页改了这边不会跟。
+    """
     r = await _core_http(port, "GET", "/api/config", timeout=2.0)
     if not r["ok"]:
         return {"ok": False, "error": r.get("error", ""), "tts": False,
@@ -2112,6 +2124,14 @@ async def _core_prefs(port: int) -> dict:
             "stt_duck_available": bool((d.get("stt_duck") or {}).get("available")),
             "version": str(d.get("version") or ""),
             "model": str(d.get("model") or ""),
+            # 审批模式（manual/auto/custom/full）与自定义档四组开关：
+            # 网页端也能改，面板显示必须以这份现读值为准
+            "permission_mode": str(d.get("permission_mode") or "auto"),
+            "permission_custom": dict(d.get("permission_custom") or {}),
+            # 「对话与语音」总开关、智能音箱模式、界面语言、深度思考档位
+            "chat_voice": bool(d.get("chat_voice", True)),
+            "wake_enabled": bool(d.get("wake_enabled", False)),
+            "ui_language": str(d.get("ui_language") or "zh"),
             # 人设昵称：状态行前缀用，缺失时前端有默认称呼兜底
             "persona_name": str(d.get("persona_name") or "")}
 
@@ -2248,6 +2268,13 @@ class Plugin:
             "update_latest": str(upd.get("latest") or ""),
             # 设置区：当前模型名，下拉菜单的首帧先显示它，再异步拉全量列表
             "model": str(prefs.get("model") or ""),
+            # 审批模式：网页端也能改，这里每次现读后端，面板/大屏跟着一起变
+            "permission_mode": str(prefs.get("permission_mode") or "auto"),
+            "permission_custom": dict(prefs.get("permission_custom") or {}),
+            # 「对话与语音」总开关 / 智能音箱模式 / 界面语言
+            "chat_voice": bool(prefs.get("chat_voice", True)),
+            "wake_enabled": bool(prefs.get("wake_enabled", False)),
+            "ui_language": str(prefs.get("ui_language") or "zh"),
             # 人设昵称：状态行用它做前缀（persona 缺失时前端退回默认称呼）
             "persona_name": str(prefs.get("persona_name") or ""),
             # 当前正在运行的游戏名：抓帧时会再查一次，这里给面板一个初值，

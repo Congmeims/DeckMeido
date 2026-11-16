@@ -434,6 +434,12 @@ def init(require_auth, client_ip, get_main) -> None:
             updates.setdefault("runtime", {})["offline_mode"] = bool(req.offline_mode)
         if updates:
             m.save_config(updates)
+            # 设置变了：通知所有端（网页/客户端/插件面板/大屏）重拉状态，
+            # 否则在网页上改了审批模式这类选项，Deck 面板上还是旧值
+            await m.manager.broadcast({
+                "type": "config_changed",
+                "data": m.config_prefs(),
+            })
         if ri.get("enabled") is False:
             # 关掉总开关时立刻结束正在进行的接管，不等下一次心跳
             await remote_input.manager.finish(remote_input.RI_DISABLED)
