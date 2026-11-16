@@ -170,6 +170,10 @@ class YdotoolBackend:
             raise RemoteInputError(
                 RI_NO_YDOTOOL,
                 f"ydotoold 没在运行（{self._sock} 不存在）")
+        # 光有 socket 不算数：ydotoold 活着但没连上当前输入会话时，
+        # 命令照样返回 0 却什么都不注入（Deck 上表现为「提示已接管，键鼠不动」）。
+        # 开局先发一条零位移自检，把这种情况在握手阶段就报回浏览器
+        await self._run("mousemove", "--", "0", "0")
         return self
 
     async def _run(self, *args: str):
@@ -199,8 +203,9 @@ class YdotoolBackend:
             raise RemoteInputError(RI_INJECT_FAILED, "ydotool 执行超时")
 
     async def move(self, dx: int, dy: int):
-        if dx or dy:
-            await self._run("mousemove", "--", str(dx), str(dy))
+        # 0,0 也照发：ydotoold 靠收到事件才重新探测输入会话，
+        # 跳过零位移会让长时间不动之后的第一下丢失
+        await self._run("mousemove", "--", str(dx), str(dy))
 
     async def button(self, b: int, down: bool):
         code = (_BTN_DOWN if down else _BTN_UP).get(b)
@@ -509,6 +514,8 @@ class RemoteInputManager:
         self.session: InputSession | None = None
         self._lock = asyncio.Lock()
         self._hook = None
+        # 后端自检（注入管线静默失效）的复核结果，仅诊断用
+        self.diagnosis = ""
 
     @property
     def active(self) -> bool:
@@ -526,6 +533,7 @@ class RemoteInputManager:
             "backend": s.backend.kind if s else "",
             "started": s.started if s else 0,
             "remaining": max(0, int(s.deadline - time.monotonic())) if s else 0,
+            "diagnosis": self.diagnosis,
         }
 
     async def _notify(self, state: str, code: str = ""):
@@ -564,6 +572,9 @@ class RemoteInputManager:
             if backend is None:
                 raise last or RemoteInputError(RI_INJECT_FAILED, "没有可用的注入后端")
             max_minutes = int(cfg.get("max_minutes", DEFAULT_MAX_MINUTES) or DEFAULT_MAX_MINUTES)
+            self.diagnosis = ""
+            if backend.kind == "ydotool":
+                self.diagnosis = await self._diagnose_ydotool(backend)
             sess = InputSession(backend, max_minutes, owner)
             sess.start_flush()
             self.session = sess
@@ -571,6 +582,12 @@ class RemoteInputManager:
                   f"后端 {backend.kind}，上限 {sess.max_minutes} 分钟", file=sys.stderr)
             await self._notify("active")
             return sess
+
+    async def _diagnose_ydotool(self, backend) -> str:
+        """ydotool 能跑通但可能注不到当前会话，把关键环境记下来便于排查。"""
+        disp = os.environ.get("DISPLAY", "")
+        way = os.environ.get("WAYLAND_DISPLAY", "")
+        return f"ydotool socket={backend._sock} DISPLAY={disp or '-'} WAYLAND_DISPLAY={way or '-'}"
 
     async def finish(self, code: str) -> bool:
         async with self._lock:

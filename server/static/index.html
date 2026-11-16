@@ -12442,7 +12442,7 @@
   var riToastEl = document.getElementById('riToast');
   var riState = {
     enabled: false, sensitivity: 1.5, max_minutes: 30,
-    active: false, by: '', remaining: 0
+    active: false, by: '', remaining: 0, diagnosis: ''
   };
   var riWs = null, riActive = false, riStarting = false;
   var riPingTimer = 0, riToastTimer = 0, riClosing = false;
@@ -12514,6 +12514,7 @@
         riState.remaining = Number(st.remaining) || 0;
         // 不覆盖本端正在进行的接管：广播可能会晚到
         if (!riActive) { riActive = !!st.active; }
+        if (st.diagnosis) riState.diagnosis = st.diagnosis;
         riPaint();
       })
       .catch(function () { /* 状态拉不到不影响页面其它功能 */ });
@@ -12595,7 +12596,7 @@
     if (riWs) return;
     var proto = location.protocol === 'https:' ? 'wss' : 'ws';
     riWs = new WebSocket(proto + '://' + location.host
-      + '/ws/input');
+      + deviceTokenQuery('/ws/input'));
     riWs.onopen = function () {
       if (!document.pointerLockElement) { riTeardown(false); return; }
       riSend({ t: 'ping' });
@@ -12609,10 +12610,17 @@
       try { msg = JSON.parse(ev.data); } catch (e) { return; }
       if (msg.t === 'state') riOnServerState(msg);
     };
-    riWs.onclose = function () {
+    riWs.onclose = function (ev) {
       riWs = null;
       if (riPingTimer) { clearInterval(riPingTimer); riPingTimer = 0; }
-      if (riActive && !riClosing) riFail('RI_DISCONNECTED');
+      if (riActive && !riClosing) { riFail('RI_DISCONNECTED'); return; }
+      // 还没等到 RI_ACTIVE 就被关：以前这里什么都不做，4401（没带设备令牌）
+      // 之类会把锁定留在原地——鼠标没了却按不动 Deck。一律收尾并说清原因
+      if (!riActive && !riClosing) {
+        var code = ev && ev.code === 4401 ? 'RI_UNAUTHORIZED' : 'RI_DISCONNECTED';
+        riTeardown(false);
+        riToast('接管未建立：' + (RI_TEXT[code] || code) + '（' + (ev && ev.code) + '）');
+      }
     };
     riWs.onerror = function () {
       if (riActive && !riClosing) riFail('RI_DISCONNECTED');
@@ -12661,8 +12669,10 @@
     riState.by = msg.by || '';
     riState.remaining = Number(msg.remaining) || 0;
     if (active) {
-      // 广播先于本端握手到达时也要亮状态，避免「已接管但没标识」
-      if (!riActive) { riActive = true; }
+      // 只同步状态标记，绝不打断本端正在锁定的指针：这里的广播是本端握手后
+      // 服务端回显的，若在收到 RI_ACTIVE 之前就设 riActive，或反之把它清掉，
+      // 都会让 riIsLocked() 提前为真/为假，出现「提示接管成功但键鼠发不出去」
+      riState.active = true;
     } else if (riActive) {
       // 服务端已经收尾（可能是别的端点的停止按钮），本地只清状态，不再发 release
       riTeardown(false);

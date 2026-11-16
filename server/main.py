@@ -3142,7 +3142,8 @@ async def ws_input(ws: WebSocket):
         await ws.close(code=1008)
         return
     await ws.send_json({"t": "state", "ok": True, "code": "RI_ACTIVE",
-                        "backend": sess.backend.kind, "max_minutes": sess.max_minutes})
+                        "backend": sess.backend.kind, "max_minutes": sess.max_minutes,
+                        "diagnosis": remote_input.manager.diagnosis})
 
     end_code = remote_input.RI_DISCONNECTED
     try:
