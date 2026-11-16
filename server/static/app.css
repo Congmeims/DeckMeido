@@ -1312,13 +1312,6 @@
     display: flex; flex-direction: column;
     position: relative;
   }
-  /* 自动保存成功的浮窗：挂在设置主区域底部居中，盖在底栏上方，
-     不挤占任何一行布局；改口吻/端口这类没有就地提示的项也能看见反馈 */
-  #toastSet {
-    position: absolute; left: 50%; bottom: 56px;
-    transform: translateX(-50%) translateY(4px);
-  }
-  #toastSet.show { transform: translateX(-50%) translateY(0); }
   /* ---------- 设置页视觉密度规范 ----------
      所有卡片共用这一组变量：改密度只改这里，不在单张卡上另写内联值。
      控件统一 32px 高，说明文字统一 11.5/1.45，圆角统一 10（卡片 12） */
@@ -1631,18 +1624,27 @@
     border-top: 1px solid var(--line);
     background: var(--surface);
   }
-  .set-foot #cfgHint { flex: 1; margin: 0; text-align: left; line-height: 1.4; }
-  /* 自动保存标记：底栏左侧的小胶囊，说明「改了就存」，右边按钮只是手动兜底 */
-  .set-auto-tag {
-    flex: none; padding: 2px 8px; border-radius: 999px;
-    font-size: 11.5px; line-height: 1.5; color: var(--brand);
-    border: 1px solid var(--brand); opacity: .85;
+  /* 提示吃掉剩余宽度，按钮靠右钉死：文案长短变化只影响提示本身，
+     按钮的位置不会跟着左右挪（以前左侧胶囊随时显隐，按钮会跳到它旁边） */
+  .set-foot #cfgHint {
+    flex: 1 1 auto; min-width: 0;
+    /* 底栏里不用旧样式那套上边距/最小高度：那会让底栏随提示出现而长高，
+       按钮跟着上下跳。这里高度由按钮决定，提示只是这一行里的一段文字 */
+    margin: 0; min-height: 0;
+    text-align: left; line-height: 1.4;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  /* 没有提示时不占宽度：flex 属性会盖掉 hidden 的 display:none，
+     空提示会吃掉一半宽度，把按钮挤到中间 */
+  .set-foot #cfgHint[hidden] { display: none; }
   /* 主按钮只有一套：设置页的「保存」和关于页的「立即升级」同高同宽同色，
      尺寸直接照抄对话页的发送键（34 高 / 0 16 内边距 / 15px 600），
      底栏右内边距也跟输入区一样是 12，两个按钮的右边缘就落在同一条线上 */
   #saveCfg, #updApply {
     flex: none;
+    /* 靠右钉死：提示条隐藏时没有东西撑开宽度，按钮会贴到左内边距上；
+       auto 让它无论提示在不在都贴着右缘 */
+    margin-left: auto;
     height: 34px; min-width: 52px; padding: 0 16px;
     border: none; border-radius: 10px;
     background: var(--brand); color: #fff;

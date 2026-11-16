@@ -289,7 +289,6 @@
      不用抄一遍，也就不会出现「设置页的顶栏比对话页丑一截」 -->
 <div id="settingsPanel">
   <div class="set-main">
-    <div id="toastSet" class="toast"></div>
     <div class="set-body">
       <div class="set-inner">
         <div id="settingsNoMatch" class="set-no-match" hidden>没有找到匹配的设置项</div>
@@ -1177,10 +1176,10 @@
 
       </div>
     </div>
-    <!-- 设置改为自动保存：底栏只留「自动保存」胶囊和保存按钮；
-         出错/进行中的提示由 setCfgHint 临时显示，平时不占位 -->
+    <!-- 设置改为自动保存：底栏只留提示和保存按钮。
+         提示平时不占位，保存成功时写「已自动保存：<刚改的那一项>」，
+         失败/进行中由 setCfgHint 临时写原因 -->
     <div class="set-foot">
-      <span class="set-auto-tag">自动保存</span>
       <div id="cfgHint" hidden></div>
       <button id="saveCfg" type="button" title="改完会自动保存，这里只是手动立刻保存一次">保存</button>
     </div>
@@ -8683,8 +8682,8 @@
   var pairPollTimer = 0;
   var saveCfg = document.getElementById('saveCfg');
   var cfgHint = document.getElementById('cfgHint');
-  // 底栏默认只留「自动保存」胶囊和保存按钮，平时不占一行字；
-  // 只有真的需要说话（保存中 / 保存失败 / 导出结果）才临时显出来，说完再收回
+  // 底栏左侧那行字：平时不占位，只有真的需要说话（保存中 / 保存失败 /
+  // 已自动保存：<改动项> / 导出结果）才显出来，说完再收回
   function setCfgHint(msg) {
     cfgHint.textContent = msg || '';
     cfgHint.hidden = !msg;
@@ -10564,19 +10563,53 @@
     if (el && el._dd && el._dd.refresh) el._dd.refresh();
   }
 
-  // 自动保存成功的浮窗：底栏那行字太靠边，改口吻、改端口这类没有就地提示的
-  // 设置项看不出「到底存没存」。只在自动保存成功时弹，手动点「保存」不弹。
-  var toastSetEl = document.getElementById('toastSet');
-  var toastSetTimer = null;
-  function showSetSaved() {
-    if (!toastSetEl) return;
-    toastSetEl.textContent = '设置项已保存';
-    toastSetEl.classList.remove('err');
-    toastSetEl.classList.add('show');
-    clearTimeout(toastSetTimer);
-    toastSetTimer = setTimeout(function () {
-      toastSetEl.classList.remove('show');
-    }, 1600);
+  // 拿某个设置控件的「人话名字」，用于底栏的「已自动保存：xxx」：
+  // .field 里的 <label> 优先，其次是所属卡片标题；都找不到就退回兜底文案
+  function cfgItemName(el) {
+    if (!el) return '';
+    // 模型接入里动态生成的接口行没有 label，按行内输入框的用途给名字
+    var row = el.closest ? el.closest('.api-profile') : null;
+    if (row) {
+      if (el.classList.contains('api-base')) return '接口地址';
+      if (el.classList.contains('api-key')) return 'API Key';
+      return '接口名称';
+    }
+    var field = el.closest ? el.closest('.field') : null;
+    var lab = field && field.querySelector('label');
+    if (lab && lab.textContent.trim()) return lab.textContent.trim().replace(/[（(].*$/, '');
+    var card = el.closest ? el.closest('.card') : null;
+    var title = card && card.querySelector('.card-title');
+    if (title && title.textContent.trim()) return title.textContent.trim();
+    // 人设区域的 textarea：placeholder 就是这个设置项的用途说明
+    var ph = String(el.getAttribute && el.getAttribute('placeholder') || '');
+    if (ph) return ph.length > 18 ? ph.slice(0, 18) + '…' : ph;
+    return '设置项';
+  }
+
+  // 找出所有和初始快照不同、这次真的改了、而且改动动作与触发元素一致的控件。
+  // 一次保存可能带上好几项（比如人设区一次失焦），只报用户最后碰的那个
+  function autoSaveChangedLabel(trigger) {
+    var els = document.querySelectorAll('[data-autosave]');
+    var last = null;
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (!el.dataset.asv) continue;
+      var cur = el.type === 'checkbox' ? (el.checked ? '1' : '0') : String(el.value || '');
+      if (cur !== el.dataset.asv) {
+        if (el === trigger) return cfgItemName(el);
+        last = last || el;
+      }
+    }
+    return last ? cfgItemName(last) : '';
+  }
+
+  // 底栏的常驻提示：只写「已自动保存：<项目名>」，没有项目名就退成不带冒号的短句
+  function setCfgSavedHint(name) {
+    cfgHint.title = '';
+    var text = name ? '已自动保存：' + name : '已自动保存';
+    // 文案可能比底栏宽，完整内容放 title 里，悬停能看到
+    cfgHint.title = text;
+    setCfgHint(text);
   }
 
   cfgPerm.addEventListener('change', function () {
@@ -10609,6 +10642,8 @@
 
   // 底栏的「保存」只是兜底：正常改动停手就会自动落盘（见 scheduleAutoSave），
   // 这里给一个「我就是要马上存」的出口，走同一条路径
+  // 手动保存也要报「已自动保存：<改动项>」：没记过 trigger 就由
+  // autoSaveChangedLabel 按当前脏控件兜底挑一个
   saveCfg.addEventListener('click', function () { cfgPermGateThenSave(); });
 
   // ---------- 设置页自动保存 ----------
@@ -10623,6 +10658,8 @@
   // 还等着自动保存的改动：关设置页 / 离开页面前要抢存一次，
   // 否则最后一个字打完就切走会丢
   var autoSavePending = false;
+  // 最后一次触发自动保存的控件：保存成功后用它给出「已自动保存：<项目名>」
+  var lastAutoSaveTrigger = null;
   // 每类控件怎么判定「这次改动需要提交」：
   //   开关/单选        → 立刻存
   //   下拉             → 选完（change）再存
@@ -10687,10 +10724,8 @@
     autoSaveAgain = false;
     cfgPermGateThenSave(function (ok) {
       autoSaveBusy = false;
-      if (ok) {
-        rememberAutoSave();
-        showSetSaved();
-      }
+      // 成功提示由 doSaveCfg 统一写（带「已自动保存：<改动项>」），这里不再重复
+      if (ok) rememberAutoSave();
       if (autoSaveAgain) scheduleAutoSave(0);   // 保存期间又改了：接着存
     });
   }
@@ -10723,6 +10758,8 @@
         var hit = (evt === rule.on);
         if (rule.blur && evt === 'change') return;   // 单行文本只认失焦和延时
         if (!hit) return;
+        // 记下是谁改的：保存成功后底栏写「已自动保存：<这个设置项>」
+        lastAutoSaveTrigger = el;
         // 先排一次自动保存：有错会在提交时把提示打到 #cfgHint 上，
         // 不用等到最后才发现没存成
         scheduleAutoSave(rule.now ? 0 : AUTO_SAVE_MS);
@@ -10732,6 +10769,7 @@
       document.addEventListener('focusout', function (e) {
         var el = e.target;
         if (!el || !el.matches || !el.matches('[data-autosave]') || !el.matches(rule.sel)) return;
+        lastAutoSaveTrigger = el;
         scheduleAutoSave(0);
       }, true);
     }
@@ -10799,6 +10837,11 @@
   }
 
   function doSaveCfg(done) {
+    // 这次提交对应的改动项：自动保存开始前记的 trigger，或手动点「保存」前抓的那一项。
+    // 提交成功时底栏写「已自动保存：<它>」，失败时由下面的提示覆盖
+    var trigger = lastAutoSaveTrigger;
+    lastAutoSaveTrigger = null;
+    var savedName = autoSaveChangedLabel(trigger);
     var err = validateCfgForm();
     if (err) {
       // 两条线索都要给：底栏那句马上能看见，出错的分区也自动切过去；
@@ -10914,8 +10957,11 @@
         refreshLogUsage();
         // 用量与余额已由上面的 renderApiProfiles 按新的当前使用刷新过
         var restartNote = res.restart_required ? '（局域网开关/端口需重启后端生效）' : '';
-        // 底栏平时不占字：保存成功就把那句提示收回，结果由「模型接入」就地说明
-        setCfgHint(res.restart_required ? '已保存（局域网开关/端口需重启后端生效）' : '');
+        // 底栏常驻写「已自动保存：<刚改的那一项>」；需要重启时再补一句，
+        // 具体结果由「模型接入」那张卡就地说明
+        setCfgSavedHint(restartNote
+          ? (savedName ? '已自动保存：' + savedName : '已自动保存') + restartNote
+          : savedName);
         // 「模型接入」里的就地提示跟着走：在这个面板改的人不用回头看页面底部
         apiProfileHint.style.color = '';
         if (!res.llm_configured) apiProfileHint.textContent = '已保存，但还没有可用的 Key —— 填好地址和 Key 会自动保存';
