@@ -2,13 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { addEventListener, call, removeEventListener } from "@decky/api";
 import {
   DialogButton,
-  DropdownItem,
   Focusable,
   Navigation,
-  PanelSection,
-  PanelSectionRow,
   TextField,
-  ToggleField,
 } from "@decky/ui";
 import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, MessageContent, TEXT, ThoughtRow } from "./ui";
 import { statusLineFor } from "./statusLine";
@@ -36,7 +32,9 @@ const PLUGIN_VERSION =
 // 高度不能写死 460：QAM 的可用高度随分辨率和侧栏状态变化，写死会比可视区高，
 // 面板整体被外层滚动裁掉一截 —— 手柄焦点滚到底就成了「一块空白」。
 // 这里取「460 与可视区高度」的较小值，短屏自动收缩，长屏仍按原比例。
-const PAGE_H = "min(460px, calc(100vh - 90px))";
+// 只留 16px 余量：根节点已不再套 PanelSection，去掉了它自带的上下 padding，
+// 之前扣掉的 90px 会让底部白白多出一段空白。
+const PAGE_H = "min(460px, calc(100vh - 16px))";
 const TAB_H = 26;
 const ACTION_H = 34;
 const INPUT_H = 32;
@@ -204,6 +202,84 @@ function Card({
   );
 }
 
+/**
+ * 紧凑开关：替代 Decky 的 ToggleField。
+ * ToggleField 用的是 Steam 默认字号（约 14px）和它自己的行高/间距，
+ * 放在这些小卡片里比周围的 11~12px 文字明显大一号，行距也不一致。
+ * 这里自绘一行：左侧标签 12px，右侧 30×16 的胶囊开关，整体与 Btn/Card 同一套尺寸。
+ */
+function SwitchRow({
+  label,
+  description,
+  checked,
+  onChange,
+}: {
+  label: string;
+  description?: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <Focusable
+      onActivate={() => onChange(!checked)}
+      onOKActionDescription={checked ? "关闭" : "开启"}
+      style={{
+        width: "100%",
+        boxSizing: "border-box",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        minHeight: description ? 34 : 26,
+        padding: "2px 0",
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }}>
+        <span
+          style={{
+            fontSize: 12,
+            color: TEXT,
+            lineHeight: 1.3,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {label}
+        </span>
+        {description ? (
+          <span style={{ fontSize: 10.5, color: DIM, lineHeight: 1.35 }}>{description}</span>
+        ) : null}
+      </div>
+      <div
+        style={{
+          flexShrink: 0,
+          width: 30,
+          height: 16,
+          borderRadius: 8,
+          position: "relative",
+          boxSizing: "border-box",
+          background: checked ? "rgba(90,169,230,.55)" : "rgba(255,255,255,.10)",
+          border: `1px solid ${checked ? "rgba(90,169,230,.75)" : "rgba(255,255,255,.16)"}`,
+          transition: "background .12s ease, border-color .12s ease",
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            top: 1,
+            left: checked ? 15 : 1,
+            width: 12,
+            height: 12,
+            borderRadius: 6,
+            background: checked ? "#eaf4ff" : "#8a929c",
+            transition: "left .12s ease, background .12s ease",
+          }}
+        />
+      </div>
+    </Focusable>
+  );
+}
+
 /** 连接卡里的两列读数：标签 10px、值 11px，窄屏下一行也不挤 */
 function StatCell({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -221,6 +297,118 @@ function StatCell({ label, value }: { label: string; value: React.ReactNode }) {
       >
         {value}
       </span>
+    </div>
+  );
+}
+
+/** 小屏模型选择器：就地展开折叠列表，不用 DropdownItem（它的全屏菜单在小 QAM 里很挤） */
+function ModelPicker({
+  value,
+  options,
+  placeholder,
+  disabled,
+  onSelect,
+}: {
+  value: string;
+  options: string[];
+  placeholder: string;
+  disabled?: boolean;
+  onSelect: (m: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const list = options.length ? options : value ? [value] : [];
+  return (
+    <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 4 }}>
+      <Focusable
+        onActivate={() => {
+          if (!disabled) setOpen((v) => !v);
+        }}
+        onOKActionDescription={open ? "收起" : "展开列表"}
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "0 9px",
+          height: 30,
+          borderRadius: 4,
+          fontSize: 12,
+          color: disabled ? DIM : value ? TEXT : DIM,
+          background: "rgba(255,255,255,.06)",
+          border: `1px solid ${open ? "rgba(90,169,230,.55)" : "rgba(255,255,255,.12)"}`,
+          opacity: disabled ? 0.6 : 1,
+        }}
+      >
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {value || placeholder}
+        </span>
+        <span style={{ flexShrink: 0, fontSize: 9, color: DIM }}>{open ? "▲" : "▼"}</span>
+      </Focusable>
+      {open ? (
+        list.length === 0 ? (
+          <div style={{ fontSize: 11, color: DIM, paddingLeft: 2 }}>还没有可选模型</div>
+        ) : (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 2,
+              maxHeight: 150,
+              overflowY: "auto",
+              borderRadius: 4,
+              padding: 3,
+              background: "rgba(0,0,0,.25)",
+              border: "1px solid rgba(90,169,230,.16)",
+            }}
+          >
+            {list.map((m) => {
+              const cur = m === value;
+              return (
+                <Focusable
+                  key={m}
+                  onActivate={() => {
+                    setOpen(false);
+                    if (!cur) onSelect(m);
+                  }}
+                  onOKActionDescription="选择"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "0 7px",
+                    height: 26,
+                    borderRadius: 3,
+                    fontSize: 11.5,
+                    color: cur ? TITLE : TEXT,
+                    background: cur ? "rgba(90,169,230,.18)" : "transparent",
+                  }}
+                >
+                  <span style={{ width: 10, flexShrink: 0, color: ACCENT }}>{cur ? "✓" : ""}</span>
+                  <span
+                    style={{
+                      minWidth: 0,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {m}
+                  </span>
+                </Focusable>
+              );
+            })}
+          </div>
+        )
+      ) : null}
     </div>
   );
 }
@@ -1225,35 +1413,37 @@ export default function QamScreen() {
   const askRunning = s.busy && s.runningAction !== "translate";
   const translateRunning = s.busy && s.runningAction === "translate";
 
+  // 根节点直接是 Focusable，不再套 PanelSection/PanelSectionRow：
+  // 这两层自带约 20px 上下 padding，会把固定高度的内容顶出 QAM 视口，
+  // 表现为顶边、底边各有一段怎么滚都到不了。
+  // 但它们同时也提供了左右留白，去掉后内容会贴到面板边缘，
+  // 所以这里自己补左右 5px（上下由 PAGE_H 的预留控制，不给纵向 padding）。
+  // 做成 Focusable 也让焦点在面板内任意控件上时 L1/R1 冒泡到这里，
+  // 与控制器消息回调共用 bumpOnce 去重，同一次按键只翻一页。
   const shell = (children: React.ReactNode) => (
-    <PanelSection>
-      <PanelSectionRow>
-        {/* 根节点做成 Focusable：焦点在面板内任意控件上时，L1/R1 也会冒泡到这里。
-            它和上面的控制器消息回调共用 bumpOnce 去重，同一次按键只翻一页。 */}
-        <Focusable
-          onButtonDown={(evt) => {
-            const d = evt?.detail;
-            if (!d || d.is_repeat) return;
-            const step = bumpOnce(d.button);
-            if (step) setTab((p) => stepTab(p, step, TABS.length));
-          }}
-          style={{
-            width: "100%",
-            height: PAGE_H,
-            display: "flex",
-            flexDirection: "column",
-            gap: GAP,
-            minWidth: 0,
-            minHeight: 0,
-            // 内容不能溢出到固定高度之外，否则外层滚动会出现空白带
-            overflow: "hidden",
-            boxSizing: "border-box",
-          }}
-        >
-          {children}
-        </Focusable>
-      </PanelSectionRow>
-    </PanelSection>
+    <Focusable
+      onButtonDown={(evt) => {
+        const d = evt?.detail;
+        if (!d || d.is_repeat) return;
+        const step = bumpOnce(d.button);
+        if (step) setTab((p) => stepTab(p, step, TABS.length));
+      }}
+      style={{
+        width: "100%",
+        height: PAGE_H,
+        padding: "0 5px",
+        display: "flex",
+        flexDirection: "column",
+        gap: GAP,
+        minWidth: 0,
+        minHeight: 0,
+        // 内容不能溢出到固定高度之外，否则外层滚动会出现空白带
+        overflow: "hidden",
+        boxSizing: "border-box",
+      }}
+    >
+      {children}
+    </Focusable>
   );
 
   // 页签两端的 L1/R1 小提示：只做视觉指引，不参与焦点，也不挤压页签文字。
@@ -1737,19 +1927,12 @@ export default function QamScreen() {
           {/* 模型 */}
           <Card title="模型">
             <div style={{ width: "100%", display: "flex" }}>
-              <DropdownItem
-                childrenContainerWidth="max"
-                layout="below"
-                rgOptions={(s.modelList.length ? s.modelList : [s.model].filter(Boolean)).map(
-                  (m) => ({ data: m, label: m })
-                )}
-                selectedOption={s.model}
-                menuLabel="选择模型"
-                strDefaultLabel={s.loadingModels ? "加载中…" : "选择模型"}
+              <ModelPicker
+                value={s.model}
+                options={s.modelList}
+                placeholder={s.loadingModels ? "加载中…" : "选择模型"}
                 disabled={!coreRunning}
-                onChange={(o) => {
-                  if (o.data && o.data !== s.model) void s.changeModel(String(o.data));
-                }}
+                onSelect={(m) => void s.changeModel(m)}
               />
             </div>
             <Btn
@@ -1761,19 +1944,10 @@ export default function QamScreen() {
             >
               {s.loadingModels ? "拉取中…" : "刷新模型列表"}
             </Btn>
-            <ToggleField label="带画面发送" checked={s.withShot} onChange={s.toggleWithShot} />
-            <ToggleField label="语音输入" checked={s.stt} onChange={s.toggleStt} />
-            <ToggleField
-              label="录音时静音外放"
-              description={
-                s.sttDuckAvailable
-                  ? "按住说话时把游戏声音静音，松开自动恢复"
-                  : "这台机器没有 wpctl/pactl，开关只保存不生效"
-              }
-              checked={s.sttDuck}
-              onChange={s.toggleSttDuck}
-            />
-            <ToggleField label="语音播报回复" checked={s.tts} onChange={s.toggleTts} />
+            <SwitchRow label="带画面发送" checked={s.withShot} onChange={s.toggleWithShot} />
+            <SwitchRow label="语音输入" checked={s.stt} onChange={s.toggleStt} />
+            <SwitchRow label="录音时静音外放" checked={s.sttDuck} onChange={s.toggleSttDuck} />
+            <SwitchRow label="语音播报回复" checked={s.tts} onChange={s.toggleTts} />
           </Card>
 
           {/* 提示词 */}
