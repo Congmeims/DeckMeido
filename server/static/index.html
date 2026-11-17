@@ -39,15 +39,15 @@
 <div id="riBanner" hidden>
   <span class="ri-dot"></span>
   <span id="riBannerText">正在接管 Deck · 按 Esc 停止接管</span>
-  <button id="riStop" type="button" title="停止接管（Esc）">停止接管</button>
+  <button id="riStop" type="button">停止接管</button>
 </div>
 <div id="riToast"></div>
 
 <div id="app">
 <aside id="sidebar">
   <!-- 折叠态只剩这条窄条：点「会话」或者箭头都能展开 -->
-  <div id="sbRail" title="展开会话栏">
-    <button id="sbExpand" class="side-toggle" title="展开会话栏">▶</button>
+  <div id="sbRail">
+    <button id="sbExpand" class="side-toggle">▶</button>
   </div>
   <!-- 顶栏：和中间 header、右栏 #rbHead 同一条 45px 的水平线，
        三栏顶边对齐。原来是 sys-card 里的第一行，被 14px 内边距压在
@@ -55,7 +55,7 @@
   <div class="sb-head">
     <!-- 收起按钮钉在屏幕最左端，与右栏 #rbToggle（最右端）互为镜像。
          原来它在这行末尾，结果两个按钮都朝右，看着不是镜像 -->
-    <button id="sbToggle" class="side-toggle" title="收起会话栏">◀</button>
+    <button id="sbToggle" class="side-toggle">◀</button>
     <!-- 设备名 / IP 双行：169px 窄栏里横排会重叠，改成两行纵排，
          IP 后带端口（:18765）让用户一眼看到服务地址 -->
     <div class="sys-meta">
@@ -89,22 +89,21 @@
     <!-- 图标用内联 SVG 线性图标，不用 ⏮⏸⏭ 这类字符：
          Windows 与 SteamOS 的字体回退会把它渲染成彩色 emoji，和全站图标风格不一致 -->
     <div class="music-btns">
-      <button type="button" data-act="previous" title="上一首"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 20L9 12l10-8z"/><path d="M5 19V5"/></svg></button>
-      <button type="button" data-act="toggle" title="播放 / 暂停"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4H6v16h4z"/><path d="M18 4h-4v16h4z"/></svg></button>
-      <button type="button" data-act="next" title="下一首"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4l10 8L5 20z"/><path d="M19 5v14"/></svg></button>
+      <button type="button" data-act="previous"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 20L9 12l10-8z"/><path d="M5 19V5"/></svg></button>
+      <button type="button" data-act="toggle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4H6v16h4z"/><path d="M18 4h-4v16h4z"/></svg></button>
+      <button type="button" data-act="next"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4l10 8L5 20z"/><path d="M19 5v14"/></svg></button>
     </div>
   </div>
   <div class="sb-sess-block">
-  <div class="sb-sess-head"><span>会话</span><button id="btnNewSess" title="新会话">＋</button></div>
+  <div class="sb-sess-head"><span>会话</span><button id="btnNewSess">＋</button></div>
   <div id="sessList"></div>
   </div>
   <!-- 设置模式下的左栏：会话区整块换成设置分区导航，logo / 版本 / 底部按钮都保留 -->
   <div class="sb-set-block">
-    <div class="sb-sess-head"><span>设置</span><button id="setClose" title="返回对话">返回</button></div>
+    <div class="sb-sess-head"><span>设置</span><button id="setClose">返回</button></div>
     <div id="setNav"></div>
   </div>
-  <div class="sb-brand" id="brandLogo" role="button" tabindex="-1"
-       title="点击接管 Deck（远程浏览器）／按 Esc 停止接管（本机客户端）">
+  <div class="sb-brand" id="brandLogo" role="button" tabindex="-1">
     <img class="brand-mark" src="logo-mark.png" alt="DeckMeido">
     <span class="brand-name">
       <span class="bn-text">DeckMeido</span>
@@ -113,8 +112,8 @@
     </span>
   </div>
   <div class="sb-foot">
-    <button id="btnTheme" title="切换主题">暗黑模式</button>
-    <button id="settingsBtn" title="设置">设置</button>
+    <button id="btnTheme">暗黑模式</button>
+    <button id="settingsBtn">设置</button>
   </div>
   </div><!-- /.sb-body -->
 </aside>
@@ -125,18 +124,18 @@
      它留在原处不动——状态点、会话名、上下文用量、连接数、模式徽章
      在设置页里看到的和在对话里一模一样 -->
 <header>
-  <button class="cb-btn" id="btnMenu" title="菜单">菜单</button>
-  <button class="cb-btn" id="btnRight" title="文件 / 终端">工具</button>
+  <button class="cb-btn" id="btnMenu">菜单</button>
+  <button class="cb-btn" id="btnRight">工具</button>
   <div class="conn-wrap">
-    <span class="dot" id="dot" title="连接状态"></span>
+    <span class="dot" id="dot"></span>
     <div class="conn-panel" id="connPanel" hidden></div>
   </div>
-  <span class="logo" id="hdrTitle" title="DeckMeido">DeckMeido</span>
+  <span class="logo" id="hdrTitle">DeckMeido</span>
   <span class="spacer" aria-hidden="true"></span>
   <div class="hdr-right">
     <!-- QQ 会话专属：OneBot 状态灯 + 快捷开关（状态与设置页共用同一份后端配置） -->
     <div class="qq-sess-wrap" id="qqSessWrap" hidden>
-      <button type="button" class="qq-sess-btn" id="qqSessBtn" title="OneBot 状态与语音开关">
+      <button type="button" class="qq-sess-btn" id="qqSessBtn">
         <span class="qq-sess-dot" id="qqSessDot"></span>
         <span class="qq-sess-label" id="qqSessLabel">QQ</span>
       </button>
@@ -219,7 +218,7 @@
   <!-- 往上翻看旧消息时出现在输入框上方正中间，点一下回到最新。
        放在 #composer 里而不是消息区：这样它永远悬在输入框上方居中，
        不会跟右下角的发送按钮挤在一起，输入框长高、排队消息变多时自动跟着上移 -->
-  <button id="jumpLatest" title="回到最新"></button>
+  <button id="jumpLatest"></button>
   <div id="plusMenu">
     <button id="pmImage">附加图片 / 文件</button>
     <button id="pmFile">引用工作区文件</button>
@@ -238,7 +237,7 @@
     <div class="sc-auth-line">
       <input id="sudoAuthPw" class="sc-pw" type="password" placeholder="管理员密码"
              autocomplete="new-password" spellcheck="false" autocapitalize="off">
-      <button id="sudoAuthEye" class="sc-eye" type="button" title="显示密码">显示</button>
+      <button id="sudoAuthEye" class="sc-eye" type="button">显示</button>
       <button id="sudoAuthBtn" class="sc-auth-btn" type="button">确认授权</button>
     </div>
     <div id="sudoAuthErr" class="sc-auth-err"></div>
@@ -246,19 +245,19 @@
   <div id="inputWrap">
     <textarea id="input" rows="1" placeholder="@ 添加上下文，/ 使用命令" enterkeyhint="send"></textarea>
     <!-- 清空输入框：贴在输入框内右边缘的小图标按钮，只在有内容时出现，点它不会触发发送 -->
-    <button id="clearBtn" type="button" title="清空输入框" aria-label="清空输入框">×</button>
+    <button id="clearBtn" type="button" aria-label="清空输入框">×</button>
   </div>
   <div id="composerBar">
     <div class="cb-left">
-      <button class="cb-btn" id="btnPlus" title="添加附件/引用" style="font-size:16px">＋</button>
-      <select class="cb-select" id="permSelect" title="AI 控制权限">
+      <button class="cb-btn" id="btnPlus" style="font-size:16px">＋</button>
+      <select class="cb-select" id="permSelect">
         <option value="manual">手动审批</option>
         <option value="auto">自动审批</option>
         <option value="full" class="opt-danger">完全访问</option>
         <option value="custom">自定义</option>
       </select>
       <!-- 深度思考档位：无 / 低 / 中 / 高，跟着权限下拉走 -->
-      <label class="think-slider" id="thinkWrap" title="深度思考档位">
+      <label class="think-slider" id="thinkWrap">
         <span id="thinkLabel">高</span>
         <input type="range" id="thinkRange" min="0" max="3" step="1" value="3"
                aria-label="深度思考档位" hidden>
@@ -271,11 +270,11 @@
       </label>
     </div>
     <div class="cb-right">
-      <select class="cb-select" id="modelSelect" title="模型"></select>
+      <select class="cb-select" id="modelSelect"></select>
       <button id="send">发送</button>
       <!-- 语音输入：只有 Native 客户端显示（网页与大屏/QAM 不加），
            点击开始/停止录音，识别结果填进输入框不自动发送 -->
-      <button class="cb-btn" id="micBtn" title="语音输入（桌面客户端，按住 R1 说话）">语音</button>
+      <button class="cb-btn" id="micBtn">语音</button>
     </div>
   </div>
 </div>
@@ -305,7 +304,7 @@
             <div class="api-foot">
               <div id="apiProfileHint" class="field-hint">同一时间只有一条生效；切换后立即使用新的那组。</div>
               <!-- 自动保存已接管：这里只留一个手动兜底的「保存」 -->
-              <button id="apiProfileSave" class="mini-btn" type="button" title="填完会自动保存，这里是立刻保存一次">保存</button>
+              <button id="apiProfileSave" class="mini-btn" type="button">保存</button>
               <button id="apiProfileAdd" class="mini-btn" type="button">新增一组</button>
             </div>
           </div>
@@ -501,7 +500,7 @@
               <!-- 卡片标题不重复章节名：这里写的是语音合成这一侧，
                    开关才是「播报回复内容」的总闸 -->
               <div class="card-title">语音合成</div>
-              <label class="switch" title="播报回复内容">
+              <label class="switch">
                 <input id="cfgTts" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
@@ -660,7 +659,7 @@
           <div class="card" id="riEnableCard">
             <div class="card-head">
               <div class="card-title">跨屏键鼠（远程接管）</div>
-              <label class="switch" title="允许局域网设备接管">
+              <label class="switch">
                 <input id="cfgRiEnabled" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
@@ -685,7 +684,7 @@
           <div class="card" id="sleepCard">
             <div class="card-head">
               <div class="card-title">睡眠模式</div>
-              <label class="switch" title="闲置满指定时长后自动关机">
+              <label class="switch">
                 <input id="cfgSleepEnabled" data-autosave type="checkbox">
                 <span class="slider"></span>
               </label>
@@ -711,7 +710,7 @@
           <div class="card">
             <div class="card-head">
               <div class="card-title">Onebot 通道</div>
-              <label class="switch" title="启用 Onebot 通道">
+              <label class="switch">
                 <input id="cfgQqEnable" type="checkbox">
                 <span class="slider"></span>
               </label>
@@ -816,7 +815,7 @@
             <div class="qq-group">
               <div class="qq-group-head">
                 <div class="qq-group-title">群常识缓存</div>
-                <label class="switch" title="记录白名单群的最近消息">
+                <label class="switch">
                   <input id="cfgQqMemo" type="checkbox">
                   <span class="slider"></span>
                 </label>
@@ -921,7 +920,7 @@
             <div class="qq-group">
               <div class="qq-group-head">
                 <div class="qq-group-title">语音条</div>
-                <label class="switch" title="发送语音条">
+                <label class="switch">
                   <input id="cfgQqVoice" type="checkbox">
                   <span class="slider"></span>
                 </label>
@@ -964,7 +963,7 @@
             <div class="qq-group qq-image-group">
               <div class="qq-group-head">
                 <div class="qq-group-title">收图 / 存图<span class="qq-key">allow_image</span></div>
-                <label class="switch" title="收图 / 存图">
+                <label class="switch">
                   <input id="cfgQqAllowImage" type="checkbox">
                   <span class="slider"></span>
                 </label>
@@ -1057,7 +1056,7 @@
           <div class="card chat-voice-card" id="chatVoiceCard">
             <div class="card-head">
               <div class="card-title">对话开关</div>
-              <label class="switch" title="关闭后这一组功能整体停用">
+              <label class="switch">
                 <input id="cfgChatVoice" data-autosave type="checkbox" checked>
                 <span class="slider"></span>
               </label>
@@ -1201,7 +1200,7 @@
          失败/进行中由 setCfgHint 临时写原因 -->
     <div class="set-foot">
       <div id="cfgHint" hidden></div>
-      <button id="saveCfg" type="button" title="改完会自动保存，这里只是手动立刻保存一次">保存</button>
+      <button id="saveCfg" type="button">保存</button>
     </div>
   </div>
 </div>
@@ -1275,10 +1274,10 @@
 <aside id="rightbar">
   <div id="rbHead">
     <div class="rb-seg">
-      <button class="rb-tab on" id="rbTabFile" title="文件管理器">文件管理器</button>
-      <button class="rb-tab" id="rbTabTerm" title="AI 执行的命令（只读）">终端</button>
+      <button class="rb-tab on" id="rbTabFile">文件管理器</button>
+      <button class="rb-tab" id="rbTabTerm">终端</button>
     </div>
-    <button id="rbToggle" class="side-toggle" title="收起 / 展开">▶</button>
+    <button id="rbToggle" class="side-toggle">▶</button>
   </div>
 
   <div class="rb-pane on" id="rbPaneFile">
@@ -1290,18 +1289,18 @@
       <span class="ai-dot idle" id="fbAiDot"></span>
       <span class="ai-text" id="fbAiText">AI 空闲</span>
       <span class="ai-sub" id="fbAiSub"></span>
-      <button id="fbAiFollow" type="button" class="ai-follow on" title="开启后：AI 执行命令自动切到终端，进入新目录自动切回文件页并停在它所在的目录">跟随：开</button>
+      <button id="fbAiFollow" type="button" class="ai-follow on">跟随：开</button>
     </div>
     <div id="fbBar">
-      <button id="fbUp" title="上一级"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
-      <button id="fbHome" title="回到工作区"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg></button>
+      <button id="fbUp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
+      <button id="fbHome"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg></button>
       <div id="fbPath"></div>
-      <span id="fbWarn" title="当前目录不在 DeckMeido 工作区内" hidden>谨慎操作</span>
+      <span id="fbWarn" hidden>谨慎操作</span>
     </div>
     <div id="fbQueue"></div>
     <div id="fbList"><div class="fb-note">加载中…</div></div>
     <div id="fbDropBar">
-      <div id="fbDrop" title="把本地文件或文件夹拖到这里，或点右侧按钮选择文件，直接上传到当前目录">拖入文件/文件夹</div>
+      <div id="fbDrop">拖入文件/文件夹</div>
       <button id="fbUploadBtn">上传</button>
       <input type="file" id="fbFileInput" multiple hidden>
     </div>
@@ -1344,7 +1343,7 @@
       <span class="ai-dot idle" id="termAiDot"></span>
       <span class="ai-text" id="termAiText">AI 空闲</span>
       <span class="ai-sub"></span>
-      <button id="termFollow" type="button" class="ai-follow on" title="开启后：AI 开始/结束命令时终端页自动滚到它所在的位置">跟随：开</button>
+      <button id="termFollow" type="button" class="ai-follow on">跟随：开</button>
     </div>
     <div id="termList"><div class="fb-note">AI 执行的命令会实时出现在这里<br>也可以在下方输入框直接跑一条</div></div>
     <!-- 输入框和运行按钮平级摆在一行里，与中间「输入区 + 发送按钮」同构。
@@ -1370,8 +1369,8 @@
       <!-- 终端放大时替代「引用到对话」：画面本身不接键盘，按键统一在这个框里收 -->
       <input class="fv-keys" id="fvKeys" autocomplete="off" autocapitalize="off"
              spellcheck="false" placeholder="点这里，然后按键操作（方向键 / q / Enter…）">
-      <button class="fv-btn" id="fvRef" title="把这个文件引用到对话输入框">引用到对话</button>
-      <button class="fv-btn" id="fvTermAsk" style="display:none" title="把当前终端画面发给 AI 让它分析">问 AI</button>
+      <button class="fv-btn" id="fvRef">引用到对话</button>
+      <button class="fv-btn" id="fvTermAsk" style="display:none">问 AI</button>
       <button class="fv-btn" id="fvClose">关闭</button>
     </div>
     <div class="fv-body" id="fvBody"></div>
@@ -2138,8 +2137,6 @@
       src.className = 'msg-src';
       src.textContent = clientLabel(client, device);
       // 把原始值写进 title：角标认错时一眼能看出是哪一边算错了
-      src.title = '发起来源：' + clientLabel(client, device) + '（' + client
-                  + '）；本端认定为 ' + myClient() + (device ? '，设备 ' + device.slice(0, 8) : '');
       el.appendChild(src);
     }
     var body = document.createElement('div');
@@ -2158,7 +2155,6 @@
       shot.className = 'msg-shot';
       shot.src = deviceTokenQuery(ev.image);
       shot.alt = ev.summary || '附带的画面';
-      shot.title = '点开看原图';
       // 先按 16:9 占位，图解码完再交回自适应，避免气泡先瘦后胖
       shot.width = 240; shot.height = 135;
       shot.onload = function () {
@@ -2200,7 +2196,6 @@
       var nm = document.createElement('span');
       nm.className = 'at-name';
       nm.textContent = name;
-      nm.title = ref;
       chip.appendChild(thumb);
       chip.appendChild(nm);
       el.appendChild(chip);
@@ -2433,7 +2428,6 @@
     if (el.querySelector('.voice-bubble')) return;
     var b = document.createElement('div');
     b.className = 'voice-bubble';
-    b.title = '点击播放这条语音';
     var play = document.createElement('button');
     play.type = 'button';
     play.className = 'voice-play';
@@ -2923,8 +2917,6 @@
   function setConnState(state) {
     connInfo.state = state;
     dot.className = 'dot' + (state === 'on' ? ' on' : (state === 'warn' ? ' warn' : ''));
-    dot.title = state === 'on' ? '已连接后端'
-      : (state === 'warn' ? '正在重连…（点开看原因）' : '连接失败（点开看原因）');
     sendBtn.disabled = state !== 'on';
     if (typeof renderControls === 'function' && lastControls) renderControls(lastControls);
     if (staleTagEl) staleTagEl.hidden = state === 'on';
@@ -3146,7 +3138,6 @@
     dot.classList.toggle('idle', !busyNow);
     txt.textContent = fbTrackWord();
     sub.textContent = busyNow ? (fb.aiPath || '') : '';
-    sub.title = busyNow ? (fb.aiPath || '') : '';
     bar.classList.toggle('busy', busyNow);
   }
 
@@ -3287,7 +3278,6 @@
       } else if (d.kind === 'pdf') {
         el = document.createElement('iframe');
         el.src = url;
-        el.title = name;
       } else if (d.kind === 'text') {
         el = document.createElement('pre');
         el.textContent = d.text || '（空文件）';
@@ -3414,7 +3404,6 @@
     it.className = 'ctx-item' + (opts.danger ? ' danger' : '');
     it.textContent = label;
     if (opts.disabled) it.setAttribute('disabled', '');
-    if (opts.title) it.title = opts.title;
     it.addEventListener('click', function () {
       if (opts.disabled) return;
       fbCtxClose();
@@ -3534,10 +3523,9 @@
     e.stopPropagation();
     var m = rbEl('ctxMenu');
     m.innerHTML = '';
-    // 只读分区：写操作整条置灰 + tooltip，点了不发请求；
+    // 只读分区：写操作整条置灰，点了不发请求；
     // 「复制」「预览」「下载」「引用」这类只读操作保留
     var ro = fbWriteBlocked();
-    var roTip = fbWriteBlockedText();
     if (isDir) {
       fbCtxItem('打开', function () { fbLoad(path); });
       fbCtxItem('女仆分析', function () {
@@ -3555,13 +3543,13 @@
       fbCtxSep();
     }
     fbCtxItem('重命名', function () { fbCtxRename(path, name); },
-              { disabled: ro, title: ro ? roTip : '' });
+              { disabled: ro });
     fbCtxItem('复制', function () { fbClip = { op: 'copy', path: path }; fbToast('已复制：' + name, 'file'); });
     fbCtxItem('剪切', function () { fbClip = { op: 'cut', path: path }; fbToast('已剪切：' + name, 'file'); },
-              { disabled: ro, title: ro ? roTip : '' });
+              { disabled: ro });
     fbCtxSep();
     fbCtxItem('删除', function () { fbCtxDelete(path, isDir); },
-              { danger: true, disabled: ro, title: ro ? roTip : '' });
+              { danger: true, disabled: ro });
     fbCtxSep();
     // 刷新的是当前面板所在目录，不是这个条目自己
     fbCtxItem('刷新列表', function () { fbLoad(fb.path); });
@@ -3575,14 +3563,13 @@
     var m = rbEl('ctxMenu');
     m.innerHTML = '';
     var ro = fbWriteBlocked();
-    var roTip = fbWriteBlockedText();
     // 手动刷新当前目录：AI 在后台复制了项目、但面板还没等到下一轮自动刷新时用
     fbCtxItem('刷新', function () { fbLoad(fb.path); });
     fbCtxSep();
     fbCtxItem('粘贴', function () { fbCtxPaste(); },
-              { disabled: !fbClip || ro, title: ro ? roTip : '' });
+              { disabled: !fbClip || ro });
     fbCtxItem('新建文件夹', function () { fbCtxMkdir(); },
-              { disabled: ro, title: ro ? roTip : '' });
+              { disabled: ro });
     fbCtxOpen(e.clientX, e.clientY);
   }
 
@@ -3741,28 +3728,21 @@
       warn.hidden = false;
       warn.className = 'workspace';
       warn.textContent = '工作区域';
-      warn.title = '工作区：可正常读写';
     } else if (z === 'danger' || z === 'forbidden') {
       warn.hidden = false;
       warn.className = 'danger';
       warn.textContent = z === 'forbidden' ? '禁止浏览' : '危险区域 · 只读';
-      warn.title = fbZoneTitle(z);
     } else {
       warn.hidden = false;
       warn.className = '';
       warn.textContent = fb.readonly ? '谨慎操作 · 只读' : '谨慎操作';
-      warn.title = fb.readonly ? '该挂载点当前为只读（写保护），删除/重命名/新建/上传均已禁用'
-                               : '工作区外：可读写，但请谨慎操作';
     }
     // 工具栏写入口跟着分区走：只读时置灰 + tooltip，点下去也不发请求
     if (upBtn) {
       upBtn.disabled = fbWriteBlocked();
-      upBtn.title = fbWriteBlocked() ? fbWriteBlockedText() : '上传到当前目录';
     }
     if (drop) {
       drop.classList.toggle('ro', fbWriteBlocked());
-      drop.title = fbWriteBlocked() ? fbWriteBlockedText()
-                                    : '把本地文件或文件夹拖到这里，或点右侧按钮选择文件，直接上传到当前目录';
       if (fbWriteBlocked() && !drop.classList.contains('hot')) drop.textContent = '当前目录只读，不能上传';
       else if (!fbWriteBlocked() && drop.textContent === '当前目录只读，不能上传') drop.textContent = '拖入文件/文件夹';
     }
@@ -3787,7 +3767,6 @@
     var root = document.createElement('span');
     root.className = 'seg';
     root.textContent = '/';
-    root.title = '/';
     root.addEventListener('click', function () { fb.select = ''; fbStopFollow(); fbLoad('/'); });
     box.appendChild(root);
     parts.forEach(function (seg) {
@@ -3795,7 +3774,6 @@
       var s = document.createElement('span');
       s.className = 'seg';
       s.textContent = seg + '/';
-      s.title = acc;
       // 点面包屑也算「用户自己点的」：停下来别跟着 AI 跑，否则刚点过去就被拽走
       s.addEventListener('click', function () { fb.select = ''; fbStopFollow(); fbLoad(acc); });
       box.appendChild(s);
@@ -3818,7 +3796,6 @@
     if (fb.parent) {
       var up = document.createElement('div');
       up.className = 'fb-item dir';
-      up.title = '返回上一级';
       var upIco = document.createElement('span');
       upIco.className = 'ico';
       upIco.innerHTML = FB_ICON.dir || FB_ICON.other;
@@ -3849,10 +3826,6 @@
                     + (e.broken ? ' broken' : '');
       // 悬停就告诉用户两种手势：单击看内容，拖到对话里等于引用。
       // 软链接额外说明目标；断链直接说目标不存在，别让用户点进空白页
-      row.title = e.broken
-        ? '链接目标不存在：' + (e.link_target || '')
-        : e.name + (e.link ? '\n软链接 → ' + (e.link_target || '') : '')
-          + (e.dir ? '' : '\n单击预览 · 拖到聊天框引用');
       var ico = document.createElement('span');
       ico.className = 'ico';
       ico.innerHTML = FB_ICON[kind] || FB_ICON.other;
@@ -4073,7 +4046,6 @@
       title.textContent = '上传 ' + st.total + ' 个文件' +
         (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : '');
     }
-    title.title = title.textContent;
     head.appendChild(title);
 
     if (!finished) {
@@ -4095,7 +4067,6 @@
       x.className = 'fbt-x';
       x.type = 'button';
       x.textContent = '×';
-      x.title = '关闭';
       x.setAttribute('data-act', 'remove');
       head.appendChild(x);
     }
@@ -4131,7 +4102,6 @@
       var nm = document.createElement('span');
       nm.className = 'nm';
       nm.textContent = fbMidPath(f.rel || f.name || '', 50);
-      nm.title = f.rel || f.name || '';
       top.appendChild(nm);
       if (f.file && !task.blocked && !task.partial) {
         top.appendChild(fbTaskBtn('重试', 'retry-item', '', task.files.indexOf(f)));
@@ -4184,7 +4154,6 @@
              (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : ''));
       if (title.textContent !== titleText) {
         title.textContent = titleText;
-        title.title = titleText;
       }
     }
     var pct = card.querySelector('.fbt-pct');
@@ -5274,7 +5243,6 @@
     // 才折进底部的「更早的命令」归档区（见 termArchived / termRenderAll）
     var head = document.createElement('div');
     head.className = 'tm-head';
-    head.title = (it.reason ? it.reason + '\n' : '') + (it.cmdText || it.cmd);
     var who = document.createElement('span');
     who.className = 'who' + (it.who === 'me' ? ' me' : '');
     who.textContent = it.who === 'me' ? '我' : 'AI';
@@ -5289,7 +5257,6 @@
       var slow = document.createElement('span');
       slow.className = 'tm-slow';
       slow.textContent = '可能较久';
-      slow.title = it.slow;
       head.appendChild(who);
       head.appendChild(cmd);
       head.appendChild(slow);
@@ -5307,7 +5274,6 @@
       stopBtn.className = 'stop';
       stopBtn.type = 'button';
       stopBtn.textContent = it.running ? '终止' : '已结束';
-      stopBtn.title = it.running ? '停止这条命令' : '这条命令已经跑完了';
       stopBtn.disabled = !it.running;
       if (it.running) {
         stopBtn.addEventListener('click', function (e) {
@@ -5322,7 +5288,6 @@
     zoomBtn.className = 'zoom';
     zoomBtn.type = 'button';
     zoomBtn.textContent = '⤢';
-    zoomBtn.title = '放大查看';
     zoomBtn.addEventListener('click', function (e) {
       e.stopPropagation();
       termOpenBig(it);
@@ -5699,14 +5664,12 @@
     var cmd = document.createElement('span');
     cmd.className = 'cmd';
     cmd.textContent = it.cmdText || it.cmd;
-    cmd.title = (it.reason ? it.reason + '\n' : '') + (it.cmdText || it.cmd);
     var st = document.createElement('span');
     st.className = 'st';
     st.innerHTML = termStatusText(it);
     row.appendChild(who);
     row.appendChild(cmd);
     row.appendChild(st);
-    row.title = '点击放大查看输出';
     row.addEventListener('click', function () { termOpenBig(it); });
     return row;
   }
@@ -5730,7 +5693,6 @@
     head.type = 'button';
     head.className = 'tm-arch-head';
     head.textContent = (termArchOpen ? '▾ ' : '▸ ') + '更早的命令 ' + items.length + ' 条';
-    head.title = termArchOpen ? '收起' : '展开查看';
     head.addEventListener('click', function () {
       termArchOpen = !termArchOpen;
       termRenderAll();
@@ -7043,7 +7005,6 @@
       lines.push('ydotoold：' + (yd.active ? '运行中' : '未运行')
         + (yd.enabled ? '（已设开机自启）' : '（未设开机自启）'));
     }
-    ctrlBadge.title = lines.join('\n');
     fillCtrlPanel(c);
   }
 
@@ -7144,7 +7105,6 @@
       pw.value = '';
       pw.type = 'password';
       eye.textContent = '显示';
-      eye.title = '显示密码';
       err.textContent = '';
       meta.textContent = '';
     }
@@ -7160,7 +7120,6 @@
       var masked = pw.type === 'password';
       pw.type = masked ? 'text' : 'password';
       eye.textContent = masked ? '隐藏' : '显示';
-      eye.title = masked ? '隐藏密码' : '显示密码';
       if (masked) { try { pw.focus(); } catch (e) {} }
     });
     function submit() {
@@ -7295,7 +7254,6 @@
     r.pw.value = '';
     r.pw.type = 'password';
     r.eye.textContent = '显示';
-    r.eye.title = '显示密码';
     r.authErr.textContent = '';
   }
 
@@ -7321,7 +7279,7 @@
       var lamp = document.createElement('span');
       lamp.className = 'lamp';
       var nm = document.createElement('span');
-      nm.className = 'nm'; nm.textContent = it.name; nm.title = it.name;
+      nm.className = 'nm'; nm.textContent = it.name;
       var rowItems = [lamp, nm];
       // 宽屏两列排布时，没装的项目名字被截断，原因另起一行（只在有内容时出现）
       if (!wide) {
@@ -7329,7 +7287,7 @@
         var ds = document.createElement('span');
         ds.className = 'ds';
         var sub = it.status === 'ready' ? '' : (it.detail || '未安装');
-        ds.textContent = sub; ds.title = sub;
+        ds.textContent = sub;
         if (sub) rowItems.push(ds);
       }
       // 右侧操作位固定宽度：未就绪给安装按钮，已就绪留空
@@ -7353,7 +7311,6 @@
       if (wide && it.status !== 'ready') {
         var wideSub = it.detail || '未安装';
         detail.textContent = wideSub;
-        detail.title = wideSub;
       }
 
       var cmd = null;
@@ -7362,7 +7319,6 @@
         cmd = document.createElement('div');
         cmd.className = 'sc-cmd';
         cmd.textContent = it.command;
-        cmd.title = '点击复制';
         cmd.addEventListener('click', function () { copyCmd(it.command); });
       }
 
@@ -7380,7 +7336,7 @@
       pw.spellcheck = false; pw.autocapitalize = 'off';
       var eye = document.createElement('button');
       eye.className = 'sc-eye'; eye.type = 'button';
-      eye.textContent = '显示'; eye.title = '显示密码';
+      eye.textContent = '显示';
       var authBtn = document.createElement('button');
       authBtn.className = 'mini-btn sc-auth-btn'; authBtn.type = 'button';
       authBtn.textContent = '确认授权';
@@ -7397,7 +7353,6 @@
         var plain = pw.type === 'password';
         pw.type = plain ? 'text' : 'password';
         eye.textContent = plain ? '隐藏' : '显示';
-        eye.title = plain ? '隐藏密码' : '显示密码';
         pw.focus();
       });
       authBtn.addEventListener('click', function () { submitPassword(it.key, rowRef); });
@@ -7607,9 +7562,6 @@
       document.getElementById('ctxName').textContent = c.sid ? ('#' + String(c.sid).slice(0, 6)) : '上下文';
       setCtxBar(pct, pct + '%' + (c.used ? ' · ' + fmtTokens(c.used) : '')
         + ((c.cache && c.cache.prompt) ? (' · 缓存 ' + Math.round(c.cache.percent) + '%') : ''));
-      ctxRow.title = '模型窗口 ' + (c.window || 0).toLocaleString() + ' tokens'
-        + (c.used ? ('\n当前约 ' + c.used.toLocaleString() + ' tokens') : '')
-        + '\n达到 ' + c.compact_at + '% 时自动压缩';
       ctxBadge.hidden = false;
       // 命中率直接摆在徽章上，省得为了看一个数去悬停
       var cache = c.cache || null;
@@ -7642,8 +7594,6 @@
         tip += '\n前缀缓存：还没有数据（发起一次对话后才有，服务商不返回则为空）';
       }
       // 顶栏徽章和侧栏状态卡共用同一份说明
-      ctxBadge.title = tip;
-      ctxRow.title = tip;
       // 用量越接近上限越醒目：85% 起变黄，95% 变红
       ctxBadge.classList.toggle('warn', pct >= 85 && pct < 95);
       ctxBadge.classList.toggle('danger', pct >= 95);
@@ -7700,7 +7650,6 @@
       var t = document.createElement('div');
       t.className = 'q-text';
       t.textContent = item.text;
-      t.title = item.text;
       chip.appendChild(t);
 
       var acts = document.createElement('div');
@@ -7709,21 +7658,18 @@
       var edit = document.createElement('button');
       edit.className = 'q-act';
       edit.textContent = '✎';
-      edit.title = '编辑（放回输入框修改）';
       edit.addEventListener('click', function () { requeueToInput(item.id); });
       acts.appendChild(edit);
 
       var now = document.createElement('button');
       now.className = 'q-act q-now';
       now.textContent = '↑';
-      now.title = '立即发送（终止当前操作）';
       now.addEventListener('click', function () { sendQueuedNow(item.id); });
       acts.appendChild(now);
 
       var del = document.createElement('button');
       del.className = 'q-act q-del';
       del.textContent = '✕';
-      del.title = '删除这条排队';
       del.addEventListener('click', function () { dropQueued(item.id); });
       acts.appendChild(del);
 
@@ -7907,12 +7853,10 @@
     if (busy) {
       sendBtn.textContent = tr('终止');
       sendBtn.classList.add('stop');
-      sendBtn.title = tr('终止当前操作（输入框里按回车 = 加入队列）');
       input.placeholder = tr('按回车加入队列，等这一轮结束自动发送');
     } else {
       sendBtn.textContent = tr('发送');
       sendBtn.classList.remove('stop');
-      sendBtn.title = '';
       input.placeholder = tr('@ 添加上下文，/ 使用命令');
     }
   }
@@ -7961,12 +7905,10 @@
       return;
     }
     if (pendingDelete) pendingDelete.restore();
-    var oldText = btn.textContent, oldTitle = btn.title;
+    var oldText = btn.textContent;
     btn.textContent = '确认？';
-    btn.title = '再点一次删除这条';
     var restore = function () {
       btn.textContent = oldText;
-      btn.title = oldTitle;
     };
     pendingDelete = { el: el, btn: btn, restore: restore };
     clearTimeout(deleteTimer);
@@ -8084,10 +8026,8 @@
 
     var text = bubbleText(el);
     var rBtn = menuItem('重试', canRetryMsg(el), function () { closeMsgMenu(); retryMsg(el); });
-    if (rBtn.disabled) rBtn.title = '只能重试最后一轮的 AI 回复';
     menu.appendChild(rBtn);
     var cBtn = menuItem('复制', !!text, function () { closeMsgMenu(); copyMsgText(text); });
-    if (cBtn.disabled) cBtn.title = '这条消息没有可复制的文字';
     menu.appendChild(cBtn);
     menu.appendChild(menuItem('分享', !messages.classList.contains('share-pick'), function () {
       closeMsgMenu();
@@ -8318,7 +8258,6 @@
     if (micBtn) {
       micBtn.classList.remove('rec', 'busy');
       micBtn.textContent = tr('语音');
-      micBtn.title = '语音输入（桌面客户端，按住 R1 说话）';
     }
   }
 
@@ -8462,7 +8401,6 @@
     micState = 'recording';
     micBtn.classList.add('rec');
     micBtn.textContent = tr('停止');
-    micBtn.title = '再点一下结束录音';
     // 常驻监听期间不设上限：设置 60 秒会把录音掐掉，而这时的录音本来就是
     // 给后端唤醒/半双工用的。用户手动按 R1 时仍按 60 秒兜底
     if (micHold()) return;
@@ -8495,7 +8433,6 @@
       micState = 'idle';
       micBtn.classList.remove('busy');
       micBtn.textContent = tr('语音');
-      micBtn.title = '语音输入（桌面客户端，按住 R1 说话）';
     }
   }
 
@@ -8633,7 +8570,7 @@
   var ttsPreview = document.getElementById('ttsPreview');
 
   // 模型状态挂在发音人行的操作区里，插在下载进度前面
-  function setTtsModelHint(text, title) {
+  function setTtsModelHint(text) {
     if (!text) {
       if (ttsModelHint && ttsModelHint.parentNode) {
         ttsModelHint.parentNode.removeChild(ttsModelHint);
@@ -8650,7 +8587,6 @@
       }
     }
     ttsModelHint.textContent = text;
-    ttsModelHint.title = title || '';
   }
 
   // 提示挂在发音人一行之后、素材署名之前
@@ -8813,7 +8749,6 @@
     if (u.last_clear && u.last_clear.failed) {
       parts.push('上次清理失败 ' + u.last_clear.failed + ' 个');
     }
-    devLogUsage.title = parts.join('\n');
   }
 
   // 日志占用：清空后立即重拉，不等轮询
@@ -9062,7 +8997,6 @@
   var verSummaryEl = document.getElementById('verSummary');
   function markUpdate(latest, current, notes) {
     settingsBtn.classList.add('has-update');
-    settingsBtn.title = '有新版本 v' + latest;
     verTag.textContent = '版本 v' + (curVerDisplay || current || '?');
     // 版本号旁边补一句更新总结：优先用发布说明首行，没有就给一句兜底，
     // 不让这块一直空着
@@ -9110,7 +9044,6 @@
         var disp = v ? String(v.version_display || v.version || '') : '';
         if (!disp) { brandVer.textContent = 'v?'; return; }
         brandVer.textContent = 'v' + disp;
-        brandVer.title = '版本 ' + disp;
       })
       .catch(function () { brandVer.textContent = 'v?'; });
   }
@@ -9464,7 +9397,7 @@
         + '<input type="radio" name="apiProfileCurrent"'
         + (isCurrent ? ' checked' : '') + '><span>'
         + (isCurrent ? '使用中' : '设为使用中') + '</span></label>'
-        + '<button class="api-remove" type="button" title="删除这组接口" aria-label="删除">✕</button>'
+        + '<button class="api-remove" type="button" aria-label="删除">✕</button>'
         + '</div>'
         + '<div class="api-detail set-grid">'
         + '<div class="field"><label>接口地址（base_url）</label>'
@@ -9876,11 +9809,9 @@
     document.body.classList.remove('sb-open');
     // 设置页保留右栏，宽度和收起态跟着同一个 RB 走
     rbApplyLayout();
-    document.title = '设置 · DeckMeido';
     // 顶栏是共用的一条，标题跟着换；关掉设置时 closeSettings 会还回去
     setHdrTitle('设置');
     settingsBtn.textContent = '返回';
-    settingsBtn.title = '返回对话';
     // 每次打开都从第一页开始；上次停在哪页容易让人以为设置不见了
     showSetPane('model');
     setCfgHint('');
@@ -10432,7 +10363,6 @@
         ? ('找到 ' + hits + ' 项 · ' + paneCount + ' 个分页')
         : '没有匹配';
       // 窄屏会收起计数文字，悬停时仍能看到完整结果
-      settingsSearchCount.title = settingsSearchCount.textContent;
     }
   }
 
@@ -10496,11 +10426,9 @@
     clearSettingsSearch();
     // 退回对话页：右栏的显示/抽屉状态重新按对话页规则算一遍
     rbApplyLayout();
-    document.title = 'DeckMeido';
     // 顶栏是共用的：「设置」只是临时借用，回到对话就把会话名还回来
     setHdrTitle(curSessTitle);
     settingsBtn.textContent = '设置';
-    settingsBtn.title = '设置';
     stopPairPoll();
   }
 
@@ -10663,10 +10591,8 @@
 
   // 底栏的常驻提示：只写「已自动保存：<项目名>」，没有项目名就退成不带冒号的短句
   function setCfgSavedHint(name) {
-    cfgHint.title = '';
     var text = name ? '已自动保存：' + name : '已自动保存';
     // 文案可能比底栏宽，完整内容放 title 里，悬停能看到
-    cfgHint.title = text;
     setCfgHint(text);
   }
 
@@ -11205,25 +11131,21 @@
       ttsPill.className = 'tts-pill ready';
       ttsPill.textContent = '';
       ttsPill.disabled = true;
-      ttsPill.title = '';
-      setTtsModelHint('', '');
+      setTtsModelHint('');
       ttsDownloadHint.textContent = '';
     } else if (!ttsState.runtime) {
       ttsPill.hidden = false;
       ttsPill.className = 'tts-pill off';
       ttsPill.textContent = '不可用';
       ttsPill.disabled = true;
-      ttsPill.title = '本机没装模型运行时，可先选「机器人」';
-      setTtsModelHint('', '');
+      setTtsModelHint('');
       ttsDownloadHint.textContent = '';
     } else if (dl.state === 'downloading' || dl.phase === 'cancelling') {
       ttsPill.hidden = false;
       ttsPill.className = 'tts-pill busy';
       ttsPill.textContent = '下载中 ' + (dl.percent || 0).toFixed(0) + '%';
       ttsPill.disabled = false;
-      ttsPill.title = '点击取消下载';
-      setTtsModelHint('模型下载中',
-        dl.file ? dl.file + (dl.source_name ? '　来源：' + dl.source_name : '') : '');
+      setTtsModelHint('模型下载中');
       ttsDownloadHint.textContent = dl.done > 0
         ? (dl.done / 1048576).toFixed(1) + ' MB'
           + (dl.total > 0 ? ' / ' + (dl.total / 1048576).toFixed(1) + ' MB' : '')
@@ -11233,8 +11155,7 @@
       ttsPill.className = 'tts-pill missing';
       ttsPill.textContent = '未就绪 · 下载';
       ttsPill.disabled = false;
-      ttsPill.title = '点击下载月读酱语音模型（约 38MB）';
-      setTtsModelHint('', '');
+      setTtsModelHint('');
       ttsDownloadHint.textContent = dl.state === 'error'
         ? '下载失败' : dl.state === 'cancelled' ? '已取消' : '';
     }
@@ -11253,8 +11174,8 @@
         scheduleTtsPoll();
       })
       .catch(function () {
-        // 读不到状态时把话写在卡片里的提示行，不再挂到试听按钮的 title 上
-        setTtsModelHint('读取语音合成状态失败（服务可能正在重启）', '');
+        // 读不到状态时把话写在卡片里的提示行
+        setTtsModelHint('读取语音合成状态失败（服务可能正在重启）');
       });
   }
 
@@ -11428,8 +11349,7 @@
           ? '<span class="chip-name">' + escapeHtml(nm) + '</span>'
             + '<span class="chip-id">' + escapeHtml(value) + '</span>'
           : escapeHtml(value);
-        return '<span class="chip"' + (nm ? ' title="' + escapeHtml(nm + '（' + value + '）') + '"' : '')
-          + '>' + head
+        return '<span class="chip">' + head
           + '<button type="button" data-chip-index="' + i
           + '" aria-label="删除">×</button></span>';
       }).join('');
@@ -12209,7 +12129,6 @@
       var ph = document.createElement('span');
       ph.className = 'qqtext-ph';
       ph.textContent = item.placeholders.map(function (p) { return '{{' + p + '}}'; }).join(' ');
-      ph.title = '这些占位符会被替换成实际内容，请保留在文案里';
       head.appendChild(ph);
     }
     if (item.overridden) {
@@ -12540,7 +12459,6 @@
         body: JSON.stringify({ title: titleIn.value, prompt: promptTa.value })
       }).then(function (res) {
         if (res && res.preset) {
-          item.title = res.preset.title;
           item.prompt = res.preset.prompt;
         }
         hint.textContent = '已保存';
@@ -12675,9 +12593,7 @@
     var left = sl.countdown_left;
     sleepCfgSwitch.classList.toggle('armed', sl.enabled && left != null);
     if (sl.enabled && left != null) {
-      sleepCfgSwitch.title = left + ' 秒后关机（动一下鼠标或键盘即取消）';
     } else {
-      sleepCfgSwitch.title = '闲置满指定时长后自动关机';
     }
   }
 
@@ -13427,8 +13343,6 @@
     thinkKnob.style.left = pct;
     thinkWrap.classList.remove('level-0', 'level-1', 'level-2', 'level-3');
     thinkWrap.classList.add('level-' + lv);
-    thinkWrap.title = lv ? ('深度思考：' + THINK_NAMES[lv] + '（档位越高越聪明，也越慢越费 token）')
-                         : '深度思考：无（不输出思维链，最快最省）';
     return lv;
   }
   // 点击/拖动滑轨：按横向位置换算成最近的档位，松手才写配置。
@@ -13570,11 +13484,9 @@
       var nm = document.createElement('span');
       nm.className = 'at-name';
       nm.textContent = a.name;
-      nm.title = a.name;
       var del = document.createElement('button');
       del.className = 'at-del';
       del.textContent = '✕';
-      del.title = '移除';
       del.addEventListener('click', function () {
         pendingAttach.splice(i, 1);
         renderAttach();
@@ -13921,7 +13833,6 @@
         var sdRow = document.getElementById('sdRow');
         if (d.sd_pct != null) {
           sdRow.hidden = false;
-          sdRow.title = d.sd_mount || '';
           setBar(document.getElementById('sdFill'), document.getElementById('sdVal'), d.sd_pct,
                  Math.round(d.sd_pct) + '%');
         } else {
@@ -13941,7 +13852,6 @@
           sub.push('可用 ' + fmtMins(mins));
         }
         document.getElementById('sysSub').textContent = sub.join(' · ');
-        document.getElementById('sysSub').title = sub.join(' · ');
       })
       .catch(function () {});
   }
@@ -13987,7 +13897,6 @@
   function setMusicPlaying(on) {
     musicPlaying = !!on;
     musicToggleBtn.innerHTML = musicPlaying ? MUSIC_ICO.pause : MUSIC_ICO.play;
-    musicToggleBtn.title = musicPlaying ? '暂停' : '播放';
   }
   function renderMusic(d) {
     var title = String((d && d.title) || '');
@@ -14003,9 +13912,7 @@
     if (sig !== musicSig) {
       musicSig = sig;
       musicTitle.textContent = title;
-      musicTitle.title = title;
       musicArtist.textContent = artist;
-      musicArtist.title = artist;
       if (cover && /^https?:\/\//.test(cover)) {
         musicCover.textContent = '';
         var img = document.createElement('img');
@@ -14081,8 +13988,7 @@
   // 顶栏标题 = 当前会话标题（空会话回落到 DeckMeido）
   function setHdrTitle(t) {
     var name = String(t || '').trim();
-    if (!name) { name = 'DeckMeido'; hdrTitle.title = '新会话'; }
-    else { hdrTitle.title = name; }
+    if (!name) { name = 'DeckMeido'; }
     if (hdrTitle.textContent !== name) hdrTitle.textContent = name;
   }
   // 最近一次拿到的会话名。设置页借用顶栏写「设置」，回来时要还回去，
@@ -14141,12 +14047,10 @@
     var title = document.createElement('span');
     title.className = 's-title';
     title.textContent = s.title || '会话';
-    title.title = (s.title || '会话') + ' · ' + s.messages + ' 条消息';
     row.appendChild(title);
     var del = document.createElement('button');
     del.className = 's-del';
     del.textContent = '删除';
-    del.title = '删除会话';
     del.addEventListener('click', function (e) {
       e.stopPropagation();
       // 二次确认：第一击变红，2.5 秒内再击才删除
@@ -14241,7 +14145,6 @@
           head.className = 'sess-group' + (folded ? ' folded' : '');
           // 组标题是可点的折叠开关：整组收起/展开，收起状态记在本机
           head.setAttribute('aria-expanded', folded ? 'false' : 'true');
-          head.title = (folded ? '展开' : '收起') + SESS_GROUP[g].name + '（' + list.length + '）';
           var caret = document.createElement('span');
           // 箭头表示折叠方向：展开时朝下，收起时朝右
           caret.className = 'sess-group-caret';
