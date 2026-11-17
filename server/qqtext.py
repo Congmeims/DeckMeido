@@ -56,6 +56,9 @@ DEFAULTS: dict[str, str] = {
     "shot_failed_reason": "没截到当前画面：{{note}}",
     "shot_caption": "截图来啦~",
     "save_image_off": "图片功能没开（allow_image=false），这次没存哦。",
+    # 对话里带图/引用图但开关没开：以前是静默丢弃，AI 只收到文字还照样评价，
+    # 看起来就像「明明发了图却说没看到」。这里明说一句，别让人以为图发丢了
+    "turn_image_off": "（图片功能没开，这次只看到文字，没读到你引用的图哦）",
     "save_image_none": "最近没有可保存的图片呢，发一张图、或者引用一张图再发「存图」就好啦。",
     "save_image_fail": "没存成功：{{error}}",
     "save_ok": "保存成功~",
@@ -162,7 +165,8 @@ GROUPS: list[tuple[str, tuple[str, ...]]] = [
                     "deps_fail", "deps_head", "deps_note", "deps_item", "deps_ydotool")),
     ("帮助菜单", ("help_title", "help_item", "help_trigger")),
     ("图片与截图", ("image_empty", "image_too_big", "image_fail", "empty_reply",
-                    "image_bad_input", "launch_fail", "launch_ok", "shot_missing")),
+                    "image_bad_input", "turn_image_off", "launch_fail", "launch_ok",
+                    "shot_missing")),
     ("异常兜底", ("dispatch_fail", "truncated_note", "timeout", "timeout_steps",
                   "retry_timeout", "killed_empty", "error_wrap", "error_steps",
                   "steps_unsummarized", "steps_none", "output_limit",
@@ -202,6 +206,7 @@ LABELS: dict[str, str] = {
     "shot_failed_reason": "截图失败（有原因）",
     "shot_caption": "截图附带的文字",
     "save_image_off": "图片功能关闭",
+    "turn_image_off": "对话带图但图片功能关闭",
     "save_image_none": "没有可保存的图",
     "save_image_fail": "存图抛异常",
     "save_ok": "保存成功",

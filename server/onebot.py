@@ -1546,11 +1546,16 @@ class OneBotClient:
                                  {"group_id": _to_uid(ev.group_id), "message": message})
         self._stats["replies"] += 1
 
-    async def _send_chunks(self, ev: MessageEvent, text: str) -> None:
+    async def _send_chunks(self, ev: MessageEvent, text: str,
+                           preface: str = "") -> None:
         cfg = self._cfg
+        # preface：只贴在第一条文字前面的提示（如「图片功能没开」），
+        # 不参与分段计算，也不进语音，免得把系统提示念出来
         # 只发语音：先尝试语音，成功才跳过文字；任何失败都必须把文字发出去
         if cfg.voice_reply and cfg.voice_only:
             if await self._maybe_send_voice(ev, text):
+                if preface:
+                    await self._send_text(ev, preface, at=True, chunk=preface)
                 return
             if voice_allowed(cfg, ev) and self._voice_synth is not None:
                 self._log("info", "voice.send",
@@ -1560,6 +1565,8 @@ class OneBotClient:
                              cfg.max_reply_chunks)
         if not chunks:
             chunks = [qqtext.get("empty_reply")]
+        if preface:
+            chunks[0] = f"{preface}\n{chunks[0]}"
         for i, chunk in enumerate(chunks):
             await self._send_text(ev, chunk, at=(i == 0), chunk=chunk)
         # 语音只发一条，且放在全部分段之后：文字先落地，语音失败也吞不掉回复
@@ -2011,8 +2018,15 @@ class OneBotClient:
             except Exception as e:
                 self._log("warn", "群缓存摘要失败", repr(e))
         image = None
+        image_note = ""
         if not route.readonly:
             image = await self._resolve_turn_image(ev)
+            # 带图或引用图但 allow_image=false 时，_resolve_turn_image 会静默返回 None，
+            # 模型只看得到文字却照样「评价」，用户就以为图丢了。这里记一句说明，
+            # 发答复时附在最前面；不拼进 text，免得写进会话历史、下一轮又被当成用户说过的话
+            if image is None and not cfg.allow_image and (ev.images or ev.reply_id):
+                image_note = qqtext.get("turn_image_off")
+                self._log("info", "图片未读取", "allow_image=false")
         # 用 ContextVar 把片段交给本轮子任务：main.py 里的 QQ 轮次会在子任务里
         # 调用 guest_prompt()，这样片段只在本轮生效，不写进会话历史、不跨群串味
         token = _TURN_GROUP_CONTEXT.set(context) if context else None
@@ -2075,7 +2089,7 @@ class OneBotClient:
             caption = str(result.get("caption") or result.get("reply") or "截图已奉上")
             await self._send_image(ev, bytes(blob), caption)
             return
-        await self._send_chunks(ev, str(result.get("reply") or ""))
+        await self._send_chunks(ev, str(result.get("reply") or ""), preface=image_note)
 
     async def _do_cancel(self, ev: MessageEvent) -> None:
         device = device_tag(ev)
