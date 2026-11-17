@@ -89,29 +89,6 @@ export type Status = {
   pending_pair?: number;
 };
 
-/** 待配对会话：PIN 只在掌机侧出现，浏览器侧看不到 */
-export type PairSession = {
-  pair_id: string;
-  pin: string;
-  ip: string;
-  ua: string;
-  name: string;
-  attempts: number;
-  created_at: number;
-  expires_in: number;
-  state: string;
-};
-
-/** 已配对设备（不含任何凭据/hash，只给设置页展示） */
-export type PairedDevice = {
-  device_id: string;
-  name: string;
-  ip: string;
-  ua: string;
-  created_at: number;
-  last_seen: number;
-};
-
 /** 一轮里发生过的过程事件，字段与后端 events 对齐（见 server/main.py） */
 export type ChatEvent =
   | { type: "thought"; text: string }
@@ -228,10 +205,6 @@ export function useSession() {
   const [pendingPoke, setPendingPoke] = useState<PendingPoke | null>(null);
   const [runningAction, setRunningActionState] = useState<ActionKind>(activeAction);
   const [logs, setLogs] = useState<LogEntry[]>(logStore);
-  // 设备配对：待配对会话（含 PIN/倒计时）与已配对设备列表
-  const [pairSessions, setPairSessions] = useState<PairSession[]>([]);
-  const [pairDevices, setPairDevices] = useState<PairedDevice[]>([]);
-  const [pairError, setPairError] = useState("");
 
   const [thought, setThought] = useState("");
   const curRef = useRef("");
@@ -332,79 +305,6 @@ export function useSession() {
     } catch {
       /* 取不到就用本地兜底模板 */
     }
-  };
-
-  // ---------- 设备配对（掌机侧展示 PIN、允许/拒绝、设备列表） ----------
-  const loadPairInfo = async () => {
-    try {
-      const r = (await call<[], {
-        ok: boolean;
-        sessions?: PairSession[];
-        devices?: PairedDevice[];
-        error?: string;
-      }>("pair_info")) as {
-        ok: boolean;
-        sessions?: PairSession[];
-        devices?: PairedDevice[];
-        error?: string;
-      };
-      setPairSessions(r.sessions || []);
-      setPairDevices(r.devices || []);
-      setPairError(r.ok ? "" : r.error || "读取配对状态失败");
-    } catch (e: any) {
-      setPairError(String(e?.message ?? e));
-    }
-  };
-
-  const pairRefresh = async (pairId: string) => {
-    try {
-      const r = (await call<[string], { ok: boolean; error?: string }>(
-        "pair_refresh", pairId
-      )) as { ok: boolean; error?: string };
-      if (!r.ok) setPairError(r.error || "刷新 PIN 失败");
-    } catch (e: any) {
-      setPairError(String(e?.message ?? e));
-    }
-    await loadPairInfo();
-  };
-
-  const pairDecide = async (pairId: string, allow: boolean) => {
-    try {
-      const r = (await call<[string, boolean], { ok: boolean; error?: string }>(
-        "pair_decide", pairId, allow
-      )) as { ok: boolean; error?: string };
-      if (!r.ok) setPairError(r.error || "操作失败");
-    } catch (e: any) {
-      setPairError(String(e?.message ?? e));
-    }
-    await loadPairInfo();
-  };
-
-  const pairRemove = async (deviceId: string) => {
-    try {
-      await call<[string], { ok: boolean }>("pair_remove", deviceId);
-    } catch (e: any) {
-      setPairError(String(e?.message ?? e));
-    }
-    await loadPairInfo();
-  };
-
-  const pairRename = async (deviceId: string, name: string) => {
-    try {
-      await call<[string, string], { ok: boolean }>("pair_rename", deviceId, name);
-    } catch (e: any) {
-      setPairError(String(e?.message ?? e));
-    }
-    await loadPairInfo();
-  };
-
-  const pairRemoveAll = async () => {
-    try {
-      await call<[], { ok: boolean }>("pair_remove_all");
-    } catch (e: any) {
-      setPairError(String(e?.message ?? e));
-    }
-    await loadPairInfo();
   };
 
   const refreshStatus = async () => {
@@ -1002,15 +902,6 @@ export function useSession() {
     killing,
     newing,
     pendingPoke,
-    pairSessions,
-    pairDevices,
-    pairError,
-    loadPairInfo,
-    pairRefresh,
-    pairDecide,
-    pairRemove,
-    pairRename,
-    pairRemoveAll,
     refreshStatus,
     startBackend,
     send,

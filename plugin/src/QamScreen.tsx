@@ -10,7 +10,7 @@ import {
   TextField,
   ToggleField,
 } from "@decky/ui";
-import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, MessageContent, TEXT, ThoughtRow, copyText } from "./ui";
+import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, MessageContent, TEXT, ThoughtRow } from "./ui";
 import { statusLineFor } from "./statusLine";
 import { bumpOnce, stepTab } from "./tabNav";
 import { useVoiceInput } from "./useVoiceInput";
@@ -21,8 +21,6 @@ import {
   Delta,
   Item,
   LogEntry,
-  PairedDevice,
-  PairSession,
   SHOT_ASK_BRIEF,
   SHOT_TRANSLATE_BRIEF,
   Status,
@@ -53,20 +51,6 @@ function steamClient(): any {
 }
 
 const TITLE = "#eaf2fb";
-/** 配对结果色：允许走绿、拒绝/失败走琥珀，与卡片现有配色同一套 */
-const PAIR_OK = "#7ee0a8";
-const PAIR_WARN = "#e0a33a";
-/** 允许/拒绝按钮的完成态：沿用 Btn 的 tint 风格，不新增组件 */
-const PAIR_ALLOW_DONE: React.CSSProperties = {
-  background: "rgba(72,199,142,.22)",
-  border: "1px solid rgba(94,214,160,.55)",
-  color: "#a7edcb",
-};
-const PAIR_DENY_DONE: React.CSSProperties = {
-  background: "rgba(224,108,117,.18)",
-  border: "1px solid rgba(224,108,117,.42)",
-  color: "#f0c3c7",
-};
 
 /** QAM 提示词多行框：固定 84px（11.5px 字号约 5 行），内部滚动 */
 const qamTplStyle: React.CSSProperties = {
@@ -435,16 +419,6 @@ function useQamSession() {
   >(null);
   const [runningAction, setRunningActionState] = useState<ActionKind>(activeAction);
   const [logs, setLogs] = useState<LogEntry[]>(logStore);
-  const [pairSessions, setPairSessions] = useState<PairSession[]>([]);
-  const [pairDevices, setPairDevices] = useState<PairedDevice[]>([]);
-  const [pairError, setPairError] = useState("");
-  // 点「允许/拒绝」后的即时结果：后端在浏览器确认前仍会返回 approved 会话，
-  // 只靠 2 秒轮询看不出变化，所以本地先记一份并渲染成完成态
-  const [pairDecisions, setPairDecisions] = useState<Record<string, boolean>>({});
-  const [pairBusy, setPairBusy] = useState<Record<string, "allow" | "deny">>({});
-  const [pairFlash, setPairFlash] = useState<{ text: string; ok: boolean } | null>(null);
-  const pairBusyRef = useRef<Record<string, boolean>>({});
-  const pairFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const curRef = useRef("");
   const thoughtBuf = useRef("");
@@ -534,121 +508,6 @@ function useQamSession() {
     } catch {
       /* 取不到就用本地兜底模板 */
     }
-  };
-
-  // ---------- 设备配对（QAM 侧展示 PIN、允许/拒绝、设备列表） ----------
-  const loadPairInfo = async () => {
-    try {
-      const r = (await call<[], {
-        ok: boolean;
-        sessions?: PairSession[];
-        devices?: PairedDevice[];
-        error?: string;
-      }>("pair_info")) as {
-        ok: boolean;
-        sessions?: PairSession[];
-        devices?: PairedDevice[];
-        error?: string;
-      };
-      setPairSessions(r.sessions || []);
-      setPairDevices(r.devices || []);
-      setPairError(r.ok ? "" : r.error || "读取配对状态失败");
-    } catch (e: any) {
-      setPairError(String(e?.message ?? e));
-    }
-  };
-
-  const pairRefresh = async (pairId: string) => {
-    try {
-      const r = (await call<[string], { ok: boolean; error?: string }>(
-        "pair_refresh", pairId
-      )) as { ok: boolean; error?: string };
-      if (!r.ok) setPairError(r.error || "刷新 PIN 失败");
-    } catch (e: any) {
-      setPairError(String(e?.message ?? e));
-    }
-    await loadPairInfo();
-  };
-
-  /** 面板顶部的单行提示：停留 3 秒后自动消失，不打断焦点 */
-  const showPairFlash = (text: string, ok: boolean) => {
-    if (pairFlashTimer.current !== null) clearTimeout(pairFlashTimer.current);
-    setPairFlash({ text, ok });
-    pairFlashTimer.current = setTimeout(() => {
-      pairFlashTimer.current = null;
-      setPairFlash(null);
-    }, 3000);
-  };
-
-  // 面板卸载时清掉定时器，避免回到已销毁的组件里 setState
-  useEffect(
-    () => () => {
-      if (pairFlashTimer.current !== null) clearTimeout(pairFlashTimer.current);
-    },
-    []
-  );
-
-  const pairDecide = async (pairId: string, allow: boolean) => {
-    // 同一会话的按钮只认第一次点击，防止连点重复提交
-    if (pairBusyRef.current[pairId]) return;
-    pairBusyRef.current[pairId] = true;
-    const sess = pairSessions.find((p) => p.pair_id === pairId);
-    const deviceName = sess?.name || "未知设备";
-    setPairBusy((prev) => ({ ...prev, [pairId]: allow ? "allow" : "deny" }));
-    setPairError("");
-    let ok = false;
-    let err = "";
-    try {
-      const r = (await call<[string, boolean], { ok: boolean; error?: string }>(
-        "pair_decide", pairId, allow
-      )) as { ok: boolean; error?: string };
-      ok = !!r.ok;
-      if (!ok) err = r.error || "操作失败";
-    } catch (e: any) {
-      err = String(e?.message ?? e);
-    }
-    delete pairBusyRef.current[pairId];
-    setPairBusy((prev) => {
-      const next = { ...prev };
-      delete next[pairId];
-      return next;
-    });
-    if (ok) {
-      setPairDecisions((prev) => ({ ...prev, [pairId]: allow }));
-      showPairFlash(allow ? `已允许 ${deviceName} 配对` : `已拒绝 ${deviceName} 的配对`, allow);
-    } else {
-      // 失败时不改会话状态，按钮回到可点，同时把原因留在卡片内
-      setPairError(err);
-      showPairFlash(`${allow ? "允许" : "拒绝"}失败：${err}`, false);
-    }
-    await loadPairInfo();
-  };
-
-  const pairRemove = async (deviceId: string) => {
-    try {
-      await call<[string], { ok: boolean }>("pair_remove", deviceId);
-    } catch (e: any) {
-      setPairError(String(e?.message ?? e));
-    }
-    await loadPairInfo();
-  };
-
-  const pairRename = async (deviceId: string, name: string) => {
-    try {
-      await call<[string, string], { ok: boolean }>("pair_rename", deviceId, name);
-    } catch (e: any) {
-      setPairError(String(e?.message ?? e));
-    }
-    await loadPairInfo();
-  };
-
-  const pairRemoveAll = async () => {
-    try {
-      await call<[], { ok: boolean }>("pair_remove_all");
-    } catch (e: any) {
-      setPairError(String(e?.message ?? e));
-    }
-    await loadPairInfo();
   };
 
   /** 保存后端端口：与网页/大屏共用 [server].port。 */
@@ -1247,18 +1106,6 @@ function useQamSession() {
     killing,
     newing,
     pendingPoke,
-    pairSessions,
-    pairDevices,
-    pairError,
-    pairDecisions,
-    pairBusy,
-    pairFlash,
-    loadPairInfo,
-    pairRefresh,
-    pairDecide,
-    pairRemove,
-    pairRename,
-    pairRemoveAll,
     savePort,
     refreshStatus,
     startBackend,
@@ -1283,29 +1130,6 @@ function useQamSession() {
 export default function QamScreen() {
   const s = useQamSession();
   const [tab, setTabState] = useState(lastTab);
-  // 有新配对请求时的待处理数：在非设置页签上顶一句提示，引导去设置页看 PIN
-  const [pairNotice, setPairNotice] = useState(0);
-  // 设备改名草稿：按 device_id 保存输入框里的值，保存后才写回后端
-  const [renameDrafts, setRenameDrafts] = useState<Record<string, string>>({});
-  // 端口草稿与提示：保存后提示需重启，改一处另两处下次读取即生效
-  const [portDraft, setPortDraft] = useState("");
-  const [portHint, setPortHint] = useState("");
-  useEffect(() => {
-    if (!portDraft && s.status?.port) setPortDraft(String(s.status.port));
-  }, [s.status?.port]);
-  const savePortDraft = async () => {
-    const n = Number(portDraft.trim());
-    if (!Number.isInteger(n) || n < 1024 || n > 65535) {
-      setPortHint("端口需为 1024-65535 之间的整数");
-      return;
-    }
-    const r = await s.savePort(n);
-    if (!r.ok) {
-      setPortHint(r.error ?? "端口保存失败");
-      return;
-    }
-    setPortHint(`已保存端口 ${r.port}，重启后端后生效`);
-  };
   const setTab = (t: number | ((prev: number) => number)) => {
     setTabState((prev) => {
       const next = typeof t === "function" ? t(prev) : t;
@@ -1344,35 +1168,11 @@ export default function QamScreen() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [s.items, s.streaming, tab]);
 
-  // 进设置页拉一次模型列表；配对信息每 2 秒刷新一次（PIN 倒计时/新设备提示）
+  // 进设置页拉一次模型列表
   useEffect(() => {
     if (tab !== 2) return;
     void s.loadModels();
-    void s.loadPairInfo();
-    const timer = setInterval(() => void s.loadPairInfo(), 2000);
-    return () => clearInterval(timer);
   }, [tab]);
-
-  // 有人在浏览器点「配对新设备」时插件会 emit 一次：主人不必先去点「配对」，
-  // 面板直接切到设置页签并拉一次带 PIN 的配对信息，焦点落到「允许」上
-  const tabRef = useRef(tab);
-  tabRef.current = tab;
-  useEffect(() => {
-    const onPairRequest = (count?: number) => {
-      // 数量只用来决定红点/提示条；配对列表仍以 loadPairInfo 的结果为准
-      setPairNotice(typeof count === "number" && count > 0 ? count : 1);
-      if (tabRef.current !== 2) setTab(2);
-      void s.loadPairInfo();
-    };
-    addEventListener<[number]>("deckmeido_pair_request", onPairRequest);
-    return () => removeEventListener("deckmeido_pair_request", onPairRequest);
-  }, []);
-  // 待配对列表是准绳：设置页每 2 秒刷它，处理完（列表空了）提示自动消失。
-  // 只在数量变化时写，避免每 2 秒拿新数组触发一次无意义的重渲染
-  const sessionCount = s.pairSessions.length;
-  useEffect(() => {
-    setPairNotice(sessionCount);
-  }, [sessionCount]);
 
   // L1 / R1 翻页：页签事件与大屏共用 tabNav 的同一套按键映射。
   // 原来这里按 6/7 判断（把 6 当 L1），实际 BUMPER_LEFT=5、BUMPER_RIGHT=6，
@@ -1505,8 +1305,6 @@ export default function QamScreen() {
     >
       {padHint("‹", "L1")}
       {TABS.map((name, i) => {
-        // 设置页签上的红点：有设备等着配对时，即使停在别的页签也看得见
-        const dot = i === 2 && pairNotice > 0 && tab !== 2;
         return (
         <Focusable
           key={name}
@@ -1530,18 +1328,6 @@ export default function QamScreen() {
           }}
         >
           {name}
-          {dot ? (
-            <span
-              style={{
-                width: 5,
-                height: 5,
-                marginLeft: 4,
-                borderRadius: 3,
-                background: PAIR_WARN,
-                flexShrink: 0,
-              }}
-            />
-          ) : null}
         </Focusable>
         );
       })}
@@ -1594,29 +1380,6 @@ export default function QamScreen() {
   return shell(
     <>
       {tabRow}
-
-      {/* 有设备等着配对时，停在别的页签也顶一句；点一下就切到设置看 PIN */}
-      {pairNotice > 0 && tab !== 2 ? (
-        <Focusable
-          onActivate={() => setTab(2)}
-          onOKActionDescription="去配对"
-          onCancelActionDescription="返回"
-          style={{
-            flexShrink: 0,
-            width: "100%",
-            boxSizing: "border-box",
-            padding: "5px 8px",
-            borderRadius: 4,
-            fontSize: 11,
-            lineHeight: 1.4,
-            color: "#f3d9a8",
-            background: "rgba(224,163,58,.16)",
-            border: "1px solid rgba(224,163,58,.45)",
-          }}
-        >
-          {pairNotice} 台设备请求配对 · 按 A 看 PIN
-        </Focusable>
-      ) : null}
 
       {/* ================= 询问页 ================= */}
       {tab === 0 && (
@@ -1971,283 +1734,6 @@ export default function QamScreen() {
             paddingRight: 2,
           }}
         >
-          {/* 局域网访问：只展示地址；鉴权走设备配对 PIN，不再有令牌 */}
-          <Card title="局域网访问">
-            <div style={{ fontSize: 11, color: DIM, lineHeight: 1.5 }}>
-              手机 / 平板 / 电脑浏览器打开这个地址，按掌机上的 PIN 配对一次即可。
-            </div>
-            <div style={{ fontSize: 12, color: TEXT, wordBreak: "break-all" }}>
-              {s.status?.lan_url || "—"}
-            </div>
-            <Btn
-              height={26}
-              size={11}
-              onClick={() => void copyText(s.status?.lan_url || "")}
-              description="复制局域网地址"
-            >
-              复制地址
-            </Btn>
-            <div style={{ fontSize: 11, color: DIM }}>
-              当前端口 {s.status?.port ?? "—"}（改后需重启后端）
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <TextField
-                value={portDraft}
-                onChange={(e) => setPortDraft(e.target.value)}
-              />
-              <Btn
-                height={26}
-                size={10.5}
-                onClick={() => void savePortDraft()}
-                description="保存端口"
-              >
-                保存端口
-              </Btn>
-              <Btn
-                height={26}
-                size={10.5}
-                disabled={s.restarting}
-                onClick={() => void s.coreRestart()}
-                description="重启后端使端口生效"
-              >
-                {s.restarting ? "重启中…" : "重启后端"}
-              </Btn>
-            </div>
-            {portHint ? (
-              <div style={{ fontSize: 10.5, color: "#e0a33a", lineHeight: 1.4 }}>
-                {portHint}
-              </div>
-            ) : null}
-          </Card>
-
-          {/* 设备配对：PIN 只在掌机上显示，浏览器输入 PIN 才能拿到设备凭据 */}
-          <Card title="设备配对">
-            {s.status?.security_note ? (
-              <div style={{ fontSize: 11.5, color: "#e0a33a", lineHeight: 1.5 }}>
-                {s.status.security_note}
-              </div>
-            ) : null}
-            {!s.status?.lan_enable ? (
-              <div style={{ fontSize: 11, color: DIM, lineHeight: 1.5 }}>
-                局域网访问当前关闭（仅本机）。在网页设置里开启并重启后端后，新设备才能配对。
-              </div>
-            ) : null}
-            {/* 结果提示占固定高度：出现/消失都不推挤下方 PIN 与按钮，窄屏不跳动 */}
-            <div
-              style={{
-                height: 14,
-                flexShrink: 0,
-                display: "flex",
-                alignItems: "center",
-                minWidth: 0,
-              }}
-            >
-              {s.pairFlash ? (
-                <div
-                  role="status"
-                  style={{
-                    width: "100%",
-                    fontSize: 10.5,
-                    lineHeight: "14px",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    color: s.pairFlash.ok ? PAIR_OK : PAIR_WARN,
-                  }}
-                >
-                  {s.pairFlash.ok ? "✓ " : "! "}
-                  {s.pairFlash.text}
-                </div>
-              ) : null}
-            </div>
-            {s.pairSessions.length === 0 ? (
-              <div style={{ fontSize: 11, color: DIM }}>
-                暂无待配对设备。对方点「配对新设备」后会出现在这里。
-              </div>
-            ) : (
-              s.pairSessions.map((p) => {
-                const busy = s.pairBusy[p.pair_id];
-                const local = s.pairDecisions[p.pair_id];
-                // 本地点击结果优先：后端在浏览器确认前仍会返回 approved，
-                // 靠轮询要等 2 秒，先把完成态画出来
-                const approved = local === true || p.state === "approved";
-                const denied = approved ? false : local === false || p.state === "denied";
-                const decided = approved || denied;
-                const stateText = busy
-                  ? `正在${busy === "allow" ? "允许" : "拒绝"}…`
-                  : approved
-                    ? "已允许 · 等待对方输入 PIN 完成配对"
-                    : denied
-                      ? "已拒绝 · 本次配对已作废"
-                      : `剩余 ${Math.max(0, p.expires_in)} 秒 · 已试 ${p.attempts}/3 次`;
-                const stateColor = busy
-                  ? ACCENT
-                  : approved
-                    ? PAIR_OK
-                    : denied
-                      ? PAIR_WARN
-                      : DIM;
-                return (
-                  <div
-                    key={p.pair_id}
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 4,
-                      padding: "8px 9px",
-                      borderRadius: 4,
-                      background: approved
-                        ? "rgba(72,199,142,.10)"
-                        : denied
-                          ? "rgba(224,108,117,.08)"
-                          : "rgba(255,255,255,.05)",
-                      border: `1px solid ${
-                        approved
-                          ? "rgba(94,214,160,.40)"
-                          : denied
-                            ? "rgba(224,108,117,.35)"
-                            : "rgba(90,169,230,.16)"
-                      }`,
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                      <span
-                        style={{
-                          fontSize: 11,
-                          color: TEXT,
-                          minWidth: 0,
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                        }}
-                      >
-                        {p.name || "未知设备"} · {p.ip || "未知来源"}
-                      </span>
-                      {approved || denied ? (
-                        <span
-                          style={{
-                            flexShrink: 0,
-                            fontSize: 10,
-                            lineHeight: 1.2,
-                            padding: "1px 5px",
-                            borderRadius: 3,
-                            whiteSpace: "nowrap",
-                            color: approved ? PAIR_OK : PAIR_WARN,
-                            border: `1px solid ${
-                              approved ? "rgba(94,214,160,.45)" : "rgba(224,108,117,.40)"
-                            }`,
-                          }}
-                        >
-                          {approved ? "已允许" : "已拒绝"}
-                        </span>
-                      ) : null}
-                    </div>
-                    {denied ? (
-                      <div style={{ fontSize: 11, lineHeight: "26px", color: DIM }}>PIN 已失效</div>
-                    ) : (
-                      <div
-                        style={{
-                          fontSize: 22,
-                          letterSpacing: 6,
-                          color: TITLE,
-                          fontFamily: "monospace",
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                        }}
-                      >
-                        {p.pin}
-                      </div>
-                    )}
-                    <div
-                      style={{
-                        fontSize: 10.5,
-                        color: stateColor,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {stateText}
-                    </div>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <Btn
-                        height={26}
-                        size={10.5}
-                        disabled={!!busy || decided}
-                        style={approved ? PAIR_ALLOW_DONE : undefined}
-                        onClick={() => void s.pairDecide(p.pair_id, true)}
-                      >
-                        {approved ? "✓ 已允许" : busy === "allow" ? "允许中…" : "允许"}
-                      </Btn>
-                      <Btn
-                        height={26}
-                        size={10.5}
-                        disabled={!!busy || decided}
-                        style={denied ? PAIR_DENY_DONE : undefined}
-                        onClick={() => void s.pairDecide(p.pair_id, false)}
-                      >
-                        {denied ? "✓ 已拒绝" : busy === "deny" ? "拒绝中…" : "拒绝"}
-                      </Btn>
-                      <Btn
-                        height={26}
-                        size={10.5}
-                        disabled={!!busy}
-                        onClick={() => void s.pairRefresh(p.pair_id)}
-                      >
-                        刷新 PIN
-                      </Btn>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-            {s.pairDevices.length === 0 ? (
-              <div style={{ fontSize: 11, color: DIM }}>还没有已配对设备。</div>
-            ) : (
-              s.pairDevices.map((d) => (
-                <div key={d.device_id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  <div style={{ fontSize: 11, color: TEXT }}>
-                    {d.name || "未命名设备"} · {d.ip || "—"}
-                  </div>
-                  <div style={{ fontSize: 10, color: DIM }}>
-                    最后在线 {d.last_seen ? new Date(d.last_seen * 1000).toLocaleString() : "—"}
-                  </div>
-                  <TextField
-                    value={renameDrafts[d.device_id] ?? d.name}
-                    onChange={(e) =>
-                      setRenameDrafts((prev) => ({ ...prev, [d.device_id]: e.target.value }))
-                    }
-                  />
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <Btn
-                      height={24}
-                      size={10.5}
-                      onClick={() =>
-                        void s.pairRename(
-                          d.device_id,
-                          renameDrafts[d.device_id] ?? d.name
-                        )
-                      }
-                    >
-                      保存名称
-                    </Btn>
-                    <Btn height={24} size={10.5} onClick={() => void s.pairRemove(d.device_id)}>
-                      移除
-                    </Btn>
-                  </div>
-                </div>
-              ))
-            )}
-            {s.pairDevices.length > 0 ? (
-              <Btn height={24} size={10.5} onClick={() => void s.pairRemoveAll()}>
-                移除全部设备
-              </Btn>
-            ) : null}
-            {s.pairError ? (
-              <div style={{ fontSize: 10.5, color: ERR_COLOR }}>{s.pairError}</div>
-            ) : null}
-          </Card>
-
           {/* 模型 */}
           <Card title="模型">
             <div style={{ width: "100%", display: "flex" }}>
