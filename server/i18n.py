@@ -41,6 +41,7 @@ EN: dict[str, str] = {
     "停止": "Stop",
     "识别中": "Transcribing",
     "语音输入": "Voice input",
+    "语音识别": "Speech recognition",
     "语音播报回复": "Read replies aloud",
     "录音时静音外放": "Mute output while recording",
     "录音时静音外放（录完自动恢复）": "Mute output while recording (restored after)",
