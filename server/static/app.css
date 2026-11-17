@@ -65,15 +65,22 @@
   html[data-runtime="deck"] button, html[data-runtime="deck"] input,
   html[data-runtime="deck"] select, html[data-runtime="deck"] textarea { font-family: inherit; }
 
-  /* 顶部状态栏 */
+  /* 顶部状态栏。
+     高度锁成 45px，和左栏 .sb-head、右栏 #rbHead 同一条水平线：
+     原来只有上下各 10px 内边距撑着，内容（状态胶囊 29px）一高就是
+     10 + 29 + 1 = 50px，比两侧多出 5px，分隔线一高一低；
+     徽章折行时更会撑到 60px 以上，分界彻底错乱。
+     写死高度后内边距只管左右，行高由内容自然居中 */
   header {
     position: relative;
     flex: 0 0 auto;
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 10px 14px;
-    padding-top: calc(10px + env(safe-area-inset-top));
+    height: 45px;
+    box-sizing: border-box;
+    padding: 0 14px;
+    padding-top: env(safe-area-inset-top);
     background: var(--surface);
     border-bottom: 1px solid var(--line);
   }
@@ -148,12 +155,22 @@
   .ctrl.danger { color: #d0492b; }
   @keyframes ctrlPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
   @media (prefers-reduced-motion: reduce) { .ctrl .lamp { animation: none !important; } }
-  /* 右上角状态区：整组靠右对齐 */
+  /* 右上角状态区：整组靠右对齐。
+     必须单行不换行：左右两栏顶栏是写死的 45px，徽章一多、宽度一窄，
+     wrap 会把这一组折成两行，header 被撑高到 60+px，两侧分隔线却还停在
+     y=45，看着就是「标题栏比两侧低一截、分界错乱」。放不下时按权重收窄：
+     QQ 状态胶囊不缩，徽章允许省略号压缩（.badge 自带 nowrap + ellipsis） */
   .hdr-right {
     margin-left: auto;
     display: flex; align-items: center; justify-content: flex-end;
-    gap: 8px; flex-wrap: wrap;
+    gap: 8px; flex-wrap: nowrap;
+    min-width: 0;
   }
+  .hdr-right > .qq-sess-wrap { flex: 0 0 auto; }
+  .hdr-right > .badge { flex: 0 1 auto; }
+  /* 标题占位：窄的时候最先被压到 0（.logo 自带省略号），
+     轮不到徽章去换行。以前没有样式，它是个宽 0 的空 span */
+  header > .spacer { flex: 1 1 auto; min-width: 0; }
 
   /* QQ 会话头部的 OneBot 状态灯 + 快捷面板 */
   .qq-sess-wrap { position: relative; display: inline-flex; flex: 0 0 auto; }
@@ -2648,7 +2665,9 @@
   }
   /* 手机竖屏（≈390px）：顶栏、时间线、输入栏都要单独收窄，否则会被挤出屏幕 */
   @media (max-width: 560px) {
-    header { gap: 7px; padding: 8px 10px; padding-top: calc(8px + env(safe-area-inset-top)); }
+    /* 高度仍锁 45px：窄屏只收左右内边距和间距，别让高度跟着内容变，
+       否则又会和侧栏折叠残片（#sbRail / #rbHead 固定 45px）对不齐 */
+    header { gap: 7px; height: 45px; padding: 0 10px; padding-top: env(safe-area-inset-top); }
     .logo { font-size: 15px; }
     .hdr-right { gap: 5px; flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; }
     .badge { padding: 3px 8px; font-size: 11px; }
