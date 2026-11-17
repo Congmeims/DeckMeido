@@ -11464,6 +11464,7 @@
       if (opts.hint) opts.hint.textContent = '';
       render();
       if (opts.onAdd) opts.onAdd(raw);
+      if (opts.onChange) opts.onChange(items.slice());
     }
     if (opts.addBtn) opts.addBtn.addEventListener('click', add);
     if (opts.input) {
@@ -11481,7 +11482,11 @@
           ? e.target.closest('button[data-chip-index]') : null;
         if (!btn) return;
         var idx = Number(btn.getAttribute('data-chip-index'));
-        if (idx >= 0) { items.splice(idx, 1); render(); }
+        if (idx >= 0) {
+          items.splice(idx, 1);
+          render();
+          if (opts.onChange) opts.onChange(items.slice());
+        }
       });
     }
     render();
@@ -11523,11 +11528,34 @@
       .catch(function () { /* 取不到名字就继续显示号码，不弹错误 */ });
   }
 
+  // 群号增删自动保存的序号：只让最后一次提交的回执落提示
+  var qqGroupSaveSeq = 0;
+  // 群号自动保存的提示直接落在群号下面（静默保存不写全局 qqHint）
+  function qqGroupHintSet(text) {
+    if (qqGroupHint) qqGroupHint.textContent = text || '';
+  }
   qqGroups = makeChipList({
     input: cfgQqGroupInput, addBtn: cfgQqGroupAdd, box: qqGroupChipsBox,
     hint: qqGroupHint, empty: '未添加群号，群里指令不生效', check: qqGroupIdError,
     nameOf: function (v) { return qqGroupNames[v] || ''; },
-    onAdd: function () { refreshQqGroupNames(); }
+    onAdd: function () { refreshQqGroupNames(); },
+    // 群号增删即保存：以前只有「连接 / 重新连接」才会提交表单，
+    // 点「添加」只改了内存，刷新页面就从服务端配置回填成旧值，列表里的号没了
+    onChange: function () {
+      refreshQqGroupNames();
+      if (!qqConfigLoaded) return;
+      qqGroupSaveSeq += 1;
+      var seq = qqGroupSaveSeq;
+      submitQq(false, { silent: true }).then(function (res) {
+        // 保存期间又改过：以最后一次提交的结果为准
+        if (seq !== qqGroupSaveSeq) return;
+        qqGroupHintSet(res ? '群号已保存' : '群号没能保存，请稍后重试');
+        if (!res) return;
+        setTimeout(function () {
+          if (seq === qqGroupSaveSeq) qqGroupHintSet('');
+        }, 2000);
+      });
+    }
   });
   qqRedactWords = makeChipList({
     input: cfgQqRedactInput, addBtn: cfgQqRedactAdd, box: qqRedactChipsBox,
