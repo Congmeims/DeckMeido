@@ -3,6 +3,7 @@ import { GiTeapot } from "react-icons/gi";
 import BigScreen from "./BigScreen";
 import QamScreen from "./QamScreen";
 import { BIG_SCREEN_ROUTE } from "./useSession";
+import { disableMenuInjection, enableMenuInjection } from "./menuInjection";
 
 export default definePlugin(() => {
   // 全屏页挂到 Steam 的 GamepadUI 路由里，从 QAM 用 Navigation.Navigate 进入；
@@ -11,6 +12,14 @@ export default definePlugin(() => {
     routerHook.addRoute(BIG_SCREEN_ROUTE, () => <BigScreen />);
   } catch (e) {
     console.error("[DeckMeido] 大屏路由注册失败", e);
+  }
+
+  // 左侧 Steam 菜单注入「DeckMeido」入口，点进去就是同一个大屏。
+  // 只是增强，注入失败不影响 QAM 和大屏路由。
+  try {
+    enableMenuInjection();
+  } catch (e) {
+    console.error("[DeckMeido] 菜单注入启动失败", e);
   }
 
   return {
@@ -25,6 +34,11 @@ export default definePlugin(() => {
     </div>
   ),
   onDismount() {
+    try {
+      disableMenuInjection();
+    } catch (e) {
+      console.error("[DeckMeido] 菜单注入关闭失败", e);
+    }
     try {
       routerHook.removeRoute(BIG_SCREEN_ROUTE);
     } catch (e) {
