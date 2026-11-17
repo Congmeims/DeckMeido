@@ -110,17 +110,19 @@ function rootFiber(): AnyFiber | null {
 
 function findFiber(root: AnyFiber, pred: FiberPred, cap = 20000): AnyFiber | null {
   let n = 0;
-  const stack: AnyFiber[] = [root];
-  while (stack.length) {
-    const f = stack.pop();
+  const queue: AnyFiber[] = [root];
+  // 用 BFS 而不是 DFS：外层 fiber 会把自己的 props 原样透传给内层（Outer → MenuBoundary → 原组件），
+  // 三者都满足 props 特征。DFS 会撞到最里面那个，把它当成菜单根去反复包，菜单就会一直重挂载。
+  while (queue.length) {
+    const f = queue.shift();
     if (!f || n++ > cap) continue;
     try {
       if (pred(f)) return f;
     } catch {
       /* 单个谓词异常忽略 */
     }
-    if (f.child) stack.push(f.child);
-    if (f.sibling) stack.push(f.sibling);
+    if (f.child) queue.push(f.child);
+    if (f.sibling) queue.push(f.sibling);
   }
   return null;
 }
@@ -219,15 +221,12 @@ function boundedRender<T>(fn: () => T): T | null {
   }
 }
 
-/** 当前菜单容器是否真的能被找到、并插进项；找不到时把原因记下来 */
-function injectItem(containerRet: any) {
-  if (fused) return;
-  const arr = deepFind(containerRet, (nd) => Array.isArray(nd) && nd.some(isMenuItemEl));
-  if (!arr) {
-    diag("menu items array miss");
-    return;
-  }
-  if (arr.some((x: any) => x?.props?.route === MENU_ROUTE)) return; // route 即唯一标识，天然去重
+/** 数组（或 Fragment 的 props 对象）里是否已有菜单项 */
+const hasMenuItem = (arr: any[]): boolean => arr.some(isMenuItemEl);
+
+/** 在任意「菜单项数组」里插入自己的项：route 即唯一标识，天然去重 */
+function injectIntoArray(arr: any[]) {
+  if (arr.some((x: any) => x?.props?.route === MENU_ROUTE)) return;
   const tmpl = arr.find(isMenuItemEl);
   if (!tmpl) return;
   // 图标与 QAM 面板保持一致（茶壶）
@@ -263,42 +262,104 @@ function injectItem(containerRet: any) {
 }
 
 /**
- * 在 fiber 子链里找菜单容器（props 带 loggedIn / menuOpen 的组件 fiber），
- * 返回一个「像 element 一样可改 type」的代理：改 type 时会同步改 fiber 和 alternate。
+ * 直接改 fiber 上已经渲染好的菜单项数组。
+ *
+ * 菜单项不是由「可插手的 element 链」生成的：Steam 用 jsx 把 item 数组作为一个 Fragment 的
+ * props 渲染（tag 7，props 就是 {0: item, 1: item, ...}），外层包装改 type 也碰不到它。
+ * 这里找到这个数组原位 splice，current 与 alternate 同时改，任何一次重渲染都会带上入口。
  */
-function findContainerElInFiber(fe: AnyFiber, asProxy = false): any {
-  const stack: AnyFiber[] = [];
-  if (fe.child) stack.push(fe.child);
+function injectIntoFiberArray(fe: AnyFiber): boolean {
+  if (fused) return false;
+  const stack: AnyFiber[] = [fe];
   let n = 0;
-  while (stack.length && n++ < 400) {
+  while (stack.length && n++ < 20000) {
     const f = stack.pop()!;
-    const p: any = f.memoizedProps;
-    if (
-      p &&
-      p.loggedIn !== undefined &&
-      p.menuOpen !== undefined &&
-      typeof f.type === "function"
-    ) {
-      return asProxy ? { type: f.type } : makeFiberProxy(f);
+    const props: any = f.memoizedProps;
+    if (props) {
+      const isFragmentProps =
+        f.tag === 7 && Array.isArray(Object.keys(props)) && Object.keys(props).some((k) => /^\d+$/.test(k));
+      if (isFragmentProps) {
+        const keys = Object.keys(props).filter((k) => /^\d+$/.test(k));
+        const arr = keys.map((k) => props[k]);
+        if (hasMenuItem(arr)) {
+          const before = arr.length;
+          injectIntoArray(arr);
+          if (arr.length === before) return false; // 已经有入口，无需再改
+          keys.forEach((k, i) => (props[k] = arr[i]));
+          const alt: any = f.alternate?.memoizedProps;
+          if (alt && alt !== props) {
+            const altKeys = Object.keys(alt).filter((k) => /^\d+$/.test(k));
+            if (altKeys.length) {
+              const altArr = altKeys.map((k) => alt[k]);
+              if (altArr.some((x: any) => x?.props?.route === MENU_ROUTE)) return true;
+              const target = altArr.findIndex((x: any) => x === arr[0] || x?.props?.route === arr[0]?.props?.route);
+              if (target >= 0) {
+                const mine = arr.find((x: any) => x?.props?.route === MENU_ROUTE);
+                if (mine) altArr.splice(target, 0, mine);
+                altKeys.forEach((k: string, i: number) => (alt[k] = altArr[i]));
+              }
+            }
+          }
+          return true;
+        }
+      }
     }
-    if (f.sibling) stack.push(f.sibling);
     if (f.child) stack.push(f.child);
+    if (f.sibling) stack.push(f.sibling);
+  }
+  return false;
+}
+
+/**
+ * 只改 memoizedProps 不够：React 用 current !== wip 判断「这棵子树上一轮已经渲染过」，
+ * 会直接 bailout 而不为新增的 props 生成子 fiber —— 表现为 props 里明明有入口、DOM 里却没有。
+ * 这里顺着已插入项的 fiber 找到最近的宿主 DOM 节点，对最近的 class 祖先触发一次 setState，
+ * 让 React 从那里开始真正 re-render 一遍（fiber 调度细节不做硬编码，交给 React 自己）。
+ */
+function hostNodeOf(f: AnyFiber | null | undefined) {
+  for (let q = f, n = 0; q && n < 12; q = q.child, n++) {
+    for (let x: AnyFiber | null | undefined = q; x; x = x.sibling) {
+      if (x.tag === 5 && x.stateNode && x.stateNode.nodeType === 1) return x.stateNode as any;
+    }
   }
   return null;
 }
 
-/** 把 fiber 包成能读 type / 改 type 的对象，patchContainer 不用关心目标是 element 还是 fiber */
-function makeFiberProxy(f: AnyFiber) {
-  return {
-    get type() {
-      return f.type;
-    },
-    set type(v: any) {
-      f.type = v;
-      if (f.alternate) f.alternate.type = v;
-    },
-    isFiberProxy: true,
-  };
+function forceUpdate(f: AnyFiber) {
+  try {
+    const el = hostNodeOf(f);
+    const k = el && Object.keys(el).find((key: string) => key.startsWith("__reactFiber"));
+    let q: AnyFiber | null | undefined = k ? el[k] : null;
+    for (let n = 0; q && n < 40; q = q.return, n++) {
+      const inst = (q as any).stateNode;
+      if (typeof q.type === "function" && inst && typeof inst.forceUpdate === "function") {
+        inst.forceUpdate();
+        return;
+      }
+    }
+  } catch {
+    /* 触不触发都行：下一次导航/重渲染也会带上 */
+  }
+}
+
+/** 丢到下一轮事件循环执行：避免在 React render 栈里同步改状态 */
+function later(fn: () => void) {
+  try {
+    setTimeout(fn, 0);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 当前菜单容器是否真的能被找到、并插进项；找不到时把原因记下来 */
+function injectItem(containerRet: any) {
+  if (fused) return;
+  const arr = deepFind(containerRet, (nd) => Array.isArray(nd) && nd.some(isMenuItemEl));
+  if (!arr) {
+    diag("menu items array miss");
+    return;
+  }
+  injectIntoArray(arr);
 }
 
 /**
@@ -357,7 +418,11 @@ function patchContainer(ieEl: any) {
     fuse(new Error("legacy container wrapper"));
     return;
   }
-  if (OrigIe[MARK]) return; // 已经是自己的 wrapper，幂等
+  if (OrigIe[MARK]) {
+    // 已经是自己的 wrapper：记下来的只是渲染结果里的快照，改它不会影响下一轮渲染，
+    // 因此不需要留引用。
+    return;
+  }
   const next = containerWrapperFor(OrigIe);
   if (next === OrigIe) return;
   diag("container patched", OrigIe.name || "anonymous");
@@ -398,17 +463,23 @@ function menuRootBoundary(wrapped: any, original: any) {
 function stillPatched(): boolean {
   const fe = patched?.fiber;
   if (!fe || !patched) return false;
-  // 共享模式（fe.type 是别的插件的 Outer，本插件没改它）：只要容器还是自己的 wrapper 就算在位
+  // 共享模式（fe.type 是别的插件包的外层，本插件没改它）：只需确认外层还在树上，
+  // 菜单项由 injectIntoFiberArray 每轮补齐。
   const shared = !fe.type?.[MARK];
   if (!shared && (isLegacyWrapper(fe.type) || !fe.type?.[MARK])) return false;
   for (let f: AnyFiber | null | undefined = fe, n = 0; f && n < 1000; f = f.return, n++) {
-    if (f.tag === HOST_ROOT) {
-      if (!shared) return true;
-      const c = findContainerElInFiber(fe, true) as any;
-      return Boolean(c && c.type?.[MARK]);
-    }
+    if (f.tag === HOST_ROOT) return true;
   }
   return false;
+}
+
+/**
+ * 共享模式不能用 stillPatched 早退：Steam 每次重渲染都从头 jsx 一份菜单项数组，
+ * 我们改进去的项会被覆盖掉，所以每轮都要重新注入（injectIntoArray 自身按 route 去重）。
+ */
+function needsInject(): boolean {
+  const fe = patched?.fiber;
+  return !fe || !stillPatched() || !fe.type?.[MARK];
 }
 
 function tryPatch() {
@@ -417,7 +488,7 @@ function tryPatch() {
       diag("fused");
       return;
     }
-    if (stillPatched()) return;
+    if (!needsInject()) return;
     const root = rootFiber();
     if (!root) {
       diag("rootFiber miss");
@@ -428,7 +499,13 @@ function tryPatch() {
       diag("menu root fiber miss");
       return;
     }
-    if (typeof fe.type !== "function" || isClassComponent(fe.type)) {
+    // 已打过补丁（包装式或直接改菜单项数组）就不用再动；顺带确认菜单项真的在
+    if (fe.type?.[MARK]) return;
+    if (!((fe.type as any)?.[FOREIGN_ORIGINAL] || (fe.type as any)?.__deckyMusic) && typeof fe.type !== "function") {
+      diag("menu root type unsupported", typeof fe.type, fe.tag);
+      return;
+    }
+    if (!((fe.type as any)?.[FOREIGN_ORIGINAL] || (fe.type as any)?.__deckyMusic) && isClassComponent(fe.type)) {
       diag("menu root type unsupported", typeof fe.type, fe.tag);
       return;
     }
@@ -441,15 +518,14 @@ function tryPatch() {
       return;
     }
     const Orig = fe.type;
-    // 外层已经被别的插件（Decky Music）包成 Outer→MenuBoundary：它返回的 element 里
-    // 只有 MenuBoundary，真正的菜单容器还在下一层，从返回值里找不到。
-    // 这种情况不改外层，直接从 fiber 子链上找已经渲染出来的容器，替换它的 type（幂等 + 缓存）。
+    // 外层已经被别的插件（Decky Music）包成 Outer→MenuBoundary：不改它的 type，
+    // 直接把项塞进已经渲染出来的菜单项数组（实测外层被包过时，wrapper 里拿到的 element 树插不进去）。
     if ((Orig as any)[FOREIGN_ORIGINAL] || (Orig as any).__deckyMusic) {
-      const container = findContainerElInFiber(fe);
-      if (container) {
-        patchContainer(container);
-        patched = { fiber: fe, original: Orig };
+      if (injectIntoFiberArray(fe)) {
+        forceUpdate(fe);
+        diag("array inject", Orig.name || "anonymous");
       }
+      patched = { fiber: fe, original: Orig };
       return;
     }
     const wrapped = function (this: any) {
@@ -472,6 +548,13 @@ function tryPatch() {
           }
         } catch (e) {
           diag("outer patch throw", String(e));
+        }
+        // 兜底：菜单项数组是 Steam 自己 jsx 出来的，可能不在返回值里，再按整棵 fiber 补一次。
+        // forceUpdate 不能放在这个 render 里（会同步 setState 报错），丢到下一轮 tick。
+        try {
+          if (injectIntoFiberArray(fe)) later(() => forceUpdate(fe));
+        } catch (e) {
+          diag("fiber array inject throw", String(e));
         }
         return ret;
       });
@@ -503,6 +586,27 @@ function diag(...args: any[]) {
   }
 }
 
+/** 卸载时撤掉直接改进去的菜单项（重新编号，避免数组出现空洞） */
+function removeFromFiberArray(fe: AnyFiber) {
+  const stack: AnyFiber[] = [fe];
+  let n = 0;
+  while (stack.length && n++ < 20000) {
+    const f = stack.pop()!;
+    const props: any = f.memoizedProps;
+    if (props && f.tag === 7) {
+      const keys = Object.keys(props).filter((k) => /^\d+$/.test(k));
+      if (keys.some((k) => props[k]?.props?.route === MENU_ROUTE)) {
+        const arr = keys.map((k) => props[k]).filter((x: any) => x?.props?.route !== MENU_ROUTE);
+        keys.forEach((k, i) => (props[k] = arr[i]));
+        keys.slice(arr.length).forEach((k) => delete props[k]);
+        return;
+      }
+    }
+    if (f.child) stack.push(f.child);
+    if (f.sibling) stack.push(f.sibling);
+  }
+}
+
 export function enableMenuInjection() {
   if (timer) return;
   epoch++;
@@ -521,8 +625,11 @@ export function disableMenuInjection() {
   }
   try {
     if (patched) {
+      const root = patched.fiber;
       patched.fiber.type = patched.original;
       if (patched.fiber.alternate) patched.fiber.alternate.type = patched.original;
+      // 直接改进去的菜单项同样要撤掉，否则插件卸载后入口还留在菜单里
+      removeFromFiberArray(root);
     }
   } catch {
     /* 还原失败也无所谓，fiber 迟早被重建 */
