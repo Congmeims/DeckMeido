@@ -523,13 +523,25 @@
                  收进可展开的一行，默认只显示「模型 · 素材来源」 -->
             <details class="tts-more">
               <summary>模型与素材来源</summary>
-              <div id="ttsCredit" class="field-hint">
-                <div class="tts-credit-line">■Piper Plus:つくよみちゃん</div>
-                <div class="tts-credit-line">音声：<a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener">■つくよみちゃんコーパス（CV.夢前黎）</a></div>
-                <div class="tts-credit-line">条款：<a href="https://tyc.rei-yumesaki.net/material/corpus/#terms3" target="_blank" rel="noopener">つくよみちゃんコーパス利用規約</a></div>
-                <div class="tts-credit-line">模型：<a href="https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan" target="_blank" rel="noopener">piper-plus-tsukuyomi-chan</a></div>
-                <!-- 哔哔啵啵是纯代码合成，不依赖模型；出处照原作者的仓库标注 -->
-                <div class="tts-credit-line">哔哔啵啵：<a id="ttsBibiboboUrl" href="https://github.com/hakihakii/bibibobo" target="_blank" rel="noopener">bibibobo</a></div>
+              <!-- 三个发音人平级横排（与上面「发音人」一行同序），
+                   每个格子只写自己那位：机器人是目前端内置的提示音，没有外部素材 -->
+              <div id="ttsCredit" class="tts-credit-grid">
+                <div class="tts-credit-col">
+                  <div class="tts-credit-name">机器人</div>
+                  <div class="tts-credit-line">提示音，端内合成</div>
+                </div>
+                <div class="tts-credit-col">
+                  <div class="tts-credit-name">月读酱</div>
+                  <div class="tts-credit-line">■Piper Plus:つくよみちゃん</div>
+                  <div class="tts-credit-line">音声：<a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener">■つくよみちゃんコーパス（CV.夢前黎）</a></div>
+                  <div class="tts-credit-line">条款：<a href="https://tyc.rei-yumesaki.net/material/corpus/#terms3" target="_blank" rel="noopener">つくよみちゃんコーパス利用規約</a></div>
+                  <div class="tts-credit-line">模型：<a href="https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan" target="_blank" rel="noopener">piper-plus-tsukuyomi-chan</a></div>
+                </div>
+                <div class="tts-credit-col">
+                  <div class="tts-credit-name">哔哔啵啵</div>
+                  <!-- 哔哔啵啵是纯代码合成，不依赖模型；出处照原作者的仓库标注 -->
+                  <div class="tts-credit-line">合成：<a id="ttsBibiboboUrl" href="https://github.com/hakihakii/bibibobo" target="_blank" rel="noopener">bibibobo</a></div>
+                </div>
               </div>
             </details>
           </div>
@@ -1409,6 +1421,9 @@
   // 永远不该走配对，哪怕某一刻 authenticated 暂时是 false（后端刚重启、
   // 还没拿到 /api/auth/session 的回包，或者代理把来源改写了），也不弹配对页。
   var isHomePage = document.body.dataset.home === '1';
+  // 后端是不是跑在掌机（SteamOS）上，由 /api/sysinfo 的 handheld 回填。
+  // 区分「这台机器」而不是「当前浏览器」：PC 打开 Deck 的页面时仍然是 PC 行为。
+  var HANDHELD = false;
 
   function deviceToken() {
     try { return localStorage.getItem(DEVICE_TOKEN_KEY) || ''; } catch (e) { return ''; }
@@ -6602,8 +6617,11 @@
   // 只在真正的关页动作里拦（刷新、关标签、Cmd+W），页面内切视图不会误触。
   // 注意：没有用户交互过（没点过页面）的标签页，浏览器会静默忽略这个弹窗，
   // 所以「刚打开就关」不弹是浏览器行为，不是这里失效。
+  // 掌机（SteamOS）上不拦：Decky 里点托盘切「音响模式」会重载页面，
+  // 系统弹窗在那里既跳不出去也没意义，用户只会以为卡住了。
   window.addEventListener('beforeunload', function (e) {
     turnCacheFlushNow();
+    if (HANDHELD) return;
     e.preventDefault();
     // 老浏览器只认 returnValue，新浏览器忽略提示文案、显示自己的通用文案
     e.returnValue = '';
@@ -8661,29 +8679,9 @@
   var ttsPreviewSeq = 0;
   var ttsAttribution = document.getElementById('ttsAttribution');
   var ttsBibiboboUrl = document.getElementById('ttsBibiboboUrl');
-  // 素材署名的两行都要整行显示，不允许在句子中间折行：先按可用宽度把字号
-  // 从 12px 往下缩（下限 10px 保住可读性），缩到下限还放不下时由横向滚动兜底。
-  // 人设页隐藏时量不到宽度，直接跳过；切到该页和窗口缩放时都会重算。
+  // 素材署名改成三列平级横排后会自动换行，不再按宽度缩字号：
+  // 原来的缩字号逻辑是为「每行不许折行」的旧版式准备的，留着只会让字越缩越小
   var ttsCredit = document.getElementById('ttsCredit');
-  var ttsCreditLines = ttsCredit
-    ? Array.prototype.slice.call(ttsCredit.querySelectorAll('.tts-credit-line')) : [];
-  function fitTtsCredit() {
-    if (!ttsCredit || !ttsCreditLines.length) return;
-    // 先复位，避免上一轮缩小后的字号影响这次测量
-    ttsCredit.style.fontSize = '';
-    var avail = ttsCredit.clientWidth;
-    // 署名收在默认折叠的 <details> 里，收起时量不到宽度，展开时再量一次
-    if (!avail) return;
-    var base = parseFloat(getComputedStyle(ttsCredit).fontSize) || 12;
-    var needed = 0;
-    ttsCreditLines.forEach(function (el) {
-      if (el.scrollWidth > needed) needed = el.scrollWidth;
-    });
-    if (!needed || needed <= avail) return;
-    // 行宽和字号近似成正比；留 1% 余量，避免四舍五入后又挤出滚动条
-    var size = Math.max(10, Math.floor(base * avail / needed * 0.99 * 10) / 10);
-    ttsCredit.style.fontSize = size + 'px';
-  }
   var ttsPollTimer = 0;
   var ttsState = null;
   var ttsSpeaker = 'maid';
@@ -10483,14 +10481,10 @@
     });
     setBody.scrollTop = 0;
     // 语音引擎里的语音回复卡要看模型/下载的实时状态，切过来时刷新一次
-    if (name === 'voice') { loadTtsStatus(); fitTtsCredit(); }
+    if (name === 'voice') loadTtsStatus();
     // 按游戏预设可能在 Deck 上刚存过，切到插件页时重新拉一份
     if (name === 'plugin') loadPresets();
   }
-
-  // 署名展开后再按实际宽度收缩字号
-  var ttsMore = document.querySelector('.tts-more');
-  if (ttsMore) ttsMore.addEventListener('toggle', fitTtsCredit);
 
   // 关掉设置 = 回到对话：主界面、侧栏会话列表、底部按钮文案都恢复原样
   function closeSettings() {
@@ -11165,8 +11159,6 @@
       btn.classList.toggle('active', on);
       btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
-    // 换发音人就换试听句，title 跟着更新（bibibo 念的是它自己的名字）
-    if (ttsPreview) ttsPreview.title = ttsPreviewTitle();
   }
 
   // 试听句：按发音人取，状态接口没拉到就按本地表兜底。
@@ -11176,10 +11168,6 @@
     // 状态还没拉到就先按本地表取，bibibo 必须念它自己的那一句
     return texts[ttsSpeaker] ||
       (ttsSpeaker === 'bibibo' ? '你好，我是哔哔啵啵。' : '你好，我是月读酱。');
-  }
-
-  function ttsPreviewTitle() {
-    return '试听：「' + ttsPreviewText() + '」';
   }
 
   // 选中女仆但本机模型不可用时，提示会先用机器人的声音兜底
@@ -11207,22 +11195,17 @@
     }
     if (ttsBibiboboUrl && ttsState.bibibobo_url) ttsBibiboboUrl.href = ttsState.bibibobo_url;
     var dl = ttsState.download || {};
-    var root = ttsState.model_root || '';
     // 胶囊只反映一个真实状态，不要「已下载」和「未就绪」同时出现
     if (ttsState.model) {
-      // 已就绪：按钮整块撤掉，模型名放到试听按钮的 title 上，
-      // 这一行只剩「发音人 + 试听」，不再有一个点不动的「已就绪」占位
+      // 已就绪：按钮整块撤掉，这一行只剩「发音人 + 试听」，
+      // 不再有一个点不动的「已就绪」占位。
+      // 试听按钮不挂 title：悬停弹「试听：「你好…」」这种提示纯属噪音，
+      // 模型是否已加载由卡片里的提示文字说明
       ttsPill.hidden = true;
       ttsPill.className = 'tts-pill ready';
       ttsPill.textContent = '';
       ttsPill.disabled = true;
       ttsPill.title = '';
-      if (ttsPreview) {
-        // 试听文案是每句都该带的，模型信息只补在后面，不能把它顶掉
-        ttsPreview.title = ttsPreviewTitle() + '　月读酱模型：'
-          + (ttsState.loaded ? '已加载' : '首次试听时加载')
-          + '（' + root + '）';
-      }
       setTtsModelHint('', '');
       ttsDownloadHint.textContent = '';
     } else if (!ttsState.runtime) {
@@ -11233,7 +11216,6 @@
       ttsPill.title = '本机没装模型运行时，可先选「机器人」';
       setTtsModelHint('', '');
       ttsDownloadHint.textContent = '';
-      if (ttsPreview) ttsPreview.title = ttsPreviewTitle();
     } else if (dl.state === 'downloading' || dl.phase === 'cancelling') {
       ttsPill.hidden = false;
       ttsPill.className = 'tts-pill busy';
@@ -11246,7 +11228,6 @@
         ? (dl.done / 1048576).toFixed(1) + ' MB'
           + (dl.total > 0 ? ' / ' + (dl.total / 1048576).toFixed(1) + ' MB' : '')
         : '';
-      if (ttsPreview) ttsPreview.title = ttsPreviewTitle();
     } else {
       ttsPill.hidden = false;
       ttsPill.className = 'tts-pill missing';
@@ -11256,7 +11237,6 @@
       setTtsModelHint('', '');
       ttsDownloadHint.textContent = dl.state === 'error'
         ? '下载失败' : dl.state === 'cancelled' ? '已取消' : '';
-      if (ttsPreview) ttsPreview.title = ttsPreviewTitle();
     }
   }
 
@@ -11273,9 +11253,8 @@
         scheduleTtsPoll();
       })
       .catch(function () {
-        // 读不到状态时不再另起一行报错；话直接落到试听按钮的 title 上，
-        // 卡片始终保持「发音人 + 试听」一行
-        if (ttsPreview) ttsPreview.title = '读取语音合成状态失败（服务可能正在重启）';
+        // 读不到状态时把话写在卡片里的提示行，不再挂到试听按钮的 title 上
+        setTtsModelHint('读取语音合成状态失败（服务可能正在重启）', '');
       });
   }
 
@@ -13925,6 +13904,8 @@
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d.error) return;
+        // 掌机标记随系统信息一起回来：第一帧到达前按 PC 处理，不影响常规使用
+        HANDHELD = !!d.handheld;
         // 端口跟随当前页面实际端口，不再写死 18765（用户可在设置里改）
         document.getElementById('sysIp').textContent = d.ip ? (d.ip + ':' + (location.port || '18765')) : '–';
         if (d.hostname) document.getElementById('sysHost').textContent = d.hostname;
@@ -14328,6 +14309,33 @@
       .catch(function () { addSystem('新建会话失败：连不上后端'); });
   });
   loadSessions();
+
+  // ---------- 外链统一处理 ----------
+  // 掌机的 Decky 页框不带新窗口能力：target="_blank" 与 window.open 都会被
+  // 静默丢弃，用户点了完全没反应（PC 浏览器正常开新标签）。所以掌机上改成
+  // 请后端用 xdg-open 拉起系统浏览器；PC 保持原来的新标签行为。
+  function openExternal(url) {
+    if (HANDHELD) {
+      apiFetch('/api/open_url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url })
+      }).catch(function () {});
+    } else {
+      window.open(url, '_blank', 'noopener');
+    }
+  }
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest && e.target.closest('a[href]');
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    if (!/^https?:\/\//i.test(href)) return;
+    // 掌机上所有 http(s) 链接都改走系统浏览器；PC 只接管显式要新窗口的那些，
+    // 免得同一页内的普通链接被抢走
+    if (!HANDHELD && a.getAttribute('target') !== '_blank') return;
+    e.preventDefault();
+    openExternal(href);
+  });
 
   // ---------- 图片 / 代码块 点开展示 ----------
   function openImage(url) {

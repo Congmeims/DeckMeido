@@ -1819,16 +1819,27 @@
     resize: vertical;
   }
   .field-hint { font-size: var(--set-hint-size); color: var(--muted); margin-top: var(--set-hint-gap); min-height: 0; line-height: var(--set-hint-lh); }
-  /* 素材署名（女仆人设 → 语音回复）收在可展开的 details 里：展开后正常换行，
-     不再需要缩字号或横向滚动 */
+  /* 素材署名（女仆人设 → 语音回复）收在可展开的 details 里。
+     三个发音人平级横排，与上面「发音人」一行同序：机器人 / 月读酱 / 哔哔啵啵。
+     用 grid 而不是 flex：每列顶部对齐，名字行一样高，下面各写各的来源 */
   #ttsCredit {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px 16px;
     min-height: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: thin;
   }
-  #ttsCredit .tts-credit-line { white-space: nowrap; line-height: 1.45; }
-  .tts-more[open] #ttsCredit .tts-credit-line { white-space: normal; overflow-wrap: anywhere; }
+  /* 极窄屏（掌机竖屏、手机）三列会挤成竖条，退回一列堆叠 */
+  @media (max-width: 560px) {
+    #ttsCredit { grid-template-columns: minmax(0, 1fr); }
+  }
+  #ttsCredit .tts-credit-col { min-width: 0; }
+  #ttsCredit .tts-credit-name {
+    font-size: var(--set-hint-size); font-weight: 600; color: var(--text);
+    line-height: 1.6; margin-bottom: 2px;
+  }
+  #ttsCredit .tts-credit-line {
+    white-space: normal; overflow-wrap: anywhere; line-height: 1.45;
+  }
   /* ---------- 语音回复卡：标题+开关 / 发音人+状态+试听 / 一行模型状态 ---------- */
   /* 这张卡的结构和其它卡一致：内边距、标题到内容、底栏间距都走共用变量，
      不再单独缩一档（缩了整页扫下来会比邻居矮一截） */

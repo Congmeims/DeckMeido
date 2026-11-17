@@ -5498,6 +5498,23 @@ async def _summarize_title(sid: str, first_user_text: str) -> None:
         await manager.broadcast({"type": "session_changed", "current": store.current_sid})
 
 
+def _is_steamos() -> bool:
+    """这台机器是不是 Steam Deck（SteamOS / Holo）。
+
+    认 /etc/os-release 的 ID 而不是装了什么桌面，开发机（Windows / 普通发行版）
+    一律为 False，不影响 PC 端的既有行为。
+    """
+    try:
+        text = Path("/etc/os-release").read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        key, _, val = line.partition("=")
+        if key.strip() in ("ID", "ID_LIKE", "NAME") and "steamos" in val.lower():
+            return True
+    return False
+
+
 def _sd_card_info() -> dict:
     """内存卡占用：找 /dev/mmcblk* 分区（SteamOS 自动挂在 /run/media/<用户>/<卷名>）
 
@@ -5596,6 +5613,9 @@ def _read_sysinfo() -> dict:
         # 所以自己按「待补/待放容量 ÷ 电流」估算，结果换回秒。
         # current_now 在充满或拔插瞬间可能为 0 或异常小，除零和天文数字都要挡掉。
         data["battery_minutes"] = _battery_minutes(charging, battery)
+        # 运行环境是不是掌机：前端据此关掉「关页面二次确认」，也用来在
+        # 托盘进「音响模式」时不做 PC 那套退出提示
+        data["handheld"] = _is_steamos()
         data.update(_sd_card_info())
         return data
     except Exception as e:
@@ -5617,6 +5637,31 @@ async def api_open_file(req: OpenFileReq):
         raise HTTPException(status_code=404, detail="file not found")
     subprocess.Popen(["xdg-open", str(p)],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return {"ok": True}
+
+
+class OpenUrlReq(BaseModel):
+    url: str
+
+
+@app.post("/api/open_url", dependencies=[Depends(require_auth)])
+async def api_open_url(req: OpenUrlReq):
+    """网页里点外链 → 交给掌机的默认浏览器打开。
+
+    Steam Deck 的 Decky 页框（QWebEngine）不带新窗口能力：`target="_blank"`
+    和 `window.open` 都会被静默丢弃，表现为「点了没反应」，而 PC 浏览器
+    正常开新标签。所以掌机上改由服务端 `xdg-open` 拉起系统浏览器。
+    只放行 http/https，避免把本地文件或自定义协议交给外部程序。
+    """
+    url = (req.url or "").strip()
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="only http(s) urls are allowed")
+    try:
+        subprocess.Popen(["xdg-open", url],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"打开浏览器失败：{exc}") from exc
     return {"ok": True}
 
 
