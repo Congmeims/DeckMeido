@@ -871,9 +871,11 @@ def route_message(cfg: OneBotConfig, ev: MessageEvent, nickname: str) -> Route:
             return _admin_route(ev.text, nickname, readonly=False)
         return Route("ignore", reason="非管理员私聊")
     if admin:
-        # @ 机器人、或者消息本身是指令：照常处理
+        # 管理员：@ 机器人、指令、带昵称前缀的闲聊都照常处理。
+        # 以前这里只认 @ 和 command，导致主人发的「露露 输出咏鹅全文」
+        # 被判成「没喊机器人」，概率为 0 时整条消息被静默丢弃。
         route = _admin_route(ev.text, nickname, readonly=False)
-        if ev.at_bot or route.action == "command":
+        if ev.at_bot or route.action == "command" or _parse_called(ev.text, nickname):
             return route
     else:
         # 群友：@ 机器人一律当闲聊；带昵称前缀的按指令/闲聊解析，但只读

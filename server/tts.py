@@ -38,27 +38,32 @@ import urllib.request
 import wave
 from pathlib import Path
 
-from . import devlog, netmode, paths
+from . import bibibobo, devlog, netmode, paths
 
 # ---------- 发音人 ----------
-# 只保留两个发音人，界面与配置都以这两个 id 为准：
-#   robot = Deck 自带的 espeak-ng；maid = piper-plus つくよみちゃん 本地模型
+# 界面与配置都以这三个 id 为准：
+#   robot  = Deck 自带的 espeak-ng
+#   maid   = piper-plus つくよみちゃん 本地模型
+#   bibibo = 「哔哔啵啵」纯代码合成的电子小人声（见 bibibobo.py），不下载模型
 SPEAKER_ROBOT = "robot"
 SPEAKER_MAID = "maid"
+SPEAKER_BIBIBO = "bibibo"
 DEFAULT_SPEAKER = SPEAKER_MAID
 SPEAKERS = (
     {"id": SPEAKER_ROBOT, "label": "机器人"},
     {"id": SPEAKER_MAID, "label": "月读酱"},
+    {"id": SPEAKER_BIBIBO, "label": "哔哔啵啵"},
 )
 # 试听接口的硬超时：合成 + 播放整体超过这个时间就判定播放端挂起
 PREVIEW_TIMEOUT = 20.0
 SPEAKER_LABELS = {item["id"]: item["label"] for item in SPEAKERS}
 
-# 试听默认句：两个发音人念同一句，只比声音，不比文案
+# 试听默认句：各自报发明明白，哔哔啵啵换用自己的名字
 PREVIEW_TEXT = "你好，我是月读酱。"
 PREVIEW_TEXTS = {
     SPEAKER_ROBOT: PREVIEW_TEXT,
     SPEAKER_MAID: PREVIEW_TEXT,
+    SPEAKER_BIBIBO: "你好，我是哔哔啵啵。",
 }
 
 VOICE_ID = "tsukuyomi"
@@ -86,6 +91,9 @@ HF_BASE = f"https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REVISION}"
 #   つくよみちゃんコーパス利用規約第③类 = ■つくよみちゃんコーパス（CV.夢前黎）
 ATTRIBUTION = "■つくよみちゃんコーパス（CV.夢前黎）"
 ATTRIBUTION_URL = "https://tyc.rei-yumesaki.net/material/corpus/"
+# 哔哔啵啵：纯代码合成，出处是原作者仓库（MIT）
+BIBIBOBO_ATTRIBUTION = "bibibobo"
+BIBIBOBO_URL = "https://github.com/hakihakii/bibibobo"
 
 LANGUAGES = ("auto", "ja", "zh", "en", "es", "fr", "pt")
 ESPEAK_VOICES = (
@@ -370,7 +378,7 @@ def _sink_snapshot() -> dict:
 
 
 def normalize_speaker(raw: str | None) -> str:
-    """把配置里的发音人写成 robot / maid 两种之一。
+    """把配置里的发音人写成 robot / maid / bibibo 之一。
 
     认不出来的值退回默认（女仆），避免一次笔误让播报彻底没声；
     同时接受中文别名与旧版引擎/音色名，老配置不用改也能继续用。
@@ -378,6 +386,8 @@ def normalize_speaker(raw: str | None) -> str:
     value = str(raw or "").strip().lower()
     if value in (SPEAKER_ROBOT, "机器人", "espeak-ng", "espeak", "spd-say", "spd_say"):
         return SPEAKER_ROBOT
+    if value in (SPEAKER_BIBIBO, "哔哔啵啵", "bibibobo", "大肥鱼", "fish"):
+        return SPEAKER_BIBIBO
     if value in (SPEAKER_MAID, "女仆", "piper-plus", "piper_plus", "piper",
                  VOICE_ID, "auto"):
         return SPEAKER_MAID
@@ -757,6 +767,8 @@ class TTS:
     @property
     def engine(self) -> str:
         """内部路由用的引擎名，由 speaker 派生（不再是可独立修改的配置项）。"""
+        if self.speaker == SPEAKER_BIBIBO:
+            return "bibibobo"
         return "piper-plus" if self.speaker == SPEAKER_MAID else "espeak-ng"
 
     # ---------- 路径与能力 ----------
@@ -835,12 +847,16 @@ class TTS:
         if self.engine == "piper-plus":
             reason = maid_reason or self._root_error
             effective = "piper-plus" if maid_ready else "espeak-ng"
+        elif self.engine == "bibibobo":
+            # 纯代码合成：没有运行时、模型、外部程序可缺，永远可用
+            effective = "bibibobo"
+            reason = ""
         else:
             effective = "espeak-ng"
             reason = "" if self._espeak_binary() else "找不到 espeak-ng / espeak / spd-say"
         return {
             "enable": self.enable,
-            # 用户选择的发音人（唯一配置项）：robot / maid
+            # 用户选择的发音人（唯一配置项）：robot / maid / bibibo
             "speaker": self.speaker,
             "speaker_label": SPEAKER_LABELS.get(self.speaker, ""),
             "speakers": [dict(item) for item in SPEAKERS],
@@ -868,7 +884,9 @@ class TTS:
             "speed_scale": self.speed_scale,
             "length_scale": self.length_scale,
             "noise_scale": self.noise_scale,
-            "ready": effective == "piper-plus" or bool(self._espeak_binary()),
+            # bibibobo 不需要外部程序，ready 恒为真
+            "ready": effective == "bibibobo" or effective == "piper-plus"
+            or bool(self._espeak_binary()),
             "reason": reason,
             "loaded": self._voice is not None,
             "player": self._player(),
@@ -880,6 +898,9 @@ class TTS:
             "degraded_segments": self._last_degraded_segments,
             "attribution": ATTRIBUTION,
             "attribution_url": ATTRIBUTION_URL,
+            "bibibobo_attribution": BIBIBOBO_ATTRIBUTION,
+            "bibibobo_url": BIBIBOBO_URL,
+            "preview_texts": dict(PREVIEW_TEXTS),
             "download": self.download_status(),
         }
 
@@ -1043,6 +1064,15 @@ class TTS:
                 await self._speak_espeak(cleaned, event, voice=voice,
                                          language=self.language)
                 return
+            if self.speaker == SPEAKER_BIBIBO:
+                # 纯代码合成，没有模型可退；真失败就整段退回 espeak，
+                # 和 piper 的兜底口径一致，至少不会静默
+                try:
+                    await self._speak_bibibo(cleaned, event)
+                except Exception as exc:
+                    self._last_error = f"哔哔啵啵不可用：{_short_error(exc)}"
+                    await self._speak_espeak(cleaned, event, language=self.language)
+                return
             if self._piper_ready():
                 try:
                     failures, degraded, first_error = await self._speak_piper(
@@ -1160,6 +1190,8 @@ class TTS:
                             else detect_language(cleaned))
         devlog.log("tts.synth", speaker=self.speaker, engine=self.engine,
                    language=lang, chars=len(cleaned))
+        if self.speaker == SPEAKER_BIBIBO:
+            return self._synth_wav_bibibo(cleaned)
         if self.speaker == SPEAKER_ROBOT:
             return self._synth_wav_espeak(cleaned, lang)
         return self._synth_wav(cleaned, lang)
@@ -1183,6 +1215,43 @@ class TTS:
             devlog.debug("tts.synth_bytes", error=repr(exc))
             pass
         return data
+
+    def _synth_wav_bibibo(self, text: str) -> Path:
+        """哔哔啵啵：纯代码合成，直接写 wav。
+
+        不走语言分段：这个声线按字符发声（一个汉字一声、一串字母数字一声），
+        本来就不「读」内容，所以没必要求语种；原实现的音高/口型规则也
+        只认标点，与语种无关。
+        """
+        fd, tmp = tempfile.mkstemp(prefix="deckmeido-tts-", suffix=".wav")
+        os.close(fd)
+        path = Path(tmp)
+        try:
+            data = bibibobo.render(text)
+        except Exception as exc:
+            path.unlink(missing_ok=True)
+            raise TTSError(f"哔哔啵啵合成失败：{_short_error(exc)}",
+                           kind="synth") from exc
+        try:
+            path.write_bytes(data)
+        except OSError as exc:
+            path.unlink(missing_ok=True)
+            raise TTSError(f"哔哔啵啵写文件失败：{_short_error(exc)}",
+                           kind="synth") from exc
+        return path
+
+    async def _speak_bibibo(self, text: str, event: threading.Event) -> None:
+        """哔哔啵啵：整句一次合成，再用和 piper 同一个播放器放出去
+
+        不做流式（原实现没有），所以是「先合成再出声」；播放进程与
+        speak / play_bytes 共用 _proc，stop() 能立刻掐断。
+        """
+        self._last_engine = "bibibobo"
+        wav = await asyncio.to_thread(self._synth_wav_bibibo, text)
+        try:
+            await self._play(wav, event)
+        finally:
+            wav.unlink(missing_ok=True)
 
     def _synth_wav_espeak(self, text: str, language: str = "") -> Path:
         """espeak-ng 直接写 wav（机器人发音的语音条）。"""

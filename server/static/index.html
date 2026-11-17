@@ -507,6 +507,7 @@
               <div class="speaker-row" id="ttsSpeakerRow">
                 <button class="mini-btn speaker-btn" data-speaker="robot" type="button" aria-pressed="false">机器人</button>
                 <button class="mini-btn speaker-btn active" data-speaker="maid" type="button" aria-pressed="true">月读酱</button>
+                <button class="mini-btn speaker-btn" data-speaker="bibibo" type="button" aria-pressed="false">哔哔啵啵</button>
               </div>
               <div class="tts-actions">
                 <button id="ttsPreview" class="mini-btn tts-preview" type="button">试听</button>
@@ -523,6 +524,8 @@
                 <div class="tts-credit-line">音声：<a id="ttsAttribution" href="https://tyc.rei-yumesaki.net/material/corpus/" target="_blank" rel="noopener">■つくよみちゃんコーパス（CV.夢前黎）</a></div>
                 <div class="tts-credit-line">条款：<a href="https://tyc.rei-yumesaki.net/material/corpus/#terms3" target="_blank" rel="noopener">つくよみちゃんコーパス利用規約</a></div>
                 <div class="tts-credit-line">模型：<a href="https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan" target="_blank" rel="noopener">piper-plus-tsukuyomi-chan</a></div>
+                <!-- 哔哔啵啵是纯代码合成，不依赖模型；出处照原作者的仓库标注 -->
+                <div class="tts-credit-line">哔哔啵啵：<a id="ttsBibiboboUrl" href="https://github.com/hakihakii/bibibobo" target="_blank" rel="noopener">bibibobo</a></div>
               </div>
             </details>
           </div>
@@ -8653,6 +8656,7 @@
   // 试听请求序号：超时/失败后重试时，旧请求的迟到回调不许覆盖新一轮的按钮状态
   var ttsPreviewSeq = 0;
   var ttsAttribution = document.getElementById('ttsAttribution');
+  var ttsBibiboboUrl = document.getElementById('ttsBibiboboUrl');
   // 素材署名的两行都要整行显示，不允许在句子中间折行：先按可用宽度把字号
   // 从 12px 往下缩（下限 10px 保住可读性），缩到下限还放不下时由横向滚动兜底。
   // 人设页隐藏时量不到宽度，直接跳过；切到该页和窗口缩放时都会重算。
@@ -11146,20 +11150,37 @@
   }
 
   // ---------- 语音回复（「女仆人格」下面的语音回复卡） ----------
-  // 只有两个发音人：robot = 机器人（Deck 自带），maid = 女仆（本地模型）
-  var TTS_SPEAKER_LABELS = { robot: '机器人', maid: '月读酱' };
+  // 三个发音人：robot = 机器人（Deck 自带），maid = 女仆（本地模型），
+  // bibibo = 哔哔啵啵（纯代码合成，不依赖模型）
+  var TTS_SPEAKER_LABELS = { robot: '机器人', maid: '月读酱', bibibo: '哔哔啵啵' };
 
   function setTtsSpeaker(value) {
-    ttsSpeaker = value === 'robot' ? 'robot' : 'maid';
+    ttsSpeaker = TTS_SPEAKER_LABELS[value] ? value : 'maid';
     ttsSpeakerBtns.forEach(function (btn) {
       var on = btn.getAttribute('data-speaker') === ttsSpeaker;
       btn.classList.toggle('active', on);
       btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
+    // 换发音人就换试听句，title 跟着更新（bibibo 念的是它自己的名字）
+    if (ttsPreview) ttsPreview.title = ttsPreviewTitle();
+  }
+
+  // 试听句：按发音人取，状态接口没拉到就按本地表兜底。
+  // 哔哔啵啵要念自己的名字，不能和另外两个共用「月读酱」那句
+  function ttsPreviewText() {
+    var texts = (ttsState && ttsState.preview_texts) || {};
+    // 状态还没拉到就先按本地表取，bibibo 必须念它自己的那一句
+    return texts[ttsSpeaker] ||
+      (ttsSpeaker === 'bibibo' ? '你好，我是哔哔啵啵。' : '你好，我是月读酱。');
+  }
+
+  function ttsPreviewTitle() {
+    return '试听：「' + ttsPreviewText() + '」';
   }
 
   // 选中女仆但本机模型不可用时，提示会先用机器人的声音兜底
   function syncTtsFields() {
+    // 哔哔啵啵是纯代码合成，没有模型可缺，不需要任何兜底提示
     if (ttsSpeaker !== 'maid') {
       setTtsEngineHint('');
       return;
@@ -11180,6 +11201,7 @@
       ttsAttribution.textContent = ttsState.attribution;
       if (ttsState.attribution_url) ttsAttribution.href = ttsState.attribution_url;
     }
+    if (ttsBibiboboUrl && ttsState.bibibobo_url) ttsBibiboboUrl.href = ttsState.bibibobo_url;
     var dl = ttsState.download || {};
     var root = ttsState.model_root || '';
     // 胶囊只反映一个真实状态，不要「已下载」和「未就绪」同时出现
@@ -11192,7 +11214,9 @@
       ttsPill.disabled = true;
       ttsPill.title = '';
       if (ttsPreview) {
-        ttsPreview.title = '月读酱模型：' + (ttsState.loaded ? '已加载' : '首次试听时加载')
+        // 试听文案是每句都该带的，模型信息只补在后面，不能把它顶掉
+        ttsPreview.title = ttsPreviewTitle() + '　月读酱模型：'
+          + (ttsState.loaded ? '已加载' : '首次试听时加载')
           + '（' + root + '）';
       }
       setTtsModelHint('', '');
@@ -11205,7 +11229,7 @@
       ttsPill.title = '本机没装模型运行时，可先选「机器人」';
       setTtsModelHint('', '');
       ttsDownloadHint.textContent = '';
-      if (ttsPreview) ttsPreview.title = '';
+      if (ttsPreview) ttsPreview.title = ttsPreviewTitle();
     } else if (dl.state === 'downloading' || dl.phase === 'cancelling') {
       ttsPill.hidden = false;
       ttsPill.className = 'tts-pill busy';
@@ -11218,7 +11242,7 @@
         ? (dl.done / 1048576).toFixed(1) + ' MB'
           + (dl.total > 0 ? ' / ' + (dl.total / 1048576).toFixed(1) + ' MB' : '')
         : '';
-      if (ttsPreview) ttsPreview.title = '';
+      if (ttsPreview) ttsPreview.title = ttsPreviewTitle();
     } else {
       ttsPill.hidden = false;
       ttsPill.className = 'tts-pill missing';
@@ -11228,7 +11252,7 @@
       setTtsModelHint('', '');
       ttsDownloadHint.textContent = dl.state === 'error'
         ? '下载失败' : dl.state === 'cancelled' ? '已取消' : '';
-      if (ttsPreview) ttsPreview.title = '';
+      if (ttsPreview) ttsPreview.title = ttsPreviewTitle();
     }
   }
 
@@ -11347,7 +11371,7 @@
         return apiFetch('/api/tts/preview', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
+          body: JSON.stringify({ text: ttsPreviewText() }),
           signal: ctrl && ctrl.signal
         });
       })
