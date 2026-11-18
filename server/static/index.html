@@ -2045,14 +2045,44 @@
     };
     try {
       addMsg(m.role === 'user' ? 'user' : 'assistant', m.brief || m.content, m.ts,
-             m.events, m.client, m.device, m.voice);
+             m.events, m.client, m.device, m.voice, m.interrupted, m.retry_text);
     } finally {
       messages.appendChild = realAppend;
     }
     return holder.firstChild || holder;
   }
 
-  function addMsg(role, text, ts, events, client, device, voice) {
+  // 中断尾注：这一轮没跑完就被打断（设备关机、重启、后端被停）。
+  // 以前只写一句「以上回答被中断」，用户既分不清是网络问题还是真断电，
+  // 也没有重试按钮；只有事件没有正文的轮次更是只剩一个空「思考」块。
+  function appendInterruptNote(host, retryText) {
+    if (!host) return;
+    var bar = document.createElement('div');
+    bar.className = 'interrupt-note';
+    var tag = document.createElement('span');
+    tag.className = 'interrupt-tag';
+    tag.textContent = '被中断';
+    var tip = document.createElement('span');
+    tip.className = 'interrupt-tip';
+    tip.textContent = '这一轮没跑完（设备关机或被停），可以重试';
+    bar.appendChild(tag);
+    bar.appendChild(tip);
+    if (String(retryText || '').trim()) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'interrupt-retry';
+      btn.textContent = '重试';
+      btn.addEventListener('click', function () {
+        if (busy) return;
+        btn.disabled = true;
+        doSend(String(retryText), []);
+      });
+      bar.appendChild(btn);
+    }
+    host.appendChild(bar);
+  }
+
+  function addMsg(role, text, ts, events, client, device, voice, interrupted, retryText) {
     // 历史回放：事件与正文按「屏幕上出现过的顺序」串成一条时间线。
     // 旧版把事件块整体摆在正文上方，于是「思考→说话→执行」的顺序被打乱成
     // 「思考全在上、说话在中、命令在最下」；现在 order 里有序，按序摆放即可
@@ -2094,6 +2124,7 @@
         box.appendChild(bubble);
       }
       messages.appendChild(box);
+      if (interrupted) appendInterruptNote(box, retryText);
       trimMessages();
       fillFileSizes(box);
       scrollBottomSafe();
@@ -2113,6 +2144,7 @@
     var el = makeTextBubble(text, true, ts);
     appendVoiceBubble(el, voice);
     messages.appendChild(el);
+    if (interrupted) appendInterruptNote(el, retryText);
     trimMessages();
     fillFileSizes(el);
     scrollBottomSafe();
@@ -5980,6 +6012,10 @@
           // sudo 授权状态：需要密码时打开输入行，成功后收起
           onSudoAuth(msg);
           break;
+        case 'power':
+          // 关机/重启倒计时：所有接上的端同步显示，任何一端都能取消
+          onPowerState(msg);
+          break;
         case 'history':
           if (msg.sid) currentSid = msg.sid;
           // 终端里的命令记录属于上一个会话的上下文，跟着会话一起换掉；
@@ -6009,7 +6045,7 @@
             // brief 是界面专用的短文案：截屏询问那套提示词一百多字，
             // 各端都只显示它，真正发出去的仍然是 content
             addMsg(m.role === 'user' ? 'user' : 'assistant', m.brief || m.content, m.ts,
-                   m.events, m.client, m.device, m.voice);
+                   m.events, m.client, m.device, m.voice, m.interrupted, m.retry_text);
           });
           if (histPending.length) {
             var moreBar = document.createElement('button');
@@ -7088,6 +7124,8 @@
   // sudo 授权行：run_command 需要提权时由后端 WS 广播打开，跨块调用所以提前挂作用域
   var loadSudoAuth = function () {};
   var onSudoAuth = function () {};
+  // 关机/重启倒计时：后端广播 power 状态，任一端取消都会同步收起
+  var onPowerState = function () {};
   safeInit('sudo 授权行', function () {
     var box = document.getElementById('sudoAuthBox');
     var pw = document.getElementById('sudoAuthPw');
@@ -7183,6 +7221,81 @@
         }).catch(function () {});
     };
     loadSudoAuth();
+  });
+  // 关机/重启倒计时：后端发 power 广播后弹出，5 秒内任何一端都能取消。
+  // 不用 confirm 对话框：Deck 上的弹窗要能点、能看清剩余秒数，而且在其他端
+  // 取消时也能同步收起
+  safeInit('关机倒计时', function () {
+    var mask = document.createElement('div');
+    mask.id = 'powerMask';
+    mask.hidden = true;
+    mask.innerHTML = '<div class="pm-card" role="alertdialog" aria-modal="true">'
+      + '<div class="pm-ring"><span id="pmSec">5</span></div>'
+      + '<div class="pm-title" id="pmTitle">正在关机</div>'
+      + '<div class="pm-tip">5 秒后关机，期间随时可以取消</div>'
+      + '<button type="button" class="pm-btn" id="pmCancel">取消</button>'
+      + '</div>';
+    document.body.appendChild(mask);
+    var secEl = document.getElementById('pmSec');
+    var titleEl = document.getElementById('pmTitle');
+    var btn = document.getElementById('pmCancel');
+    var deadline = 0;
+    var tick = null;
+    var label = function (action) { return action === 'reboot' ? '重启' : '关机'; };
+
+    function paint() {
+      var left = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
+      secEl.textContent = String(left);
+      if (left <= 0 && tick) { clearInterval(tick); tick = null; }
+    }
+    function close() {
+      if (tick) { clearInterval(tick); tick = null; }
+      mask.hidden = true;
+    }
+    // 用后端给的 deadline 算剩余秒数：设备和服务端时钟一致，本地开着页面也不会越数越偏
+    function show(msg) {
+      deadline = Number(msg.deadline || 0) || (Date.now() / 1000 + Number(msg.seconds || 5));
+      titleEl.textContent = '正在' + label(msg.action);
+      mask.querySelector('.pm-tip').textContent =
+        Number(msg.seconds || 5) + ' 秒后' + label(msg.action) + '，期间随时可以取消';
+      btn.disabled = false;
+      btn.textContent = '取消';
+      mask.hidden = false;
+      paint();
+      if (tick) clearInterval(tick);
+      tick = setInterval(paint, 250);
+    }
+    btn.addEventListener('click', function () {
+      btn.disabled = true;
+      btn.textContent = '已取消';
+      apiFetch('/api/power/cancel', { method: 'POST' }).then(function (r) { return r.json(); })
+        .then(function (res) {
+          if (res && res.ok) close();
+        })
+        .catch(function () {
+          // 请求失败就恢复按钮，别让用户以为取消成功了
+          btn.disabled = false;
+          btn.textContent = '取消';
+        });
+    });
+    onPowerState = function (msg) {
+      msg = msg || {};
+      if (msg.armed) { show(msg); return; }
+      // 没在倒计时了：到点执行 / 别处取消，都收起
+      if (!mask.hidden) {
+        close();
+        if (msg.done) fbToast('正在' + label(msg.action || titleEl.textContent.replace('正在', '')));
+        else if (msg.action) fbToast(label(msg.action) + '已取消');
+      }
+    };
+    // 刷新/重连后补一次状态：别因为错过了广播就看不见倒计时
+    var sync = function () {
+      apiFetch('/api/power/state').then(function (r) { return r.json(); })
+        .then(function (res) { if (res && res.armed) show(res); })
+        .catch(function () {});
+    };
+    sync();
+    setTimeout(sync, 1500);
   });
   safeInit('自检组件面板', function () {
   var scList = rbEl('selfcheckList');

@@ -1881,10 +1881,17 @@ def init_sessions():
         if tail_text and tail_text not in partial_text:
             partial_text = (partial_text + "\n\n" + tail_text).strip() if partial_text else tail_text
         if partial_text or evs:
+            hist = store.history
+            retry = ""
+            for m in reversed(hist):
+                if m.get("role") == "user":
+                    retry = str(m.get("content") or m.get("brief") or "")
+                    break
             note = "\n\n（以上回答被中断，已保留屏幕上出现过的全部内容）"
             store.history.append({"role": "assistant",
                                   "content": (partial_text.rstrip() + note) if partial_text else note.strip(),
                                   "events": evs, "interrupted": True,
+                                  "retry_text": retry,
                                   "ts": (partial.get("ts") if isinstance(partial, dict) else None) or time.time()})
             print(f"[DeckMeido] 已恢复被中断的回答（{len(partial_text)} 字，{len(evs)} 个事件）",
                   file=sys.stderr)
@@ -6069,6 +6076,21 @@ async def _boot_overlay():
     ensure_overlay()
 
 
+@app.get("/api/power/state", dependencies=[Depends(require_auth)])
+async def api_power_state():
+    """前端连上/刷新时问一次：有没有正在跑的关机倒计时"""
+    return _power_state()
+
+
+@app.post("/api/power/cancel", dependencies=[Depends(require_auth)])
+async def api_power_cancel():
+    """取消正在跑的关机/重启倒计时（任何一端都能点）"""
+    ok = _power_cancel("用户取消")
+    st = _power_state()
+    await _power_broadcast()
+    return {"ok": ok, **st}
+
+
 @app.on_event("shutdown")
 async def _shutdown_overlay():
     # 服务被重启/停止时把自己拉起的遮罩一起收掉，别留孤儿
@@ -6087,6 +6109,16 @@ async def _shutdown_overlay():
         if store.turn.get("active") and text.strip():
             persist_stream(text, force=True, parts=_stream_buf().get("parts") or [])
             print(f"[DeckMeido] 退出前已保存未完成的回答（{len(text)} 字）", file=sys.stderr)
+        # 这一轮还没收完就被打断（关机、重启、Ctrl+C）：把半截正文和已做过的事件
+        # 补成一条带 interrupted 标记的回答。否则重启后前端只剩一个空的「思考」块，
+        # 用户既不知道发生了什么，也没有重试入口（会话 211bdd 的现象）
+        if store.turn.get("active"):
+            _mark_turn_interrupted()
+            # 在跑的子进程也一并收掉：重启后它们已经成了没人管理的孤儿
+            try:
+                tools.kill_live_procs()
+            except Exception:
+                pass
         # 这里刻意不写内存 history：正文在 handle_chat 收尾时已落盘，用户消息开头就落盘了，
         # 内存不比文件新。而「拿内存覆盖文件」在内存为空/偏旧时会直接把历史冲掉——
         # 那才是真正的「聊天记录丢了」。只补流式残留，别碰已落盘的历史。
@@ -6133,12 +6165,192 @@ def _record_power_intent(ctx: policy.TurnContext, name: str, args: dict,
     store.set_intent(ctx.sid, it)
 
 
+# ---------- 受控关机 / 重启 ----------
+# 关机、重启一律不直接执行：先在所有界面弹出 5 秒倒计时（任何一端都能取消），
+# 到点后由这里停服务、落盘当前这一轮，再交给系统关机。
+# 这样设备不会「说关就关」：后端有收尾时间，用户也有反悔的机会。
+POWER_COUNTDOWN = 5.0
+_POWER: dict = {"task": None, "action": "", "deadline": 0.0}
+
+
+def _power_label(action: str) -> str:
+    return "重启" if action == "reboot" else "关机"
+
+
+def _power_tool_desc() -> str:
+    return ("关闭或重启设备（SteamOS / Linux）。调用后所有界面会弹出 "
+            f"{int(POWER_COUNTDOWN)} 秒倒计时，用户可以随时取消，到点才真正执行。"
+            "用户要求关机、重启、电源键这类操作时用它，不要用 run_command 拼 "
+            "poweroff / reboot / shutdown（那些命令会被直接拦下）")
+
+
+def _power_tool_schema() -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": "power",
+            "description": _power_tool_desc(),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["poweroff", "reboot"],
+                               "description": "poweroff 关机，reboot 重启"},
+                },
+                "required": ["action"],
+            },
+        },
+    }
+
+
+def _power_state() -> dict:
+    """当前倒计时状态；没有在等就返回 armed=False"""
+    task = _POWER.get("task")
+    if not task or task.done():
+        return {"armed": False, "action": "", "seconds": 0, "deadline": 0}
+    left = max(0, int(round(_POWER["deadline"] - time.time())))
+    return {"armed": True, "action": _POWER["action"], "seconds": left,
+            "deadline": _POWER["deadline"]}
+
+
+async def _power_broadcast(extra: dict | None = None) -> None:
+    msg = {"type": "power", **_power_state()}
+    if extra:
+        msg.update(extra)
+    try:
+        await manager.broadcast(msg)
+    except Exception as exc:
+        devlog.debug("main._power_broadcast", error=repr(exc))
+
+
+def _power_cancel(reason: str = "") -> bool:
+    """取消倒计时；返回是否真的取消掉了一次"""
+    task = _POWER.get("task")
+    if not task or task.done():
+        return False
+    task.cancel()
+    _POWER.update({"task": None, "action": "", "deadline": 0.0})
+    print(f"[DeckMeido][power] 倒计时已取消（{reason or '用户取消'}）", file=sys.stderr)
+    return True
+
+
+async def _power_countdown(action: str, ctx: policy.TurnContext, hist: list[dict]) -> str:
+    """弹倒计时并等待；到点返回说明，期间被取消抛 CancelledError"""
+    _POWER.update({"action": action, "deadline": time.time() + POWER_COUNTDOWN})
+    # 意图先落盘：真把机器关掉了也能按 boot_id 对账，下次启动知道这次是谁关的
+    _arm_power_intent(ctx, action, hist)
+    print(f"[DeckMeido][power] 请求{_power_label(action)}，"
+          f"{POWER_COUNTDOWN:.0f} 秒倒计时", file=sys.stderr)
+    await _power_broadcast()
+    await asyncio.sleep(POWER_COUNTDOWN)
+    return _power_label(action)
+
+
+async def _power_commit(action: str) -> None:
+    """倒计时到点：先让所有连接知道，再停服务，最后交给系统"""
+    _POWER.update({"task": None, "action": "", "deadline": 0.0})
+    await _power_broadcast({"committing": True})
+    # 给广播一点时间发出去（关机的瞬间连接就断了）
+    await asyncio.sleep(0.3)
+    try:
+        store.flush_index()
+    except Exception as exc:
+        devlog.debug("main._power_commit", error=repr(exc))
+    for argv in (["systemctl", action], ["loginctl", action], [action]):
+        try:
+            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            print(f"[DeckMeido][power] 执行 {argv[0]} 失败：{exc}", file=sys.stderr)
+            return
+    print("[DeckMeido][power] 找不到可用的关机命令", file=sys.stderr)
+
+
+async def _power_start(action: str, ctx: policy.TurnContext, hist: list[dict]) -> str:
+    """启动倒计时并等待；被取消返回取消说明，到点返回执行说明"""
+    if _power_state()["armed"]:
+        return (f"已经有一个{_power_label(_POWER['action'])}倒计时在跑了，"
+                f"等它结束或者取消后再试。")
+    task = asyncio.ensure_future(_power_countdown(action, ctx, hist))
+    _POWER["task"] = task
+    try:
+        await task
+    except asyncio.CancelledError:
+        _POWER.update({"task": None, "action": "", "deadline": 0.0})
+        return f"{_power_label(action)}已取消，设备保持原样。"
+    await _power_commit(action)
+    return (f"正在{_power_label(action)}：当前回答已保存，服务即将停止。"
+            f"如果几秒后设备没有反应，说明系统拒绝了这次{_power_label(action)}，可以再试一次。")
+
+
+async def _power_execute(action, args: dict | None = None) -> str:
+    """power 工具的执行器：先弹 5 秒倒计时（任何一端可取消），到点再真正关机/重启"""
+    action = str(action or "")
+    if action not in ("poweroff", "reboot"):
+        return "只支持 poweroff（关机）和 reboot（重启）。"
+    sid = store.turn.get("sid") or store.current_sid
+    ctx = policy.TurnContext(sid=sid, turn_id=store.turn.get("turn_id") or "",
+                             user_text="", boot_id=_system_boot_id())
+    return await _power_start(action, ctx, store.history)
+
+
+# ---------- 优雅退出 ----------
+# systemctl restart / stop、升级重启、以及用户直接关终端，都会给进程发 SIGTERM。
+# uvicorn 自己就处理这个信号：停连接 → 发 lifespan shutdown → 退出。
+# 所以这里不接管信号，只在 on_event("shutdown") 里把「正在跑但没跑完」的那一轮
+# 落盘并打上 interrupted 标记；否则重启后前端只剩一个空的「思考」块
+# （会话 211bdd 就是这样）。
+
+
+def _mark_turn_interrupted() -> None:
+    """把「正在跑、但再也没机会收尾」的这一轮补成带 interrupted 标记的回答。
+
+    以前的退出路径只把半截正文写进流式副档案，重启后由恢复逻辑拼一句
+    「以上回答被中断」；但只有事件、没有正文的轮次（比如会话 211bdd：
+    刚调完 poweroff，正文还是空的）拼出来就是一个空「思考」块，用户
+    看不出发生了什么。这里直接往历史里补一条，带上 interrupted 与
+    retry_text（用户那一轮的原话），前端据此显示「被中断」并给出重试按钮。
+    """
+    buf = _stream_buf()
+    parts = buf.get("parts") or []
+    text = "\n\n".join((p.get("content") or "").strip()
+                       for p in parts if p.get("type") == "text").strip()
+    if not text:
+        text = (buf.get("text") or "").strip()
+    evs = [p.get("event") for p in parts if p.get("type") == "event"]
+    if not text and not evs:
+        return
+    hist = store.history
+    # 最后一轮已经是带标记的助手消息就别重复补
+    if hist and hist[-1].get("role") == "assistant" and hist[-1].get("interrupted"):
+        return
+    retry = ""
+    for m in reversed(hist):
+        if m.get("role") == "user":
+            retry = str(m.get("content") or m.get("brief") or "")
+            break
+    hist.append({"role": "assistant", "content": text, "events": evs,
+                 "interrupted": True, "retry_text": retry, "ts": time.time()})
+    try:
+        _write_session(store.turn.get("sid") or store.current_sid, hist)
+        store.drop_stream_side(store.turn.get("sid") or store.current_sid)
+    except Exception as e:
+        print(f"[DeckMeido] 写回中断标记失败：{e}", file=sys.stderr)
+    print(f"[DeckMeido] 退出前已标记中断（{len(text)} 字，{len(evs)} 个事件）",
+          file=sys.stderr)
+
+
 _REFUSAL_MARKS = ["我不会", "我不能", "无法执行", "无法直接执行", "恕我不能", "不执行", "拒绝执行",
                   "我不会执行", "我没办法", "不允许", "不建议执行"]
 
 
 def _looks_like_refusal(reply: str) -> bool:
     return any(m in reply for m in _REFUSAL_MARKS)
+
+
+# power 工具的执行器放在这里：它要读写对话状态、广播倒计时、落盘，tools 层拿不到
+tools.register("power", _power_execute)
 
 
 async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
@@ -6473,7 +6685,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
             _shot_lock = policy.shot_lock_for(from_client, surface)
         locked_shot = has_shot and _shot_lock
         # 工具集由场景策略表决定（群友档是空集 = 零工具），再叠加带图轮的截图限制
-        round_tools = [t for t in pol.filter_tools(tools.TOOLS)
+        round_tools = [t for t in pol.filter_tools(tools.TOOLS + [_power_tool_schema()])
                        if tools.tool_ready(t["function"]["name"], {})]
         if locked_shot:
             round_tools = [t for t in round_tools

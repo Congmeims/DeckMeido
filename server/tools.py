@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from . import audit, netmode, power, sudo_auth
+from . import audit, netmode, policy, power, sudo_auth
 
 HTTP = httpx.AsyncClient(timeout=20, follow_redirects=True)
 
@@ -52,6 +52,7 @@ TOOL_CN: dict[str, str] = {
     "music_search": "搜索歌曲",
     "music_play": "点歌播放",
     "music_control": "控制播放",
+    "power": "关闭或重启设备",
 }
 
 
@@ -1375,6 +1376,24 @@ async def abort_all_procs(grace: float = 2.0) -> int:
     return len(procs)
 
 
+# 退出时需要一起收掉的子进程（main 的优雅退出用得到）
+LIVE_PROCS = _LIVE_PROCS
+
+
+def kill_live_procs() -> int:
+    """同步杀掉还在跑的子进程（进程退出前用，不需要 await）"""
+    n = 0
+    for p in list(_LIVE_PROCS) + list(_BG_PROCS):
+        try:
+            p.kill()
+            n += 1
+        except Exception:
+            pass
+    _LIVE_PROCS.clear()
+    _BG_PROCS.clear()
+    return n
+
+
 async def _kill_tree(proc: asyncio.subprocess.Process, grace: float = 2.0) -> None:
     """杀掉整棵进程树，绝不能只 kill 直接子进程。
 
@@ -1868,6 +1887,39 @@ def command_budget(command: str, timeout: int | None) -> tuple[int, str]:
     return budget, hint
 
 
+# 命令里自己设置 SUDO_ASKPASS（或 SHIM 的等价写法）：等于把授权通道换成自己写的脚本，
+# sudo_auth 的待授权确认就被绕过去了
+_ASKPASS_OVERRIDE_RE = re.compile(r"(?<![\w])(SUDO_ASKPASS|DECKMEIDO_ASKPASS)\s*=")
+
+
+def _askpass_override(command: str) -> str:
+    """命令里是否自己设置了 SUDO_ASKPASS；返回命中的变量名，没有返回空串"""
+    m = _ASKPASS_OVERRIDE_RE.search(command or "")
+    return m.group(1) if m else ""
+
+
+# 手动指定 askpass 程序（-A / --askpass）：密码从哪来完全由命令决定，同样绕过授权通道
+_ASKPASS_FLAG_RE = re.compile(r"(?<![\w-])(?:-A|--askpass)(?![\w-])")
+
+
+def _power_guard(command: str) -> str:
+    """拦截关机/重启这类会把后端和整台机器一起掐掉的命令。
+
+    以前这类命令走 run_command 直接执行：后端进程被 systemd 一起杀掉，
+    既没机会把当前这一轮落盘，也没人见过「要不要现在关」的确认。
+    现在统一改成让模型调 power 工具（服务端 5 秒倒计时、所有端都能看见、可以取消），
+    模型硬写 shell 的一律拦下并告诉它该怎么做。
+    """
+    action = policy.power_action(command)
+    if not action:
+        return ""
+    label = {"reboot": "重启", "poweroff": "关机", "shutdown": "关机",
+             "halt": "关机", "kexec": "重启", "restart": "重启"}.get(action, "电源操作")
+    return (f"这条命令会让设备直接{label}，已拦截（run_command 里不允许关机/重启）。"
+            f"请改用 power 工具：系统会先在所有界面弹出 5 秒倒计时，"
+            f"用户可以随时取消，到点才真正{label}。")
+
+
 async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin: str = "",
                        detach: bool = False) -> str:
     global CURRENT_CMD
@@ -1875,11 +1927,25 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
     env = _command_env()
     _fix_display_env(env)
     _log_interpreter(env)
+    # 自杀式电源命令：一律不走 run_command，交给受控路径（倒计时 + 可取消）。
+    # 原因见 _power_guard 的说明
+    guard = _power_guard(command)
+    if guard:
+        return guard
     # sudo 命令统一走 askpass 授权通道：
     # 有有效授权就把密码放进子进程环境（不进 argv），没有就先登记一次待授权请求并返回。
     # 这样既不会反复执行注定失败的 `sudo -S`，也不需要模型在对话里索要密码。
     uses_sudo = sudo_auth.command_uses_sudo(command)
     if uses_sudo:
+        # 自己塞 SUDO_ASKPASS（或直接 sudo -A / --askpass）等于绕过 sudo_auth 的授权通道——
+        # 模型在会话 211bdd 里就是这么生成 askpass 脚本、直接断电的。一律拒绝，让它按正常写法重来。
+        # 只认命令文本里的显式 askpass 开关：免密 sudo、以及我们自己注入的 env 都不受影响
+        forged = _askpass_override(command)
+        if forged or _ASKPASS_FLAG_RE.search(command):
+            return ("命令里自己指定了 askpass（SUDO_ASKPASS / sudo -A），"
+                    "这是在绕过系统的 sudo 授权通道，已拒绝执行。"
+                    "请直接写 sudo 命令：系统会自动用 SUDO_ASKPASS 取密码，"
+                    "没有授权时会弹出授权入口；不要把授权机制写进命令里。")
         inline_pw = sudo_auth.inline_sudo_password(command)
         if inline_pw:
             return ("命令里检测到内联密码写法（echo/printf 管道喂给 sudo -S），已拒绝执行。"
@@ -2133,6 +2199,8 @@ def summarize_tool(name: str, args: dict) -> str:
         return f"「{args.get('city', '')}」"
     if name == "find_game":
         return f"「{args.get('name', '')}」"
+    if name == "power":
+        return "重启设备" if str(args.get("action")) == "reboot" else "关闭设备"
     if name == "install_game":
         return f"「{args.get('appid', '')}」"
     if name == "ocr_image":
@@ -2192,6 +2260,9 @@ def describe(name: str, args: dict) -> str:
         return "把 DeckMeido 升级到最新版：拉取新代码并重启服务（当前对话会中断）"
     if name == "run_command":
         return f"执行命令：{args.get('command', '')}\n目的：{args.get('reason', '')}"
+    if name == "power":
+        return ("关闭设备（5 秒倒计时，可取消）" if str(args.get("action")) != "reboot"
+                else "重启设备（5 秒倒计时，可取消）")
     detail = summarize_tool(name, args)
     return f"{cn_name(name)}：{detail}" if detail else cn_name(name)
 
@@ -3725,11 +3796,20 @@ _TOOL_TIMEOUT = {
     "music_search": 30, "music_play": 40, "music_control": 20,
 }
 _TOOL_TIMEOUT_DEFAULT = 120
-_TOOL_NO_TIMEOUT = {"run_command", "install_game", "self_update"}
+_TOOL_NO_TIMEOUT = {"run_command", "install_game", "self_update", "power"}
+
+# 需要在 main 里执行（依赖对话状态、广播、落盘）的工具：tools 层不实现，
+# 由 main 在导入期注册进来
+HOOKS: dict = {}
+
+
+def register(name: str, fn) -> None:
+    """登记一个由 main 提供的工具执行器"""
+    HOOKS[name] = fn
 
 
 async def execute(name: str, args: dict) -> str:
-    fn = EXECUTORS.get(name)
+    fn = EXECUTORS.get(name) or HOOKS.get(name)
     if not fn:
         print(f"[DeckMeido] 工具调用失败：未知工具 {name}", file=sys.stderr)
         return f"未知工具：{name}"
