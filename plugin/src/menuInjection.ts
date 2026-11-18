@@ -1,332 +1,271 @@
 /**
  * 在 Steam GamepadUI 左侧菜单里注入一个「DeckMeido」入口。
  *
- * 为什么之前会壮烈失败（记录下来，避免回退）：
- *   社区通行做法（Decky Music 等）是把菜单外层组件 `fe.type` 换成自己的 wrapper，
- *   再从渲染结果里把菜单项容器 `Ie.type` 换成自己的 wrapper，往菜单项数组里 splice 一项。
- *   这套做法是「独占」的——同一时刻只允许一个插件拥有 `fe` / `Ie`。
- *   两个这样做的插件同时安装时，后注入的一方要么被前者的 `__deckyMusic` 标记挡掉
- *   （入口静默消失），要么覆盖掉前者。
- *   另外 Steam 的菜单项没有显式 key，splice 会让 React 按数组下标复用到错位的孩子，
- *   表现为「插了自己的项，别人的项就没了」。
+ * 已经试过、确认走不通的路（别再回头）：
  *
- * 现在的做法（不动 `fe`、不动 `Ie`、不动原菜单项数组）：
- *   1. 从当前窗口（Decky 插件跑在 SharedJSContext）的 DOM 上爬到 React 根，
- *      按 props 特征找到左侧菜单外层组件 `fe`，再找菜单项 Fragment fiber；
- *   2. 在 Fragment 的父 fiber（菜单项容器组件）上用 `onCommitFiberRoot` 之后的渲染钩子不合适，
- *      所以改成 DOM 层：把真实挂载的菜单 Panel（aria-label="主菜单"）里的「商店」那一行
- *      clone 一份，改文案/图标/aria-label，插到它后面；
- *   3. 点击时调用 Decky 的 `Navigation.Navigate("/deckmeido")`，与 QAM 里进大屏是同一条路径；
- *   4. 每秒检查一次：React 重渲染会把我们补的节点丢掉，丢了就补回来。
+ * 1) 社区通行做法（DeckWebBrowser / Deckcord / Loadout / Decky Music）：包菜单外层和内层
+ *    菜单组件的 `type`，再往菜单项数组里 splice。这套是「独占」的，两个插件同时装会
+ *    互相顶掉。
  *
- * 这样：
- *   - 不动 `fe.type` / `Ie.type`，Decky Music 的所有权检查永远命中它自己那一层；
- *   - 不动 React 的菜单项数组，不存在隐式下标 key 错位；
- *   - 即便 Steam 或别的插件重渲染整个菜单，我们下一轮把这一行补回来。
+ * 2) 纯 DOM clone：克隆出来的节点没有导航节点，Steam 焦点导航按导航树遍历，补多少
+ *    `Focusable` / `tabindex` 都没用，方向键直接略过。
+ *
+ * 3) 改已提交 fiber 的 `memoizedProps`：不会触发重渲染，DOM 永远不变。
+ *
+ * 4) 包 `S.type` / 替换 `inst.render` + `forceUpdate`：前者破坏 hooks 链，后者直接把
+ *    mainmenu 搞崩。
+ *
+ * 现在这条路：**借位**——不加新节点，直接把原生「库」那一格占下来。
+ *
+ * Steam 左侧菜单是固定的 9 项，每项在 `MainNavMenuContainer` 导航树里有一个节点，
+ * 节点上真正决定行为的是 `m_element`（焦点框哪个 DOM）和 `m_rgNavigationHandlers`
+ * （按 A 干什么）。所以：
+ *
+ *   - 在菜单列表 DOM 里用我们的条目顶掉 `库` 那一项；
+ *   - 把 `库` 节点的 `m_element` 指向我们的条目，往回压一个导航处理器接管 A 键。
+ *
+ * 这样方向键走到这一格时，焦点框落的是 DeckMeido，按 A 进大屏。完全不碰 React，
+ * 也就不再和 Decky Music 抢菜单。
+ *
+ * 已知差异：原生的 `库` 入口会被顶掉（要进库得走主页或用其它入口）。
  *
  * 约束：
- *   - 任何异常都只让本轮 no-op，绝不抛到 Steam 的 render 栈里；
- *   - 卸载时把补的节点删掉，菜单回到原生状态。
+ *   - 不碰 Steam 内部模块，只读写导航树实例上的字段；
+ *   - 任何异常只让本次注入放弃，绝不把菜单搞崩；
+ *   - 卸载时把 DOM 和节点字段还原。
  */
 import { Navigation } from "@decky/ui";
+import { createElement } from "react";
 import { GiTeapot } from "react-icons/gi";
 
-/** 注入项的 route，与 index.tsx 里 routerHook 注册的同一个常量（避免循环依赖，这里重复定义一份） */
+/**
+ * 把图标组件转成 SVG 字符串。
+ *
+ * react-dom 在插件里不是可用的导入（@decky/rollup 不打包它，运行时也拿不到），
+ * 而图标组件本身就是 `{ tag: "svg", attr: {...}, child: [...] }` 这种结构，
+ * 直接拼字符串最省事。
+ */
+function svgMarkup() {
+  const icon: any = createElement(GiTeapot, { size: "1.4em" });
+  const { tag, attr, child } = icon.props;
+  const attrs = Object.keys(attr || {})
+    .map((k) => `${k}="${String(attr[k]).replace(/"/g, "&quot;")}"`)
+    .join(" ");
+  const body = Array.isArray(child)
+    ? child
+        .map((c: any) => {
+          const a = Object.keys(c.attr || {})
+            .map((k) => `${k}="${String(c.attr[k])}"`)
+            .join(" ");
+          return `<${c.tag} ${a}></${c.tag}>`;
+        })
+        .join("")
+    : "";
+  return `<${tag} ${attrs}>${body}</${tag}>`;
+}
+
+/** 注入项的 route，与 index.tsx 里 routerHook 注册的同一个常量（避免循环依赖，这里重复定义） */
 const MENU_ROUTE = "/deckmeido";
-/** 菜单里「商店」的可见文案（本地化后用来定位锚点） */
-const AFTER_LABEL = "商店";
-/** 菜单检查间隔：React 重渲染会把我们补的节点丢掉，需要周期补回 */
-const RETRY_MS = 1000;
-/** 补的节点上的标记，用于去重 / 清理 */
-const DOM_MARK = "data-deckmeido-item";
-/** 菜单行所属 Panel 的可访问名 */
-const PANEL_LABEL = "主菜单";
 /** 要插入的菜单项文案 */
 const ITEM_LABEL = "DeckMeido";
+/** 借用的菜单项文案 */
+const ANCHOR_LABEL = "库";
+/** 我们的可见条目 */
+const ENTRY_CLASS = "deckmeido-menu-entry";
 
-type AnyFiber = {
-  type: any;
-  return?: AnyFiber | null;
-  child?: AnyFiber | null;
-  sibling?: AnyFiber | null;
-  memoizedProps?: any;
-  tag?: number;
-  stateNode?: any;
-};
-
-type FiberPred = (f: AnyFiber) => boolean;
-
-/** 左侧菜单外层组件：带登录态、展开态和 popup */
-const isMenuRootFiber: FiberPred = (f) => {
-  const p = f?.memoizedProps;
-  return !!p && p.bLoggedIn !== undefined && p.open !== undefined && "popup" in p;
-};
-
-/** 原生菜单项：有 route 和 label 的 element */
-const isMenuItemEl = (x: any) =>
-  x &&
-  typeof x === "object" &&
-  x.props &&
-  typeof x.props.route === "string" &&
-  typeof x.props.label === "string" &&
-  x.type &&
-  typeof x.type !== "string";
-
-function log(...args: any[]) {
+function log(...a: any[]) {
   try {
-    console.warn("[DeckMeido]", ...args);
+    console.warn("[DeckMeido]", ...a);
   } catch {
     /* console 不可用不能影响 UI */
   }
 }
 
-/** 调试用的落盘记录（Steam 的 console 在部分窗口不可见，直接读 window.__deckmeidoStamp） */
-function stamp(...args: any[]) {
+/** 调试用落盘（Steam 的 console 在部分窗口不可见，直接读 window.__deckmeidoStamp） */
+function stamp(...a: any[]) {
   try {
     const g: any = window;
     g.__deckmeidoStamp = g.__deckmeidoStamp || [];
-    g.__deckmeidoStamp.push([Date.now(), ...args]);
+    g.__deckmeidoStamp.push([Date.now(), ...a]);
     if (g.__deckmeidoStamp.length > 200) g.__deckmeidoStamp.shift();
   } catch {
     /* ignore */
   }
-  log(...args);
+  log(...a);
 }
 
 /**
- * 沿 DOM 节点上的 __reactFiber$ 往上爬到根。
- * Decky 插件运行在 SharedJSContext，但这份 fiber 树对应的是主菜单（MainMenu）窗口的文档，
- * 所以 `document.getElementById("MainNavMenuContainer")` 在这里是 null —— 必须靠 fiber 拿到
- * 那个窗口里的真实 DOM 节点。
+ * 拿 CFocusNavController 实例。
+ *
+ * 实测插件跑在 shared 窗口，`window.FocusNavController` 就在这一侧，并且
+ * `m_rgAllContexts` 里能看到其它窗口的导航树；`@decky/ui` 导出的 `Navigation`
+ * 在运行时是 undefined，所以只能走全局对象。
  */
-function rootFiber(): AnyFiber | null {
-  try {
-    for (const el of Array.from(document.querySelectorAll("*"))) {
-      const k = Object.keys(el).find((key) => key.startsWith("__reactFiber"));
-      if (k) {
-        let f = (el as any)[k] as AnyFiber;
-        for (let n = 0; f?.return && n < 1000; n++) f = f.return;
-        return f;
+function getController(): any | null {
+  const w = window as any;
+  const candidates = [w.FocusNavController, (Navigation as any)?.NavigationManager];
+  for (const c of candidates) {
+    if (c && Array.isArray(c.m_rgAllContexts)) return c;
+  }
+  return null;
+}
+
+function findMenuList(fc: any): { list: any; kids: any[] } | null {
+  for (const ctx of Array.from(fc.m_rgAllContexts || []) as any[]) {
+    for (const t of ctx?.m_rgGamepadNavigationTrees || []) {
+      if (t?.m_ID !== "MainNavMenuContainer") continue;
+      // 根的直接子节点可能是菜单列表本身，也可能再套一层，按元素数量找真正的列表
+      const queue = [...(t.Root?.m_rgChildren || [])];
+      while (queue.length) {
+        const node: any = queue.shift();
+        const kids = node?.m_rgChildren;
+        if (Array.isArray(kids) && kids.length >= 5) return { list: node, kids };
+        if (Array.isArray(kids)) queue.push(...kids);
       }
     }
-  } catch {
-    /* 找不到根就 no-op */
   }
   return null;
 }
 
-function findFiber(root: AnyFiber, pred: FiberPred, cap = 20000): AnyFiber | null {
-  let n = 0;
-  const queue: AnyFiber[] = [root];
-  while (queue.length) {
-    const f = queue.shift();
-    if (!f || n++ > cap) continue;
-    try {
-      if (pred(f)) return f;
-    } catch {
-      /* 单个谓词异常忽略 */
+/** 找要借位的菜单项：原生 `库` 那一项 */
+function pickSlot(kids: any[]): any | null {
+  for (const k of kids) {
+    const text = k?.m_element?.textContent?.trim();
+    if (text && text.includes(ANCHOR_LABEL)) return k;
+  }
+  return kids[1] || null;
+}
+
+function goToMenuRoute() {
+  try {
+    const nm: any = Navigation;
+    if (nm && typeof nm.Navigate === "function") {
+      nm.Navigate(MENU_ROUTE);
+      return;
     }
-    if (f.child) queue.push(f.child);
-    if (f.sibling) queue.push(f.sibling);
-  }
-  return null;
-}
-
-/** 找已经渲染出来的菜单项 Fragment fiber（tag 7，props 是 {0:item,1:item,...}） */
-function findMenuFragment(fe: AnyFiber): AnyFiber | null {
-  const stack: AnyFiber[] = [fe];
-  let n = 0;
-  while (stack.length && n++ < 20000) {
-    const f = stack.pop()!;
-    const props: any = f.memoizedProps;
-    if (f.tag === 7 && props) {
-      const keys = Object.keys(props).filter((k) => /^\d+$/.test(k));
-      if (keys.length && keys.map((k) => props[k]).some(isMenuItemEl)) return f;
-    }
-    if (f.child) stack.push(f.child);
-    if (f.sibling) stack.push(f.sibling);
-  }
-  return null;
-}
-
-/** 从 fiber 往下走，找到第一个真实 DOM 节点（tag 5 = HostComponent） */
-function hostDomOf(f: AnyFiber | null): HTMLElement | null {
-  if (!f) return null;
-  const stack: AnyFiber[] = [f];
-  let n = 0;
-  while (stack.length && n++ < 300) {
-    const cur = stack.pop()!;
-    if (cur.tag === 5 && cur.stateNode && cur.stateNode.nodeType === 1) return cur.stateNode as HTMLElement;
-    if (cur.child) stack.push(cur.child);
-    if (cur.sibling) stack.push(cur.sibling);
-  }
-  return null;
-}
-
-/**
- * 找到左侧菜单的 Panel：每个菜单行都是它的直接子元素。
- * 通过 aria-label 匹配而不是 class（class 是 Steam 的哈希名，版本一变就失效）。
- */
-function menuPanel(): HTMLElement | null {
-  const root = rootFiber();
-  if (!root) return null;
-  const fe = findFiber(root, isMenuRootFiber);
-  if (!fe) return null;
-  const frag = findMenuFragment(fe);
-  const anyRow = hostDomOf(frag?.child ?? null);
-  if (!anyRow) return null;
-  let cur: HTMLElement | null = anyRow;
-  for (let i = 0; cur && i < 8; i++) {
-    if (cur.getAttribute && cur.getAttribute("aria-label") === PANEL_LABEL) return cur;
-    cur = cur.parentElement;
-  }
-  return null;
-}
-
-function menuRowOf(el: Element | null): Element | null {
-  if (!el) return null;
-  if (el.getAttribute("role") === "menuitem") return el;
-  return el.querySelector('[role="menuitem"]');
-}
-
-function rowLabel(row: Element | null): string | null {
-  const item = menuRowOf(row);
-  return item ? item.getAttribute("aria-label") : null;
-}
-
-/** 我们的入口是否已经在菜单里 */
-function existingItem(): HTMLElement | null {
-  const panel = menuPanel();
-  if (!panel) return null;
-  return panel.querySelector(`[${DOM_MARK}]`) as HTMLElement | null;
-}
-
-/** 跳到大屏：与 QAM 里走的是同一个 Decky 路由，Steam 侧不用关心 */
-function activate(e?: Event) {
-  try {
-    e?.preventDefault?.();
-    e?.stopPropagation?.();
-  } catch {
-    /* ignore */
-  }
-  try {
-    Navigation.Navigate(MENU_ROUTE);
-  } catch (err) {
-    log("跳转失败", err);
-  }
-}
-
-function bindActivate(el: HTMLElement) {
-  if ((el as any).__deckmeidoBound) return;
-  (el as any).__deckmeidoBound = true;
-  el.addEventListener("click", activate);
-  el.addEventListener("keydown", (e: any) => {
-    if (e.key === "Enter" || e.key === " ") activate(e);
-  });
-}
-
-/**
- * 生成图标节点的 svg 字符串。
- * 直接用 react-icons 组件定义里的 path 数据手拼 svg，避免引入 react-dom/server。
- */
-function iconSvg(icon: any): string {
-  try {
-    const props = typeof icon === "function" ? icon({ size: 22, color: "currentColor" }) : icon;
-    const children = props?.props?.children;
-    const inner = Array.isArray(children) ? children : [children];
-    const body = inner
-      .filter(Boolean)
-      .map((c: any) => {
-        const cp = c?.props || {};
-        const attrs = Object.keys(cp)
-          .filter((k) => k !== "children")
-          .map((k) => `${k.replace(/[A-Z]/g, (m) => "-" + m.toLowerCase())}="${String(cp[k])}"`)
-          .join(" ");
-        return `<${c.type || "path"} ${attrs} />`;
-      })
-      .join("");
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22" fill="currentColor">${body}</svg>`;
-  } catch {
-    return "";
-  }
-}
-
-/** clone「商店」那一行，换文案 + 图标，插到它后面 */
-function insertDomItem(panel: HTMLElement): boolean {
-  const rows = Array.from(panel.children);
-  const anchor = rows.find((r) => rowLabel(r) === AFTER_LABEL);
-  if (!anchor) return false;
-  const doc = anchor.ownerDocument;
-  const el = anchor.cloneNode(true) as HTMLElement;
-  el.setAttribute(DOM_MARK, "1");
-  const item = menuRowOf(el);
-  if (!item) return false;
-  item.setAttribute("aria-label", ITEM_LABEL);
-  item.removeAttribute("aria-current");
-
-  // 文案：菜单行里第一个非空文本节点
-  const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-  let textSet = false;
-  while (walker.nextNode()) {
-    const t = walker.currentNode as Text;
-    if (t.nodeValue && t.nodeValue.trim()) {
-      t.nodeValue = ITEM_LABEL;
-      textSet = true;
-      break;
-    }
-  }
-  if (!textSet) return false;
-
-  // 图标：把原生 svg 换成我们的图标，容器尺寸不变（决定文字左边距）
-  const svg = el.querySelector("svg");
-  const holder = svg?.parentElement;
-  const markup = iconSvg(GiTeapot as any);
-  if (holder && markup) holder.innerHTML = markup;
-
-  bindActivate(el);
-  anchor.parentElement?.insertBefore(el, anchor.nextSibling);
-  return true;
-}
-
-function removeDomItem() {
-  try {
-    const item = existingItem();
-    if (item) item.remove();
-  } catch {
-    /* ignore */
-  }
-}
-
-// ---- 生命周期 ----
-let timer: ReturnType<typeof setInterval> | null = null;
-
-function tick() {
-  try {
-    if (existingItem()) return;
-    const panel = menuPanel();
-    if (!panel) return;
-    if (insertDomItem(panel)) stamp("dom insert ok");
   } catch (e) {
-    /* 单轮失败不影响菜单，下一轮再试 */
-    stamp("tick error", String(e));
+    stamp("navigate failed", String(e));
   }
+  stamp("navigate unavailable");
+}
+
+/**
+ * 接管档位节点的激活行为。
+ *
+ * 原生菜单项的 A 键不在节点属性上（`m_Properties.onActivate` 是 undefined），但节点挂
+ * DOM 时注册的处理器按 DOM 上的 `__nav_node` 反查节点，所以把我们的条目伪装成那个节点
+ * 的 DOM（补上 `__nav_node` / `m_element` / `m_bMounted`）后，方向键与按 A 都走原生路径。
+ */
+function attachNavNode(slot: any, host: HTMLElement) {
+  (host as any).__nav_node = slot;
+  slot.m_element = host;
+  slot.m_bMounted = true;
+  const navKey = slot.m_Properties?.navKey;
+  if (navKey) host.setAttribute("data-nav-key", String(navKey));
 }
 
 export function enableMenuInjection() {
-  stamp("enable called", "timer=", timer ? "on" : "off");
-  if (timer) return;
-  timer = setInterval(tick, RETRY_MS);
+  stamp("enable called");
+  let tries = 0;
+  const tick = () => {
+    if (++tries > 240) return; // 约 2 分钟还没就绪就放弃，不再空转
+    try {
+      const fc = getController();
+      if (!fc) {
+        if (tries % 20 === 1) stamp("waiting for FocusNavController", tries);
+      } else {
+        const found = findMenuList(fc);
+        if (found && install(fc, found)) return;
+        if (tries % 20 === 1) stamp("waiting for menu tree", tries, !!found);
+      }
+    } catch (e) {
+      stamp("install error", String(e));
+    }
+    setTimeout(tick, 500);
+  };
   tick();
 }
 
+let installed: {
+  slot: any;
+  host: HTMLElement;
+  prevEl: any;
+  prevHandlers?: any[];
+} | null = null;
+
+function install(fc: any, found: { list: any; kids: any[] }): boolean {
+  if (installed) return true;
+  const slot: any = pickSlot(found.kids);
+  if (!slot) return false;
+  const idx = found.kids.indexOf(slot);
+
+  const prevEl = slot.m_element;
+  if (!prevEl || !prevEl.parentElement) return false;
+  const doc: Document = prevEl.ownerDocument;
+  const win: any = doc.defaultView || window;
+
+  // 原来的菜单项挪到旁边藏着，先不删：删掉的话万一 Steam 要重排菜单，会把整行搞乱。
+  // 它的 class / tabindex 复制到我们的条目上，Steam 的焦点样式和 gpfocus 类照常生效。
+  prevEl.style.position = "absolute";
+  prevEl.style.visibility = "hidden";
+  prevEl.style.pointerEvents = "none";
+  const host = doc.createElement("div");
+  host.className = (prevEl.className || "") + " " + ENTRY_CLASS;
+  host.setAttribute("role", "menuitem");
+  host.setAttribute("aria-label", ITEM_LABEL);
+  host.setAttribute("tabindex", prevEl.getAttribute("tabindex") || "0");
+  host.style.display = "flex";
+  host.style.alignItems = "center";
+  host.style.width = "200px";
+  host.style.flex = "0 0 auto";
+
+  // 图标 + 文案：照抄原生菜单项的内部结构，避免被菜单项自身的 flex 布局挡住文字
+  const icon = doc.createElement("div");
+  const iconEl = prevEl.querySelector("svg")?.parentElement;
+  if (iconEl) icon.className = iconEl.className;
+  else icon.style.marginRight = "11px";
+  icon.innerHTML = svgMarkup();
+  const label = doc.createElement("span");
+  label.textContent = ITEM_LABEL;
+  label.style.marginLeft = "4px";
+  host.append(icon, label);
+
+  host.addEventListener("click", () => goToMenuRoute());
+  prevEl.parentElement.insertBefore(host, prevEl);
+
+  const prevHandlers = Array.isArray(slot.m_rgNavigationHandlers) ? slot.m_rgNavigationHandlers.slice() : undefined;
+  attachNavNode(slot, host);
+  // 节点换了 DOM，导航树缓存的路由 / 排序依据都要作废，否则方向键按旧顺序走
+  slot.m_bChildrenSorted = false;
+  found.list.m_bChildrenSorted = false;
+
+  installed = { slot, host, prevEl, prevHandlers };
+  stamp("menu slot installed at", idx, "win:", win?.name || "");
+  return true;
+}
+
 export function disableMenuInjection() {
+  if (!installed) return;
+  const it = installed;
+  installed = null;
   try {
-    if (timer) {
-      clearInterval(timer);
-      timer = null;
-    }
+    it.slot.m_element = it.prevEl;
+    if (it.prevHandlers) it.slot.m_rgNavigationHandlers = it.prevHandlers;
+    it.prevEl.style.position = "";
+    it.prevEl.style.visibility = "";
+    it.prevEl.style.pointerEvents = "";
   } catch {
     /* ignore */
   }
-  removeDomItem();
+  try {
+    if (it.host.parentElement && it.prevEl) it.host.parentElement.insertBefore(it.prevEl, it.host);
+  } catch {
+    /* ignore */
+  }
+  try {
+    it.host.remove();
+  } catch {
+    /* ignore */
+  }
+  stamp("menu slot removed");
 }
