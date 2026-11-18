@@ -6245,8 +6245,82 @@ async def _power_countdown(action: str, ctx: policy.TurnContext, hist: list[dict
     return _power_label(action)
 
 
-async def _power_commit(action: str) -> None:
-    """倒计时到点：先让所有连接知道，再停服务，最后交给系统"""
+def _power_env() -> dict:
+    """关机命令要带的会话环境：polkit / logind 都需要找到系统总线"""
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS",
+                   f"unix:path=/run/user/{os.getuid()}/bus")
+    env.setdefault("DISPLAY", ":0")
+    return env
+
+
+def _power_try(argv: list[str], password: str = "") -> tuple[bool, str]:
+    """跑一条关机/重启命令：返回 (是否成功发起, 失败原因)。
+
+    必须看返回码和 stderr。以前用 Popen + DEVNULL，polkit 拒绝时子进程照样
+    能起来，错误被吞掉，会话 211bdd 于是「说关机了，机器却一直开着」。
+    """
+    env = _power_env()
+    if password:
+        env.update(sudo_auth.sudo_env(password))
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=20,
+                           stdin=subprocess.DEVNULL, env=env)
+    except subprocess.TimeoutExpired:
+        return False, f"{' '.join(argv)} 超时"
+    except OSError as exc:
+        return False, f"{' '.join(argv)} 调用失败：{exc}"
+    if r.returncode == 0:
+        return True, ""
+    detail = ((r.stderr or "") + (r.stdout or "")).strip().splitlines()
+    return False, f"{' '.join(argv)}：{detail[0][:200] if detail else f'退出码 {r.returncode}'}"
+
+
+def _power_exec(action: str) -> tuple[bool, str]:
+    """按授权顺序发起关机/重启，返回 (是否成功, 失败原因)。
+
+    顺序照 selfcheck 里的提权方式：免密 sudo → 内存里已有的 sudo 授权
+    （用户刚输过密码，直接复用）→ pkexec 由桌面弹窗确认 → 最后才试不带
+    提权的 systemctl / loginctl / poweroff。Deck 上普通用户走 polkit 会要求
+    交互认证，所以裸 systemctl 基本必失败，只能兜底。
+    """
+    password = sudo_auth.cached_password() or ""
+    attempts: list[tuple[list[str], str]] = []
+    if sudo_auth.silent_sudo():
+        attempts.append((["sudo", "-n", "systemctl", action], ""))
+    if password:
+        attempts.append((["sudo", "-A", "systemctl", action], password))
+    if shutil.which("pkexec"):
+        attempts.append((["pkexec", "systemctl", action], ""))
+    attempts += [(["systemctl", action], ""),
+                 (["loginctl", action], ""),
+                 ([action], "")]
+    errors: list[str] = []
+    for argv, pw in attempts:
+        if not pw and not shutil.which(argv[0]):
+            continue
+        ok, err = _power_try(argv, pw)
+        print(f"[DeckMeido][power] {' '.join(argv)} → "
+              f"{'成功' if ok else err}", file=sys.stderr)
+        if ok:
+            return True, ""
+        errors.append(err)
+    if not errors:
+        return False, "找不到可用的关机命令"
+    # 失败几乎只有一个原因：系统要求交互授权，而后端不在能弹授权框的环境里。
+    # 给一句能直接照做的说明，别把 polkit 原文原样甩给用户
+    return False, ("系统要求交互授权（polkit），而后端拿不到授权：需要先在对话里"
+                   "执行一条 sudo 命令、弹出「需要授权」后输入一次管理员密码，"
+                   "之后再开关机就能走这条授权。原始错误：" + errors[-1])
+
+
+async def _power_commit(action: str) -> tuple[bool, str]:
+    """倒计时到点：先让所有连接知道，再停服务，最后交给系统。
+
+    返回 (是否成功发起, 失败原因)。失败时前端和模型都要拿到真实原因，
+    不能让回答里写「正在关机」而设备毫无反应。
+    """
     _POWER.update({"task": None, "action": "", "deadline": 0.0})
     await _power_broadcast({"committing": True})
     # 给广播一点时间发出去（关机的瞬间连接就断了）
@@ -6255,20 +6329,16 @@ async def _power_commit(action: str) -> None:
         store.flush_index()
     except Exception as exc:
         devlog.debug("main._power_commit", error=repr(exc))
-    for argv in (["systemctl", action], ["loginctl", action], [action]):
-        try:
-            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
-        except FileNotFoundError:
-            continue
-        except Exception as exc:
-            print(f"[DeckMeido][power] 执行 {argv[0]} 失败：{exc}", file=sys.stderr)
-            return
-    print("[DeckMeido][power] 找不到可用的关机命令", file=sys.stderr)
+    ok, err = await asyncio.to_thread(_power_exec, action)
+    if not ok:
+        print(f"[DeckMeido][power] {_power_label(action)}失败：{err}", file=sys.stderr)
+        await _power_broadcast({"done": True, "failed": True, "error": err,
+                                "action": action})
+    return ok, err
 
 
 async def _power_start(action: str, ctx: policy.TurnContext, hist: list[dict]) -> str:
-    """启动倒计时并等待；被取消返回取消说明，到点返回执行说明"""
+    """启动倒计时并等待；被取消返回取消说明，到点返回执行结果"""
     if _power_state()["armed"]:
         return (f"已经有一个{_power_label(_POWER['action'])}倒计时在跑了，"
                 f"等它结束或者取消后再试。")
@@ -6278,8 +6348,13 @@ async def _power_start(action: str, ctx: policy.TurnContext, hist: list[dict]) -
         await task
     except asyncio.CancelledError:
         _POWER.update({"task": None, "action": "", "deadline": 0.0})
+        await _power_broadcast({"done": True, "cancelled": True, "action": action})
         return f"{_power_label(action)}已取消，设备保持原样。"
-    await _power_commit(action)
+    ok, err = await _power_commit(action)
+    if not ok:
+        return (f"{_power_label(action)}失败：{err}。"
+                f"设备没有关闭，已经保存的内容不受影响。"
+                f"如果需要，请先把上面的原因告诉主人，再问他是否要我重试。")
     return (f"正在{_power_label(action)}：当前回答已保存，服务即将停止。"
             f"如果几秒后设备没有反应，说明系统拒绝了这次{_power_label(action)}，可以再试一次。")
 

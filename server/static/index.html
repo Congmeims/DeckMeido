@@ -7231,8 +7231,8 @@
     mask.hidden = true;
     mask.innerHTML = '<div class="pm-card" role="alertdialog" aria-modal="true">'
       + '<div class="pm-ring"><span id="pmSec">5</span></div>'
-      + '<div class="pm-title" id="pmTitle">正在关机</div>'
-      + '<div class="pm-tip">5 秒后关机，期间随时可以取消</div>'
+      + '<div class="pm-title" id="pmTitle">正在关闭 Deck</div>'
+      + '<div class="pm-tip">5 秒后关闭 Deck，期间随时可以取消</div>'
       + '<button type="button" class="pm-btn" id="pmCancel">取消</button>'
       + '</div>';
     document.body.appendChild(mask);
@@ -7241,7 +7241,9 @@
     var btn = document.getElementById('pmCancel');
     var deadline = 0;
     var tick = null;
-    var label = function (action) { return action === 'reboot' ? '重启' : '关机'; };
+    // 文案必须写明是 Deck：网页可能开在 Windows 电脑上，只写「关机」
+    // 会让人以为要关掉眼前这台电脑
+    var label = function (action) { return action === 'reboot' ? '重启 Deck' : '关闭 Deck'; };
 
     function paint() {
       var left = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
@@ -7284,7 +7286,10 @@
       // 没在倒计时了：到点执行 / 别处取消，都收起
       if (!mask.hidden) {
         close();
-        if (msg.done) fbToast('正在' + label(msg.action || titleEl.textContent.replace('正在', '')));
+        var act = msg.action || (titleEl.textContent === '正在重启 Deck' ? 'reboot' : 'poweroff');
+        // 执行失败时不能报「正在关闭」，要明确告诉用户 Deck 没关掉以及原因
+        if (msg.failed) fbToast(label(act) + '失败：' + (msg.error || '系统拒绝了这次操作'));
+        else if (msg.done) fbToast('已发出：' + label(act));
         else if (msg.action) fbToast(label(msg.action) + '已取消');
       }
     };
