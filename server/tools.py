@@ -2295,21 +2295,27 @@ def _parse_acf(text: str) -> dict:
 
 
 async def _list_installed_games() -> str:
-    steamapps_dirs = [Path.home() / ".steam/steam/steamapps"]
-    lf = steamapps_dirs[0] / "libraryfolders.vdf"
-    if lf.exists():
-        for m in re.finditer(r'"path"\s+"([^"]+)"', lf.read_text(errors="ignore")):
-            d = Path(m.group(1)) / "steamapps"
-            if d not in steamapps_dirs:
-                steamapps_dirs.append(d)
+    # 扫库是纯同步 IO（每个库目录逐个 glob + 读几百个 .acf），
+    # 放到线程里跑，免得 SD 卡慢的时候卡住整个事件循环
+    def _scan() -> list[str]:
+        steamapps_dirs = [Path.home() / ".steam/steam/steamapps"]
+        lf = steamapps_dirs[0] / "libraryfolders.vdf"
+        if lf.exists():
+            for m in re.finditer(r'"path"\s+"([^"]+)"', lf.read_text(errors="ignore")):
+                d = Path(m.group(1)) / "steamapps"
+                if d not in steamapps_dirs:
+                    steamapps_dirs.append(d)
 
-    games = []
-    for d in steamapps_dirs:
-        for acf in d.glob("appmanifest_*.acf"):
-            info = _parse_acf(acf.read_text(errors="ignore"))
-            if info.get("name"):
-                size_gb = int(info.get("SizeOnDisk", 0)) / 2**30
-                games.append(f"- {info['name']}（appid {info.get('appid')}，{size_gb:.1f} GB）")
+        found = []
+        for d in steamapps_dirs:
+            for acf in d.glob("appmanifest_*.acf"):
+                info = _parse_acf(acf.read_text(errors="ignore"))
+                if info.get("name"):
+                    size_gb = int(info.get("SizeOnDisk", 0)) / 2**30
+                    found.append(f"- {info['name']}（appid {info.get('appid')}，{size_gb:.1f} GB）")
+        return found
+
+    games = await asyncio.to_thread(_scan)
     if not games:
         return "没有找到已安装的 Steam 游戏"
     return f"共 {len(games)} 款已安装游戏：\n" + "\n".join(sorted(games))
@@ -2385,16 +2391,31 @@ async def _check_system_updates() -> str:
         "steamos-update", "check",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
-    out, _ = await proc.communicate()
+    try:
+        out, _ = await proc.communicate()
+    finally:
+        # 外层 wait_for 超时会取消这个协程，但子进程不会跟着停：
+        # 不显式 kill 就会留一个一直在后台联网检查的孤儿进程
+        if proc.returncode is None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
     return out.decode(errors="ignore").strip() or "检查完成，无输出"
 
 
 async def _install_game(appid: int) -> str:
+    # 只负责把 URI 交给 Steam，不在这里等 steam 进程退出：
+    # 它在客户端关闭前一直活着，await 会让整轮对话无限挂住
     proc = await asyncio.create_subprocess_exec(
         "steam", f"steam://install/{appid}",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
     )
-    await proc.wait()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=10)
+    except asyncio.TimeoutError:
+        pass        # 客户端已经拉起，等不等它自己退出都无所谓
     return f"已向 Steam 发送安装指令（appid {appid}），下载会在 Steam 客户端中开始"
 
 
@@ -3498,13 +3519,18 @@ async def _read_file(path: str, offset: int = 1, limit: int = 400) -> str:
     # 图片/二进制文件不能用 read_text 读——那会喂一堆乱码给模型。
     # 图片本就有专门的多模态通道（截图 / @{} 引用 / 上传），这里拦下并提示；
     # 用 NUL 字节探测，比记扩展名清单更稳（无扩展名、伪装扩展名的二进制也能拦住）
-    head = p.read_bytes()[:8192]
+    # 读盘放到线程里：最大 8MB 的文件在 Deck 的 eMMC/SD 卡上读要几十毫秒，
+    # 直接在事件循环里读会卡住所有 WS 推送
+    def _load() -> tuple[bytes, str]:
+        return p.read_bytes()[:8192], p.read_text(encoding="utf-8", errors="replace")
+
+    head, text = await asyncio.to_thread(_load)
     if b"\x00" in head or p.suffix.lower() in _IMG_EXT:
         return (f"{p} 是二进制或图片文件，不能用文本方式读取。"
                 f"图片想取里面的文字就用 ocr_image 工具；"
                 f"只看画面请用截图工具或 @{{{p.name}}} 引用；"
                 f"其他二进制文件可用 run_command 的 file/xxd/strings 查看片段。")
-    lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    lines = text.splitlines()
     offset = max(1, offset)
     chunk = lines[offset - 1: offset - 1 + min(limit, 2000)]
     body = "\n".join(f"{offset + i}→{line}" for i, line in enumerate(chunk))
@@ -3556,9 +3582,13 @@ async def _write_file(path: str, content: str) -> str:
     global LAST_DIFF
     LAST_DIFF = None
     p = resolve_in_workspace(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    old_lines = len(p.read_text(encoding="utf-8", errors="replace").splitlines()) if p.is_file() else 0
-    _atomic_write(p, content)
+    def _save() -> int:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        old = len(p.read_text(encoding="utf-8", errors="replace").splitlines()) if p.is_file() else 0
+        _atomic_write(p, content)
+        return old
+
+    old_lines = await asyncio.to_thread(_save)
     LAST_DIFF = {"add": len(content.splitlines()), "del": old_lines}
     return f"已写入 {p}（{len(content)} 字符）"
 
@@ -3569,13 +3599,19 @@ async def _edit_file(path: str, old: str, new: str) -> str:
     p = resolve_in_workspace(path)
     if not p.is_file():
         return f"文件不存在：{p}"
-    text = p.read_text(encoding="utf-8")
-    count = text.count(old)
+
+    def _do_edit() -> int:
+        body = p.read_text(encoding="utf-8")
+        n = body.count(old)
+        if n == 1:
+            _atomic_write(p, body.replace(old, new, 1))
+        return n
+
+    count = await asyncio.to_thread(_do_edit)
     if count == 0:
         return "替换失败：old 文本在文件中不存在（先用 read_file 确认原文）"
     if count > 1:
         return f"替换失败：old 文本出现了 {count} 次，请扩大范围使其唯一"
-    _atomic_write(p, text.replace(old, new, 1))
     LAST_DIFF = {"add": len(new.splitlines()), "del": len(old.splitlines())}
     return f"已修改 {p}（替换 1 处）"
 

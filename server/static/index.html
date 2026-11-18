@@ -6507,9 +6507,6 @@
           if (msg.current) currentSid = msg.current;
           loadSessions();
           break;
-        case 'history':
-          loadSessions();
-          break;
         case 'update_available':
           markUpdate(msg.latest, msg.current);
           break;
