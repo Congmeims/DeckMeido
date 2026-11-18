@@ -6076,21 +6076,6 @@ async def _boot_overlay():
     ensure_overlay()
 
 
-@app.get("/api/power/state", dependencies=[Depends(require_auth)])
-async def api_power_state():
-    """前端连上/刷新时问一次：有没有正在跑的关机倒计时"""
-    return _power_state()
-
-
-@app.post("/api/power/cancel", dependencies=[Depends(require_auth)])
-async def api_power_cancel():
-    """取消正在跑的关机/重启倒计时（任何一端都能点）"""
-    ok = _power_cancel("用户取消")
-    st = _power_state()
-    await _power_broadcast()
-    return {"ok": ok, **st}
-
-
 @app.on_event("shutdown")
 async def _shutdown_overlay():
     # 服务被重启/停止时把自己拉起的遮罩一起收掉，别留孤儿
@@ -6165,210 +6150,6 @@ def _record_power_intent(ctx: policy.TurnContext, name: str, args: dict,
     store.set_intent(ctx.sid, it)
 
 
-# ---------- 受控关机 / 重启 ----------
-# 关机、重启一律不直接执行：先在所有界面弹出 5 秒倒计时（任何一端都能取消），
-# 到点后由这里停服务、落盘当前这一轮，再交给系统关机。
-# 这样设备不会「说关就关」：后端有收尾时间，用户也有反悔的机会。
-POWER_COUNTDOWN = 5.0
-_POWER: dict = {"task": None, "action": "", "deadline": 0.0}
-
-
-def _power_label(action: str) -> str:
-    return "重启" if action == "reboot" else "关机"
-
-
-def _power_tool_desc() -> str:
-    return ("关闭或重启设备（SteamOS / Linux）。调用后所有界面会弹出 "
-            f"{int(POWER_COUNTDOWN)} 秒倒计时，用户可以随时取消，到点才真正执行。"
-            "用户要求关机、重启、电源键这类操作时用它，不要用 run_command 拼 "
-            "poweroff / reboot / shutdown（那些命令会被直接拦下）")
-
-
-def _power_tool_schema() -> dict:
-    return {
-        "type": "function",
-        "function": {
-            "name": "power",
-            "description": _power_tool_desc(),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "enum": ["poweroff", "reboot"],
-                               "description": "poweroff 关机，reboot 重启"},
-                },
-                "required": ["action"],
-            },
-        },
-    }
-
-
-def _power_state() -> dict:
-    """当前倒计时状态；没有在等就返回 armed=False"""
-    task = _POWER.get("task")
-    if not task or task.done():
-        return {"armed": False, "action": "", "seconds": 0, "deadline": 0}
-    left = max(0, int(round(_POWER["deadline"] - time.time())))
-    return {"armed": True, "action": _POWER["action"], "seconds": left,
-            "deadline": _POWER["deadline"]}
-
-
-async def _power_broadcast(extra: dict | None = None) -> None:
-    msg = {"type": "power", **_power_state()}
-    if extra:
-        msg.update(extra)
-    try:
-        await manager.broadcast(msg)
-    except Exception as exc:
-        devlog.debug("main._power_broadcast", error=repr(exc))
-
-
-def _power_cancel(reason: str = "") -> bool:
-    """取消倒计时；返回是否真的取消掉了一次"""
-    task = _POWER.get("task")
-    if not task or task.done():
-        return False
-    task.cancel()
-    _POWER.update({"task": None, "action": "", "deadline": 0.0})
-    print(f"[DeckMeido][power] 倒计时已取消（{reason or '用户取消'}）", file=sys.stderr)
-    return True
-
-
-async def _power_countdown(action: str, ctx: policy.TurnContext, hist: list[dict]) -> str:
-    """弹倒计时并等待；到点返回说明，期间被取消抛 CancelledError"""
-    _POWER.update({"action": action, "deadline": time.time() + POWER_COUNTDOWN})
-    # 意图先落盘：真把机器关掉了也能按 boot_id 对账，下次启动知道这次是谁关的
-    _arm_power_intent(ctx, action, hist)
-    print(f"[DeckMeido][power] 请求{_power_label(action)}，"
-          f"{POWER_COUNTDOWN:.0f} 秒倒计时", file=sys.stderr)
-    await _power_broadcast()
-    await asyncio.sleep(POWER_COUNTDOWN)
-    return _power_label(action)
-
-
-def _power_env() -> dict:
-    """关机命令要带的会话环境：polkit / logind 都需要找到系统总线"""
-    env = dict(os.environ)
-    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-    env.setdefault("DBUS_SESSION_BUS_ADDRESS",
-                   f"unix:path=/run/user/{os.getuid()}/bus")
-    env.setdefault("DISPLAY", ":0")
-    return env
-
-
-def _power_try(argv: list[str], password: str = "") -> tuple[bool, str]:
-    """跑一条关机/重启命令：返回 (是否成功发起, 失败原因)。
-
-    必须看返回码和 stderr。以前用 Popen + DEVNULL，polkit 拒绝时子进程照样
-    能起来，错误被吞掉，会话 211bdd 于是「说关机了，机器却一直开着」。
-    """
-    env = _power_env()
-    if password:
-        env.update(sudo_auth.sudo_env(password))
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=20,
-                           stdin=subprocess.DEVNULL, env=env)
-    except subprocess.TimeoutExpired:
-        return False, f"{' '.join(argv)} 超时"
-    except OSError as exc:
-        return False, f"{' '.join(argv)} 调用失败：{exc}"
-    if r.returncode == 0:
-        return True, ""
-    detail = ((r.stderr or "") + (r.stdout or "")).strip().splitlines()
-    return False, f"{' '.join(argv)}：{detail[0][:200] if detail else f'退出码 {r.returncode}'}"
-
-
-def _power_exec(action: str) -> tuple[bool, str]:
-    """按授权顺序发起关机/重启，返回 (是否成功, 失败原因)。
-
-    顺序照 selfcheck 里的提权方式：免密 sudo → 内存里已有的 sudo 授权
-    （用户刚输过密码，直接复用）→ pkexec 由桌面弹窗确认 → 最后才试不带
-    提权的 systemctl / loginctl / poweroff。Deck 上普通用户走 polkit 会要求
-    交互认证，所以裸 systemctl 基本必失败，只能兜底。
-    """
-    password = sudo_auth.cached_password() or ""
-    attempts: list[tuple[list[str], str]] = []
-    if sudo_auth.silent_sudo():
-        attempts.append((["sudo", "-n", "systemctl", action], ""))
-    if password:
-        attempts.append((["sudo", "-A", "systemctl", action], password))
-    if shutil.which("pkexec"):
-        attempts.append((["pkexec", "systemctl", action], ""))
-    attempts += [(["systemctl", action], ""),
-                 (["loginctl", action], ""),
-                 ([action], "")]
-    errors: list[str] = []
-    for argv, pw in attempts:
-        if not pw and not shutil.which(argv[0]):
-            continue
-        ok, err = _power_try(argv, pw)
-        print(f"[DeckMeido][power] {' '.join(argv)} → "
-              f"{'成功' if ok else err}", file=sys.stderr)
-        if ok:
-            return True, ""
-        errors.append(err)
-    if not errors:
-        return False, "找不到可用的关机命令"
-    # 失败几乎只有一个原因：系统要求交互授权，而后端不在能弹授权框的环境里。
-    # 给一句能直接照做的说明，别把 polkit 原文原样甩给用户
-    return False, ("系统要求交互授权（polkit），而后端拿不到授权：需要先在对话里"
-                   "执行一条 sudo 命令、弹出「需要授权」后输入一次管理员密码，"
-                   "之后再开关机就能走这条授权。原始错误：" + errors[-1])
-
-
-async def _power_commit(action: str) -> tuple[bool, str]:
-    """倒计时到点：先让所有连接知道，再停服务，最后交给系统。
-
-    返回 (是否成功发起, 失败原因)。失败时前端和模型都要拿到真实原因，
-    不能让回答里写「正在关机」而设备毫无反应。
-    """
-    _POWER.update({"task": None, "action": "", "deadline": 0.0})
-    await _power_broadcast({"committing": True})
-    # 给广播一点时间发出去（关机的瞬间连接就断了）
-    await asyncio.sleep(0.3)
-    try:
-        store.flush_index()
-    except Exception as exc:
-        devlog.debug("main._power_commit", error=repr(exc))
-    ok, err = await asyncio.to_thread(_power_exec, action)
-    if not ok:
-        print(f"[DeckMeido][power] {_power_label(action)}失败：{err}", file=sys.stderr)
-        await _power_broadcast({"done": True, "failed": True, "error": err,
-                                "action": action})
-    return ok, err
-
-
-async def _power_start(action: str, ctx: policy.TurnContext, hist: list[dict]) -> str:
-    """启动倒计时并等待；被取消返回取消说明，到点返回执行结果"""
-    if _power_state()["armed"]:
-        return (f"已经有一个{_power_label(_POWER['action'])}倒计时在跑了，"
-                f"等它结束或者取消后再试。")
-    task = asyncio.ensure_future(_power_countdown(action, ctx, hist))
-    _POWER["task"] = task
-    try:
-        await task
-    except asyncio.CancelledError:
-        _POWER.update({"task": None, "action": "", "deadline": 0.0})
-        await _power_broadcast({"done": True, "cancelled": True, "action": action})
-        return f"{_power_label(action)}已取消，设备保持原样。"
-    ok, err = await _power_commit(action)
-    if not ok:
-        return (f"{_power_label(action)}失败：{err}。"
-                f"设备没有关闭，已经保存的内容不受影响。"
-                f"如果需要，请先把上面的原因告诉主人，再问他是否要我重试。")
-    return (f"正在{_power_label(action)}：当前回答已保存，服务即将停止。"
-            f"如果几秒后设备没有反应，说明系统拒绝了这次{_power_label(action)}，可以再试一次。")
-
-
-async def _power_execute(action, args: dict | None = None) -> str:
-    """power 工具的执行器：先弹 5 秒倒计时（任何一端可取消），到点再真正关机/重启"""
-    action = str(action or "")
-    if action not in ("poweroff", "reboot"):
-        return "只支持 poweroff（关机）和 reboot（重启）。"
-    sid = store.turn.get("sid") or store.current_sid
-    ctx = policy.TurnContext(sid=sid, turn_id=store.turn.get("turn_id") or "",
-                             user_text="", boot_id=_system_boot_id())
-    return await _power_start(action, ctx, store.history)
-
 
 # ---------- 优雅退出 ----------
 # systemctl restart / stop、升级重启、以及用户直接关终端，都会给进程发 SIGTERM。
@@ -6422,10 +6203,6 @@ _REFUSAL_MARKS = ["我不会", "我不能", "无法执行", "无法直接执行"
 
 def _looks_like_refusal(reply: str) -> bool:
     return any(m in reply for m in _REFUSAL_MARKS)
-
-
-# power 工具的执行器放在这里：它要读写对话状态、广播倒计时、落盘，tools 层拿不到
-tools.register("power", _power_execute)
 
 
 async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
@@ -6760,7 +6537,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
             _shot_lock = policy.shot_lock_for(from_client, surface)
         locked_shot = has_shot and _shot_lock
         # 工具集由场景策略表决定（群友档是空集 = 零工具），再叠加带图轮的截图限制
-        round_tools = [t for t in pol.filter_tools(tools.TOOLS + [_power_tool_schema()])
+        round_tools = [t for t in pol.filter_tools(tools.TOOLS)
                        if tools.tool_ready(t["function"]["name"], {})]
         if locked_shot:
             round_tools = [t for t in round_tools

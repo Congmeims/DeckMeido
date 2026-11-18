@@ -52,7 +52,6 @@ TOOL_CN: dict[str, str] = {
     "music_search": "搜索歌曲",
     "music_play": "点歌播放",
     "music_control": "控制播放",
-    "power": "关闭或重启设备",
 }
 
 
@@ -1902,24 +1901,6 @@ def _askpass_override(command: str) -> str:
 _ASKPASS_FLAG_RE = re.compile(r"(?<![\w-])(?:-A|--askpass)(?![\w-])")
 
 
-def _power_guard(command: str) -> str:
-    """拦截关机/重启这类会把后端和整台机器一起掐掉的命令。
-
-    以前这类命令走 run_command 直接执行：后端进程被 systemd 一起杀掉，
-    既没机会把当前这一轮落盘，也没人见过「要不要现在关」的确认。
-    现在统一改成让模型调 power 工具（服务端 5 秒倒计时、所有端都能看见、可以取消），
-    模型硬写 shell 的一律拦下并告诉它该怎么做。
-    """
-    action = policy.power_action(command)
-    if not action:
-        return ""
-    label = {"reboot": "重启", "poweroff": "关机", "shutdown": "关机",
-             "halt": "关机", "kexec": "重启", "restart": "重启"}.get(action, "电源操作")
-    return (f"这条命令会让设备直接{label}，已拦截（run_command 里不允许关机/重启）。"
-            f"请改用 power 工具：系统会先在所有界面弹出 5 秒倒计时，"
-            f"用户可以随时取消，到点才真正{label}。")
-
-
 async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin: str = "",
                        detach: bool = False) -> str:
     global CURRENT_CMD
@@ -1927,11 +1908,6 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
     env = _command_env()
     _fix_display_env(env)
     _log_interpreter(env)
-    # 自杀式电源命令：一律不走 run_command，交给受控路径（倒计时 + 可取消）。
-    # 原因见 _power_guard 的说明
-    guard = _power_guard(command)
-    if guard:
-        return guard
     # sudo 命令统一走 askpass 授权通道：
     # 有有效授权就把密码放进子进程环境（不进 argv），没有就先登记一次待授权请求并返回。
     # 这样既不会反复执行注定失败的 `sudo -S`，也不需要模型在对话里索要密码。
@@ -2199,8 +2175,6 @@ def summarize_tool(name: str, args: dict) -> str:
         return f"「{args.get('city', '')}」"
     if name == "find_game":
         return f"「{args.get('name', '')}」"
-    if name == "power":
-        return "重启设备" if str(args.get("action")) == "reboot" else "关闭设备"
     if name == "install_game":
         return f"「{args.get('appid', '')}」"
     if name == "ocr_image":
@@ -2260,9 +2234,6 @@ def describe(name: str, args: dict) -> str:
         return "把 DeckMeido 升级到最新版：拉取新代码并重启服务（当前对话会中断）"
     if name == "run_command":
         return f"执行命令：{args.get('command', '')}\n目的：{args.get('reason', '')}"
-    if name == "power":
-        return ("关闭设备（5 秒倒计时，可取消）" if str(args.get("action")) != "reboot"
-                else "重启设备（5 秒倒计时，可取消）")
     detail = summarize_tool(name, args)
     return f"{cn_name(name)}：{detail}" if detail else cn_name(name)
 
@@ -3796,7 +3767,7 @@ _TOOL_TIMEOUT = {
     "music_search": 30, "music_play": 40, "music_control": 20,
 }
 _TOOL_TIMEOUT_DEFAULT = 120
-_TOOL_NO_TIMEOUT = {"run_command", "install_game", "self_update", "power"}
+_TOOL_NO_TIMEOUT = {"run_command", "install_game", "self_update"}
 
 # 需要在 main 里执行（依赖对话状态、广播、落盘）的工具：tools 层不实现，
 # 由 main 在导入期注册进来

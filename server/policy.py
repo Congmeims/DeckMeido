@@ -685,18 +685,13 @@ def check_delete(name: str, args: dict, ctx: TurnContext) -> PolicyDecision | No
 
 def risky_action(name: str, args: dict) -> str | None:
     """需要「本轮用户明确意图」才放行的操作：电源 + SteamOS 会话切换"""
-    if name == "power":
-        # 受控电源工具：同样只认本轮用户明确说了关机/重启，或确认过挂起意图
-        act = str((args or {}).get("action") or "")
-        return act if act in ("poweroff", "reboot") else None
     if name != "run_command":
         return None
     cmd = str((args or {}).get("command") or "")
     act = power_action(cmd)
-    # run_command 里的关机/重启由 tools 统一拦下并引导到 power 工具；
-    # 这里只放行剩下真正需要意图确认的动作（steamosctl 会话切换）
+    # 关机/重启只认本轮用户明确说了，或确认过挂起意图
     if act in ("reboot", "poweroff"):
-        return None
+        return act
     return steamosctl_action(cmd)
 
 
