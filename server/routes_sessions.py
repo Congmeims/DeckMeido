@@ -125,8 +125,8 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         # 换对象而不是原地 clear：还在跑的那一轮持有旧列表引用，
         # 原地清空会把它的历史一起抹掉，结果就变成「有问无答」
         store.history = []
-        # 上下文占用计数必须一起清零，否则新会话会沿用上一个会话的用量
-        m._ctx_used = 0
+        # 上下文占用按会话记（main._ctx_set），新会话号还没用过，自然是 0
+        m._ctx_set(store.current_sid, 0)
         # 代次 +1：正在跑的那一轮会据此发现自己的会话已被换掉
         store.bump_epoch()
         store.turn["active"] = False
@@ -184,8 +184,8 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
                 m._write_session(store.current_sid, store.history)
             except Exception as e:
                 print(f"[DeckMeido] 切换会话时写回 pending_intent 失败：{e}", file=sys.stderr)
-        m._ctx_used = m._estimate_tokens(
-            m._build_llm_msgs(store.history, m.SYSTEM_PROMPT, store.current_sid))
+        m._ctx_set(store.current_sid, m._estimate_tokens(
+            await m._build_llm_msgs(store.history, m.SYSTEM_PROMPT, store.current_sid)))
         store.bump_epoch()
         store.turn["active"] = False
         await m.manager.broadcast({"type": "history", "messages": store.history,
@@ -283,8 +283,8 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
             m._set_compact(sid, comp["summary"], len(store.history))
 
         m.save_current_session()
-        m._ctx_used = m._estimate_tokens(
-            m._build_llm_msgs(store.history, m.SYSTEM_PROMPT, store.current_sid))
+        m._ctx_set(store.current_sid, m._estimate_tokens(
+            await m._build_llm_msgs(store.history, m.SYSTEM_PROMPT, store.current_sid)))
         await m.manager.broadcast({"type": "session_changed", "current": store.current_sid})
         return {"ok": True, "removed": removed, "left": len(store.history)}
 
@@ -313,6 +313,7 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         # 内存里按 sid 挂着的摘要/意图/流式缓冲也一并清掉。QQ 通道的 sid 是按
         # uin/群号算死的，不清的话同一个人下一条消息又会把旧摘要当上文复读
         store.forget_session(sid)
+        m._ctx_drop(sid)
         m._stream_bufs.pop(sid, None)
         if sid.startswith("qq-"):
             try:
@@ -369,7 +370,6 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
                 # 当前会话号先空着，下一条消息进来时会分配新 sid（见 main.handle_chat）
                 store.current_sid = ""
                 store.history = []
-                m._ctx_used = 0
             else:
                 store.current_sid = nxt.get("id") or m._fresh_sid()
                 # 换对象而不是原地 clear：在跑的那一轮仍持有旧列表引用
@@ -380,8 +380,8 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
                                    min(int(comp.get("upto") or 0), len(store.history)))
                 else:
                     store.drop_compact(store.current_sid)
-                m._ctx_used = m._estimate_tokens(
-                    m._build_llm_msgs(store.history, m.SYSTEM_PROMPT, store.current_sid))
+                m._ctx_set(store.current_sid, m._estimate_tokens(
+                    await m._build_llm_msgs(store.history, m.SYSTEM_PROMPT, store.current_sid)))
             await m.manager.broadcast({"type": "history", "messages": store.history,
                                        "sid": store.current_sid})
             await m.manager.broadcast({"type": "session_changed", "current": store.current_sid})

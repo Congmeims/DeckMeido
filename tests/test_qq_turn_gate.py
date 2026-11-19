@@ -186,7 +186,7 @@ class HistoryWindowTest(unittest.TestCase):
                 for i in range(n)]
 
     def test_guest_window_trims_and_clips(self):
-        msgs = main._build_llm_msgs(
+        msgs = main._build_llm_msgs_sync(
             self._hist(30), "系统", sid="window-guest",
             hist_max=main.policy.GUEST_POLICY.history_max_messages,
             item_max_chars=main.policy.GUEST_POLICY.history_item_max_chars)
@@ -200,7 +200,7 @@ class HistoryWindowTest(unittest.TestCase):
 
     def test_owner_window_keeps_everything(self):
         hist = self._hist(30)
-        msgs = main._build_llm_msgs(hist, "系统", sid="window-owner")
+        msgs = main._build_llm_msgs_sync(hist, "系统", sid="window-owner")
         users = [m for m in msgs if m["role"] == "user"]
         self.assertEqual(len(users), 30)
         self.assertEqual(users[0]["content"], hist[0]["content"])

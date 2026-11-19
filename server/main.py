@@ -281,8 +281,62 @@ COMPACT_TARGET_LEFT = float(CFG["agent"].get("compact_target_left", 0.3))
 MAX_OUTPUT_TOKENS = int(CFG["llm"].get("max_output_tokens", 0) or 0) or CONTEXT_WINDOW
 # 撞到输出上限时最多自动续写几轮（0 = 不续写）
 MAX_CONTINUATIONS = int(CFG["llm"].get("max_continuations", 3))
-# 最近一次请求的 token 用量：由服务商 usage 或字符估算更新
-_ctx_used = 0
+# 最近一次请求的 token 用量：由服务商 usage 或字符估算更新。
+# 按会话记（sid → 用量）：QQ 频道、后台续跑和网页会话可能同时在跑，
+# 一个全局单值会被后结束的那一轮覆盖，界面上的上下文用量就成了别人的数字。
+_ctx_used_by_sid: dict[str, int] = {}
+
+
+def _ctx_get(sid: str = "") -> int:
+    """取某个会话最近一轮的用量（不传 sid 就取当前会话）"""
+    sid = sid or store.turn.get("sid") or store.current_sid
+    return _ctx_used_by_sid.get(sid, 0)
+
+
+def _ctx_set(sid: str, used: int) -> None:
+    """记下某个会话最近一轮的用量；顺手丢掉已经不存在的会话，别让字典无限长"""
+    sid = sid or store.turn.get("sid") or store.current_sid
+    if not sid:
+        return
+    if used:
+        _ctx_used_by_sid[sid] = int(used)
+    else:
+        _ctx_used_by_sid.pop(sid, None)
+    if len(_ctx_used_by_sid) > 32:
+        alive = {store.current_sid, *(store.index().keys())}
+        for k in [k for k in _ctx_used_by_sid if k not in alive]:
+            _ctx_used_by_sid.pop(k, None)
+
+
+def _ctx_drop(sid: str) -> None:
+    """会话被删掉时把它的用量一起丢掉（QQ 的 sid 是固定算出来的，会复用）"""
+    if sid:
+        _ctx_used_by_sid.pop(sid, None)
+
+
+# 后台任务的强引用池。asyncio 只持有 create_task 返回值的弱引用，
+# 任务跑完前若没有别的引用，可能被 GC 掉（表现为「有时候那条广播没发出去」
+# 或者异常无处可寻）。统一从这里派生，跑完自动移除并记录异常。
+_BG_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn(coro, label: str = "") -> asyncio.Task:
+    """派生一个后台任务并持有到它结束；异常统一落到 devlog，不再静默丢失"""
+    task = asyncio.create_task(coro)
+    _BG_TASKS.add(task)
+
+    def _done(t: asyncio.Task) -> None:
+        _BG_TASKS.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            devlog.debug(f"main._spawn.{label or 'task'}", error=repr(exc))
+
+    task.add_done_callback(_done)
+    return task
+
+
 # 估算结果的缓存：(会话 sid, 历史条数, 估算值)。每次 /api/status 都全量重算一遍
 # 是最浪费的一处 —— 状态接口每秒都在被轮询，而历史只在对话推进时才会变。
 # 条数一变就失效，所以「切会话」「追加消息」都会自动重算，不会用到过期值
@@ -296,7 +350,7 @@ def _cached_estimate() -> int:
     n = len(store.history)
     if _est_cache[0] == sid and _est_cache[1] == n:
         return _est_cache[2]
-    val = _estimate_tokens(_build_llm_msgs(store.history, SYSTEM_PROMPT, sid))
+    val = _estimate_tokens(_build_llm_msgs_sync(store.history, SYSTEM_PROMPT, sid))
     _est_cache = (sid, n, val)
     return val
 
@@ -383,8 +437,8 @@ _BOUNDARY_NOTE = ("【本轮授权边界】以上历史消息仅供上下文，�
                   "只有下面这条本轮用户消息构成授权。")
 
 
-def _build_llm_msgs(hist: list[dict], sys_prompt: str, sid: str = "",
-                    hist_max: int = 0, item_max_chars: int = 0) -> list[dict]:
+def _build_llm_msgs_sync(hist: list[dict], sys_prompt: str, sid: str = "",
+                         hist_max: int = 0, item_max_chars: int = 0) -> list[dict]:
     """构造发给模型的 messages：摘要 + 压缩游标之后的原文
 
     返回的列表长度就是「来自历史的条数」，调用方据此区分本轮新增的临时消息
@@ -463,6 +517,22 @@ def _build_llm_msgs(hist: list[dict], sys_prompt: str, sid: str = "",
         if last_user is not None:
             msgs.insert(last_user, {"role": "system", "content": _BOUNDARY_NOTE})
     return _drop_orphan_tools(msgs)
+
+
+async def _build_llm_msgs(hist: list[dict], sys_prompt: str, sid: str = "",
+                          hist_max: int = 0, item_max_chars: int = 0) -> list[dict]:
+    """异步版：只把「等上传文件落盘」这一步放进事件循环外
+
+    _to_vision_content 在图片刚粘上、文件还在写盘时要最多等 1 秒（见 _wait_upload）。
+    这段以前是 time.sleep，直接卡住整个事件循环 —— 流式输出、WS 广播、状态轮询
+    全都跟着停。其余构造逻辑仍是同步的，放在同一个函数里现读现写，不额外起线程。
+    """
+    sid = sid or store.turn.get("sid") or store.current_sid
+    # 先把历史里出现的上传路径都确认一遍（一次并发等，而不是每张各等 1 秒）
+    urls = {u for m in hist for u in _UPLOAD_RE.findall(str(m.get("llm") or m.get("content") or ""))}
+    if urls:
+        await asyncio.gather(*(_wait_upload_async(u) for u in urls))
+    return _build_llm_msgs_sync(hist, sys_prompt, sid, hist_max, item_max_chars)
 
 
 # 上一轮终止时，交接说明里最多列几条工具，再多模型也读不出重点
@@ -1443,8 +1513,8 @@ def _flush_delta(sid: str) -> None:
     if not text:
         return
     tag = st["tag"]
-    asyncio.create_task(manager.broadcast(
-        {"type": "delta", "text": text, "final": False, **tag}))
+    _spawn(manager.broadcast(
+        {"type": "delta", "text": text, "final": False, **tag}), "flush_delta")
 
 
 def _flush_delta_later(sid: str, text: str, tag: dict) -> None:
@@ -1469,8 +1539,8 @@ def _flush_thought(sid: str) -> None:
     st["buf"].clear()
     if not text:
         return
-    asyncio.create_task(manager.broadcast(
-        {"type": "thought_delta", "text": text, **st["tag"]}))
+    _spawn(manager.broadcast(
+        {"type": "thought_delta", "text": text, **st["tag"]}), "flush_thought")
 
 
 def _flush_thought_later(sid: str, text: str, tag: dict) -> None:
@@ -1495,8 +1565,8 @@ def flush_thought_now(sid: str = "") -> None:
         st["task"].cancel()
     text = "".join(st["buf"])
     if text:
-        asyncio.create_task(manager.broadcast(
-            {"type": "thought_delta", "text": text, **st["tag"]}))
+        _spawn(manager.broadcast(
+            {"type": "thought_delta", "text": text, **st["tag"]}), "flush_thought_now")
 
 
 def flush_delta_now(sid: str = "") -> None:
@@ -1514,8 +1584,8 @@ def flush_delta_now(sid: str = "") -> None:
         st["task"].cancel()
     text = "".join(st["buf"])
     if text:
-        asyncio.create_task(manager.broadcast(
-            {"type": "delta", "text": text, "final": False, **st["tag"]}))
+        _spawn(manager.broadcast(
+            {"type": "delta", "text": text, "final": False, **st["tag"]}), "flush_delta_now")
 
 
 def clear_stream(sid: str = "") -> None:
@@ -1601,6 +1671,20 @@ def _wait_upload(url: str, tries: int = 3, wait: float = 0.3) -> Path | None:
         if fp:
             return fp
         time.sleep(wait)
+        fp = _upload_path(url)
+    return fp
+
+
+async def _wait_upload_async(url: str, tries: int = 3, wait: float = 0.3) -> Path | None:
+    """_wait_upload 的异步版：等待期间让出事件循环
+
+    聊天链路（async）一律用这个；线程里跑的同步代码仍可用上面那个。
+    """
+    fp = _upload_path(url)
+    for _ in range(tries):
+        if fp:
+            return fp
+        await asyncio.sleep(wait)
         fp = _upload_path(url)
     return fp
 
@@ -1811,7 +1895,6 @@ def _restore_intent_map(sid: str, data: dict) -> bool:
 
 def init_sessions():
     """启动时恢复最近的会话；没有历史则创建默认会话"""
-    global _ctx_used
     # index.json 是侧栏索引，*.side.json 是流式正文的副档案：
     # 都不是会话文件，混进来的话会被当成坏文件反复改名
     files = session_store.all_session_files()
@@ -1837,7 +1920,7 @@ def init_sessions():
     if not files:
         store.current_sid = _fresh_sid()
         store.history = []
-        _ctx_used = 0
+        _ctx_set(store.current_sid, 0)
         return
 
     # 逐个试：以前只认 mtime 最新的那一个，它坏了就 history.clear() 整个重来，
@@ -1846,7 +1929,6 @@ def init_sessions():
     # 所以空 history 的文件也当作不合格，继续往旧文件里找。
     def _restore(data: dict, src: Path) -> bool:
         """从一个会话文件恢复出完整状态；成功返回 True"""
-        global _ctx_used
         sid = data.get("id") or src.stem
         hist = data.get("history") or []
         if not isinstance(hist, list) or not hist:
@@ -1905,7 +1987,8 @@ def init_sessions():
                                   "ts": (partial.get("ts") if isinstance(partial, dict) else None) or time.time()})
             print(f"[DeckMeido] 已恢复被中断的回答（{len(partial_text)} 字，{len(evs)} 个事件）",
                   file=sys.stderr)
-        _ctx_used = _estimate_tokens(_build_llm_msgs(store.history, SYSTEM_PROMPT, store.current_sid))
+        _ctx_set(store.current_sid, _estimate_tokens(
+            _build_llm_msgs_sync(store.history, SYSTEM_PROMPT, store.current_sid)))
         if partial is not None:
             # 无论是「恢复成消息」还是「判定太短丢弃」，都要把半截正文抹掉后落盘：
             #   - 不落盘：恢复出来的内容后端再死一次又没了
@@ -1949,7 +2032,7 @@ def init_sessions():
     # 全部不可用：开一个全新会话顶上（换随机 sid，避免和目录里残存的旧文件撞号）
     store.current_sid = _fresh_sid()
     store.history = []
-    _ctx_used = 0
+    _ctx_set(store.current_sid, 0)
     # 只在内存里建，不落盘也不进索引：这个会话一句都没说过，写出去就是一条空会话，
     # 而后端每次重启都会再建一条 —— 用户看到的就是侧栏里越堆越多、点进去全空的
     # 「新会话 xx:xx」。等它真说了第一句话，正常落盘路径会带上来源和标题写出去。
@@ -1965,6 +2048,36 @@ _init_sessions()
 # sid/epoch/client/device 是「谁在什么会话里提的」：确认只认原会话原来源，
 # 否则任何连上的客户端随便一句「好」就能放行别人发起的危险命令
 pending_action: dict | None = None
+
+
+def _pending_get() -> dict | None:
+    """读挂起的危险操作。
+
+    只做「取一次快照」：调用方拿到后自己判断是否匹配，别在读和用之间再读第二次，
+    否则两轮对话并发时可能读到别人刚挂上的那一条。
+    """
+    return pending_action
+
+
+def _pending_set(p: dict | None) -> None:
+    """挂上/撤销待确认操作（传 None 撤销）"""
+    global pending_action
+    pending_action = p
+
+
+def _pending_claim(p: dict) -> bool:
+    """认领一条待确认操作：只有当前挂着的正好是这一条时才清掉
+
+    以前是 `action, pending_action = pending_action, None` —— 两轮对话同时确认时，
+    后到的那个会先把 pending 清掉，先到的那个还拿着旧引用照常执行，
+    等于同一个危险操作被执行两次。这里用身份比对保证只有一个能认领成功。
+    """
+    global pending_action
+    if pending_action is not p:
+        return False
+    pending_action = None
+    return True
+
 
 
 def _pending_matches(p: dict, sid: str, epoch: int,
@@ -2170,7 +2283,7 @@ def get_status(gaming: bool | None = None) -> dict:
     if gaming is None:
         gaming = tools.mode_is_gaming()
     win = context_window()
-    used = _ctx_used or _cached_estimate()
+    used = _ctx_get() or _cached_estimate()
     pct = round(min(used / win, 1.0) * 100, 1) if win else 0
     # 按游戏提示词预设：游戏是哪款由插件探测后上报，后端不再重复实现一套探测
     preset_state = presets.active_view()
@@ -2181,10 +2294,10 @@ def get_status(gaming: bool | None = None) -> dict:
         "mode": "gaming" if gaming else "desktop",
         # 后端是否正在跑一轮对话：前端重连后据此恢复 ⏹ 按钮状态，
         # 避免断联时正在跑的那轮看起来像「已经停了」
-        "running": bool(current_task and not current_task.done()),
+        "running": _chat_busy(),
         # 本轮开始的时间戳（没有在跑则为 0）：前端据此显示「已等 N 秒」，
         # 工具链跑得久时也能看出后端还活着，而不是一屏静默的「没反应」
-        "running_since": (store.turn.get("started") or 0) if (current_task and not current_task.done()) else 0,
+        "running_since": (store.turn.get("started") or 0) if _chat_busy() else 0,
         "llm_configured": llm.configured,
         "model": llm.model,
         "thinking": bool(llm.reasoning_effort),
@@ -2294,7 +2407,7 @@ async def build_status_line(state: str = "", game: str = "",
         nickname=nickname,
         persona_name=str(PERSONA.get("name") or ""),
         prompt=status_prompt_text(),
-        busy=bool(current_task and not current_task.done()),
+        busy=_chat_busy(),
         configured=llm.configured,
         chat=lambda messages: llm.chat_with_tools_stream(
             messages, [], max_tokens=status_line.MAX_TOKENS, temperature=0.3),
@@ -3239,7 +3352,7 @@ async def api_terminal_stop():
     但它可能是用户自己敲的，没有对话轮次可取消，所以这一步允许为空。
     """
     killed = await tools.abort_all_procs()
-    if current_task and not current_task.done():
+    if _chat_busy():
         current_task.cancel()
         set_overlay(False)
     return {"ok": True, "killed": killed}
@@ -3284,17 +3397,17 @@ async def api_terminal_run(payload: dict):
                 "output": f"已拒绝执行（{verdict.label}）：{verdict.reason}"}
     if verdict.ask:
         # 挂进和对话同一份 pending_action，之后由对话里那句「确认」放行
-        global pending_action
         args = {"command": cmd, "reason": "终端面板手动执行"}
-        pending_action = {"name": "run_command", "args": args,
-                          "description": tools.describe("run_command", args),
-                          "hard": verdict.hard,
-                          "sid": store.current_sid, "epoch": store.epoch,
-                          "turn_id": store.turn.get("turn_id") or "",
-                          "client": store.turn.get("client") or "",
-                          "device": store.turn.get("device") or ""}
+        pending = {"name": "run_command", "args": args,
+                   "description": tools.describe("run_command", args),
+                   "hard": verdict.hard,
+                   "sid": store.current_sid, "epoch": store.epoch,
+                   "turn_id": store.turn.get("turn_id") or "",
+                   "client": store.turn.get("client") or "",
+                   "device": store.turn.get("device") or ""}
+        _pending_set(pending)
         return {"ok": False, "pending": True,
-                "description": pending_action["description"]}
+                "description": pending["description"]}
     # 串行执行：面板同一时间只有一条 PTY 会话
     lock = _term_lock_get()
     if lock.locked():
@@ -3652,6 +3765,17 @@ async def api_file_stat(payload: dict):
 
 # 当前正在处理的对话任务（用于终止按钮）
 current_task: asyncio.Task | None = None
+# 启动/收尾时串行化：以前是「先读 current_task 判断，再赋值」，
+# 两个请求同时进来（网页点发送 + QQ 推消息）都能通过判断，
+# 后赋值的那个把前一个任务的引用覆盖掉 —— 前一轮从此取消不掉，
+# 还会和新的那一轮同时改 store.history。
+_chat_start_lock = asyncio.Lock()
+
+
+def _chat_busy() -> bool:
+    """是否有一轮对话在跑（供 /status、状态行、重试等只读判断用）"""
+    t = current_task
+    return t is not None and not t.done()
 
 
 async def start_chat(text: str, announce: bool = True, **kwargs):
@@ -3660,21 +3784,34 @@ async def start_chat(text: str, announce: bool = True, **kwargs):
     **kwargs 原样转给 handle_chat（图片、工作区根），插件那条路要用。
     """
     global current_task
-    current_task = asyncio.create_task(handle_chat(text, announce, **kwargs))
+    async with _chat_start_lock:
+        # 同一时刻只允许一轮：上一轮没结束就不抢跑，否则引用被覆盖、
+        # 两轮同时写同一个 store.history，最后落盘的会话是两次回答的混合体
+        if _chat_busy():
+            return {"reply": "上一轮还没结束，请等它跑完或先点终止", "busy": True,
+                    "events": []}
+        current_task = asyncio.create_task(handle_chat(text, announce, **kwargs))
+    task = current_task
     try:
-        return await current_task
+        return await task
     except asyncio.CancelledError:
         return {"reply": "已终止当前操作", "events": [], "cancelled": True}
     finally:
-        current_task = None
+        async with _chat_start_lock:
+            # 只清理自己登记的那一个：理论上不会出现被别人覆盖的情况
+            # （上面已禁止并发启动），这里再比对一次身份，避免以后改动打破前提
+            if current_task is task:
+                current_task = None
         # 收尾必须补一条 running=false。插件（大屏 / QAM）只吃 ws 推送、不轮询
         # HTTP，而 run_agent 中途那几次 status 广播都发生在 current_task 置空之前，
         # 少了这一条，最后一次「running=true」会永久挂在面板上——表现就是
         # 网页端这一轮早就结束，插件面板一打开却立刻显示「思考中…」。
         # 成功、异常、取消（含用户点终止）都会走到这里，三种收尾口径一致。
         try:
+            # 必须绕开 TTL 缓存：这一条是「本轮已结束」的收尾广播，
+            # 吃到之前的缓存就会把 running=true 再挂一轮
             await asyncio.shield(manager.broadcast(
-                {"type": "status", "data": get_status()}))
+                {"type": "status", "data": await status_async(force=True)}))
         except Exception as exc:
             devlog.debug("main.start_chat", error=repr(exc))
             pass
@@ -3701,7 +3838,7 @@ async def api_cancel(request: Request, client: str = "", device: str = ""):
     网页各自带自己的标识，对不上就说明是别人的页面在点。
     """
     who = f"client={client or '?'} device={device or '?'} ip={request.client.host if request.client else '?'}"
-    if current_task and not current_task.done():
+    if _chat_busy():
         print(f"[DeckMeido] 终止请求：{who}（有正在执行的轮次，已取消）",
               file=sys.stderr, flush=True)
         current_task.cancel()
@@ -4274,7 +4411,7 @@ def _resume_after_sudo(held: dict) -> bool:
     这里用 announce=False 起一轮新对话，不让界面重复出现一条「用户消息」；
     上一轮还在跑时不抢跑（current_task 单例会被覆盖），改由界面提示用户。
     """
-    if current_task is not None and not current_task.done():
+    if _chat_busy():
         devlog.debug("main._resume_after_sudo", reason="busy, skipped",
                      command=held.get("command", "")[:120])
         return False
@@ -4291,7 +4428,7 @@ def _resume_after_sudo(held: dict) -> bool:
         except Exception as exc:
             devlog.debug("main._resume_after_sudo", error=repr(exc))
 
-    asyncio.create_task(_run())
+    _spawn(_run(), "_resume_after_sudo")
     devlog.debug("main._resume_after_sudo", reason="started",
                  command=command[:120])
     return True
@@ -4639,7 +4776,7 @@ async def _wake_startup():
             devlog.debug("main._boot", error=repr(exc))
             pass
 
-    asyncio.create_task(_boot())
+    _spawn(_boot(), "wake_boot")
 
 
 @app.on_event("shutdown")
@@ -4652,6 +4789,12 @@ async def _wake_shutdown():
     # 进程退出兜底：即使上面哪一步异常，也不能把用户的音乐音量停在静音状态
     try:
         media.unmute_for_record()
+    except Exception as exc:
+        devlog.debug("main._wake_shutdown", error=repr(exc))
+        pass
+    # 共享 HTTP 连接池是模块级全局对象，关掉才不会有 keep-alive 连接挂着
+    try:
+        await tools.aclose_http()
     except Exception as exc:
         devlog.debug("main._wake_shutdown", error=repr(exc))
         pass
@@ -4843,7 +4986,7 @@ async def _start_update_watch():
             pass
 
     sudo_auth.set_hook(hook)
-    asyncio.create_task(update_watch_loop())
+    _spawn(update_watch_loop(), "update_watch")
 
 
 @app.get("/api/models", dependencies=[Depends(require_auth)])
@@ -4878,10 +5021,9 @@ async def api_models(base_url: str = "", api_key: str = ""):
 
 @app.post("/api/retry", dependencies=[Depends(require_auth)])
 async def api_retry():
-    global pending_action
     # 只有本会话挂起的操作才挡重试；别的会话挂着的与本端无关
-    if pending_action and _pending_matches(
-            pending_action, store.current_sid, store.epoch, None, None):
+    pend = _pending_get()
+    if pend and _pending_matches(pend, store.current_sid, store.epoch, None, None):
         raise HTTPException(status_code=400, detail="有待确认的操作，先回复确认或取消")
     if store.history and store.history[-1]["role"] == "assistant":
         store.history.pop()
@@ -4994,7 +5136,6 @@ async def handle_chat(text: str, announce: bool = True,
     turn_policy 是本轮的场景策略表：不传按主人档（能力与以前完全一致），
     群友档传 policy.GUEST_POLICY；工具集 / 记忆 / 回复上限 / 脱敏都从这张表走。
     """
-    global pending_action, _ctx_used
     pol = turn_policy or policy.OWNER_POLICY
     # 本轮归属快照：整轮全程只认这份 sid/epoch，中途别的端新建/切换会话也不影响它
     # sid 可由外部通道（QQ）显式指定：QQ 用自己的独立会话，不往本地会话里写
@@ -5102,11 +5243,12 @@ async def handle_chat(text: str, announce: bool = True,
     await manager.broadcast({"type": "session_changed", "current": store.current_sid})
 
     # 上下文逼近模型窗口上限时自动压缩（摘要替换旧对话，不再直接丢弃）。
-    # _ctx_used 在切换会话等路径上会归零，这时按当前历史重新估算一次
+    # 用量按会话记：切换会话时取到的是那个会话自己的数，
+    # 没记过（刚启动/刚切换）就按当前历史重新估算一次
     # （_cached_estimate 会按条数缓存，刚追加过用户消息，这里必然重算）；
     # 压缩失败也不能让这一轮起不来
     try:
-        if _need_compact(_ctx_used or _cached_estimate()):
+        if _need_compact(_ctx_get() or _cached_estimate()):
             await compact_history(auto=True, hist=hist)
     except Exception as e:
         print(f"[DeckMeido] 自动压缩失败，按原上下文继续：{e}", file=sys.stderr)
@@ -5139,8 +5281,8 @@ async def handle_chat(text: str, announce: bool = True,
                         hist, guest_prompt_text or _guest_system_prompt(), text, pol=pol)
         elif not llm.configured:
             reply = "还没有配置模型。点右上角「设置」填好 API 地址和 Key 就能开始对话。"
-        elif pending_action and not _pending_matches_turn(
-                pending_action, turn_sid, turn_epoch, turn_id, client, device):
+        elif (pend := _pending_get()) and not _pending_matches_turn(
+                pend, turn_sid, turn_epoch, turn_id, client, device):
             # 挂起的操作不是这个会话/这个端提的：既不能替别人确认，也不该
             # 因为别处的对话把这边的手头操作清掉，按普通消息继续
             reply = await _run_agent_guarded(events, hist=hist, image_part=shot_ref,
@@ -5148,36 +5290,45 @@ async def handle_chat(text: str, announce: bool = True,
                                              turn_ctx=turn_ctx,
                                              shot_lock=shot_lock, surface=surface,
                                              turn_policy=pol)
-        elif pending_action and (tools.is_confirm(text) or policy.is_hard_confirm(text)):
+        elif (pend := _pending_get()) and (tools.is_confirm(text) or policy.is_hard_confirm(text)):
             # 用户确认了挂起的危险操作：这是显式的「窗口里点了确认」，
-            # 不是历史文本推断出来的授权，policy 用 approved=True 放行并记账
-            action, pending_action = pending_action, None
-            decision = policy.check(action["name"], action["args"], turn_ctx,
-                                    approved=True)
-            events.append({"type": "tool", "name": action["name"],
-                           "summary": action["description"], "files": [], "approved": True,
-                           **({} if decision.allowed else {"denied": True,
-                                                           "reason": decision.reason})})
-            if decision.allowed:
-                power_act = (policy.power_action(str(action["args"].get("command") or ""))
-                             if action["name"] == "run_command" else None)
-                if power_act:
-                    _arm_power_intent(turn_ctx, power_act, hist)
-                result = await _run_tool(action["name"], action["args"])
-                _record_power_intent(turn_ctx, action["name"], action["args"], result)
+            # 不是历史文本推断出来的授权，policy 用 approved=True 放行并记账。
+            # 认领用 _pending_claim：两轮同时确认时只有一个能执行，避免同一个
+            # 危险操作被执行两次。没认领到说明已经被别处执行过，这句按普通消息走
+            if not _pending_claim(pend):
+                reply = await _run_agent_guarded(events, hist=hist, image_part=shot_ref,
+                                                 tool_log=tool_log, client=client,
+                                                 turn_ctx=turn_ctx,
+                                                 shot_lock=shot_lock, surface=surface,
+                                                 turn_policy=pol)
             else:
-                print(f"[DeckMeido][policy] 策略拒绝已确认操作 {action['name']}："
-                      f"{decision.reason}", file=sys.stderr)
-                result = f"策略拒绝：{decision.reason}"
-            tool_log.append({"name": action["name"], "summary": action["description"]})
-            # 补上执行结果，QQ 的「装完自动打开」要靠 exit=0 判断成功
-            if events:
-                events[-1]["output"] = str(result)[:1500]
-            reply = (f"已完成：{action['description']}\n{result}" if decision.allowed
-                     else f"未执行：{action['description']}\n{result}")
-        elif pending_action:
+                action = pend
+                decision = policy.check(action["name"], action["args"], turn_ctx,
+                                        approved=True)
+                events.append({"type": "tool", "name": action["name"],
+                               "summary": action["description"], "files": [], "approved": True,
+                               **({} if decision.allowed else {"denied": True,
+                                                               "reason": decision.reason})})
+                if decision.allowed:
+                    power_act = (policy.power_action(str(action["args"].get("command") or ""))
+                                 if action["name"] == "run_command" else None)
+                    if power_act:
+                        _arm_power_intent(turn_ctx, power_act, hist)
+                    result = await _run_tool(action["name"], action["args"])
+                    _record_power_intent(turn_ctx, action["name"], action["args"], result)
+                else:
+                    print(f"[DeckMeido][policy] 策略拒绝已确认操作 {action['name']}："
+                          f"{decision.reason}", file=sys.stderr)
+                    result = f"策略拒绝：{decision.reason}"
+                tool_log.append({"name": action["name"], "summary": action["description"]})
+                # 补上执行结果，QQ 的「装完自动打开」要靠 exit=0 判断成功
+                if events:
+                    events[-1]["output"] = str(result)[:1500]
+                reply = (f"已完成：{action['description']}\n{result}" if decision.allowed
+                         else f"未执行：{action['description']}\n{result}")
+        elif (pend := _pending_get()) is not None and _pending_claim(pend):
             # 有新消息但未确认，取消挂起操作
-            action, pending_action = pending_action, None
+            action = pend
             reply = f"已取消：{action['description']}。\n\n" + await run_agent(
                 events, hist=hist, image_part=shot_ref, tool_log=tool_log,
                 from_client=client, turn_ctx=turn_ctx,
@@ -5261,7 +5412,7 @@ async def handle_chat(text: str, announce: bool = True,
         user_msgs = [m for m in hist if m.get("role") == "user"]
         if len(user_msgs) == 1:
             first = str(user_msgs[0].get("brief") or user_msgs[0].get("content") or "")
-            asyncio.create_task(_summarize_title(turn_sid, first))
+            _spawn(_summarize_title(turn_sid, first), "summarize_title")
     if turn_deleted:
         # 这一轮跑到一半会话被删了：结果按用户意愿丢弃，但要明确告知，
         # 否则用户看到的是「回答消失了」
@@ -5291,7 +5442,7 @@ async def handle_chat(text: str, announce: bool = True,
             if force_tts:
                 await tts.speak(reply, force=True)
             else:
-                asyncio.create_task(tts.speak(reply))
+                _spawn(tts.speak(reply), "tts_speak")
     return {"reply": reply, "events": events}
 
 
@@ -5385,7 +5536,6 @@ async def compact_history(auto: bool = False, hist: list[dict] | None = None,
     对话被一起抹掉，用户看到的就是「内容凭空消失」。现在只推进压缩游标：
     摘要与 upto 存进文件，history 保持完整，重启后界面能一条不少地回放。
     """
-    global _ctx_used
     hist = store.history if hist is None else hist
     sid = sid or store.turn.get("sid") or store.current_sid
     comp = _compact_for(sid)
@@ -5431,7 +5581,7 @@ async def compact_history(auto: bool = False, hist: list[dict] | None = None,
         # 会话在压缩过程中被删了：游标与落盘一律作废，否则删掉的会话会被写回来
         return summary
     _set_compact(sid, summary, end)
-    _ctx_used = _estimate_tokens(_build_llm_msgs(hist, SYSTEM_PROMPT, sid))
+    _ctx_set(sid, _estimate_tokens(_build_llm_msgs_sync(hist, SYSTEM_PROMPT, sid)))
     # 游标要和会话文件一起持久化，否则重启后模型会重新吃到全量历史
     if sid == store.current_sid:
         save_current_session()
@@ -6322,7 +6472,6 @@ async def run_agent(events: list[dict], extra_system: str = "",
     turn_policy 是本轮的场景策略表（不传按主人档）：工具集、记忆 scopes、
     是否拼模式段/extra、确认级别都从它取，引擎里不再散落场景判断
     """
-    global pending_action, _ctx_used
     pol = turn_policy or policy.OWNER_POLICY
     hist = store.history if hist is None else hist
     # 本轮独占的截图状态：两轮并发时共用模块全局会互相清空（上一轮刚截的图
@@ -6371,9 +6520,9 @@ async def run_agent(events: list[dict], extra_system: str = "",
             sys_prompt += "\n\n" + mem
     # 只把「摘要 + 游标之后的原文」发给模型；界面历史一条不删。
     # 群友档带策略表里的上下文窗口，主人档两项都是 0，行为不变
-    msgs = _build_llm_msgs(hist, sys_prompt, turn_sid,
-                           hist_max=pol.history_max_messages,
-                           item_max_chars=pol.history_item_max_chars)
+    msgs = await _build_llm_msgs(hist, sys_prompt, turn_sid,
+                                 hist_max=pol.history_max_messages,
+                                 item_max_chars=pol.history_item_max_chars)
     if not llm.supports_vision:
         # 纯文本模型：把图换成一句「没收到」，别让残留的图片部件把上游 400，
         # 也别让它以为图在磁盘某处而自己去 find / 装 OCR
@@ -6575,7 +6724,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 # 压缩只是省上下文，压不了就带着原上下文继续跑
                 try:
                     await compact_history(auto=True, hist=hist, sid=turn_sid)
-                    rebuilt = _build_llm_msgs(
+                    rebuilt = await _build_llm_msgs(
                         hist, sys_prompt, turn_sid,
                         hist_max=pol.history_max_messages,
                         item_max_chars=pol.history_item_max_chars)
@@ -6635,7 +6784,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     break
 
             # 记录本轮真实占用：优先服务商的 prompt_tokens，拿不到就用上面数过的估算值
-            _ctx_used = _split_usage(msg.get("usage")) or used_now
+            _ctx_set(turn_sid, _split_usage(msg.get("usage")) or used_now)
             await manager.broadcast({"type": "status", "data": await status_async()})
 
             # 水位自检：Deck 的可用内存在跑会话时往往只剩一两百 MB，等内核动手就晚了
@@ -6899,20 +7048,21 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     # 挂起危险操作，等用户下一轮确认。把「谁在哪提的」一并记下，
                     # 确认时校验（见 _pending_matches），别的端说的「好」不算数。
                     # hard 档只认「确认执行」，onebot 侧会按这个标记收紧确认口径
-                    pending_action = {"name": name, "args": args,
-                                      "description": tools.describe(name, args),
-                                      "hard": hard,
-                                      "sid": store.turn.get("sid") or store.current_sid,
-                                      "epoch": store.turn.get("epoch") or store.epoch,
-                                      "turn_id": store.turn.get("turn_id") or "",
-                                      "client": store.turn.get("client") or "",
-                                      "device": store.turn.get("device") or ""}
+                    pending = {"name": name, "args": args,
+                               "description": tools.describe(name, args),
+                               "hard": hard,
+                               "sid": store.turn.get("sid") or store.current_sid,
+                               "epoch": store.turn.get("epoch") or store.epoch,
+                               "turn_id": store.turn.get("turn_id") or "",
+                               "client": store.turn.get("client") or "",
+                               "device": store.turn.get("device") or ""}
+                    _pending_set(pending)
                     print(f"[DeckMeido] 工具待确认 {name}（模式 {PERMISSION_MODE}，"
                           f"{verdict.label}{'/' + verdict.reason if verdict.reason else ''}）："
-                          f"{pending_action['description']}")
+                          f"{pending['description']}")
                     text_out = prompts.part("pending_approval").format(
-                        description=pending_action['description'])
-                    if pending_action["hard"]:
+                        description=pending['description'])
+                    if pending["hard"]:
                         text_out += ("\n这项操作风险较高"
                                      f"（{verdict.label}：{verdict.reason or '高危操作'}），"
                                      "只有回复「确认执行」才会执行。")
@@ -7151,7 +7301,7 @@ async def ws_endpoint(ws: WebSocket):
                     # 它挂在 gamescope 上，请求和流式都在同一条连接里，
                     # 走不了"先 POST 拿结果再订阅"的两段式。
                     ws_root = data.get("workspace")
-                    await start_chat(
+                    ws_res = await start_chat(
                         str(data.get("text", "")).strip(),
                         image=data.get("image") or None,
                         image_prompt=data.get("image_prompt")
@@ -7163,6 +7313,12 @@ async def ws_endpoint(ws: WebSocket):
                         turn_id=str(data.get("turn_id") or ""),
                         surface=str(data.get("surface") or "").strip() or None,
                     )
+                    # 上一轮还没跑完（见 start_chat 的串行化）：这条不是新回答，
+                    # 得明说一句，否则前端发完就在那儿干等，看不出被挡住了
+                    if isinstance(ws_res, dict) and ws_res.get("busy"):
+                        await ws.send_json({"type": "system",
+                                            "text": str(ws_res.get("reply") or ""),
+                                            "ts": time.time()})
                 except asyncio.CancelledError:
                     pass  # 用户点了终止，保持 ws 连接
                 except Exception as exc:
@@ -7344,12 +7500,11 @@ async def _qq_maybe_launch_after_install(events: list) -> dict:
 
 def _qq_clear_pending(device: str, sid: str) -> None:
     """QQ 侧确认超时后，把仍然属于这条来源的挂起操作撤掉"""
-    global pending_action
-    p = pending_action
+    p = _pending_get()
     if (isinstance(p, dict) and (p.get("client") or "") == "qq"
             and (p.get("device") or "") == device
             and (p.get("sid") or "") == sid):
-        pending_action = None
+        _pending_set(None)
 
 
 async def _qq_run_turn(text: str, *, sid: str, device: str,
@@ -7366,7 +7521,6 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
     未授权时直接返回，不写会话、不广播、不跑工具——避免界面里出现一条
     「已开始询问卸载哪个」的会话，让用户误以为它在干活。
     """
-    global _ctx_used, pending_action
     if not onebot.qq_turn_authorized():
         onebot.log_tool_blocked("qq_turn")
         _qq_log("warn", "回合拒绝",
@@ -7377,7 +7531,7 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
     # 挂起的危险操作只认「同一个 QQ 来源」的确认，并且必须沿用那一轮的 turn_id，
     # 才符合 handle_chat 的认领校验（见 _pending_matches_turn）。
     # 会话已经切走（epoch 变了）或者 sid 对不上的，确认也放行不了，直接作废
-    pend = pending_action
+    pend = _pending_get()
     if (isinstance(pend, dict) and (pend.get("client") or "") == "qq"
             and (pend.get("device") or "") == device):
         if onebot.is_confirm_text(text) or onebot.is_hard_confirm(text):
@@ -7386,10 +7540,12 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
                     and (pend.get("turn_id") or "")):
                 turn_id = str(pend.get("turn_id"))
             else:
-                pending_action = None
+                _pending_set(None)
     # 本地端正在跑另一轮时不要插进来：store.turn / pending_action 都是全局单份的，
     # 两边同时跑会把「这一轮是谁提的」搅乱。等本地这轮结束再发即可
-    if (store.turn.get("active") and (store.turn.get("client") or "") != "qq"):
+    # （start_chat 里还有一道 _chat_start_lock 兜底，这里提前返回是为了给出
+    #  更贴切的提示语，而不是让 QQ 用户吃到一条通用忙碌文案）
+    if (store.turn.get("active") and (store.turn.get("client") or "") != "qq") or _chat_busy():
         return {"reply": qqtext.get("local_busy"), "busy": True}
     # QQ 的会话独立于本地当前会话：历史从它自己的文件读，不碰 store.history
     if sid in store.deleted_sids:
@@ -7420,9 +7576,9 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
                                    guest_prompt_text=guest_text,
                                    turn_policy=turn_policy)
     finally:
-        # handle_chat 会把本轮的 token 用量写进全局估算值，那是给本地会话看的；
-        # QQ 这轮结束后归零，让本地/status 下次重新按自己的历史估算
-        _ctx_used = 0
+        # QQ 这轮的用量单独记在它自己的 sid 上（_ctx_set 按会话存），
+        # 本地会话的 /status 不会被 QQ 的数字串味，这里无需再归零
+        pass
     # 排障：QQ 会话到底有没有写进索引。dev_mode 打开时这条会落到
     # userdata/logs/debug-<时间>.log，搜 qq.session 即可；平时不写文件
     try:
@@ -7432,7 +7588,7 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
         devlog.debug("main._qq_run_turn", error=repr(exc))
         pass
     out = {"reply": str(result.get("reply") or "")}
-    p = pending_action
+    p = _pending_get()
     if (isinstance(p, dict) and (p.get("client") or "") == "qq"
             and (p.get("device") or "") == device and (p.get("sid") or "") == sid
             and (p.get("epoch") or 0) == store.epoch):

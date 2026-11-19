@@ -18,9 +18,22 @@ from pathlib import Path
 
 import httpx
 
-from . import audit, netmode, policy, power, sudo_auth
+from . import audit, devlog, netmode, policy, power, sudo_auth
 
 HTTP = httpx.AsyncClient(timeout=20, follow_redirects=True)
+
+
+async def aclose_http() -> None:
+    """进程退出时关掉共享连接池（main 的 shutdown 钩子调用）
+
+    不关的话，升级重启/停止服务时这些 keep-alive 连接会一直吊着，
+    系统里表现为后端已经「退出」但 socket 还在，端口占用也未必及时释放。
+    """
+    try:
+        await HTTP.aclose()
+    except Exception as exc:
+        devlog.debug("tools.aclose_http", error=repr(exc))
+
 
 # 点播动作白名单。schema 里要列出来，所以放在最前面；执行仍走 media.execute。
 MUSIC_ACTIONS = ("next", "previous", "pause", "play", "stop",
