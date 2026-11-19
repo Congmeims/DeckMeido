@@ -1688,13 +1688,14 @@ def main() -> int:
             watch_state["misses"] = 0
             return
         proc = backend["proc"]
-        if proc is not None:
-            if proc.poll() is None:
-                watch_state["misses"] = 0
-                return  # 句柄在、进程活
-        elif _listener_on_port(PORT) is not None:
+        # 「句柄活着」和「端口有人在听」只要有一个成立就算后端在：
+        # 句柄可能是个已退出的旧进程（比如后端被别处重启过、或自己
+        # fork 出了新进程），这时端口上照样有服务在跑。只看句柄会把
+        # 这种情况误判成后端已死，kicks 掉再由单实例守卫挡住秒退，
+        # 于是每 60 秒循环一次、托盘反复弹「后端已自动重启」。
+        if (proc is not None and proc.poll() is None) or _listener_on_port(PORT) is not None:
             watch_state["misses"] = 0
-            return  # 没句柄（启动时连的是既有后端），但端口有人在听
+            return
         # 到这里只能说明「句柄没了/端口没人听」，还不能断定后端真死：
         # `ss` 偶尔会慢一拍或查不到，直接 kick 就会在回答生成到一半时
         # 杀掉后端（用户视角：回复又丢了）。要求连续两次探活失败才动手。
