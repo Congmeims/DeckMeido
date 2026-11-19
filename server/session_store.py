@@ -124,6 +124,25 @@ def io_submit(fn, *args):
     return _IO.submit(fn, *args)
 
 
+def _forget_session_state(st: "SessionStore", sid: str) -> None:
+    """把内存里所有按 sid 记的状态一次清干净（删除会话 / 摘索引共用）
+
+    单独拎出来是因为这两条路径字段必须一致：少清一个 origin_map，
+    同一个 sid 的下一条消息就会被当成「还是原来那台机器建的」，
+    侧栏分组和归属设备都会回退到旧值。
+    """
+    if not sid:
+        return
+    with st.lock:
+        st.compact_map.pop(sid, None)
+        st.intent_map.pop(sid, None)
+        st.created_map.pop(sid, None)
+        st.origin_map.pop(sid, None)
+        st.device_map.pop(sid, None)
+        st.wrote_map.pop(sid, None)
+        st.flushed_sids.discard(sid)
+
+
 class SessionStore:
     """当前会话的内存状态 + 会话文件的读写"""
 
@@ -169,6 +188,10 @@ class SessionStore:
         # 会话来源 {sid: origin}：侧栏按它自动分组（web/mobile/client/qam/qq/wake）。
         # 一轮对话在 handle_chat 里认出来源后写进来，随落盘一起进会话文件与索引
         self.origin_map: dict[str, str] = {}
+        # 会话归属设备 {sid: device_id}：发起这一轮的那台机器（网页端生成的 uuid，
+        # 原生客户端固定 native-client）。只用于排障和排查「换台电脑就变分组」，
+        # 不参与分组；没带 device 的端（QQ / 唤醒 / 老页面）就是空
+        self.device_map: dict[str, str] = {}
         # 侧栏索引 {sid: {id,title,updated,messages,origin}}，启动时由 load_index 填充
         self._index: dict[str, dict] = {}
         # 待落盘的索引定时器（防抖用，见 _index_schedule）
@@ -224,16 +247,25 @@ class SessionStore:
         uin/群号算出来的固定值，删掉之后同一个人的下一条消息又落回同一个 sid，
         旧摘要就会被当成「他刚才说过什么」重新注入 —— 表现就是删了还在复读。
         """
-        if not sid:
-            return
         with self.lock:
             self.deleted_sids.add(sid)
-            self.compact_map.pop(sid, None)
-            self.intent_map.pop(sid, None)
-            self.created_map.pop(sid, None)
-            self.origin_map.pop(sid, None)
-            self.wrote_map.pop(sid, None)
-            self.flushed_sids.discard(sid)
+        _forget_session_state(self, sid)
+
+    def set_session_device(self, sid: str, device: str | None, replace: bool = False) -> None:
+        """记下会话归属设备（排障用，不参与分组）
+
+        默认只认第一次：会话里换了端接着说，不把归属改写成后来那台机器，
+        否则换台电脑发一句话，原会话的归属就漂走了。
+        replace=True 只给「一句话没说过、还没有任何内容」的空会话用：
+        它在哪台机器上被点开，归属就跟着谁。
+        """
+        if not sid or not device:
+            return
+        with self.lock:
+            if replace:
+                self.device_map[sid] = device
+            else:
+                self.device_map.setdefault(sid, device)
 
     def allow_fresh(self, sid: str, active_sid: str = "") -> bool:
         """已删除的固定 sid 是否可以当「全新会话」再开
@@ -352,6 +384,10 @@ class SessionStore:
             origin = self.origin_map.get(sid)
             if origin:
                 data["origin"] = origin
+            # 归属设备一并落盘：换台电脑排查「这条会话是谁建的」时不用翻日志
+            device = self.device_map.get(sid)
+            if device:
+                data["device"] = device
             self.created_map[sid] = data["created"]
             # 指纹里带上这次写入的 updated（排障用：能看出最近一次整份写入是什么时候）
             self.wrote_map[sid] = (data["updated"], len(hist))
@@ -482,7 +518,8 @@ class SessionStore:
                                 "title": data.get("title") or "会话",
                                 "updated": data.get("updated") or time.time(),
                                 "messages": len(data.get("history") or []),
-                                "origin": data.get("origin") or ""}
+                                "origin": data.get("origin") or "",
+                                "device": data.get("device") or ""}
         self._index_schedule()
 
     def _index_schedule(self) -> None:
@@ -585,10 +622,14 @@ class SessionStore:
             # 下一次 _index_save 自然带上
             for sid, it in self._index.items():
                 if not it.get("origin"):
+                    # 老索引里的空来源也一并补上（以前推不出就是空串，
+                    # 侧栏只能把它挂在「调试」组）
                     o = normalize_origin("", sid, it.get("title") or "")
+                    it["origin"] = o
                     if o:
-                        it["origin"] = o
                         self.origin_map.setdefault(sid, o)
+                if it.get("device"):
+                    self.device_map.setdefault(sid, it["device"])
             if dirty:
                 # 滤掉了脏条目时把文件也重写一遍：否则磁盘上的旧条目下次启动又读回来
                 self._index_save()
@@ -606,10 +647,13 @@ class SessionStore:
             o = normalize_origin(d.get("origin") or "", sid, d.get("title") or "")
             if o:
                 self.origin_map.setdefault(sid, o)
+            if d.get("device"):
+                self.device_map.setdefault(sid, d["device"])
             self._index[sid] = {"id": sid, "title": d.get("title") or "会话",
                                 "updated": d.get("updated") or 0,
                                 "messages": len(d.get("history") or []),
-                                "origin": o}
+                                "origin": o,
+                                "device": d.get("device") or ""}
         try:
             path.write_text(json.dumps(list(self._index.values()), ensure_ascii=False),
                             encoding="utf-8")
@@ -621,11 +665,7 @@ class SessionStore:
         """会话被删：从索引里摘掉并重写索引文件（删除是低频操作，同步写没问题）"""
         with self.lock:
             self._index.pop(sid, None)
-            self.origin_map.pop(sid, None)
-            self.created_map.pop(sid, None)
-            self.intent_map.pop(sid, None)
-            self.wrote_map.pop(sid, None)
-            self.flushed_sids.discard(sid)
+        _forget_session_state(self, sid)
         self._index_save()
 
     def index_drop_mem(self, sid: str) -> None:
@@ -639,6 +679,7 @@ class SessionStore:
         with self.lock:
             self._index.pop(sid, None)
             self.origin_map.pop(sid, None)
+            self.device_map.pop(sid, None)
         self._index_schedule()
 
     def index_put_mem(self, sid: str, title: str, updated: float, messages: int) -> None:
@@ -647,9 +688,11 @@ class SessionStore:
             # 来源必须跟着带上：整条记录是替换而不是合并，漏了就会把分组清空
             origin = self.origin_map.get(sid) \
                 or (self._index.get(sid) or {}).get("origin") or ""
+            device = self.device_map.get(sid) \
+                or (self._index.get(sid) or {}).get("device") or ""
             self._index[sid] = {"id": sid, "title": title or "会话",
                                 "updated": updated, "messages": messages,
-                                "origin": origin}
+                                "origin": origin, "device": device}
 
 
 # 会话来源的规范取值（侧栏按它分组）。老会话没有这个字段时按 sid / 标题回退推断
@@ -680,7 +723,9 @@ def normalize_origin(origin: str, sid: str = "", title: str = "") -> str:
     t = str(title or "")
     if t.startswith("QQ"):
         return "qq"
-    return ""
+    # 剩下的都是浏览器连上来的：分不出手机就归电脑，别返回空串
+    # （空串会被侧栏当成未知来源塞进「调试」组，换台电脑打开就看着像会话跑组了）
+    return "mobile" if o == "mobile" else "web"
 
 
 store = SessionStore()

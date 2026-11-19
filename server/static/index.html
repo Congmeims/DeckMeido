@@ -1888,6 +1888,14 @@
   var localClient = null;
 
   function myClient() {
+    var c = guessClient();
+    // 兜底成 web：分组只认 web/mobile/client/qam/qq/wake，猜不出来就归「电脑」。
+    // 以前这里会把认不出的端原样送上去，服务端 normalize 之后是空串，
+    // 侧栏就把它塞进「调试」分组；新建会话和每次发消息都走这个函数，
+    // 所以一旦是空值，整个会话看起来就像「莫名跳到调试里」
+    return CLIENT_LABEL[c] ? c : 'web';
+  }
+  function guessClient() {
     if (localClient) return localClient;
     if (IS_NATIVE) return 'client';
     return /Mobile|Android/.test(navigator.userAgent) ? 'mobile' : 'web';
@@ -14225,8 +14233,9 @@
     apiFetch('/api/sessions/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      // 带上发起端，新建的空会话在侧栏里就能按来源分组，不会落进「其它」
-      body: JSON.stringify({ client: myClient() })
+      // 带上发起端和发起设备：侧栏按来源分组，设备号只做归属记录，方便排查
+      // 「换台电脑打开页面，A 上的会话就变分组」这类问题
+      body: JSON.stringify({ client: myClient(), device: DEVICE_ID })
     })
       .then(function (r) {
         if (!r.ok) { addSystem('新建会话失败（HTTP ' + r.status + '）'); return null; }

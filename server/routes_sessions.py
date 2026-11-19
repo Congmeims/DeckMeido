@@ -25,8 +25,9 @@ class SwitchReq(BaseModel):
 
 
 class CreateReq(BaseModel):
-    """新建会话的发起端（client/mobile/qam/...），用于侧栏分组"""
+    """新建会话的发起端（client/mobile/qam/...）+ 发起设备，用于侧栏分组与排障"""
     client: str = ""
+    device: str = ""
 
 
 class MetaReq(BaseModel):
@@ -108,9 +109,17 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
                 store.index_drop_mem(store.current_sid)
             else:
                 m.save_current_session(touch=False)
-        # 连点「新会话」会把侧栏刷成一排空会话，一个能用的都没有。
-        # 已经在空会话里就原地不动，各端也不用重刷列表
+        # 已经在空会话里就原地不动，各端也不用重刷列表。
+        # 但发起端和设备要补记一下：在 A 电脑点「＋」开了个空输入框，
+        # 到 B 电脑再点「＋」时命中的还是这个空会话 —— 不补记的话，
+        # 它永远带着 A 的分组和归属，看起来就像「在 B 上新建的会话跑到了 A 组」。
+        # 会话一句没说过、没有任何内容，改归属不会影响历史
         if _current_session_untouched():
+            if store.current_sid:
+                origin = req.client or m.client_from_ua(request.headers.get("user-agent", ""))
+                m._set_session_origin(store.current_sid, origin or None)
+                store.set_session_device(store.current_sid,
+                                         (req.device or "").strip() or None, replace=True)
             return {"ok": True, "id": store.current_sid, "unchanged": True}
         store.current_sid = m._fresh_sid()
         # 换对象而不是原地 clear：还在跑的那一轮持有旧列表引用，
@@ -130,6 +139,9 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         # 这里以前会 save_current_session()，于是每点一次「＋」就立刻在侧栏留下
         # 一条点进去空空的「新会话」，而它本来就是为了「换一个干净的输入框」。
         m._set_session_origin(store.current_sid, origin or None)
+        # 设备号只做归属记录（排障用），跟着第一条消息一起随会话落盘。
+        # 新会话号是新生成的，内存里不会残留旧的归属，按「只认第一次」记即可
+        store.set_session_device(store.current_sid, (req.device or "").strip() or None)
         # 代次已经变了，前端要把当前会话号换掉；历史是空的，一起推一份让各端清屏。
         # 不发 session_changed 老列表不会刷新，新建的那个会话号也传不出去
         await m.manager.broadcast({"type": "history", "messages": store.history,

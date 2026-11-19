@@ -1120,14 +1120,24 @@ def _write_session(sid: str, hist: list[dict]):
 def _set_session_origin(sid: str, client: str | None) -> None:
     """按发起端给会话打来源标记（侧栏分组用）
 
-    client 为空（重试这类内部链路）时不动：沿用这个会话原来的来源，
-    否则一点「重试」就把分组刷成「其它」。
+    client 为空（重试这类内部链路）或认不出来时不动：沿用这个会话原来的
+    来源，否则一点「重试」就把分组刷成「其它」。
     """
     if not sid or not client:
         return
     o = session_store.normalize_origin(client, sid)
     if o:
-        store.origin_map[sid] = o
+        with store.lock:
+            store.origin_map[sid] = o
+
+
+def _set_session_device(sid: str, device: str | None) -> None:
+    """记下这个会话是哪台设备发起的（排障用，不参与分组）
+
+    只认第一次：会话里换了端接着说，不把归属改写成后来那台机器 ——
+    否则换台电脑发一句话，原会话的归属就漂走了，排查时反倒看不出是谁建的。
+    """
+    store.set_session_device(sid, (device or "").strip() or None)
 
 
 # ---------- 流式正文的增量落盘 ----------
@@ -5004,6 +5014,7 @@ async def handle_chat(text: str, announce: bool = True,
     if not origin_client:
         origin_client = store.origin_map.get(turn_sid) or ""
     _set_session_origin(turn_sid, origin_client)
+    _set_session_device(turn_sid, device)
     store.turn.update({"sid": turn_sid, "epoch": turn_epoch, "active": True,
                        "turn_id": turn_id,
                        # 本轮开始时刻：/api/status 的 running_since 用它，
