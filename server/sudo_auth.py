@@ -195,6 +195,20 @@ def pending_command(now: float | None = None) -> dict | None:
                 "created": float(_pending.get("created") or 0)}
 
 
+def cancel_pending() -> bool:
+    """界面点「取消」：撤掉这条待授权请求，被拦下的命令不再等密码。
+
+    只丢待授权请求，已缓存的授权不受影响（那是用户之前提供的）。
+    """
+    global _pending
+    with _lock:
+        if _pending is None:
+            return False
+        _pending = None
+    _notify({"state": "cancelled", "message": "已取消输入管理员密码"})
+    return True
+
+
 def clear_all() -> None:
     """仅测试用：清空缓存与待授权请求"""
     global _cache, _pending, _probe

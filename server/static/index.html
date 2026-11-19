@@ -234,10 +234,12 @@
       <span class="sd-auth-title">需要授权</span>
       <span class="sd-auth-meta" id="sudoAuthMeta"></span>
     </div>
+    <div id="sudoAuthCmd" class="sd-auth-cmd"></div>
     <div class="sc-auth-line">
       <input id="sudoAuthPw" class="sc-pw" type="password" placeholder="管理员密码"
              autocomplete="new-password" spellcheck="false" autocapitalize="off">
       <button id="sudoAuthEye" class="sc-eye" type="button">显示</button>
+      <button id="sudoAuthCancel" class="sc-eye" type="button">取消</button>
       <button id="sudoAuthBtn" class="sc-auth-btn" type="button">确认授权</button>
     </div>
     <div id="sudoAuthErr" class="sc-auth-err"></div>
@@ -7132,6 +7134,8 @@
     var btn = document.getElementById('sudoAuthBtn');
     var err = document.getElementById('sudoAuthErr');
     var meta = document.getElementById('sudoAuthMeta');
+    var cmd = document.getElementById('sudoAuthCmd');
+    var cancelBtn = document.getElementById('sudoAuthCancel');
     if (!box || !pw || !eye || !btn || !err) return;
 
     function reuseText(sec) {
@@ -7144,13 +7148,19 @@
       eye.textContent = '显示';
       err.textContent = '';
       meta.textContent = '';
+      if (cmd) cmd.textContent = '';
+      btn.disabled = false;
     }
     function hide() { box.classList.remove('show'); reset(); }
     function show(payload) {
       payload = payload || {};
       box.classList.add('show');
       err.textContent = payload.error || '';
-      meta.textContent = payload.command ? ('命令：' + payload.command) : '';
+      meta.textContent = payload.source ? ('来源：' + payload.source) : '';
+      if (cmd) {
+        cmd.textContent = payload.command || '';
+        cmd.title = payload.command || '';
+      }
       setTimeout(function () { try { pw.focus(); } catch (e) {} }, 0);
     }
     eye.addEventListener('click', function () {
@@ -7194,6 +7204,13 @@
     pw.addEventListener('keydown', function (ev) {
       if (ev.key === 'Enter') { ev.preventDefault(); submit(); }
     });
+    // 取消输入：关掉这一条待授权请求，被拦下的命令不再等密码
+    if (cancelBtn) cancelBtn.addEventListener('click', function () {
+      hide();
+      // 取消后让输入框拿回焦点，用户可以直接继续说话
+      try { document.getElementById('input').focus(); } catch (e) {}
+      apiFetch('/api/sudo/cancel', { method: 'POST' }).catch(function () {});
+    });
 
     onSudoAuth = function (payload) {
       payload = payload || {};
@@ -7203,6 +7220,7 @@
         fbToast('已授权：' + reuseText(payload.expires_in));
         return;
       }
+      if (payload.state === 'cancelled') { hide(); return; }
       if (payload.state === 'expired' || payload.state === 'failed') {
         err.textContent = payload.error || payload.message || '授权已失效，请重新输入密码';
       }
@@ -7213,8 +7231,11 @@
           if (!res || !res.ok) return;
           var pending = res.pending;
           if (pending && pending.created) {
-            show({ command: pending.command, error: pending.last_error });
-          } else if (res.available) {
+            show({ command: pending.command, error: pending.last_error,
+                   source: pending.source });
+          } else if (!pending) {
+            // 没有待授权请求就收起这一行（不管是已授权还是被取消），
+            // 否则刷新后还会挂着一个对不上的空授权框
             hide();
           }
         }).catch(function () {});

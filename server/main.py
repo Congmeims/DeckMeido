@@ -3342,6 +3342,12 @@ class SudoPasswordBody(BaseModel):
     password: str
 
 
+@app.post("/api/sudo/cancel")
+async def api_sudo_cancel():
+    """界面点「取消」：撤掉待授权请求，被拦下的命令不再等密码"""
+    return {"ok": True, "cancelled": sudo_auth.cancel_pending()}
+
+
 @app.post("/api/sudo/password")
 async def api_sudo_password(req: SudoPasswordBody):
     """界面提交管理员密码：`sudo -A -v` 校验一次，通过后内存缓存 TTL 时长。
