@@ -309,7 +309,7 @@ async def _set_overlay_passthrough_wait(on: bool) -> None:
     """让遮罩让开并等到它确认已隐藏（点击注入前用这个）"""
     m = _m()
     set_overlay_passthrough(on)
-    if not on:
+    if not on or not tools._OVERLAY_HOOKED:
         return
     proc = m._overlay_proc
     if proc is None or proc.poll() is not None:
@@ -338,7 +338,7 @@ async def set_overlay_lift(on: bool) -> None:
     """
     m = _m()
     m._overlay_state["lift"] = on
-    if not on:
+    if not on or not tools._OVERLAY_HOOKED:
         return
     proc = m._overlay_proc
     if proc is None or proc.poll() is not None:
@@ -353,5 +353,6 @@ def start_watchdog() -> None:
     """起看门狗线程（main 在导入期调用一次）"""
     tools.ON_OVERLAY_PASSTHROUGH = set_overlay_passthrough
     tools.ON_OVERLAY_LIFT = set_overlay_lift
+    tools._OVERLAY_HOOKED = True
     threading.Thread(target=_overlay_watchdog, name="overlay-watchdog",
                      daemon=True).start()

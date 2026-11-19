@@ -951,9 +951,15 @@ def extract_paths(cmd: str) -> str:
 # 判断「这条命令会不会注入鼠标键盘」的逻辑见上方 _invocations / _pointer_click：
 # 解析真实子命令，而不是拿关键词在整串命令里模糊匹配
 
-# 由 main 注入：切换遮罩的鼠标穿透状态 / 截图时收起遮罩
+# 由 overlay_host.start_watchdog() 注入：切换遮罩的鼠标穿透状态 / 截图时收起遮罩。
+# 两者都是同步函数（只改后端状态，不等遮罩 ack），别在这里 await——
+# 它们以前被 async def 包装过，这里一律 await 的写法直接炸成
+# 「'NoneType' object can't be awaited」，连带 run_command 全线不可用。
 ON_OVERLAY_PASSTHROUGH = None
 ON_OVERLAY_LIFT = None
+# 有回调登记就说明后端已经起来了；一个都没有说明接缝没接上（比如注册被提前跳过），
+# 这种情况下遮罩根本没在跑，等 ack 只会白等，直接跳过
+_OVERLAY_HOOKED = False
 
 # 判断「这条命令是在拉起一个常驻程序」：浏览器、播放器、游戏这类进程不会自己退出，
 # 傻等只会一直卡到超时。单纯启动器（单条命令、无管道/重定向/后台符）且首个程序命中下表，
@@ -992,15 +998,19 @@ def _is_launcher(cmd: str) -> bool:
 
 
 async def _set_overlay_passthrough(on: bool):
-    """通知后端：遮罩是否暂时不接鼠标事件（避免 agent 的点击被遮罩当成用户终止）"""
+    """通知后端：遮罩是否暂时不接鼠标事件（避免 agent 的点击被遮罩当成用户终止）
+
+    回调和 ack 的等待都在 overlay_host._set_overlay_passthrough_wait 里，
+    这里只负责把「不接事件」这个状态转过去。
+    """
     if ON_OVERLAY_PASSTHROUGH:
-        await ON_OVERLAY_PASSTHROUGH(on)
+        ON_OVERLAY_PASSTHROUGH(on)
 
 
 async def _set_overlay_lift(on: bool):
     """通知后端：截图时先把遮罩收起来，免得挡住要拍的画面"""
     if ON_OVERLAY_LIFT:
-        await ON_OVERLAY_LIFT(on)
+        ON_OVERLAY_LIFT(on)
 
 
 def _fix_session_env(env: dict, uid: int, runtime: str):
