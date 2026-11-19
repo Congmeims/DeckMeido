@@ -19,6 +19,7 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import (APIRouter, Depends, HTTPException, Query, Request,
                      Response, UploadFile, WebSocket, WebSocketDisconnect)
@@ -298,6 +299,106 @@ def _workspace_file(rel: str) -> Path:
     if not target.is_file():
         raise HTTPException(status_code=404, detail="file not found")
     return target
+
+
+def _trash_dir(path: Path) -> Path | None:
+    """该路径所在磁盘的回收站目录；不可用时返回 None。
+
+    按 XDG 规范：通常盘用 ~/.local/share/Trash，其它挂载点用 <挂载点>/.Trash-$uid
+    （必须确实存在且可写，否则文件管理器不会去那里找，移到那儿等于永久删除）。
+    """
+    uid = os.getuid() if hasattr(os, "getuid") else 1000
+    home = Path.home()
+    try:
+        if path == home or home in path.parents:
+            base = Path(os.environ.get("XDG_DATA_HOME")
+                        or (home / ".local" / "share")) / "Trash"
+        else:
+            # 找 path 所属的挂载点：从自身往上走到 anchor，取第一个能读到 dev 的差异点
+            anchor = Path(path.anchor or "/")
+            mount = anchor
+            cur = path
+            try:
+                dev = path.stat().st_dev
+            except OSError:
+                dev = None
+            while cur != cur.parent:
+                if dev is not None:
+                    try:
+                        if cur.stat().st_dev != dev:
+                            break
+                    except OSError:
+                        break
+                mount = cur
+                cur = cur.parent
+            base = mount / f".Trash-{uid}"
+    except OSError:
+        return None
+    return base if base.is_dir() and os.access(base, os.W_OK) else None
+
+
+def _trash_unique(dest_dir: Path, name: str) -> Path:
+    """同名已存在时补 .1 / .2，别覆盖之前删的"""
+    dest = dest_dir / name
+    if not dest.exists() and not dest.is_symlink():
+        return dest
+    stem, suffix = os.path.splitext(name)
+    for i in range(1, 1000):
+        cand = dest_dir / f"{stem}.{i}{suffix}"
+        if not cand.exists() and not cand.is_symlink():
+            return cand
+    raise OSError("回收站里同名文件过多")
+
+
+def _trash_info_lines(src: Path) -> str:
+    """回收站 info 文件的内容：原绝对路径 + 删除时间（UTF-8 做 URL 转义）"""
+    return "Path=" + quote(str(src)) + "\nDeletionDate=" + \
+        time.strftime("%Y-%m-%dT%H:%M:%S") + "\n"
+
+
+def _move_to_trash(target: Path) -> Path:
+    """把 target 移进回收站，返回它在 files/ 下的最终位置。
+
+    同盘直接 rename；跨盘（rename 报 EXDEV）退化成长轮询复制再删源，
+    期间出错就把半成品清掉，源文件保持不动。
+    """
+    base = _trash_dir(target)
+    if base is None:
+        raise OSError("该位置没有可用的回收站（~/.local/share/Trash 或 .Trash-<uid>）")
+    files_dir = base / "files"
+    info_dir = base / "info"
+    files_dir.mkdir(parents=True, exist_ok=True)
+    info_dir.mkdir(parents=True, exist_ok=True)
+    dest = _trash_unique(files_dir, target.name)
+    try:
+        os.rename(target, dest)
+    except OSError:
+        # 跨设备：先拷到回收站再删源。复制到一半失败时清掉目标，源不受影响
+        try:
+            if target.is_dir() and not target.is_symlink():
+                shutil.copytree(target, dest, symlinks=True)
+            else:
+                shutil.copy2(target, dest, follow_symlinks=False)
+        except Exception:
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest, ignore_errors=True)
+            else:
+                try:
+                    dest.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    # info 文件写失败不影响「已经进了回收站」，只是文件管理器里看不见来源
+    try:
+        (info_dir / (dest.name + ".trashinfo")).write_text(
+            _trash_info_lines(target), encoding="utf-8")
+    except OSError:
+        pass
+    return dest
 
 
 def _zip_add_dir(zf: zipfile.ZipFile, root: Path, arc_root: str) -> None:
@@ -713,10 +814,9 @@ def register(app) -> None:
             # 直接写在 async 函数里，整段时间事件循环是停的：流式输出断掉、心跳发不出去、
             # 其它接口全部排队。丢进线程池跑，循环照常转
             if op == "delete":
-                if p.is_dir() and not p.is_symlink():
-                    await asyncio.to_thread(shutil.rmtree, p)
-                else:
-                    await asyncio.to_thread(p.unlink, missing_ok=True)
+                # 走回收站而不是直接抹掉：终端/文件管理器删的东西要能在同一个
+                # 回收站里找回来。回收站不可用时直接报错，不偷偷退化成永久删除
+                await asyncio.to_thread(_move_to_trash, p)
             elif op == "mkdir":
                 # path 是父目录，path2 是目录名
                 name = (req.path2 or "").strip()

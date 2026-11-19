@@ -3586,16 +3586,16 @@
   }
 
   function fbCtxDelete(path, isDir) {
-    var msg = isDir ? '删除文件夹「' + (path.split('/').pop()) + '」及其全部内容？' :
-                      '删除文件「' + (path.split('/').pop()) + '」？';
+    var msg = isDir ? '把文件夹「' + (path.split('/').pop()) + '」移到回收站？' :
+                      '把文件「' + (path.split('/').pop()) + '」移到回收站？';
     fbConfirmDelete(msg, function () {
       fbFs('delete', path).then(function (r) {
         if (!r.ok) {
-          // 失败（权限/占用）不刷新列表，避免整表跳到顶部
+          // 失败（权限/占用/回收站不可用）不刷新列表，避免整表跳到顶部
           fbToast('删除失败：' + r.error, 'file', true);
           return;
         }
-        fbToast('已删除', 'file');
+        fbToast('已移到回收站', 'file');
         // 刷新数据但记住滚动位置：长列表里删完还停在原处
         fbKeepScroll(function () { return fbLoad(fb.path || ''); });
       });
@@ -3670,7 +3670,7 @@
     fbCtxItem('剪切', function () { fbClip = { op: 'cut', path: path }; fbToast('已剪切：' + name, 'file'); },
               { disabled: ro });
     fbCtxSep();
-    fbCtxItem('删除', function () { fbCtxDelete(path, isDir); },
+    fbCtxItem('移到回收站', function () { fbCtxDelete(path, isDir); },
               { danger: true, disabled: ro });
     fbCtxSep();
     // 刷新的是当前面板所在目录，不是这个条目自己
