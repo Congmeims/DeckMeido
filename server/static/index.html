@@ -3304,7 +3304,7 @@
       var where = z === 'danger' ? '系统目录（危险区域）' : 'SD 卡等外部存储（谨慎操作区域）';
       fbConfirmDelete(
         '「' + (name || path) + '」位于' + where + '，会把整个文件夹递归打包。' +
-        '游戏、存档库这类目录动辄几个 G，超过 512 MB 会被拒绝；' +
+        '大目录（游戏、存档库）可能要等一会儿，开始后请别关页面；' +
         '打包只读取文件、不会改动任何内容。确认继续？',
         function () { fbZipDownloadNow(path, name); },
         { yes: '确认打包下载', neutral: true, no: '取消' }

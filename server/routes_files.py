@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import zipfile
 from pathlib import Path
@@ -23,6 +24,7 @@ from fastapi import (APIRouter, Depends, HTTPException, Query, Request,
                      Response, UploadFile, WebSocket, WebSocketDisconnect)
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from . import approval, audit, devlog, fszones, paths, policy, tools
 from .session_store import store
@@ -298,34 +300,6 @@ def _workspace_file(rel: str) -> Path:
     return target
 
 
-# 打包下载的总量上限。zip 在内存里打（不落临时文件，省得操心清理），
-# 所以必须有个天花板：sd 卡上的游戏目录动辄几十 G，全塞进来后端直接 OOM。
-ZIP_MAX_BYTES = 512 * 1024 * 1024
-
-
-def _zip_total_size(targets: list[Path]) -> int:
-    """估算打包总量（不读内容，只看 stat）；打不开的条目按 0 计"""
-    total = 0
-    for t in targets:
-        try:
-            if t.is_dir():
-                for p in t.rglob("*"):
-                    if p.is_file():
-                        try:
-                            total += p.stat().st_size
-                        except OSError:
-                            continue
-                        if total > ZIP_MAX_BYTES:
-                            return total
-            else:
-                total += t.stat().st_size
-        except OSError:
-            continue
-        if total > ZIP_MAX_BYTES:
-            return total
-    return total
-
-
 def _zip_add_dir(zf: zipfile.ZipFile, root: Path, arc_root: str) -> None:
     """把整个目录按 arc_root/ 前缀递归压进去
 
@@ -342,13 +316,15 @@ def _zip_add_dir(zf: zipfile.ZipFile, root: Path, arc_root: str) -> None:
             continue
 
 
-def _zip_pack(targets: list[Path]) -> tuple[bool, bytes | str]:
-    """在工作线程里打包，返回 (成功, zip 字节 / "too_big" / "empty")"""
-    if _zip_total_size(targets) > ZIP_MAX_BYTES:
-        return False, "too_big"
-    buf = io.BytesIO()
+def _zip_pack(targets: list[Path], out: Path) -> tuple[bool, int]:
+    """在工作线程里把 targets 打进 out 文件，返回 (是否成功, 字节数)
+
+    写临时文件而不是内存：sd 卡上的游戏、存档库动辄几个 G，
+    全塞进内存会把后端打挂；落盘后由 FileResponse 流式发出去。
+    """
     used: set[str] = set()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED,
+                         allowZip64=True) as zf:
         for target in targets:
             if target.is_dir():
                 # 单个目录：保留它自己的名字作为 zip 内的顶层目录
@@ -371,9 +347,12 @@ def _zip_pack(targets: list[Path]) -> tuple[bool, bytes | str]:
                 zf.write(target, arcname=arc)
             except OSError:
                 continue
-    if not buf.getbuffer().nbytes:
-        return False, "empty"
-    return True, buf.getvalue()
+    try:
+        size = out.stat().st_size
+    except OSError:
+        return False, 0
+    # 只有文件头（目录里一个可读文件都没有）也算没打成
+    return (size > 22, size)
 
 
 # 面板自己敲的命令：和白名单无关，但同样要过危险判定，
@@ -981,21 +960,37 @@ def register(app) -> None:
         targets = [t for t in (resolve(p) for p in path[:200]) if t is not None]
         if not targets:
             raise HTTPException(status_code=404, detail="file not found")
-        # 压缩是纯 CPU + 磁盘 IO，几百 MB 的目录会卡住整个事件循环
-        # （WebSocket 心跳、其它请求全停），所以整段丢到线程里跑
-        ok, payload = await asyncio.to_thread(_zip_pack, targets)
-        if not ok:
-            raise HTTPException(status_code=413 if payload == "too_big" else 404,
-                                detail=("要打包的内容超过 "
-                                        f"{_fmt_bytes(ZIP_MAX_BYTES)}，"
-                                        "请展开后挑选需要的文件")
-                                if payload == "too_big" else "file not found")
-        data = payload
         safe = re.sub(r"[^\w\-.]+", "_", Path(name).name)[:60] or "files.zip"
         if not safe.lower().endswith(".zip"):
             safe += ".zip"
-        return Response(data, media_type="application/zip",
-                        headers={"Content-Disposition": f'attachment; filename="{safe}"'})
+        # 压缩是纯 CPU + 磁盘 IO，几个 G 的目录会卡住整个事件循环
+        # （WebSocket 心跳、其它请求全停），所以整段丢到线程里跑。
+        # 结果写临时文件再用 FileResponse 流式发：内存占用和目录大小无关，
+        # 下载完由 BackgroundTask 删掉。不设总量上限——「把 sd 卡上的东西
+        # 拷回电脑」正是这个功能的用法，只要求临时目录放得下。
+        tmp_dir = paths.data_dir() / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkstemp(prefix="zip_", suffix=".zip", dir=tmp_dir)[1])
+        try:
+            ok, size = await asyncio.to_thread(_zip_pack, targets, tmp)
+        except Exception as exc:
+            tmp.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail=f"打包失败：{exc}") from exc
+        if not ok:
+            tmp.unlink(missing_ok=True)
+            raise HTTPException(status_code=404, detail="file not found")
+
+        def _cleanup() -> None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        return FileResponse(
+            tmp, media_type="application/zip", filename=safe,
+            background=BackgroundTask(_cleanup),
+            headers={"Content-Length": str(size)},
+        )
 
     @router.post("/api/file_stat")
     async def api_file_stat(payload: dict):
