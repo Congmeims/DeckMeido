@@ -103,9 +103,13 @@ def _ensure_overlay_locked() -> None:
         except OSError:
             log = subprocess.DEVNULL
         try:
+            # 必须用 -m 当包模块跑：overlay.py 里有 `from . import devlog`
+            # 这类相对导入，直接以脚本路径运行会报
+            # "attempted relative import with no known parent package" 秒退，
+            # 遮罩因此永远起不来（日志里刷了几百次同样的 ImportError）
             new_proc = subprocess.Popen(
-                [sys.executable, str(m.BASE_DIR / "overlay.py"), "--force"],
-                cwd=str(m.BASE_DIR), env=_overlay_env(),
+                [sys.executable, "-m", "server.overlay", "--force"],
+                cwd=str(m.BASE_DIR.parent), env=_overlay_env(),
                 stdout=log, stderr=log, start_new_session=True,
             )
         except Exception:
@@ -191,11 +195,17 @@ def _reap_children(only_pid: int | None = None) -> None:
 
 
 def _overlay_pids() -> list[int]:
-    """找出本机所有 overlay.py 进程（含孤儿）"""
+    """找出本机所有遮罩进程（含孤儿）
+
+    进程命令行是 `python -m server.overlay --force`，路径里已经没有
+    overlay.py 了，所以按模块名匹配；老版本遗留的 `.../overlay.py`
+    也一并算上，免得升级后旧孤儿遮罩收不掉。
+    """
     pids: list[int] = []
+    pattern = r"(-m server\.overlay|server/overlay\.py)"
     try:
         out = subprocess.run(
-            ["pgrep", "-f", str(_m().BASE_DIR / "overlay.py")],
+            ["pgrep", "-f", pattern],
             capture_output=True, text=True, timeout=3,
         ).stdout
         for line in out.split():
