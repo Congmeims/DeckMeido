@@ -27,15 +27,17 @@ class DeviceIdRequest(BaseModel):
 
 
 def init(require_auth, client_ip, get_main) -> None:
-    auth = [Depends(require_auth)]
+    # 鉴权在建 router 时挂一次：整组路由统一要令牌，
+    # 不再逐条写 dependencies=[Depends(require_auth)]
+    router.dependencies.append(Depends(require_auth))
 
-    @router.get("/api/status", dependencies=auth)
+    @router.get("/api/status")
     async def api_status():
         # 完整采集（模式探针 pw-dump、depcheck、tts）全部在线程里跑并带 TTL 缓存，
         # 别阻塞事件循环（WS 与流式输出都在同一个 loop 上）
         return await get_main().status_async()
 
-    @router.get("/api/net/probe", dependencies=auth)
+    @router.get("/api/net/probe")
     async def api_net_probe(force: bool = False):
         """公网连通性：online / lan_only / offline
 
@@ -44,7 +46,7 @@ def init(require_auth, client_ip, get_main) -> None:
         """
         return await asyncio.to_thread(netmode.probe, bool(force))
 
-    @router.get("/api/status/line", dependencies=auth)
+    @router.get("/api/status/line")
     async def api_status_line(state: str = Query(default=""),
                               game: str = Query(default=""),
                               game_confidence: str = Query(default=""),
@@ -56,7 +58,7 @@ def init(require_auth, client_ip, get_main) -> None:
         m = get_main()
         return await m.build_status_line(state, game, game_confidence, nickname)
 
-    @router.get("/api/qrcode", dependencies=auth)
+    @router.get("/api/qrcode")
     async def api_qrcode():
         """局域网访问地址 + 二维码 PNG（base64）"""
         url = get_main().phone_url()
@@ -73,13 +75,13 @@ def init(require_auth, client_ip, get_main) -> None:
             pass
         return {"url": url, "qr": png_b64}
 
-    @router.get("/api/devices", dependencies=auth)
+    @router.get("/api/devices")
     async def api_devices():
         m = get_main()
         return {"ok": True, "devices": pairing.manager.devices.list(),
                 "device_days": m._device_days()}
 
-    @router.post("/api/devices/rename", dependencies=auth)
+    @router.post("/api/devices/rename")
     async def api_device_rename(req: DeviceRenameRequest, request: Request):
         m = get_main()
         try:
@@ -90,7 +92,7 @@ def init(require_auth, client_ip, get_main) -> None:
                      detail=device.get("name", ""))
         return {"ok": True, "device": device}
 
-    @router.post("/api/devices/remove", dependencies=auth)
+    @router.post("/api/devices/remove")
     async def api_device_remove(req: DeviceIdRequest, request: Request):
         if not pairing.manager.devices.remove(req.device_id):
             raise HTTPException(status_code=404, detail="设备不存在或已被移除")
@@ -98,7 +100,7 @@ def init(require_auth, client_ip, get_main) -> None:
                      detail=req.device_id[:8])
         return {"ok": True, "devices": pairing.manager.devices.list()}
 
-    @router.post("/api/devices/remove_all", dependencies=auth)
+    @router.post("/api/devices/remove_all")
     async def api_device_remove_all(request: Request):
         n = pairing.manager.devices.remove_all()
         audit.record("device", "remove_all", "ok", ip=client_ip(request), detail=str(n))

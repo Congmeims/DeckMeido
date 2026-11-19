@@ -487,14 +487,17 @@ def _voice_path(url: str) -> Path:
 
 def register(app) -> None:
     """由 main 在 app 创建后调用：挂路由 + 建 OneBotClient + 启停钩子"""
-    auth = [Depends(require_auth)]
+    # 整组路由统一走鉴权：在建 router/app 时挂一次依赖，
+    # 不再逐条写 dependencies=[Depends(require_auth)]
+    router.dependencies.append(Depends(require_auth))
+    app.include_router(router)
 
-    @app.get("/api/qq/status", dependencies=auth)
+    @router.get("/api/qq/status")
     async def api_qq_status():
         """QQ 通道的连接状态与统计（令牌不回显），供远程连接页用"""
         return onebot_client.state()
 
-    @app.get("/api/qq/group-names", dependencies=auth)
+    @router.get("/api/qq/group-names")
     async def api_qq_group_names(ids: str = Query(default="")):
         """群号 -> 群名，仅用于设置页辅助展示。
 
@@ -511,18 +514,18 @@ def register(app) -> None:
             names = {}
         return {"names": names, "connected": True}
 
-    @app.get("/api/qq/logs", dependencies=auth)
+    @router.get("/api/qq/logs")
     async def api_qq_logs(limit: int = Query(default=100, ge=1, le=300)):
         """QQ 事件日志：只含事件与计数，不含令牌/消息正文；新的在前"""
         return {"logs": onebot_client.logs(limit), "state": onebot_client.state()}
 
-    @app.post("/api/qq/disconnect", dependencies=auth)
+    @router.post("/api/qq/disconnect")
     async def api_qq_disconnect():
         """手动断开 OneBot：只停连接，不改配置（开启状态保持不变）"""
         await onebot_client.stop()
         return {"ok": True, "state": onebot_client.state()}
 
-    @app.post("/api/qq/connect", dependencies=auth)
+    @router.post("/api/qq/connect")
     async def api_qq_connect():
         """重新连接 OneBot；未启用或配置不完整时明确报错，交给界面提示"""
         state = onebot_client.state()
@@ -536,7 +539,7 @@ def register(app) -> None:
                                 detail=state.get("detail") or "OneBot 配置不完整")
         return {"ok": True, "state": state}
 
-    @app.get("/api/voice/{name}", dependencies=auth)
+    @router.get("/api/voice/{name}")
     async def api_voice_file(name: str):
         """语音条原件（wav）；网页走设备令牌（查询参数），插件走本机来源"""
         if not VOICE_NAME_RE.match(name):
@@ -546,7 +549,7 @@ def register(app) -> None:
             raise HTTPException(status_code=404, detail="语音文件不存在")
         return FileResponse(path, media_type="audio/wav")
 
-    @app.post("/api/voice/play", dependencies=auth)
+    @router.post("/api/voice/play")
     async def api_voice_play(req: VoicePlayRequest):
         """QAM / WebKit 播不了 <audio> 时的降级：用后端现有播放器在本机播放"""
         global _voice_proc
@@ -572,11 +575,11 @@ def register(app) -> None:
                                 detail=f"播放失败：{type(exc).__name__}") from exc
         return {"ok": True, "fallback": "server"}
 
-    @app.get("/api/qq/config", dependencies=auth)
+    @router.get("/api/qq/config")
     async def api_qq_config():
         return _qq_public_config()
 
-    @app.post("/api/qq/config", dependencies=auth)
+    @router.post("/api/qq/config")
     async def api_save_qq_config(req: OneBotConfigUpdate):
         """保存 QQ 配置；只改配置与下次启动行为，不顺手触发连接
 

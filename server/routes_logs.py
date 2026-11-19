@@ -30,15 +30,17 @@ class LogClearRequest(BaseModel):
 
 def init(require_auth, client_ip) -> None:
     """由 main 在 app 创建后调用：登记路由并注入鉴权闸门与取 IP 的小工具"""
-    auth = [Depends(require_auth)]
+    # 鉴权在建 router 时挂一次：整组路由统一要令牌，
+    # 不再逐条写 dependencies=[Depends(require_auth)]
+    router.dependencies.append(Depends(require_auth))
 
-    @router.get("/api/logs/usage", dependencies=auth)
+    @router.get("/api/logs/usage")
     async def api_logs_usage():
         """日志占用：总量 / 分项 / 文件数 / debug 轮转上限"""
         # 目录扫描放线程，避免日志多时卡住事件循环
         return await asyncio.to_thread(devlog.usage)
 
-    @router.post("/api/logs/clear", dependencies=auth)
+    @router.post("/api/logs/clear")
     async def api_logs_clear(req: LogClearRequest, request: Request):
         """清空日志（不碰配置 / 会话 / 记忆 / 模型）。
 
@@ -68,7 +70,7 @@ def init(require_auth, client_ip) -> None:
                      ip=client_ip(request), detail=req.category)
         return result
 
-    @router.post("/api/debug/render", dependencies=auth)
+    @router.post("/api/debug/render")
     async def api_debug_render(req: RenderReport):
         """前端回报本轮思考链实际渲染了多少字（仅 dev_mode 可用）
 

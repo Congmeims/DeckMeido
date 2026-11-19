@@ -48,9 +48,11 @@ class MsgDeleteReq(BaseModel):
 
 def init(require_auth, client_ip, get_main, set_overlay) -> None:
     """由 main 在 app 创建后调用；set_overlay 用于删除当前会话前强制收掉浮层"""
-    auth = [Depends(require_auth)]
+    # 鉴权在建 router 时挂一次：整组路由统一要令牌，
+    # 不再逐条写 dependencies=[Depends(require_auth)]
+    router.dependencies.append(Depends(require_auth))
 
-    @router.get("/api/sessions", dependencies=auth)
+    @router.get("/api/sessions")
     async def api_sessions():
         """侧栏列表：只读索引，不再把每个会话文件整份解析一遍
 
@@ -67,7 +69,7 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
             items.append(row)
         return {"current": store.current_sid, "items": items}
 
-    @router.get("/api/meta/{key}", dependencies=auth)
+    @router.get("/api/meta/{key}")
     async def api_meta_get(key: str):
         """读一段 UI 标记（如「引导看过没有」）
 
@@ -77,7 +79,7 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         """
         return {"value": session_store.read_meta(key)}
 
-    @router.post("/api/meta/{key}", dependencies=auth)
+    @router.post("/api/meta/{key}")
     async def api_meta_set(key: str, req: MetaReq):
         session_store.write_meta(key, MetaReq.clamp(req.value))
         return {"ok": True}
@@ -96,7 +98,7 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
             return False
         return not any(m.get("role") in ("user", "assistant") for m in store.history)
 
-    @router.post("/api/sessions/create", dependencies=auth)
+    @router.post("/api/sessions/create")
     async def api_session_create(req: CreateReq, request: Request):
         m = get_main()
         # 会话列表由索引维护，而索引没写过盘的会话只活在内存里
@@ -150,7 +152,7 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         await m.manager.broadcast({"type": "system", "text": "已开始新会话", "ts": time.time()})
         return {"ok": True, "id": store.current_sid}
 
-    @router.post("/api/sessions/switch", dependencies=auth)
+    @router.post("/api/sessions/switch")
     async def api_session_switch(req: SwitchReq):
         m = get_main()
         p = m._sess_path(req.id)
@@ -193,7 +195,7 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         await m.manager.broadcast({"type": "session_changed", "current": store.current_sid})
         return {"ok": True}
 
-    @router.get("/api/sessions/{sid}/history", dependencies=auth)
+    @router.get("/api/sessions/{sid}/history")
     async def api_session_history(sid: str):
         """只读历史：给手机端预览会话，不改变服务端 current_sid。
 
@@ -228,7 +230,7 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
             "messages": hist,
         }
 
-    @router.post("/api/messages/delete", dependencies=auth)
+    @router.post("/api/messages/delete")
     async def api_message_delete(req: MsgDeleteReq):
         """删除会话里的单条消息。
 
@@ -288,7 +290,7 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         await m.manager.broadcast({"type": "session_changed", "current": store.current_sid})
         return {"ok": True, "removed": removed, "left": len(store.history)}
 
-    @router.delete("/api/sessions/{sid}", dependencies=auth)
+    @router.delete("/api/sessions/{sid}")
     async def api_session_delete(sid: str, request: Request):
         m = get_main()
         # 删除一个还在跑的会话前，先强制终止它在跑的那一轮，否则它那轮 run_agent
@@ -387,7 +389,7 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
             await m.manager.broadcast({"type": "session_changed", "current": store.current_sid})
         return {"ok": True, "current": store.current_sid}
 
-    @router.post("/api/checkpoint", dependencies=auth)
+    @router.post("/api/checkpoint")
     async def api_checkpoint():
         """客户端退出前先来这儿「打个招呼」：把还没落盘的东西全部刷下去。
 

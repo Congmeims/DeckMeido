@@ -6,7 +6,6 @@ PERSONA 等会在热更新时被重新赋值），所以统一通过 init() 注�
 """
 from __future__ import annotations
 
-import httpx
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -125,9 +124,11 @@ def init(require_auth, client_ip, get_main) -> None:
     CFG / llm / API_STATE / PERSONA / WORKSPACE_OK 等热更新会换绑的全局量
     一律 m.xxx 现读，不在本模块留引用。
     """
-    auth = [Depends(require_auth)]
+    # 鉴权在建 router 时挂一次：整组路由统一要令牌，
+    # 不再逐条写 dependencies=[Depends(require_auth)]
+    router.dependencies.append(Depends(require_auth))
 
-    @router.get("/api/config", dependencies=auth)
+    @router.get("/api/config")
     async def api_get_config():
         m = get_main()
         llm = m.llm
@@ -234,7 +235,7 @@ def init(require_auth, client_ip, get_main) -> None:
             "sleep": sleepmode.service.status(),
         }
 
-    @router.post("/api/config", dependencies=auth)
+    @router.post("/api/config")
     async def api_set_config(req: ConfigUpdate, request: Request):
         m = get_main()
         llm = m.llm
@@ -478,11 +479,11 @@ def init(require_auth, client_ip, get_main) -> None:
         # key -> 新文案；空串或与默认值相同都表示「恢复默认」
         items: dict[str, str]
 
-    @router.get("/api/qqtext", dependencies=auth)
+    @router.get("/api/qqtext")
     async def api_get_qqtext():
         return qqtext.view()
 
-    @router.post("/api/qqtext", dependencies=auth)
+    @router.post("/api/qqtext")
     async def api_save_qqtext(req: QQTextSave, request: Request):
         qqtext.save(req.items)
         audit.record("config", "qqtext", "ok", ip=client_ip(request),
@@ -491,7 +492,7 @@ def init(require_auth, client_ip, get_main) -> None:
         return {"ok": True, "count": data["count"],
                 "overridden": sorted(k for k in qqtext.DEFAULTS if qqtext.is_overridden(k))}
 
-    @router.post("/api/qqtext/reset", dependencies=auth)
+    @router.post("/api/qqtext/reset")
     async def api_reset_qqtext(request: Request):
         qqtext.reset()
         audit.record("config", "qqtext", "ok", ip=client_ip(request), detail="reset all")

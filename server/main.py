@@ -2817,7 +2817,14 @@ def _wake_cancel_chat() -> None:
 wake_service.set_handlers(chat=start_chat, cancel_chat=_wake_cancel_chat)
 
 
-@app.post("/api/cancel", dependencies=[Depends(require_auth)])
+# ---------- 本文件内的接口统一鉴权 ----------
+# 下面这批路由直接挂在 app 上（与已拆出的 routes_* 模块不同，它们各自在建
+# router 时挂了一次依赖）。这里同样只挂一次：不再在每条路由上重复写
+# dependencies=[Depends(require_auth)]。
+app.router.dependencies.append(Depends(require_auth))
+
+
+@app.post("/api/cancel")
 async def api_cancel(request: Request, client: str = "", device: str = ""):
     """终止当前这一轮，并把「谁点的」记进日志。
 
@@ -2934,7 +2941,7 @@ class SoulImport(BaseModel):
 # 配置接口（GET/POST /api/config）与请求模型在 server/routes_config.py
 
 
-@app.get("/api/memory", dependencies=[Depends(require_auth)])
+@app.get("/api/memory")
 async def api_get_memory(scope: str | None = None):
     """长期记忆，按「类别 + 创建时间」排好，和注入顺序一致
 
@@ -2951,7 +2958,7 @@ async def api_get_memory(scope: str | None = None):
             "kinds": [{"id": k, "name": v} for k, v in memory.KINDS.items()]}
 
 
-@app.post("/api/memory", dependencies=[Depends(require_auth)])
+@app.post("/api/memory")
 async def api_save_memory(req: MemoryItem):
     """新增 / 修改 / 删除一条记忆
 
@@ -2967,14 +2974,14 @@ async def api_save_memory(req: MemoryItem):
     return {"ok": True}
 
 
-@app.delete("/api/memory/{mid}", dependencies=[Depends(require_auth)])
+@app.delete("/api/memory/{mid}")
 async def api_delete_memory(mid: str):
     if not memory.remove(mid):
         raise HTTPException(status_code=404, detail="这条记忆已不存在")
     return {"ok": True}
 
 
-@app.delete("/api/memory", dependencies=[Depends(require_auth)])
+@app.delete("/api/memory")
 async def api_clear_memory(scope: str | None = None):
     """清空全部，或只清空指定 scope（网页设置页的批量删除）"""
     if scope:
@@ -2988,7 +2995,7 @@ async def api_clear_memory(scope: str | None = None):
 # 这两样就是「她这个人」的全部：人设在 meidosoul.json，记忆在 memory.json，
 # 换机器、重装系统、想备份一份，都应该一次拷走。
 
-@app.get("/api/soul/export", dependencies=[Depends(require_auth)])
+@app.get("/api/soul/export")
 async def api_export_soul():
     """导出人设与全部记忆，返回一个可以直接存盘的 JSON"""
     items = memory.load()["items"]
@@ -3003,7 +3010,7 @@ async def api_export_soul():
     }
 
 
-@app.post("/api/soul/import", dependencies=[Depends(require_auth)])
+@app.post("/api/soul/import")
 async def api_import_soul(req: SoulImport):
     """导入备份。replace=True 覆盖，False 则只补缺（人设仍整体覆盖）"""
     if req.persona is not None:
@@ -3092,7 +3099,7 @@ async def api_auth_session(request: Request):
 # 日志与诊断接口（/api/logs*、/api/debug/render）在 server/routes_logs.py
 
 
-@app.get("/api/usage", dependencies=[Depends(require_auth)])
+@app.get("/api/usage")
 async def api_usage(days: int = 14, api: str = ""):
     """本地用量统计（按日 / 按模型 / 按峰谷时段），不做网络请求
 
@@ -3116,7 +3123,7 @@ async def api_usage(days: int = 14, api: str = ""):
     return data
 
 
-@app.get("/api/usage/balance", dependencies=[Depends(require_auth)])
+@app.get("/api/usage/balance")
 async def api_usage_balance(api: str = ""):
     """查询官方余额；失败原因原样带回，前端不做静默处理
 
@@ -3143,7 +3150,7 @@ async def api_usage_balance(api: str = ""):
     return result
 
 
-@app.get("/api/usage/export", dependencies=[Depends(require_auth)])
+@app.get("/api/usage/export")
 async def api_usage_export():
     """导出按日聚合的原始 JSON（浏览器直接下载）"""
     data = await asyncio.to_thread(usage.export_data)
@@ -3153,7 +3160,7 @@ async def api_usage_export():
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
-@app.post("/api/usage/clear", dependencies=[Depends(require_auth)])
+@app.post("/api/usage/clear")
 async def api_usage_clear(request: Request):
     """清空本地用量统计（不碰配置、会话与余额）"""
     removed = await asyncio.to_thread(usage.clear)
@@ -3212,7 +3219,7 @@ async def api_pair_waiting():
     return {"ok": True, "count": len(pairing.manager.pending())}
 
 
-@app.get("/api/pair/pending", dependencies=[Depends(require_auth)])
+@app.get("/api/pair/pending")
 async def api_pair_pending(history: bool = Query(False)):
     """掌机设置页：待配对设备 + PIN + 倒计时。
 
@@ -3223,7 +3230,7 @@ async def api_pair_pending(history: bool = Query(False)):
     return {"ok": True, "sessions": sessions, "device_days": _device_days()}
 
 
-@app.post("/api/pair/refresh", dependencies=[Depends(require_auth)])
+@app.post("/api/pair/refresh")
 async def api_pair_refresh(req: PairIdRequest):
     try:
         return {"ok": True, **pairing.manager.refresh(req.pair_id)}
@@ -3231,7 +3238,7 @@ async def api_pair_refresh(req: PairIdRequest):
         raise _pair_http(exc) from exc
 
 
-@app.post("/api/pair/decision", dependencies=[Depends(require_auth)])
+@app.post("/api/pair/decision")
 async def api_pair_decision(req: PairDecisionRequest, request: Request):
     try:
         return {"ok": True, **pairing.manager.decide(
@@ -3245,13 +3252,13 @@ async def api_pair_decision(req: PairDecisionRequest, request: Request):
 
 # ---------- 登录与配对审计 ----------
 
-@app.get("/api/audit", dependencies=[Depends(require_auth)])
+@app.get("/api/audit")
 async def api_audit(limit: int = Query(default=50, ge=1, le=audit.MAX_EVENTS)):
     """只读审计：最近若干条鉴权失败 / 配对尝试，不包含 PIN 或设备令牌。"""
     return {"ok": True, "events": audit.recent(limit)}
 
 
-@app.post("/api/tts", dependencies=[Depends(require_auth)])
+@app.post("/api/tts")
 async def api_set_tts(enabled: bool = Query(...)):
     """只切语音播报开关：给 Decky 插件面板用
 
@@ -3262,13 +3269,13 @@ async def api_set_tts(enabled: bool = Query(...)):
     return {"ok": True, "tts_enable": tts.enable}
 
 
-@app.get("/api/tts", dependencies=[Depends(require_auth)])
+@app.get("/api/tts")
 async def api_tts_status():
     """语音合成状态：引擎是否可用、模型是否已下载、下载进度、署名信息。"""
     return {"ok": True, **tts.status()}
 
 
-@app.post("/api/tts/download", dependencies=[Depends(require_auth)])
+@app.post("/api/tts/download")
 async def api_tts_download():
     """后台下载语音模型（约 38MB）；重复点击不会开第二个线程。"""
     # 离线模式：模型必须联网下载，直接返回原因，不启动下载线程
@@ -3277,18 +3284,18 @@ async def api_tts_download():
     return {"ok": True, **tts.start_download()}
 
 
-@app.post("/api/tts/download/cancel", dependencies=[Depends(require_auth)])
+@app.post("/api/tts/download/cancel")
 async def api_tts_download_cancel():
     return {"ok": True, **tts.request_cancel()}
 
 
-@app.get("/api/selfcheck", dependencies=[Depends(require_auth)])
+@app.get("/api/selfcheck")
 async def api_selfcheck():
     """桌面控件自检的可补装组件清单 + 当前安装任务"""
     return {"ok": True, **selfcheck.snapshot()}
 
 
-@app.post("/api/selfcheck/install", dependencies=[Depends(require_auth)])
+@app.post("/api/selfcheck/install")
 async def api_selfcheck_install(component: str = Query(...)):
     """后台线程安装单个组件；同一时间只允许一个任务（重复点击返回 busy）"""
     loop = asyncio.get_running_loop()
@@ -3309,7 +3316,7 @@ class SelfcheckPasswordBody(BaseModel):
     password: str
 
 
-@app.post("/api/selfcheck/password", dependencies=[Depends(require_auth)])
+@app.post("/api/selfcheck/password")
 async def api_selfcheck_password(req: SelfcheckPasswordBody):
     """界面提交管理员密码，交给正在等待授权的系统包安装任务。
 
@@ -3323,7 +3330,7 @@ async def api_selfcheck_password(req: SelfcheckPasswordBody):
     return res
 
 
-@app.get("/api/sudo/status", dependencies=[Depends(require_auth)])
+@app.get("/api/sudo/status")
 async def api_sudo_status():
     """当前 sudo 授权状态：是否可用、还要多久失效、是否有待输入密码的请求"""
     st = sudo_auth.cache_status()
@@ -3335,7 +3342,7 @@ class SudoPasswordBody(BaseModel):
     password: str
 
 
-@app.post("/api/sudo/password", dependencies=[Depends(require_auth)])
+@app.post("/api/sudo/password")
 async def api_sudo_password(req: SudoPasswordBody):
     """界面提交管理员密码：`sudo -A -v` 校验一次，通过后内存缓存 TTL 时长。
 
@@ -3382,12 +3389,12 @@ def _resume_after_sudo(held: dict) -> bool:
     return True
 
 
-@app.get("/api/selfcheck/progress", dependencies=[Depends(require_auth)])
+@app.get("/api/selfcheck/progress")
 async def api_selfcheck_progress():
     return {"ok": True, "job": selfcheck.job_snapshot()}
 
 
-@app.post("/api/tts/preview", dependencies=[Depends(require_auth)])
+@app.post("/api/tts/preview")
 async def api_tts_preview(req: TTSPreviewRequest):
     """就地试听：用当前发音人念一句短的，返回实际用到的引擎与失败原因。"""
     result = await tts.preview(req.text)
@@ -3401,7 +3408,7 @@ async def api_tts_preview(req: TTSPreviewRequest):
     }
 
 
-@app.post("/api/tts/say", dependencies=[Depends(require_auth)])
+@app.post("/api/tts/say")
 async def api_tts_say(req: TTSSayRequest):
     """给远程客户端（手机）合成语音，直接返回 WAV 字节。
 
@@ -3430,13 +3437,13 @@ async def api_tts_say(req: TTSSayRequest):
     )
 
 
-@app.get("/api/ask-template", dependencies=[Depends(require_auth)])
+@app.get("/api/ask-template")
 async def api_get_ask_template():
     """「截屏询问」提示词模板：插件面板展开设置区时读一次"""
     return {"ok": True, "text": ASK_TEMPLATE, "default": DEFAULT_ASK_TEMPLATE}
 
 
-@app.post("/api/ask-template", dependencies=[Depends(require_auth)])
+@app.post("/api/ask-template")
 async def api_set_ask_template(req: AskTemplateUpdate):
     """改「截屏询问」提示词模板：空 / 全空白表示恢复默认
 
@@ -3447,7 +3454,7 @@ async def api_set_ask_template(req: AskTemplateUpdate):
     return {"ok": True, "text": ASK_TEMPLATE}
 
 
-@app.get("/api/translate-template", dependencies=[Depends(require_auth)])
+@app.get("/api/translate-template")
 async def api_get_translate_template():
     """「截图翻译」提示词模板：和大屏模型页那一栏是同一份配置"""
     return {
@@ -3457,7 +3464,7 @@ async def api_get_translate_template():
     }
 
 
-@app.post("/api/translate-template", dependencies=[Depends(require_auth)])
+@app.post("/api/translate-template")
 async def api_set_translate_template(req: TranslateTemplateUpdate):
     """改「截图翻译」提示词模板：空 / 全空白表示恢复默认
 
@@ -3484,12 +3491,12 @@ def _presets_view() -> dict:
     }
 
 
-@app.get("/api/presets", dependencies=[Depends(require_auth)])
+@app.get("/api/presets")
 async def api_get_presets():
     return _presets_view()
 
 
-@app.post("/api/presets", dependencies=[Depends(require_auth)])
+@app.post("/api/presets")
 async def api_save_preset(req: PresetSaveBody):
     """插件「保存为预设」：按当前游戏存一份提示词（同一游戏重复保存即更新）"""
     try:
@@ -3502,7 +3509,7 @@ async def api_save_preset(req: PresetSaveBody):
     return {"ok": True, "preset": item, "current": current}
 
 
-@app.post("/api/presets/active", dependencies=[Depends(require_auth)])
+@app.post("/api/presets/active")
 async def api_set_active_game(req: ActiveGameBody):
     """插件检测到游戏开始/退出时上报，命中预设就套用，退出就回默认
 
@@ -3512,7 +3519,7 @@ async def api_set_active_game(req: ActiveGameBody):
     return {"ok": True, "current": presets.set_active_game(req.appid, req.name)}
 
 
-@app.patch("/api/presets/{preset_id}", dependencies=[Depends(require_auth)])
+@app.patch("/api/presets/{preset_id}")
 async def api_update_preset(preset_id: str, req: PresetUpdateBody):
     """设置页编辑内容 / 改名；改名不影响绑定的游戏"""
     try:
@@ -3524,7 +3531,7 @@ async def api_update_preset(preset_id: str, req: PresetUpdateBody):
     return {"ok": True, "preset": item, "current": presets.active_view()}
 
 
-@app.delete("/api/presets/{preset_id}", dependencies=[Depends(require_auth)])
+@app.delete("/api/presets/{preset_id}")
 async def api_delete_preset(preset_id: str):
     if not presets.delete(preset_id):
         raise HTTPException(status_code=404, detail="预设不存在")
@@ -3533,7 +3540,7 @@ async def api_delete_preset(preset_id: str):
 
 # ---------- 语音输入 ----------
 
-@app.get("/api/stt", dependencies=[Depends(require_auth)])
+@app.get("/api/stt")
 async def api_stt_status():
     """语音输入状态：前端据此决定按钮能不能按、要不要提示下模型
 
@@ -3552,7 +3559,7 @@ async def api_stt_status():
     }
 
 
-@app.post("/api/stt/download", dependencies=[Depends(require_auth)])
+@app.post("/api/stt/download")
 async def api_stt_download():
     """启动语音模型下载（镜像直取约 250MB，GitHub 回退为 1GB 压缩包）
 
@@ -3566,13 +3573,13 @@ async def api_stt_download():
     return {"ok": True, **stt.start_download()}
 
 
-@app.post("/api/stt/download/cancel", dependencies=[Depends(require_auth)])
+@app.post("/api/stt/download/cancel")
 async def api_stt_download_cancel():
     """取消正在下载的模型（已下载的 .part 会被清掉，不会留下半个包）"""
     return {"ok": True, **stt.request_cancel()}
 
 
-@app.post("/api/stt/toggle", dependencies=[Depends(require_auth)])
+@app.post("/api/stt/toggle")
 async def api_set_stt(enabled: bool = Query(...)):
     """只切语音输入开关：给 Decky 面板用
 
@@ -3583,7 +3590,7 @@ async def api_set_stt(enabled: bool = Query(...)):
     return {"ok": True, "stt_enable": stt.enable}
 
 
-@app.post("/api/stt/duck", dependencies=[Depends(require_auth)])
+@app.post("/api/stt/duck")
 async def api_stt_duck(on: bool = Query(...)):
     """录音开始/结束时静音、恢复系统输出
 
@@ -3595,7 +3602,7 @@ async def api_stt_duck(on: bool = Query(...)):
     return audiomute.restore()
 
 
-@app.post("/api/stt/transcribe", dependencies=[Depends(require_auth)])
+@app.post("/api/stt/transcribe")
 async def api_stt_transcribe(req: Request):
     """整段 WAV 转文字。请求体直接是音频字节，不做 multipart
 
@@ -3626,7 +3633,7 @@ def _wake_local_only(request: Request) -> None:
         raise HTTPException(status_code=403, detail="智能音箱模式只允许本机访问")
 
 
-@app.get("/api/wake/state", dependencies=[Depends(require_auth)])
+@app.get("/api/wake/state")
 async def api_wake_state(request: Request):
     _wake_local_only(request)
     # 睡眠模式的倒计时一起带上：眼睛页本来就每 250ms 轮询这个接口，
@@ -3635,7 +3642,7 @@ async def api_wake_state(request: Request):
             "sleep": sleepmode.service.status()}
 
 
-@app.get("/api/music/now", dependencies=[Depends(require_auth)])
+@app.get("/api/music/now")
 async def api_music_now():
     """侧栏音乐条：当前在放什么 + 封面 + 进度。没在放就返回 playing=False。
 
@@ -3649,7 +3656,7 @@ async def api_music_now():
     return {"ok": True, "playing": False} if not info else {"ok": True, **info}
 
 
-@app.post("/api/music/action", dependencies=[Depends(require_auth)])
+@app.post("/api/music/action")
 async def api_music_action(payload: dict):
     """侧栏音乐条的三个按钮：上一首 / 播放暂停 / 下一首。"""
     action = str((payload or {}).get("action") or "").strip().lower()
@@ -3665,7 +3672,7 @@ async def api_music_action(payload: dict):
     return {"ok": True, "action": action}
 
 
-@app.post("/api/wake/toggle", dependencies=[Depends(require_auth)])
+@app.post("/api/wake/toggle")
 async def api_wake_toggle(request: Request, on: bool | None = Query(default=None)):
     """开关常驻监听；打开时写 [wake] enabled=true，关闭时同时退出监听。"""
     _wake_local_only(request)
@@ -3685,7 +3692,7 @@ async def api_wake_toggle(request: Request, on: bool | None = Query(default=None
     return {"ok": True, **status}
 
 
-@app.post("/api/wake/stop", dependencies=[Depends(require_auth)])
+@app.post("/api/wake/stop")
 async def api_wake_stop(request: Request):
     """停止聆听：立刻停采集并退出智能音箱模式；播报用 /api/wake/tts-stop。"""
     _wake_local_only(request)
@@ -3693,7 +3700,7 @@ async def api_wake_stop(request: Request):
     return {"ok": True, **await wake_service.disarm()}
 
 
-@app.post("/api/wake/exit", dependencies=[Depends(require_auth)])
+@app.post("/api/wake/exit")
 async def api_wake_exit(request: Request):
     """退出智能音箱模式：关总开关并释放麦克风/电源保持。"""
     _wake_local_only(request)
@@ -3701,7 +3708,7 @@ async def api_wake_exit(request: Request):
     return {"ok": True, **await wake_service.disarm()}
 
 
-@app.post("/api/sleep/cancel", dependencies=[Depends(require_auth)])
+@app.post("/api/sleep/cancel")
 async def api_sleep_cancel(request: Request):
     """取消睡眠模式的关机倒计时。眼睛页收到任何键鼠/触摸输入时调用。
 
@@ -3777,7 +3784,7 @@ async def api_i18n():
     }
 
 
-@app.get("/api/update/check", dependencies=[Depends(require_auth)])
+@app.get("/api/update/check")
 async def api_update_check():
     try:
         info = await updater.check()
@@ -3786,7 +3793,7 @@ async def api_update_check():
     return info
 
 
-@app.post("/api/update/apply", dependencies=[Depends(require_auth)])
+@app.post("/api/update/apply")
 async def api_update_apply():
     """从网页一键升级：拉取代码后交给 install.sh upgrade 重启服务
 
@@ -3800,7 +3807,7 @@ async def api_update_apply():
         raise HTTPException(status_code=400 if "不是 git" in msg else 502, detail=msg)
 
 
-@app.post("/api/restart", dependencies=[Depends(require_auth)])
+@app.post("/api/restart")
 async def api_restart():
     """重启核心（后端服务自身）
 
@@ -3937,7 +3944,7 @@ async def _start_update_watch():
     _spawn(update_watch_loop(), "update_watch")
 
 
-@app.get("/api/models", dependencies=[Depends(require_auth)])
+@app.get("/api/models")
 async def api_models(base_url: str = "", api_key: str = ""):
     """向服务商拉取可用模型列表，供前端下拉框自动填充
 
@@ -3967,7 +3974,7 @@ async def api_models(base_url: str = "", api_key: str = ""):
     return {"models": names}
 
 
-@app.post("/api/retry", dependencies=[Depends(require_auth)])
+@app.post("/api/retry")
 async def api_retry():
     # 只有本会话挂起的操作才挡重试；别的会话挂着的与本端无关
     pend = _pending_get()
@@ -4541,7 +4548,7 @@ async def compact_history(auto: bool = False, hist: list[dict] | None = None,
     return summary
 
 
-@app.post("/api/compact", dependencies=[Depends(require_auth)])
+@app.post("/api/compact")
 async def api_compact(preview: bool = False):
     """压缩上下文。preview=true 时只报「会压掉多少」，不真正执行
 
@@ -4657,7 +4664,7 @@ def _sd_card_info() -> dict:
     return {}
 
 
-@app.get("/api/sysinfo", dependencies=[Depends(require_auth)])
+@app.get("/api/sysinfo")
 async def api_sysinfo():
     """侧栏状态卡：CPU / 内存 / SSD / 内存卡占用 / 电量 / 运行时长 / 局域网 IP
 
@@ -4742,7 +4749,7 @@ class OpenFileReq(BaseModel):
     path: str
 
 
-@app.post("/api/open_file", dependencies=[Depends(require_auth)])
+@app.post("/api/open_file")
 async def api_open_file(req: OpenFileReq):
     """原生客户端里点开图片/文件 → 用系统默认工具打开（仅限 static 目录内）"""
     rel = req.path.split("?")[0].lstrip("/")
@@ -4760,7 +4767,7 @@ class OpenUrlReq(BaseModel):
     url: str
 
 
-@app.post("/api/open_url", dependencies=[Depends(require_auth)])
+@app.post("/api/open_url")
 async def api_open_url(req: OpenUrlReq):
     """网页里点外链 → 交给掌机的默认浏览器打开。
 
@@ -4864,7 +4871,7 @@ set_overlay_lift = overlay_host.set_overlay_lift
 overlay_host.start_watchdog()
 
 
-@app.get("/api/controls", dependencies=[Depends(require_auth)])
+@app.get("/api/controls")
 async def api_controls(force: int = Query(default=0)):
     """控件自检：force=1 时跳过缓存重新实测（网页上点徽章刷新用）
 
@@ -4873,7 +4880,7 @@ async def api_controls(force: int = Query(default=0)):
     return await asyncio.to_thread(depcheck.summary, bool(force))
 
 
-@app.get("/api/overlay_state", dependencies=[Depends(require_auth)])
+@app.get("/api/overlay_state")
 async def api_overlay_state(ack: int = 0, hidden: int = 1):
     # 遮罩进程带 ack=1 轮询时，表示它已经按本次返回的状态生效过了。
     # hidden 是它自报的「当前窗口是否已隐藏」：要求让开时只有真的藏了才算确认，
@@ -5026,7 +5033,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
         surface=surface, turn_ctx=turn_ctx, turn_policy=turn_policy)
 
 
-@app.get("/shots/local", dependencies=[Depends(require_auth)])
+@app.get("/shots/local")
 async def shots_local(path: str = Query(default="")):
     """把插件截图落在本机 /tmp 下的那份读出来给各端显示
 
@@ -5046,7 +5053,7 @@ async def shots_local(path: str = Query(default="")):
     return FileResponse(real, media_type="image/jpeg")
 
 
-@app.post("/api/screenshot", dependencies=[Depends(require_auth)])
+@app.post("/api/screenshot")
 async def api_screenshot():
     """插件端专用：抓一张当前画面，返回压缩 JPEG 的 base64
 

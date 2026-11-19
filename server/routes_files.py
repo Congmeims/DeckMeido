@@ -47,6 +47,9 @@ def init(require_auth_fn, get_main_fn) -> None:
     global require_auth, get_main
     require_auth = require_auth_fn
     get_main = get_main_fn
+    # 鉴权在建 router 时挂一次：整组路由统一要令牌，
+    # 不再逐条写 dependencies=[Depends(require_auth)]
+    router.dependencies.append(Depends(require_auth))
 
 
 def _m():
@@ -262,15 +265,10 @@ def _term_lock_get() -> asyncio.Lock:
 
 # ---------- 路由 ----------
 
-auth = None
-
 
 def register(app) -> None:
     """由 main 在 app 创建后调用：挂 HTTP 路由与终端 WebSocket"""
-    global auth
-    auth = [Depends(require_auth)]
-
-    @router.post("/api/upload", dependencies=auth)
+    @router.post("/api/upload")
     async def api_upload(file: UploadFile):
         """上传附件。
 
@@ -312,7 +310,7 @@ def register(app) -> None:
         rel = str(keep.relative_to(tools.WORKSPACE))
         return {"url": f"/uploads/{keep.name}", "path": rel, "kind": kind, "name": fn.name}
 
-    @router.post("/api/upload-to", dependencies=auth)
+    @router.post("/api/upload-to")
     async def api_upload_to(file: UploadFile, dir: str = ""):
         """文件管理器里的拖放上传（multipart 版）。
 
@@ -359,7 +357,7 @@ def register(app) -> None:
                                 content=_upload_limit_error(limit, too_large))
         return {"ok": True, "name": fn, "dir": str(target_dir), "size": written}
 
-    @router.get("/api/upload-limit", dependencies=auth)
+    @router.get("/api/upload-limit")
     async def api_upload_limit(dir: str = ""):
         """上传前查询目标目录的单文件上限（前端据此给出「当前上限 X，该文件 Y」）。"""
         target_dir = _upload_target_dir(dir)
@@ -368,7 +366,7 @@ def register(app) -> None:
             return denied
         return {"ok": True, "dir": str(target_dir), **upload_limits(target_dir)}
 
-    @router.post("/api/upload-stream", dependencies=auth)
+    @router.post("/api/upload-stream")
     async def api_upload_stream(request: Request, dir: str = "", name: str = "",
                                 overwrite: bool = False):
         """原始流上传：请求体就是文件本身，边收边写盘。
@@ -428,7 +426,7 @@ def register(app) -> None:
                                 content=_upload_limit_error(limit, too_large))
         return {"ok": True, "name": fn, "dir": str(target_dir), "size": written}
 
-    @router.get("/api/files", dependencies=auth)
+    @router.get("/api/files")
     async def api_files():
         """列出工作区文件（@ 引用候选）"""
         out = []
@@ -442,7 +440,7 @@ def register(app) -> None:
             pass
         return {"workspace": str(tools.WORKSPACE), "files": out}
 
-    @router.get("/api/preview", dependencies=auth)
+    @router.get("/api/preview")
     async def api_preview(path: str, raw: int = 0):
         """给文件浏览器预览用：吐任意路径的文件
 
@@ -484,7 +482,7 @@ def register(app) -> None:
                 info["error"] = f"读取失败：{e}"
         return info
 
-    @router.get("/api/browse", dependencies=auth)
+    @router.get("/api/browse")
     async def api_browse(path: str = ""):
         """列单层目录内容（右侧文件浏览器用）
 
@@ -608,7 +606,7 @@ def register(app) -> None:
         return {"path": str(target), "parent": parent, "entries": entries,
                 "select": select, **zone_fields}
 
-    @router.post("/api/fs", dependencies=auth)
+    @router.post("/api/fs")
     async def api_fs(req: _FsReq):
         """文件面板的右键操作：rename / delete / copy / move / mkdir。
 
@@ -687,7 +685,7 @@ def register(app) -> None:
             return {"ok": False, "error": f"操作失败：{e}"}
         return {"ok": True}
 
-    @router.get("/api/terminal", dependencies=auth)
+    @router.get("/api/terminal")
     async def api_terminal():
         """当前正在跑（或刚跑完）的那条命令，给右侧终端面板轮询
 
@@ -695,7 +693,7 @@ def register(app) -> None:
         """
         return {"state": tools.CURRENT_CMD}
 
-    @router.post("/api/terminal/stop", dependencies=auth)
+    @router.post("/api/terminal/stop")
     async def api_terminal_stop():
         """终止面板里正在跑的那条命令（小窗上的终止按钮）
 
@@ -710,7 +708,7 @@ def register(app) -> None:
             m.set_overlay(False)
         return {"ok": True, "killed": killed}
 
-    @router.post("/api/terminal/run", dependencies=auth)
+    @router.post("/api/terminal/run")
     async def api_terminal_run(payload: dict):
         """面板里手动执行一条命令（终端 tab 的输入框）
 
@@ -836,7 +834,7 @@ def register(app) -> None:
             except asyncio.CancelledError:
                 pass
 
-    @router.get("/files/{path:path}", dependencies=auth)
+    @router.get("/files/{path:path}")
     async def api_workspace_file(path: str):
         """下载工作区里的文件（网页端附件卡片用）
 
@@ -845,7 +843,7 @@ def register(app) -> None:
         """
         return FileResponse(_workspace_file(path), filename=Path(path).name)
 
-    @router.post("/api/file_stat_batch", dependencies=auth)
+    @router.post("/api/file_stat_batch")
     async def api_file_stat_batch(payload: dict):
         """附件卡片补大小（批量）：{paths: [...]} → {sizes: {path: 字节数}}
 
@@ -863,7 +861,7 @@ def register(app) -> None:
                 continue
         return {"sizes": sizes}
 
-    @router.get("/api/zip", dependencies=auth)
+    @router.get("/api/zip")
     async def api_zip(path: list[str] | None = Query(default=None),
                       name: str = Query(default="files.zip")):
         """把多个工作区文件打成一个 zip 下载（网页端「打包下载」用）
@@ -902,7 +900,7 @@ def register(app) -> None:
         return Response(data, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="{safe}"'})
 
-    @router.post("/api/file_stat", dependencies=auth)
+    @router.post("/api/file_stat")
     async def api_file_stat(payload: dict):
         """附件卡片补大小：{path: 相对工作区的路径} → {size, name}"""
         rel = str(payload.get("path", "")).strip()
