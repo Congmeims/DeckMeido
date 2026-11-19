@@ -11174,6 +11174,15 @@
           if (done) done(false);
           return;
         }
+        // 配置已存下、只是服务商那侧没拉到模型清单：不判失败、也不标红。
+        // 这类多半是 Key/地址还不对，用户自己会再去改，界面不用一直挂着红字
+        if (err && err.modelsFailed) {
+          setCfgHint('已保存，但没拉到模型列表');
+          apiProfileHint.style.color = 'var(--muted)';
+          apiProfileHint.textContent = '已保存，但没拉到模型列表 —— 请检查接口地址和 Key';
+          if (done) done(true);
+          return;
+        }
         setCfgHint(text);
         apiProfileHint.style.color = '#e06c75';
         apiProfileHint.textContent = text;
@@ -13424,10 +13433,15 @@
             try { d = t ? JSON.parse(t) : null; } catch (e) {}
             if (!r.ok) {
               var detail = d && (d.detail || d.message || d.error);
-              throw new Error('HTTP ' + r.status + (detail ? '：' + detail : ''));
+              var e1 = new Error('HTTP ' + r.status + (detail ? '：' + detail : ''));
+              // 只是没拉到模型清单，配置本身已经存下了，界面不该按「保存失败」报警
+              e1.modelsFailed = true;
+              throw e1;
             }
             if (!d || !Array.isArray(d.models)) {
-              throw new Error('返回内容里没有模型列表（HTTP ' + r.status + '）');
+              var e2 = new Error('返回内容里没有模型列表（HTTP ' + r.status + '）');
+              e2.modelsFailed = true;
+              throw e2;
             }
             return d.models;
           });
