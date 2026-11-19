@@ -2192,14 +2192,25 @@ def _auth_public(request: Request) -> bool:
     path = request.url.path
     if path in AUTH_PUBLIC_PATHS or path.startswith(AUTH_PUBLIC_PREFIXES):
         return True
-    return path == "/" or path.startswith(AUTH_PUBLIC_URL_PREFIXES)
+    if path == "/" or path.startswith(AUTH_PUBLIC_URL_PREFIXES):
+        return True
+    # /ws 自己鉴权（见 _ws_authorized），这里放行，省得 WS 升级也走 HTTP 这道闸
+    return request.scope.get("type") == "websocket"
 
 
-def require_auth(request: Request):
+async def require_auth(request: Request):
     """接口总闸：本机回环/本机网卡来源免验证，局域网必须带已配对设备令牌。
 
     令牌由客户端放在 Authorization 请求头里（不用 Cookie），静态页面本身
     不设防，未配对时前端会弹 PIN 配对，受保护接口统一 401。
+
+    /ws 的鉴权不在这里做：ws_hub 用 Starlette 原生 WebSocketRoute 注册端点，
+    不受整组依赖影响，改由 _ws_authorized 校验（它支持 ?token=，WebSocket
+    不能自定义请求头）。
+
+    写成 async 是有原因的：同步依赖会被 Starlette 丢进线程池执行，而 FastAPI
+    是按签名里的类型绑定参数（不认识 Request 就当成必填查询参数），进线程池
+    时参数丢失，每次都报「missing 1 required positional argument: 'request'」。
     """
     if _auth_public(request):
         return

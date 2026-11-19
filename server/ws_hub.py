@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from fastapi import WebSocket, WebSocketDisconnect
+from starlette.routing import WebSocketRoute
 
 from . import audit, devlog, power, singleton
 from .session_store import store
@@ -78,9 +79,16 @@ async def _broadcast_remote_input(state: dict):
 
 
 def register(app) -> None:
-    """把 /ws 端点挂到 app 上（main 建好 app 后调用）"""
+    """把 /ws 端点挂到 app 上（main 建好 app 后调用）
 
-    @app.websocket("/ws")
+    这里用 Starlette 原生的 WebSocketRoute，而不是 @app.websocket：
+    main 把 require_auth 挂在 app.router.dependencies 上，FastAPI 的 WS 路由
+    会把这组依赖一起带上，而依赖是按 HTTP Request 的签名写的，依赖解析阶段
+    不会给它塞 WebSocket 对象，于是每次升级都 TypeError → 500 拒绝，前端一直
+    「连接已断开」。原生 route 不经 FastAPI 依赖解析，鉴权由下面的
+    _ws_authorized 自己完成。
+    """
+
     async def ws_endpoint(ws: WebSocket):
         m = _m()
         client_ip = ws.client.host if ws.client else ""
@@ -195,3 +203,5 @@ def register(app) -> None:
             await manager.disconnect(ws)
             # 连接没了就等于这个页面不在了：撤销前台登记，别让抑制一直挂着
             power.note_view(_view_src, False)
+
+    app.router.routes.append(WebSocketRoute("/ws", ws_endpoint))
