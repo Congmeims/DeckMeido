@@ -689,8 +689,9 @@ def risky_action(name: str, args: dict) -> str | None:
         return None
     cmd = str((args or {}).get("command") or "")
     act = power_action(cmd)
-    # 关机/重启只认本轮用户明确说了，或确认过挂起意图
-    if act in ("reboot", "poweroff"):
+    # 所有电源动作（含 shutdown -h / systemctl kexec 这类）都只认本轮用户
+    # 明确说了，或确认过挂起意图。这里漏掉哪个，那个动作就会被当成普通命令放行
+    if act in POWER_ACTIONS:
         return act
     return steamosctl_action(cmd)
 

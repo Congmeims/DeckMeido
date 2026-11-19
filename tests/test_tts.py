@@ -764,11 +764,13 @@ class SpeakerTest(unittest.TestCase):
         self.assertEqual(t.speaker, "robot")
         self.assertIsNone(t._voice)
 
-    def test_状态只暴露两个发音人(self):
+    def test_状态只暴露三个发音人(self):
         t = ttsmod.TTS(speaker="maid", model_root=self.root)
         state = t.status()
         self.assertEqual(state["speaker"], "maid")
-        self.assertEqual([s["id"] for s in state["speakers"]], ["robot", "maid"])
+        # 顺序即界面上的排列：机器人 / 月读酱 / 哔哔啵啵
+        self.assertEqual([s["id"] for s in state["speakers"]],
+                         ["robot", "maid", "bibibo"])
 
     def test_机器人走_espeak_女仆走_piper(self):
         calls = []
