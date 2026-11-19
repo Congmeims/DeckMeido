@@ -13,6 +13,7 @@ import asyncio
 import io
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -401,57 +402,208 @@ def _move_to_trash(target: Path) -> Path:
     return dest
 
 
-def _zip_add_dir(zf: zipfile.ZipFile, root: Path, arc_root: str) -> None:
-    """把整个目录按 arc_root/ 前缀递归压进去
+def _zip_resolve(path: list[str]) -> list[Path]:
+    """把 /api/zip 的 path 参数落到真实文件；不允许的一律丢掉
 
-    软链接不跟：指到目录外（甚至 /）的链接会把整盘拖进来，
-    这里只压真实文件，链接本身直接跳过。打不开的文件跳过不中断。
+    绝对路径只拦「禁止浏览」的区域（/proc、/sys、/dev 等），和 /api/preview 同一套；
+    危险区/谨慎区是「不可写」，读和下载仍然允许。
     """
-    for p in root.rglob("*"):
-        if p.is_symlink() or not p.is_file():
+    out: list[Path] = []
+    for raw in path[:200]:
+        raw = str(raw or "").strip()
+        if not raw:
+            continue
+        if os.path.isabs(raw):
+            target = Path(os.path.normpath(raw))
+            if fszones.browse_denied(target):
+                continue
+            if target.exists():
+                out.append(target)
             continue
         try:
-            arc = f"{arc_root}/{p.relative_to(root).as_posix()}"
-            zf.write(p, arcname=arc)
-        except (OSError, ValueError):
+            out.append(_workspace_file(raw))
+        except HTTPException:
             continue
+    return out
 
 
-def _zip_pack(targets: list[Path], out: Path) -> tuple[bool, int]:
-    """在工作线程里把 targets 打进 out 文件，返回 (是否成功, 字节数)
+def _zip_safe_name(name: str) -> str:
+    safe = re.sub(r"[^\w\-.]+", "_", Path(name or "files.zip").name)[:60] or "files.zip"
+    if not safe.lower().endswith(".zip"):
+        safe += ".zip"
+    return safe
 
-    写临时文件而不是内存：sd 卡上的游戏、存档库动辄几个 G，
-    全塞进内存会把后端打挂；落盘后由 FileResponse 流式发出去。
+
+def _zip_tmp_file() -> Path:
+    tmp_dir = paths.data_dir() / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    # 清掉之前进程留下的临时包（后端重启 / 下载中途断开时 BackgroundTask
+    # 不会执行，文件就永久留下了 —— 上一次就攒出过一个 4.9GB 的残包）。
+    # 只认 zip_ 前缀，且只删超过 10 分钟的：同名进程里正在压的一定还很新
+    try:
+        cutoff = time.time() - 600
+        for old in tmp_dir.glob("zip_*.zip"):
+            try:
+                if old.stat().st_mtime < cutoff:
+                    old.unlink(missing_ok=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return Path(tempfile.mkstemp(prefix="zip_", suffix=".zip", dir=tmp_dir)[1])
+
+
+# 打包任务：前端先 POST 建任务拿到 id，再轮询进度，100% 后 GET /api/zip/job/<id>
+# 触发下载。任务内存态只保留最近 20 个、且 30 分钟内有效，避免临时文件越积越多
+_ZIP_JOBS: dict[str, dict] = {}
+_ZIP_TTL = 30 * 60
+# 一次性下载票：浏览器直连下载带不了 Authorization 头，靠这张票放行
+_ZIP_TICKETS: dict[str, dict] = {}
+
+
+def _zip_job_prune() -> None:
+    now = time.time()
+    for jid in [k for k, v in _ZIP_JOBS.items() if now - v["at"] > _ZIP_TTL]:
+        job = _ZIP_JOBS.pop(jid, None)
+        if job and job.get("path"):
+            try:
+                Path(job["path"]).unlink(missing_ok=True)
+            except OSError:
+                pass
+    while len(_ZIP_JOBS) > 20:
+        oldest = min(_ZIP_JOBS, key=lambda k: _ZIP_JOBS[k]["at"])
+        job = _ZIP_JOBS.pop(oldest, None)
+        if job and job.get("path"):
+            try:
+                Path(job["path"]).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _zip_job_run(jid: str, targets: list[Path]) -> None:
+    """线程里压缩，把进度写回任务字典"""
+    job = _ZIP_JOBS.get(jid)
+    if not job:
+        return
+    tmp = Path(job["path"])
+    try:
+        ok, size = _zip_pack(targets, tmp, job["prog"])
+    except Exception as exc:                      # noqa: BLE001
+        job["error"] = f"打包失败：{exc}"
+        job["status"] = "error"
+        tmp.unlink(missing_ok=True)
+        return
+    if not ok:
+        # 可能是取消（任务已从表里摘掉），也可能是目录里没有可打包的文件
+        if job["prog"].get("cancel"):
+            job["status"] = "cancelled"
+        else:
+            job["error"] = "没有可打包的文件"
+            job["status"] = "error"
+        tmp.unlink(missing_ok=True)
+        return
+    if job["prog"].get("cancel"):
+        # 取消发生在收尾前：不留临时文件
+        tmp.unlink(missing_ok=True)
+        job["status"] = "cancelled"
+        return
+    job["size"] = size
+    job["status"] = "done"
+
+
+def _zip_files_of(targets: list[Path]) -> list[tuple[str, Path, int]]:
+    """先把要压的(归档名, 真实路径, 大小)列出来
+
+    先走一遍目录树的好处：前端能立刻拿到「一共多少个文件、多少字节」，
+    压缩时可以按已处理字节报真实百分比。软链接不跟，指到目录外（甚至 /）
+    的链接会把整盘拖进来，这里只收真实文件。
     """
     used: set[str] = set()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED,
-                         allowZip64=True) as zf:
-        for target in targets:
-            if target.is_dir():
-                # 单个目录：保留它自己的名字作为 zip 内的顶层目录
-                arc = target.name
-                n = 1
-                while arc in used:
-                    n += 1
-                    arc = f"{target.name}_{n}"
-                used.add(arc)
-                _zip_add_dir(zf, target, arc)
-                continue
-            # 同名文件加序号，别让后面的覆盖前面的
+    out: list[tuple[str, Path, int]] = []
+    for target in targets:
+        if target.is_dir():
             arc = target.name
             n = 1
             while arc in used:
                 n += 1
-                arc = f"{target.stem}_{n}{target.suffix}"
+                arc = f"{target.name}_{n}"
             used.add(arc)
-            # 单选的软链接同样不跟：/api/zip?path=xxx 传进来的是 resolve 过的路径，
-            # 但调用方也可能本身就是个链接，指向 /etc/shadow 之类的地方
-            if target.is_symlink() or not target.is_file():
-                continue
-            try:
-                zf.write(target, arcname=arc)
-            except OSError:
-                continue
+            for p in target.rglob("*"):
+                if p.is_symlink() or not p.is_file():
+                    continue
+                try:
+                    size = p.stat().st_size
+                    rel = p.relative_to(target).as_posix()
+                except (OSError, ValueError):
+                    continue
+                out.append((f"{arc}/{rel}", p, size))
+            continue
+        arc = target.name
+        n = 1
+        while arc in used:
+            n += 1
+            arc = f"{target.stem}_{n}{target.suffix}"
+        used.add(arc)
+        if target.is_symlink() or not target.is_file():
+            continue
+        try:
+            out.append((arc, target, target.stat().st_size))
+        except OSError:
+            continue
+    return out
+
+
+def _zip_prefix_size(out: Path) -> int:
+    try:
+        return out.stat().st_size
+    except OSError:
+        return 0
+
+
+def _zip_write(entries: list[tuple[str, Path, int]], out: Path, base: int,
+               total: int, prog: dict | None) -> bool:
+    """按清单写 zip；prog 每写一个文件更新推进字节数（给 /api/zip/progress 看）"""
+    try:
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED,
+                             allowZip64=True) as zf:
+            for arc, src, size in entries:
+                if prog is not None and prog.get("cancel"):
+                    # 用户点取消：剩下的不再压，由调用方删掉半成品
+                    return False
+                try:
+                    zf.write(src, arcname=arc)
+                except (OSError, ValueError):
+                    pass
+                if prog is not None:
+                    prog["done"] += size
+                    prog["current"] = arc
+                    prog["percent"] = min(99.0,
+                                          round((base + prog["done"]) / total * 1000) / 10) \
+                        if total > 0 else 0
+    except (OSError, zipfile.BadZipFile):
+        return False
+    if prog is not None:
+        prog["percent"] = 100.0
+    return True
+
+
+def _zip_pack(targets: list[Path], out: Path, prog: dict | None = None) -> tuple[bool, int]:
+    """在工作线程里把 targets 打进 out 文件，返回 (是否成功, 字节数)
+
+    写临时文件而不是内存：sd 卡上的游戏、存档库动辄几个 G，
+    全塞进内存会把后端打挂；落盘后由 FileResponse 流式发出去。
+
+    进度条的一小段留给「浏览器下载」，所以压缩阶段最多报 99%，到 100% 的是
+    /progress 接口 —— 这里只负责把真实处理量写进 prog。
+    """
+    entries = _zip_files_of(targets)
+    total = sum(size for _arc, _src, size in entries)
+    if prog is not None:
+        prog["file_count"] = len(entries)
+        prog["total"] = total
+        prog["percent"] = 0.0
+    if not _zip_write(entries, out, _zip_prefix_size(out), total, prog):
+        return False, 0
     try:
         size = out.stat().st_size
     except OSError:
@@ -1042,39 +1194,16 @@ def register(app) -> None:
         path = path or []          # 不用 [] 作默认值：可变对象会被所有请求共享
         if not path:
             raise HTTPException(status_code=400, detail="no files")
-        roots = _fs_workspace_roots()
-
-        def resolve(raw: str) -> Path | None:
-            """把请求里的路径落到真实文件；不允许的一律 None"""
-            raw = str(raw or "").strip()
-            if not raw:
-                return None
-            if os.path.isabs(raw):
-                target = Path(os.path.normpath(raw))
-                # 只拦「禁止浏览」的区域（/proc、/sys、/dev 等），和 /api/preview 同一套：
-                # 危险区/谨慎区是「不可写」，读和下载仍然允许
-                if fszones.browse_denied(target):
-                    return None
-                return target if target.exists() else None
-            try:
-                return _workspace_file(raw)
-            except HTTPException:
-                return None
-
-        targets = [t for t in (resolve(p) for p in path[:200]) if t is not None]
+        targets = _zip_resolve(path)
         if not targets:
             raise HTTPException(status_code=404, detail="file not found")
-        safe = re.sub(r"[^\w\-.]+", "_", Path(name).name)[:60] or "files.zip"
-        if not safe.lower().endswith(".zip"):
-            safe += ".zip"
+        safe = _zip_safe_name(name)
         # 压缩是纯 CPU + 磁盘 IO，几个 G 的目录会卡住整个事件循环
         # （WebSocket 心跳、其它请求全停），所以整段丢到线程里跑。
         # 结果写临时文件再用 FileResponse 流式发：内存占用和目录大小无关，
         # 下载完由 BackgroundTask 删掉。不设总量上限——「把 sd 卡上的东西
         # 拷回电脑」正是这个功能的用法，只要求临时目录放得下。
-        tmp_dir = paths.data_dir() / "tmp"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        tmp = Path(tempfile.mkstemp(prefix="zip_", suffix=".zip", dir=tmp_dir)[1])
+        tmp = _zip_tmp_file()
         try:
             ok, size = await asyncio.to_thread(_zip_pack, targets, tmp)
         except Exception as exc:
@@ -1092,6 +1221,137 @@ def register(app) -> None:
 
         return FileResponse(
             tmp, media_type="application/zip", filename=safe,
+            background=BackgroundTask(_cleanup),
+            headers={"Content-Length": str(size)},
+        )
+
+    @router.post("/api/zip/job")
+    async def api_zip_job_create(payload: dict):
+        """建一个打包任务，立刻返回 id；压缩在后台线程跑，前端轮询进度
+
+        body: {paths: [绝对/相对工作区路径], name: 下载文件名}
+        """
+        raw = payload.get("paths") or payload.get("path") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list) or not raw:
+            raise HTTPException(status_code=400, detail="no files")
+        targets = _zip_resolve([str(p) for p in raw])
+        if not targets:
+            raise HTTPException(status_code=404, detail="file not found")
+        _zip_job_prune()
+        jid = "z" + secrets.token_hex(8)
+        name = _zip_safe_name(str(payload.get("name") or "files.zip"))
+        _ZIP_JOBS[jid] = {
+            "at": time.time(), "status": "packing", "path": str(_zip_tmp_file()),
+            "name": name, "error": "", "size": 0,
+            "prog": {"percent": 0.0, "done": 0, "total": 0,
+                     "file_count": 0, "current": ""},
+        }
+        asyncio.get_running_loop().run_in_executor(None, _zip_job_run, jid, targets)
+        return {"ok": True, "id": jid, "name": name}
+
+    @router.get("/api/zip/progress")
+    async def api_zip_progress(id: str = Query(default="")):
+        """查打包进度；前端据此画进度条，done 后去 /api/zip/dl/<ticket> 下载"""
+        job = _ZIP_JOBS.get(id)
+        if not job:
+            raise HTTPException(status_code=404, detail="任务不存在或已过期")
+        if job["status"] == "done" and job["size"] > 0:
+            # 压缩完还没被下载：报 100% 让前端立刻进入下载阶段
+            percent = 100.0
+        else:
+            percent = job["prog"].get("percent", 0.0)
+        out = {
+            "ok": True, "status": job["status"], "percent": percent,
+            "done_bytes": job["prog"].get("done", 0),
+            "total_bytes": job["prog"].get("total", 0),
+            "file_count": job["prog"].get("file_count", 0),
+            "current": job["prog"].get("current", ""),
+            "size": job["size"], "name": job["name"], "error": job["error"],
+        }
+        # 打包完成后发一张一次性下载票：浏览器 <a download> 没法带 Authorization 头，
+        # 而 5.4GB 的包走 fetch+blob 会整个读进内存，直接卡死 / 崩页。
+        # 票只能取一次、10 分钟过期，命中即删，放在 URL 里也不至于被反复复用。
+        if job["status"] == "done" and job.get("path"):
+            ticket = secrets.token_urlsafe(18)
+            _ZIP_TICKETS[ticket] = {"jid": id, "at": time.time()}
+            out["ticket"] = ticket
+        return out
+
+    @router.get("/api/zip/dl/{ticket}")
+    async def api_zip_ticket_download(ticket: str):
+        """凭一次性票取打包结果（浏览器直连下载，不需要 Authorization 头）"""
+        # 顺手清过期票，避免无限堆积
+        now = time.time()
+        for k in [k for k, v in _ZIP_TICKETS.items() if now - v["at"] > 600]:
+            _ZIP_TICKETS.pop(k, None)
+        info = _ZIP_TICKETS.pop(ticket, None)
+        if not info:
+            raise HTTPException(status_code=404, detail="下载链接已失效")
+        job = _ZIP_JOBS.get(info["jid"])
+        if not job or job["status"] != "done":
+            raise HTTPException(status_code=404, detail="打包结果已失效")
+        tmp = Path(job["path"])
+        if not tmp.is_file():
+            _ZIP_JOBS.pop(info["jid"], None)
+            raise HTTPException(status_code=404, detail="打包结果已失效")
+        name = job["name"]
+        size = job["size"]
+        _ZIP_JOBS.pop(info["jid"], None)
+
+        def _cleanup() -> None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        return FileResponse(
+            tmp, media_type="application/zip", filename=name,
+            background=BackgroundTask(_cleanup),
+            headers={"Content-Length": str(size)},
+        )
+
+    @router.delete("/api/zip/job/{jid}")
+    async def api_zip_job_cancel(jid: str):
+        """取消/放弃打包结果：删掉临时文件并让任务失效（前端点取消时调）"""
+        job = _ZIP_JOBS.pop(jid, None)
+        if job:
+            # 还在压缩的线程看到这个标记会尽快收尾并自行清理半成品
+            job["prog"]["cancel"] = True
+            if job.get("path") and job.get("status") != "packing":
+                try:
+                    Path(job["path"]).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        return {"ok": True}
+
+    @router.get("/api/zip/job/{jid}")
+    async def api_zip_job_download(jid: str):
+        """下载打包结果；取走后任务即失效（临时文件随之删掉）"""
+        job = _ZIP_JOBS.get(jid)
+        if not job:
+            raise HTTPException(status_code=404, detail="打包任务不存在或已过期")
+        if job["status"] == "error":
+            raise HTTPException(status_code=500, detail=job["error"] or "打包失败")
+        if job["status"] != "done":
+            raise HTTPException(status_code=409, detail="还在打包中")
+        tmp = Path(job["path"])
+        if not tmp.is_file():
+            _ZIP_JOBS.pop(jid, None)
+            raise HTTPException(status_code=404, detail="打包结果已失效")
+        name = job["name"]
+        size = job["size"]
+        _ZIP_JOBS.pop(jid, None)
+
+        def _cleanup() -> None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        return FileResponse(
+            tmp, media_type="application/zip", filename=name,
             background=BackgroundTask(_cleanup),
             headers={"Content-Length": str(size)},
         )

@@ -3241,6 +3241,16 @@
   }
   .fbt-btn:hover { border-color: var(--brand); color: var(--brand); }
   .fbt-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+  /* 打包完成后的主操作：整行宽、实心，和右上角的小按钮区分开 */
+  .fbt-actions { margin-top: 7px; }
+  .fbt-dl {
+    width: 100%; padding: 6px 10px; font-size: 11.5px; font-weight: 600;
+    border-color: var(--brand); color: var(--brand);
+    background: color-mix(in srgb, var(--brand) 12%, transparent);
+  }
+  .fbt-dl:hover {
+    background: var(--brand); color: #fff; border-color: var(--brand);
+  }
   .fbt-x {
     flex: 0 0 auto; width: 18px; height: 18px; line-height: 16px;
     border: none; border-radius: 50%; background: transparent;

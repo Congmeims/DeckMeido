@@ -3330,26 +3330,113 @@
 
   function fbZipDownloadNow(path, name) {
     var zipName = (name || 'folder') + '.zip';
-    fbToast('正在打包：' + (name || path) + '（大目录可能要等一会儿）', 'file');
-    var url = '/api/zip?name=' + encodeURIComponent(zipName) +
-              '&path=' + encodeURIComponent(path);
-    apiFetch(url).then(function (r) {
-      if (r.ok) return r.blob();
-      // 413 的 detail 说明了实际原因（超过上限），原样转给用户
-      return r.json().catch(function () { return {}; }).then(function (d) {
-        throw new Error(d.detail || ('HTTP ' + r.status));
-      });
-    }).then(function (blob) {
+    // 复用上传队列那张卡：同一套样式、同一个位置，用户不用学第二套提示
+    var task = fbTaskCreate(fb.path || '', {
+      preparing: true, phaseText: '正在统计文件…'
+    });
+    task.kind = 'zip';
+    task.zipLabel = name || path;
+    task.zipId = '';
+    task.zipTimer = null;
+    task.finished = false;
+    fbTaskBind();
+    fbTaskRender();
+
+    function fail(msg) {
+      if (task.zipTimer) { clearTimeout(task.zipTimer); task.zipTimer = null; }
+      task.preparing = false;
+      task.status = 'cancelled';
+      task.finished = true;
+      task.files = [{ rel: name || path, name: zipName, status: 'fail', err: msg }];
+      fbTaskRender();
+    }
+
+    function poll() {
+      if (task.cancelled) { fbTaskRemove(task); return; }
+      if (!task.zipId) return;
+      apiFetch('/api/zip/progress?id=' + encodeURIComponent(task.zipId))
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (!d || d.ok === false) throw new Error((d && d.detail) || '任务已失效');
+          if (d.status === 'error') { fail(d.error || '打包失败'); return; }
+          var pct = Number(d.percent) || 0;
+          task.preparing = false;
+          task.status = 'running';
+          task.phaseText = d.total_bytes
+            ? (fbFmtBytes(d.done_bytes) + ' / ' + fbFmtBytes(d.total_bytes) +
+               ' · ' + (d.file_count || 0) + ' 个文件')
+            : '正在统计文件…';
+          task.files = [{
+            rel: d.current || '', name: zipName, size: d.total_bytes || 0,
+            // 用后端报的真实已处理字节，别拿 percent 反算一次 —— 那样会和
+            // 标题里的「已处理/总量」对不上，进度条看起来像多走了一截
+            loaded: d.done_bytes || 0,
+            status: 'uploading'
+          }];
+          fbTaskPaint(task);
+          if (d.status === 'done' || pct >= 100) {
+            task.zipTimer = null;
+            zipReady(d);
+            return;
+          }
+          task.zipTimer = setTimeout(poll, 400);
+        })
+        .catch(function (err) {
+          task.zipTimer = null;
+          fail(err.message || '轮询失败');
+        });
+    }
+
+    function zipReady(d) {
+      // 打包完不再自动下载：卡片停在完成态，等用户点「下载」。
+      // 下载走 /api/zip/dl/<一次性票>，浏览器直连流式保存，
+      // 不会把整个包读进内存（5GB 的包走 blob 会直接把页面卡死）。
+      if (task.zipTimer) { clearTimeout(task.zipTimer); task.zipTimer = null; }
+      task.preparing = false;
+      task.status = 'done';
+      task.finished = false;      // 保持卡片可交互（有下载按钮），点完才收掉
+      task.phaseText = '';
+      task.zipTicket = d.ticket || '';
+      task.zipFile = d.name || zipName;
+      task.zipSize = d.size || 0;
+      task.files = [{
+        rel: name || path, name: d.name || zipName, size: d.size || 0,
+        loaded: d.size || 0, status: 'done'
+      }];
+      fbTaskRender();
+      fbTaskBind();
+    }
+
+    function zipStartDownload() {
+      if (!task.zipTicket) { fail('下载链接已失效，请重新打包'); return; }
       var a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = zipName;
+      a.href = '/api/zip/dl/' + encodeURIComponent(task.zipTicket);
+      a.download = task.zipFile;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      setTimeout(function () { URL.revokeObjectURL(a.href); }, 30000);
-      fbToast('已保存到本机下载目录：' + zipName, 'file');
+      // 票已用掉，任务收尾；卡片淡出移除，跟上传完成后自动收起一致
+      task.zipTicket = '';
+      task.finished = true;
+      fbTaskPaint(task);
+      setTimeout(function () { fbTaskRemove(task); }, 4000);
+    }
+    task.onZipDownload = zipStartDownload;
+
+    apiFetch('/api/zip/job', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: [path], name: zipName })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        if (!r.ok || !d.id) throw new Error(d.detail || ('HTTP ' + r.status));
+        return d;
+      });
+    }).then(function (d) {
+      task.zipId = d.id;
+      poll();
     }).catch(function (err) {
-      fbToast('打包下载失败：' + err.message, 'file', true);
+      fail(err.message || '无法创建打包任务');
     });
   }
 
@@ -4142,6 +4229,8 @@
 
   function fbTaskCard(task) {
     var st = fbTaskStats(task);
+    // 打包完成但还没点下载：不算「结束」，卡片保持可见，只给下载/关闭两个按钮
+    var zipReadyState = task.kind === 'zip' && !!task.zipTicket;
     var finished = !!task.finished;
     var retryable = task.files.filter(function (f) {
       return f.file && (f.status === 'fail' || f.status === 'cancelled');
@@ -4153,7 +4242,8 @@
     var card = document.createElement('div');
     card.className = 'fbt-card ' +
       (finished ? 'finished' : (task.preparing ? 'preparing' :
-        (task.status === 'running' ? 'running' : 'wait'))) +
+        (task.status === 'running' ? 'running' :
+          (zipReadyState ? 'done' : 'wait')))) +
       (st.failed ? ' fail' : '') + (task.expanded ? ' expanded' : '');
     card.setAttribute('data-task', String(task.id));
 
@@ -4162,8 +4252,16 @@
     var title = document.createElement('span');
     title.className = 'fbt-title';
     if (finished) title.textContent = fbTaskSummary(task);
+    else if (zipReadyState) {
+      title.textContent = '打包完成 · ' + fbFmtBytes(task.zipSize || 0);
+    }
     else if (task.preparing) {
-      title.textContent = '正在读取文件列表 · 已发现 ' + st.total + ' 个文件';
+      title.textContent = task.kind === 'zip'
+        ? '正在打包 · 统计文件中'
+        : '正在读取文件列表 · 已发现 ' + st.total + ' 个文件';
+    } else if (task.kind === 'zip') {
+      title.textContent = '正在打包 ' + (task.zipLabel || '') +
+        (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : '');
     } else {
       title.textContent = '上传 ' + st.total + ' 个文件' +
         (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : '');
@@ -4171,13 +4269,18 @@
     head.appendChild(title);
 
     if (!finished) {
-      if (!task.preparing) {
+      if (!task.preparing && !zipReadyState) {
         var pct = document.createElement('span');
         pct.className = 'fbt-pct';
         pct.textContent = fbPctText(st.percent);
         head.appendChild(pct);
       }
-      head.appendChild(fbTaskBtn('取消', 'cancel', 'danger'));
+      if (zipReadyState) {
+        // 打包已结束、只等下载：只留关闭，点它等于放弃这个包
+        head.appendChild(fbTaskBtn('关闭', 'zip-discard'));
+      } else {
+        head.appendChild(fbTaskBtn('取消', 'cancel', 'danger'));
+      }
     } else {
       if (problems.length) {
         head.appendChild(fbTaskBtn(task.expanded ? '收起' : '明细', 'toggle'));
@@ -4213,6 +4316,19 @@
     now.className = 'fbt-now';
     now.textContent = fbTaskNowText(task, st);
     card.appendChild(now);
+
+    // 打包完成、还没点过下载：给一个明确的下载按钮（点了才真正开始传文件）
+    if (task.kind === 'zip' && task.zipTicket) {
+      var dlRow = document.createElement('div');
+      dlRow.className = 'fbt-actions';
+      var dl = document.createElement('button');
+      dl.className = 'fbt-btn fbt-dl';
+      dl.type = 'button';
+      dl.setAttribute('data-act', 'zip-download');
+      dl.textContent = '下载 ' + fbFmtBytes(task.zipSize || 0);
+      dlRow.appendChild(dl);
+      card.appendChild(dlRow);
+    }
 
     var detail = document.createElement('div');
     detail.className = 'fbt-detail';
@@ -4265,15 +4381,26 @@
   function fbTaskPaint(task) {
     var card = document.querySelector('#fbQueue .fbt-card[data-task="' + task.id + '"]');
     if (!card) return;
+    // 准备阶段的 class 决定进度条走「来回滑动」动画还是按百分比定宽。
+    // 这里只改数字不重建卡片，所以 class 必须跟着 task.preparing 同步，
+    // 否则动画会一直盖住下面写进去的 width（表现就是条子停在中段不动）
+    card.classList.toggle('preparing', !!task.preparing);
+    card.classList.toggle('running',
+      !task.preparing && !task.finished && task.status === 'running');
     var st = fbTaskStats(task);
     // 准备阶段文件是边遍历边入队的，标题里的「已发现 N 个」也要跟着涨
     var title = card.querySelector('.fbt-title');
     if (title) {
       var titleText = task.finished ? fbTaskSummary(task)
         : task.preparing
-          ? ('正在读取文件列表 · 已发现 ' + st.total + ' 个文件')
-          : ('上传 ' + st.total + ' 个文件' +
-             (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : ''));
+          ? (task.kind === 'zip'
+              ? '正在打包 · 统计文件中'
+              : '正在读取文件列表 · 已发现 ' + st.total + ' 个文件')
+          : task.kind === 'zip'
+            ? ('正在打包 ' + (task.zipLabel || '') +
+               (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : ''))
+            : ('上传 ' + st.total + ' 个文件' +
+               (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : ''));
       if (title.textContent !== titleText) {
         title.textContent = titleText;
       }
@@ -4282,7 +4409,10 @@
     if (pct) pct.textContent = fbPctText(st.percent);
     // 准备阶段进度条交给 CSS 的来回滑动动画，不写宽度
     var fill = card.querySelector('.fbt-fill');
-    if (fill && !task.preparing) fill.style.width = st.percent + '%';
+    if (fill && !task.preparing) {
+      // 去掉 preparing 后 CSS 动画立刻失效，这里只需把宽度写成真实百分比
+      fill.style.width = st.percent + '%';
+    }
     var sub = card.querySelector('.fbt-sub');
     if (sub) sub.textContent = fbTaskSubText(task, st);
     var now = card.querySelector('.fbt-now');
@@ -4319,6 +4449,15 @@
         fbTaskRender();
       } else if (act === 'remove') {
         fbTaskRemove(task);
+      } else if (act === 'zip-download') {
+        if (task.onZipDownload) task.onZipDownload();
+      } else if (act === 'zip-discard') {
+        // 等于放弃这个包：后端临时文件靠 TTL 回收，这里只把卡片收掉
+        task.zipTicket = '';
+        task.status = 'cancelled';
+        task.finished = true;
+        fbTaskRender();
+        fbTaskBind();
       }
     });
   }
@@ -4444,6 +4583,15 @@
     });
     // 取消时如果正弹着「覆盖还是跳过」，把挂起标记一起清掉，否则会卡在等待
     task.dupAsk = false;
+    // 打包任务：停掉轮询，并让后端把半成品临时文件删掉
+    if (task.kind === 'zip') {
+      if (task.zipTimer) { clearTimeout(task.zipTimer); task.zipTimer = null; }
+      if (task.zipId) {
+        apiFetch('/api/zip/job/' + encodeURIComponent(task.zipId),
+                 { method: 'DELETE' }).catch(function () {});
+        task.zipId = '';
+      }
+    }
     var xhr = task.xhr;
     task.xhr = null;
     if (xhr) { try { xhr.abort(); } catch (e) {} }

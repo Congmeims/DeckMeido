@@ -62,6 +62,12 @@ function fbTaskStats(task) {
 // 完成后的单行结果：38 个文件 · 1.2 GB · 37 成功 1 失败
 function fbTaskSummary(task) {
   var st = fbTaskStats(task);
+  if (task && task.kind === 'zip') {
+    // 打包是单个 zip 结果，不说「N 个文件 / N 成功」，和上传区分开
+    var z = ['打包完成'];
+    if (st.totalBytes > 0) z.push(fbFmtBytes(st.totalBytes));
+    return z.join(' · ');
+  }
   var parts = [st.total + ' 个文件'];
   if (st.totalBytes > 0) parts.push(fbFmtBytes(st.totalBytes));
   if (task && task.status === 'cancelled') parts.push('已取消');
@@ -85,9 +91,15 @@ function fbPctText(p) {
 // 任务副行 / 当前阶段行：卡片首绘和进度刷新共用，避免两处文案不一致
 function fbTaskSubText(task, st) {
   st = st || fbTaskStats(task);
+  var isZip = task && task.kind === 'zip';
   if (task && task.preparing) {
+    if (isZip) return '正在统计文件…';
     return '已发现 ' + st.total + ' 个文件' +
       (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : '');
+  }
+  if (isZip) {
+    return '已完成 ' + fbFmtBytes(st.sentBytes) +
+      (st.totalBytes ? ' / ' + fbFmtBytes(st.totalBytes) : '');
   }
   return '已完成 ' + st.done + '/' + st.total + ' · 已传 ' +
     fbFmtBytes(st.sentBytes) + (st.totalBytes ? ' / ' + fbFmtBytes(st.totalBytes) : '');
@@ -95,8 +107,11 @@ function fbTaskSubText(task, st) {
 
 function fbTaskNowText(task, st) {
   st = st || fbTaskStats(task);
-  if (st.current) return '正在上传：' + fbMidPath(st.current, 52);
-  if (task && task.preparing) return '正在读取文件夹…';
+  var isZip = task && task.kind === 'zip';
+  if (st.current) {
+    return (isZip ? '正在压缩：' : '正在上传：') + fbMidPath(st.current, 52);
+  }
+  if (task && task.preparing) return isZip ? '正在统计文件…' : '正在读取文件夹…';
   return (task && task.phaseText) ? task.phaseText : '准备中…';
 }
 
@@ -106,6 +121,8 @@ function fbPickTask(tasks) {
   for (var i = 0; i < tasks.length; i++) {
     var t = tasks[i];
     if (!t || t.finished || t.cancelled) continue;
+    // 打包任务是只读的下载任务，由自己的轮询驱动，别被当成上传推进
+    if (t.kind === 'zip') continue;
     if (t.status === 'wait' || t.status === 'running') return t;
   }
   return null;

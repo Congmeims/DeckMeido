@@ -2195,6 +2195,10 @@ def _auth_public(request: Request) -> bool:
         return True
     if path == "/" or path.startswith(AUTH_PUBLIC_URL_PREFIXES):
         return True
+    # /api/zip/dl/ 是打包完成后的浏览器直连下载：<a download> 带不了
+    # Authorization 头，凭的是后端发的一次性票（随机、单次、10 分钟过期）
+    if path.startswith("/api/zip/dl/"):
+        return True
     # /ws 自己鉴权（见 _ws_authorized），这里放行，省得 WS 升级也走 HTTP 这道闸
     return request.scope.get("type") == "websocket"
 
