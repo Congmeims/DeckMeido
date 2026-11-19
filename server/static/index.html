@@ -3294,6 +3294,51 @@
     });
   }
 
+  // 文件夹打包下载：整棵树压成一个 zip。浏览器没法定向「下载整个目录」，
+  // 所以只能走后端 /api/zip 递归打包，再按普通文件存到本机。
+  // 和后端同一套口径：只有「禁止浏览」的区域（/proc、/sys、/dev）不给下，
+  // 危险区/谨慎区仍可下，只是先确认一次。
+  function fbZipDownload(path, name) {
+    var z = fb.zone || 'workspace';
+    if (z === 'danger' || z === 'caution') {
+      var where = z === 'danger' ? '系统目录（危险区域）' : 'SD 卡等外部存储（谨慎操作区域）';
+      fbConfirmDelete(
+        '「' + (name || path) + '」位于' + where + '，会把整个文件夹递归打包。' +
+        '游戏、存档库这类目录动辄几个 G，超过 512 MB 会被拒绝；' +
+        '打包只读取文件、不会改动任何内容。确认继续？',
+        function () { fbZipDownloadNow(path, name); },
+        { yes: '确认打包下载', neutral: true, no: '取消' }
+      );
+      return;
+    }
+    fbZipDownloadNow(path, name);
+  }
+
+  function fbZipDownloadNow(path, name) {
+    var zipName = (name || 'folder') + '.zip';
+    fbToast('正在打包：' + (name || path) + '（大目录可能要等一会儿）', 'file');
+    var url = '/api/zip?name=' + encodeURIComponent(zipName) +
+              '&path=' + encodeURIComponent(path);
+    apiFetch(url).then(function (r) {
+      if (r.ok) return r.blob();
+      // 413 的 detail 说明了实际原因（超过上限），原样转给用户
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        throw new Error(d.detail || ('HTTP ' + r.status));
+      });
+    }).then(function (blob) {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = zipName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 30000);
+      fbToast('已保存到本机下载目录：' + zipName, 'file');
+    }).catch(function (err) {
+      fbToast('打包下载失败：' + err.message, 'file', true);
+    });
+  }
+
   function fbPreview(path, name) {
     rbEl('fbViewer').classList.add('show');
     rbEl('fvName').textContent = name;
@@ -3590,6 +3635,7 @@
     var ro = fbWriteBlocked();
     if (isDir) {
       fbCtxItem('打开', function () { fbLoad(path); });
+      fbCtxItem('打包下载', function () { fbZipDownload(path, name); });
       fbCtxItem('女仆分析', function () {
         if (ws && ws.readyState === 1 && !busy) {
           ws.send(JSON.stringify({ type: 'chat',

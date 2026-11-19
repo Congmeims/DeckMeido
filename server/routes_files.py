@@ -298,6 +298,84 @@ def _workspace_file(rel: str) -> Path:
     return target
 
 
+# 打包下载的总量上限。zip 在内存里打（不落临时文件，省得操心清理），
+# 所以必须有个天花板：sd 卡上的游戏目录动辄几十 G，全塞进来后端直接 OOM。
+ZIP_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _zip_total_size(targets: list[Path]) -> int:
+    """估算打包总量（不读内容，只看 stat）；打不开的条目按 0 计"""
+    total = 0
+    for t in targets:
+        try:
+            if t.is_dir():
+                for p in t.rglob("*"):
+                    if p.is_file():
+                        try:
+                            total += p.stat().st_size
+                        except OSError:
+                            continue
+                        if total > ZIP_MAX_BYTES:
+                            return total
+            else:
+                total += t.stat().st_size
+        except OSError:
+            continue
+        if total > ZIP_MAX_BYTES:
+            return total
+    return total
+
+
+def _zip_add_dir(zf: zipfile.ZipFile, root: Path, arc_root: str) -> None:
+    """把整个目录按 arc_root/ 前缀递归压进去
+
+    软链接不跟：指到目录外（甚至 /）的链接会把整盘拖进来，
+    这里只压真实文件，链接本身直接跳过。打不开的文件跳过不中断。
+    """
+    for p in root.rglob("*"):
+        if p.is_symlink() or not p.is_file():
+            continue
+        try:
+            arc = f"{arc_root}/{p.relative_to(root).as_posix()}"
+            zf.write(p, arcname=arc)
+        except (OSError, ValueError):
+            continue
+
+
+def _zip_pack(targets: list[Path]) -> tuple[bool, bytes | str]:
+    """在工作线程里打包，返回 (成功, zip 字节 / "too_big" / "empty")"""
+    if _zip_total_size(targets) > ZIP_MAX_BYTES:
+        return False, "too_big"
+    buf = io.BytesIO()
+    used: set[str] = set()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for target in targets:
+            if target.is_dir():
+                # 单个目录：保留它自己的名字作为 zip 内的顶层目录
+                arc = target.name
+                n = 1
+                while arc in used:
+                    n += 1
+                    arc = f"{target.name}_{n}"
+                used.add(arc)
+                _zip_add_dir(zf, target, arc)
+                continue
+            # 同名文件加序号，别让后面的覆盖前面的
+            arc = target.name
+            n = 1
+            while arc in used:
+                n += 1
+                arc = f"{target.stem}_{n}{target.suffix}"
+            used.add(arc)
+            try:
+                zf.write(target, arcname=arc)
+            except OSError:
+                continue
+    if not buf.getbuffer().nbytes:
+        return False, "empty"
+    return True, buf.getvalue()
+
+
 # 面板自己敲的命令：和白名单无关，但同样要过危险判定，
 # 用户手动敲的也按当前权限模式审批，避免网页端变成绕过审批的后门
 _term_lock: asyncio.Lock | None = None
@@ -868,36 +946,51 @@ def register(app) -> None:
     @router.get("/api/zip")
     async def api_zip(path: list[str] | None = Query(default=None),
                       name: str = Query(default="files.zip")):
-        """把多个工作区文件打成一个 zip 下载（网页端「打包下载」用）
+        """把若干文件/文件夹打成一个 zip 下载
 
-        在内存里打：一次打包的通常是模型刚生成的几个文档，几十 MB 量级，
-        落到临时文件反而要操心清理。
+        两种用法：
+        - 相对工作区的路径（模型给的附件卡片）：只认工作区，越界跳过；
+        - 绝对路径（文件面板里对任意位置点「打包下载」）：按分区放行，
+          目录递归打包，只有 /proc、/sys、/dev 这类禁止浏览的区域会拒绝。
+
+        先统计总量再打：目录递归可能拖进几个 G，全塞内存会把后端打挂。
+        超过上限就返回 413 并说明实际大小，让用户自己进去挑。
         """
         path = path or []          # 不用 [] 作默认值：可变对象会被所有请求共享
         if not path:
             raise HTTPException(status_code=400, detail="no files")
-        buf = io.BytesIO()
-        used: set[str] = set()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for rel in path[:200]:
-                try:
-                    target = _workspace_file(rel)
-                except HTTPException:
-                    continue
-                # 同名文件加序号，别让后面的覆盖前面的
-                arc = target.name
-                n = 1
-                while arc in used:
-                    n += 1
-                    arc = f"{target.stem}_{n}{target.suffix}"
-                used.add(arc)
-                try:
-                    zf.write(target, arcname=arc)
-                except OSError:
-                    continue
-        if not used:
+        roots = _fs_workspace_roots()
+
+        def resolve(raw: str) -> Path | None:
+            """把请求里的路径落到真实文件；不允许的一律 None"""
+            raw = str(raw or "").strip()
+            if not raw:
+                return None
+            if os.path.isabs(raw):
+                target = Path(os.path.normpath(raw))
+                # 只拦「禁止浏览」的区域（/proc、/sys、/dev 等），和 /api/preview 同一套：
+                # 危险区/谨慎区是「不可写」，读和下载仍然允许
+                if fszones.browse_denied(target):
+                    return None
+                return target if target.exists() else None
+            try:
+                return _workspace_file(raw)
+            except HTTPException:
+                return None
+
+        targets = [t for t in (resolve(p) for p in path[:200]) if t is not None]
+        if not targets:
             raise HTTPException(status_code=404, detail="file not found")
-        data = buf.getvalue()
+        # 压缩是纯 CPU + 磁盘 IO，几百 MB 的目录会卡住整个事件循环
+        # （WebSocket 心跳、其它请求全停），所以整段丢到线程里跑
+        ok, payload = await asyncio.to_thread(_zip_pack, targets)
+        if not ok:
+            raise HTTPException(status_code=413 if payload == "too_big" else 404,
+                                detail=("要打包的内容超过 "
+                                        f"{_fmt_bytes(ZIP_MAX_BYTES)}，"
+                                        "请展开后挑选需要的文件")
+                                if payload == "too_big" else "file not found")
+        data = payload
         safe = re.sub(r"[^\w\-.]+", "_", Path(name).name)[:60] or "files.zip"
         if not safe.lower().endswith(".zip"):
             safe += ".zip"
