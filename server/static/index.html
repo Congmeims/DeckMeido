@@ -3253,7 +3253,27 @@
   // 浏览器自己的下载目录。加 download 属性不行——预览地址是同源 URL，
   // 但直接跳过去会被浏览器当「打开」处理，视频/图片只会在页内播放而不是落盘。
   // 文件在 Deck 上、浏览器可能在另一台电脑，所以只能是「这台电脑的下载目录」。
+  //
+  // 分区差异：服务端只拦 /proc、/sys、/dev；SD 卡、系统目录这些仍可下载，
+  // 但都是用户平时不该碰的地方（读错一份配置也可能把设备搞坏），
+  // 所以这两个分区下载前多问一句，工作区直接下。
   function fbDownload(path, name) {
+    var z = fb.zone || 'workspace';
+    if (z === 'danger' || z === 'caution') {
+      var where = z === 'danger' ? '系统目录（危险区域）' : 'SD 卡等外部存储（谨慎操作区域）';
+      fbConfirmDelete(
+        '「' + (name || path) + '」位于' + where + '，' +
+        '这里不是你平时的工作区；下载只是只读操作、不会改动机器上的文件，' +
+        '确认这就是你要的那一份再继续。',
+        function () { fbDownloadNow(path, name); },
+        { yes: '确认下载', neutral: true, no: '取消' }
+      );
+      return;
+    }
+    fbDownloadNow(path, name);
+  }
+
+  function fbDownloadNow(path, name) {
     fbToast('正在下载：' + name, 'file');
     var url = '/api/preview?path=' + encodeURIComponent(path) + '&raw=1';
     apiFetch(url).then(function (r) {
