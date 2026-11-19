@@ -132,6 +132,54 @@ def _upload_target_dir(dir: str) -> Path:
     return target
 
 
+async def _stream_to_file(dest: Path, chunks, limit: int, declared: int) -> int:
+    """边收边写盘，返回写入字节数；超上限抛 413、写入出错抛 500（都删掉半成品）
+
+    chunks 是异步迭代器（multipart 的 file.read 或 request.stream 都包一层传进来），
+    两块路径共用这一份逻辑：写之前先判上限，落盘量不会超过 limit；
+    任何失败都要把写了一半的目标文件清掉，不能留个残缺文件占着原名。
+    """
+    written = 0
+    too_large = 0
+    try:
+        with open(dest, "wb") as out:
+            async for chunk in chunks:
+                if not chunk:
+                    continue
+                written += len(chunk)
+                if written > limit:
+                    too_large = max(declared, written)
+                    break
+                out.write(chunk)
+    except Exception as e:
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail=f"写入失败：{e}") from e
+    if too_large:
+        dest.unlink(missing_ok=True)
+        info = _upload_limit_error(limit, too_large)
+        raise HTTPException(status_code=413, detail=info["detail"])
+    return written
+
+
+async def _file_chunks(file, size: int = 1024 * 1024):
+    """把 UploadFile 包成异步迭代器，交给 _stream_to_file 分块消费"""
+    while True:
+        chunk = await file.read(size)
+        if not chunk:
+            return
+        yield chunk
+
+
+async def _raw_chunks(request):
+    """原始请求体按块吐出来（/api/upload-stream 用，不经过 multipart 临时文件）"""
+    async for chunk in request.stream():
+        if chunk:
+            yield chunk
+
+
 async def _extract_text(raw: bytes, ext: str):
     """尽量把文档抽成纯文本；抽不出来返回 None（按二进制附件处理）"""
     if ext in _TEXT_EXT:
@@ -332,29 +380,7 @@ def register(app) -> None:
         if declared > 0 and declared > limit:
             return JSONResponse(status_code=413,
                                 content=_upload_limit_error(limit, declared))
-        written = 0
-        too_large = 0
-        try:
-            with open(dest, "wb") as out:
-                while True:
-                    chunk = await file.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    written += len(chunk)
-                    if written > limit:
-                        too_large = max(declared, written)
-                        break
-                    out.write(chunk)
-        except Exception as e:
-            try:
-                dest.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise HTTPException(status_code=500, detail=f"写入失败：{e}") from e
-        if too_large:
-            dest.unlink(missing_ok=True)
-            return JSONResponse(status_code=413,
-                                content=_upload_limit_error(limit, too_large))
+        written = await _stream_to_file(dest, _file_chunks(file), limit, declared)
         return {"ok": True, "name": fn, "dir": str(target_dir), "size": written}
 
     @router.get("/api/upload-limit")
@@ -401,29 +427,7 @@ def register(app) -> None:
         if declared > 0 and declared > limit:
             return JSONResponse(status_code=413,
                                 content=_upload_limit_error(limit, declared))
-        written = 0
-        too_large = 0
-        try:
-            with open(dest, "wb") as out:
-                async for chunk in request.stream():
-                    if not chunk:
-                        continue
-                    written += len(chunk)
-                    # 写之前先判上限：写到一半发现超了就先停，落盘量不会超过 limit
-                    if written > limit:
-                        too_large = max(declared, written)
-                        break
-                    out.write(chunk)
-        except Exception as e:
-            try:
-                dest.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise HTTPException(status_code=500, detail=f"写入失败：{e}") from e
-        if too_large:
-            dest.unlink(missing_ok=True)
-            return JSONResponse(status_code=413,
-                                content=_upload_limit_error(limit, too_large))
+        written = await _stream_to_file(dest, _raw_chunks(request), limit, declared)
         return {"ok": True, "name": fn, "dir": str(target_dir), "size": written}
 
     @router.get("/api/files")
