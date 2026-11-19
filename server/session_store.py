@@ -106,8 +106,12 @@ def prune_trash(target_dir: Path | None = None) -> list[str]:
 
 
 def _atomic_write(p: Path, body: str) -> None:
-    """原子写：先写临时文件再 replace，进程中途被杀也不会留下半个 JSON"""
-    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    """原子写：先写临时文件再 replace，进程中途被杀也不会留下半个 JSON
+
+    临时名带 pid + 线程 id：同一个进程里如果两条线程同时写同一个目标
+    （兜底情形，正常都排在 IO 队列里），也不会互相覆盖对方的半截文件。
+    """
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         tmp.write_text(body, encoding="utf-8")
         os.replace(tmp, p)
@@ -424,16 +428,23 @@ class SessionStore:
                 if sid in self.deleted_sids:
                     return
                 p = self.sess_path(sid)
-                if not data.get("history") and self._disk_count(sid, p) > 0:
-                    print(f"[DeckMeido] 拒绝空写入：会话 {sid} 磁盘有 "
-                          f"{self._disk_count(sid, p)} 条，内存为空，保持磁盘内容不变",
-                          file=sys.stderr)
-                    return
+                # 空历史：先看磁盘上有几条。磁盘也空，就正常写出（新建会话）；
+                # 磁盘有内容，说明内存这份快照已经过期（比如启动时序，
+                # 或者本进程的 history 被别处提前清空），不能拿空覆盖掉
+                if not data.get("history"):
+                    disk = self._disk_count(sid, p)
+                    if disk > 0:
+                        print(f"[DeckMeido] 拒绝空写入：会话 {sid} 磁盘有 "
+                              f"{disk} 条，内存为空，保持磁盘内容不变",
+                              file=sys.stderr)
+                        return
                 body = json.dumps(data, ensure_ascii=False)
                 # 临时文件名带 pid：万一还有别的进程（旧的孤儿后端）在写同一份会话，
                 # 至少不会互相踩坏对方正在写的临时文件
                 _atomic_write(p, body)
-                self._index_put(sid, data)
+                # 索引不在这里更新：内存里的索引已经在 write_session 当场写好了，
+                # 这一份可能更旧（排队期间 history 又追加了几条），再写一次
+                # 会让索引里的 messages 和磁盘主文件对不上
                 # dev_mode 埋点：落盘的思考字符数 / 文件 / 大小，与 reasoning.end、
                 # ui.render 三条长度直接对比，谁短一眼能看出来
                 try:
@@ -533,23 +544,43 @@ class SessionStore:
             t.start()
 
     def flush_index(self) -> None:
-        """立即把索引落盘（进程退出前用；正常路径走延迟合并）"""
+        """立即把索引落盘（进程退出前用；正常路径走延迟合并）
+
+        写盘已经排进 IO 线程，退出前必须等它真写完，否则关机时
+        排队中的索引会被直接丢掉。
+        """
         with self.lock:
             if self._index_timer is not None:
                 self._index_timer.cancel()
                 self._index_timer = None
         self._index_save()
+        try:
+            _IO.submit(lambda: None).result(timeout=5)
+        except Exception as exc:
+            devlog.debug("session_store.flush_index", error=repr(exc))
 
     def _index_save(self) -> None:
-        """把当前索引落盘（线程安全；可在 IO 线程或定时器线程里跑）"""
+        """把当前索引落盘（线程安全；可在 IO 线程或定时器线程里跑）
+
+        真正写盘排进 IO 线程：和会话文件走同一条串行队列，
+        不会出现「索引写到一半、会话文件同时 replace」的交叉窗口。
+        """
         with self.lock:
             self._index_timer = None
             body = json.dumps(list(self._index.values()), ensure_ascii=False)
+        if threading.current_thread().name.startswith("sess-io"):
+            # 已经在 IO 线程里（例如排队中的写入顺带触发一次），直接写，
+            # 再 submit 一次自己会排在自己后面等死
+            self._index_write(body)
+            return
+        io_submit(self._index_write, body)
+
+    @staticmethod
+    def _index_write(body: str) -> None:
         try:
             _atomic_write(sessions_dir() / "index.json", body)
         except Exception as exc:
             devlog.debug("session_store._index_save", error=repr(exc))
-            pass
 
     def read_session(self, sid: str) -> dict:
         """读一个会话文件，读不到/解析失败返回空 dict
