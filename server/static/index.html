@@ -237,7 +237,9 @@
     <div id="sudoAuthCmd" class="sd-auth-cmd"></div>
     <div class="sc-auth-line">
       <input id="sudoAuthPw" class="sc-pw" type="password" placeholder="管理员密码"
-             autocomplete="new-password" spellcheck="false" autocapitalize="off">
+             autocomplete="new-password" name="deckmeido-sudo-pw-not-a-login"
+             data-lpignore="true" data-1p-ignore data-form-type="other"
+             spellcheck="false" autocapitalize="off">
       <button id="sudoAuthEye" class="sc-eye" type="button">显示</button>
       <button id="sudoAuthCancel" class="sc-eye" type="button">取消</button>
       <button id="sudoAuthBtn" class="sc-auth-btn" type="button">确认授权</button>
@@ -766,7 +768,9 @@
               <label>访问令牌（access_token，与 NapCat 的 WebSocket 服务器一致）</label>
               <div class="token-row">
                 <input id="cfgQqToken" type="password" placeholder="NapCat 里设置的令牌"
-                       autocomplete="off" spellcheck="false">
+                       autocomplete="new-password" name="naqcat-token-not-a-login"
+                       data-lpignore="true" data-1p-ignore data-form-type="other"
+                       spellcheck="false">
                 <button id="qqTokenReveal" class="mini-btn" type="button">显示</button>
               </div>
             </div>
@@ -1446,6 +1450,16 @@
     if (tk) h['Authorization'] = 'Bearer ' + tk;
     o.headers = h;
     return fetch(url, o);
+  }
+
+  // 后端只有真鉴权失败才回 401 + X-Meido-Error: unpaired；其余 401（如服务商
+  // 拒绝 Key）原文里也会出现「401」，所以一律按这个标记判断，不看错误文本
+  function markUnpaired(err, r) {
+    if (err && r && r.status === 401 && r.headers
+        && r.headers.get('X-Meido-Error') === 'unpaired') {
+      err.unpaired = true;
+    }
+    return err;
   }
 
   var ws = null;
@@ -9526,11 +9540,15 @@
         + '<div class="api-detail set-grid">'
         + '<div class="field"><label>接口地址（base_url）</label>'
         + '<input class="api-base" type="text" autocomplete="off" data-autosave'
+        + ' name="deckmeido-api-base-not-a-login" data-lpignore="true" data-1p-ignore'
+        + ' data-form-type="other" spellcheck="false"'
         + ' placeholder="https://api.deepseek.com"'
         + ' value="' + escapeHtml(p.base_url) + '"'
         + ' data-asv="' + escapeHtml(p.base_url) + '"></div>'
         + '<div class="field"><label>API Key</label>'
-        + '<input class="api-key" type="password" autocomplete="off" data-autosave placeholder="'
+        + '<input class="api-key" type="password" autocomplete="new-password" data-autosave'
+        + ' name="deckmeido-api-key-not-a-login" data-lpignore="true" data-1p-ignore'
+        + ' data-form-type="other" spellcheck="false" placeholder="'
         + escapeHtml(p.key_set ? (p.masked + '（已配置，留空不改）') : 'sk-…') + '"></div>'
         + '<div class="field-hint grid-full">'
         + (p.key_set ? '已配置：' + escapeHtml(p.masked) : '还没有配置 Key')
@@ -10075,7 +10093,7 @@
         // 会一直留到手动刷新页面
         apiProfilesLoaded = false;
         var msg = (e && e.message) || '';
-        if (/401/.test(msg) && !isHomePage) { showAuth('登录已失效，请重新配对'); }
+        if (e && e.unpaired && !isHomePage) { showAuth('登录已失效，请重新配对'); }
         // 同「保存」：fetch 层失败只给一句人话，别把 Failed to fetch 摆到界面上
         else if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
           setCfgHint('连不上服务，请稍等几秒重试');
@@ -11037,7 +11055,7 @@
         // 提示栏还写着「已保存」，实际什么都没落盘
         if (!r.ok) {
           return r.json().catch(function () { return {}; }).then(function (j) {
-            throw new Error((j && j.detail) || ('保存失败（HTTP ' + r.status + '）'));
+            throw markUnpaired(new Error((j && j.detail) || ('保存失败（HTTP ' + r.status + '）')), r);
           });
         }
         return r.json();
@@ -11145,10 +11163,10 @@
         var msg = (err && err.message) || '';
         var offline = /Failed to fetch|NetworkError|Load failed/i.test(msg);
         var text = offline ? '连不上服务，请稍等几秒重试' : (msg || '保存失败');
-        // 401 = 设备令牌未配对/已失效：只说「失败」用户无法自救，直接引导重新配对。
-        // 本机页面不可能因为鉴权失败（后端按来源放行），这里不弹配对页，
-        // 只提示重试 —— 免得掌机上保存时被误判成「需要配对」
-        if (/401|未配对|重新配对/.test(msg)) {
+        // 只有后端明确标了 X-Meido-Error: unpaired 才是真的没配对。
+        // 以前按「错误文本里有没有 401」判断，服务商回 401（Key 无效）被包成
+        // 502 后原文里仍带着 401，保存 Key 时就被误弹配对页
+        if (err && err.unpaired) {
           text = '保存失败：这台设备还没配对或配对已失效，请重新配对后再保存';
           apiProfileHint.textContent = text;
           setCfgHint(text);
@@ -13281,7 +13299,10 @@
   var modelsErrShown = false;   // 模型列表失败只提示一次，成功后再重置
   function loadToolbar() {
     apiFetch('/api/config')
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (r.status === 401) throw markUnpaired(new Error('登录已失效'), r);
+        return r.json();
+      })
       .then(function (c) {
         if (c.permission_mode) {
           permSelect.value = c.permission_mode;

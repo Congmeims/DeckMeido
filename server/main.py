@@ -2172,7 +2172,10 @@ def _reject_unauthorized(ip: str, action: str, detail: str = "") -> None:
                           if now - t >= _UNAUTH_NOTICE_S]:
                 _unauth_marks.pop(stale, None)
         audit.record("auth", action, "fail", ip=ip, reason="unpaired", detail=detail)
-    raise HTTPException(status_code=401, detail="未配对设备：请先在设置页配对")
+    # X-Meido-Error 是给前端判定的唯一依据：只认 401 + unpaired 才弹配对页。
+    # 上游服务商的 401（Key 无效等）会被包成别的状态码，绝不能再被当成配对失效
+    raise HTTPException(status_code=401, detail="未配对设备：请先在设置页配对",
+                        headers={"X-Meido-Error": "unpaired"})
 
 
 # 总闸挂在整个 app 上，这几条必须未配对可用：首页与静态资源（否则连配对

@@ -343,6 +343,10 @@ def _zip_pack(targets: list[Path], out: Path) -> tuple[bool, int]:
                 n += 1
                 arc = f"{target.stem}_{n}{target.suffix}"
             used.add(arc)
+            # 单选的软链接同样不跟：/api/zip?path=xxx 传进来的是 resolve 过的路径，
+            # 但调用方也可能本身就是个链接，指向 /etc/shadow 之类的地方
+            if target.is_symlink() or not target.is_file():
+                continue
             try:
                 zf.write(target, arcname=arc)
             except OSError:
