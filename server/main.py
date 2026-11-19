@@ -2191,6 +2191,15 @@ def require_auth(request: Request):
     _reject_unauthorized(ip, "api", request.url.path)
 
 
+# require_auth 由「整组 router.dependencies」挂载，FastAPI 注册时会重新解析它的注解。
+# main.py 启用了 from __future__ import annotations，注解在源码里是字符串；一旦
+# 求值失败（Python 3.14 下会退回 annotationlib.Format.FORWARDREF，get_typed_annotation
+# 只处理 str），request 就会被当成必填查询参数，调用时缺参 →
+# TypeError: require_auth() missing 1 required positional argument: 'request'。
+# 这里把已求值的类型对象直接写回 __annotations__，让注册时不再做字符串求值。
+require_auth.__annotations__ = {"request": Request}
+
+
 def _ws_authorized(ws: WebSocket) -> bool:
     # 掌机自己（含通过本机局域网 IP 访问的启动器 WebView）直接放行；
     # 局域网设备从 ?token= 带设备令牌（WebSocket 不能自定义请求头）
