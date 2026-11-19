@@ -589,7 +589,9 @@ def _rpc(method: str, *args):
         raise MediaError(f"不允许的插件方法：{method}", "操作失败")
     token = _loader_token()
     try:
-        from websockets.sync.client import connect  # noqa: F401
+        # 只探一下依赖能不能导入（真正的连接在 _rpc_exchange 里建）
+        import websockets.sync.client  # noqa: F401
+        del websockets
     except Exception as exc:
         raise MediaError("缺少 websockets 库，无法调用 Decky Music",
                          "点播没准备好") from exc

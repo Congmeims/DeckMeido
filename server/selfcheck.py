@@ -436,26 +436,6 @@ def _install_nltk() -> None:
 
 
 def _install_ocr() -> str:
-    """pip 装 rapidocr：轮子和模型一起下，进度按输出行数粗估"""
-    if netmode.enabled():
-        raise RuntimeError(netmode.reason("离线 OCR 依赖下载"))
-    req = Path(__file__).resolve().parent.parent / "requirements-ocr.txt"
-    if not req.is_file():
-        raise _NeedTerminal(f"缺少 {req.name}，请在终端执行：bash install.sh install --deps")
-    _set("ocr_image", "download", 5.0, "下载 RapidOCR 与 PP-OCR 模型…")
-    cmd = [sys.executable, "-m", "pip", "install", "-r", str(req)]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-    if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
-        raise RuntimeError("pip 安装失败：" + " / ".join(tail)[:300])
-    _set("ocr_image", "verify", 92.0, "校验能否导入…")
-    probe = ocr_mod.available()
-    if not probe["ok"]:
-        raise RuntimeError("装完仍无法导入：" + probe["reason"])
-    return f"已就绪（约 {ocr_mod.PACKAGE_MB}MB）"
-
-
-def _install_ocr() -> str:
     """pip 装 rapidocr：轮子和 PP-OCR 模型一起下（约 300MB），装完校验能否导入"""
     if netmode.enabled():
         raise RuntimeError(netmode.reason("离线 OCR 依赖下载"))

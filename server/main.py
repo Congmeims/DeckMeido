@@ -32,8 +32,7 @@ from . import agent_engine
 from . import ws_hub
 from . import overlay_host
 from . import routes_config, routes_files, routes_logs, routes_qq, routes_sessions, routes_system
-from .tts import (LANGUAGES, SPEAKER_LABELS, TTS, TTSError, normalize_speaker,
-                  speaker_from_legacy)
+from .tts import LANGUAGES, SPEAKER_LABELS, TTS, TTSError
 from .stt import STT, STTError, record_supported
 from .tomlcfg import ConfigWriteError, write_config
 
@@ -981,7 +980,7 @@ wake_service.set_tts_stop(tts.stop)
 
 def apply_config(cfg: dict):
     """热更新运行配置（LLM / TTS / 权限模式 / 界面语言），无需重启"""
-    global CFG, PERMISSION_MODE, PERSONA, SYSTEM_PROMPT, MAX_TOOL_ROUNDS, ASK_TEMPLATE
+    global CFG, PERMISSION_MODE, SYSTEM_PROMPT, MAX_TOOL_ROUNDS, ASK_TEMPLATE
     global TRANSLATE_TEMPLATE, UI_LANG, API_STATE
     CFG = cfg
     # [runtime].offline_mode 热更新：保存即生效，所有出网入口下一次调用就走新值
@@ -1829,7 +1828,6 @@ def _shot_ref_content(text: str):
         fp = _shot_ref_path(name)
         if not fp:
             continue
-        import base64
         ext = "jpeg" if fp.suffix.lower() in (".jpg", ".jpeg") else fp.suffix.lstrip(".").lower()
         b64 = base64.b64encode(fp.read_bytes()).decode()
         parts.append({"type": "image_url",
@@ -1851,7 +1849,6 @@ def _img_ref_content(text: str):
     paths = _IMG_REF_RE.findall(text or "")
     if not paths:
         return None
-    import base64
     parts: list[dict] = []
     for raw in paths:
         fp = Path(raw).expanduser()
@@ -2598,7 +2595,6 @@ def _pack_image(data: str, prompt: str = "") -> tuple[dict | None, bytes | None]
     MIME 是唯一的判断依据：宁可返回 None 让调用方报错，也不能把一段
     解析失败的字符串当成图片发给模型，那会变成一条纯粹的空提问。
     """
-    import base64
     raw = (data or "").strip()
     if not raw:
         return None, None

@@ -40,7 +40,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from . import groupmemo, menu, memory, netmode, paths, policy, qqtext, redact
+from . import devlog, groupmemo, menu, memory, netmode, paths, policy, qqtext, redact
 
 # ---------- 图片链接安全校验 ----------
 # NapCat 传来的图片地址是外部输入：必须挡住 file:// 等本地协议、

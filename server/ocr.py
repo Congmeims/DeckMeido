@@ -12,7 +12,6 @@ PP-OCR 权重（Apache-2.0），不需要 Docker、不需要联网推理。
 """
 from __future__ import annotations
 
-import logging
 import threading
 import time
 from pathlib import Path
@@ -37,7 +36,9 @@ class OCRError(RuntimeError):
 def available() -> dict:
     """探一下依赖在不在，不加载模型、不下载任何东西"""
     try:
+        # 只探依赖：导入成功就说明这套东西在，真正建引擎在 _engine()
         import rapidocr  # noqa: F401
+        del rapidocr
     except Exception as exc:  # ImportError 之外还有 cv2 动态库缺失等
         return {"ok": False, "reason": _short(exc)}
     return {"ok": True, "reason": ""}

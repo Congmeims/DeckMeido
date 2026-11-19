@@ -20,7 +20,7 @@ import struct
 import sys
 import time
 
-from . import devlog, netcfg
+from . import devlog
 
 # fcntl 只在 Linux 上有；Windows 开发机跑单元测试时也要能 import 本模块
 try:

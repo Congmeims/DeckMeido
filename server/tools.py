@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from . import audit, devlog, netmode, policy, power, sudo_auth
+from . import audit, devlog, netmode, power, sudo_auth
 
 HTTP = httpx.AsyncClient(timeout=20, follow_redirects=True)
 

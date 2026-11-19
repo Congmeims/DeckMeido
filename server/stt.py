@@ -267,7 +267,9 @@ class STT:
     def installed(self) -> bool:
         """sherpa-onnx 装没装（没装时前端提示去装依赖，而不是报一堆栈）"""
         try:
+            # 只判依赖在不在，导入即可，不用它做别的事
             import sherpa_onnx  # noqa: F401
+            del sherpa_onnx
             return True
         except Exception:
             return False
