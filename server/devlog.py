@@ -41,6 +41,10 @@ LOG_CAP = MAX_BYTES * (BACKUP_COUNT + 1)
 # 通用轮转的扫描间隔（秒）：backend.log 等文件由别的进程持有，
 # 只能轮询大小；10 分钟一次足够及时，也不会频繁扫盘
 ROTATE_INTERVAL = 600.0
+# 非当前 debug 文件（往日的 debug-*.log 整个家族 + 轮转副本）累计上限。
+# RotatingFileHandler 只盯着「自己正在写的那一个」，每天一个新文件、
+# 旧文件没人回收，占用会一路涨到几十 MB；这里按总量裁剪，只留最近的
+DEBUG_POOL_BYTES = 2 * LOG_CAP
 _ROTATE_LOCK = threading.Lock()
 _ROTATOR_STARTED = False
 # 正在被进程持有句柄的文件：只能 truncate，unlink 在 Linux 下看起来删了、
@@ -390,6 +394,45 @@ def _drop_extra_generations(path: Path, keep: int) -> None:
                 pass
 
 
+def _prune_debug_pool(keep: int = DEBUG_POOL_BYTES) -> list[str]:
+    """把「非当前」的 debug 日志按总量裁剪，返回被删的文件名。
+
+    轮转只保证单个文件不超过 5 MB，但每天都会新建一个 debug-<日期>.log，
+    旧的那个就不再被任何 handler 持有、也不会被轮转回收。这里把所有
+    debug-* 家族文件（含轮转后缀）按修改时间新→旧累加，累计超过 keep
+    之后的旧文件直接删除。当前 handler 正在写的那一个永远跳过。
+    """
+    current = ""
+    if _HANDLER is not None:
+        try:
+            current = Path(_HANDLER.baseFilename).name
+        except Exception:
+            current = ""
+    items: list[tuple[float, int, Path]] = []
+    for p in log_files("debug"):
+        if p.name == current:
+            continue
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        items.append((st.st_mtime, st.st_size, p))
+    items.sort(reverse=True)
+    removed: list[str] = []
+    used = 0
+    for _mtime, size, p in items:
+        used += size
+        # 保留条件：加上这一份仍然不超过上限
+        if used <= keep:
+            continue
+        try:
+            p.unlink()
+            removed.append(p.name)
+        except OSError:
+            pass
+    return removed
+
+
 def rotate_logs() -> list[str]:
     """扫一遍日志目录，把超限的 .log 轮转；返回实际轮转的文件名"""
     rotated: list[str] = []
@@ -406,6 +449,7 @@ def rotate_logs() -> list[str]:
                     pass
             if _rotate_one(p):
                 rotated.append(p.name)
+        rotated += _prune_debug_pool()
     if rotated:
         _USAGE_CACHE.update({"ts": 0.0, "data": None})
     return rotated
