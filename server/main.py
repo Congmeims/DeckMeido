@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
+from starlette.routing import WebSocketRoute
 
 from .llm import LLMClient
 from . import approval
@@ -5241,6 +5242,173 @@ agent_engine.init(lambda: sys.modules[__name__])
 # WebSocket 端点：连接管理在 ws_hub，端点要现读本模块的 start_chat / status
 ws_hub.init(lambda: sys.modules[__name__])
 ws_hub.register(app)
+
+
+# ---------- 跨屏键鼠接管 ----------
+# 浏览器把相对位移/按键发过来，后端注入到 Deck。放在这里是因为要用到 app，
+# 而 app 在本文件后半段才创建；它依赖 remote_input 的会话状态与鉴权。
+#
+# 注意：不能用 @app.websocket。main 把 require_auth 挂在 app.router.dependencies
+# 上，FastAPI 的 WS 路由会把这组依赖一并带上，依赖按 HTTP Request 签名解析，
+# 升级阶段会 TypeError → 500，前端只看到「连接已断开」。这里和 ws_hub 一样
+# 用 Starlette 原生 WebSocketRoute，鉴权自己在这一层做。
+
+
+async def _ws_input_endpoint(ws: WebSocket):
+    """跨屏键鼠接管 WebSocket（PC 浏览器 ↔ Deck 输入注入）
+
+    协议（JSON 帧，前后端共同约定）：
+      浏览器 → 后端：
+        {"t":"move","dx":int,"dy":int}      相对位移（已乘灵敏度）
+        {"t":"btn","b":0|1|2,"p":true|false} 左/右/中键，0=左 1=右 2=中
+        {"t":"wheel","d":int}               滚轮格数，正=向下
+        {"t":"key","code":"KeyA","p":bool}  浏览器 KeyboardEvent.code
+        {"t":"ping"}                        心跳（建议 3 秒一次）
+        {"t":"release"}                     结束接管
+      后端 → 浏览器：
+        {"t":"state","ok":bool,"code":"RI_..."}
+
+    鉴权失败直接 4401 关闭；其余失败先回一条 state 再关，原因码不吞。
+    位移在 remote_input.InputSession 里按 ~16ms 合并，不按每个 mousemove 刷进程。
+    """
+    client_ip = ws.client.host if ws.client else ""
+    cfg = CFG.get("remote_input") or {}
+    # 已配对浏览器带设备令牌（WebSocket 用 ?token=），本机来源免验证；两者都算已授权
+    authed = bool(pairing.manager.devices.authenticate(ws.query_params.get("token"))) \
+        or netcfg.is_this_host(client_ip)
+    code = remote_input.access_error(cfg, client_ip, authed)
+    if code == remote_input.RI_UNAUTHORIZED:
+        await ws.accept()
+        await ws.close(code=4401)
+        return
+    if code:
+        await ws.accept()
+        await ws.send_json({"t": "state", "ok": False, "code": code})
+        await ws.close(code=1008)
+        return
+
+    await ws.accept()
+    try:
+        sess = await remote_input.manager.begin(cfg, owner=client_ip)
+    except remote_input.RemoteInputError as exc:
+        await ws.send_json({"t": "state", "ok": False, "code": exc.code,
+                            "detail": exc.detail})
+        await ws.close(code=1008)
+        return
+    await ws.send_json({"t": "state", "ok": True, "code": "RI_ACTIVE",
+                        "backend": sess.backend.kind, "max_minutes": sess.max_minutes,
+                        "diagnosis": remote_input.manager.diagnosis})
+
+    end_code = remote_input.RI_DISCONNECTED
+    try:
+        while True:
+            remain = sess.deadline - time.monotonic()
+            if remain <= 0:
+                end_code = remote_input.RI_TIMEOUT
+                try:
+                    await ws.send_json({"t": "state", "ok": False,
+                                        "code": remote_input.RI_TIMEOUT})
+                except Exception as exc:
+                    devlog.debug("main.ws_input", error=repr(exc))
+                break
+            # 同时等「下一条消息」和「外部释放」：客户端点 logo / 停止按钮时
+            # 由 /api/remote-input/release 结束会话，这里必须立刻醒来收尾
+            recv_task = asyncio.create_task(ws.receive_json())
+            stop_task = asyncio.create_task(sess.stop_event.wait())
+            done, pending = await asyncio.wait(
+                {recv_task, stop_task},
+                timeout=min(remote_input.HEARTBEAT_S, remain),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if not done:
+                end_code = remote_input.RI_TIMEOUT
+                try:
+                    await ws.send_json({"t": "state", "ok": False,
+                                        "code": remote_input.RI_TIMEOUT})
+                except Exception as exc:
+                    devlog.debug("main.ws_input", error=repr(exc))
+                break
+            if stop_task in done:
+                end_code = sess.end_code or remote_input.RI_RELEASED
+                if end_code != remote_input.RI_RELEASED:
+                    try:
+                        await ws.send_json({"t": "state", "ok": False,
+                                            "code": end_code})
+                    except Exception as exc:
+                        devlog.debug("main.ws_input", error=repr(exc))
+                break
+            try:
+                msg = recv_task.result()
+            except WebSocketDisconnect:
+                end_code = remote_input.RI_DISCONNECTED
+                break
+            except Exception:
+                end_code = remote_input.RI_DISCONNECTED
+                break
+            sess.touch()
+            try:
+                action = await sess.handle(msg)
+            except remote_input.RemoteInputError as exc:
+                end_code = exc.code
+                try:
+                    await ws.send_json({"t": "state", "ok": False,
+                                        "code": exc.code, "detail": exc.detail})
+                except Exception as exc:
+                    devlog.debug("main.ws_input", error=repr(exc))
+                break
+            if action == remote_input.RI_RELEASED:
+                end_code = remote_input.RI_RELEASED
+                try:
+                    await ws.send_json({"t": "state", "ok": True,
+                                        "code": remote_input.RI_RELEASED})
+                except Exception as exc:
+                    devlog.debug("main.ws_input", error=repr(exc))
+                break
+    except WebSocketDisconnect:
+        end_code = remote_input.RI_DISCONNECTED
+    except Exception as exc:
+        print(f"[DeckMeido] 跨屏接管异常：{exc}", file=sys.stderr)
+        end_code = remote_input.RI_INJECT_FAILED
+    finally:
+        # 无论正常释放、断线、超时还是异常，都走同一个结束路径释放所有按键
+        try:
+            await remote_input.manager.finish(end_code)
+        finally:
+            try:
+                await ws.close()
+            except Exception as exc:
+                devlog.debug("main.ws_input", error=repr(exc))
+
+
+@app.get("/api/remote-input/status", dependencies=[Depends(require_auth)])
+async def api_remote_input_status():
+    """接管开关 + 当前会话状态：页面加载/重连后据此恢复横幅与 logo 状态"""
+    cfg = CFG.get("remote_input") or {}
+    return {
+        # 合并后的单开关：true = 已开启且允许局域网来源
+        "enabled": remote_input.enabled(cfg),
+        "sensitivity": float(cfg.get("sensitivity", 1.5) or 1.5),
+        "max_minutes": int(cfg.get("max_minutes", 30) or 30),
+        **remote_input.manager.status(),
+    }
+
+
+@app.post("/api/remote-input/release", dependencies=[Depends(require_auth)])
+async def api_remote_input_release():
+    """任何已鉴权页面都能释放接管（Deck 客户端点 logo 走这条）"""
+    released = await remote_input.manager.finish(remote_input.RI_RELEASED)
+    return {"ok": True, "released": released}
+
+
+# 用原生 WebSocketRoute 挂载：绕过 app.router.dependencies 的 require_auth
+# （原因见上面 _ws_input_endpoint 的注释），鉴权在端点内部自己做
+app.router.routes.append(
+    WebSocketRoute("/ws/input", endpoint=_ws_input_endpoint))
+
 
 # QQ 通道：客户端、回合驱动与配置/语音接口都在 routes_qq
 routes_qq.setup(require_auth, lambda: sys.modules[__name__])
