@@ -691,11 +691,14 @@
     position: relative;   /* 供 ＋ 菜单 / 命令菜单 / 回到底部球定位 */
   }
   #composerBar { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  /* sudo 授权行：只在需要授权时占位，复用自检卡的输入/眼睛/确认样式 */
+  /* sudo 授权行：只在需要授权时占位，复用自检卡的输入/眼睛/确认样式。
+     抬成一张浮起的卡片：左边一条主色竖条 + 阴影，和输入框拉开层级，
+     不然贴在输入框上方看着就像输入框的一部分 */
   #sudoAuthBox {
-    display: none; padding: 8px 10px; box-sizing: border-box;
-    border: 1px solid var(--line); border-radius: 10px;
-    background: var(--surface-2);
+    display: none; padding: 9px 12px 10px; box-sizing: border-box;
+    border: 1px solid var(--line); border-left: 3px solid var(--brand);
+    border-radius: 10px; background: var(--surface-2);
+    box-shadow: 0 6px 18px rgba(0,0,0,.18);
   }
   #sudoAuthBox.show { display: block; }
   .sd-auth-head {
@@ -2871,6 +2874,19 @@
     background: var(--surface-2); color: var(--muted); cursor: pointer;
   }
   .sc-auth-btn { flex: 0 0 auto; width: 84px; min-height: 30px; padding: 0 6px; font-size: 12px; }
+  /* 确认授权是这一行的主操作：实心主色，和旁边两个描边次按钮拉开层级 */
+  .sc-auth-btn {
+    border: 1px solid var(--brand); border-radius: 8px;
+    background: var(--brand); color: #fff; cursor: pointer;
+  }
+  .sc-auth-btn:hover { filter: brightness(1.06); }
+  /* 取消是次操作里的退出项：描边保持中性，hover 才转危险色，
+     避免和「显示」这个纯辅助按钮完全同款、看不出是关闭授权 */
+  #sudoAuthCancel { color: var(--muted); }
+  #sudoAuthCancel:hover {
+    color: var(--danger); border-color: var(--danger);
+    background: rgba(228,80,80,.12);
+  }
   .sc-auth-err {
     margin-top: 4px; font-size: 11.5px; color: #d0492b; line-height: 1.4;
     overflow-wrap: anywhere;
