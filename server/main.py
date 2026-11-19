@@ -2177,12 +2177,32 @@ def _reject_unauthorized(ip: str, action: str, detail: str = "") -> None:
     raise HTTPException(status_code=401, detail="未配对设备：请先在设置页配对")
 
 
+# 总闸挂在整个 app 上，这几条必须未配对可用：首页与静态资源（否则连配对
+# 页面都打不开）、启动时问登录状态的 auth/session、鉴权页显示的版本号、
+# 界面文案，以及配对流程本身（未配对设备只有这些接口能访问）。
+AUTH_PUBLIC_PATHS = frozenset({
+    "/api/auth/session", "/api/version", "/api/i18n", "/api/pair/waiting",
+})
+AUTH_PUBLIC_PREFIXES = ("/api/pair/",)
+# 首页与静态资源不走路由，用 URL 前缀判断（挂载点不会进 request.url.path）
+AUTH_PUBLIC_URL_PREFIXES = ("/static/", "/uploads/", "/files/")
+
+
+def _auth_public(request: Request) -> bool:
+    path = request.url.path
+    if path in AUTH_PUBLIC_PATHS or path.startswith(AUTH_PUBLIC_PREFIXES):
+        return True
+    return path == "/" or path.startswith(AUTH_PUBLIC_URL_PREFIXES)
+
+
 def require_auth(request: Request):
     """接口总闸：本机回环/本机网卡来源免验证，局域网必须带已配对设备令牌。
 
     令牌由客户端放在 Authorization 请求头里（不用 Cookie），静态页面本身
     不设防，未配对时前端会弹 PIN 配对，受保护接口统一 401。
     """
+    if _auth_public(request):
+        return
     ip = _client_ip(request)
     if netcfg.is_this_host(ip):
         return
