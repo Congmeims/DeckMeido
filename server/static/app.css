@@ -1353,6 +1353,16 @@
      这样进设置不会「跳到一个别的界面」，两边的间距和字号也跟对话页一致 */
   body.settings-mode .sb-sess-block,
   body.settings-mode #chatView { display: none; }
+  /* 设置页的导航就在左栏里，左栏不能收成 0 宽：收起来就只剩一条 44px 的
+     #sbRail（设置模式下又没渲染内容），整块分区导航连「返回」都没了，
+     只能点顶栏「菜单」碰运气。所以设置模式下强制展开侧栏，
+     对话页的折叠状态原样保留，退出设置后自动恢复 */
+  body.settings-mode #sidebar { flex: 0 0 15%; overflow: hidden; border-right: 1px solid var(--line); }
+  body.settings-mode .sb-body,
+  body.settings-mode .sb-head {
+    display: flex; opacity: 1; pointer-events: auto; visibility: visible;
+    width: auto; min-width: 0; padding: 0; overflow: visible;
+  }
   /* 顶栏不归 #chatView 管：它留在 #main 顶上，所以设置页顶上看到的
      就是对话页那一模一样的一条 */
   .sb-set-block { display: none; flex-direction: column; min-height: 0; }
@@ -2599,6 +2609,12 @@
     opacity: 1; visibility: visible;
     transition: opacity .18s ease .1s, visibility 0s linear 0s;
   }
+  /* 收起后 #sidebar 宽 0 且 overflow:visible，#sbRail 是绝对定位，
+     靠出来的就是这一块 44x45。但它的 z-index:2 只在 #sidebar 的层叠上下文里管用，
+     侧栏作为 flex 子项没设 z-index 时会画在 #main 的 header（z-index:1）下面，
+     按钮被顶栏盖住就点不到了——这就是「收起后再也呼不出来」的原因。
+     给侧栏在收起态抬高一层，窄条才真的浮在中间顶栏之上 */
+  body.sb-collapsed #sidebar { z-index: 3; }
   #sbRail button, #sbRail .side-toggle { align-self: center; pointer-events: auto; }
   #sidebar .sys-card { position: relative; }
   /* 两侧折叠按钮共用一套：同尺寸同圆角同反馈，各自钉在栏顶那一行的
@@ -2807,6 +2823,11 @@
     body.sb-collapsed .sb-head { display: flex; }
     body.sb-collapsed #sbRail { display: none; }
     #sbToggle { display: none; }
+    /* 设置页左栏是分区导航，窄屏下直接以抽屉常开的形式露出，不然进设置后
+       整块导航没了，只剩顶栏那颗「菜单」才找得回来 */
+    body.settings-mode #sidebar {
+      transform: none; width: 310px; flex: none;
+    }
     #btnMenu { display: block; }
   }
   /* 手机竖屏（≈390px）：顶栏、时间线、输入栏都要单独收窄，否则会被挤出屏幕 */
