@@ -35,6 +35,8 @@ class _TuneReq(BaseModel):
     blur: int | None = None
 
 
+# dim 在前端是「界面透明度」：越大上层 UI 越透、壁纸越清楚（见 index.html
+# 的 applyCfgAppearance）。新装默认 45，与设置页滑条的初始位置一致
 DIM_DEFAULT = 45
 BLUR_DEFAULT = 0
 
@@ -98,12 +100,17 @@ def _mtime(name: str) -> int:
         return 0
 
 
-async def _publish(updates: dict) -> None:
-    """写配置并把新主题推给所有端（网页/客户端/插件/大屏）"""
+async def _publish(updates: dict, data: dict | None = None) -> None:
+    """写配置并把新主题推给所有端（网页/客户端/插件/大屏）
+
+    data 只给 api_theme_config 用：它刚把两项一起写完，快照就是这次的结果。
+    其余广播一律现读配置 —— 曾经在这里加过「拖动窗口内沿用进程里缓存的
+    旧值」，进程重启后缓存是默认值，换壁纸的广播就会把滑条打回 0。
+    """
     m = get_main()
     m.save_config({"appearance": updates})
     try:
-        await m.manager.broadcast({"type": "theme_changed", "data": current_theme()})
+        await m.manager.broadcast({"type": "theme_changed", "data": data or current_theme()})
     except Exception:
         pass
 
@@ -177,15 +184,16 @@ def register(app) -> None:
 
     @router.post("/api/theme/config")
     async def api_theme_config(req: _TuneReq):
-        """压暗 / 模糊：两个滑杆停手后落到这里，别的端立刻跟着变"""
-        updates = {}
-        if req.dim is not None:
-            updates["dim"] = _clamp_int(req.dim, DIM_DEFAULT, 0, 80)
-        if req.blur is not None:
-            updates["blur"] = _clamp_int(req.blur, BLUR_DEFAULT, 0, 24)
-        if not updates:
-            return {"ok": False, "error": "没有要改的项"}
-        await _publish(updates)
+        """压暗 / 模糊：两个滑杆停手后落到这里，别的端立刻跟着变
+
+        只改传上来的那一项，另一项按调用方看到的值回写并原样推送：
+        这一项自己的值以本次操作为准，不会被另一台的旧值盖回去。
+        """
+        cur = current_theme()
+        dim = cur["dim"] if req.dim is None else _clamp_int(req.dim, DIM_DEFAULT, 0, 80)
+        blur = cur["blur"] if req.blur is None else _clamp_int(req.blur, BLUR_DEFAULT, 0, 24)
+        await _publish({"dim": dim, "blur": blur},
+                       dict(cur, dim=dim, blur=blur))
         return {"ok": True, "theme": current_theme()}
 
     @router.get("/api/theme/candidates/{cid}")

@@ -1907,6 +1907,9 @@
     box-shadow: 0 2px 6px rgba(0,0,0,.35);
     pointer-events: none;
     box-sizing: border-box;
+    /* 位置由脚本按「抓手中心 = kr + 可用宽 × 进度」写成 translateX(px)，
+       和点击判值用同一套像素坐标（不要再改回 left: %） */
+    will-change: transform;
   }
   /* 命中层：整行可点，肉眼不可见（不要用 display:none，否则键盘也失效） */
   .rg input[type="range"] {
@@ -1919,6 +1922,9 @@
     appearance: none;
     background: transparent;
     border: 0;
+    /* 判值完全由 .rg 的指针事件负责，关掉触屏/触控板的原生手势，
+       否则浏览器会把拖动当成页面滚动、range 也跟着抢事件 */
+    touch-action: none;
   }
   .rg:focus-within .rg-knob {
     box-shadow: 0 0 0 4px rgba(26,159,255,.28), 0 2px 6px rgba(0,0,0,.35);
@@ -2495,8 +2501,11 @@
      顶栏 / 侧栏 / 输入区 / 助手气泡改用半透明底，壁纸透出来。
      没有壁纸时 --wallpaper 是 none，这一层什么都不画，--panel-alpha 也是 1，
      三档内置主题的观感与以前完全一致。
-     --wall-dim 是「压暗」：壁纸不透明度 = 1 - 压暗，暗到一定程度文字才看得清；
-     --wall-blur 是大图在小屏上糊一点，减少噪点干扰阅读。
+     --wall-dim 现在固定为 0（壁纸层不压暗）；「压暗壁纸」滑条改成控制
+     上层界面的透明度，落到 --panel-alpha：越小面板越实、壁纸被挡得越多，
+     越大面板越透、壁纸越清楚。两者以前各做一半、效果打架。
+     --wall-blur 是大图在小屏上糊一点，减少噪点干扰阅读（前端在 10px 之后
+     做平方根收口，滑条右半截不会变成没反应的死区）。
      这三个变量由 index.html 的 applyCfgAppearance() 按后端配置写在
      documentElement 的内联样式上（内联优先级高于三档主题的属性选择器）。 */
   :root {
@@ -2526,31 +2535,62 @@
      虚化，既透出氛围又不影响读字。
      中间对话区没有气泡的裸字（思考链、时间线、系统提示、进度小字）也直接
      压在壁纸上，所以对话栏本身铺一层很淡的雾面，字才有底——不铺的话
-     亮色壁纸配 --muted 灰字基本读不出来 */
+     亮色壁纸配 --muted 灰字基本读不出来。
+     --glass 是「毛玻璃强度」，只在设置页出现、默认 0：
+     为 0 时下面两处 backdrop-filter 恰好是 blur(0)，观感与之前完全一致；
+     拉大后各面板背后虚化更强、saturate 提高，玻璃感更明显。 */
+  :root { --glass: 0px; }
   html.wall-on header,
   html.wall-on #sidebar,
   html.wall-on #sbRail,
+  html.wall-on #rightbar,
   html.wall-on #composer,
   html.wall-on #chatView {
     background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
-    backdrop-filter: blur(14px) saturate(1.1);
+    backdrop-filter: blur(calc(14px + var(--glass))) saturate(calc(1.1 + var(--glass) / 14));
+  }
+  /* 右栏（文件管理器 / 终端）以前整栏是一块不透明的 --surface，和左栏的
+     半透明玻璃对不上。上面已经把 #rightbar 加进半透明名单，这里再让里面
+     自成一块的「浅色底块」跟着透明：顶部页签条、AI 状态条、路径栏、
+     文件列表里的文件夹行。它们的 --surface-2 在壁纸上看像一块实心板，
+     混一点 --surface 让它们变成「压在玻璃上的浅色卡片」 */
+  html.wall-on #rbHead,
+  html.wall-on .ai-bar,
+  html.wall-on #fbBar,
+  html.wall-on #fbDrop {
+    background: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 70%), transparent);
+  }
+  /* 终端那块自己是一层实心底（xterm 要底色，不能透），有壁纸时给它
+     和半透明右栏一致的外壳：留出同样的圆角内缩，看着是一块嵌在玻璃里的屏 */
+  html.wall-on #rbPaneFile,
+  html.wall-on #rbPaneTerm {
+    background: transparent;
   }
   /* 设置页：卡片、输入框、分区标题都有自己的底色，本来不需要这层雾；
      但 body 让位给壁纸后，设置页整块直接压在图上——卡片之间的空隙、
      卡片本身（--surface 无色时会透）都跟着露壁纸，分区标题的 8% 品牌底
-     更是彻底透明，字浮在图上。这里给设置页铺一层比对话区更实的底，
-     保证「设置页里的一切都是实色」 */
+     更是彻底透明，字浮在图上。这里给设置页铺一层底，厚度沿用主面板的
+     --panel-alpha，和对话页 / 左栏一致；否则「界面透明度」拉到全透时，
+     设置页是一块 88% 的实心板，和系统其它部分对不上。
+     卡片本身跟主面板同一口径，但稍实一点，仍能分出层次 */
   html.wall-on #settingsPanel {
-    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    background: color-mix(in srgb, var(--bg) calc(var(--panel-alpha) * 100%), transparent);
+  }
+  html.wall-on .set-body .card {
+    background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
+    backdrop-filter: blur(calc(8px + var(--glass))) saturate(1.05);
   }
   /* 分区标题（左侧蓝条那种小标题）：品牌色底在壁纸上会淡成透明，
      叠一层同色相的实色底，保证在任何壁纸上都能读 */
   html.wall-on .set-sect {
-    background: color-mix(in srgb, var(--brand) 16%, var(--surface));
+    background: color-mix(in srgb, var(--brand) 16%,
+      color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent));
   }
-  /* 对话栏这层雾要比侧栏更淡：太实会把壁纸的构图整块切掉 */
+  /* 对话栏这层雾要比侧栏更淡：太实会把壁纸的构图整块切掉。
+     以前乘了个 42%，于是「界面透明度」拉满时左栏/右栏几乎全透，
+     中间对话区还是实心板——三栏观感对不上。现在和其它面板同一口径 */
   html.wall-on #chatView {
-    background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 42%), transparent);
+    background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
   }
   /* ---- 设置页「外观」分区 ---- */
   .wall-preview {

@@ -1165,29 +1165,42 @@
             <input id="wallFile" type="file" accept="image/*" hidden>
             <div class="field">
               <div class="field-row">
-                <label>压暗壁纸</label>
+                <label>界面透明度</label>
                 <span class="rg-val" id="wallDimVal">45%</span>
               </div>
               <div class="rg" id="wallDimRg">
                 <div class="rg-rail"><div class="rg-fill"></div></div>
                 <div class="rg-knob"></div>
                 <input id="wallDim" type="range" min="0" max="80" step="5" value="45"
-                       aria-label="压暗壁纸">
+                       aria-label="界面透明度">
               </div>
-              <div class="field-hint">压得越暗，壁纸上的文字越好认；压得少画面更亮。</div>
+              <div class="field-hint">越小界面越实、壁纸被挡得越多；拉大后顶栏、两栏、输入框变透，壁纸更明显。</div>
             </div>
             <div class="field">
               <div class="field-row">
-                <label>模糊</label>
+                <label>壁纸模糊</label>
                 <span class="rg-val" id="wallBlurVal">0px</span>
               </div>
               <div class="rg" id="wallBlurRg">
                 <div class="rg-rail"><div class="rg-fill"></div></div>
                 <div class="rg-knob"></div>
                 <input id="wallBlur" type="range" min="0" max="24" step="2" value="0"
-                       aria-label="模糊">
+                       aria-label="壁纸模糊">
               </div>
-              <div class="field-hint">图片很花、干扰阅读时往右拉一点。</div>
+              <div class="field-hint">图片很花、干扰阅读时往右拉一点，到最右就是完全糊开。</div>
+            </div>
+            <div class="field">
+              <div class="field-row">
+                <label>毛玻璃强度</label>
+                <span class="rg-val" id="wallGlassVal">0px</span>
+              </div>
+              <div class="rg" id="wallGlassRg">
+                <div class="rg-rail"><div class="rg-fill"></div></div>
+                <div class="rg-knob"></div>
+                <input id="wallGlass" type="range" min="0" max="24" step="2" value="0"
+                       aria-label="毛玻璃强度">
+              </div>
+              <div class="field-hint">顶栏、左右两栏、输入框背后的虚化程度。只在有壁纸时看得到效果；只影响这台设备的界面，不会同步到其他端。</div>
             </div>
           </div>
           <div class="card">
@@ -7308,7 +7321,7 @@
             // 广播里带的是完整快照，设置页表单还没渲染过时也能直接用；
             // 不传参数走「主题快照还没到」的占位分支，别把表单写成空值
             var th = msg.data;
-            if (th && th.wallpaper !== undefined) renderAppearanceForm(th);
+            if (th && th.wallpaper !== undefined) renderAppearanceForm(th, true);
           }
           break;
         case 'session_changed':
@@ -11100,7 +11113,10 @@
 
   // 快照没到（theme 为空或带 error）时只同步按钮文案，不写表单：
   // 否则壁纸/配色还没拉下来就先把设置页刷成「没有壁纸」，看着像丢了设置
-  function renderAppearanceForm(theme) {
+  // remote=true：快照是别的端/广播推来的。压暗、模糊这两项可能正在这里被
+  // 拖着（或刚松手，广播还在路上），这种时候不能把表单刷回去，
+  // 只接受后端已经落盘的那一个值；本端拖完的那次保存回来时会带上最终值
+  function renderAppearanceForm(theme, remote) {
     if (!theme || theme.error) {
       syncThemeBtn(document.documentElement.getAttribute('data-theme'));
       return;
@@ -11116,10 +11132,17 @@
     } else {
       wallPreview.innerHTML = '<span class="wall-empty">还没有壁纸，主题就是内置的浅色 / 深色 / 暗黑</span>';
     }
-    wallDim.value = String(Number(a.dim) || 0);
-    wallBlur.value = String(Number(a.blur) || 0);
-    wallDimVal.textContent = wallDim.value + '%';
-    wallBlurVal.textContent = wallBlur.value + 'px';
+    var hold = !!remote && wallTuneBusy();
+    if (!hold || !wallTuneEl || wallTuneEl === wallDim) {
+      wallDim.value = String(Number(a.dim) || 0);
+      wallDimVal.textContent = wallDim.value + '%';
+      if (!hold) CFG_APPEARANCE.dim = Number(a.dim) || 0;
+    }
+    if (!hold || !wallTuneEl || wallTuneEl === wallBlur) {
+      wallBlur.value = String(Number(a.blur) || 0);
+      wallBlurVal.textContent = wallBlur.value + 'px';
+      if (!hold) CFG_APPEARANCE.blur = Number(a.blur) || 0;
+    }
     syncWallRgs();
     var brand = a.palette && a.palette.dark ? a.palette.dark.brand : '';
     if (brand) {
@@ -11132,21 +11155,59 @@
     // 后端广播/撤销壁纸后也会走到这里，顺带把左下角按钮的「自定义」文案对齐
     syncThemeBtn(document.documentElement.getAttribute('data-theme'));
   }
-  // 压暗 / 模糊：本地先预览，停手 400ms 再落盘，拖动过程不发请求
+  // 压暗 / 模糊：本地先预览，停手后落盘。拖动的中间值不发请求，
+  // 停手也只提交本次操作的最终值 —— 另一项不传，后端按自己现存的值保留。
+  // 以前这里把两项一起发，而广播回程/别处的旧值会把另一项盖回去，
+  // 表现就是「一拉就归零」
   var wallTuneTimer = null;
-  function saveWallTune() {
+  // el = 本次动的那一条；不传 = 本次这里什么都没改（比如只是刷新了主题），
+  // 此时不提交，免得把别的端刚存的压暗/模糊用本地旧值写回去
+  function saveWallTune(el, delay) {
     clearTimeout(wallTuneTimer);
+    // 本次什么都没改：只按本地快照重画，绝不提交 —— 以前这里调
+    // applyCfgAppearance()，而它会拿本地旧值回写快照，下一次保存就把
+    // 拖动结果换成旧值，「滑到 40% 下一秒自己归零」
+    if (!el) { applyCfgAppearance(); return; }
     wallTuneTimer = setTimeout(function () {
-      CFG_APPEARANCE.dim = Number(wallDim.value) || 0;
-      CFG_APPEARANCE.blur = Number(wallBlur.value) || 0;
+      wallTuneEl = null;
+      wallTuneEndAt = Date.now() + 900;
+      var body = {};
+      if (el === wallDim) {
+        CFG_APPEARANCE.dim = Number(wallDim.value) || 0;
+        body.dim = CFG_APPEARANCE.dim;
+      } else if (el === wallBlur) {
+        CFG_APPEARANCE.blur = Number(wallBlur.value) || 0;
+        body.blur = CFG_APPEARANCE.blur;
+      }
       applyCfgAppearance();
       apiFetch('/api/theme/config', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dim: CFG_APPEARANCE.dim, blur: CFG_APPEARANCE.blur })
+        body: JSON.stringify(body)
       }).then(function (r) { return r.json(); })
         .then(function (d) { if (d && !d.error) renderAppearanceForm(d); })
         .catch(function () {});
-    }, 400);
+    }, delay || 400);
+  }
+  // 正在这条滑杆上操作：别的端推来的快照不能把表单刷回去，
+  // 否则刚拖到的值立刻被打回旧值
+  var wallTuneEl = null;
+  var wallTuneEndAt = 0;
+  function wallTuneBusy() {
+    return !!wallTuneEl || Date.now() < wallTuneEndAt;
+  }
+  function startWallTune(el) {
+    wallTuneEl = el;
+    wallTuneEndAt = 0;
+  }
+  function endWallTune(el) {
+    saveWallTune(el, 0);
+  }
+  // 键盘按住方向键时 input 与 change 会交替触发：拖动中一律用短防抖，
+  // 免得每一次按键都发一次请求
+  function wallTuneStep(el) {
+    startWallTune(el);
+    clearTimeout(wallTuneTimer);
+    wallTuneTimer = setTimeout(function () { saveWallTune(el, 0); }, 300);
   }
   // 自绘滑块：原生 range 的拇指样式各浏览器不同，Deck 上鼠标/触控落点还偏，
   // 改成「隐形 range 盖在自绘轨道上」——点击、拖动、键盘都由原生控件处理，
@@ -11158,26 +11219,49 @@
   function bindWallRg(input) {
     var rg = input.parentNode;
     if (!rg || !rg.classList || !rg.classList.contains('rg')) return;
-    var rail = rg.querySelector('.rg-rail') || rg;
     var dragging = false;
+    // 整条 .rg 才是判值范围，不是中间那 6px 的轨道：轨道宽是全宽的
+    // 1/k，按它换算会「拖 40% 只走几像素」。这里各量一次、缓存住，
+    // 拖动过程中元素不会变尺寸，不必每一帧都读
+    var geo = null;
+    function measure() {
+      var rgB = rg.getBoundingClientRect();
+      var knob = rg.querySelector('.rg-knob');
+      var kr = (knob && knob.offsetWidth ? knob.offsetWidth : 18) / 2;
+      geo = {
+        left: rgB.left,
+        w: rgB.width,
+        kr: kr,
+        // 抓手中心可走的范围（和 syncWallRg 的画法一致）
+        inner: Math.max(1, rgB.width - kr * 2)
+      };
+      return geo;
+    }
     function seek(e) {
-      var b = rail.getBoundingClientRect();
-      if (!b.width) return;
+      var g = geo || measure();
+      if (!g.w) return;
       var min = Number(input.min) || 0;
       var max = Number(input.max) || 100;
       var step = Number(input.step) || 1;
-      var pct = (e.clientX - b.left) / b.width;
+      // 反解 syncWallRg 的映射：pos = kr + inner * pct
+      var pct = (e.clientX - g.left - g.kr) / g.inner;
       pct = Math.max(0, Math.min(1, pct));
       var v = min + pct * (max - min);
       v = Math.round(v / step) * step;
       v = Math.max(min, Math.min(max, v));
       input.value = v;
+      syncWallRg(input);
       input.dispatchEvent(new Event('input', { bubbles: true }));
     }
     rg.addEventListener('pointerdown', function (e) {
       if (e.button !== undefined && e.button !== 0) return;
       dragging = true;
+      measure();
+      startWallTune(input);
       try { rg.setPointerCapture(e.pointerId); } catch (_) {}
+      // 自己算值并且先派给 input：拖拽手势（触屏/触控板）可能到不了
+      // 里面那层透明 range，光靠它的原生行为会「划不动」
+      e.preventDefault();
       seek(e);
     });
     rg.addEventListener('pointermove', function (e) {
@@ -11188,8 +11272,9 @@
     function end(e) {
       if (!dragging) return;
       dragging = false;
+      geo = null;
       try { rg.releasePointerCapture(e.pointerId); } catch (_) {}
-      input.dispatchEvent(new Event('change', { bubbles: true }));
+      endWallTune(input);
     }
     rg.addEventListener('pointerup', end);
     rg.addEventListener('pointercancel', end);
@@ -11199,12 +11284,19 @@
     if (!rg || !rg.classList || !rg.classList.contains('rg')) return;
     var min = Number(input.min) || 0;
     var max = Number(input.max) || 100;
-    var pct = max > min ? (Number(input.value) - min) / (max - min) * 100 : 0;
-    pct = Math.max(0, Math.min(100, pct));
+    var pct = max > min ? (Number(input.value) - min) / (max - min) : 0;
+    pct = Math.max(0, Math.min(1, pct));
     var knob = rg.querySelector('.rg-knob');
     var fill = rg.querySelector('.rg-fill');
-    if (knob) knob.style.left = pct + '%';
-    if (fill) fill.style.width = pct + '%';
+    // 抓手半径：轨道两端是圆头，按 % 直接定位会让 0% 时抓手一半悬在轨道外，
+    // 滑到头再拖就正好落在死区里、看着像归零。这里把 0~100% 映射到
+    // 内缩半径后的可用区间（与 bindWallRg 的 seek 互为反函数）
+    var kr = (knob && knob.offsetWidth ? knob.offsetWidth : 18) / 2;
+    var w = rg.clientWidth || 0;
+    var inner = Math.max(1, w - kr * 2);
+    var pos = w ? kr + inner * pct : 0;
+    if (knob) knob.style.transform = 'translateX(' + pos + 'px)';
+    if (fill) fill.style.width = Math.max(0, pos - kr) + 'px';
   }
   function syncWallRgs() {
     wallRgs.forEach(syncWallRg);
@@ -11216,12 +11308,54 @@
     el.addEventListener('input', function () {
       wallDimVal.textContent = wallDim.value + '%';
       wallBlurVal.textContent = wallBlur.value + 'px';
-      document.documentElement.style.setProperty('--wall-dim', (Number(wallDim.value) || 0) / 100);
-      document.documentElement.style.setProperty('--wall-blur', (Number(wallBlur.value) || 0) + 'px');
+      // 本地即时值同步进快照，再由 applyCfgAppearance 统一换算成 CSS 变量，
+      // 拖动时的实时观感与松手后、刷新后完全一致（两处换算口径不再分叉）
+      CFG_APPEARANCE.dim = Number(wallDim.value) || 0;
+      CFG_APPEARANCE.blur = Number(wallBlur.value) || 0;
+      applyCfgAppearance();
       syncWallRg(el);
-      saveWallTune();
+      // 拖动中：值由 .rg 的指针事件直接给，只防抖保存；键盘改值没有指针
+      // 事件，走短防抖，按住方向键不会连发一堆请求
+      if (wallTuneEl === el) saveWallTune(el);
+      else wallTuneStep(el);
+    });
+    // 停手（键盘改完 / 另有控件抢走焦点）立刻补一次保存：只靠防抖，
+    // 最后一次改动如果紧接着被别的请求回程刷掉，这次值就永远没落盘
+    el.addEventListener('change', function () {
+      syncWallRg(el);
+      if (wallTuneEl === el) endWallTune(el);
     });
   });
+  // 毛玻璃强度：纯本机观感，不进 config.toml、不广播（Deck 的弱 GPU 上开大发虚，
+  // PC 上未必想跟着变），所以存在 localStorage，改了立刻生效。
+  // 用 safe 取值：这个包在整页脚本里，这里抛异常会让后面所有初始化一起停
+  var wallGlass = document.getElementById('wallGlass');
+  var wallGlassVal = document.getElementById('wallGlassVal');
+  var GLASS_KEY = 'deckmeido_glass';
+  if (wallGlass) {
+    wallRgs.push(wallGlass);
+    syncWallRg(wallGlass);
+    bindWallRg(wallGlass);
+    // 拖的时候先改到 CSS（不写回 input），松手再落盘，避免每动一格写一次 localStorage
+    wallGlass.addEventListener('input', function () {
+      var v = Number(wallGlass.value) || 0;
+      document.documentElement.style.setProperty('--glass', v + 'px');
+      wallGlassVal.textContent = v + 'px';
+      syncWallRg(wallGlass);
+    });
+    wallGlass.addEventListener('change', function () {
+      syncWallRg(wallGlass);
+      try { localStorage.setItem(GLASS_KEY, String(Number(wallGlass.value) || 0)); } catch (_) {}
+    });
+    // 读回上次的强度（Key 不存在 = 0，和 CSS 里 --glass 的默认值一致）
+    var savedGlass = 0;
+    try { savedGlass = Number(localStorage.getItem(GLASS_KEY)) || 0; } catch (_) {}
+    savedGlass = Math.max(0, Math.min(24, Math.round(savedGlass / 2) * 2));
+    wallGlass.value = String(savedGlass);
+    wallGlassVal.textContent = savedGlass + 'px';
+    document.documentElement.style.setProperty('--glass', savedGlass + 'px');
+    syncWallRg(wallGlass);
+  }
   document.getElementById('wallPick').addEventListener('click', function () {
     document.getElementById('wallFile').click();
   });
@@ -14362,7 +14496,7 @@
           applyCfgAppearance(c.theme);
           // 只在设置面板已渲染过时回写表单：没渲染过时它的引用还是 undefined
           // （下面是 var 声明，不会提升），而且用户正在拖的滑杆不该被重置
-          if (typeof setBody !== 'undefined' && setBody) renderAppearanceForm(c.theme);
+          if (typeof setBody !== 'undefined' && setBody) renderAppearanceForm(c.theme, true);
         }
         // 权限等 select 的 value 刚被恢复，同步刷新自绘下拉的 label，别显示成第一项
         ddRefreshAll();
@@ -14906,7 +15040,8 @@
     document.documentElement.setAttribute('data-theme', t);
     localStorage.setItem('deckmeido_theme', t);
     syncThemeBtn(t);
-    // 壁纸配色跟着深浅档切换（applyCfgAppearance 声明在下文，函数提升可直接调）
+    // 壁纸配色跟着深浅档切换（applyCfgAppearance 声明在下文，函数提升可直接调）。
+    // 它每次都会重算全部内联变量，并清掉当前用不上的壁纸/品牌变量
     if (typeof applyCfgAppearance === 'function') applyCfgAppearance();
   }
   applyTheme(localStorage.getItem('deckmeido_theme') || 'dark');
@@ -14937,19 +15072,35 @@
     if (!CFG_APPEARANCE || typeof CFG_APPEARANCE !== 'object') {
       CFG_APPEARANCE = { wallpaper: '', url: '', thumb: '', palette: null, dim: 45, blur: 0 };
     }
-    if (theme && typeof theme === 'object' && !(theme instanceof Event)) CFG_APPEARANCE = theme;
+    // 没传快照（或被当成事件对象传进来）时只是「按本地快照重画一遍」。
+    // 以前这种情况会把本地值原样写回 CFG_APPEARANCE，等于把别的端推来的
+    // 旧值也认成自己的，再一保存就把拖动结果盖掉了
+    if (theme && typeof theme === 'object' && !(theme instanceof Event)) {
+      // 本端正在拖压暗/模糊，别处的广播里这两个数是旧的：壁纸、配色照收，
+      // 这两项留给本端拖完那次保存的结果（否则拖动中途整页会闪回旧效果）
+      if (typeof wallTuneEl !== 'undefined' && wallTuneEl) theme = Object.assign({}, theme, {
+        dim: Number(CFG_APPEARANCE.dim) || 0, blur: Number(CFG_APPEARANCE.blur) || 0
+      });
+      CFG_APPEARANCE = theme;
+    }
     var a = CFG_APPEARANCE;
     var html = document.documentElement;
     var pal = a.palette || null;
     var on = !!(a.wallpaper && a.url);
     var dim = Math.max(0, Math.min(80, Number(a.dim) || 0));
-    var blur = Math.max(0, Math.min(24, Number(a.blur) || 0));
+    // 模糊超过 10px 基本就看不出差别了（大图整体糊成一片），滑条右半截
+    // 全是「再拉也没变化」的死区。步长 2、最大 24 的存储值不变，
+    // 这里按平方根收口：10px 之后增长得极慢，0~12 对应实际 0~7px
+    var blurRaw = Math.max(0, Math.min(24, Number(a.blur) || 0));
+    var blur = blurRaw <= 10 ? blurRaw : 10 + Math.sqrt(blurRaw - 10) * 0.9;
     var vars = {
       '--wallpaper': on ? 'url("' + a.url + '")' : 'none',
-      '--wall-dim': String(dim / 100),
-      '--wall-blur': blur + 'px',
-      // 压暗越深，面板就越透——壁纸已经够暗了，面板跟着让出画面
-      '--panel-alpha': on ? String(Math.max(0.55, Math.min(1, 1 - dim / 260))) : '1'
+      // 「压暗壁纸」实际做的事是让上层 UI 变透明：0 = 面板全实、壁纸完全被
+      // 挡住；80 = 面板几乎全透，壁纸最清楚地透出来。壁纸层本身不压暗
+      // （以前还叠了一层 opacity，越拉壁纸越暗、面板越透，两个效果打架）
+      '--wall-dim': '0',
+      '--wall-blur': (Math.round(blur * 2) / 2) + 'px',
+      '--panel-alpha': on ? String(Math.max(0.08, 1 - dim / 88)) : '1'
     };
     if (on && pal) {
       // 浅色主题用浅色那套，深色/暗黑用深色那套；只覆盖配色相关的变量，
@@ -14957,6 +15108,13 @@
       var set = isLightTheme() ? pal.light : pal.dark;
       ['brand', 'user_bubble', 'bg', 'surface'].forEach(function (k) {
         if (set && set[k]) vars['--' + k.replace('_', '-')] = set[k];
+      });
+    } else {
+      // 没壁纸（或没取到配色）时这层内联必须撤掉：内联优先级高于
+      // [data-theme=xxx]，留着上一次的配色就是「切档错乱」——
+      // 浅色档带着深色底、切到暗黑还是原来的牌子色
+      ['--brand', '--user-bubble', '--bg', '--surface'].forEach(function (k) {
+        html.style.removeProperty(k);
       });
     }
     Object.keys(vars).forEach(function (k) { html.style.setProperty(k, vars[k]); });
