@@ -5507,10 +5507,9 @@
 
   rbEl('rbTabFile').addEventListener('click', function () { rbShowTab('file'); });
   rbEl('rbTabTerm').addEventListener('click', function () { rbShowTab('term'); });
-  // 设置页里收起左栏会连分区导航一起藏掉（返回按钮也在里面），所以直接不响应；
-  // 真收了也会被 body.settings-mode 的 CSS 强制展开，点了却没反应反而更迷惑
+  // 设置页同样允许收起左栏：收起后窄条上的 ▶ 能再呼出，
+  // 分区导航收掉也不影响，顶栏「返回」仍在
   rbEl('sbToggle').addEventListener('click', function () {
-    if (document.body.classList.contains('settings-mode')) return;
     sbSetCollapsed(true);
   });
   // 收起后窄条上的展开按钮：只在收起态露出，箭头指向展开方向
