@@ -1511,6 +1511,10 @@
 
   // 当前会话号（会话列表加载后回填）。提前声明：WS 消息回调里要用它做过期判定
   var currentSid = null;
+  // 自定义主题快照（壁纸 + 配色）。提前声明：WS 的 theme_changed 广播可能在
+  // 文件后段的初始化执行到之前就到，那时若还是 undefined 会在 applyCfgAppearance
+  // 里抛异常，连带后面的初始化全部中断。真正取值由 loadTheme 拉 /api/theme 填入。
+  var CFG_APPEARANCE = { wallpaper: '', url: '', thumb: '', palette: null, dim: 45, blur: 0 };
   // 后端进程的启动标识（history 消息里的 boot）。变了 = 后端重启过，
   // 没变 = 只是 WebSocket 断了一下，这一轮还在跑，不该走缓存补回
   var lastBoot = '';
@@ -7143,7 +7147,12 @@
         case 'theme_changed':
           // AI 换了壁纸，或另一台设备改了外观：整站立刻跟着变，不用刷新
           applyCfgAppearance(msg.data || {});
-          renderAppearanceForm(msg.data || {});
+          {
+            // 广播里带的是完整快照，设置页表单还没渲染过时也能直接用；
+            // 不传参数走「主题快照还没到」的占位分支，别把表单写成空值
+            var th = msg.data;
+            if (th && th.wallpaper !== undefined) renderAppearanceForm(th);
+          }
           break;
         case 'session_changed':
           // 广播里带着新的当前会话号：先对齐基线，否则后面别的端的
@@ -10931,8 +10940,14 @@
   var wallPaletteHint = document.getElementById('wallPaletteHint');
   var WALL_HINT_BASE = wallHint.textContent;
 
+  // 快照没到（theme 为空或带 error）时只同步按钮文案，不写表单：
+  // 否则壁纸/配色还没拉下来就先把设置页刷成「没有壁纸」，看着像丢了设置
   function renderAppearanceForm(theme) {
-    var a = (theme && !theme.error) ? theme : CFG_APPEARANCE;
+    if (!theme || theme.error) {
+      syncThemeBtn(document.documentElement.getAttribute('data-theme'));
+      return;
+    }
+    var a = theme;
     CFG_APPEARANCE = a;
     if (a.thumb) {
       wallPreview.innerHTML = '';
@@ -10955,6 +10970,8 @@
       wallPaletteHint.textContent = '导入壁纸后会自动取主色，生成深 / 浅两套配色。';
     }
     document.getElementById('wallClear').disabled = !a.wallpaper;
+    // 后端广播/撤销壁纸后也会走到这里，顺带把左下角按钮的「自定义」文案对齐
+    syncThemeBtn(document.documentElement.getAttribute('data-theme'));
   }
   // 压暗 / 模糊：本地先预览，停手 400ms 再落盘，拖动过程不发请求
   var wallTuneTimer = null;
@@ -11073,9 +11090,20 @@
       if (rr.width) rightStart = Math.min(rightStart, rr.left - hr.left);
     }
     var half = Math.min(hr.width / 2 - leftEnd, rightStart - hr.width / 2);
-    // 左右各留 12px 呼吸；最小 96px，保证输入框不会消失
+    // 左右各留 12px 呼吸
     var w = Math.floor(half * 2 - 24);
-    w = Math.min(440, Math.max(96, w > 0 ? w : 96));
+    // 两侧真的挤不下时，不要硬塞一个 96px 的框：绝对居中的框会溢出顶栏、
+    // 从下方露出来（某些窄窗口尺寸就是这么翻车的）。这时改走到第二行独占，
+    // 和 <=640px 同一套排版（见 CSS 里 body.settings-mode header 的 flex-wrap）。
+    if (w < 96) {
+      hdrSearch.style.width = '';
+      hdrSearch.classList.remove('compact');
+      hdrBar.classList.add('hdr-wrap');
+      settingsSearch.placeholder = HDR_SEARCH_PH;
+      return;
+    }
+    hdrBar.classList.remove('hdr-wrap');
+    w = Math.min(440, w);
     hdrSearch.style.width = w + 'px';
     hdrSearch.classList.toggle('compact', w < 320);
     // 窄了先缩成「搜索设置」，再窄就只留放大镜图标，输入框本身始终在
@@ -11265,6 +11293,9 @@
     if (typeof flushAutoSave === 'function') flushAutoSave();
     document.body.classList.remove('settings-mode');
     document.body.classList.remove('sb-open');
+    // 搜索框回到对话页后不显示，但 fitHdrSearch 曾给顶栏挂过换行标记的，
+    // 这里一并撤掉，免得下次进设置时残留两行布局
+    if (hdrBar) hdrBar.classList.remove('hdr-wrap');
     // 搜索词不跨次保留：下次打开设置还是正常的分区视图
     clearSettingsSearch();
     // 退回对话页：右栏的显示/抽屉状态重新按对话页规则算一遍
@@ -14047,7 +14078,9 @@
         // /api/config 会带回最新快照，这边按它重拉一次壁纸与配色
         if (c.theme) {
           applyCfgAppearance(c.theme);
-          renderAppearanceForm(c.theme);
+          // 只在设置面板已渲染过时回写表单：没渲染过时它的引用还是 undefined
+          // （下面是 var 声明，不会提升），而且用户正在拖的滑杆不该被重置
+          if (typeof setBody !== 'undefined' && setBody) renderAppearanceForm(c.theme);
         }
         // 权限等 select 的 value 刚被恢复，同步刷新自绘下拉的 label，别显示成第一项
         ddRefreshAll();
@@ -14626,19 +14659,37 @@
   // 按这个顺序循环；按钮上写的是「点一下会切到的下一档」，和原来两档时的语义一致
   var THEMES = ['light', 'dark', 'oled'];
   var THEME_NAME = { light: '浅色模式', dark: '深色模式', oled: '暗黑模式' };
+  // 是否已设置自定义主题（壁纸 + 配色）。取色成功后 palette 才有值，
+  // 壁纸还没取完色时不显示「自定义」，此时页面仍是内置主题的样子
+  function customThemeOn() {
+    return !!(CFG_APPEARANCE && CFG_APPEARANCE.wallpaper && CFG_APPEARANCE.url &&
+              CFG_APPEARANCE.palette);
+  }
+  // 左下角按钮文案：自定义生效时写「自定义」，否则写「点一下会切到的下一档」。
+  // 点击行为不变，自定义状态下仍是循环三档（循环后配色跟着换深浅那套）
+  function syncThemeBtn(t) {
+    var el = document.getElementById('btnTheme');
+    if (!el) return;
+    if (customThemeOn()) { el.textContent = '自定义'; return; }
+    var idx = THEMES.indexOf(t);
+    el.textContent = THEME_NAME[THEMES[(idx < 0 ? 0 : idx + 1) % THEMES.length]];
+  }
   function applyTheme(t) {
     if (THEMES.indexOf(t) === -1) t = 'dark';
     document.documentElement.setAttribute('data-theme', t);
     localStorage.setItem('deckmeido_theme', t);
-    var next = THEMES[(THEMES.indexOf(t) + 1) % THEMES.length];
-    document.getElementById('btnTheme').textContent = THEME_NAME[next];
+    syncThemeBtn(t);
     // 壁纸配色跟着深浅档切换（applyCfgAppearance 声明在下文，函数提升可直接调）
     if (typeof applyCfgAppearance === 'function') applyCfgAppearance();
   }
   applyTheme(localStorage.getItem('deckmeido_theme') || 'dark');
-  document.getElementById('btnTheme').addEventListener('click', function () {
+  var btnThemeEl = document.getElementById('btnTheme');
+  if (btnThemeEl) btnThemeEl.addEventListener('click', function () {
     var cur = document.documentElement.getAttribute('data-theme');
-    applyTheme(THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length]);
+    // 当前主题不在 THEMES 里时 indexOf 返回 -1，再加 1 得 0 才对；
+    // 直接取模会得到 NaN，THEMES[NaN] 是 undefined，传给 applyTheme 就炸
+    var idx = THEMES.indexOf(cur);
+    applyTheme(THEMES[(idx < 0 ? 0 : idx + 1) % THEMES.length]);
   });
 
   // ---------- 自定义壁纸 + 自动配色 ----------
@@ -14646,14 +14697,20 @@
   // Deck 与 PC 打开同一台机器就是同一套。三档主题仍由 applyTheme 管，
   // 这里只叠一层内联变量 —— 内联优先级高于 [data-theme=xxx] 的属性选择器，
   // 所以换壁纸后切三档主题依然有效，配色变量按当前明暗档取 dark / light。
-  var CFG_APPEARANCE = { wallpaper: '', url: '', thumb: '', palette: null, dim: 45, blur: 0 };
+  // （CFG_APPEARANCE 的声明提前到文件前段 currentSid 那里，避免 WS 广播早到时是 undefined）
 
   function isLightTheme() {
     return document.documentElement.getAttribute('data-theme') === 'light';
   }
   // 把后端的 theme 快照套到页面上。wall.url 为空 = 没壁纸，原样恢复内置主题
   function applyCfgAppearance(theme) {
-    if (theme && typeof theme === 'object') CFG_APPEARANCE = theme;
+    // CFG_APPEARANCE 的声明在文件后段，而 theme_changed 广播可能在脚本还没执行到
+    // 那里就到：此时它是 undefined，直接读 .palette 会抛异常并中断后面的初始化。
+    // 这里先兜一个空壳，真正值稍后由 loadTheme / renderAppearanceForm 覆盖。
+    if (!CFG_APPEARANCE || typeof CFG_APPEARANCE !== 'object') {
+      CFG_APPEARANCE = { wallpaper: '', url: '', thumb: '', palette: null, dim: 45, blur: 0 };
+    }
+    if (theme && typeof theme === 'object' && !(theme instanceof Event)) CFG_APPEARANCE = theme;
     var a = CFG_APPEARANCE;
     var html = document.documentElement;
     var pal = a.palette || null;
@@ -14677,6 +14734,8 @@
     }
     Object.keys(vars).forEach(function (k) { html.style.setProperty(k, vars[k]); });
     html.classList.toggle('wall-on', on);
+    // 自定义主题的生灭都在这里落地，左下角按钮文案跟着同步
+    syncThemeBtn(html.getAttribute('data-theme'));
   }
   // 切三档主题时配色变量跟着换深浅那一套（见 applyTheme 里的调用）
   // 撤销壁纸后要把内联变量清干净，否则旧颜色会一直压在三档主题之上

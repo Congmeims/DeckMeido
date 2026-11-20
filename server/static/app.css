@@ -1420,6 +1420,23 @@
     max-width: calc(100vw - 24px);
   }
   body.settings-mode .hdr-search { display: flex; }
+  /* 第一行实在塞不下搜索框时（fitHdrSearch 量出来不足 96px），
+     由 JS 给 header 加上 .hdr-wrap：整条换行，搜索框独占第二行。
+     不这样做的话，绝对居中的框会溢出顶栏、从下方露出来。 */
+  body.settings-mode header.hdr-wrap {
+    flex-wrap: wrap; row-gap: 6px;
+    /* header 本身写死 height: 45px，换行后第二行会被压在底边之外。
+       这里必须同时抬高自身高度，否则搜索框照样越界。 */
+    height: auto; min-height: 45px;
+    padding-bottom: 6px;
+    padding-top: calc(env(safe-area-inset-top) + 6px);
+  }
+  body.settings-mode header.hdr-wrap .hdr-search {
+    position: static; transform: none; order: 2;
+    flex: 1 0 100%; width: auto !important;
+    max-width: 440px; margin: 0 auto;
+  }
+  body.settings-mode header.hdr-wrap .hdr-search-count { display: none; }
   .hdr-search-field {
     position: relative; flex: 1 1 auto; min-width: 0;
     display: flex; align-items: center;
@@ -1744,7 +1761,13 @@
   /* 极窄屏顶栏放不下「左右内容 + 居中搜索」时，让搜索独占顶栏第二行。
      左右按钮、标题仍然完整留在第一行，不压缩、不换行；搜索水平占满剩余宽度 */
   @media (max-width: 640px) {
-    body.settings-mode header { flex-wrap: wrap; row-gap: 6px; }
+    /* 同上：换行后必须让 header 自己长高，否则第二行被 45px 的固定高度压出界 */
+    body.settings-mode header {
+      flex-wrap: wrap; row-gap: 6px;
+      height: auto; min-height: 45px;
+      padding-bottom: 6px;
+      padding-top: calc(env(safe-area-inset-top) + 6px);
+    }
     body.settings-mode .hdr-search {
       position: static; transform: none; order: 2;
       flex: 1 0 100%; width: auto !important;
