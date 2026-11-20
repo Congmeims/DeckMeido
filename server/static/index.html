@@ -3481,7 +3481,9 @@
       rbEl('fvMeta').textContent = fbFmtSize(d.size) + (d.kind === 'other' ? '' : ' · ' + d.kind);
       // 媒体和文本都走同一个地址，只是浏览器自己按类型解码。
       // raw=1 让后端吐文件本体（带 Range 支持），视频/音频才能拖进度条
-      var url = src + '&raw=1&v=' + Math.round((d.mtime || 0) * 1000);
+      // <img>/<video>/<audio>/<iframe> 带不上 Authorization 头，设备令牌得拼在
+      // ?token= 上，否则局域网浏览器里图片全部加载失败（只显示「解不了」）
+      var url = deviceTokenQuery(src + '&raw=1&v=' + Math.round((d.mtime || 0) * 1000));
       var isMd = /\.(md|markdown)$/i.test(name || d.path || '');
       var el;
       if (d.kind === 'text' && isMd) {
