@@ -223,11 +223,6 @@
        放在 #composer 里而不是消息区：这样它永远悬在输入框上方居中，
        不会跟右下角的发送按钮挤在一起，输入框长高、排队消息变多时自动跟着上移 -->
   <button id="jumpLatest"></button>
-  <div id="plusMenu">
-    <button id="pmImage">附加图片 / 文件</button>
-    <button id="pmFile">引用工作区文件</button>
-    <button id="pmShot">引用当前屏幕截图</button>
-  </div>
   <div id="fileList"></div>
   <div id="attachBox"></div>
   <div id="queueBox"></div>
@@ -257,7 +252,6 @@
   </div>
   <div id="composerBar">
     <div class="cb-left">
-      <button class="cb-btn" id="btnPlus" style="font-size:16px">＋</button>
       <select class="cb-select" id="permSelect">
         <option value="manual">手动审批</option>
         <option value="auto">自动审批</option>
@@ -14221,7 +14215,6 @@
   }
 
   // ---------- 输入框工具栏：＋附件 / 权限 / 模型 ----------
-  var plusMenu = document.getElementById('plusMenu');
   var fileList = document.getElementById('fileList');
   var imgInput = document.getElementById('imgInput');
   var permSelect = document.getElementById('permSelect');
@@ -14593,22 +14586,11 @@
     });
   }
 
-  // ＋ 附件菜单
-  document.getElementById('btnPlus').addEventListener('click', function (e) {
-    e.stopPropagation();
-    fileList.classList.remove('show');
-    plusMenu.classList.toggle('show');
-  });
+  // 附加菜单已移除：图片/文件走粘贴与拖拽，工作区文件走右侧文件面板
   document.addEventListener('click', function (e) {
-    if (!plusMenu.contains(e.target)) plusMenu.classList.remove('show');
-    if (!fileList.contains(e.target) && e.target.id !== 'pmFile') fileList.classList.remove('show');
+    if (!fileList.contains(e.target)) fileList.classList.remove('show');
   });
 
-  // 附加图片 / 文档：统一走 uploadFiles，图片插 ![](url)，文档插 @{路径}
-  document.getElementById('pmImage').addEventListener('click', function () {
-    plusMenu.classList.remove('show');
-    imgInput.click();
-  });
   imgInput.addEventListener('change', function () {
     uploadFiles(imgInput.files);
     imgInput.value = '';
@@ -14800,10 +14782,9 @@
     else if (files && files.length) uploadFiles(files);
   });
 
-  // 引用工作区文件：@{路径}
+  // 引用工作区文件：@{路径}（由右侧文件面板触发）
   document.getElementById('pmFile').addEventListener('click', function (e) {
     e.stopPropagation();
-    plusMenu.classList.remove('show');
     apiFetch('/api/files')
       .then(function (r) { return r.json(); })
       .then(function (res) {
@@ -14830,7 +14811,6 @@
 
   // 引用当前屏幕截图
   document.getElementById('pmShot').addEventListener('click', function () {
-    plusMenu.classList.remove('show');
     if (ws && ws.readyState === 1 && !busy) {
       ws.send(JSON.stringify({ type: 'chat', text: '截屏，把当前桌面画面展示给我',
                                client: myClient(), device: DEVICE_ID }));
