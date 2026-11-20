@@ -33,7 +33,6 @@ EN: dict[str, str] = {
     "回到最新": "Jump to latest",
     "回复": "Reply",
     "重新生成": "Regenerate",
-    "@ 添加上下文，/ 使用命令": "@ add context, / for commands",
     "按回车加入队列，等这一轮结束自动发送": "Enter to queue; it sends after this turn",
     "终止当前操作（输入框里按回车 = 加入队列）": "Stop this turn (Enter in the box queues a message)",
     # 语音

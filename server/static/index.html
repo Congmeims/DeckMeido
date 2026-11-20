@@ -247,7 +247,7 @@
     <div id="sudoAuthErr" class="sc-auth-err"></div>
   </div>
   <div id="inputWrap">
-    <textarea id="input" rows="1" placeholder="@ 添加上下文，/ 使用命令" enterkeyhint="send"></textarea>
+    <textarea id="input" rows="1" placeholder="" enterkeyhint="send"></textarea>
     <!-- 清空输入框：贴在输入框内右边缘的小图标按钮，只在有内容时出现，点它不会触发发送 -->
     <button id="clearBtn" type="button" aria-label="清空输入框">×</button>
   </div>
@@ -8498,7 +8498,7 @@
     } else {
       sendBtn.textContent = tr('发送');
       sendBtn.classList.remove('stop');
-      input.placeholder = tr('@ 添加上下文，/ 使用命令');
+      input.placeholder = tr('');
     }
   }
 
@@ -14949,57 +14949,6 @@
   setTimeout(function () {
     if (fb.follow && !fb.aiPath && RB.tab === 'file') fbLoad('');
   }, 500);
-
-  // ---------- / 快捷命令 ----------
-  // 压缩上下文：先问后端「会压掉多少」，用户看到条数和 token 再决定
-  safeInit('快捷命令补全', function () {
-  function compactContext() {
-    if (busy) { addSystem('正在执行任务，等这一轮结束再压缩'); return; }
-    var u = '/api/compact';
-    apiFetch(u + '?preview=true', { method: 'POST' })
-      .then(function (r) { return r.json(); })
-      .then(function (p) {
-        if (!p.ok) { addSystem('压缩失败：' + (p.detail || '未知错误')); return; }
-        if (!p.count) { addSystem('对话还很短，无需压缩'); return; }
-        var msg = '将把 ' + p.count + '/' + p.total + ' 条旧消息（约 '
-          + p.tokens + ' token）压成摘要，最近 ' + (p.total - p.count)
-          + ' 条与当前这一轮完整保留，聊天记录不会消失。';
-        if (!window.confirm(msg + '\n\n要现在压缩吗？')) return;
-        return apiFetch(u, { method: 'POST' })
-          .then(function (r) { return r.json(); })
-          .then(function (r2) {
-            addSystem(r2.ok ? '压缩完成' : '压缩失败：' + (r2.detail || '未知错误'));
-          });
-      })
-      .catch(function (e) { addSystem('压缩请求失败：' + e); });
-  }
-
-  var COMMANDS = [
-    { cmd: 'compact', label: '压缩上下文（先预览）', run: function () { compactContext(); } },
-    { cmd: 'shot', label: '截屏并展示', run: function () { input.value = '截屏，把当前桌面画面展示给我'; } },
-    { cmd: 'new', label: '新会话', run: function () { document.getElementById('btnNewSess').click(); } },
-    { cmd: 'weather', label: '查天气（发送询问）', run: function () { input.value = '查一下现在上海的天气'; } }
-  ];
-  input.addEventListener('input', function () {
-    var v = input.value;
-    if (!v.startsWith('/')) { fileList.classList.remove('show'); return; }
-    var q = v.slice(1).toLowerCase();
-    var hits = COMMANDS.filter(function (c) { return c.cmd.startsWith(q); });
-    fileList.innerHTML = '';
-    if (!hits.length) { fileList.classList.remove('show'); return; }
-    hits.forEach(function (c) {
-      var b = document.createElement('button');
-      b.textContent = '/' + c.cmd + '  ' + c.label;
-      b.addEventListener('click', function () {
-        input.value = '';
-        fileList.classList.remove('show');
-        c.run();
-      });
-      fileList.appendChild(b);
-    });
-    fileList.classList.add('show');
-  });
-  });
 
   // ---------- 新手引导 ----------
   // 只在网页里出现，插件端（Decky QAM）不做；每个浏览器只弹一次，
