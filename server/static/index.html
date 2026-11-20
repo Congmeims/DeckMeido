@@ -5459,11 +5459,15 @@
   // 长时间跑、又一直没输出的命令（sleep、等下载、轮询服务）挂满一屏会把有用的
   // 那几条挤出视野，所以先静音等这么久；到点还没有任何输出就自己收成一行
   var TERM_QUIET_MS = 4000;
-  // 命令结束后完整卡片再留多久才折进「更早的命令」归档区。
-  // 以前 5 秒后整条淡出，用户来不及看退出码；现在成功的留 15 秒，
-  // 失败的留 1 分钟（要能回头查报错，又不能让失败卡片常年堆着）
+  // 结束的卡片按「同批一批算」：AI 一口气发十几条命令，它们的 diedAt 前后
+  // 只差几毫秒，如果各按各的 15s / 60s 计时，就是十几张整卡同时挂在右栏。
+  // 改成以「最近一次结束」为基准统一切换：最后一条结束满这么久，整批一起
+  // 折进归档区。成功 15s、失败 60s（失败要能回头查退出码和报错）
   var TERM_KEEP_MS = 15000;
   var TERM_KEEP_FAIL_MS = 60000;
+  // 一次结束超过这么多条时，不再等 15s 才折：那种场面下用户根本不是在挨个
+  // 读输出，先折起来保住「还能看清谁在跑」，想看哪条点开归档区就行
+  var TERM_BATCH_BURST = 3;
   // 归档区最多记多少条，超了丢最老的（内存不会无限涨）
   var TERM_ARCH_MAX = 100;
   // 归档区一次最多铺多少行：一条命令一行、每行 22px，铺 100 行就是把整个
@@ -5948,14 +5952,22 @@
     return row;
   }
 
-  // 这条是不是「已经过去、可以折起来」的：结束满 TERM_KEEP_MS 就归档。
-  // 失败的命令多留一会儿（TERM_KEEP_FAIL_MS），退出码要让人看得到。
+  // 这条是不是「已经过去、可以折起来」的。按批算，见 TERM_KEEP_MS 的注释：
+  // 基准取「最后一条结束的时刻」，整批一起折，不会十几张卡片各按各的计时。
   // 退出码 -1 / null 表示「没拿到退出码」（会话未建立、被中断），
-  // 不当作失败——否则终端没连上时每条命令都要在屏上赖三分钟
+  // 不当作失败——否则终端没连上时每条命令都要在屏上赖一分钟
   function termArchived(it) {
     if (!it || it.running || !it.diedAt) return false;
     var failed = typeof it.exit === 'number' && it.exit > 0;
-    return Date.now() - it.diedAt > (failed ? TERM_KEEP_FAIL_MS : TERM_KEEP_MS);
+    var base = it.diedAt;
+    var batch = 0;
+    term.items.forEach(function (x) {
+      if (x === it || x.running || !x.diedAt) return;
+      batch++;
+      if (x.diedAt > base) base = x.diedAt;
+    });
+    if (batch >= TERM_BATCH_BURST) return true;
+    return Date.now() - base > (failed ? TERM_KEEP_FAIL_MS : TERM_KEEP_MS);
   }
 
   // 归档区：一条可点开的窄条，默认收起。展开后每条只占一行（命令 + 状态 + 耗时），
