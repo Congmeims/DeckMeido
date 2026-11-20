@@ -2203,6 +2203,10 @@ def _auth_public(request: Request) -> bool:
     # Authorization 头，凭的是后端发的一次性票（随机、单次、10 分钟过期）
     if path.startswith("/api/zip/dl/"):
         return True
+    # 壁纸候选预览图：<img> 带不了令牌，和 /wallpapers 静态图同口径。
+    # 路径里的 id 是 12 位随机 hex，猜不到，也不会暴露目录
+    if path.startswith("/api/theme/candidates/"):
+        return True
     # /ws 自己鉴权（见 _ws_authorized），这里放行，省得 WS 升级也走 HTTP 这道闸
     return request.scope.get("type") == "websocket"
 

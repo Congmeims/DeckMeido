@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import re
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from . import paths, themecolor
@@ -26,7 +27,7 @@ get_main = None
 
 _REGISTERED: dict = {}
 __all_routes__ = ("api_theme_get", "api_theme_wallpaper", "api_theme_clear",
-                  "api_theme_palette", "api_theme_config")
+                  "api_theme_palette", "api_theme_config", "api_theme_candidate")
 
 
 class _TuneReq(BaseModel):
@@ -186,6 +187,15 @@ def register(app) -> None:
             return {"ok": False, "error": "没有要改的项"}
         await _publish(updates)
         return {"ok": True, "theme": current_theme()}
+
+    @router.get("/api/theme/candidates/{cid}")
+    async def api_theme_candidate(cid: str):
+        """候选壁纸图。给聊天里那 4 张预览用，不鉴权（静态图，和 /wallpapers 同口径）。
+        文件过期被回收过就 404，前端会显示「已过期」而不是一张破图"""
+        p = themecolor.candidate_path(cid)
+        if p is None:
+            raise HTTPException(404, "候选图已过期")
+        return FileResponse(p, headers={"Cache-Control": "public, max-age=3600"})
 
     app.include_router(router)
     _REGISTERED.update({name: locals()[name] for name in __all_routes__})

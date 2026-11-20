@@ -924,6 +924,11 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 event["output"] = result[:1500] + ("\n…（截断）" if len(result) > 1500 else "")
                 if name in ("write_file", "edit_file") and tools.LAST_DIFF:
                     event["diff"] = tools.LAST_DIFF
+                if name == "search_wallpaper":
+                    # 候选图列表随事件带给前端，直接渲染成可点选的图。
+                    # 结果文本里也有 id，模型能对上编号，但图片本身不靠它
+                    event["candidates"] = tools.LAST_CANDIDATES
+                    event["query"] = str(args.get("query") or "")
                 if name == "screenshot":
                     m2 = re.search(r"/shots/\S+?\.png", result)
                     if m2:

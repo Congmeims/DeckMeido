@@ -637,6 +637,38 @@
   .ask-opt.picked { border-color: var(--brand); background: var(--hover); }
   .ask-opt.picked .ask-n { color: var(--brand); border-color: var(--brand); }
 
+  /* 壁纸候选：4 张图铺成 2×2 网格，点一张就发编号。
+     和 ask 卡片同一套缩进与定住后的观感，但内容换成了图 */
+  .wall-pick { margin: 4px 0 2px; align-self: stretch; min-width: 0; max-width: 560px; }
+  .wall-pick .wp-head { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .wp-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .wp-item {
+    position: relative; padding: 0; cursor: pointer; overflow: hidden;
+    background: var(--surface-2); border: 2px solid var(--line); border-radius: 10px;
+    aspect-ratio: 16 / 9;
+  }
+  .wp-item:hover:not(:disabled) { border-color: var(--brand); }
+  .wp-item img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .wp-item .wp-n {
+    position: absolute; left: 6px; top: 6px;
+    width: 20px; height: 20px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; color: #fff; background: rgba(0,0,0,.55);
+    border: 1px solid rgba(255,255,255,.28);
+  }
+  /* 图过期被回收：留一块灰底写清楚，不要只显示破图图标 */
+  .wp-item.gone::after {
+    content: '已过期'; position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; color: var(--muted);
+  }
+  .wall-pick .wp-hint { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .wall-pick.answered { opacity: .55; }
+  .wall-pick.answered .wp-item { cursor: default; }
+  .wp-item.picked { border-color: var(--brand); }
+  .wp-item.picked .wp-n { background: var(--brand); border-color: var(--brand); }
+  @media (max-width: 520px) { .wp-grid { grid-template-columns: minmax(0, 1fr); } }
+
   /* 分享图片预览 */
   #shareOverlay {
     display: none; position: fixed; inset: 0; z-index: 40;

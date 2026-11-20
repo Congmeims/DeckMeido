@@ -20,6 +20,7 @@ import colorsys
 import io
 import json
 import re
+import uuid
 
 WALLPAPER_MAX = 20 * 1024 * 1024          # 与附件上限一致
 FALLBACK = "#1a9fff"                     # 取不出主色时退回品牌蓝
@@ -189,6 +190,75 @@ def clear_wallpaper() -> None:
             p.unlink()
         except OSError:
             pass
+
+
+# ---------- 壁纸候选（AI 搜图后先给用户挑，选中才应用） ----------
+
+# 候选图单独放一个目录，不碰 wallpaper.* 那一族，所以预览阶段完全不影响当前壁纸。
+# 上限 16 张：一轮最多给 4 张，连搜几次也不会把盘塞满
+CANDIDATE_KEEP = 16
+
+
+def candidates_dir():
+    from . import paths
+    d = paths.wallpapers_dir() / "candidates"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def save_candidate(img_bytes: bytes) -> tuple[str, str]:
+    """把下载到的候选图落盘，返回 (id, 扩展名)。只校验不取色。
+
+    取色留到真正应用时再做：用户挑不中的图没必要跑一遍量化。
+    """
+    from PIL import Image
+
+    if len(img_bytes) > WALLPAPER_MAX:
+        raise ValueError(f"图片超过 {WALLPAPER_MAX // (1024 * 1024)}MB")
+    ext = sniff_ext(img_bytes[:16])
+    if not ext:
+        raise ValueError("不是支持的图片格式")
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        img.load()
+    except Exception:
+        raise ValueError("图片解析失败") from None
+    ext = _EXT_BY_FMT.get(img.format or "", ext)
+
+    cid = uuid.uuid4().hex[:12]
+    folder = candidates_dir()
+    (folder / f"{cid}.{ext}").write_bytes(img_bytes)
+    _trim_candidates()
+    return cid, ext
+
+
+def _trim_candidates() -> None:
+    """按修改时间保留最新 CANDIDATE_KEEP 张，旧的直接删"""
+    folder = candidates_dir()
+    files = []
+    for pat in ("*.png", "*.jpg", "*.webp", "*.gif", "*.bmp"):
+        files.extend(folder.glob(pat))
+    files.sort(key=lambda p: p.stat().st_mtime)
+    for p in files[:-CANDIDATE_KEEP]:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def candidate_path(cid: str):
+    """按 id 找回候选图文件；id 格式不对或文件已过期返回 None"""
+    if not re.fullmatch(r"[0-9a-f]{12}", cid or ""):
+        return None
+    for p in candidates_dir().glob(f"{cid}.*"):
+        return p
+    return None
+
+
+def candidate_url(cid: str) -> str:
+    # 必须走 /api/theme/candidates/<id>：候选图落盘带扩展名，而 /wallpapers
+    # 静态挂载按原名找文件，/wallpapers/candidates/<id> 一定 404
+    return f"/api/theme/candidates/{cid}"
 
 
 def wallpaper_files() -> list[str]:

@@ -2650,6 +2650,12 @@
       return;
     }
     if (ev.type !== 'tool') return;
+    // 壁纸候选：4 张图铺成网格，点哪张就把编号发回去。以前这里会先画一行
+    // 灰色的「搜索壁纸」工具行，图和它挤在一起看着乱，所以整条都交给卡片
+    if (ev.name === 'search_wallpaper' && ev.candidates && ev.candidates.length) {
+      var wp = makeWallPickCard(ev);
+      if (wp) { box.appendChild(wp); return; }
+    }
     // 随提问附带的画面：一条「截图 · 附带的画面」+ 小缩略图。
     // 以前它走下面通用的截图行（「已截屏」+ 铺满整行的大图），回放一轮
     // 截屏询问时屏幕上先是一整屏图片，后面才是正文
@@ -2817,6 +2823,65 @@
     row.appendChild(go);
     box.appendChild(row);
     card.appendChild(box);
+    return card;
+  }
+
+  // 壁纸候选卡片：AI 搜图后把 4 张图直接铺在聊天里，点哪张就把编号发回去。
+  // 用户点的这一下只是发一句「2」这种消息，真正应用壁纸由模型拿到编号后
+  // 调 set_wallpaper(candidate_id) 完成——这样重放历史时卡片状态和
+  // 普通 ask 卡片一致，也不需要前端知道怎么取色
+  function makeWallPickCard(ev) {
+    var card = document.createElement('div');
+    card.className = 'wall-pick';
+    var list = (ev.candidates || []).slice(0, 4);
+    if (!list.length) return null;
+    var head = document.createElement('div');
+    head.className = 'wp-head';
+    head.textContent = ev.query
+      ? ('想用哪张？（「' + ev.query + '」）')
+      : '想用哪张？';
+    card.appendChild(head);
+    function settle(picked) {
+      card.classList.add('answered');
+      if (picked) picked.classList.add('picked');
+      var all = card.querySelectorAll('button');
+      Array.prototype.forEach.call(all, function (el) { el.disabled = true; });
+    }
+    var box = document.createElement('div');
+    box.className = 'wp-grid';
+    list.forEach(function (c, i) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'wp-item';
+      var img = document.createElement('img');
+      img.className = 'chat-img';
+      // 候选图走 /api/theme/candidates/，不带令牌（<img> 也带不了）
+      img.src = c.url;
+      img.alt = '候选壁纸 ' + (i + 1);
+      img.width = 240; img.height = 135;
+      img.onload = function () { img.removeAttribute('width'); img.removeAttribute('height'); };
+      img.onerror = function () {
+        b.classList.add('gone');
+        img.remove();
+      };
+      var n = document.createElement('span');
+      n.className = 'wp-n';
+      n.textContent = String(i + 1);
+      b.appendChild(img);
+      b.appendChild(n);
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (card.classList.contains('answered') || busy) return;
+        settle(b);
+        doSend(String(i + 1));
+      });
+      box.appendChild(b);
+    });
+    card.appendChild(box);
+    var hint = document.createElement('div');
+    hint.className = 'wp-hint';
+    hint.textContent = '点图或回复编号选用；都不满意就说「换一批」';
+    card.appendChild(hint);
     return card;
   }
 

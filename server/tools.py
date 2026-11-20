@@ -62,6 +62,7 @@ TOOL_CN: dict[str, str] = {
     "music_play": "点歌播放",
     "music_control": "控制播放",
     "set_wallpaper": "更换壁纸",
+    "search_wallpaper": "搜索壁纸",
 }
 
 
@@ -392,15 +393,38 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "search_wallpaper",
+            "description": ("搜壁纸并给用户挑：按关键词抓 4 张候选图，直接显示在聊天里让用户"
+                            "选 1-4；用户选中后再用 set_wallpaper 传 candidate_id 应用。"
+                            "用户说「换张壁纸」「找张星空背景」时先调这个，不要直接 set_wallpaper。"
+                            "用户不满意就用新关键词再搜一次。"
+                            "候选图由界面自己渲染，不要再用 run_command 打开看图软件、"
+                            "也不要用 screenshot 截图桌面给用户挑。"),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string",
+                              "description": "英文关键词更容易搜到图，例如 starry night sky、anime girl"},
+                    "count": {"type": "integer",
+                              "description": "候选数量，默认 4，范围 2-4"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "set_wallpaper",
-            "description": ("换一张界面壁纸：下载指定的图片，自动按它的主色生成整套配色，"
-                            "并立即同步到所有端（Deck 与电脑网页）。用户说「换张壁纸」"
-                            "「找张星空背景」「这个主题不好看」时用：先 web_search 搜到一张"
-                            "图片直链，再把那条链接传给 url。传 clear=true 恢复内置主题。"
+            "description": ("应用一张壁纸：自动按它的主色生成整套配色并立即同步到所有端。"
+                            "search_wallpaper 给出候选、用户选定编号后，传 candidate_id 应用；"
+                            "已有图片直链时也可以传 url。传 clear=true 恢复内置主题。"
                             "只接受 http/https 的图片地址，不读本地文件"),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "candidate_id": {"type": "string",
+                                     "description": "search_wallpaper 返回的候选图 id（用户选中的那张）"},
                     "url": {"type": "string", "description": "图片直链（jpg / png / webp / gif / bmp）"},
                     "clear": {"type": "boolean", "description": "true = 撤销壁纸、恢复内置主题"},
                 },
@@ -2133,6 +2157,8 @@ def summarize_tool(name: str, args: dict) -> str:
         return cmd if len(cmd) <= 120 else cmd[:120] + "…"
     if name == "web_search":
         return f"「{args.get('query', '')}」"
+    if name == "search_wallpaper":
+        return f"「{args.get('query', '')}」"
     if name == "find_game":
         return f"「{args.get('name', '')}」"
     if name == "install_game":
@@ -3175,34 +3201,140 @@ async def _remember(text: str, kind: str = "note") -> str:
 
 WALLPAPER_TIMEOUT = 20.0
 
+# 上一次 search_wallpaper 的候选（给 agent_engine 塞进工具事件，前端据此画选图卡片）。
+# 和 LAST_DIFF 一样是「刚做完的那一步」的旁路数据，放在这里避免改工具返回签名
+LAST_CANDIDATES: list[dict] = []
 
-async def _set_wallpaper(url: str = "", clear: bool = False) -> str:
-    """下载一张图当壁纸，按主色生成配色；clear=true 恢复内置主题"""
+
+async def _fetch_image(url: str, limit: int) -> tuple[bytes | None, str]:
+    """下载一张图（限制大小），返回 (bytes, 错误说明)。成功时说明为空串"""
+    why = netmode.check("下载壁纸")
+    if why:
+        return None, why
+    try:
+        async with httpx.AsyncClient(timeout=WALLPAPER_TIMEOUT, follow_redirects=True) as cli:
+            async with cli.stream("GET", url, headers={"User-Agent": "DeckMeido"}) as resp:
+                if resp.status_code != 200:
+                    return None, f"图片地址返回 HTTP {resp.status_code}"
+                buf = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    buf.extend(chunk)
+                    if len(buf) > limit:
+                        return None, "图片太大"
+                return bytes(buf), ""
+    except httpx.HTTPError as e:
+        return None, f"下载失败 {type(e).__name__}"
+
+
+async def _search_wallpaper(query: str, count: int = 4) -> str:
+    """按关键词抓几张候选图，落盘后把编号与 id 交给模型，由前端渲染成可选卡片。
+
+    候选阶段不碰当前壁纸：只写 wallpapers/candidates/，等用户选了才走 set_wallpaper。
+    """
+    from . import themecolor
+
+    query = str(query or "").strip()
+    if not query:
+        return "请给一个搜索关键词，例如 starry night sky。"
+    why = netmode.check("搜索壁纸")
+    if why:
+        return why
+    try:
+        count = max(2, min(4, int(count or 4)))
+    except (TypeError, ValueError):
+        count = 4
+
+    def _search() -> list[dict]:
+        from ddgs import DDGS
+        # 多要几张：有的图床会 403 或不是图片，下载失败的要跳过，得留出余量
+        last_exc = None
+        # DDG 偶尔会对某个查询回 malformed headers / 空结果，换个后端再试一次；
+        # 两次都不行才算真失败
+        for backend in ("duckduckgo", "brave"):
+            try:
+                rows = DDGS().images(query, max_results=count * 3, backend=backend) or []
+            except Exception as e:
+                last_exc = e
+                continue
+            if rows:
+                return rows
+        if last_exc is not None:
+            raise last_exc
+        return []
+
+    try:
+        results = await asyncio.to_thread(_search)
+    except Exception as e:
+        return (f"搜图失败：{e}。可以换个关键词再试，"
+                "英文关键词（如 scenic landscape）命中率更高。")
+
+    picked: list[dict] = []
+    seen = set()
+    for r in results:
+        if len(picked) >= count:
+            break
+        url = str(r.get("image") or r.get("thumbnail") or "").strip()
+        if not url or url in seen or not re.match(r"^https?://", url, re.I):
+            continue
+        seen.add(url)
+        raw, _err = await _fetch_image(url, themecolor.WALLPAPER_MAX)
+        if not raw:
+            continue
+        try:
+            cid, _ext = await asyncio.to_thread(themecolor.save_candidate, raw)
+        except ValueError:
+            continue
+        picked.append({"id": cid, "url": themecolor.candidate_url(cid),
+                       "title": str(r.get("title") or "")[:80]})
+
+    if not picked:
+        LAST_CANDIDATES.clear()
+        return ("没搜到能用的图片。换一组更通用的关键词再搜一次"
+                "（例如 scenic landscape、anime wallpaper）。")
+    LAST_CANDIDATES[:] = picked
+    # 结果文本给模型看，前端另有一份候选列表可渲染；两者顺序一致，编号从 1 开始
+    lines = [f"{i + 1}. id={c['id']} {c['title']}".rstrip() for i, c in enumerate(picked)]
+    return (f"找到 {len(picked)} 张候选壁纸，已经显示给用户了：\n" + "\n".join(lines) +
+            "\n\n等用户回复编号后，把对应 id 传给 set_wallpaper(candidate_id=...)。"
+            "如果用户说不满意，就换个关键词再调 search_wallpaper。")
+
+
+async def _set_wallpaper(url: str = "", clear: bool = False,
+                         candidate_id: str = "") -> str:
+    """下载一张图当壁纸，按主色生成配色；clear=true 恢复内置主题。
+
+    candidate_id 来自 search_wallpaper：直接用已落盘的候选图，不再重新下载。
+    """
     from . import themecolor, routes_theme
     if clear:
         themecolor.clear_wallpaper()
         routes_theme.publish_reset()
         return "已撤销壁纸，界面恢复成内置主题。"
+    candidate_id = str(candidate_id or "").strip()
+    if candidate_id:
+        p = themecolor.candidate_path(candidate_id)
+        if p is None or not p.exists():
+            return "这张候选图已经过期了（候选图只保留最近 16 张），重新 search_wallpaper 搜一次。"
+        try:
+            raw = p.read_bytes()
+        except OSError as e:
+            return f"候选图读不出来：{e}。重新搜一次。"
+        try:
+            name, palette = themecolor.save_wallpaper(raw)
+        except ValueError as e:
+            return f"这张图用不了：{e}。换一张试试。"
+        routes_theme.publish_saved(name, palette)
+        return (f"已应用你选的那张壁纸，强调色自动取成了 {palette['source']}，"
+                "所有端的界面已经同步。")
     url = str(url or "").strip()
     if not re.match(r"^https?://", url, re.I):
-        return "需要一个 http/https 的图片直链；先用 web_search 搜图，再把图片链接传过来。"
-    why = netmode.check("下载壁纸")
-    if why:
-        return why
+        return ("需要候选图 id，或者一个 http/https 的图片直链。"
+                "想给用户挑图就先用 search_wallpaper 搜几张。")
+    raw, err = await _fetch_image(url, themecolor.WALLPAPER_MAX)
+    if raw is None:
+        return f"{err}。换一张试试。"
     try:
-        async with httpx.AsyncClient(timeout=WALLPAPER_TIMEOUT, follow_redirects=True) as cli:
-            async with cli.stream("GET", url, headers={"User-Agent": "DeckMeido"}) as resp:
-                if resp.status_code != 200:
-                    return f"下载失败：图片地址返回 HTTP {resp.status_code}。换一张试试。"
-                buf = bytearray()
-                async for chunk in resp.aiter_bytes():
-                    buf.extend(chunk)
-                    if len(buf) > themecolor.WALLPAPER_MAX:
-                        return "这张图超过 20MB，当壁纸太重了，换一张小一点的。"
-    except httpx.HTTPError as e:
-        return f"下载失败：{type(e).__name__}。检查一下图片地址是否还能访问。"
-    try:
-        name, palette = themecolor.save_wallpaper(bytes(buf))
+        name, palette = themecolor.save_wallpaper(raw)
     except ValueError as e:
         return f"这张图用不了：{e}。换一张 jpg / png / webp 格式的图片。"
     routes_theme.publish_saved(name, palette)
@@ -3336,12 +3468,14 @@ EXECUTORS = {
     "remember": _remember,
     "music_play": _music_play,
     "music_control": _music_control,
+    "search_wallpaper": _search_wallpaper,
     "set_wallpaper": _set_wallpaper,
 }
 
 # 真正要出网的工具：离线模式下直接返回可读原因，不发起请求。
 # 截图、文件、命令、游戏库、安装这类本地动作不在此列，保持可用。
-_OUTBOUND_TOOLS = {"web_search", "find_game", "self_update", "set_wallpaper"}
+_OUTBOUND_TOOLS = {"web_search", "find_game", "self_update", "set_wallpaper",
+                   "search_wallpaper"}
 
 
 # 不需要「保持常亮」的工具：联网搜索、读写文件这类不碰屏幕也不动
@@ -3350,7 +3484,7 @@ _NO_KEEP_AWAKE = {
     "web_search", "find_game", "list_installed_games",
     "check_system_updates", "screenshot", "remember",
     "music_play", "music_control", "task_status", "ocr_image",
-    "set_wallpaper",
+    "search_wallpaper", "set_wallpaper",
 }
 
 
@@ -3371,6 +3505,8 @@ _TOOL_TIMEOUT = {
     "music_play": 40, "music_control": 20,
     # 下载 + 解码 + 取色，图大时留足余量（下载本身 20 秒超时）
     "set_wallpaper": 40,
+    # 搜图接口 + 逐张下载（可能几张都 403，要多试几次），比单张宽
+    "search_wallpaper": 75,
 }
 _TOOL_TIMEOUT_DEFAULT = 120
 _TOOL_NO_TIMEOUT = {"run_command", "install_game", "self_update"}
