@@ -1291,7 +1291,7 @@
          跟随开着时：AI 跑命令切到终端页，AI 进新目录切回这里并停在它所在的目录 -->
     <div class="ai-bar" id="fbAiBar">
       <span class="ai-dot idle" id="fbAiDot"></span>
-      <span class="ai-text" id="fbAiText">AI 空闲</span>
+      <span class="ai-text" id="fbAiText">空闲</span>
       <span class="ai-sub" id="fbAiSub"></span>
       <button id="fbAiFollow" type="button" class="ai-follow on">跟随：开</button>
     </div>
@@ -1341,11 +1341,11 @@
   </div>
 
   <div class="rb-pane" id="rbPaneTerm">
-    <!-- AI 状态条：和对话区的「AI 空闲 / 正在执行命令…」同构，让用户不必回头翻中间栏。
+    <!-- AI 状态条：和对话区的「空闲 / 正在执行命令…」同构，让用户不必回头翻中间栏。
          右侧开关决定滚动是否跟随 AI（关掉后新命令只加个未读角标，不抢用户的滚动位置） -->
     <div class="ai-bar" id="termAi">
       <span class="ai-dot idle" id="termAiDot"></span>
-      <span class="ai-text" id="termAiText">AI 空闲</span>
+      <span class="ai-text" id="termAiText">空闲</span>
       <span class="ai-sub"></span>
       <button id="termFollow" type="button" class="ai-follow on">跟随：开</button>
     </div>
@@ -2765,7 +2765,7 @@
       if (waitBase) word += ' · 已' + (waitUsedTool ? '执行' : (waitSeen ? '思考' : '等待'))
         + ' ' + waitBase + ' 秒';
     } else {
-      word = 'AI 空闲';
+      word = '空闲';
     }
     txt.textContent = word;
     dot.classList.toggle('on', busyNow);
@@ -3199,7 +3199,7 @@
   // 文案与终端页的 termAiRender 保持完全一致，两个页签看到的永远是同一句话，
   // 唯一多出来的是「AI 当前停留的目录」这一小段次要信息
   function fbTrackWord() {
-    if (!busy && !typingEl) return 'AI 空闲';
+    if (!busy && !typingEl) return '空闲';
     var w = waitUsedTool ? (waitLabel || '正在执行') : (waitSeen ? '已思考' : '等待模型响应');
     if (waitBase) w += ' · 已' + (waitUsedTool ? '执行' : (waitSeen ? '思考' : '等待')) + ' ' + waitBase + ' 秒';
     return w;
