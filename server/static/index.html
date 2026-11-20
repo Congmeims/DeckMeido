@@ -5613,7 +5613,7 @@
   }
 
   // 结束后停留多久开始消散，消散动画本身 0.9s
-  var TERM_DIE_DELAY = 5000;
+  var TERM_DIE_DELAY = 2000;
   var TERM_DIE_ANIM = 900;
   // 长时间跑、又一直没输出的命令（sleep、等下载、轮询服务）挂满一屏会把有用的
   // 那几条挤出视野，所以先静音等这么久；到点还没有任何输出就自己收成一行
@@ -5629,6 +5629,10 @@
   var TERM_BATCH_BURST = 3;
   // 归档区最多记多少条，超了丢最老的（内存不会无限涨）
   var TERM_ARCH_MAX = 100;
+  // 右栏最多同时摊着几张整卡：正在跑的 + 结束了但还没满 TERM_KEEP_MS 的，
+  // 合计不超过这个数（见 termArchFlags）。长任务一条接一条时，就是靠它把
+  // 「上一张还没折、下一张已经在跑」的场面压在几行以内
+  var TERM_LIVE_CARDS = 2;
   // 归档区一次最多铺多少行：一条命令一行、每行 22px，铺 100 行就是把整个
   // 右栏变成一张 2200px 的长表，比不展开还难用。展开后只铺最近这么多条，
   // 剩下的用「…另有 N 条」的尾条兜住
@@ -5668,8 +5672,10 @@
 
   function termRenderOne(it) {
     // 归档项（结束够久了）不再画整张卡片：只留一行「谁 · 命令 · 状态」，
-    // 点一下放大仍可看完整输出（it.out 还在）
-    it._renderedArch = termArchived(it);
+    // 点一下放大仍可看完整输出（it.out 还在）。
+    // 用全表算出来的标记，不用单条自己算：让位规则要看同批的别的命令
+    var flagIdx = term.items.indexOf(it);
+    it._renderedArch = flagIdx >= 0 ? termArchFlags()[flagIdx] : termArchived(it);
     if (it._renderedArch) return termRenderArchRow(it);
     var box = document.createElement('div');
     box.className = 'tm' + (it.running ? ' running' : '') + (it.collapsed ? ' collapsed' : '');
@@ -6065,8 +6071,9 @@
     // 「更早的命令 N 条」。以前跑几十条长任务后右栏就被十几张卡片占满，
     // 真正在跑的那条反倒被挤出视野
     var archived = [];
-    term.items.forEach(function (it) {
-      if (termArchived(it) && it !== bigIt) {
+    var archFlags = termArchFlags();
+    term.items.forEach(function (it, idx) {
+      if (archFlags[idx] && it !== bigIt) {
         // 归档后不再需要 xterm 实例（只留 it.out 文本），顺手释放掉
         if (it.xt) { try { it.xt.dispose(); } catch (e) {} it.xt = null; }
         if (it.xtView) { try { it.xtView.term.dispose(); } catch (e) {} it.xtView = null; }
@@ -6114,19 +6121,71 @@
   // 这条是不是「已经过去、可以折起来」的。按批算，见 TERM_KEEP_MS 的注释：
   // 基准取「最后一条结束的时刻」，整批一起折，不会十几张卡片各按各的计时。
   // 退出码 -1 / null 表示「没拿到退出码」（会话未建立、被中断），
-  // 不当作失败——否则终端没连上时每条命令都要在屏上赖一分钟
+  // 不当作失败——否则终端没连上时每条命令都要在屏上赖一分钟。
+  // 另外两种「立刻折」：
+  //   · 刚跑完、而它后面已经有新的命令在跑了（长任务一条接一条，上一张结果
+  //     没必要一直挂着占地方）
+  //   · 还没到 15s 的完成整卡已经超过 TERM_LIVE_CARDS 张，older 的先折
   function termArchived(it) {
     if (!it || it.running || !it.diedAt) return false;
-    var failed = typeof it.exit === 'number' && it.exit > 0;
-    var base = it.diedAt;
+    var failed = typeof it.exit === "number" && it.exit > 0;
+    var mine = termEndKey(it);
+    var newerRunning = false;
+    var newerFinished = 0;
     var batch = 0;
-    term.items.forEach(function (x) {
-      if (x === it || x.running || !x.diedAt) return;
+    var base = it.diedAt;
+    var idx = term.items.indexOf(it);
+    term.items.forEach(function (x, i) {
+      if (x === it) return;
+      if (x.running) {
+        // 只有排在它后面的才算「新命令」
+        if (i > idx) newerRunning = true;
+        return;
+      }
+      if (!x.diedAt) return;
       batch++;
       if (x.diedAt > base) base = x.diedAt;
+      // 结束得比它晚的才算「更新」
+      if (termEndKey(x) > mine) newerFinished++;
     });
+    if (newerRunning) return true;
     if (batch >= TERM_BATCH_BURST) return true;
+    // 更晚结束的整卡已经够多了：不失败的、更早的那张让位
+    if (!failed && newerFinished >= TERM_LIVE_CARDS) return true;
     return Date.now() - base > (failed ? TERM_KEEP_FAIL_MS : TERM_KEEP_MS);
+  }
+
+  // 整表算一遍「谁该折成一行」。单条各算各的不行：让位规则要看「同一批里
+  // 还有几张整卡」，两边算出来的结果会打架，屏上忽整忽折地跳。
+  //
+  // 硬性上限：正在跑的那条（最多一条）之外，整卡最多再留 TERM_LIVE_CARDS 张。
+  // 超出的按「最早结束的先折」处理 —— 用户最想看的是刚跑完的那条，
+  // 越老的越该让位。失败的不参与让位（要看退出码和报错），但同样算进上限，
+  // 只是排序时排在后面。
+  function termArchFlags() {
+    var flags = term.items.map(function (it) { return termArchived(it); });
+    var live = [];
+    term.items.forEach(function (it, i) {
+      if (!flags[i] && !it.running && it.diedAt) live.push(i);
+    });
+    var room = TERM_LIVE_CARDS;
+    // 失败卡优先留（排序时给个更大的键），其余按结束时刻从新到旧
+    live.sort(function (a, b) {
+      var x = term.items[a], y = term.items[b];
+      var xf = typeof x.exit === "number" && x.exit > 0 ? 1 : 0;
+      var yf = typeof y.exit === "number" && y.exit > 0 ? 1 : 0;
+      if (xf !== yf) return yf - xf;
+      return termEndKey(y) - termEndKey(x);
+    });
+    live.slice(room).forEach(function (i) { flags[i] = true; });
+    return flags;
+  }
+
+  // 归档排序键：结束时刻 > 开始时刻 > 序号。
+  // 列表是按「谁在跑、谁刚结束」排的，不能直接拿数组下标：
+  // 让位规则要看「比我更晚结束的还有几张」，下标一掺进来就前后打架
+  function termEndKey(it) {
+    return it.diedAt || it.startedAt || it.sent * 1000 || it.id;
   }
 
   // 归档区：一条可点开的窄条，默认收起。展开后每条只占一行（命令 + 状态 + 耗时），
@@ -6337,12 +6396,14 @@
   // 只在某条该换形态（整卡 → 一行、或该淡出）时才重画，空闲时什么都不做
   setInterval(function () {
     if (!term.items || !term.items.length) return;
+    // 用整表标记比对：单条 termArchived 看不出「让位」那几条，
+    // 结果是同一批命令算出来的形态不一致，屏上就会忽整忽折地跳
+    var flags = termArchFlags();
     for (var i = 0; i < term.items.length; i++) {
       var it = term.items[i];
       if (it.running || !it.diedAt) continue;
-      var arch = termArchived(it);
       // 形态和上次渲染时一致就不动它
-      if (it._renderedArch === arch) continue;
+      if (it._renderedArch === flags[i]) continue;
       termRenderAll();
       return;
     }

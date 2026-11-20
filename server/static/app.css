@@ -3543,7 +3543,13 @@
   .tm {
     border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
     background: var(--surface-2);
+    /* 单条卡片高度封顶：输出区自己有 max-height，但一条长任务连同头行、
+       截图、进度条叠起来仍能吃掉大半屏，把它下面正在跑的别的命令全推出去。
+       封顶之后，超出的部分在卡片内滚动，右栏始终能同时看到好几条 */
+    max-height: 46vh;
+    display: flex; flex-direction: column;
   }
+  .tm > .tm-out, .tm > .tm-term { min-height: 0; }
   .tm-head {
     display: flex; align-items: center; gap: 6px;
     padding: 6px 8px; font-size: 11.5px; color: var(--muted);
