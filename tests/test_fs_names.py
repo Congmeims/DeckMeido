@@ -50,6 +50,23 @@ def test_emit_plain_text_untouched():
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows 的 fs 编码不是 UTF-8，复现不出这个问题")
+def test_disk_restores_gbk_path():
+    # 前端拿到的显示名是中文，os 按 UTF-8 编码就不在磁盘上了；
+    # _disk 要把它按 GBK 编回去，拼出的字节路径和真实文件一致
+    gbk = "恶魔城 - 晓月圆舞曲.gba".encode("gbk")
+    p = "/home/deck/FreedeckGames/126/" + gbk.decode("utf-8", errors="surrogateescape")
+    shown = routes_files._wire_name(os.path.basename(p))
+    got = os.fsencode(routes_files._disk("/home/deck/FreedeckGames/126/" + shown))
+    assert got == b"/home/deck/FreedeckGames/126/" + gbk
+
+
+def test_disk_leaves_utf8_and_ascii_alone():
+    assert routes_files._disk("/home/deck/游戏/x.txt") == "/home/deck/游戏/x.txt"
+    assert routes_files._disk("/home/deck/a b.txt") == "/home/deck/a b.txt"
+    assert routes_files._disk("") == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows 的 fs 编码不是 UTF-8，复现不出这个问题")
 def test_scandir_bytes_path_works(tmp_path):
     raw_name = "恶魔城.gba".encode("gbk")
     with open(os.path.join(os.fsencode(tmp_path), raw_name), "wb") as f:

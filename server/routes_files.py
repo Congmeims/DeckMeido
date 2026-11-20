@@ -121,6 +121,33 @@ def _wire_name(name: str) -> str:
     return _emit(_fs_name(name))
 
 
+def _disk(s: str) -> str:
+    """把前端传来的路径名还原成磁盘上的原名。
+
+    前端拿到的名字有三种可能：正常 UTF-8；`\\udcXX` 转义（非 GBK 的坏字节，
+    转回 surrogate 后 os 自己会拼回原字节）；已经转成中文的 GBK 名 ——
+    最后这种必须先按 GBK 编回字节再解，否则 os 会按 UTF-8 编码，
+    拼出来的路径在磁盘上根本不存在（点进去就是「不存在」/404）。
+    """
+    if not s or s.isascii():
+        return s
+    if any("\ud800" <= ch <= "\udfff" for ch in s):
+        return s
+    try:
+        os.fsencode(s).decode("utf-8")
+        return s          # 本来就是合法 UTF-8，os 编码出来就是磁盘上的样子
+    except UnicodeDecodeError:
+        pass
+    for enc in ("gb18030", "big5"):
+        try:
+            alt = s.encode(enc)
+        except UnicodeEncodeError:
+            continue
+        if alt.decode(enc) == s:
+            return os.fsdecode(alt)
+    return s
+
+
 def _fmt_bytes(n: int) -> str:
     """人类可读体积（1024 进制，与前端 fbFmtBytes 同一口径）"""
     value = float(max(0, int(n or 0)))
@@ -814,7 +841,7 @@ def register(app) -> None:
         视频/音频要能拖进度条就得支持 Range，所以走 FileResponse。
         """
         try:
-            target = Path(path).expanduser().resolve()
+            target = Path(_disk(path)).expanduser().resolve()
         except OSError:
             raise HTTPException(status_code=404, detail="file not found")
         if fszones.browse_denied(target, _fs_workspace_roots()):
@@ -855,7 +882,7 @@ def register(app) -> None:
         """
         raw = (path or "").strip()
         # 不传 path 就回到工作区，用户第一次打开面板看到的是自己的工作区
-        target = Path(raw).expanduser() if raw else tools.WORKSPACE
+        target = Path(_disk(raw)).expanduser() if raw else tools.WORKSPACE
         if not target.is_absolute():
             # 相对路径一律相对工作区解释，避免 cwd 变化导致行为漂移
             target = tools.WORKSPACE / target
