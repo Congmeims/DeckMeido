@@ -1287,8 +1287,6 @@
   </div>
 
   <div class="rb-pane on" id="rbPaneFile">
-    <!-- 用户手动点过别处后不再跟着 AI 跑，这条横幅就是「点此回到跟随」的入口 -->
-    <div id="fbFollow"><span class="t">AI 正在看：</span><span class="p" id="fbFollowPath"></span><span class="t">· 点此跟随</span></div>
     <!-- AI 状态条：与终端页同构（同一个 .ai-bar 组件），左侧圆点表示忙闲，右侧是跟随开关。
          跟随开着时：AI 跑命令切到终端页，AI 进新目录切回这里并停在它所在的目录 -->
     <div class="ai-bar" id="fbAiBar">
@@ -5244,29 +5242,16 @@
   }
 
   function fbStopFollow() {
-    // 用户自己点过目录：暂停自动跟随，顶部摆出「AI 正在看：xxx · 点此跟随」
+    // 用户自己点过目录：暂停自动跟随（恢复入口是状态条上的「跟随」开关）
     if (!fb.follow) return;
     fb.follow = false;
-    rbEl('fbFollow').classList.toggle('show', !!fb.aiPath);
-  }
-
-  function fbFollowStart() {
-    fb.follow = true;
-    rbEl('fbFollow').classList.remove('show');
-    if (fb.aiPath) fbFocusAi(fb.aiPath, fb.aiIsDir);
   }
 
   function fbFocusAi(path, isDir) {
     fb.aiPath = path;
     fb.aiIsDir = !!isDir;
     fbTrackTip(path);
-    if (!fb.follow) {
-      // 不跟随的时候也要让横幅上的路径实时更新，用户才知道 AI 跑哪儿去了
-      rbEl('fbFollowPath').textContent = path;
-      rbEl('fbFollow').classList.add('show');
-      return;
-    }
-    rbEl('fbFollow').classList.remove('show');
+    if (!fb.follow) return;
     // 跟随关着：只更新状态条，不动用户当前停留的目录
     if (!fb.follow || !fbTrackFollow()) return;
     // AI 进了新目录：切回文件页并停在它所在的地方（只在目录真的变了时才切，
@@ -5357,7 +5342,6 @@
     fbStopFollow();
     fbLoad('');
   });
-  rbEl('fbFollow').addEventListener('click', fbFollowStart);
 
   // 文件页的跟随开关：和终端页那个是同一套交互（按钮显示开/关、状态存本地）。
   // 开着时 AI 跑命令切终端、进新目录切回文件页并停在它所在的目录
@@ -5376,7 +5360,6 @@
   // 跟随刚打开时要做的对齐（由 aiFollowApply 在开启时调用）
   function fbTrackFollowStart() {
     fb.follow = true;
-    rbEl('fbFollow').classList.remove('show');
     if (fb.aiPath) fbFocusAi(fb.aiPath, fb.aiIsDir);
   }
 

@@ -3080,17 +3080,6 @@
   }
 
   /* 文件浏览器 */
-  #fbFollow {
-    flex: 0 0 auto; display: none; align-items: center; gap: 6px;
-    padding: 6px 10px; font-size: 11.5px; color: #b8860b;
-    background: rgba(230, 180, 34, .1); border-bottom: 1px solid var(--line);
-    cursor: pointer;
-  }
-  #fbFollow.show { display: flex; }
-  /* 路径是唯一可被挤掉的部分：前后两段文案不收缩，长路径省略号在左侧 */
-  #fbFollow .t { flex: 0 0 auto; }
-  #fbFollow .p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    direction: rtl; text-align: left; }
   /* AI 跟随跳转时列表的一次淡入过渡：替换「清空→闪白→重绘」的生硬切换 */
   #fbList.fb-anim { animation: fbListIn .34s ease; }
   @keyframes fbListIn { from { opacity: .2; transform: translateY(4px); } to { opacity: 1; transform: none; } }
