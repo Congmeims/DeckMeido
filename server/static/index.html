@@ -3984,9 +3984,30 @@
       : '危险区域只读：删除/重命名/新建/上传/保存均已禁用';
   }
 
+  // 右键路径栏：弹一个小菜单，左键点「复制路径」就把当前目录的完整路径
+  // 写进剪贴板。面包屑每段是独立 span，这里挂在整个路径条上，
+  // 右键任意一段都复制「当前所在的这个目录」
+  function fbPathContextMenu(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    var p = fb.path || '';
+    if (!p) return;
+    fbCtxClear();
+    fbCtxItem('复制路径', function () {
+      fbCopyText(p);
+      fbToast('已复制路径', 'file');
+    });
+    fbCtxOpen(e.clientX, e.clientY);
+  }
+
   function fbRenderPath() {
     var box = rbEl('fbPath');
     box.innerHTML = '';
+    // 挂在容器上只绑一次：重绘只会换掉子节点，容器本身一直在
+    if (!box._ctxBound) {
+      box._ctxBound = true;
+      box.addEventListener('contextmenu', fbPathContextMenu);
+    }
     var p = fb.path || '';
     // 每次渲染都重算：切目录、手输路径、前进后退、刷新都会走到这里
     fbRenderZone();
