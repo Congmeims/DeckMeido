@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from . import audit, devlog, netmode, power, sudo_auth
+from . import audit, devlog, netmode, power, sudo_auth, transfer
 
 HTTP = httpx.AsyncClient(timeout=20, follow_redirects=True)
 
@@ -2018,6 +2018,14 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
                    "started": time.time(), "running": True,
                    "output": "", "exit": None, "pid": proc.pid,
                    "background": False}
+    # 搬运类命令（mv / cp -r / rsync）另外登记一条任务：文件管理器面板据此
+    # 画「从哪到哪 + 进度条 + 取消」，用户在命令跑完之前就能看到搬到哪了
+    transfer_id = None
+    try:
+        tr = transfer.start(raw_command, proc.pid, cwd)
+        transfer_id = tr["id"] if tr else None
+    except Exception as exc:
+        devlog.debug("tools._run_command", error=repr(exc))
     cur = CURRENT_CMD
     launcher = group_file is not None
     # 启动类命令只等这么久：正常程序 1~2 秒内就出窗口或报错。
@@ -2111,6 +2119,12 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
         finally:
             raise
     finally:
+        # 搬运任务收尾：把最后一次量到的字节写进去，卡片随即显示「完成」
+        if transfer_id:
+            try:
+                transfer.finish(transfer_id)
+            except Exception as exc:
+                print(f"[DeckMeido][transfer] 收尾失败：{exc}", file=sys.stderr)
         # 点击已经发完，遮罩恢复接收点击，用户仍可随时点一下终止
         await _set_overlay_passthrough(False)
         # 这一轮的 await 链已经走完，从登记表里摘掉：

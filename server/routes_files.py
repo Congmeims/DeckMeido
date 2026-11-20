@@ -28,7 +28,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import approval, audit, devlog, fszones, paths, policy, tools
+from . import approval, audit, devlog, fszones, paths, policy, tools, transfer
 from .session_store import store
 
 router = APIRouter()
@@ -43,6 +43,7 @@ __all_routes__ = (
     "api_files", "api_preview", "api_browse", "api_fs", "api_terminal",
     "api_terminal_stop", "api_terminal_run", "api_workspace_file",
     "api_file_stat_batch", "api_zip", "api_file_stat",
+    "api_transfers", "api_transfer_cancel",
 )
 
 
@@ -1159,6 +1160,16 @@ def register(app) -> None:
         防止 ../ 一路穿到工作区外面去。
         """
         return FileResponse(_workspace_file(path), filename=Path(path).name)
+
+    @router.get("/api/transfers")
+    async def api_transfers():
+        """模型正在执行的搬运任务（mv / cp -r / rsync）：文件管理器据此画进度卡"""
+        return {"tasks": transfer.list_tasks()}
+
+    @router.post("/api/transfer/cancel")
+    async def api_transfer_cancel(payload: dict):
+        """取消一条搬运任务：本进程起的直接杀进程组，外部后台任务只标记"""
+        return transfer.cancel(str((payload or {}).get("id") or ""))
 
     @router.post("/api/file_stat_batch")
     async def api_file_stat_batch(payload: dict):

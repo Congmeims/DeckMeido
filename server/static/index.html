@@ -4383,9 +4383,132 @@
     var box = rbEl('fbQueue');
     if (!box) return;
     box.innerHTML = '';
+    fbTransferTasks.forEach(function (t) { box.appendChild(fbTransferCard(t)); });
     fbUploadTasks.forEach(function (task) { box.appendChild(fbTaskCard(task)); });
     fbSyncQueueScrollbar();
     fbDropHint();
+  }
+
+  // ---------- 搬运卡：模型在跑 mv / cp -r / rsync ----------
+  // 和上传卡同一套 .fbt-* 样式，但内容全由后端 /api/transfers 提供：
+  // 「从哪 → 到哪」、复制还是移动、已搬多少、进度条，以及取消按钮。
+  // 用户在命令跑完之前就能看到搬到哪了，不用盯着终端猜。
+  var fbTransferTasks = [];
+  var fbTransferTimer = null;
+  var fbTransferBusy = false;
+
+  function fbTransferCard(t) {
+    var running = t.status === 'running';
+    var src = (t.sources || []).map(function (s) {
+      var parts = String(s).split('/').filter(Boolean);
+      return parts.length ? parts[parts.length - 1] : s;
+    }).join('、');
+    var card = document.createElement('div');
+    card.className = 'fbt-card ' + (running ? 'running' : 'finished') +
+      (t.kind === 'move' ? ' transfer-move' : ' transfer-copy');
+    card.setAttribute('data-transfer', String(t.id));
+
+    var head = document.createElement('div');
+    head.className = 'fbt-head';
+    var badge = document.createElement('span');
+    badge.className = 'fbt-badge';
+    badge.textContent = t.kind === 'move' ? '移动' : '复制';
+    head.appendChild(badge);
+    var title = document.createElement('span');
+    title.className = 'fbt-title';
+    title.textContent = src || t.dest;
+    head.appendChild(title);
+    if (running) {
+      var pct = document.createElement('span');
+      pct.className = 'fbt-pct';
+      pct.textContent = (t.total > 0 ? Math.floor(t.percent) + '%' : '…');
+      head.appendChild(pct);
+      head.appendChild(fbTaskBtn('取消', 'transfer-cancel', 'danger'));
+    } else {
+      var txt = document.createElement('span');
+      txt.className = 'fbt-pct';
+      txt.textContent = t.status === 'cancelled' ? '已取消' : '完成';
+      head.appendChild(txt);
+      var x = document.createElement('button');
+      x.className = 'fbt-x';
+      x.type = 'button';
+      x.textContent = '×';
+      x.setAttribute('data-act', 'transfer-remove');
+      head.appendChild(x);
+    }
+    card.appendChild(head);
+
+    // 从哪到哪：源目录和目标目录各一行（省略号在中间，保留末尾路径）
+    var p = document.createElement('div');
+    p.className = 'fbt-sub fbt-path';
+    p.textContent = fbMidPath(String(t.sources && t.sources[0] || ''), 46) +
+      ' → ' + fbMidPath(String(t.dest || ''), 46);
+    card.appendChild(p);
+
+    var bar = document.createElement('div');
+    bar.className = 'fbt-bar' + (t.total > 0 ? '' : ' preparing');
+    var fill = document.createElement('div');
+    fill.className = 'fbt-fill';
+    if (t.total > 0) fill.style.width = (t.percent || 0) + '%';
+    bar.appendChild(fill);
+    card.appendChild(bar);
+
+    var now = document.createElement('div');
+    now.className = 'fbt-now';
+    now.textContent = t.total > 0
+      ? fbFmtBytes(t.done || 0) + ' / ' + fbFmtBytes(t.total)
+      : '正在统计体积…';
+    card.appendChild(now);
+    return card;
+  }
+
+  // 只在文件管理器浮层打开时轮询；浮层收起就停，别让后台一直发请求
+  function fbTransferPoll(on) {
+    if (on && !fbTransferTimer) {
+      fbTransferTimer = setInterval(fbTransferTick, 1500);
+      fbTransferTick();
+    } else if (!on && fbTransferTimer) {
+      clearInterval(fbTransferTimer);
+      fbTransferTimer = null;
+    }
+  }
+
+  function fbTransferTick() {
+    if (fbTransferBusy) return;
+    fbTransferBusy = true;
+    fetch('/api/transfers').then(function (r) { return r.json(); }).then(function (d) {
+      fbTransferBusy = false;
+      var tasks = (d && d.tasks) || [];
+      // 已经关掉的卡不要被下一次轮询又拉回来
+      tasks = tasks.filter(function (t) { return !fbTransferHidden[t.id]; });
+      var changed = tasks.length !== fbTransferTasks.length;
+      if (!changed) {
+        for (var i = 0; i < tasks.length; i++) {
+          if (tasks[i].id !== fbTransferTasks[i].id ||
+              tasks[i].status !== fbTransferTasks[i].status ||
+              tasks[i].done !== fbTransferTasks[i].done) { changed = true; break; }
+        }
+      }
+      fbTransferTasks = tasks;
+      if (changed) { fbTaskRender(); fbTaskBind(); }
+    }).catch(function () { fbTransferBusy = false; });
+  }
+
+  var fbTransferHidden = {};
+  function fbTransferRemove(id) {
+    fbTransferHidden[id] = true;
+    fbTransferTasks = fbTransferTasks.filter(function (t) { return t.id !== id; });
+  }
+
+  function fbTransferCancel(id) {
+    fetch('/api/transfer/cancel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.ok === false) fbToast(d.detail || '取消失败', null, true);
+      else if (d && d.killed === false) fbToast('外部后台任务，无法直接终止', null, true);
+      fbTransferTick();
+    }).catch(function () { fbToast('取消失败', null, true); });
   }
 
   // 上传卡要和下面的文件行左右贴齐：队列出现竖向滚动条时，内容区会窄一条滚动条，
@@ -4459,6 +4582,17 @@
     box.addEventListener('click', function (e) {
       var btn = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
       if (!btn) return;
+      // 搬运卡（模型在跑的 mv / cp / rsync）：动作自己分派，别落到上传任务里
+      var tcard = btn.closest('[data-transfer]');
+      if (tcard) {
+        var tid = tcard.getAttribute('data-transfer');
+        if (btn.getAttribute('data-act') === 'transfer-cancel') fbTransferCancel(tid);
+        else if (btn.getAttribute('data-act') === 'transfer-remove') {
+          fbTransferRemove(tid);
+          fbTaskRender();
+        }
+        return;
+      }
       var card = btn.closest('[data-task]');
       var task = fbTaskById(card && card.getAttribute('data-task'));
       if (!task) return;
@@ -5075,11 +5209,13 @@
   }
 
   function fbAutoStart() {
+    fbTransferPoll(true);
     if (fb.autoTimer) return;
     fb.autoTimer = setInterval(fbAutoTick, FB_AUTO_MS);
   }
 
   function fbAutoStop() {
+    fbTransferPoll(false);
     if (!fb.autoTimer) return;
     clearInterval(fb.autoTimer);
     fb.autoTimer = null;

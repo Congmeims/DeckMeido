@@ -3269,6 +3269,27 @@
     font-size: 10.5px; color: var(--brand); min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  /* 搬运卡（模型在跑的 mv / cp -r / rsync）：复制用品牌蓝、移动用橙色，
+     一眼分出是「留一份」还是「挪走」；完成后保留路径那一行，方便回看搬到哪了 */
+  .fbt-badge {
+    flex: 0 0 auto; font-size: 9.5px; font-weight: 700; line-height: 1;
+    padding: 3px 5px; border-radius: 5px; letter-spacing: .5px;
+    background: rgba(26,159,255,.16); color: var(--brand);
+  }
+  .fbt-card.transfer-move .fbt-badge { background: rgba(240,150,40,.18); color: #f0962a; }
+  .fbt-card.transfer-move .fbt-fill { background: #f0962a; }
+  .fbt-path {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  /* 总量还没量出来：和上传的准备态同一套来回滑动的条 */
+  .fbt-bar.preparing .fbt-fill {
+    width: 30%; transition: none;
+    animation: fbtSlide 1.15s ease-in-out infinite;
+  }
+  .fbt-card.finished.transfer-move .fbt-fill { background: #2ecc71; }
+  /* 搬运卡完成后保留「从哪到哪」那一行：回看时最想知道的就是搬到了哪 */
+  .fbt-card.finished .fbt-path { display: block; }
   /* 完成后自动收起：只留一行结果，进度条 / 明细先藏起来 */
   .fbt-card.finished:not(.expanded) .fbt-bar,
   .fbt-card.finished:not(.expanded) .fbt-sub,
