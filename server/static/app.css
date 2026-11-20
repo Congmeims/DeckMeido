@@ -1855,6 +1855,62 @@
     border: none;
     accent-color: #5aa9e6;
   }
+  /* 自绘滑块（壁纸压暗 / 模糊）：原生 range 的拇指在各浏览器样式不一，
+     落点也偏，这里把原生 range 铺满整行当透明命中层，
+     轨道、已填充段、圆形抓手都由 .rg 里的元素画出来 */
+  .rg {
+    position: relative;
+    height: 30px;
+    margin: 2px 0 0;
+    display: flex;
+    align-items: center;
+    touch-action: none;
+  }
+  .rg-rail {
+    position: absolute; left: 0; right: 0; top: 50%;
+    height: 6px; margin-top: -3px;
+    border-radius: 3px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    overflow: hidden;
+  }
+  .rg-fill {
+    height: 100%; width: 0;
+    background: var(--brand);
+    border-radius: 3px;
+  }
+  .rg-knob {
+    position: absolute; top: 50%;
+    left: 0;
+    width: 18px; height: 18px;
+    margin: -9px 0 0 -9px;
+    border-radius: 50%;
+    background: #fff;
+    border: 2px solid var(--brand);
+    box-shadow: 0 2px 6px rgba(0,0,0,.35);
+    pointer-events: none;
+    box-sizing: border-box;
+  }
+  /* 命中层：整行可点，肉眼不可见（不要用 display:none，否则键盘也失效） */
+  .rg input[type="range"] {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    margin: 0; padding: 0;
+    opacity: 0;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    border: 0;
+  }
+  .rg:focus-within .rg-knob {
+    box-shadow: 0 0 0 4px rgba(26,159,255,.28), 0 2px 6px rgba(0,0,0,.35);
+  }
+  .rg-val {
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
   .field-row > label:not(.switch) { display: inline-block; margin: 0; align-self: center; }
   /* 开关外层的 label 同时也是 .field label，会把「块级 + 灰色小字」带进来，
      这里复位成与开关等大的容器 */

@@ -296,48 +296,6 @@
       <div class="set-inner">
         <div id="settingsNoMatch" class="set-no-match" hidden>没有找到匹配的设置项</div>
 
-        <section class="set-pane on" data-pane="appearance">
-          <h3>外观</h3>
-          <p class="pane-desc">换一张壁纸，整站配色会跟着壁纸主色自动变。壁纸与配色存在这台机器上，Deck 和电脑网页打开同一台就是同一套；也可以直接对她说「换一张星空壁纸」。</p>
-          <h4 class="set-sect">壁纸</h4>
-          <div class="card">
-            <div class="card-title">当前壁纸</div>
-            <div id="wallPreview" class="wall-preview"><span class="wall-empty">还没有壁纸，正在使用内置主题</span></div>
-            <div class="wall-actions">
-              <button id="wallPick" class="mini-btn" type="button">选择图片</button>
-              <button id="wallClear" class="mini-btn" type="button">撤销壁纸</button>
-              <div class="field-hint" id="wallHint">支持 PNG / JPG / WEBP / GIF / BMP，20MB 以内。也可以让 AI 联网找一张。</div>
-            </div>
-            <input id="wallFile" type="file" accept="image/*" hidden>
-            <div class="field">
-              <label>压暗壁纸 <span id="wallDimVal">45%</span></label>
-              <input id="wallDim" type="range" min="0" max="80" step="5" value="45">
-              <div class="field-hint">压得越暗，壁纸上的文字越好认；压得少画面更亮。</div>
-            </div>
-            <div class="field">
-              <label>模糊 <span id="wallBlurVal">0px</span></label>
-              <input id="wallBlur" type="range" min="0" max="24" step="2" value="0">
-              <div class="field-hint">图片很花、干扰阅读时往右拉一点。</div>
-            </div>
-          </div>
-          <h4 class="set-sect">强调色</h4>
-          <div class="card">
-            <div class="card-title">配色来源</div>
-            <div class="field">
-              <label>从壁纸自动取色</label>
-              <div class="field-hint" id="wallPaletteHint">导入壁纸后会自动取主色，生成深 / 浅两套配色。</div>
-            </div>
-            <div class="field">
-              <label>手动改强调色</label>
-              <div class="wall-color-row">
-                <input id="wallColor" type="color" value="#1a9fff">
-                <button id="wallColorApply" class="mini-btn" type="button">应用</button>
-                <span class="field-hint">只换按钮、气泡等强调色，背景仍跟壁纸走。</span>
-              </div>
-            </div>
-          </div>
-        </section>
-
         <section class="set-pane" data-pane="model">
           <h3>模型接入</h3>
           <p class="pane-desc">填写服务商的接口地址与 Key，保存后立即生效。</p>
@@ -1183,9 +1141,9 @@
 
         </section>
 
-        <section class="set-pane" data-pane="about">
+        <section class="set-pane on" data-pane="about">
           <h3>关于更新</h3>
-          <p class="pane-desc">版本信息与升级渠道。升级会保留配置、会话与长期记忆。</p>
+          <p class="pane-desc">界面偏好、壁纸外观，以及版本信息与升级渠道。升级会保留配置、会话与长期记忆。</p>
           <h4 class="set-sect">界面偏好</h4>
           <div class="card">
             <div class="card-title">界面语言</div>
@@ -1195,6 +1153,58 @@
                 <option value="zh">简体中文（默认）</option>
                 <option value="en">English（机翻）</option>
               </select>
+            </div>
+          </div>
+          <h4 class="set-sect">壁纸与配色</h4>
+          <div class="card">
+            <div class="card-title">当前壁纸</div>
+            <div id="wallPreview" class="wall-preview"><span class="wall-empty">还没有壁纸，主题就是内置的浅色 / 深色 / 暗黑</span></div>
+            <div class="wall-actions">
+              <button id="wallPick" class="mini-btn" type="button">选择图片</button>
+              <button id="wallClear" class="mini-btn" type="button">撤销壁纸</button>
+              <div class="field-hint" id="wallHint">支持 PNG / JPG / WEBP / GIF / BMP，20MB 以内。也可以让 AI 联网找一张。</div>
+            </div>
+            <input id="wallFile" type="file" accept="image/*" hidden>
+            <div class="field">
+              <div class="field-row">
+                <label>压暗壁纸</label>
+                <span class="rg-val" id="wallDimVal">45%</span>
+              </div>
+              <div class="rg" id="wallDimRg">
+                <div class="rg-rail"><div class="rg-fill"></div></div>
+                <div class="rg-knob"></div>
+                <input id="wallDim" type="range" min="0" max="80" step="5" value="45"
+                       aria-label="压暗壁纸">
+              </div>
+              <div class="field-hint">压得越暗，壁纸上的文字越好认；压得少画面更亮。</div>
+            </div>
+            <div class="field">
+              <div class="field-row">
+                <label>模糊</label>
+                <span class="rg-val" id="wallBlurVal">0px</span>
+              </div>
+              <div class="rg" id="wallBlurRg">
+                <div class="rg-rail"><div class="rg-fill"></div></div>
+                <div class="rg-knob"></div>
+                <input id="wallBlur" type="range" min="0" max="24" step="2" value="0"
+                       aria-label="模糊">
+              </div>
+              <div class="field-hint">图片很花、干扰阅读时往右拉一点。</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">配色来源</div>
+            <div class="field">
+              <label>从壁纸自动取色</label>
+              <div class="field-hint" id="wallPaletteHint">导入壁纸后会自动取主色，生成浅色 / 深色两套配色。</div>
+            </div>
+            <div class="field">
+              <label>手动改强调色</label>
+              <div class="wall-color-row">
+                <input id="wallColor" type="color" value="#1a9fff">
+                <button id="wallColorApply" class="mini-btn" type="button">应用</button>
+                <span class="field-hint">只换按钮、气泡等强调色，背景仍跟壁纸走。</span>
+              </div>
             </div>
           </div>
           <h4 class="set-sect">运行与更新</h4>
@@ -11058,8 +11068,7 @@
   // 设置分区导航建在侧栏里（原来那套写在浮层里的 <nav> 已经搬过去了）。
   // 名称与顺序固定，和内容区各 <section data-pane> 一一对应
   var setNav = document.getElementById('setNav');
-  [['appearance', '外观'],
-   ['model', '模型接入'], ['persona', '女仆人设'],
+  [['model', '模型接入'], ['persona', '女仆人设'],
    ['voice', '语音引擎'], ['external', '外部连接'],
    ['plugin', '插件设置'], ['about', '关于更新']].forEach(function (it) {
     var b = document.createElement('button');
@@ -11107,18 +11116,19 @@
       img.alt = '当前壁纸';
       wallPreview.appendChild(img);
     } else {
-      wallPreview.innerHTML = '<span class="wall-empty">还没有壁纸，正在使用内置主题</span>';
+      wallPreview.innerHTML = '<span class="wall-empty">还没有壁纸，主题就是内置的浅色 / 深色 / 暗黑</span>';
     }
     wallDim.value = String(Number(a.dim) || 0);
     wallBlur.value = String(Number(a.blur) || 0);
     wallDimVal.textContent = wallDim.value + '%';
     wallBlurVal.textContent = wallBlur.value + 'px';
+    syncWallRgs();
     var brand = a.palette && a.palette.dark ? a.palette.dark.brand : '';
     if (brand) {
       wallColor.value = brand;
-      wallPaletteHint.textContent = '当前主色 ' + brand + '，深 / 浅两套配色已自动生成。';
+      wallPaletteHint.textContent = '当前主色 ' + brand + '，浅色 / 深色两套配色已自动生成。';
     } else {
-      wallPaletteHint.textContent = '导入壁纸后会自动取主色，生成深 / 浅两套配色。';
+      wallPaletteHint.textContent = '导入壁纸后会自动取主色，生成浅色 / 深色两套配色。';
     }
     document.getElementById('wallClear').disabled = !a.wallpaper;
     // 后端广播/撤销壁纸后也会走到这里，顺带把左下角按钮的「自定义」文案对齐
@@ -11140,12 +11150,77 @@
         .catch(function () {});
     }, 400);
   }
+  // 自绘滑块：原生 range 的拇指样式各浏览器不同，Deck 上鼠标/触控落点还偏，
+  // 改成「隐形 range 盖在自绘轨道上」——点击、拖动、键盘都由原生控件处理，
+  // 我们只负责把 fill 宽度和 knob 位置按当前值画出来
+  var wallRgs = [];
+  // 自绘滑块外面那层 .rg 没有原生 range 的「点哪跳哪」行为，
+  // 所以按点击位置自己算值：按下就跳过去，按住拖动跟着走。
+  // 命中仍然交给上面透明的 input[type=range]（键盘、无障碍不被破坏）
+  function bindWallRg(input) {
+    var rg = input.parentNode;
+    if (!rg || !rg.classList || !rg.classList.contains('rg')) return;
+    var rail = rg.querySelector('.rg-rail') || rg;
+    var dragging = false;
+    function seek(e) {
+      var b = rail.getBoundingClientRect();
+      if (!b.width) return;
+      var min = Number(input.min) || 0;
+      var max = Number(input.max) || 100;
+      var step = Number(input.step) || 1;
+      var pct = (e.clientX - b.left) / b.width;
+      pct = Math.max(0, Math.min(1, pct));
+      var v = min + pct * (max - min);
+      v = Math.round(v / step) * step;
+      v = Math.max(min, Math.min(max, v));
+      input.value = v;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    rg.addEventListener('pointerdown', function (e) {
+      if (e.button !== undefined && e.button !== 0) return;
+      dragging = true;
+      try { rg.setPointerCapture(e.pointerId); } catch (_) {}
+      seek(e);
+    });
+    rg.addEventListener('pointermove', function (e) {
+      if (!dragging) return;
+      e.preventDefault();
+      seek(e);
+    });
+    function end(e) {
+      if (!dragging) return;
+      dragging = false;
+      try { rg.releasePointerCapture(e.pointerId); } catch (_) {}
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    rg.addEventListener('pointerup', end);
+    rg.addEventListener('pointercancel', end);
+  }
+  function syncWallRg(input) {
+    var rg = input.parentNode;
+    if (!rg || !rg.classList || !rg.classList.contains('rg')) return;
+    var min = Number(input.min) || 0;
+    var max = Number(input.max) || 100;
+    var pct = max > min ? (Number(input.value) - min) / (max - min) * 100 : 0;
+    pct = Math.max(0, Math.min(100, pct));
+    var knob = rg.querySelector('.rg-knob');
+    var fill = rg.querySelector('.rg-fill');
+    if (knob) knob.style.left = pct + '%';
+    if (fill) fill.style.width = pct + '%';
+  }
+  function syncWallRgs() {
+    wallRgs.forEach(syncWallRg);
+  }
   [wallDim, wallBlur].forEach(function (el) {
+    wallRgs.push(el);
+    syncWallRg(el);
+    bindWallRg(el);
     el.addEventListener('input', function () {
       wallDimVal.textContent = wallDim.value + '%';
       wallBlurVal.textContent = wallBlur.value + 'px';
       document.documentElement.style.setProperty('--wall-dim', (Number(wallDim.value) || 0) / 100);
       document.documentElement.style.setProperty('--wall-blur', (Number(wallBlur.value) || 0) + 'px');
+      syncWallRg(el);
       saveWallTune();
     });
   });
@@ -14869,18 +14944,12 @@
   // 按这个顺序循环；按钮上写的是「点一下会切到的下一档」，和原来两档时的语义一致
   var THEMES = ['light', 'dark', 'oled'];
   var THEME_NAME = { light: '浅色模式', dark: '深色模式', oled: '暗黑模式' };
-  // 是否已设置自定义主题（壁纸 + 配色）。取色成功后 palette 才有值，
-  // 壁纸还没取完色时不显示「自定义」，此时页面仍是内置主题的样子
-  function customThemeOn() {
-    return !!(CFG_APPEARANCE && CFG_APPEARANCE.wallpaper && CFG_APPEARANCE.url &&
-              CFG_APPEARANCE.palette);
-  }
-  // 左下角按钮文案：自定义生效时写「自定义」，否则写「点一下会切到的下一档」。
-  // 点击行为不变，自定义状态下仍是循环三档（循环后配色跟着换深浅那套）
+  // 左下角按钮文案：始终写「点一下会切到的下一档」。
+  // 设了壁纸后三档会自动带上壁纸底色（见 applyCfgAppearance），
+  // 所以这里不再有单独的「自定义」档，文案也不变
   function syncThemeBtn(t) {
     var el = document.getElementById('btnTheme');
     if (!el) return;
-    if (customThemeOn()) { el.textContent = '自定义'; return; }
     var idx = THEMES.indexOf(t);
     el.textContent = THEME_NAME[THEMES[(idx < 0 ? 0 : idx + 1) % THEMES.length]];
   }
