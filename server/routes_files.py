@@ -899,7 +899,7 @@ def register(app) -> None:
             return JSONResponse(status_code=403, content={
                 "ok": False, "zone": fszones.ZONE_FORBIDDEN,
                 "reason": fszones.REASON_FORBIDDEN_ZONE,
-                "path": str(target),
+                "path": _emit(str(target)),
                 "error": "该目录禁止浏览（/proc、/sys、/dev）",
             })
         if not target.is_file():
@@ -912,7 +912,7 @@ def register(app) -> None:
             stat = target.stat()
         except OSError:
             raise HTTPException(status_code=404, detail="file not found")
-        info = {"path": str(target), "name": target.name, "kind": kind,
+        info = {"path": _emit(str(target)), "name": _emit(target.name), "kind": kind,
                 "size": stat.st_size, "mtime": stat.st_mtime}
         if kind == "text":
             try:
@@ -950,8 +950,9 @@ def register(app) -> None:
                 z = fszones.zone_info(target, _fs_workspace_roots())
                 link_parent = (str(requested.parent)
                                if str(requested.parent) != str(requested) else None)
-                return {"path": str(requested), "parent": link_parent, "entries": [],
-                        "link_broken": True, "link_target": str(target),
+                return {"path": _emit(str(requested)), "parent": _emit(link_parent) if link_parent else None,
+                        "entries": [],
+                        "link_broken": True, "link_target": _emit(str(target)),
                         "zone": z["zone"], "readonly": z["readonly"],
                         "zone_label": z["label"], "zone_reason": z["reason"],
                         "error": f"链接目标不存在：{requested} -> {target}"}
@@ -960,7 +961,7 @@ def register(app) -> None:
                 target = target.parent
                 parent = str(target.parent) if str(target.parent) != str(target) else None
         except OSError:
-            return {"path": raw, "parent": None, "entries": [], "error": "路径无效"}
+            return {"path": _emit(raw), "parent": None, "entries": [], "error": "路径无效"}
 
         zone = fszones.zone_info(target, _fs_workspace_roots())
         zone_fields = {"zone": zone["zone"], "readonly": zone["readonly"],
@@ -968,7 +969,8 @@ def register(app) -> None:
         if zone["zone"] == fszones.ZONE_FORBIDDEN:
             # /proc、/sys、/dev 不是只读，是根本不给进；前端按 reason 显示提示
             return JSONResponse(status_code=403, content={
-                "ok": False, "path": str(target), "parent": parent, "entries": [],
+                "ok": False, "path": _emit(str(target)), "parent": _emit(parent) if parent else None,
+                "entries": [],
                 "reason": fszones.REASON_FORBIDDEN_ZONE, **zone_fields,
                 "error": f"{target} 属于禁止浏览的系统目录（/proc、/sys、/dev），已拒绝进入",
             })
@@ -981,12 +983,14 @@ def register(app) -> None:
                 if m.ensure_workspace(str(tools.WORKSPACE)):
                     target = Path(tools.WORKSPACE)
                 else:
-                    return {"path": str(target), "parent": parent, "entries": [],
+                    return {"path": _emit(str(target)), "parent": _emit(parent) if parent else None,
+                            "entries": [],
                             **zone_fields,
                             "error": f"工作区目录 {target} 建不出来（{m.WORKSPACE_ERROR}）。"
                                      "请检查该路径是否有写权限，或在设置里换一个目录"}
             else:
-                return {"path": str(target), "parent": parent, "entries": [], **zone_fields,
+                return {"path": _emit(str(target)), "parent": _emit(parent) if parent else None,
+                        "entries": [], **zone_fields,
                         "error": f"目录 {target} 不存在"}
         entries = []
         try:
@@ -1046,10 +1050,12 @@ def register(app) -> None:
                         pass
                     entries.append(item)
         except PermissionError:
-            return {"path": str(target), "parent": parent, "entries": [], **zone_fields,
+            return {"path": _emit(str(target)), "parent": _emit(parent) if parent else None,
+                    "entries": [], **zone_fields,
                     "error": "没有权限读取这个目录"}
         except OSError as e:
-            return {"path": str(target), "parent": parent, "entries": [], **zone_fields,
+            return {"path": _emit(str(target)), "parent": _emit(parent) if parent else None,
+                    "entries": [], **zone_fields,
                     "error": f"读取失败：{e}"}
         # 文件夹在前、同类按名字排，隐藏文件照样列出（用户可能就是要看 .config）
         entries.sort(key=lambda x: (not x["dir"], x["name"].lower()))
@@ -1071,7 +1077,7 @@ def register(app) -> None:
         """
         op = req.op
         try:
-            p = Path(req.path).expanduser().resolve()
+            p = Path(_fs_path(req.path)).expanduser().resolve()
         except OSError:
             return {"ok": False, "error": "路径无效"}
 
@@ -1083,7 +1089,7 @@ def register(app) -> None:
         p2 = None
         if op in ("rename", "move", "copy"):
             try:
-                p2 = Path(req.path2).expanduser().resolve()
+                p2 = Path(_fs_path(req.path2)).expanduser().resolve()
             except OSError:
                 return {"ok": False, "error": "路径无效"}
             check_paths.append(p2)
@@ -1119,7 +1125,7 @@ def register(app) -> None:
                     return {"ok": False, "error": "目标已存在"}
                 p2.parent.mkdir(parents=True, exist_ok=True)
                 if op == "rename" or op == "move":
-                    await asyncio.to_thread(shutil.move, str(p), str(p2))
+                    await asyncio.to_thread(shutil.move, p, p2)
                 else:
                     if p.is_dir():
                         await asyncio.to_thread(shutil.copytree, p, p2)
@@ -1509,7 +1515,7 @@ def register(app) -> None:
             raise HTTPException(status_code=404, detail="file not found")
         target = _workspace_file(rel)
         try:
-            return {"size": target.stat().st_size, "name": target.name}
+            return {"size": target.stat().st_size, "name": _emit(target.name)}
         except OSError:
             raise HTTPException(status_code=404, detail="file not found")
 
