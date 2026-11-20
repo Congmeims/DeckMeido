@@ -52,7 +52,6 @@ TOOL_CN: dict[str, str] = {
     "list_emulator_roms": "扫描模拟器游戏",
     "run_command": "执行命令",
     "desktop": "操作桌面",
-    "gamepad": "操作手柄",
     "screenshot": "截取屏幕",
     "list_dir": "查看目录",
     "read_file": "读取文件",
@@ -261,53 +260,6 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "gamepad",
-            "description": ("模拟手柄按键（写 /dev/uinput 虚拟手柄，游戏模式里唯一能被游戏认到的注入方式；"
-                            "desktop 那套鼠标键盘在游戏里没用）。"
-                            "action=press 按一下某个键；hold 按住某个键若干毫秒（跑动这类需要长按）；"
-                            "stick 把摇杆推到 (x,y) 并保持；trigger 把扳机压到 value 力度；"
-                            "release 摇杆回中并松开扳机。"
-                            "玩游戏、过对话、菜单导航时用。一次只能动一个键，"
-                            "需要连续操作就多次调用"),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string",
-                               "enum": ["press", "hold", "stick", "trigger", "release"],
-                               "description": "要做的动作"},
-                    "button": {"type": "string",
-                               "enum": ["a", "b", "x", "y", "up", "down", "left", "right",
-                                        "lb", "rb", "lt", "rt", "start", "select", "guide",
-                                        "l3", "r3", "share"],
-                               "description": ("press/hold/trigger 的键位。a 通常是确认/跳跃，"
-                                               "b 取消，x/y 视游戏而定；方向键是十字键不是摇杆，"
-                                               "需要模拟摇杆用 stick。"
-                                               "lt/rt 是左右扳机（0..1 力度，press/hold 时按到底），"
-                                               "l3/r3 是左右摇杆按下（跑步/蹲/近战常见）。"
-                                               "start 是 Xbox 的 Menu 键（≡），select 是 View 键（◱），"
-                                               "两者在游戏里常被用来打开暂停菜单/地图；"
-                                               "guide 是 Xbox 的 Xbox/Guide 键，游戏内可呼出 overlay；"
-                                               "share 是 Xbox Series 的分享键，部分游戏不认；"
-                                               "guide 不是 Steam 键，无法呼出 Steam 菜单，需要那个请让用户自己按")},
-                    "ms": {"type": "integer",
-                           "description": "hold 按住多久（毫秒，默认 500，上限 5000）；press 默认 80"},
-                    "x": {"type": "number",
-                          "description": "stick 的横向，-1 最左、1 最右，0 居中"},
-                    "y": {"type": "number",
-                          "description": "stick 的纵向，-1 最上、1 最下，0 居中"},
-                    "side": {"type": "string",
-                             "enum": ["left", "right"],
-                             "description": "stick/release 用哪个摇杆，默认 left（右摇杆主要用来转视角）"},
-                    "value": {"type": "number",
-                              "description": "trigger 的力度，0 松开、1 按到底，默认 1"},
-                },
-                "required": ["action"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "list_dir",
             "description": "列出目录内容（编程/文件任务先看结构）。默认列出工作区（家目录下的 MeidoSpace）",
             "parameters": {
@@ -480,9 +432,7 @@ TOOLS: list[dict] = [
 ]
 
 # 危险操作：任何权限模式下都需确认
-# gamepad 写的是 /dev/uinput 虚拟手柄，按下去会直接操作当前游戏/前台界面，
-# 用户不在旁边看着的时候不该自己动 —— 归到必确认，和装游戏同一级别
-DANGEROUS = {"install_game", "gamepad"}
+DANGEROUS = {"install_game"}
 
 
 def touches_screen(name: str, args: dict) -> bool:
@@ -493,9 +443,6 @@ def touches_screen(name: str, args: dict) -> bool:
     """
     if name == "desktop":
         return str(args.get("action", "")) != "where"
-    # 手柄注入也是「真的在操作游戏」：按下去游戏就在动，遮罩该盖就盖
-    if name == "gamepad":
-        return True
     if name == "run_command":
         return bool(_screen_command(str(args.get("command", ""))))
     return False
@@ -2239,19 +2186,6 @@ def summarize_tool(name: str, args: dict) -> str:
     if name in ("read_file", "write_file", "edit_file", "list_dir"):
         path = str(args.get("path", ""))
         return path.split("/")[-1] or path
-    if name == "gamepad":
-        act = str(args.get("action", ""))
-        if act == "stick":
-            side = "右" if str(args.get("side", "left")) == "right" else "左"
-            return f"推{side}摇杆 ({args.get('x', 0)}, {args.get('y', 0)})"
-        if act == "trigger":
-            return f"{str(args.get('button', '')).upper()} 扳机 {args.get('value', 1)}"
-        if act == "release":
-            return "摇杆回中、松开扳机"
-        btn = str(args.get("button", "")).upper()
-        if act == "hold":
-            return f"按住 {btn} {args.get('ms', 500)}ms"
-        return f"按 {btn}"
     # 无需参数的简单操作：不显示多余说明
     if name in ("screenshot", "list_installed_games", "check_system_updates", "list_emulator_roms"):
         return ""
@@ -2709,9 +2643,8 @@ async def _screenshot_gamescope(path: Path) -> str:
         return "找不到 gamescope 所在的用户会话（/run/user/* 下没有活的图形会话）"
     uid, user = sess
     raw = path.with_suffix(".raw.png")
-    # 只试抓 1.5 秒。以前会再「推一下摇杆」等 12 秒，但实测 uinput 注入的输入
-    # gamescope 根本不认（只有真人动摇杆/触摸板才会重绘），那 12 秒是白等。
-    # 画面静止就直接报出来，让用户动一下——插件那边也会据此弹重试卡片。
+    # 只试抓 1.5 秒：画面静止时 gamescope 不产生新帧，等久了只是白等。
+    # 抓不到就直接报出来，让用户动一下——插件那边也会据此弹重试卡片。
     ok, err_text = await _gst_grab(node, raw, uid, user, timeout=1.5)
     if not ok and not err_text:
         return "画面静止，gamescope 没有输出新帧（随便动一下摇杆或触摸板再试）"
@@ -2722,306 +2655,11 @@ async def _screenshot_gamescope(path: Path) -> str:
     return ""
 
 
-# ---------- 虚拟手柄（uinput） ----------
+# ---------- 虚拟手柄（uinput）已移除 ----------
 #
-# 游戏模式下 XTest / Wayland 虚拟键盘都进不了 gamescope，能进游戏的只有
-# /dev/uinput 虚拟设备（Steam Input、Sunshine 走的都是这条）。这里直接建一个
-# 带 EV_KEY + EV_ABS 的手柄设备：键盘设备扛不了摇杆（ABS 是绝对值轴），
-# 手柄设备也发不出键盘字符，两类设备分工不同。
-
-_UI_DEV_CREATE = 0x5501
-_UI_DEV_DESTROY = 0x5502
-_UI_SET_EVBIT = 0x40045564
-_UI_SET_KEYBIT = 0x40045565
-_UI_SET_ABSBIT = 0x40045567
-_UI_DEV_SETUP = 0x405C5503
-_UI_ABS_SETUP = 0x401C5504
-
-_EV_SYN, _EV_KEY, _EV_ABS = 0x00, 0x01, 0x03
-_ABS_X, _ABS_Y, _ABS_Z, _ABS_RX, _ABS_RY, _ABS_RZ = 0x00, 0x01, 0x02, 0x03, 0x04, 0x05
-_STICK_MAX = 32767
-_TRIG_MAX = 32767
-
-# 面板/工具里用的名字 → 键位。ABXY 按 Xbox 布局。
-_PAD_KEYS = {
-    "a": 0x130, "b": 0x131, "x": 0x133, "y": 0x134,
-    "lb": 0x136, "rb": 0x137,
-    "up": 0x220, "down": 0x221, "left": 0x222, "right": 0x223,
-    "start": 0x13B, "select": 0x13A,
-    # BTN_MODE：Xbox 手柄的 Guide 键。SteamOS 里物理 Steam 键由系统层拦截，
-    # 虚拟手柄发的这个键只会被游戏当成 Xbox/Guide 键，不会真的呼出 Steam 菜单
-    "guide": 0x13C,
-    # 摇杆按下（L3 / R3）
-    "l3": 0x13D, "r3": 0x13E,
-    # 分享键：Xbox Series X|S 才有，内核里报成 KEY_RECORD 而不是 BTN_*
-    "share": 0x0A7,
-}
-
-# 扳机名字 → 轴。手柄惯例走 0..32767，不是按键
-_PAD_TRIGGERS = {"lt": _ABS_Z, "rt": _ABS_RZ}
-
-# 当前摇杆/扳机状态，用来判断 release 时要不要真的发一帧
-_PAD_STICK = [0, 0]
-_PAD_STICK_R = [0, 0]
-_PAD_TRIG = {"lt": 0, "rt": 0}
-
-# 虚拟手柄的厂商/产品号：微软 Xbox 360 有线手柄（0x045E/0x02FD）。
-# 曾试过换成库里没有的 28DE:1205 让 Steam 显示自定义名，结果游戏完全不认，
-# 所以退回标准 Xbox ID —— 兼容性优先于显示名。
-_PAD_VID = 0x045E
-_PAD_PID = 0x02FD
-
-
-class _VirtualPad:
-    """一个懒创建、用完立刻销毁的虚拟手柄。
-
-    设备只要挂在系统里，Steam Input 就会把它当成「接了另一只手柄」：
-    游戏模式下调出虚拟键盘打字时，按键会先进这只假手柄，上屏变成候选词序号。
-    所以这里不做长驻——注入完这一下就销毁，闲置也只是一小段兜底。
-    """
-
-    _IDLE = 3.0
-
-    def __init__(self):
-        self._fd: int | None = None
-        self._lock = asyncio.Lock()
-        self._idle: asyncio.Task | None = None
-        self._gen = 0
-
-    def _emit(self, typ: int, code: int, value: int):
-        # input_event 的 timeval 两个字段都是 64 位 long，所以用 qq 不用 ll
-        import struct
-
-        os.write(self._fd, struct.pack("qqHHi", 0, 0, typ, code, value))
-
-    def _syn(self):
-        self._emit(_EV_SYN, 0, 0)
-
-    def _create(self):
-        import fcntl
-        import struct
-
-        fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
-        try:
-            fcntl.ioctl(fd, _UI_SET_EVBIT, _EV_KEY)
-            fcntl.ioctl(fd, _UI_SET_EVBIT, _EV_SYN)
-            fcntl.ioctl(fd, _UI_SET_EVBIT, _EV_ABS)
-            for code in _PAD_KEYS.values():
-                fcntl.ioctl(fd, _UI_SET_KEYBIT, code)
-            for code, lo, hi in (
-                (_ABS_X, -_STICK_MAX, _STICK_MAX),
-                (_ABS_Y, -_STICK_MAX, _STICK_MAX),
-                # 右摇杆：不少游戏用右摇杆转视角
-                (_ABS_RX, -_STICK_MAX, _STICK_MAX),
-                (_ABS_RY, -_STICK_MAX, _STICK_MAX),
-                (_ABS_Z, 0, _TRIG_MAX),
-                (_ABS_RZ, 0, _TRIG_MAX),
-            ):
-                fcntl.ioctl(fd, _UI_SET_ABSBIT, code)
-                # uinput_abs_setup：code(2)+pad(2)+absinfo{value,min,max,fuzz,flat,resolution}
-                fcntl.ioctl(
-                    fd, _UI_ABS_SETUP,
-                    struct.pack("HHiiiiii", code, 0, 0, lo, hi, 0, 0, 0),
-                )
-            # uinput_setup：id{bus,vendor,product,version} + name(80) + ff_effects_max
-            # ID 用标准 Xbox 360 手柄，Steam / SDL / 游戏三方都按 Xbox 认。
-            # Steam 提示里显示的是 SDL 内置库里的名字（「Xbox One S 手柄已连接」），
-            # 内核这行名字只在 SDL 不认识该 ID 时才生效，而换个不认识的 ID
-            # 游戏会连手柄都认不到 —— 试过 28DE:1205，实测完全不认。
-            fcntl.ioctl(
-                fd, _UI_DEV_SETUP,
-                struct.pack("HHHH80sI", 0x03, _PAD_VID, _PAD_PID, 0x0001,
-                            b"DeckMeido Gamepad", 0),
-            )
-            fcntl.ioctl(fd, _UI_DEV_CREATE)
-        except Exception:
-            os.close(fd)
-            raise
-        self._fd = fd
-        # AI 操纵游戏时，日志里必须能看出设备是这一刻才建出来的：
-        # 新建的设备游戏要重新枚举，紧接着按下去的键往往收不到
-        print(f"[DeckMeido] 虚拟手柄已创建（fd {fd}）")
-
-    def _destroy(self):
-        if self._fd is None:
-            return
-        try:
-            import fcntl
-
-            fcntl.ioctl(self._fd, _UI_DEV_DESTROY)
-        except Exception as exc:
-            devlog.debug("tools._destroy", error=repr(exc))
-            pass
-        try:
-            os.close(self._fd)
-        except Exception as exc:
-            devlog.debug("tools._destroy", error=repr(exc))
-            pass
-        self._fd = None
-        _PAD_STICK[0] = _PAD_STICK[1] = 0
-        _PAD_STICK_R[0] = _PAD_STICK_R[1] = 0
-        _PAD_TRIG["lt"] = _PAD_TRIG["rt"] = 0
-        print("[DeckMeido] 虚拟手柄已销毁")
-
-    def _touch(self):
-        if self._idle is not None:
-            self._idle.cancel()
-        # 代次自增：被取消的旧任务如果已经醒来并卡在等锁上，取消是打不断的
-        # （CancelledError 只在 sleep 阶段生效）。它拿到锁后会比对代次，
-        # 发现自己过期就直接退出，不会把刚建好的设备关掉。
-        self._gen += 1
-        self._idle = asyncio.create_task(self._close_later(self._gen))
-
-    async def _close_later(self, gen: int):
-        try:
-            await asyncio.sleep(self._IDLE)
-        except asyncio.CancelledError:
-            return
-        async with self._lock:
-            if gen != self._gen:
-                return
-            self._destroy()
-
-    async def _ensure(self):
-        """确保设备已建好、且内核已经注册完成（游戏收得到后面的按键）
-
-        设备刚创建到游戏能收到事件之间有一段空窗：内核要等 uinput 的事件
-        循环把 /dev/input/eventXX 建出来才会分发。这期间写进去的按下事件
-        会被丢掉——表现就是「第一次按键没反应」。等这一小段再补发一帧
-        「按键全抬起、摇杆居中」的初始状态，游戏接上时先看到干净的值。
-        """
-        if self._fd is not None:
-            return
-        self._create()
-        await asyncio.sleep(0.2)
-        for code in _PAD_KEYS.values():
-            self._emit(_EV_KEY, code, 0)
-        for code in (_ABS_X, _ABS_Y, _ABS_RX, _ABS_RY, _ABS_Z, _ABS_RZ):
-            self._emit(_EV_ABS, code, 0)
-        self._syn()
-        # 设备刚出现时 Steam 才把它枚举进去，等一会儿再按，别让第一次必然扑空
-        await asyncio.sleep(0.3)
-
-    async def key(self, name: str, hold_ms: int = 80) -> str:
-        code = _PAD_KEYS.get(name)
-        if code is None:
-            return f"不认识的手柄键：{name}（可用：{'、'.join(_PAD_KEYS)}）"
-        async with self._lock:
-            try:
-                await self._ensure()
-                self._emit(_EV_KEY, code, 1)
-                self._syn()
-                await asyncio.sleep(max(30, min(hold_ms, 5000)) / 1000)
-                self._emit(_EV_KEY, code, 0)
-                self._syn()
-            except FileNotFoundError:
-                print("[DeckMeido] 手柄注入失败：没有 /dev/uinput", file=sys.stderr)
-                return "手柄注入失败：没有 /dev/uinput，uinput 内核模块未加载"
-            except PermissionError:
-                print("[DeckMeido] 手柄注入失败：没权限写 /dev/uinput", file=sys.stderr)
-                return "手柄注入失败：没有写 /dev/uinput 的权限（需要 root）"
-            # 按键是「按一下就好」的：注入完立刻把设备摘掉，
-            # 别让它留在系统里抢虚拟键盘的输入
-            self._destroy()
-        hold = max(30, min(hold_ms, 5000))
-        print(f"[DeckMeido] 手柄按键 {name}（{hold}ms）")
-        return f"已按下手柄键 {name}（{hold}ms）"
-
-    async def stick(self, x: float, y: float, side: str = "left") -> str:
-        right = str(side or "left").strip().lower() == "right"
-        axes = (_ABS_RX, _ABS_RY) if right else (_ABS_X, _ABS_Y)
-        vx = int(max(-1.0, min(1.0, x)) * _STICK_MAX)
-        vy = int(max(-1.0, min(1.0, y)) * _STICK_MAX)
-        async with self._lock:
-            try:
-                await self._ensure()
-                self._emit(_EV_ABS, axes[0], vx)
-                self._emit(_EV_ABS, axes[1], vy)
-                self._syn()
-            except FileNotFoundError:
-                print("[DeckMeido] 摇杆注入失败：没有 /dev/uinput", file=sys.stderr)
-                return "摇杆注入失败：没有 /dev/uinput，uinput 内核模块未加载"
-            except PermissionError:
-                print("[DeckMeido] 摇杆注入失败：没权限写 /dev/uinput", file=sys.stderr)
-                return "摇杆注入失败：没有写 /dev/uinput 的权限（需要 root）"
-            state = _PAD_STICK_R if right else _PAD_STICK
-            state[0], state[1] = vx, vy
-            # 回中 = 这一轮操作结束，设备没必要再留着抢键盘
-            if vx == 0 and vy == 0:
-                self._destroy()
-            else:
-                self._touch()
-        print(f"[DeckMeido] 手柄{'右' if right else '左'}摇杆 ({x:.2f}, {y:.2f})")
-        return f"{'右' if right else '左'}摇杆已推到 ({x:.2f}, {y:.2f})"
-
-    async def trigger(self, which: str, value: float) -> str:
-        name = str(which or "").strip().lower()
-        code = _PAD_TRIGGERS.get(name)
-        if code is None:
-            return f"不认识的扳机：{which}（可用：lt、rt）"
-        level = int(max(0.0, min(1.0, value)) * _TRIG_MAX)
-        async with self._lock:
-            try:
-                await self._ensure()
-                self._emit(_EV_ABS, code, level)
-                self._syn()
-            except FileNotFoundError:
-                print("[DeckMeido] 扳机注入失败：没有 /dev/uinput", file=sys.stderr)
-                return "扳机注入失败：没有 /dev/uinput，uinput 内核模块未加载"
-            except PermissionError:
-                print("[DeckMeido] 扳机注入失败：没权限写 /dev/uinput", file=sys.stderr)
-                return "扳机注入失败：没有写 /dev/uinput 的权限（需要 root）"
-            _PAD_TRIG[name] = level
-            # 松开 = 这一轮操作结束，设备没必要再留着抢键盘
-            if level == 0:
-                self._destroy()
-            else:
-                self._touch()
-        print(f"[DeckMeido] 手柄{name.upper()} 扳机 {value:.2f}")
-        return f"{name.upper()} 扳机力度 {value:.2f}"
-
-
-_PAD = _VirtualPad()
-
-
-async def _gamepad(action: str, button: str = "", ms: int = 0,
-                   x: float = 0.0, y: float = 0.0, side: str = "left",
-                   value: float = 1.0) -> str:
-    """模拟手柄。press/hold 按键，stick 推摇杆，trigger 压扳机，release 摇杆/扳机回中"""
-    act = str(action or "").strip().lower()
-    if act in ("press", "hold"):
-        name = str(button or "").strip().lower()
-        if not name:
-            return "press/hold 需要填 button"
-        # lt/rt 是轴不是键，按一下等价于踩到底再松开
-        if name in _PAD_TRIGGERS:
-            default = 80 if act == "press" else 500
-            hold = max(30, min(int(ms or default), 5000))
-            await _PAD.trigger(name, 1.0)
-            await asyncio.sleep(hold / 1000)
-            return await _PAD.trigger(name, 0.0) + f"（按住 {hold}ms）"
-        default = 80 if act == "press" else 500
-        return await _PAD.key(name, int(ms or default))
-    if act == "stick":
-        try:
-            return await _PAD.stick(float(x), float(y), side)
-        except (TypeError, ValueError):
-            return "stick 的 x/y 要填 -1..1 的数字"
-    if act == "trigger":
-        try:
-            return await _PAD.trigger(button, float(value))
-        except (TypeError, ValueError):
-            return "trigger 的 value 要填 0..1 的数字"
-    if act == "release":
-        if str(button or "").strip().lower() in _PAD_TRIGGERS:
-            return await _PAD.trigger(button, 0.0)
-        out = [await _PAD.stick(0.0, 0.0, side)]
-        # 扳机也一起松开，避免 release 之后还踩着油门
-        for name in _PAD_TRIGGERS:
-            if _PAD_TRIG[name]:
-                out.append(await _PAD.trigger(name, 0.0))
-        return "；".join(out)
-    return f"不认识的 action：{action}（可用：press / hold / stick / trigger / release）"
+# 这里原本写 /dev/uinput 建一只虚拟 Xbox 手柄，供 AI 在游戏模式里按键。
+# 已按要求整体删除：软件不再创建、也不再使用任何虚拟手柄，
+# 游戏模式下 AI 只做只读操作与截图，需要操作时由用户自己按手柄。
 
 
 async def _screenshot() -> str:
@@ -3795,7 +3433,6 @@ EXECUTORS = {
     "list_emulator_roms": _list_emulator_roms,
     "run_command": _run_command,
     "desktop": _desktop,
-    "gamepad": _gamepad,
     "screenshot": _screenshot,
     "list_dir": _list_dir,
     "read_file": _read_file,

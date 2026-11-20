@@ -263,8 +263,6 @@ def tool_risk(name: str, args: dict) -> Verdict:
                        rule="self_update", reason="升级会重启服务并中断对话")
     if name == "install_game":
         return Verdict(severity=NOTABLE, rule="install_game", reason="安装游戏会触发下载")
-    if name == "gamepad":
-        return Verdict(severity=NOTABLE, rule="gamepad", reason="模拟手柄会操作游戏")
     path = str((args or {}).get("path") or (args or {}).get("file") or "")
     if name in ("write_file", "edit_file") and path:
         p = path.replace("\\", "/")

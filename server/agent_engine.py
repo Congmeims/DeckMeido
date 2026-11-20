@@ -222,10 +222,10 @@ async def run_agent(events: list[dict], extra_system: str = "",
         # 也不需要为拼提示词去探测当前桌面/游戏模式
         sys_prompt = m._guest_system_prompt()
     else:
-        # 当前模式必须实测后告诉模型：游戏模式用 gamepad 注入、游戏模式下从 gamescope
-        # 抓帧、遮罩提示挂 gamescope 覆盖层；桌面模式走 desktop 点按 + spectacle 截图。
-        # 两套操作手段不通用，猜错就是「点了没反应」或「抓不到画面」。探针会起子进程，
-        # 所以放到线程里跑，别卡住这一轮
+        # 当前模式必须实测后告诉模型：游戏模式只能只读 + 从 gamescope 抓帧，
+        # 遮罩提示挂 gamescope 覆盖层；桌面模式走 desktop 点按 + spectacle 截图。
+        # 两种模式能做的事情不一样，猜错就是「点了没反应」或「抓不到画面」。
+        # 探针会起子进程，所以放到线程里跑，别卡住这一轮
         gaming = await asyncio.to_thread(tools.mode_is_gaming)
         sys_prompt = m.SYSTEM_PROMPT + m._mode_block(gaming) + (f"\n{extra_system}" if extra_system else "")
         # 长期记忆拼在最末尾（见 _memory_block 里的缓存说明）。每轮都重新取，

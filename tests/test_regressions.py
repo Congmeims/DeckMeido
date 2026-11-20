@@ -392,7 +392,6 @@ class DeletePolicyTest(unittest.TestCase):
         """install_game 这类危险工具跟着「系统命令」开关走"""
         groups = {"read": False, "write": False, "cmd": True, "net": False}
         self.assertTrue(tools.custom_needs_approval("install_game", {"appid": 1}, groups))
-        self.assertTrue(tools.custom_needs_approval("gamepad", {}, groups))
         groups["cmd"] = False
         self.assertFalse(tools.custom_needs_approval("install_game", {"appid": 1}, groups))
 
