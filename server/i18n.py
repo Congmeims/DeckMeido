@@ -34,6 +34,16 @@ EN: dict[str, str] = {
     "回复": "Reply",
     "重新生成": "Regenerate",
     "按回车加入队列，等这一轮结束自动发送": "Enter to queue; it sends after this turn",
+    # 输入框空闲占位文案（带人设名的句子在 JS 里替换 {n}）
+    "有什么想让我做的吗？": "What can I do for you?",
+    "今天想做点什么呀？": "What shall we do today?",
+    "有什么想告诉我的吗？": "Anything you'd like to tell me?",
+    "试试「截个屏」「放首歌」，或者直接问我": "Try \"take a screenshot\" or \"play a song\", or just ask",
+    "{n}在呢，有什么想说的？": "{n} here — what's on your mind?",
+    "今天想让{n}做点什么呀？": "What should {n} do for you today?",
+    "唔……有什么需要{n}的吗？": "Hmm… anything you need from {n}?",
+    "有问题随时问{n}哦～": "Ask {n} anytime you have a question~",
+    "想聊天、截屏、放歌，都可以找{n}": "Chat, screenshots, music — just ask {n}",
     "终止当前操作（输入框里按回车 = 加入队列）": "Stop this turn (Enter in the box queues a message)",
     # 语音
     "语音": "Voice",

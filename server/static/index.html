@@ -8488,6 +8488,37 @@
     termAiSync();
   }
 
+  // 空闲时输入框的引导文案：每次刷新从池子里随机挑一句，带昵称（人设名）
+  // 的句子只在用户填过昵称时才参与，没填就用通用句，不至于出现「在呢」前面空着
+  var idlePh = '';
+  var idlePhRandom = true;
+  var PERSONA_NAME = '';
+  var PH_NAMED = [
+    '有什么想让我做的吗？',
+    '{n}在呢，有什么想说的？',
+    '今天想让{n}做点什么呀？',
+    '唔……有什么需要{n}的吗？',
+    '有问题随时问{n}哦～',
+    '想聊天、截屏、放歌，都可以找{n}'
+  ];
+  var PH_PLAIN = [
+    '有什么想让我做的吗？',
+    '今天想做点什么呀？',
+    '有什么想告诉我的吗？',
+    '试试「截个屏」「放首歌」，或者直接问我'
+  ];
+  function pickIdlePh() {
+    var named = String(PERSONA_NAME || '').trim();
+    var pool = named ? PH_NAMED.map(function (s) { return s.replace('{n}', named); })
+      .concat(PH_PLAIN) : PH_PLAIN;
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+  function applyIdlePh() {
+    if (busy) return;
+    if (!idlePh || idlePhRandom) idlePh = pickIdlePh();
+    input.placeholder = tr(idlePh);
+  }
+
   function updateSendBtn() {
     // 只要 agent 在跑就一直是「终止」——主人希望任何时刻都能一键叫停。
     // 排队改由回车承担，跟输入框里有没有字无关。
@@ -8498,7 +8529,7 @@
     } else {
       sendBtn.textContent = tr('发送');
       sendBtn.classList.remove('stop');
-      input.placeholder = tr('');
+      applyIdlePh();
     }
   }
 
@@ -13839,6 +13870,13 @@
             addSystem('模型列表加载失败：' + msg);
           }
         });
+        // 占位文案要带人设昵称：拿到后重挑一句，之后同一会话不再变
+        if (c.persona_name !== undefined && String(c.persona_name || '') !== PERSONA_NAME) {
+          PERSONA_NAME = String(c.persona_name || '');
+          idlePh = pickIdlePh();
+          idlePhRandom = false;
+          applyIdlePh();
+        }
         // 权限等 select 的 value 刚被恢复，同步刷新自绘下拉的 label，别显示成第一项
         ddRefreshAll();
       })
