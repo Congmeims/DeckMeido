@@ -3561,6 +3561,9 @@
     cursor: pointer; border-top: 1px solid var(--line);
   }
   .tm-arch-row:hover { background: var(--hover); }
+  /* 尾条：告诉用户下面还压着多少条，不是可点的行 */
+  .tm-arch-row.more { cursor: default; color: var(--muted); opacity: .75; font-size: 10.5px; }
+  .tm-arch-row.more:hover { background: transparent; }
   .tm-arch-row .who {
     flex: 0 0 auto; font-size: 10px; padding: 0 4px; border-radius: 4px;
     background: rgba(26,159,255,.16); color: var(--brand);
@@ -3580,6 +3583,11 @@
     background: var(--code-bg); padding-top: 6px;
   }
   .tm.collapsed .tm-out { display: none; }
+  /* 收起的那条：头行就是全部，别占一整块卡片高度。
+     同时把左边压成一条窄色条，一眼能分出「一行小条 = 没在输出」和
+     「大卡片 = 正在刷屏」，十几条一起排下来也不散 */
+  .tm.collapsed { border-left: 2px solid var(--line); }
+  .tm.collapsed .tm-head { padding: 4px 8px; }
   /* 带 ANSI 控制序列的输出（ncdu / top / htop 这类全屏程序）：后端吐的是
      「清屏 + 光标定位 + 着色」的原始字节流，直接塞进 <pre> 就是满屏乱码。
      这里不渲染控制序列，而是由 termRenderAnsi 把它解释成一块字符网格，

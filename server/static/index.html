@@ -5466,6 +5466,10 @@
   var TERM_KEEP_FAIL_MS = 60000;
   // 归档区最多记多少条，超了丢最老的（内存不会无限涨）
   var TERM_ARCH_MAX = 100;
+  // 归档区一次最多铺多少行：一条命令一行、每行 22px，铺 100 行就是把整个
+  // 右栏变成一张 2200px 的长表，比不展开还难用。展开后只铺最近这么多条，
+  // 剩下的用「…另有 N 条」的尾条兜住
+  var TERM_ARCH_SHOW = 20;
   // 归档区是否展开（用户点过「更早的命令」之后记住，切会话时复位）
   var termArchOpen = false;
 
@@ -5969,10 +5973,21 @@
     });
     wrap.appendChild(head);
     if (!termArchOpen) return wrap;
-    // 新的在上：用户更关心刚才那条
-    items.slice().reverse().forEach(function (it) {
+    // 新的在上：用户更关心刚才那条。
+    // 只铺最近 TERM_ARCH_SHOW 条，再多就把右栏撑成一张超长表——
+    // 展开是为了「翻一下刚才那几条」，不是「把 100 条历史一次全塞进视野」
+    var shown = items.slice().reverse().slice(0, TERM_ARCH_SHOW);
+    shown.forEach(function (it) {
       wrap.appendChild(termRenderArchRow(it));
     });
+    var rest = items.length - shown.length;
+    if (rest > 0) {
+      var tail = document.createElement('div');
+      tail.className = 'tm-arch-row more';
+      tail.textContent = '…另有 ' + rest + ' 条更早的命令，已在本地保留（最多 ' +
+        TERM_ARCH_MAX + ' 条）';
+      wrap.appendChild(tail);
+    }
     return wrap;
   }
 
@@ -5995,6 +6010,8 @@
     term.items.push(it);
     if (term.items.length > TERM_ARCH_MAX) term.items.splice(0, term.items.length - TERM_ARCH_MAX);
     term.trackIdx = term.items.length - 1;
+    // 前面还有没跑完的，就先把它们收成一行，只留新开的这条展开
+    termCollapseRunners(it);
     termRenderAll();
     // AI 命令（who==='ai'）走旧轮询；手动命令（who==='me'）由 termRunCmd 起 WS 会话
     if (who === 'ai') termStartPoll();
@@ -6013,11 +6030,45 @@
     termRenderAll();
   }
 
+  // 同时堆了一串命令在跑（AI 一次连发好几条工具调用、或者排队等锁）时，
+  // 每条都摊开自己的画面，右栏就被切成十几条细缝，谁在跑、跑到哪一步全看不清。
+  // 这里只让「最该看的那条」展开，其余自动收起成一行：
+  //   · 优先已经出了输出的（真在干活）
+  //   · 否则取最新发起的（就是此刻占着前台的那条）
+  // 用户手动点开/折起的（autoCollapsed 为假）不动它们。
+  // 只收起、不展开——展开交给 termAutoExpand（出输出时），避免来回抖动
+  function termCollapseRunners(except) {
+    var keep = except || null;
+    if (!keep) {
+      for (var i = term.items.length - 1; i >= 0; i--) {
+        var x = term.items[i];
+        if (!x.running) continue;
+        if (x.out) { keep = x; break; }
+        if (!keep) keep = x;
+      }
+    }
+    if (!keep) return;
+    var changed = false;
+    for (var j = 0; j < term.items.length; j++) {
+      var y = term.items[j];
+      if (y === keep || !y.running || y.collapsed || y.out) continue;
+      if (y.collapsed === false && y.autoCollapsed === false) continue;   // 用户自己折的不管
+      if (termBig && termBig.it === y) continue;                          // 浮层里的不收
+      y.collapsed = true;
+      y.autoCollapsed = true;
+      changed = true;
+    }
+    if (changed) termRenderAll();
+  }
+
   function termAutoExpand(it) {
     // 自动收起来的那些，一有输出就展开；用户自己折起来的（autoCollapsed 为假）不碰
     if (!it || !it.collapsed || !it.autoCollapsed) return;
     it.collapsed = false;
     it.autoCollapsed = false;
+    // 轮到它出输出了，说明它才是现在真正在干活的那条：别的收起来，
+    // 不然「A 吐两行、B 吐两行」会把右栏重新撑成一堆半开的卡片
+    termCollapseRunners(it);
     termRenderAll();
   }
 
