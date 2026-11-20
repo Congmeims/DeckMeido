@@ -117,6 +117,13 @@ def _mask_key(key: str) -> str:
     return f"{key[:6]}…{key[-4:]}"
 
 
+def _theme_view() -> dict:
+    """自定义主题快照。实现放在 routes_theme，这里只做转发，
+    避免两处各自解析 [appearance] 造成口径不一致"""
+    from . import routes_theme
+    return routes_theme.current_theme()
+
+
 def init(require_auth, client_ip, get_main) -> None:
     """由 main 在 app 创建后调用。
 
@@ -233,6 +240,8 @@ def init(require_auth, client_ip, get_main) -> None:
             "remote_input_max_minutes": int((CFG.get("remote_input") or {}).get("max_minutes", 30) or 30),
             # 睡眠模式：设置页表单用开关与分钟数，眼睛页用倒计时（countdown_left）
             "sleep": sleepmode.service.status(),
+            # 自定义主题：壁纸 URL / 深浅两套配色 / 压暗与模糊，首屏一次拿到
+            "theme": _theme_view(),
         }
 
     @router.post("/api/config")

@@ -26,7 +26,7 @@ from pathlib import Path
 
 import httpx
 
-from . import devlog, memory, menu, netmode, policy, prompts, qqtext, tools
+from . import devlog, memory, menu, netmode, policy, prompts, qqtext, themecolor, tools
 from .session_store import store
 
 # 由 main 在模块末尾调用：get_main 返回 main 模块本身（现读现写）
@@ -94,7 +94,8 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
                              turn_ctx: policy.TurnContext | None = None,
                              shot_lock: bool | None = None,
                              surface: str | None = None,
-                             turn_policy: policy.TurnPolicy | None = None) -> str:
+                             turn_policy: policy.TurnPolicy | None = None,
+                             extra_system: str = "") -> str:
     """带总超时和拒绝重试的 agent 入口：任何环节卡死都不会让对话无限挂起
 
     image_part 非空表示本轮提问自带画面（这里是历史里那条 [SHOT:文件名] 标记，
@@ -112,7 +113,8 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
         reply = await asyncio.wait_for(
             run_agent(events, hist=hist, image_part=image_part, tool_log=tool_log,
                       from_client=client, turn_ctx=turn_ctx,
-                      _shot_lock=shot_lock, surface=surface, turn_policy=pol),
+                      _shot_lock=shot_lock, surface=surface, turn_policy=pol,
+                      extra_system=extra_system),
             timeout=agent_timeout)
     except asyncio.TimeoutError:
         # 超时不能只丢一句「超时了」：这一轮里已经跑完的命令、改过的文件全都要留下，
@@ -129,7 +131,9 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
         try:
             reply = await asyncio.wait_for(run_agent(
                 events, hist=hist, tool_log=tool_log, from_client=client,
-                extra_system=prompts.part("retry_refuse"), turn_ctx=turn_ctx,
+                extra_system=(prompts.part("retry_refuse")
+                              + ("\n" + extra_system if extra_system else "")),
+                turn_ctx=turn_ctx,
                 _shot_lock=shot_lock, surface=surface, turn_policy=pol,
             ), timeout=agent_timeout)
         except asyncio.TimeoutError:
@@ -228,6 +232,11 @@ async def run_agent(events: list[dict], extra_system: str = "",
         # 探针会起子进程，所以放到线程里跑，别卡住这一轮
         gaming = await asyncio.to_thread(tools.mode_is_gaming)
         sys_prompt = m.SYSTEM_PROMPT + m._mode_block(gaming) + (f"\n{extra_system}" if extra_system else "")
+        # 当前外观：换了壁纸（含通过 set_wallpaper 自己换的）之后，下一轮就要知道
+        # 界面已经变了，不然模型会按老印象回答「现在是什么配色」
+        look = themecolor.describe_current(m)
+        if look:
+            sys_prompt += "\n\n" + look
         # 长期记忆拼在最末尾（见 _memory_block 里的缓存说明）。每轮都重新取，
         # 用户刚在对话里让它「记住」，这一轮之后就能生效。
         # 记忆 scopes：None = 跟随当前会话；() = 本轮不注入；显式元组 = 临时切到这些 scope
@@ -441,6 +450,11 @@ async def run_agent(events: list[dict], extra_system: str = "",
         if locked_shot:
             round_tools = [t for t in round_tools
                            if t["function"]["name"] != "screenshot"]
+            # 带图这轮把 set_wallpaper 也摘掉：它要联网下壁纸，模型手上已经有
+            # 用户发来的那张图，容易顺手拿它当壁纸去改主题；而设置壁纸后
+            # 服务端会广播整屏刷新，追问的那轮对话会被刷没
+            round_tools = [t for t in round_tools
+                           if t["function"]["name"] != "set_wallpaper"]
         # 带图提问是「一问一答」：模型答完通常会顺手再截一张确认，于是又对着
         # 新画面续一轮，用户看到的是一条提问连着好几张图和好几段回答。
         # 所以带图这轮答完正文就直接收工，不再继续跑工具轮

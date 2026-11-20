@@ -61,6 +61,7 @@ TOOL_CN: dict[str, str] = {
     "ask_user": "向你提问",
     "music_play": "点歌播放",
     "music_control": "控制播放",
+    "set_wallpaper": "更换壁纸",
 }
 
 
@@ -385,6 +386,24 @@ TOOLS: list[dict] = [
                                                "mute=静音，unmute=取消静音")},
                 },
                 "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_wallpaper",
+            "description": ("换一张界面壁纸：下载指定的图片，自动按它的主色生成整套配色，"
+                            "并立即同步到所有端（Deck 与电脑网页）。用户说「换张壁纸」"
+                            "「找张星空背景」「这个主题不好看」时用：先 web_search 搜到一张"
+                            "图片直链，再把那条链接传给 url。传 clear=true 恢复内置主题。"
+                            "只接受 http/https 的图片地址，不读本地文件"),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "图片直链（jpg / png / webp / gif / bmp）"},
+                    "clear": {"type": "boolean", "description": "true = 撤销壁纸、恢复内置主题"},
+                },
             },
         },
     },
@@ -3150,6 +3169,47 @@ async def _remember(text: str, kind: str = "note") -> str:
     return f"已记入{where}（{label}）：{item['text']}"
 
 
+# ---------- 壁纸（自定义主题） ----------
+# 只下载、落盘、取色；「广播给所有端」由 agent_engine 侧通过 main 完成，
+# tools 不反向依赖 main，保持现有分层。
+
+WALLPAPER_TIMEOUT = 20.0
+
+
+async def _set_wallpaper(url: str = "", clear: bool = False) -> str:
+    """下载一张图当壁纸，按主色生成配色；clear=true 恢复内置主题"""
+    from . import themecolor, routes_theme
+    if clear:
+        themecolor.clear_wallpaper()
+        routes_theme.publish_reset()
+        return "已撤销壁纸，界面恢复成内置主题。"
+    url = str(url or "").strip()
+    if not re.match(r"^https?://", url, re.I):
+        return "需要一个 http/https 的图片直链；先用 web_search 搜图，再把图片链接传过来。"
+    why = netmode.check("下载壁纸")
+    if why:
+        return why
+    try:
+        async with httpx.AsyncClient(timeout=WALLPAPER_TIMEOUT, follow_redirects=True) as cli:
+            async with cli.stream("GET", url, headers={"User-Agent": "DeckMeido"}) as resp:
+                if resp.status_code != 200:
+                    return f"下载失败：图片地址返回 HTTP {resp.status_code}。换一张试试。"
+                buf = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    buf.extend(chunk)
+                    if len(buf) > themecolor.WALLPAPER_MAX:
+                        return "这张图超过 20MB，当壁纸太重了，换一张小一点的。"
+    except httpx.HTTPError as e:
+        return f"下载失败：{type(e).__name__}。检查一下图片地址是否还能访问。"
+    try:
+        name, palette = themecolor.save_wallpaper(bytes(buf))
+    except ValueError as e:
+        return f"这张图用不了：{e}。换一张 jpg / png / webp 格式的图片。"
+    routes_theme.publish_saved(name, palette)
+    return (f"壁纸已更换（{name}），强调色自动取成了 {palette['source']}，"
+            "所有端的界面已经同步。")
+
+
 # ---------- 音乐（Decky Music） ----------
 # 只调 server/media.py 的公开函数：动作名进白名单，歌名只作为数据参数，
 # 不拼 shell。media 里的 MPRIS 调用是同步 subprocess，这里统一丢线程。
@@ -3276,11 +3336,12 @@ EXECUTORS = {
     "remember": _remember,
     "music_play": _music_play,
     "music_control": _music_control,
+    "set_wallpaper": _set_wallpaper,
 }
 
 # 真正要出网的工具：离线模式下直接返回可读原因，不发起请求。
 # 截图、文件、命令、游戏库、安装这类本地动作不在此列，保持可用。
-_OUTBOUND_TOOLS = {"web_search", "find_game", "self_update"}
+_OUTBOUND_TOOLS = {"web_search", "find_game", "self_update", "set_wallpaper"}
 
 
 # 不需要「保持常亮」的工具：联网搜索、读写文件这类不碰屏幕也不动
@@ -3289,6 +3350,7 @@ _NO_KEEP_AWAKE = {
     "web_search", "find_game", "list_installed_games",
     "check_system_updates", "screenshot", "remember",
     "music_play", "music_control", "task_status", "ocr_image",
+    "set_wallpaper",
 }
 
 
@@ -3307,6 +3369,8 @@ _TOOL_TIMEOUT = {
     "ocr_image": 90,
     # 曲库搜索/开播各有一次 RPC 超时（6 秒）兜底，再加回读确认
     "music_play": 40, "music_control": 20,
+    # 下载 + 解码 + 取色，图大时留足余量（下载本身 20 秒超时）
+    "set_wallpaper": 40,
 }
 _TOOL_TIMEOUT_DEFAULT = 120
 _TOOL_NO_TIMEOUT = {"run_command", "install_game", "self_update"}

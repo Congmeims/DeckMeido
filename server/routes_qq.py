@@ -232,6 +232,7 @@ def _qq_clear_pending(device: str, sid: str) -> None:
 async def _qq_run_turn(text: str, *, sid: str, device: str,
                        readonly: bool, turn_id: str = "",
                        image: bytes | None = None,
+                       turn_note: str = "",
                        proactive: bool = False) -> dict:
     """QQ 通道的一轮对话
 
@@ -286,10 +287,15 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
         hist = data.get("history") if isinstance(data.get("history"), list) else []
     image_part = _qq_image_data_url(image)
     turn_started = time.time()
+    # 群聊来源：sid 形如 qq-g-<群号>（见 onebot.session_sid），私聊是 qq-p-<QQ号>
+    is_group = sid.startswith("qq-g-")
     # 场景策略表：群友档零工具/无长期记忆/400 字/脱敏；主人档能力不变
     turn_policy = policy.GUEST_POLICY if readonly else policy.OWNER_POLICY
     # 群友提示词也留着给 _guest_reply 做灰度回退用
     guest_text = m._guest_system_prompt() if readonly else ""
+    # 引用了别人的图等「看图受限」的情况：附注只进本轮提示，不写进历史
+    if turn_note and not readonly:
+        guest_text = (guest_text + "\n" if guest_text else "") + turn_note
     try:
         result = await m.handle_chat(text, client="qq", device=device,
                                      turn_id=turn_id, surface=policy.SURFACE_CHAT,
@@ -297,6 +303,7 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
                                      force_confirm=True, image=image_part,
                                      guest=bool(readonly),
                                      guest_prompt_text=guest_text,
+                                     turn_note=turn_note,
                                      turn_policy=turn_policy)
     finally:
         # QQ 这轮的用量单独记在它自己的 sid 上（_ctx_set 按会话存），
@@ -326,7 +333,8 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
     # 网页端能看到，QQ 侧却只有一句文字。把这张新图随回复发回去，
     # 否则用户会觉得「截图截到了但没发上来」。只认本轮新生成的 vision 文件，
     # 避免把上一轮的旧图重发一遍。
-    if not out.get("image"):
+    # 群聊里不回发：那是 Deck 自己的桌面画面，群友不该看到。
+    if not out.get("image") and not is_group:
         blob = await asyncio.to_thread(_turn_screenshot_blob, turn_started)
         if blob:
             out["image"] = blob

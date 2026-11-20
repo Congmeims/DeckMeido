@@ -1,0 +1,192 @@
+"""自定义主题接口：上传壁纸、撤销、微调配色、读取当前主题。
+
+路由模式与 routes_files 一致：init(require_auth, get_main) 注入鉴权与运行态读取，
+register(app) 时才定义路由函数，保持 main.api_xxx 的既有写法。
+
+壁纸与配色存 config.toml 的 [appearance] 段：
+    wallpaper = "wallpaper.jpg"      # 空串 = 无壁纸
+    palette   = '{"dark":{...},"light":{...},"source":"#xxx"}'   # JSON 字符串
+    dim       = 45                   # 压暗 0-80
+    blur      = 0                    # 背景模糊 px 0-24
+文件本身在 userdata/wallpapers/，由 /wallpapers 静态挂载公开提供（<img> 带不了令牌）。
+"""
+from __future__ import annotations
+
+import re
+
+from fastapi import APIRouter, Depends, File, UploadFile
+from pydantic import BaseModel
+
+from . import paths, themecolor
+
+router = APIRouter()
+
+require_auth = None
+get_main = None
+
+_REGISTERED: dict = {}
+__all_routes__ = ("api_theme_get", "api_theme_wallpaper", "api_theme_clear",
+                  "api_theme_palette", "api_theme_config")
+
+
+class _TuneReq(BaseModel):
+    dim: int | None = None
+    blur: int | None = None
+
+
+DIM_DEFAULT = 45
+BLUR_DEFAULT = 0
+
+
+class _PaletteReq(BaseModel):
+    brand: str | None = None
+
+
+def init(require_auth_fn, get_main_fn) -> None:
+    global require_auth, get_main
+    require_auth = require_auth_fn
+    get_main = get_main_fn
+    router.dependencies.append(Depends(require_auth))
+
+
+def _appearance() -> dict:
+    """config.toml 的 [appearance] 段（现读，apply_config 换绑后仍然有效）"""
+    cfg = get_main().CFG.get("appearance") or {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _clamp_int(value, default: int, lo: int, hi: int) -> int:
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def current_theme() -> dict:
+    """当前主题的快照：壁纸 URL（含版本号防缓存）、调色板、压暗/模糊。
+
+    配置里记的文件名可能已被手动删掉，这里以磁盘为准兜底。
+    """
+    app = _appearance()
+    name = str(app.get("wallpaper") or "")
+    if name and not (paths.wallpapers_dir() / name).is_file():
+        name = ""
+    if not name:
+        found = themecolor.wallpaper_files()
+        name = found[0] if found else ""
+    palette = themecolor.load_palette(app.get("palette"))
+    if name and not palette:
+        palette = None
+    dim = _clamp_int(app.get("dim"), DIM_DEFAULT, 0, 80)
+    blur = _clamp_int(app.get("blur"), BLUR_DEFAULT, 0, 24)
+    return {
+        "wallpaper": name,
+        # 带上修改时间：同文件名换图后浏览器不会继续用旧缓存
+        "url": f"/wallpapers/{name}?v={_mtime(name)}" if name else "",
+        "thumb": f"/wallpapers/wallpaper_thumb.jpg?v={_mtime(name)}" if name else "",
+        "palette": palette,
+        "dim": dim,
+        "blur": blur,
+    }
+
+
+def _mtime(name: str) -> int:
+    try:
+        return int((paths.wallpapers_dir() / name).stat().st_mtime)
+    except OSError:
+        return 0
+
+
+async def _publish(updates: dict) -> None:
+    """写配置并把新主题推给所有端（网页/客户端/插件/大屏）"""
+    m = get_main()
+    m.save_config({"appearance": updates})
+    try:
+        await m.manager.broadcast({"type": "theme_changed", "data": current_theme()})
+    except Exception:
+        pass
+
+
+def publish_saved(name: str, palette: dict) -> None:
+    """工具换了壁纸后调用：写配置并同步所有端。
+
+    tools 是同步上下文、也没有事件循环的引用，这里就用 asyncio.run 起一个
+    短任务；正在跑的 agent 回合本身在另一个任务里，互不阻塞。
+    """
+    import asyncio
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(_publish({"wallpaper": name,
+                              "palette": themecolor.dump_palette(palette)}))
+        return
+    # 已在事件循环里（工具由 agent 回合调用）：排到循环上，不等待
+    asyncio.ensure_future(_publish({"wallpaper": name,
+                                   "palette": themecolor.dump_palette(palette)}))
+
+
+def publish_reset() -> None:
+    """工具撤销壁纸后调用：清壁纸与配色并同步所有端（调用约定同 publish_saved）"""
+    import asyncio
+    updates = {"wallpaper": "", "palette": ""}
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(_publish(updates))
+        return
+    asyncio.ensure_future(_publish(updates))
+
+
+def register(app) -> None:
+    @router.get("/api/theme")
+    async def api_theme_get():
+        return current_theme()
+
+    @router.post("/api/theme/wallpaper")
+    async def api_theme_wallpaper(file: UploadFile = File(...)):
+        raw = await file.read(themecolor.WALLPAPER_MAX + 1)
+        try:
+            name, palette = themecolor.save_wallpaper(raw)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        await _publish({
+            "wallpaper": name,
+            "palette": themecolor.dump_palette(palette),
+        })
+        return {"ok": True, "theme": current_theme()}
+
+    @router.post("/api/theme/clear")
+    async def api_theme_clear():
+        themecolor.clear_wallpaper()
+        await _publish({"wallpaper": "", "palette": ""})
+        return {"ok": True, "theme": current_theme()}
+
+    @router.post("/api/theme/palette")
+    async def api_theme_palette(req: _PaletteReq):
+        app_cfg = _appearance()
+        palette = themecolor.load_palette(app_cfg.get("palette")) or {}
+        if req.brand is not None:
+            if not re.fullmatch(r"#[0-9a-fA-F]{6}", req.brand.strip()):
+                return {"ok": False, "error": "颜色格式应为 #rrggbb"}
+            palette = themecolor.palette_from_color(req.brand.strip())
+        elif not palette:
+            return {"ok": False, "error": "当前没有配色可调"}
+        await _publish({"palette": themecolor.dump_palette(palette)})
+        return {"ok": True, "theme": current_theme()}
+
+    @router.post("/api/theme/config")
+    async def api_theme_config(req: _TuneReq):
+        """压暗 / 模糊：两个滑杆停手后落到这里，别的端立刻跟着变"""
+        updates = {}
+        if req.dim is not None:
+            updates["dim"] = _clamp_int(req.dim, DIM_DEFAULT, 0, 80)
+        if req.blur is not None:
+            updates["blur"] = _clamp_int(req.blur, BLUR_DEFAULT, 0, 24)
+        if not updates:
+            return {"ok": False, "error": "没有要改的项"}
+        await _publish(updates)
+        return {"ok": True, "theme": current_theme()}
+
+    app.include_router(router)
+    _REGISTERED.update({name: locals()[name] for name in __all_routes__})
+    globals().update(_REGISTERED)

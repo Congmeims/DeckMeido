@@ -2337,6 +2337,71 @@
     /* 告诉浏览内核当前配色，原生滚动条/表单控件才会跟着走 */
     color-scheme: dark;
   }
+  /* ===== 自定义壁纸 =====
+     壁纸层（body::before）铺满整屏并压在内容之下；--panel-alpha < 1 时，
+     顶栏 / 侧栏 / 输入区 / 助手气泡改用半透明底，壁纸透出来。
+     没有壁纸时 --wallpaper 是 none，这一层什么都不画，--panel-alpha 也是 1，
+     三档内置主题的观感与以前完全一致。
+     --wall-dim 是「压暗」：壁纸不透明度 = 1 - 压暗，暗到一定程度文字才看得清；
+     --wall-blur 是大图在小屏上糊一点，减少噪点干扰阅读。
+     这三个变量由 index.html 的 applyCfgAppearance() 按后端配置写在
+     documentElement 的内联样式上（内联优先级高于三档主题的属性选择器）。 */
+  :root {
+    --wallpaper: none;
+    --wall-dim: 0.45;
+    --wall-blur: 0px;
+    --panel-alpha: 1;
+  }
+  /* 必须 z-index:-1 + position:fixed并挂在 body 上：
+     挂在 #app 里会被各栏的不透明背景盖住，挂在 body 上则位于所有内容之下、
+     body 背景之上（body 背景不画时这里才看得见，见 html.wall-on 那条） */
+  body::before {
+    content: ''; position: fixed; inset: 0; z-index: -1;
+    background-image: var(--wallpaper);
+    background-size: cover; background-position: center;
+    background-repeat: no-repeat;
+    filter: blur(var(--wall-blur));
+    opacity: calc(1 - var(--wall-dim));
+    pointer-events: none;
+    /* 模糊会让边缘露出底色，稍微放大一点避免四边出现暗角 */
+    transform: scale(1.03);
+  }
+  /* 有壁纸时 body 自己的底色让位，否则会盖住 ::before */
+  html.wall-on body { background: transparent; }
+  /* 半透明面板：只在这几块主结构上开，弹窗/菜单/卡片保持不透明——
+     菜单半透会让文字和背后的消息糊在一起。backdrop-filter 让背后的壁纸
+     虚化，既透出氛围又不影响读字 */
+  html.wall-on header,
+  html.wall-on #sidebar,
+  html.wall-on #sbRail,
+  html.wall-on #composer {
+    background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
+    backdrop-filter: blur(14px) saturate(1.1);
+  }
+  /* ---- 设置页「外观」分区 ---- */
+  .wall-preview {
+    width: 100%; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden;
+    background: var(--surface-2); border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .wall-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .wall-empty { color: var(--muted); font-size: 13px; }
+  .wall-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0 4px; }
+  .wall-actions .field-hint { flex: 1 1 220px; margin: 0; }
+  .wall-color-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .wall-color-row input[type="color"] {
+    width: 44px; height: 30px; padding: 0; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--surface-2); cursor: pointer;
+  }
+  .wall-color-row .field-hint { flex: 1 1 200px; margin: 0; }
+
+  /* 助手气泡同理：它体量大、贴着壁纸，最容易让人觉得「字浮在图上」。
+     直接写 .msg.assistant（与上面的背景声明同优先级、位置更靠后），
+     不用后代选择器——气泡就是 .msg.assistant 本身 */
+  html.wall-on .msg.assistant {
+    background: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
+    backdrop-filter: blur(10px);
+  }
   [data-theme=light] {
     /* 对话区底色用纯白，助手气泡的浅灰才拉得开层次（原来是 #f2f4f8，灰得几乎同色） */
     --bg: #ffffff;

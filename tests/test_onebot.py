@@ -1394,9 +1394,11 @@ async def start_bot(ws=None, *, config=None, runner=None, screenshot=None,
     ws = ws or FakeWS()
     calls = []
 
-    async def default_runner(text, *, sid, device, readonly, turn_id="", image=None, proactive=False):
+    async def default_runner(text, *, sid, device, readonly, turn_id="", image=None,
+                             proactive=False, turn_note=""):
         calls.append({"text": text, "sid": sid, "device": device,
-                      "readonly": readonly, "turn_id": turn_id, "image": image})
+                      "readonly": readonly, "turn_id": turn_id, "image": image,
+                      "turn_note": turn_note})
         return {"reply": "好的"}
 
     async def default_shot():
@@ -1754,6 +1756,9 @@ class ImageTurnTest(unittest.IsolatedAsyncioTestCase):
         ws.feed(private_event("10001", "meido 看看这张", reply_id="q2"))
         self.assertTrue(await wait_until(lambda: calls))
         self.assertIsNone(calls[0]["image"])
+        # 图不交给模型，但必须留一句附注：不然模型会拿自己屏幕上的画面
+        # 当作用户说的那张图（群友的图被当成「我本地的截屏」）
+        self.assertIn("引用了别人发的一张图片", calls[0]["turn_note"])
 
 
 class ShotTest(unittest.IsolatedAsyncioTestCase):

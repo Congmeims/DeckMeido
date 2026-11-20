@@ -2019,6 +2019,7 @@ class OneBotClient:
                 self._log("warn", "群缓存摘要失败", repr(e))
         image = None
         image_note = ""
+        self._turn_image_note = ""
         if not route.readonly:
             image = await self._resolve_turn_image(ev)
             # 带图或引用图但 allow_image=false 时，_resolve_turn_image 会静默返回 None，
@@ -2027,6 +2028,9 @@ class OneBotClient:
             if image is None and not cfg.allow_image and (ev.images or ev.reply_id):
                 image_note = qqtext.get("turn_image_off")
                 self._log("info", "图片未读取", "allow_image=false")
+        # 引用了非管理员的图：图片本身不交给模型，但要让它知道「这张图」指什么，
+        # 否则它会拿自己屏幕上的画面顶替（见 _resolve_turn_image）
+        turn_note = str(getattr(self, "_turn_image_note", "") or "") if not route.readonly else ""
         # 用 ContextVar 把片段交给本轮子任务：main.py 里的 QQ 轮次会在子任务里
         # 调用 guest_prompt()，这样片段只在本轮生效，不写进会话历史、不跨群串味
         token = _TURN_GROUP_CONTEXT.set(context) if context else None
@@ -2039,11 +2043,15 @@ class OneBotClient:
             memory.scopes_for(ev.group_id, ev.uin),
             memory.write_scope(ev.group_id),
         )
+        turn_kwargs = {"sid": sid, "device": device,
+                       "readonly": route.readonly, "turn_id": turn_id,
+                       "image": image, "proactive": route.proactive}
+        # turn_note 是本轮附注（引用了别人的图等）；为空时不传，
+        # 老 runner 与测试替身只要签名里没有这个参数也照常工作
+        if turn_note:
+            turn_kwargs["turn_note"] = turn_note
         try:
-            task = asyncio.create_task(
-                self._runner(text, sid=sid, device=device,
-                             readonly=route.readonly, turn_id=turn_id, image=image,
-                             proactive=route.proactive))
+            task = asyncio.create_task(self._runner(text, **turn_kwargs))
         finally:
             memory.reset_context(token_mem)
             _TURN_AUTHORIZED.reset(token_auth)
@@ -2376,7 +2384,8 @@ class OneBotClient:
         """引用消息里的图
 
         admin_sender_only=True（聊天回合附图）：只认 admin_qq 发的，其他人的
-        引用图忽略，免得群友的图混进上下文。
+        引用图只记一条附注（self._turn_image_note）、不进上下文——免得群友的图
+        混进上下文；更要紧的是别让模型把自己屏幕上的画面当成用户说的那张图。
         存图走 False：主人引用哪张就是要存哪张，跟原图是谁发的无关——引用这个
         动作本身已经是主人表达的意图，再按原图发送者过滤只会让存图失败
         （群友发的图、机器人自己发的图都存不了）。
@@ -2425,6 +2434,17 @@ class OneBotClient:
             if item:
                 self._last_image[device] = {**item, "at": self._clock()}
                 return bytes(item["blob"])
+            # 引用到的消息里确实有图、只是发送者不是管理员：聊天轮不做附图，
+            # 但这句话本身必须让模型知道——否则它会拿自己屏幕上刚截的图
+            # 当成用户说的「这张图」去评价。附注只进本轮提示，不写历史
+            payload = await self._reply_payload(ev)
+            _t, _a, images, _rid = _segments((payload or {}).get("message"))
+            if images:
+                self._turn_image_note = (
+                    "这条消息引用了别人发的一张图片。系统没有把那张图片作为附图"
+                    "交给你，你也没有看到它——不要拿自己屏幕上的画面、以前截过的"
+                    "图或想象的内容来顶替。回答时说明你看不到这张被引用的图，"
+                    "请主人把它重新发一遍。")
             return None
         item = self._image_cache(device)
         if item:

@@ -285,6 +285,20 @@ countdown_sec = 60
 # 用户自己改过的提示词模板不受影响。插件面板暂未翻译，仍显示中文。
 language = "zh"
 
+[appearance]
+# 自定义主题：壁纸 + 由壁纸主色推导的配色。网页「设置 → 外观」里改，
+# 也可以直接对 AI 说「换一张星空壁纸」。
+# 壁纸文件放在 userdata/wallpapers/，通过 /wallpapers/ 公开提供。
+# wallpaper：壁纸文件名，空串 = 无壁纸（恢复三档内置主题的原样）
+wallpaper = ""
+# palette：深浅两套配色变量的 JSON 字符串，由壁纸主色自动生成；
+# 设置页里手动改强调色会只换 brand / user_bubble，背景色不变
+palette = ""
+# dim：壁纸压暗程度 0-80（百分比），压得越暗文字越清楚
+dim = 45
+# blur：壁纸模糊半径 0-24（px）
+blur = 0
+
 [workspace]
 # 编程/文件任务的默认工作区，可在设置面板修改。
 # 默认 ~/MeidoSpace（安装器首次创建时会放 .directory 与 说明.txt）；留空也回落到这里。

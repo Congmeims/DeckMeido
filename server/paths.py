@@ -135,6 +135,13 @@ def uploads_dir() -> Path:
     return path
 
 
+def wallpapers_dir() -> Path:
+    """自定义主题壁纸：<data>/wallpapers，通过 /wallpapers 静态挂载公开访问"""
+    path = data_dir() / "wallpapers"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def voice_dir() -> Path:
     """QQ 语音条的本地副本：<data>/voice，供网页 / 客户端 / 插件回放"""
     path = data_dir() / "voice"

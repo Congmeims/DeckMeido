@@ -32,7 +32,7 @@ from . import session_store
 from . import agent_engine
 from . import ws_hub
 from . import overlay_host
-from . import routes_config, routes_files, routes_logs, routes_qq, routes_sessions, routes_system
+from . import routes_config, routes_files, routes_logs, routes_qq, routes_sessions, routes_system, routes_theme
 from .tts import LANGUAGES, SPEAKER_LABELS, TTS, TTSError
 from .stt import STT, STTError, record_supported
 from .tomlcfg import ConfigWriteError, write_config
@@ -2190,7 +2190,7 @@ AUTH_PUBLIC_PATHS = frozenset({
 })
 AUTH_PUBLIC_PREFIXES = ("/api/pair/",)
 # 首页与静态资源不走路由，用 URL 前缀判断（挂载点不会进 request.url.path）
-AUTH_PUBLIC_URL_PREFIXES = ("/static/", "/uploads/", "/files/")
+AUTH_PUBLIC_URL_PREFIXES = ("/static/", "/uploads/", "/files/", "/wallpapers/")
 
 
 def _auth_public(request: Request) -> bool:
@@ -4137,6 +4137,7 @@ async def handle_chat(text: str, announce: bool = True,
                       guest: bool = False,
                       force_tts: bool = False,
                       guest_prompt_text: str = "",
+                      turn_note: str = "",
                       turn_policy: policy.TurnPolicy | None = None) -> dict:
     """brief 是给界面看的短文案（可选）：截屏询问那套提示词有一百多字，
    插件面板长显会把整个面板撑开。它只随消息存下来供各端显示，
@@ -4144,6 +4145,9 @@ async def handle_chat(text: str, announce: bool = True,
 
     turn_policy 是本轮的场景策略表：不传按主人档（能力与以前完全一致），
     群友档传 policy.GUEST_POLICY；工具集 / 记忆 / 回复上限 / 脱敏都从这张表走。
+
+    turn_note 是只进本轮提示词的附注（不写历史）：例如「引用的图不是管理员发的、
+    这张图没有交给你看图」——不然模型会拿自己屏幕上的画面顶替用户说的那张图。
     """
     pol = turn_policy or policy.OWNER_POLICY
     # 本轮归属快照：整轮全程只认这份 sid/epoch，中途别的端新建/切换会话也不影响它
@@ -4279,7 +4283,7 @@ async def handle_chat(text: str, announce: bool = True,
                     reply = await _run_agent_guarded(
                         events, hist=hist, image_part=shot_ref, tool_log=tool_log,
                         client=client, turn_ctx=turn_ctx, shot_lock=shot_lock,
-                        surface=surface, turn_policy=pol)
+                        surface=surface, turn_policy=pol, extra_system=turn_note)
                 except Exception as e:
                     print(f"[DeckMeido][onebot] 群友档引擎回退：{e!r}", file=sys.stderr)
                     events.clear()
@@ -4295,7 +4299,7 @@ async def handle_chat(text: str, announce: bool = True,
                                              tool_log=tool_log, client=client,
                                              turn_ctx=turn_ctx,
                                              shot_lock=shot_lock, surface=surface,
-                                             turn_policy=pol)
+                                             turn_policy=pol, extra_system=turn_note)
         elif (pend := _pending_get()) and (tools.is_confirm(text) or policy.is_hard_confirm(text)):
             # 用户确认了挂起的危险操作：这是显式的「窗口里点了确认」，
             # 不是历史文本推断出来的授权，policy 用 approved=True 放行并记账。
@@ -4306,7 +4310,7 @@ async def handle_chat(text: str, announce: bool = True,
                                                  tool_log=tool_log, client=client,
                                                  turn_ctx=turn_ctx,
                                                  shot_lock=shot_lock, surface=surface,
-                                                 turn_policy=pol)
+                                                 turn_policy=pol, extra_system=turn_note)
             else:
                 action = pend
                 decision = policy.check(action["name"], action["args"], turn_ctx,
@@ -4337,7 +4341,7 @@ async def handle_chat(text: str, announce: bool = True,
             action = pend
             reply = f"已取消：{action['description']}。\n\n" + await run_agent(
                 events, hist=hist, image_part=shot_ref, tool_log=tool_log,
-                from_client=client, turn_ctx=turn_ctx,
+                from_client=client, turn_ctx=turn_ctx, extra_system=turn_note,
                 _shot_lock=shot_lock, surface=surface, turn_policy=pol)
         else:
             # 画面要一路传进 run_agent：插件端才知道这一轮不用自己再截图
@@ -4345,7 +4349,7 @@ async def handle_chat(text: str, announce: bool = True,
                                              tool_log=tool_log, client=client,
                                              turn_ctx=turn_ctx,
                                              shot_lock=shot_lock, surface=surface,
-                                             turn_policy=pol)
+                                             turn_policy=pol, extra_system=turn_note)
     except asyncio.CancelledError:
         # 用户点了终止：广播终止消息并向上传递
         await manager.broadcast({"type": "assistant_message", "text": "已终止当前操作",
@@ -5060,12 +5064,13 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
                              turn_ctx: policy.TurnContext | None = None,
                              shot_lock: bool | None = None,
                              surface: str | None = None,
-                             turn_policy: policy.TurnPolicy | None = None) -> str:
+                             turn_policy: policy.TurnPolicy | None = None,
+                             extra_system: str = "") -> str:
     """引擎入口的薄壳：实现在 agent_engine，注入本模块供其现读运行态"""
     return await agent_engine._run_agent_guarded(
         events, hist=hist, image_part=image_part, tool_log=tool_log,
         client=client, turn_ctx=turn_ctx, shot_lock=shot_lock,
-        surface=surface, turn_policy=turn_policy)
+        surface=surface, turn_policy=turn_policy, extra_system=extra_system)
 
 
 async def run_agent(events: list[dict], extra_system: str = "",
@@ -5152,6 +5157,8 @@ _stop_onebot = None
 
 # 图片上传落在数据根（userdata/uploads），不再写进 server/static
 app.mount("/uploads", StaticFiles(directory=str(paths.uploads_dir())), name="uploads")
+# 自定义主题壁纸：CSS background-image / <img> 带不了令牌，所以公开提供
+app.mount("/wallpapers", StaticFiles(directory=str(paths.wallpapers_dir())), name="wallpapers")
 
 
 def _serving_on_steamos() -> bool:
@@ -5436,6 +5443,12 @@ routes_files.register(app)
 # 路由函数在 register 里定义，注册后补齐同名全局（测试与其它模块按原名调用）
 for _name in routes_files.__all_routes__:
     globals()[_name] = getattr(routes_files, _name)
+
+# 自定义主题（壁纸/配色）：与渲染无关，只读写 config 的 [appearance] 段
+routes_theme.init(require_auth, lambda: sys.modules[__name__])
+routes_theme.register(app)
+for _name in routes_theme.__all_routes__:
+    globals()[_name] = getattr(routes_theme, _name)
 
 
 # 静态网页控制台（放最后挂载，避免覆盖 API 路由）
