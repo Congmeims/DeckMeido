@@ -3030,6 +3030,10 @@
   var serverDevMode = false;
   var liveThoughtShown = 0; // 已实时渲染的思维链数
   var askShown = 0;         // 已实时渲染的提问数（收尾时按这个跳过 events 里的 ask）
+  // ask 之前那段已经流式显示的正文气泡。case 'ask' 会把 streamEl 置空，
+  // 不复用这个引用的话，收尾时就认不出它是「这一轮的正文」，
+  // 屏幕上只剩一句反问（分析被吞）。收尾用完即清
+  var askPreBubble = null;
   var liveThought = null;  // 实时思维链卡片（.thought-body 元素）
   // 思考链合帧缓冲：后端已按 40ms 合过一批，一帧里仍可能进来好几条，
   // 这里再合一次，重排次数从「每条一次」降到「每帧一次」
@@ -6447,6 +6451,9 @@
           }
           liveThought = null;
           askShown = 0;
+          // 断线/重连会走这里重建时间线：上面那个 ask 前置正文的引用跟着作废，
+          // 否则下一轮收尾会去认一个早已不在屏幕上的旧气泡
+          askPreBubble = null;
           hideTyping();
           setBusy(false);
           // 等服务端紧跟着发的 status：它带着 running 字段，
@@ -6639,6 +6646,15 @@
           var askText = askEv ? String(askEv.question || '').trim() : '';
           var askOnly = !!askEv && (!String(msg.text || '').trim()
                                     || String(msg.text).trim() === askText);
+          // ask 之前那段分析已经作为气泡留在屏幕上了（见 case 'ask'）。
+          // 它才是这一轮真正的正文：认成最终正文原地收尾，别再补一条
+          if (askOnly && askPreBubble && askPreBubble.parentNode
+              && askPreBubble !== streamEl) {
+            if (msg.ts) askPreBubble.dataset.ts = String(msg.ts);
+            askPreBubble.classList.add('turn-final');
+            promoted = true;
+            finalBubble = askPreBubble;
+          }
           if (streamEl && streamEl.parentNode) {
             if (msg.text) {
               var fb = streamEl.querySelector('.stream-body');
@@ -6734,6 +6750,7 @@
             liveBox.parentNode.removeChild(liveBox);
           }
           liveBox = null; liveToolCount = 0; liveThoughtShown = 0; askShown = 0;
+          askPreBubble = null;   // 这一轮已经收尾，引用不能漏到下一轮
           if (!promoted && !askOnly) addMsg('assistant', msg.text, msg.ts);
           refreshStatus();  // 更新上下文用量徽标
           } catch (e) {
@@ -6756,11 +6773,18 @@
           }
           // 提问前她可能已经把这句话流式吐了出来（streamEl 里就是它），
           // 那就把它撤掉，统一用下面这条正式气泡，免得屏幕上同一句话俩气泡
+          // 反过来，streamEl 里是一段真正的分析（跟问题不一样），那是这一轮的
+          // 正文，必须留着：以前这里不管内容一律把 streamEl 置空，收尾时
+          // askOnly 判定又认定「正文就是那句问题」不再补气泡，于是那段分析
+          // 成了孤儿 —— 屏幕上只剩一句反问，用户以为分析被吞了。
+          // 留着的同时把引用交出去，让 assistant_message 认它是最终正文
           if (streamEl && streamEl.parentNode) {
             var sBody = streamEl.querySelector('.stream-body');
             var sText = sBody ? sBody.textContent.trim() : '';
             if (!sText || sText === String(msg.question || '').trim()) {
               streamEl.parentNode.removeChild(streamEl);
+            } else {
+              askPreBubble = streamEl;
             }
           }
           streamTextPend = '';
@@ -8556,6 +8580,7 @@
     streamEl = null; streamBody = null;
     liveBox = null; liveToolCount = 0; liveThoughtShown = 0; liveThought = null;
     askShown = 0;
+    askPreBubble = null;   // 终止这一轮：ask 前置正文的引用一并丢掉
   }
 
   // 按钮点击：运行中 = 终止；空闲 = 发送输入框内容

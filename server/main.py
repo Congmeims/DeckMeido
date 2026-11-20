@@ -1189,13 +1189,17 @@ def _set_session_origin(sid: str, client: str | None) -> None:
 
     client 为空（重试这类内部链路）或认不出来时不动：沿用这个会话原来的
     来源，否则一点「重试」就把分组刷成「其它」。
+
+    只认第一次：来源定下来之后，同一会话换端接着说不再改写它。
+    以前是跟着最近一轮走，于是换了台电脑接着聊旧会话，只要最后一句是从
+    插件（QAM 面板）发的，整条会话当场跳到「插件」组，用户以为会话被搬走了。
     """
     if not sid or not client:
         return
     o = session_store.normalize_origin(client, sid)
     if o:
         with store.lock:
-            store.origin_map[sid] = o
+            store.origin_map.setdefault(sid, o)
 
 
 def _set_session_device(sid: str, device: str | None) -> None:
@@ -4150,12 +4154,9 @@ async def handle_chat(text: str, announce: bool = True,
         # 侧栏按来源把它分到对应组，而不是强留一个空会话占位
         turn_sid = store.current_sid = _fresh_sid()
     turn_epoch = store.epoch
-    # 本轮来源：侧栏据此把会话自动分到网页 / Deck / 插件 / Onebot / 智能音响几组。
-    # 同一会话里换了端发问（网页接着插件说）也照样跟着最近一轮走。
-    # client 为空（重试、唤醒这类内部链路，或是老版本前端没带）时不能就这么空着：
-    # 先看上一轮是谁发起的（store.turn 里还没被本轮覆盖），再退回这个会话已经
-    # 记下的来源。两处都没有才真的留空 —— 那样侧栏会把它归到「调试」组，
-    # 用户换台电脑就冒出一条无主会话
+    # 本轮来源：只在本会话还没有来源时定，定下来就不再改（见 _set_session_origin）。
+    # 以前是每轮都跟着最近一端走，换了台电脑接着聊旧会话，最后一句从插件发的，
+    # 整条会话就跳进「插件」组 —— 用户看起来像昨天的会话被搬走了
     origin_client = client or store.turn.get("client") or ""
     if not origin_client:
         origin_client = store.origin_map.get(turn_sid) or ""
