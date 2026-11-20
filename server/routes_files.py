@@ -80,19 +80,83 @@ _UPLOAD_MAX = 20 * 1024 * 1024
 # gb18030（GBK 的超集，能解绝大多数中文老文件名）。拿不到原字节时退回
 # 「替换成 ?」，至少能列出来，不会整层挂掉。
 def _fs_name(name: str) -> str:
-    """把可能带 surrogate 的文件名转成能显示的中文名"""
+    """把可能带 surrogate 的文件名转成能显示的中文名。
+
+    逐字节按 gb18030 解码，能解成长度 ≥2 的字符就吐中文，解不了（或只剩
+    单个 ASCII）就按 latin-1 原样留着 —— 后者保证了 `_gbk_bytes` 能把它
+    原封不动编回去，显示名和磁盘原名一一对应。
+    """
     try:
         name.encode("utf-8")
         return name
     except UnicodeEncodeError:
         pass
     raw = name.encode("utf-8", errors="surrogateescape")
-    for enc in ("gb18030", "big5"):
-        try:
-            return raw.decode(enc)
-        except UnicodeDecodeError:
+    out: list[str] = []
+    i = 0
+    while i < len(raw):
+        if raw[i] < 0x80:
+            out.append(chr(raw[i]))
+            i += 1
             continue
-    return raw.decode("utf-8", errors="replace")
+        for size in (2, 4):                 # gb18030：双字节为主，四字节区极少见
+            chunk = raw[i:i + size]
+            if len(chunk) < size:
+                continue
+            try:
+                out.append(chunk.decode("gb18030"))
+            except UnicodeDecodeError:
+                continue
+            i += size
+            break
+        else:
+            out.append(chr(raw[i]))         # 解不了的字节按 latin-1 占位
+            i += 1
+    return "".join(out)
+
+
+def _gbk_bytes(shown: str) -> bytes:
+    """_fs_name 的逆过程：显示名 -> 磁盘上的原始字节。
+
+    显示名里 U+0080~U+00FF 是当初解不出来的单字节，其余按 gb18030 编。
+    """
+    out = bytearray()
+    for ch in shown:
+        cp = ord(ch)
+        if 0x80 <= cp <= 0xFF:
+            out.append(cp)
+            continue
+        try:
+            out += ch.encode("gb18030")
+        except UnicodeEncodeError:
+            out += ch.encode("utf-8")
+    return bytes(out)
+
+
+def _raw_bytes(name: str) -> str:
+    """把文件名换成磁盘原名（带 surrogate 的形式，os 直接能用）
+
+    两种输入：列表里原样给出的显示名（中文，要按 GBK 编回去）；前端按
+    `\\udcXX` 还原好的原始字节串（原样返回，再编一次就跑偏了）。
+    """
+    if name.isascii() or any("\udc80" <= ch <= "\udcff" for ch in name):
+        return name
+    if not _gbk_roundtrip_ok(name):
+        return name            # 正常 UTF-8 名（含中文），os 编码出来就是磁盘上的样子
+    head, sep, tail = name.rpartition(".")
+    if sep and tail.isascii() and head and _gbk_roundtrip_ok(tail):
+        return _gbk_bytes(head).decode("utf-8", errors="surrogateescape") + sep + tail
+    return _gbk_bytes(name).decode("utf-8", errors="surrogateescape")
+
+
+def _gbk_roundtrip_ok(text: str) -> bool:
+    """这段中文能不能按 GBK 编回字节、再用 GBK 解出同一串（老 GBK 文件名的特征）"""
+    try:
+        return text.encode("gb18030").decode("gb18030") == text
+    except UnicodeError:
+        return False
+
+
 
 # 文件管理器搬运文件不再写死 500MB：上限 = 目标磁盘剩余空间 - 安全余量。
 # 余量默认 128MB；剩余不足 256MB 时改留一半，避免「还有 100MB 却完全不让传」。
@@ -120,20 +184,17 @@ def _wire_name(name: str) -> str:
 def _fs_path(s: str) -> str:
     """前端传回来的路径 -> 磁盘上的真路径（os 能直接用的 str）。
 
-    三种来源：
-    · 正常 UTF-8 路径：原样返回；
-    · 服务端自己还原好的 `\\udcXX`（非 GBK 的坏字节）：原样返回，os 用原名；
-    · 浏览器传回来的名字：浏览器已把 %B6 之类解成 U+00B6，%E5%A5%BD 解成「好」。
-      整串都落在 U+0000~U+00FF 时按单字节收回，就是磁盘原名；含替换符（原字节
-      已经丢了）或已经是合法 UTF-8 的，原样交给 os，最多得到「不存在」。
+    浏览器把 %B6 之类解成 U+00B6、%E5%A5%BD 解成「好」。整串都落在
+    U+0000~U+00FF 时按单字节收就是磁盘原名；夹着正常中文的（老 GBK 名和
+    中文目录混在一层）逐段还原：每段先按 utf-8 编码回原字节，再交给
+    _raw_bytes 按 GBK 对照表编回去。
     """
-    if not s or s.isascii():
-        return s
+    if not s or s.isascii() or any("\udc80" <= ch <= "\udcff" for ch in s):
+        return s          # 正常串，或前端已经还原好的原始字节（surrogate）
     if all(ord(ch) < 0x100 for ch in s):
-        # 整串都在 U+0000~U+00FF：这是浏览器按 UTF-8 解过一次的结果
-        # （%B6 解成 U+00B6、%E5 解成「å」），按单字节收就是磁盘原名
         return bytes(ord(ch) for ch in s).decode("utf-8", errors="surrogateescape")
-    return s
+    head, sep, tail = s.rpartition("/")
+    return head + sep + _raw_bytes(tail)
 
 
 def _fmt_bytes(n: int) -> str:
