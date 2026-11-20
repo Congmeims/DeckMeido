@@ -501,6 +501,14 @@ def _build_llm_msgs_sync(hist: list[dict], sys_prompt: str, sid: str = "",
         if (item_max_chars > 0 and isinstance(content, str)
                 and len(content) > item_max_chars):
             content = content[:item_max_chars] + "…"
+        # 那一轮搜过壁纸时，把候选清单补在这条回答后面。工具往返本身不进历史，
+        # 不补的话模型下一轮就忘了自己给过哪几张，用户回「3」它只能反问一遍
+        cands = m.get("candidates")
+        if cands and isinstance(content, str):
+            lines = [f"{c['no']}. {c.get('title') or '（无标题）'} · id={c['id']}"
+                     for c in cands]
+            content = (content + "\n\n【本轮展示给用户的壁纸候选，用户可能用编号回复】\n"
+                       + "\n".join(lines))
         # 历史里还存了 ts / events 供界面回放，发给模型时只保留 role 和 content
         msgs.append({"role": m["role"], "content": content,
                      "tool_calls": m.get("tool_calls"),
@@ -4252,6 +4260,9 @@ async def handle_chat(text: str, announce: bool = True,
     events: list[dict] = []
     # run_agent 在终止时会往这里塞本轮执行过的工具，供落盘时做交接（见 _aborted_note）
     tool_log: list[dict] = []
+    # 本轮壁纸搜索给出的候选（编号 ↔ id）。工具往返不进历史，模型下一轮就忘了
+    # 自己给过哪几张，用户隔一轮回「3」只能干瞪眼；这里收好挂到回答上
+    turn_candidates: list[dict] = []
     # 标题取自第一条用户消息，所以用户一发出就落盘并刷新侧栏，不必等整轮回答结束
     _safe_save(turn_sid, hist)
     await manager.broadcast({"type": "session_changed", "current": store.current_sid})
@@ -4287,7 +4298,8 @@ async def handle_chat(text: str, announce: bool = True,
                     reply = await _run_agent_guarded(
                         events, hist=hist, image_part=shot_ref, tool_log=tool_log,
                         client=client, turn_ctx=turn_ctx, shot_lock=shot_lock,
-                        surface=surface, turn_policy=pol, extra_system=turn_note)
+                        surface=surface, turn_policy=pol, extra_system=turn_note,
+                        turn_candidates_out=turn_candidates)
                 except Exception as e:
                     print(f"[DeckMeido][onebot] 群友档引擎回退：{e!r}", file=sys.stderr)
                     events.clear()
@@ -4303,7 +4315,8 @@ async def handle_chat(text: str, announce: bool = True,
                                              tool_log=tool_log, client=client,
                                              turn_ctx=turn_ctx,
                                              shot_lock=shot_lock, surface=surface,
-                                             turn_policy=pol, extra_system=turn_note)
+                                             turn_policy=pol, extra_system=turn_note,
+                                             turn_candidates_out=turn_candidates)
         elif (pend := _pending_get()) and (tools.is_confirm(text) or policy.is_hard_confirm(text)):
             # 用户确认了挂起的危险操作：这是显式的「窗口里点了确认」，
             # 不是历史文本推断出来的授权，policy 用 approved=True 放行并记账。
@@ -4314,7 +4327,8 @@ async def handle_chat(text: str, announce: bool = True,
                                                  tool_log=tool_log, client=client,
                                                  turn_ctx=turn_ctx,
                                                  shot_lock=shot_lock, surface=surface,
-                                                 turn_policy=pol, extra_system=turn_note)
+                                                 turn_policy=pol, extra_system=turn_note,
+                                                 turn_candidates_out=turn_candidates)
             else:
                 action = pend
                 decision = policy.check(action["name"], action["args"], turn_ctx,
@@ -4346,14 +4360,16 @@ async def handle_chat(text: str, announce: bool = True,
             reply = f"已取消：{action['description']}。\n\n" + await run_agent(
                 events, hist=hist, image_part=shot_ref, tool_log=tool_log,
                 from_client=client, turn_ctx=turn_ctx, extra_system=turn_note,
-                _shot_lock=shot_lock, surface=surface, turn_policy=pol)
+                _shot_lock=shot_lock, surface=surface, turn_policy=pol,
+                turn_candidates_out=turn_candidates)
         else:
             # 画面要一路传进 run_agent：插件端才知道这一轮不用自己再截图
             reply = await _run_agent_guarded(events, hist=hist, image_part=shot_ref,
                                              tool_log=tool_log, client=client,
                                              turn_ctx=turn_ctx,
                                              shot_lock=shot_lock, surface=surface,
-                                             turn_policy=pol, extra_system=turn_note)
+                                             turn_policy=pol, extra_system=turn_note,
+                                             turn_candidates_out=turn_candidates)
     except asyncio.CancelledError:
         # 用户点了终止：广播终止消息并向上传递
         await manager.broadcast({"type": "assistant_message", "text": "已终止当前操作",
@@ -4382,7 +4398,8 @@ async def handle_chat(text: str, announce: bool = True,
         hist.append({"role": "assistant", "content": killed_text,
                      "events": events, "interrupted": True, "aborted_turn": True,
                      "tool_log": list(tool_log), "ts": time.time(),
-                     **src_tag})
+                     **src_tag,
+                     **({"candidates": list(turn_candidates)} if turn_candidates else {})})
         _safe_save(turn_sid, hist)
         _safe_clear_stream(turn_sid)
         raise
@@ -4411,8 +4428,10 @@ async def handle_chat(text: str, announce: bool = True,
     asst_ts = time.time()
     # 回答也带上这条提问的来源：QAM 面板把各端的问答混在一列显示，
     # 只看 user 的标记分不清哪条回答是应哪一句的
+    # 本轮搜过的壁纸候选随回答落盘：下一轮 _build_llm_msgs 会把它讲给模型听
+    cand_tag = {"candidates": list(turn_candidates)} if turn_candidates else {}
     hist.append({"role": "assistant", "content": reply, "events": events,
-                 "ts": asst_ts, **src_tag})
+                 "ts": asst_ts, **src_tag, **cand_tag})
     # 关键：写回「本轮所属」的会话文件。中途被切走时 current_sid 已经指向别处，
     # 用 save_current_session 会把这一轮错写进新会话（串回复的根源）
     _safe_save(turn_sid, hist)
@@ -5069,12 +5088,14 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
                              shot_lock: bool | None = None,
                              surface: str | None = None,
                              turn_policy: policy.TurnPolicy | None = None,
-                             extra_system: str = "") -> str:
+                             extra_system: str = "",
+                             turn_candidates_out: list[dict] | None = None) -> str:
     """引擎入口的薄壳：实现在 agent_engine，注入本模块供其现读运行态"""
     return await agent_engine._run_agent_guarded(
         events, hist=hist, image_part=image_part, tool_log=tool_log,
         client=client, turn_ctx=turn_ctx, shot_lock=shot_lock,
-        surface=surface, turn_policy=turn_policy, extra_system=extra_system)
+        surface=surface, turn_policy=turn_policy, extra_system=extra_system,
+        turn_candidates_out=turn_candidates_out)
 
 
 async def run_agent(events: list[dict], extra_system: str = "",
@@ -5085,12 +5106,14 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     _shot_lock: bool | None = None,
                     surface: str | None = None,
                     turn_ctx: policy.TurnContext | None = None,
-                    turn_policy: policy.TurnPolicy | None = None) -> str:
+                    turn_policy: policy.TurnPolicy | None = None,
+                    turn_candidates_out: list[dict] | None = None) -> str:
     """LLM + 工具调用循环的薄壳：实现在 agent_engine"""
     return await agent_engine.run_agent(
         events, extra_system=extra_system, hist=hist, image_part=image_part,
         tool_log=tool_log, from_client=from_client, _shot_lock=_shot_lock,
-        surface=surface, turn_ctx=turn_ctx, turn_policy=turn_policy)
+        surface=surface, turn_ctx=turn_ctx, turn_policy=turn_policy,
+        turn_candidates_out=turn_candidates_out)
 
 
 @app.get("/shots/local")

@@ -95,7 +95,8 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
                              shot_lock: bool | None = None,
                              surface: str | None = None,
                              turn_policy: policy.TurnPolicy | None = None,
-                             extra_system: str = "") -> str:
+                             extra_system: str = "",
+                             turn_candidates_out: list[dict] | None = None) -> str:
     """带总超时和拒绝重试的 agent 入口：任何环节卡死都不会让对话无限挂起
 
     image_part 非空表示本轮提问自带画面（这里是历史里那条 [SHOT:文件名] 标记，
@@ -114,7 +115,8 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
             run_agent(events, hist=hist, image_part=image_part, tool_log=tool_log,
                       from_client=client, turn_ctx=turn_ctx,
                       _shot_lock=shot_lock, surface=surface, turn_policy=pol,
-                      extra_system=extra_system),
+                      extra_system=extra_system,
+                      turn_candidates_out=turn_candidates_out),
             timeout=agent_timeout)
     except asyncio.TimeoutError:
         # 超时不能只丢一句「超时了」：这一轮里已经跑完的命令、改过的文件全都要留下，
@@ -135,6 +137,7 @@ async def _run_agent_guarded(events: list[dict], hist: list[dict] | None = None,
                               + ("\n" + extra_system if extra_system else "")),
                 turn_ctx=turn_ctx,
                 _shot_lock=shot_lock, surface=surface, turn_policy=pol,
+                turn_candidates_out=turn_candidates_out,
             ), timeout=agent_timeout)
         except asyncio.TimeoutError:
             return qqtext.get("retry_timeout")
@@ -187,7 +190,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
                    _shot_lock: bool | None = None,
                    surface: str | None = None,
                    turn_ctx: policy.TurnContext | None = None,
-                   turn_policy: policy.TurnPolicy | None = None) -> str:
+                   turn_policy: policy.TurnPolicy | None = None,
+                   turn_candidates_out: list[dict] | None = None) -> str:
     """LLM + 工具调用循环（流式），思考链/工具调用/终端输出写入 events 供 UI 展示
 
     image_part 非空表示本轮提问自带画面：插件端这一轮把截图工具摘掉（见 round_tools）
@@ -282,6 +286,11 @@ async def run_agent(events: list[dict], extra_system: str = "",
         msgs.append({"role": "system", "content": aborted_note})
     # 本轮真正执行过的工具，终止时随回答一起落盘，供下一轮做交接
     tool_log: list[dict] = [] if tool_log is None else tool_log
+    # 本轮壁纸搜索出的候选（编号 ↔ id）：工具往返不进历史，只留在 events 里，
+    # 下一轮模型就忘了自己给过哪几张。落盘前挂到回答上，拼历史时再讲给它听
+    turn_candidates: list[dict] = []
+    if turn_candidates_out is not None:
+        turn_candidates = turn_candidates_out
     # 上下文里一共有几张画面（含本轮提问自带的那张）。模型自己截图时，新注入的
     # 那张要接着编号，否则它和旧图的说明一字不差，模型分不清哪张是当前的
     turn_shot_no = sum(1 for m in hist if isinstance(m.get("content"), list))
@@ -929,6 +938,12 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     # 结果文本里也有 id，模型能对上编号，但图片本身不靠它
                     event["candidates"] = tools.LAST_CANDIDATES
                     event["query"] = str(args.get("query") or "")
+                    # 候选编号与 id 的对应表：这一轮的工具结果下一轮就进不了历史，
+                    # 用户隔一轮回一句「3」时模型连候选是什么都不记得。这里先存着，
+                    # 落盘前挂到本轮回答上（见 handle_chat 的 cand_tag）
+                    turn_candidates[:] = [
+                        {"no": i + 1, "id": c["id"], "title": c.get("title") or ""}
+                        for i, c in enumerate(tools.LAST_CANDIDATES)]
                 if name == "screenshot":
                     m2 = re.search(r"/shots/\S+?\.png", result)
                     if m2:

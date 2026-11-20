@@ -398,6 +398,8 @@ TOOLS: list[dict] = [
                             "选 1-4；用户选中后再用 set_wallpaper 传 candidate_id 应用。"
                             "用户说「换张壁纸」「找张星空背景」时先调这个，不要直接 set_wallpaper。"
                             "用户不满意就用新关键词再搜一次。"
+                            "用户只回一个编号（例如「3」）时，对照上一轮回答里附带的候选清单"
+                            "直接 set_wallpaper；清单里没有编号可对，就再搜一批，别反问他。"
                             "候选图由界面自己渲染，不要再用 run_command 打开看图软件、"
                             "也不要用 screenshot 截图桌面给用户挑。"),
             "parameters": {
@@ -424,7 +426,9 @@ TOOLS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "candidate_id": {"type": "string",
-                                     "description": "search_wallpaper 返回的候选图 id（用户选中的那张）"},
+                                     "description": "search_wallpaper 返回的候选图 id（用户选中的那张）。"
+                                                    "上一轮展示的候选编号与 id 见那条回答附带的候选清单；"
+                                                    "清单里没有就别猜，重新 search_wallpaper 再搜一批"},
                     "url": {"type": "string", "description": "图片直链（jpg / png / webp / gif / bmp）"},
                     "clear": {"type": "boolean", "description": "true = 撤销壁纸、恢复内置主题"},
                 },
