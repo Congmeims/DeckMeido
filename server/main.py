@@ -17,7 +17,7 @@ from pathlib import Path
 
 import tomllib
 
-from fastapi import FastAPI, WebSocket, Query, HTTPException, Depends, Response, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Depends, Response, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel

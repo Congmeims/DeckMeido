@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import (APIRouter, Depends, HTTPException, Query, Request,
-                     Response, UploadFile, WebSocket, WebSocketDisconnect)
+                     UploadFile, WebSocket, WebSocketDisconnect)
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
