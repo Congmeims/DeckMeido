@@ -72,6 +72,28 @@ _TEXT_EXT = {".txt", ".md", ".py", ".js", ".ts", ".json", ".csv", ".log", ".sh",
 # 单个附件上限，防止一次拖进几个 G 的文件把服务拖死
 _UPLOAD_MAX = 20 * 1024 * 1024
 
+# 老手机 / 老 Windows 传进来的文件名常是 GBK 而不是 UTF-8（例如 Deck 上
+# FreedeckGames 里那几个 .gba）。这种名字在列表时会让 os.scandir 抛
+# UnicodeDecodeError（属于 ValueError，不是 OSError），整层目录直接 500，
+# 用户看到的就是「这个文件夹打不开」。
+# 处理方式：扫描时用 surrogateescape 把坏字节原样收进来，显示前再试
+# gb18030（GBK 的超集，能解绝大多数中文老文件名）。拿不到原字节时退回
+# 「替换成 ?」，至少能列出来，不会整层挂掉。
+def _fs_name(name: str) -> str:
+    """把可能带 surrogate 的文件名转成能显示的中文名"""
+    try:
+        name.encode("utf-8")
+        return name
+    except UnicodeEncodeError:
+        pass
+    raw = name.encode("utf-8", errors="surrogateescape")
+    for enc in ("gb18030", "big5"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
 # 文件管理器搬运文件不再写死 500MB：上限 = 目标磁盘剩余空间 - 安全余量。
 # 余量默认 128MB；剩余不足 256MB 时改留一半，避免「还有 100MB 却完全不让传」。
 UPLOAD_FREE_RESERVE = 128 * 1024 * 1024
@@ -870,7 +892,10 @@ def register(app) -> None:
                         "error": f"目录 {target} 不存在"}
         entries = []
         try:
-            with os.scandir(target) as it:
+            # errors="surrogateescape"：目录里有非 UTF-8 的文件名（GBK 老文件）时，
+            # scandir 不再抛 UnicodeDecodeError 把整层目录打成 500，
+            # 坏字节以 surrogate 形式保留下来，显示前由 _fs_name 转成中文
+            with os.scandir(os.fsencode(target)) as it:
                 for e in it:
                     # 软链接要跟随判断：/run/media/ 下的 SDCARD 是"指向 SD 卡的目录链接"，
                     # 用 follow_symlinks=False 会把它当成普通文件，点不进去
@@ -888,11 +913,19 @@ def register(app) -> None:
                             is_dir = e.is_dir(follow_symlinks=False)
                         except OSError:
                             is_dir = False
-                    item = {"name": e.name, "dir": is_dir}
+                    # 扫的是 bytes 路径，名字也是 bytes：先按 fs 编码还原成 str
+                    # （坏字节变成 surrogate），再由 _fs_name 转成能显示的中文
+                    raw_name = os.fsdecode(e.name)
+                    name = _fs_name(raw_name)
+                    item = {"name": name, "dir": is_dir}
+                    # 显示名可能是转码后的中文，点开/重命名用的仍是磁盘上的原名。
+                    # 只有两者不同的时候才带上，正常目录不多占字段
+                    if name != raw_name:
+                        item["raw_name"] = raw_name
                     if is_link:
                         item["link"] = True
                         try:
-                            item["link_target"] = os.path.realpath(e.path)
+                            item["link_target"] = os.fsdecode(os.path.realpath(e.path))
                         except OSError:
                             item["link_target"] = ""
                         # 断链：exists 会跟随链接，False 说明目标没了。
@@ -903,7 +936,7 @@ def register(app) -> None:
                             item["broken"] = False
                     if not is_dir:
                         # kind 给前端挑图标和预览方式用（image/video/audio/pdf/text/other）
-                        item["kind"] = _file_kind(e.name)
+                        item["kind"] = _file_kind(name)
                     # 大小与修改时间：目录也带 mtime，条目一律显示「类型/大小/修改时间」
                     try:
                         st = e.stat(follow_symlinks=False)

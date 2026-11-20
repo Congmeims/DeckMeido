@@ -4051,7 +4051,10 @@
       box.appendChild(empty);
     }
     entries.forEach(function (e) {
-      var full = data.path + (data.path.endsWith('/') ? '' : '/') + e.name;
+      // 磁盘上的原名：老 GBK 文件名后端会再给一个中文显示名（e.name），
+      // 拼路径必须用原名，否则点进去 / 预览都会找不到文件
+      var diskName = e.raw_name || e.name;
+      var full = data.path + (data.path.endsWith('/') ? '' : '/') + diskName;
       var kind = e.dir ? 'dir' : (e.kind || fbKindOf(e.name));
       var row = document.createElement('div');
       row.className = 'fb-item' + (e.dir ? ' dir' : '') + (e.link ? ' link' : '')
@@ -4080,7 +4083,7 @@
         sz.textContent = fbFmtSize(e.size);
         row.appendChild(sz);
       }
-      if (fb.select && e.name === fb.select) {
+      if (fb.select && diskName === fb.select) {
         // AI 刚看的就是它：标记 + 闪两下，帮用户在长列表里一眼找到。
         // 自动刷新重绘时不重新闪、不新增高亮（soft），否则每秒都闪一下
         row.classList.add('sel');
@@ -4104,7 +4107,7 @@
         }
         // 单击 = 预览。引用改成把这一行拖进聊天框，避免「只想看一眼」时
         // 输入框里莫名多出一串 @{...}
-        fb.select = e.name;
+        fb.select = diskName;
         Array.prototype.forEach.call(box.querySelectorAll('.fb-item.sel'), function (x) {
           x.classList.remove('sel');
         });
