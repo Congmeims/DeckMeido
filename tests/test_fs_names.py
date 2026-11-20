@@ -22,9 +22,31 @@ def test_fs_name_utf8_untouched():
 
 
 def test_fs_name_undecodable():
+    # 只有前半截是 GBK 的坏字节：整串解不开，只能替换成 ?
     name = b"\xff\xfe\x00bad".decode("utf-8", errors="surrogateescape")
     out = routes_files._fs_name(name)
     assert all(not ("\ud800" <= ch <= "\udfff") for ch in out)   # surrogate 不能丢给前端
+
+
+def test_wire_name_always_json_safe():
+    # 任意坏字节都要能进 JSON（响应体是 UTF-8 编码的，带 surrogate 直接 500）
+    for raw in (b"\xff\xfe\x00bad", b"\xb6\xf1\xc4\xa7\xb3\xc7.gba", b"ok.gba"):
+        routes_files._wire_name(raw.decode("utf-8", errors="surrogateescape")).encode("utf-8")
+
+
+def test_emit_keeps_undecodable_recoverable():
+    # 按 utf-8 切出来、本身解不了的文件名：转成 \udcXX 文本，前端还原后
+    # 拼路径仍指向磁盘上同一个文件（GBK 能被 _fs_name 解出来，不会走到这里）
+    name = b"a\xff\xfe.gz".decode("utf-8", errors="surrogateescape")
+    out = routes_files._emit(name)
+    assert "\\udcff" in out and "\\udcfe" in out
+    back = out.replace("\\udcff", "\udcff").replace("\\udcfe", "\udcfe")
+    assert back.encode("utf-8", errors="surrogateescape") == b"a\xff\xfe.gz"
+
+
+def test_emit_plain_text_untouched():
+    assert routes_files._emit("/home/deck/FreedeckGames/126") == "/home/deck/FreedeckGames/126"
+    assert routes_files._emit("") == ""
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows 的 fs 编码不是 UTF-8，复现不出这个问题")

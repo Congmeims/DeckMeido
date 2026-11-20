@@ -99,6 +99,28 @@ def _fs_name(name: str) -> str:
 UPLOAD_FREE_RESERVE = 128 * 1024 * 1024
 
 
+def _emit(s: str) -> str:
+    """把带 surrogate 的串（os.fsdecode 还原出的坏字节，或含这种名字的整条路径）
+    换成能进 JSON 的形式：坏字节写成 \\udcXX 文本，前端按同一规则还原后
+    就是原始字节，可以原样用来拼磁盘路径。"""
+    try:
+        s.encode("utf-8")
+        return s
+    except UnicodeEncodeError:
+        pass
+    try:
+        s.encode("utf-8", errors="surrogateescape").decode("utf-8")
+        return s
+    except UnicodeDecodeError:
+        return "".join(ch if ch < "\ud800" or ch > "\udfff" else f"\\udc{ord(ch) - 0xdc00:02x}"
+                       for ch in s)
+
+
+def _wire_name(name: str) -> str:
+    """文件名的线路格式：先转可读中文（老 GBK 名），仍解不出来的坏字节再转义"""
+    return _emit(_fs_name(name))
+
+
 def _fmt_bytes(n: int) -> str:
     """人类可读体积（1024 进制，与前端 fbFmtBytes 同一口径）"""
     value = float(max(0, int(n or 0)))
@@ -916,16 +938,17 @@ def register(app) -> None:
                     # 扫的是 bytes 路径，名字也是 bytes：先按 fs 编码还原成 str
                     # （坏字节变成 surrogate），再由 _fs_name 转成能显示的中文
                     raw_name = os.fsdecode(e.name)
-                    name = _fs_name(raw_name)
+                    name = _wire_name(raw_name)
                     item = {"name": name, "dir": is_dir}
                     # 显示名可能是转码后的中文，点开/重命名用的仍是磁盘上的原名。
                     # 只有两者不同的时候才带上，正常目录不多占字段
-                    if name != raw_name:
-                        item["raw_name"] = raw_name
+                    raw_disk = _emit(raw_name)
+                    if name != raw_disk:
+                        item["raw_name"] = raw_disk
                     if is_link:
                         item["link"] = True
                         try:
-                            item["link_target"] = os.fsdecode(os.path.realpath(e.path))
+                            item["link_target"] = _emit(os.fsdecode(os.path.realpath(e.path)))
                         except OSError:
                             item["link_target"] = ""
                         # 断链：exists 会跟随链接，False 说明目标没了。
@@ -955,8 +978,10 @@ def register(app) -> None:
         # 文件夹在前、同类按名字排，隐藏文件照样列出（用户可能就是要看 .config）
         entries.sort(key=lambda x: (not x["dir"], x["name"].lower()))
         parent = str(target.parent) if str(target.parent) != str(target) else None
-        return {"path": str(target), "parent": parent, "entries": entries,
-                "select": select, **zone_fields}
+        # path / select 里也可能带上层的坏字节目录名，一并处理，
+        # 否则前一层能打开、点进来又 500
+        return {"path": _emit(str(target)), "parent": _emit(parent) if parent else None,
+                "entries": entries, "select": _emit(select), **zone_fields}
 
     @router.post("/api/fs")
     async def api_fs(req: _FsReq):

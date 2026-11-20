@@ -4052,9 +4052,10 @@
     }
     entries.forEach(function (e) {
       // 磁盘上的原名：老 GBK 文件名后端会再给一个中文显示名（e.name），
-      // 拼路径必须用原名，否则点进去 / 预览都会找不到文件
-      var diskName = e.raw_name || e.name;
-      var full = data.path + (data.path.endsWith('/') ? '' : '/') + diskName;
+      // 拼路径必须用原名，否则点进去 / 预览都会找不到文件。
+      // 原名后端是按 utf-8 转义过的（坏字节 -> \udcXX），这里先还原成字节串
+      var diskName = fbRaw(e.raw_name || e.name);
+      var full = fbRaw(data.path) + (data.path.endsWith('/') ? '' : '/') + diskName;
       var kind = e.dir ? 'dir' : (e.kind || fbKindOf(e.name));
       var row = document.createElement('div');
       row.className = 'fb-item' + (e.dir ? ' dir' : '') + (e.link ? ' link' : '')
@@ -4122,9 +4123,20 @@
     });
   }
 
+  // 后端把文件名里的坏字节（非 UTF-8 的老 GBK 文件名）转义成了 \udcXX。
+  // 这里还原成原始字节串：fetch 请求路径与 XHR 都能原样发送，磁盘上才能找到。
+  // 正常路径不含转义，直接原样返回
+  function fbRaw(s) {
+    s = String(s == null ? '' : s);
+    if (!/\\udc[0-9a-f]{2}/i.test(s)) return s;
+    return s.replace(/\\udc([0-9a-f]{2})/gi, function (m, h) {
+      return String.fromCharCode(0xdc00 + parseInt(h, 16));
+    });
+  }
+
   // 统一的 /api/browse 请求：非 JSON（500 的纯文本、网关错误页）不能直接 r.json()
   function fbFetchList(url) {
-    return apiFetch(url).then(function (r) {
+    return apiFetch(fbRaw(url)).then(function (r) {
       return r.json().catch(function () {
         return { error: '读取失败（HTTP ' + r.status + '）' };
       }).then(function (data) {
