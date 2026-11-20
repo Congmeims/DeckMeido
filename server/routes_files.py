@@ -108,43 +108,31 @@ def _emit(s: str) -> str:
         return s
     except UnicodeEncodeError:
         pass
-    try:
-        s.encode("utf-8", errors="surrogateescape").decode("utf-8")
-        return s
-    except UnicodeDecodeError:
-        return "".join(ch if ch < "\ud800" or ch > "\udfff" else f"\\udc{ord(ch) - 0xdc00:02x}"
-                       for ch in s)
+    return "".join(ch if ch < "\ud800" or ch > "\udfff" else f"\\udc{ord(ch) - 0xdc00:02x}"
+                   for ch in s)
 
 
 def _wire_name(name: str) -> str:
-    """文件名的线路格式：先转可读中文（老 GBK 名），仍解不出来的坏字节再转义"""
+    """文件名对前端的线路格式：GBK 老名转成中文显示，剩下的坏字节再转义"""
     return _emit(_fs_name(name))
 
 
-def _disk(s: str) -> str:
-    """把前端传来的路径名还原成磁盘上的原名。
+def _fs_path(s: str) -> str:
+    """前端传回来的路径 -> 磁盘上的真路径（os 能直接用的 str）。
 
-    前端拿到的名字有三种可能：正常 UTF-8；`\\udcXX` 转义（非 GBK 的坏字节，
-    转回 surrogate 后 os 自己会拼回原字节）；已经转成中文的 GBK 名 ——
-    最后这种必须先按 GBK 编回字节再解，否则 os 会按 UTF-8 编码，
-    拼出来的路径在磁盘上根本不存在（点进去就是「不存在」/404）。
+    三种来源：
+    · 正常 UTF-8 路径：原样返回；
+    · 服务端自己还原好的 `\\udcXX`（非 GBK 的坏字节）：原样返回，os 用原名；
+    · 浏览器传回来的名字：浏览器已把 %B6 之类解成 U+00B6，%E5%A5%BD 解成「好」。
+      整串都落在 U+0000~U+00FF 时按单字节收回，就是磁盘原名；含替换符（原字节
+      已经丢了）或已经是合法 UTF-8 的，原样交给 os，最多得到「不存在」。
     """
     if not s or s.isascii():
         return s
-    if any("\ud800" <= ch <= "\udfff" for ch in s):
-        return s
-    try:
-        os.fsencode(s).decode("utf-8")
-        return s          # 本来就是合法 UTF-8，os 编码出来就是磁盘上的样子
-    except UnicodeDecodeError:
-        pass
-    for enc in ("gb18030", "big5"):
-        try:
-            alt = s.encode(enc)
-        except UnicodeEncodeError:
-            continue
-        if alt.decode(enc) == s:
-            return os.fsdecode(alt)
+    if all(ord(ch) < 0x100 for ch in s):
+        # 整串都在 U+0000~U+00FF：这是浏览器按 UTF-8 解过一次的结果
+        # （%B6 解成 U+00B6、%E5 解成「å」），按单字节收就是磁盘原名
+        return bytes(ord(ch) for ch in s).decode("utf-8", errors="surrogateescape")
     return s
 
 
@@ -841,7 +829,7 @@ def register(app) -> None:
         视频/音频要能拖进度条就得支持 Range，所以走 FileResponse。
         """
         try:
-            target = Path(_disk(path)).expanduser().resolve()
+            target = Path(_fs_path(path)).expanduser().resolve()
         except OSError:
             raise HTTPException(status_code=404, detail="file not found")
         if fszones.browse_denied(target, _fs_workspace_roots()):
@@ -882,7 +870,7 @@ def register(app) -> None:
         """
         raw = (path or "").strip()
         # 不传 path 就回到工作区，用户第一次打开面板看到的是自己的工作区
-        target = Path(_disk(raw)).expanduser() if raw else tools.WORKSPACE
+        target = Path(_fs_path(raw)).expanduser() if raw else tools.WORKSPACE
         if not target.is_absolute():
             # 相对路径一律相对工作区解释，避免 cwd 变化导致行为漂移
             target = tools.WORKSPACE / target
@@ -965,7 +953,7 @@ def register(app) -> None:
                     # 扫的是 bytes 路径，名字也是 bytes：先按 fs 编码还原成 str
                     # （坏字节变成 surrogate），再由 _fs_name 转成能显示的中文
                     raw_name = os.fsdecode(e.name)
-                    name = _wire_name(raw_name)
+                    name = _emit(_fs_name(raw_name))
                     item = {"name": name, "dir": is_dir}
                     # 显示名可能是转码后的中文，点开/重命名用的仍是磁盘上的原名。
                     # 只有两者不同的时候才带上，正常目录不多占字段
