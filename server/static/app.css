@@ -3371,9 +3371,10 @@
     box-shadow: 0 6px 20px rgba(26, 159, 255, .25);
   }
   #toastChat.toast.err, #toastFile.toast.err { color: var(--danger); border-color: var(--danger); }
-  /* 文件面板的提示往下挪一屏：顶部 16px 太贴着工具栏，改成 80px（约 5 倍），
-     落在路径栏下方的列表区，不压工具栏、也离底部上传条很远。聊天区（#toastChat）不动 */
-  #toastFile.toast { top: 80px; }
+  /* 文件面板的提示放到底部上传条上方：以前放顶部（80px）会压住路径栏和
+     列表头一两行，删完文件正好挡住用户正在看的那条。底部 64px 正好在
+     #fbDropBar（44px 高 + 8px 外边距）上方，不挡列表内容也不挡上传条 */
+  #toastFile.toast { top: auto; bottom: 64px; }
   /* 文件面板内的确认气泡：替代原生 confirm()（游戏模式 WebView 里那种系统弹窗太突兀）。
      遮罩只在面板范围内，卡片居中显示 */
   .fb-confirm-mask {
