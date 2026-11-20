@@ -255,6 +255,17 @@ async def run_agent(events: list[dict], extra_system: str = "",
     streaming = False  # 是否已开始向用户流式输出正文
     # 本轮正文累积：流式回调里按节流频率落盘，进程被杀最多丢一小段
     stream_text: list[str] = []
+    # 本轮时间线的序号：思考 / 正文 / 工具 / 提问每出现一块就 +1，随广播带给前端。
+    # 前端按它排序插入，块之间的先后就不再依赖「消息到达顺序」——
+    # 断线重连、迟到的 tool_done、别的端补发的片段都可能乱序，
+    # 以前只能一股脑 append 到容器末尾，于是屏幕上出现「选项跑到回答上方」
+    # 这种明显不合理的排列
+    seq_no = 0
+
+    def _next_seq() -> int:
+        nonlocal seq_no
+        seq_no += 1
+        return seq_no
     # 上一轮被用户终止时做过、没做完的工具（见 _aborted_note）：终止就是「别干了」，
     # 不把这段交接说清楚，模型看到自己的话成了半截，下一句就会自作主张接着做
     aborted_note = m._aborted_note(hist)
@@ -306,7 +317,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
             # 模型开始写正式回答 = 不再操作桌面。若刚才那一步动屏的遮罩还亮着
             # （正常情况工具收尾就收掉了），这里再兜一次，把屏幕还给用户
             m.set_overlay(False)
-            await m.manager.broadcast({"type": "stream_start", "ts": time.time(), **m._turn_tag()})
+            await m.manager.broadcast({"type": "stream_start", "ts": time.time(),
+                                       "seq": _next_seq(), **m._turn_tag()})
         # 增量落盘（此函数是 async 的，前端不会感知到这点磁盘开销）
         # _stamp_parts 要遍历全部 events，先问一句要不要写，免得在节流命中的
         # 情况下白拼一遍字符串
@@ -355,8 +367,11 @@ async def run_agent(events: list[dict], extra_system: str = "",
             thought_open = True
             # 先切话题：正文字要排在思维链前面，不然顺序会乱
             m.flush_delta_now(turn_sid)
-            await m.manager.broadcast({"type": "thought_start", "ts": time.time(), **m._turn_tag()})
-            thought_ev = {"type": "thought", "text": ""}
+            _tsq = _next_seq()
+            await m.manager.broadcast({"type": "thought_start", "ts": time.time(),
+                                       "seq": _tsq, **m._turn_tag()})
+            # seq 一并落盘：刷新 / 重连后补渲染的那份 events 也要能排出先后
+            thought_ev = {"type": "thought", "text": "", "seq": _tsq}
             events.append(thought_ev)
             _rs.update({"started": True, "chars": 0, "segs": 0, "next": 500})
             devlog.log("reasoning.start", sid=turn_sid, round=round_no)
@@ -639,7 +654,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
                               else "重复调用已跳过")
                     loop_event = {"type": "tool", "name": name, "label": label,
                                   "summary": summary, "files": [], "denied": True,
-                                  "reason": f"{reason}（连续第 {repeats} 次）"}
+                                  "reason": f"{reason}（连续第 {repeats} 次）",
+                                  "seq": _next_seq()}
                     events.append(loop_event)
                     _persist_screen(force=True)
                     await m.manager.broadcast({"type": "tool_done", "event": loop_event,
@@ -679,8 +695,10 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         print(f"[DeckMeido][policy] 登记待授权意图 {ask_kind}"
                               f"（会话 {turn_sid}）", file=sys.stderr)
                     ask = {"question": q, "options": opts}
-                    events.append({"type": "ask", **ask})
+                    ask_seq = _next_seq()
+                    events.append({"type": "ask", "seq": ask_seq, **ask})
                     await m.manager.broadcast({"type": "ask", "ts": time.time(),
+                                               "seq": ask_seq,
                                                **ask, **m._turn_tag()})
                     return q or prompts.part("ask_empty")
 
@@ -694,7 +712,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     summary = tools.summarize_tool(name, args)
                     deny_event = {"type": "tool", "name": name, "label": label,
                                   "summary": summary, "files": [], "denied": True,
-                                  "reason": remote_risk.reason}
+                                  "reason": remote_risk.reason, "seq": _next_seq()}
                     events.append(deny_event)
                     await m.manager.broadcast({"type": "tool_done", "event": deny_event,
                                                "ts": time.time(), **m._turn_tag()})
@@ -715,7 +733,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     summary = tools.summarize_tool(name, args)
                     deny_event = {"type": "tool", "name": name, "label": label,
                                   "summary": summary, "files": [], "denied": True,
-                                  "reason": decision.reason}
+                                  "reason": decision.reason, "seq": _next_seq()}
                     events.append(deny_event)
                     await m.manager.broadcast({"type": "tool_done", "event": deny_event,
                                                "ts": time.time(), **m._turn_tag()})
@@ -754,7 +772,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     summary = tools.summarize_tool(name, args)
                     deny_event = {"type": "tool", "name": name, "label": label,
                                   "summary": summary, "files": [], "denied": True,
-                                  "reason": verdict.reason}
+                                  "reason": verdict.reason, "seq": _next_seq()}
                     events.append(deny_event)
                     await m.manager.broadcast({"type": "tool_done", "event": deny_event,
                                                "ts": time.time(), **m._turn_tag()})
@@ -900,8 +918,10 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         # 抓帧失败：接口层要把原因带到前端，不能让用户只看到
                         # 一行「已截屏」却一直没有画面
                         event["error"] = shot_state.get("error") or "未知原因"
+                event["seq"] = _next_seq()
                 events.append(event)
-                await m.manager.broadcast({"type": "tool_done", "event": event, "ts": time.time(), **m._turn_tag()})
+                await m.manager.broadcast({"type": "tool_done", "event": event,
+                                           "ts": time.time(), **m._turn_tag()})
                 _persist_screen()
                 # 工具结果前面统一加「[工具名] 」，这类元信息在请求最前面：
                 # 同一次调用无论正文多长，前缀都一样，DeepSeek 的前缀缓存才命中得上。

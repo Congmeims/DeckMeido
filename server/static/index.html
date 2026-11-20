@@ -3035,6 +3035,25 @@
   // 屏幕上只剩一句反问（分析被吞）。收尾用完即清
   var askPreBubble = null;
   var liveThought = null;  // 实时思维链卡片（.thought-body 元素）
+
+  // 按 seq 把块插进本轮时间线。后端给每个块（思考 / 正文 / 工具 / 提问）
+  // 发了同一轮内单调递增的 seq，这里据此找「第一个 seq 比我大的兄弟」，
+  // 插到它前面。以前一律 appendChild，顺序完全由「消息什么时候到」决定，
+  // 断线重连、迟到的 tool_done、别的端补发的片段都会把块插错位置，
+  // 屏幕上就出现「选项跑到回答上方」这种排列。
+  // 没带 seq（老版本后端）时退回追加，行为与改造前一致。
+  function appendOrdered(box, node, seq) {
+    node.dataset.seq = (seq === undefined || seq === null) ? '' : String(seq);
+    var incoming = (seq === undefined || seq === null) ? NaN : Number(seq);
+    if (!isFinite(incoming)) { box.appendChild(node); return null; }
+    var kids = box.children;
+    for (var i = 0; i < kids.length; i++) {
+      var s = Number(kids[i].dataset && kids[i].dataset.seq);
+      if (isFinite(s) && s > incoming) { box.insertBefore(node, kids[i]); return kids[i]; }
+    }
+    box.appendChild(node);
+    return null;
+  }
   // 思考链合帧缓冲：后端已按 40ms 合过一批，一帧里仍可能进来好几条，
   // 这里再合一次，重排次数从「每条一次」降到「每帧一次」
   var thoughtFlushQueued = false;
@@ -6500,7 +6519,7 @@
           }
           streamEl = makeTextBubble('', false);
           streamBody = streamEl.querySelector('.stream-body');
-          liveBox.appendChild(streamEl);
+          appendOrdered(liveBox, streamEl, msg.seq);
           scrollBottomIfFollow();
           break;
         case 'delta':
@@ -6561,7 +6580,7 @@
           tbd.className = 'tl-body';
           trow.tl.appendChild(tbd);
           trow.tl.classList.add('open');
-          liveBox.appendChild(trow.tl);
+          appendOrdered(liveBox, trow.tl, msg.seq);
           liveThought = tbd;
           scrollBottomIfFollow();
           break;
@@ -6601,7 +6620,13 @@
             if (_tlbl) _tlbl.textContent = '';
           }
           if (liveBox && msg.event) {
-            renderEvent(msg.event, liveBox);
+            // 先画到临时容器，再按 seq 挪进去：renderEvent 只会 append，
+            // 直接画到 liveBox 会绕过排序，迟到的工具块就落到正文下面去了
+            var tdoneTmp = document.createElement('div');
+            renderEvent(msg.event, tdoneTmp);
+            while (tdoneTmp.firstChild) {
+              appendOrdered(liveBox, tdoneTmp.firstChild, msg.seq);
+            }
             liveToolCount++;
             scrollBottomIfFollow();
           }
@@ -6704,6 +6729,7 @@
               // 注意用 finalBubble 而不是 streamEl —— 后者在上面的缓存收尾里已经置空
               var tailRef = (promoted && finalBubble && finalBubble.parentNode === liveBox)
                             ? finalBubble : null;
+              var evSeq = NaN;
               msg.events.forEach(function (e) {
                 if (e.type === 'text') return;
                 if (e.type === 'ask' && hasAsk) return;
@@ -6713,8 +6739,12 @@
                 // 再按顺序整体挪过去，多段思考/工具之间的相对顺序保持不变
                 var tmp = document.createElement('div');
                 renderEvent(e, tmp);
+                // events 里持久化的事件也带 seq（agent_engine 写入时就带上），
+                // 有它就按序号归位；老会话没有 seq 才退回「插在正文之前」
+                evSeq = (e.seq === undefined || e.seq === null) ? NaN : Number(e.seq);
                 while (tmp.firstChild) {
-                  if (tailRef) liveBox.insertBefore(tmp.firstChild, tailRef);
+                  if (isFinite(evSeq)) appendOrdered(liveBox, tmp.firstChild, evSeq);
+                  else if (tailRef) liveBox.insertBefore(tmp.firstChild, tailRef);
                   else liveBox.appendChild(tmp.firstChild);
                 }
               });
@@ -6724,8 +6754,25 @@
           }
           // 万一流式阶段正文之后又冒过一段思考（模型先说话、再补 reasoning），
           // 把最终正文挪回容器末尾：屏幕上永远是「思考在前、正文在后」
+          // 但不能一路挪到最底：提问的候选按钮在 case 'ask' 里挂在正文之后，
+          // 直接 appendChild 会把正文甩到选项下面，看起来就像「先给选项、再给回答」。
+          // 有 ask 卡片时，正文只挪到它前面（问题气泡 → 正文 → 选项）
+          // 块都带 seq 时不再靠「挪」来定序：appendOrdered 已经按序号排好，
+          // 再动一下反而会把正文挤出原位（老会话没 seq 才走原来的挪动逻辑）
+          var seqOrdered = true;
           if (promoted && finalBubble && finalBubble.parentNode === liveBox) {
-            liveBox.appendChild(finalBubble);
+            var liveKids = liveBox.children;
+            for (var lk = 0; lk < liveKids.length; lk++) {
+              var lkSeq = liveKids[lk].dataset && liveKids[lk].dataset.seq;
+              if (lkSeq === '' || lkSeq === undefined || !isFinite(Number(lkSeq))) {
+                seqOrdered = false; break;
+              }
+            }
+            if (!seqOrdered && liveBox.querySelector('.ask-card')) {
+              appendOrdered(liveBox, finalBubble, Number(finalBubble.dataset.seq));
+            } else if (!seqOrdered) {
+              liveBox.appendChild(finalBubble);
+            }
           }
           // dev_mode 埋点：统计本轮思考块实际渲染出来的字符数与段数。
           // 有实时容器就数 DOM（最接近用户看到的）；没有则按本次补渲染的 events 计
@@ -6789,8 +6836,17 @@
           }
           streamTextPend = '';
           streamEl = null; streamBody = null;
-          if (msg.question) liveBox.appendChild(makeTextBubble(msg.question, false));
-          liveBox.appendChild(makeAskCard(msg.question, msg.options));
+          // 问题气泡和候选卡片按 ask 的 seq 插，顺序由后端保证：
+          // 反问总在那一轮正文之后，不会因为正文收尾时被挪动而跑到选项下面
+          if (msg.question) {
+            var askHeadEl = makeTextBubble(msg.question, false);
+            appendOrdered(liveBox, askHeadEl, msg.seq);
+            // 同一块里的选项紧跟在问题气泡后面：给它一个略大的 seq，
+            // 这样别的迟到块也插不进这两者中间
+            askHeadEl.dataset.seq = isFinite(Number(msg.seq))
+              ? String(Number(msg.seq) + 0.5) : msg.seq;
+          }
+          appendOrdered(liveBox, makeAskCard(msg.question, msg.options), msg.seq);
           askShown++;   // 收尾时 events 里那条 ask 不再画第二遍
           scrollBottomIfFollow();
           break;
