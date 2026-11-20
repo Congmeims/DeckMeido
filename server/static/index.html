@@ -54,12 +54,16 @@
        y=14，比另外两栏矮，现在提成独立一条 -->
   <div class="sb-head">
     <!-- 收起按钮钉在屏幕最左端，与右栏 #rbToggle（最右端）互为镜像。
-         原来它在这行末尾，结果两个按钮都朝右，看着不是镜像 -->
+         原来它在这行末尾，结果两个按钮都朝右，看着不是镜像。
+         设置页里这颗被 #setClose 盖住同位置出现（见 app.css），
+         两页的「最左端按钮」就落在同一个像素上 -->
     <button id="sbToggle" class="side-toggle">◀</button>
+    <button id="setClose" hidden>◀</button>
     <!-- 设备名 / IP 双行：169px 窄栏里横排会重叠，改成两行纵排，
-         IP 后带端口（:18765）让用户一眼看到服务地址 -->
+         IP 后带端口（:18765）让用户一眼看到服务地址。
+         设置页里 IP 行收起、设备名换成「设置」标题 -->
     <div class="sys-meta">
-      <span class="sys-title"><span id="sysHost">Steam Deck</span></span>
+      <span class="sys-title"><span id="sysHost">Steam Deck</span><span class="set-label">设置</span></span>
       <span class="sys-ip" id="sysIp">–</span>
     </div>
   </div>
@@ -98,9 +102,9 @@
   <div class="sb-sess-head"><span>会话</span><button id="btnNewSess">＋</button></div>
   <div id="sessList"></div>
   </div>
-  <!-- 设置模式下的左栏：会话区整块换成设置分区导航，logo / 版本 / 底部按钮都保留 -->
+  <!-- 设置模式下的左栏：会话区整块换成设置分区导航，logo / 版本 / 底部按钮都保留。
+       顶部的「返回」在 .sb-head 里（与对话页的 ◀ 同一个位置） -->
   <div class="sb-set-block">
-    <div class="sb-sess-head"><span>设置</span><button id="setClose">返回</button></div>
     <div id="setNav"></div>
   </div>
   <div class="sb-brand" id="brandLogo" role="button" tabindex="-1">

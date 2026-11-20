@@ -1401,6 +1401,26 @@
      就是对话页那一模一样的一条 */
   .sb-set-block { display: none; flex-direction: column; min-height: 0; }
   body.settings-mode .sb-set-block { display: flex; flex: 1; }
+  /* 「设置」页的分区导航直接接在顶栏下面：顶部那颗「返回」就在 .sb-head 里，
+     与对话页的 ◀ 同一个位置，两页切换时按钮不跳 */
+  body.settings-mode .sb-head #sbToggle { display: none; }
+  body.settings-mode .sb-head #setClose { display: inline-flex; }
+  body.settings-mode .sb-head .sys-meta > .sys-ip { display: none; }
+  body.settings-mode .sb-head .sys-title #sysHost { display: none; }
+  body.settings-mode .sb-head .sys-title .set-label { display: inline; }
+  .sb-head .sys-title .set-label, #setClose { display: none; }
+  /* 上面那条 padding:0 是为会话区 .sb-body 写的，会一并把 .sb-head 的左右 8px
+     清掉——那正是「返回」比对话页 ◀ 靠左 8px 的原因。这里还原回来 */
+  body.settings-mode:not(.sb-collapsed) .sb-head { padding: 0 8px; }
+  /* 「返回」就是收起态那颗 ◀：同尺寸同圆角，贴在最左端 */
+  #setClose {
+    flex: 0 0 auto;
+    width: 26px; height: 26px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--line); background: var(--surface-2); color: var(--muted);
+    border-radius: 8px; cursor: pointer; font-size: 11px; line-height: 1;
+  }
+  #setClose:hover { background: var(--hover); color: var(--text); }
   #setNav { flex: 1; overflow-y: auto; padding: 4px 8px 8px; }
   /* 分区导航复用会话条目的观感（同宽、同圆角、同字号），一眼就是同一条侧栏 */
   .set-tab {
@@ -1412,12 +1432,8 @@
   }
   .set-tab:hover { background: var(--hover); }
   .set-tab.on { background: var(--surface-2); font-weight: 600; }
-  /* 「返回」和会话区的「＋」同一块砖，只换宽度装得下两个字 */
-  #setClose {
-    min-width: 24px; height: 24px; padding: 0 8px;
-    border: 1px solid var(--line); background: var(--surface-2); color: var(--text);
-    border-radius: 7px; cursor: pointer; font-size: 12px; line-height: 1;
-  }
+  /* 「返回」和会话区的「＋」同一块砖，只换宽度装得下两个字。
+     尺寸/位置统一在上面 45px 那条里定义，这里只管悬停反馈 */
   #setClose:hover { border-color: var(--brand); color: var(--brand); }
   #settingsPanel { display: none; flex: 1; min-height: 0; flex-direction: column; }
   body.settings-mode #settingsPanel { display: flex; }
@@ -2506,13 +2522,34 @@
   html.wall-on body { background: transparent; }
   /* 半透明面板：只在这几块主结构上开，弹窗/菜单/卡片保持不透明——
      菜单半透会让文字和背后的消息糊在一起。backdrop-filter 让背后的壁纸
-     虚化，既透出氛围又不影响读字 */
+     虚化，既透出氛围又不影响读字。
+     中间对话区没有气泡的裸字（思考链、时间线、系统提示、进度小字）也直接
+     压在壁纸上，所以对话栏本身铺一层很淡的雾面，字才有底——不铺的话
+     亮色壁纸配 --muted 灰字基本读不出来 */
   html.wall-on header,
   html.wall-on #sidebar,
   html.wall-on #sbRail,
-  html.wall-on #composer {
+  html.wall-on #composer,
+  html.wall-on #chatView {
     background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
     backdrop-filter: blur(14px) saturate(1.1);
+  }
+  /* 设置页：卡片、输入框、分区标题都有自己的底色，本来不需要这层雾；
+     但 body 让位给壁纸后，设置页整块直接压在图上——卡片之间的空隙、
+     卡片本身（--surface 无色时会透）都跟着露壁纸，分区标题的 8% 品牌底
+     更是彻底透明，字浮在图上。这里给设置页铺一层比对话区更实的底，
+     保证「设置页里的一切都是实色」 */
+  html.wall-on #settingsPanel {
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+  }
+  /* 分区标题（左侧蓝条那种小标题）：品牌色底在壁纸上会淡成透明，
+     叠一层同色相的实色底，保证在任何壁纸上都能读 */
+  html.wall-on .set-sect {
+    background: color-mix(in srgb, var(--brand) 16%, var(--surface));
+  }
+  /* 对话栏这层雾要比侧栏更淡：太实会把壁纸的构图整块切掉 */
+  html.wall-on #chatView {
+    background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 42%), transparent);
   }
   /* ---- 设置页「外观」分区 ---- */
   .wall-preview {
@@ -2538,6 +2575,24 @@
     background: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
     backdrop-filter: blur(10px);
   }
+  /* 壁纸下没有气泡兜底的那几类字：
+     - 灰色小字（思考链标题、时间线正文、进度提示、系统提示）统一加深一档，
+       --muted 在亮色壁纸上几乎看不见；
+     - 带 --surface-2 底的块（思考气泡、时间线正文、轮内过渡正文）换成实底，
+       原来跟着面板半透明，思考内容叠在壁纸上几乎读不出来 */
+  html.wall-on { --muted: color-mix(in srgb, var(--text) 72%, var(--surface)); }
+  html.wall-on .tl-body,
+  html.wall-on .events .msg.in-turn {
+    background: color-mix(in srgb, var(--surface-2) 92%, var(--surface));
+  }
+  /* 思考气泡要比普通消息再实一点、深一点：深浅两档的「加深」方向相反——
+     深色主题往黑里压，浅色主题往灰里压，不能用同一个混色方向 */
+  html.wall-on { --think-bg: color-mix(in srgb, var(--surface-2) 70%, #000); }
+  [data-theme=light] { --think-bg: color-mix(in srgb, var(--surface-2) 62%, #6b7385); }
+  html.wall-on .tl-body { background: var(--think-bg); }
+  /* 思考气泡里的推理正文：比灰字再亮一点，长段文字才不吃力 */
+  html.wall-on .tl-body { color: color-mix(in srgb, var(--text) 86%, var(--surface)); }
+  [data-theme=light] html.wall-on .tl-body { color: color-mix(in srgb, var(--text) 92%, #000); }
   [data-theme=light] {
     /* 对话区底色用纯白，助手气泡的浅灰才拉得开层次（原来是 #f2f4f8，灰得几乎同色） */
     --bg: #ffffff;
