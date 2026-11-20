@@ -7551,7 +7551,7 @@
     pairWait.hidden = true;
     pinRow.hidden = false;
     pairConfirm.hidden = false;
-    pairSync();
+    pinSync();
     pairMsg.textContent = pinValue().length === 4 ? '' : '已允许，请输入 Deck 上显示的 4 位 PIN';
     pinDigits[0].focus();
     maybeAutoSubmit();
@@ -7693,7 +7693,7 @@
       .catch(function () {
         pairBusy = false;
         pairMsg.textContent = '连不上服务，请稍后重试';
-        pairSync();
+        pinSync();
       });
   }
 
@@ -14780,42 +14780,6 @@
     // 落点在文件面板 → 递归上传到面板当前目录；否则作为聊天附件
     if (toFb) fbUploadDataTransfer(e.dataTransfer);
     else if (files && files.length) uploadFiles(files);
-  });
-
-  // 引用工作区文件：@{路径}（由右侧文件面板触发）
-  document.getElementById('pmFile').addEventListener('click', function (e) {
-    e.stopPropagation();
-    apiFetch('/api/files')
-      .then(function (r) { return r.json(); })
-      .then(function (res) {
-        fileList.innerHTML = '';
-        if (!res.files.length) {
-          fileList.innerHTML = '<button disabled style="color:var(--muted)">（工作区还没有文件）</button>';
-        }
-        res.files.forEach(function (f) {
-          var b = document.createElement('button');
-          b.textContent = f;
-          b.addEventListener('click', function () {
-            // 与文件面板「引用到对话」一致：进附件胶囊，不往输入框塞裸文本
-            pendingAttach.push({ mark: '@{' + f + '}', name: f.split('/').pop(), kind: 'file', url: '' });
-            renderAttach();
-            fileList.classList.remove('show');
-            input.focus();
-          });
-          fileList.appendChild(b);
-        });
-        fileList.classList.add('show');
-      })
-      .catch(function () { addSystem('读取工作区失败'); });
-  });
-
-  // 引用当前屏幕截图
-  document.getElementById('pmShot').addEventListener('click', function () {
-    if (ws && ws.readyState === 1 && !busy) {
-      ws.send(JSON.stringify({ type: 'chat', text: '截屏，把当前桌面画面展示给我',
-                               client: myClient(), device: DEVICE_ID }));
-      setBusy(true);
-    }
   });
 
   // ---------- 自定义圆角下拉（ddSelect） ----------

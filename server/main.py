@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.routing import WebSocketRoute
 
 from .llm import LLMClient
@@ -2436,6 +2437,11 @@ async def build_status_line(state: str = "", game: str = "",
 # ---------- API ----------
 
 app = FastAPI(title="DeckMeido")
+
+# 文本资源压缩：index.html 单文件 700KB、app.css 200KB，局域网首次加载
+# 不压缩要全量传输。只在客户端声明 gzip 且响应超过 1KB 时生效，
+# WebSocket 与图片/上传等二进制流不走这里，已压缩格式也由中间件自动跳过。
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # 分包路由：在 app 创建后注入 main 的鉴权闸门与 _client_ip，再挂载
 routes_logs.init(require_auth, _client_ip)
