@@ -1008,6 +1008,27 @@
                 转码失败、NapCat 拒收时一律自动改发文字，不会既没语音也没文字。
               </div>
             </div>
+            <div class="qq-group">
+              <div class="qq-group-head">
+                <div class="qq-group-title">断线重连</div>
+              </div>
+              <div class="qq-num-grid">
+                <div class="field">
+                  <label>最小间隔（秒，reconnect_min）</label>
+                  <input id="cfgQqReconnMin" type="number" min="0.5" max="600" step="0.5"
+                         value="1" spellcheck="false">
+                </div>
+                <div class="field">
+                  <label>最大间隔（秒，reconnect_max）</label>
+                  <input id="cfgQqReconnMax" type="number" min="0.5" max="600" step="0.5"
+                         value="60" spellcheck="false">
+                </div>
+              </div>
+              <div class="field-hint">
+                断开后按指数退避重连：从最小间隔起逐次翻倍，封顶到最大间隔。
+                改完保存即生效，正在等待的那一次重连不受影响。
+              </div>
+            </div>
             <div class="qq-group qq-image-group">
               <div class="qq-group-head">
                 <div class="qq-group-title">收图 / 存图<span class="qq-key">allow_image</span></div>
@@ -9671,6 +9692,8 @@
   var cfgQqVoiceOnly = document.getElementById('cfgQqVoiceOnly');
   var cfgQqVoiceSeconds = document.getElementById('cfgQqVoiceSeconds');
   var cfgQqVoiceKb = document.getElementById('cfgQqVoiceKb');
+  var cfgQqReconnMin = document.getElementById('cfgQqReconnMin');
+  var cfgQqReconnMax = document.getElementById('cfgQqReconnMax');
   // QQ 会话头部的状态灯 + 快捷面板（与上面这些设置页控件共用同一份后端配置）
   var qqSessWrap = document.getElementById('qqSessWrap');
   var qqSessBtn = document.getElementById('qqSessBtn');
@@ -12787,6 +12810,10 @@
         c.voice_max_seconds != null ? c.voice_max_seconds : 60;
       if (cfgQqVoiceKb) cfgQqVoiceKb.value =
         c.voice_max_kb != null ? c.voice_max_kb : 4096;
+      if (cfgQqReconnMin) cfgQqReconnMin.value =
+        c.reconnect_min != null ? c.reconnect_min : 1;
+      if (cfgQqReconnMax) cfgQqReconnMax.value =
+        c.reconnect_max != null ? c.reconnect_max : 60;
       // 群友提示词：默认原文原样回填（{name} 不预先替换）。
       // 配置里存空串表示「用内置默认」，这里直接把后端下发的默认原文摆进
       // 输入框，首次打开看到的就是实际会生效的内容，而不是一个空框
@@ -12909,6 +12936,10 @@
           res.config.voice_max_seconds != null ? res.config.voice_max_seconds : 60;
         if (cfgQqVoiceKb) cfgQqVoiceKb.value =
           res.config.voice_max_kb != null ? res.config.voice_max_kb : 4096;
+        if (cfgQqReconnMin) cfgQqReconnMin.value =
+          res.config.reconnect_min != null ? res.config.reconnect_min : 1;
+        if (cfgQqReconnMax) cfgQqReconnMax.value =
+          res.config.reconnect_max != null ? res.config.reconnect_max : 60;
       }
       var autoNow = !!(res && res.config && res.config.auto_connect);
       var autoChanged = autoNow !== qqAutoSaved;
@@ -12990,6 +13021,57 @@
       void pushQqVoice({ voice_only: !!qsVoiceOnly.checked });
     });
   }
+
+  // 设置页的语音开关 / 数值框：以前只有点「连接」「重新连接」才会顺带保存，
+  // 改完开关不点连接就什么都没写进去，看着像“保存不生效”。现在改完即时落库，
+  // 走的是和顶栏面板同一个接口（只发语音这几个字段，不覆盖其它未保存的表单）
+  function saveQqVoiceField(patch) {
+    return memFetch('/api/qq/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    }).then(function (res) {
+      if (!res || !res.config) throw new Error('保存失败');
+      // 以服务端归一后的值为准回填（例如时长超界被拒时还原）
+      applyQqVoiceConfig(res.config);
+      if (cfgQqVoiceSeconds) cfgQqVoiceSeconds.value = res.config.voice_max_seconds;
+      if (cfgQqVoiceKb) cfgQqVoiceKb.value = res.config.voice_max_kb;
+      if (cfgQqReconnMin) cfgQqReconnMin.value = res.config.reconnect_min;
+      if (cfgQqReconnMax) cfgQqReconnMax.value = res.config.reconnect_max;
+      if (qqHint) qqHint.textContent = '语音设置已保存';
+      return res;
+    }).catch(function (err) {
+      var msg = (err && err.message) || '';
+      if (qqHint) qqHint.textContent = '语音设置保存失败：' + (msg || '未知错误');
+      // 失败时按服务端现有值回滚，别让界面显示成“已改”
+      return loadQqConfig();
+    });
+  }
+  [[cfgQqVoice, 'voice_reply'], [cfgQqVoiceMembers, 'voice_group_members'],
+   [cfgQqVoiceOnly, 'voice_only']].forEach(function (pair) {
+    var el = pair[0];
+    if (!el) return;
+    el.addEventListener('change', function () {
+      var patch = {};
+      patch[pair[1]] = !!el.checked;
+      void saveQqVoiceField(patch);
+    });
+  });
+  // 数值框：change 只在失焦/回车时触发，不会每敲一个数字就发一次请求。
+  // 两个重连参数要成对提交，否则后端单看一项没法判断“最小 > 最大”
+  function saveQqNumericFields() {
+    var patch = {
+      voice_max_seconds: qqNum(cfgQqVoiceSeconds, 60),
+      voice_max_kb: qqNum(cfgQqVoiceKb, 4096),
+      reconnect_min: qqNum(cfgQqReconnMin, 1),
+      reconnect_max: qqNum(cfgQqReconnMax, 60)
+    };
+    void saveQqVoiceField(patch);
+  }
+  [cfgQqVoiceSeconds, cfgQqVoiceKb, cfgQqReconnMin, cfgQqReconnMax]
+    .forEach(function (el) {
+      if (el) el.addEventListener('change', saveQqNumericFields);
+    });
   if (qsConnBtn) {
     qsConnBtn.addEventListener('click', function () {
       var connected = qqSessState === 'connected'

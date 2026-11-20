@@ -372,6 +372,8 @@ ADVANCED_FIELDS = (
     "max_reply_chunks", "redact_words", "redact_mask",
     "voice_reply", "voice_group_members", "voice_only",
     "voice_max_seconds", "voice_max_kb",
+    # 断线重连退避：改完下一次断开就按新值走（configure 会重建 Backoff）
+    "reconnect_min", "reconnect_max",
 )
 RATE_LIMIT_MAX = 600                    # 条/分钟上限
 GROUP_MEMO_SIZE_MAX = 100               # 每群保留条数上限
@@ -387,6 +389,8 @@ VOICE_SECONDS_MIN = 1.0
 VOICE_SECONDS_MAX = 600.0
 VOICE_KB_MIN = 64
 VOICE_KB_MAX = 20480
+RECONNECT_SECONDS_MIN = 0.5
+RECONNECT_SECONDS_MAX = 600.0
 
 
 def normalize_advanced(raw: dict) -> tuple[dict, str | None]:
@@ -448,6 +452,23 @@ def normalize_advanced(raw: dict) -> tuple[dict, str | None]:
             return {}, (f"语音时长上限需在 {VOICE_SECONDS_MIN:g}~"
                         f"{VOICE_SECONDS_MAX:g} 秒之间（当前 {seconds:g}）")
         out["voice_max_seconds"] = seconds
+    # 重连退避两个值要成对看：最小间隔不能大于最大间隔，否则 Backoff 直接卡在
+    # 一个别扭的区间里。这里先全量算出来再一起校验
+    for key, label in (("reconnect_min", "重连最小间隔"),
+                       ("reconnect_max", "重连最大间隔")):
+        if key not in raw:
+            continue
+        try:
+            val = float(raw[key])
+        except (TypeError, ValueError):
+            return {}, f"{label}必须是数字（秒）"
+        if val < RECONNECT_SECONDS_MIN or val > RECONNECT_SECONDS_MAX:
+            return {}, (f"{label}需在 {RECONNECT_SECONDS_MIN:g}~"
+                        f"{RECONNECT_SECONDS_MAX:g} 秒之间（当前 {val:g}）")
+        out[key] = val
+    if "reconnect_min" in out and "reconnect_max" in out \
+            and out["reconnect_min"] > out["reconnect_max"]:
+        return {}, "重连最小间隔不能大于最大间隔"
     if "redact_words" in raw:
         value = raw["redact_words"]
         text = value if isinstance(value, str) else "\n".join(str(v) for v in (value or []))

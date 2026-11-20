@@ -88,6 +88,9 @@ class OneBotConfigUpdate(BaseModel):
     voice_only: bool | None = None
     voice_max_seconds: float | None = None
     voice_max_kb: int | None = None
+    # 断线重连退避（秒）：最小/最大间隔，保存后下一次断开即按新值退避
+    reconnect_min: float | None = None
+    reconnect_max: float | None = None
 
 
 class VoicePlayRequest(BaseModel):
@@ -473,6 +476,9 @@ def _qq_public_config() -> dict:
         "voice_only": cfg.voice_only,
         "voice_max_seconds": cfg.voice_max_seconds,
         "voice_max_kb": cfg.voice_max_kb,
+        # 重连退避：设置页可改，保存后下一次断开即生效
+        "reconnect_min": cfg.reconnect_min,
+        "reconnect_max": cfg.reconnect_max,
         "confirm_timeout": cfg.confirm_timeout,
         "prefix": onebot.prefix_for(_qq_nickname()),
     }
