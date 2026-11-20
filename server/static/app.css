@@ -448,6 +448,11 @@
   }
   .msg ul, .md-doc ul { padding-left: 20px; margin: 4px 0; }
   .msg a, .md-doc a { color: var(--brand); }
+  /* 文件预览里的 Markdown 走的也是 renderMd：图片按容器宽度收 */
+  .md-doc img.chat-img {
+    display: block; max-width: 100%; height: auto; margin: 8px 0;
+    border-radius: 8px; cursor: zoom-in;
+  }
 
   /* 操作流水（Trae 式时间线：思考 / 工具调用 / 文件改动） */
   .events {
@@ -899,7 +904,15 @@
     resize: none;
     outline: none;
   }
-  .msg img.chat-img { display: block; max-width: 100%; border-radius: 8px; margin: 6px 0; }
+  /* 正文里的图片（上传图 / 工作区图 / AI 给的网图）：宽度跟气泡走，
+     纵向超长的图由脚本按 40vh 收一次，点开看原图 */
+  .msg img.chat-img {
+    display: block; max-width: 100%; height: auto; border-radius: 8px; margin: 6px 0;
+    border: 1px solid rgba(255, 255, 255, .12); cursor: zoom-in;
+  }
+  [data-theme=light] .msg img.chat-img { border-color: rgba(16, 24, 40, .12); }
+  .msg img.chat-img-gone { margin: 6px 0; }
+  .msg img.chat-img-gone a { color: var(--brand); text-decoration: underline; }
   /* 生成文件的气泡卡片：图标 + 文件名 + 大小，右侧独立下载按钮 */
   .file-card {
     display: flex; align-items: center; gap: 10px;

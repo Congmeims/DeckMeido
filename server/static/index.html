@@ -1832,6 +1832,17 @@
     return s;
   }
 
+  // 正文里的图片标签。本机图（/uploads/、/files/）要带设备令牌才能取；
+  // 网图只放行 http(s)，挡掉 javascript:/data: 这类地址（alt 也一起转义，防注入）。
+  // 拿不到可用的地址就退回原来的 alt 文字，别在气泡里留个破图标
+  function imgHtml(alt, src) {
+    var href = String(src || '');
+    var local = href.indexOf('/uploads/') === 0 || href.indexOf('/files/') === 0;
+    if (!local && !/^https?:\/\//i.test(href)) return escapeHtml(alt || '');
+    return '<img class="chat-img" alt="' + escapeHtml(alt || '') + '" loading="lazy"'
+         + ' src="' + escapeHtml(local ? deviceTokenQuery(href) : href) + '">';
+  }
+
   function renderMd(t) {
     var s = escapeHtml(t);
     var stash = [];
@@ -1843,16 +1854,26 @@
     s = s.replace(/`([^`\n]+)`/g, function (m, c) {
       return mdHold(stash, 'c', '<code>' + c + '</code>');
     });
-    // 3) 单元格里允许粗体 / 链接 / 文件卡片：先做行内替换，再切表格
+    // 3) 单元格里允许粗体 / 链接 / 文件卡片 / 图片：先做行内替换，再切表格。
+    //    图片一定要在链接之前：![a](u) 里的 [a](u) 部分会被链接规则先吃掉，
+    //    行内图片就只剩一个孤零零的感叹号了
+    s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, function (m, alt, href) {
+      return imgHtml(alt, href);
+    });
     s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
-    s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    // 前面带 ! 的交给上面的图片规则，这里不能碰
+    s = s.replace(/(^|[^!])\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+                  '$1<a href="$3" target="_blank" rel="noopener">$2</a>');
     // 工作区里的文件：渲染成下载卡片（必须在普通链接替换之后，否则先被吃掉）
     s = s.replace(/\[([^\]\n]*)\]\((\/files\/[^)\s]+)\)/g, function (m, label, href) {
       return fileCardHtml(label, href.slice('/files/'.length).split('?')[0]);
     });
-    s = s.replace(/!\[([^\]]*)\]\((\/uploads\/[^)\s]+)\)/g, function (m, alt, href) {
-      // 上传的图在 /uploads/ 下，鉴权由设备令牌（查询参数）完成
-      return '<img class="chat-img" alt="' + alt + '" src="' + deviceTokenQuery(href) + '">';
+    // 图片：行内 ![alt](地址)。
+    // 地址三种来源：/uploads/ 与 /files/ 是本机的（要带设备令牌），其余只接受
+    // http(s)（AI 给的网图）。以前只认整行的 /uploads/，AI 回复里的仓库截图、
+    // 图床链接全都退化成一条裸链接
+    s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, function (m, alt, href) {
+      return imgHtml(alt, href);
     });
     // 4) 表格（此时代码块已经抽走，不会被误判）
     s = mdTables(s, stash);
@@ -1876,19 +1897,51 @@
     return mdRestore(s, stash);
   }
 
-  // 正文里的上传图可能永远加载不出来：上传没落盘、文件被清理、浏览器不认这个格式。
-  // innerHTML 里挂不了 onerror，所以渲染完统一扫一遍：加载失败就换成一句说明，
-  // 别给用户留一个空白破图标（「传了却看不到图」最让人迷惑的就是这种）
+  // 正文里的图片可能永远加载不出来：上传没落盘、文件被清理、浏览器不认这个格式，
+  // 或者 AI 给的网图失效/防盗链。innerHTML 里挂不了 onerror，所以渲染完统一扫一遍：
+  // 加载失败就换成一句说明（网图另给一个「打开原图」链接），别留空白破图标。
+  // 加载成功的点一下看原图，顺手把解码后的尺寸按比例收进气泡，竖向长图不会顶穿屏幕
   function wireChatImages(root) {
     if (!root || !root.querySelectorAll) return;
     root.querySelectorAll('img.chat-img').forEach(function (img) {
       if (img.dataset.wired) return;
       img.dataset.wired = '1';
       img.addEventListener('error', function () {
+        var src = img.currentSrc || img.src || '';
+        // 带令牌的只可能是本机图（/uploads/、/files/），其余是 AI 给的网图
+        var gone = src.indexOf('token=') >= 0;
         var ph = document.createElement('div');
         ph.className = 'chat-img-gone';
-        ph.textContent = '（这张图片没能加载：文件可能已被清理，或格式浏览器不支持，可以重新发一次）';
+        ph.textContent = gone
+          ? '（这张图片没能加载：文件可能已被清理，或格式浏览器不支持，可以重新发一次）'
+          : '（这张图片没能加载：链接可能已失效，或对方网站不允许外链）';
+        // 网图失效时留一条出路：原链接还能不能打开由用户自己判断
+        if (!gone && /^https?:/i.test(src)) {
+          var a = document.createElement('a');
+          a.href = src; a.target = '_blank'; a.rel = 'noopener';
+          a.textContent = '打开原图';
+          ph.appendChild(document.createTextNode(' '));
+          ph.appendChild(a);
+        }
         if (img.parentNode) img.parentNode.replaceChild(ph, img);
+      });
+      img.addEventListener('load', function () {
+        img.classList.add('ok');
+        var w = img.naturalWidth, h = img.naturalHeight;
+        // 超长的竖图按显示宽度算一下真实高度，超出 40vh 就整体缩到 40vh
+        if (w > 0 && h > 0 && img.clientWidth > 0) {
+          var shown = img.clientWidth * h / w;
+          var cap = Math.round(window.innerHeight * 0.4);
+          if (shown > cap) {
+            img.style.width = Math.round(img.clientWidth * cap / shown) + 'px';
+            img.style.height = cap + 'px';
+          }
+        }
+        // 图片把内容撑高后，原本贴着底部的对话要继续贴着底部
+        scrollBottomIfFollow();
+      }, { once: true });
+      img.addEventListener('click', function () {
+        openShotViewer(img.currentSrc || img.src);
       });
       // 已经加载失败的图（缓存里直接失败）不会再触发 error，这里补一次判定
       if (img.complete && img.naturalWidth === 0) img.dispatchEvent(new Event('error'));
@@ -3533,6 +3586,7 @@
         // 而不是把源码原样塞进 <pre>
         body.classList.add('md');
         body.innerHTML = '<div class="md-doc">' + renderMd(d.text || '（空文件）') + '</div>';
+        wireChatImages(body);
       } else if (d.kind === 'image') {
         el = document.createElement('img');
         el.src = url;
