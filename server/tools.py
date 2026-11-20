@@ -42,14 +42,12 @@ MUSIC_ACTIONS = ("next", "previous", "pause", "play", "stop",
 # ---------- 工具中文名（界面提示统一用中文，不暴露内部函数名） ----------
 
 TOOL_CN: dict[str, str] = {
-    "get_weather": "查询天气",
     "web_search": "联网搜索",
     "list_installed_games": "查看游戏库",
     "find_game": "搜索商店游戏",
     "check_system_updates": "检查系统更新",
     "task_status": "查看任务进度",
     "install_game": "安装游戏",
-    "list_emulator_roms": "扫描模拟器游戏",
     "run_command": "执行命令",
     "desktop": "操作桌面",
     "screenshot": "截取屏幕",
@@ -61,7 +59,6 @@ TOOL_CN: dict[str, str] = {
     "self_update": "更新软件",
     "remember": "记住这件事",
     "ask_user": "向你提问",
-    "music_search": "搜索歌曲",
     "music_play": "点歌播放",
     "music_control": "控制播放",
 }
@@ -78,22 +75,8 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "get_weather",
-            "description": "查询指定城市的当前天气",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "city": {"type": "string", "description": "城市名，如 上海、北京、Tokyo"},
-                },
-                "required": ["city"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "web_search",
-            "description": "搜索互联网，获取实时信息、新闻、攻略等",
+            "description": "搜索互联网，获取实时信息、新闻、天气、攻略等",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -160,19 +143,6 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "list_emulator_roms",
-            "description": "扫描本机模拟器 ROM 游戏目录（EmuDeck 标准结构 ~/Emulation/roms 等），按机型统计数量。可指定机型过滤，如 switch",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "system": {"type": "string", "description": "可选，机型目录名，如 switch、ps2、gba"},
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "run_command",
             "description": f"在设备上执行 bash 命令（通用能力：文件/进程/桌面操作 xdotool/截屏/软件管理等）。环境：SteamOS、桌面模式为 KDE Plasma Wayland（Xwayland 在 DISPLAY=:0）、家目录 {Path.home()}。避免交互式参数。启动浏览器/播放器/游戏这类常驻程序直接写命令即可，系统会自动判定已拉起并返回，不用加 nohup 或 &；需要拿到输出的命令才会等待执行完成。需要 sudo 时直接写 sudo 命令：系统会走 SUDO_ASKPASS 授权通道，没有可用授权时只提示一次并打开授权入口，绝对不要在命令里内联密码（不要写 echo 密码 | sudo -S）",
             "parameters": {
@@ -195,9 +165,9 @@ TOOLS: list[dict] = [
                             "click 在屏幕坐标处左键单击；move 移动光标（分段平滑滑过去，"
                             "连续调几次 move 就能让光标沿着一串点走，画形状时按几十像素的间隔取点）；"
                             "scroll 在 (x,y) 处滚动（dx 正数向右、dy 正数向下，一格约 120）；"
+                            "带 pixels=true 时 dx/dy 改按屏幕像素算（内部换算成滚轮格数）——"
+                            "steam 界面、浏览器等横向翻页用它；"
                             "drag 从 (x,y) 按住左键拖到 (x2,y2)，中间自动插值，可用来拖滑块/拖文件/拖选中；"
-                            "swipe 模拟触摸板滑动（dx/dy 填屏幕像素，内部按步换算成滚轮格数）——"
-                            "steam 界面、浏览器等横向翻页用它，纵向滚动用 scroll 更精确；"
                             "type 在当前窗口打字（中英文都支持）；"
                             "where 查光标和焦点窗口。"
                             "坐标从 screenshot 画面上读，左上角为 0,0。"
@@ -207,15 +177,16 @@ TOOLS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "action": {"type": "string",
-                               "enum": ["focus", "click", "move", "scroll", "drag", "swipe", "type", "where"],
+                               "enum": ["focus", "click", "move", "scroll", "drag", "type", "where"],
                                "description": "要做的动作"},
                     "target": {"type": "string", "description": "focus 时填窗口标题关键词（如 Kazumi）"},
-                    "x": {"type": "integer", "description": "click/move/scroll 的起点、drag/swipe 的起点的屏幕横坐标"},
-                    "y": {"type": "integer", "description": "click/move/scroll 的起点、drag/swipe 的起点的屏幕纵坐标"},
+                    "x": {"type": "integer", "description": "click/move/scroll 的起点、drag 的起点的屏幕横坐标"},
+                    "y": {"type": "integer", "description": "click/move/scroll 的起点、drag 的起点的屏幕纵坐标"},
                     "x2": {"type": "integer", "description": "drag 的终点横坐标"},
                     "y2": {"type": "integer", "description": "drag 的终点纵坐标"},
-                    "dx": {"type": "integer", "description": "scroll 的横向格数（正右负左）；swipe 的横向像素（正右负左）"},
-                    "dy": {"type": "integer", "description": "scroll 的纵向格数（正下负上）；swipe 的纵向像素（正下负上）"},
+                    "dx": {"type": "integer", "description": "scroll 的横向量（正右负左，默认按格；pixels=true 时按像素）"},
+                    "dy": {"type": "integer", "description": "scroll 的纵向量（正下负上，默认按格；pixels=true 时按像素）"},
+                    "pixels": {"type": "boolean", "description": "scroll 专用，默认 false；true 表示 dx/dy 是屏幕像素"},
                     "text": {"type": "string", "description": "type 时要输入的文本，中英文均可（走 KDE 剪贴板粘贴）"},
                 },
                 "required": ["action"],
@@ -377,27 +348,11 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "music_search",
-            "description": ("在 Decky Music 曲库里搜歌（只搜不放），返回歌名与歌手。"
-                            "用户提到具体的歌名/歌手、但你拿不准是哪一首时先用它确认；"
-                            "只想放歌就直接用 music_play"),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "keyword": {"type": "string", "description": "歌名、歌手或「歌手 歌名」，2~30 个字"},
-                    "limit": {"type": "integer", "description": "最多列几首，默认 5，最大 10"},
-                },
-                "required": ["keyword"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "music_play",
             "description": ("点歌并立即播放：在 Decky Music 曲库搜「歌名 / 歌手 / 歌手 歌名」，"
                             "匹配到就开播并回读确认，用户听到的就是这首。"
                             "用户说「放首歌」「来点周杰伦」「播放稻香」时用它，不要用 run_command 调播放器。"
+                            "只想确认是哪一首、先别放：带上 dry_run=true，只返回候选列表。"
                             "结果说「是 XXX 吗」表示有多个相近候选：把这句话原样问用户，"
                             "用户点头后再调一次并把 confirm 设为 false"),
             "parameters": {
@@ -406,6 +361,10 @@ TOOLS: list[dict] = [
                     "query": {"type": "string", "description": "歌名、歌手或「歌手 歌名」"},
                     "confirm": {"type": "boolean",
                                 "description": "默认 true；上一次返回「是 XXX 吗」且用户确认后，这一次传 false"},
+                    "dry_run": {"type": "boolean",
+                                "description": "默认 false；true 表示只搜索、不播放，返回候选歌名与歌手"},
+                    "limit": {"type": "integer",
+                              "description": "只与 dry_run 搭配，候选最多列几首，默认 5，最大 10"},
                 },
                 "required": ["query"],
             },
@@ -462,7 +421,7 @@ def pointer_action(name: str, args: dict) -> bool:
 
 
 # desktop 里会按下鼠标键的动作（move 只挪光标，不按键）
-_POINTER_ACTIONS = {"click", "scroll", "drag", "swipe"}
+_POINTER_ACTIONS = {"click", "scroll", "drag"}
 
 
 # run_command 里能干出「动屏幕」这件事的命令：输入注入、窗口切换、弹出可见窗口/通知
@@ -775,7 +734,7 @@ CUSTOM_LABELS = {
 
 _FILE_WRITE_TOOLS = {"write_file", "edit_file"}
 _FILE_READ_TOOLS = {"read_file", "list_dir", "ocr_image"}
-_NET_TOOLS = {"web_search", "get_weather", "find_game"}
+_NET_TOOLS = {"web_search", "find_game"}
 
 
 def normalize_custom(raw) -> dict[str, bool]:
@@ -2155,8 +2114,6 @@ def summarize_tool(name: str, args: dict) -> str:
         return cmd if len(cmd) <= 120 else cmd[:120] + "…"
     if name == "web_search":
         return f"「{args.get('query', '')}」"
-    if name == "get_weather":
-        return f"「{args.get('city', '')}」"
     if name == "find_game":
         return f"「{args.get('name', '')}」"
     if name == "install_game":
@@ -2173,12 +2130,12 @@ def summarize_tool(name: str, args: dict) -> str:
         if act == "move":
             return f"移动光标到 ({args.get('x', 0)}, {args.get('y', 0)})"
         if act == "scroll":
+            if args.get("pixels"):
+                return f"触摸板滑动 dx={args.get('dx', 0)} dy={args.get('dy', 0)}"
             return f"滚动 dx={args.get('dx', 0)} dy={args.get('dy', 0)}"
         if act == "drag":
             return (f"从 ({args.get('x', 0)}, {args.get('y', 0)}) 拖到 "
                     f"({args.get('x2', 0)}, {args.get('y2', 0)})")
-        if act == "swipe":
-            return f"触摸板滑动 dx={args.get('dx', 0)} dy={args.get('dy', 0)}"
         if act == "type":
             t = str(args.get("text", ""))
             return f"输入「{t[:40]}」"
@@ -2187,7 +2144,7 @@ def summarize_tool(name: str, args: dict) -> str:
         path = str(args.get("path", ""))
         return path.split("/")[-1] or path
     # 无需参数的简单操作：不显示多余说明
-    if name in ("screenshot", "list_installed_games", "check_system_updates", "list_emulator_roms"):
+    if name in ("screenshot", "list_installed_games", "check_system_updates"):
         return ""
     if name == "self_update":
         return "查询新版本" if args.get("action") != "upgrade" else "升级并重启服务"
@@ -2210,35 +2167,6 @@ def describe(name: str, args: dict) -> str:
 
 
 # ---------- 工具实现 ----------
-
-async def _get_weather(city: str) -> str:
-    geo = await HTTP.get(
-        "https://geocoding-api.open-meteo.com/v1/search",
-        params={"name": city, "count": 1, "language": "zh", "format": "json"},
-    )
-    results = geo.json().get("results")
-    if not results:
-        return f"找不到城市：{city}"
-    loc = results[0]
-    w = await HTTP.get(
-        "https://api.open-meteo.com/v1/forecast",
-        params={
-            "latitude": loc["latitude"],
-            "longitude": loc["longitude"],
-            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m",
-            "timezone": "auto",
-        },
-    )
-    cur = w.json()["current"]
-    codes = {0: "晴", 1: "大致晴", 2: "局部多云", 3: "阴", 45: "雾", 48: "冻雾",
-             51: "毛毛雨", 61: "小雨", 63: "中雨", 65: "大雨", 71: "小雪", 73: "中雪",
-             75: "大雪", 80: "阵雨", 95: "雷阵雨"}
-    desc = codes.get(cur["weather_code"], f"天气代码 {cur['weather_code']}")
-    return (
-        f"{loc.get('name', city)}（{loc.get('country', '')}）当前：{desc}，"
-        f"气温 {cur['temperature_2m']}°C，体感 {cur['apparent_temperature']}°C，"
-        f"湿度 {cur['relative_humidity_2m']}%，风速 {cur['wind_speed_10m']} km/h"
-    )
 
 
 async def _web_search(query: str) -> str:
@@ -2388,88 +2316,6 @@ async def _install_game(appid: int) -> str:
     except asyncio.TimeoutError:
         pass        # 客户端已经拉起，等不等它自己退出都无所谓
     return f"已向 Steam 发送安装指令（appid {appid}），下载会在 Steam 客户端中开始"
-
-
-# 不算 ROM 的杂项文件（存档/封面/数据库等）
-ROM_EXCLUDE_EXT = {
-    ".txt", ".xml", ".md", ".json", ".dat", ".db", ".png", ".jpg", ".jpeg",
-    ".webp", ".cue", ".m3u", ".srm", ".sav", ".state", ".dst", ".dsv",
-    ".cfg", ".ini", ".log", ".bak", ".tmp", ".bin.index",
-}
-# 在 Games 等非标准目录里，只认这些模拟器游戏扩展名
-ROM_INCLUDE_EXT = {
-    ".nsp", ".xci", ".nro", ".iso", ".gcm", ".rvz", ".wbfs", ".chd",
-    ".gba", ".gbc", ".gb", ".nds", ".3ds", ".cia", ".nes", ".sfc", ".smc",
-    ".md", ".sms", ".n64", ".z64", ".v64", ".pbp", ".cso", ".wad",
-}
-# 不计入游戏数的部分（DLC/升级补丁）
-ROM_SKIP_DIRS = {"dlc", "dlcs", "update", "updates", "upd", "runtime"}
-ROM_SKIP_PREFIX = ("[dlc]", "[upd]", "[update]")
-
-
-def _count_roms(directory: Path, by_ext_only: bool) -> int:
-    n = 0
-    for f in directory.rglob("*"):
-        if not f.is_file() or f.name.startswith("."):
-            continue
-        # 跳过 DLC/补丁目录与文件
-        if any(part.lower() in ROM_SKIP_DIRS for part in f.parts):
-            continue
-        if f.name.lower().startswith(ROM_SKIP_PREFIX):
-            continue
-        ext = f.suffix.lower()
-        if by_ext_only:
-            if ext in ROM_INCLUDE_EXT:
-                n += 1
-        elif ext not in ROM_EXCLUDE_EXT:
-            n += 1
-    return n
-
-
-async def _list_emulator_roms(system: str = "") -> str:
-    def _scan() -> dict:
-        counts: dict[str, int] = {}
-
-        # EmuDeck 标准结构：<root>/<机型>/ 下所有非杂项文件都算 ROM
-        roots = [Path.home() / "Emulation/roms", Path.home() / "ROMs", Path.home() / "roms"]
-        media = Path("/run/media")
-        if media.is_dir():
-            for card in media.iterdir():
-                if card.is_dir():
-                    roots.append(card / "Emulation/roms")
-        for root in roots:
-            if not root.is_dir():
-                continue
-            for sub in sorted(root.iterdir()):
-                if not sub.is_dir():
-                    continue
-                n = _count_roms(sub, by_ext_only=False)
-                if n:
-                    counts[sub.name] = counts.get(sub.name, 0) + n
-
-        # SD 卡 Games 目录：<card>/Games/<合集名>/ 下按扩展名识别
-        if media.is_dir():
-            for card in media.iterdir():
-                games = card / "Games"
-                if not games.is_dir():
-                    continue
-                for sub in sorted(games.iterdir()):
-                    if not sub.is_dir() or sub.name.lower() in ROM_SKIP_DIRS:
-                        continue
-                    n = _count_roms(sub, by_ext_only=True)
-                    if n:
-                        counts[sub.name] = counts.get(sub.name, 0) + n
-        return counts
-
-    counts = await asyncio.to_thread(_scan)
-    if system:
-        counts = {k: v for k, v in counts.items() if system.lower() in k.lower()}
-        if not counts:
-            return f"没有找到 {system} 相关的游戏目录"
-    if not counts:
-        return "没有找到模拟器 ROM（已扫描 ~/Emulation/roms、SD 卡 Games 等目录）"
-    lines = [f"- {k}: {v} 个" for k, v in sorted(counts.items())]
-    return f"共 {sum(counts.values())} 个游戏文件：\n" + "\n".join(lines)
 
 
 def _session_user() -> tuple[int, str] | None:
@@ -2968,10 +2814,11 @@ def _drag_steps(x: int, y: int, x2: int, y2: int) -> list[tuple[int, int]]:
 
 
 async def _desktop(action: str, target: str = "", x: int = 0, y: int = 0, text: str = "",
-                   x2: int = 0, y2: int = 0, dx: int = 0, dy: int = 0) -> str:
-    """桌面窗口操作：切焦点 / 点击 / 移动 / 滚动 / 拖拽 / 触摸板滑动 / 打字
+                   x2: int = 0, y2: int = 0, dx: int = 0, dy: int = 0,
+                   pixels: bool = False) -> str:
+    """桌面窗口操作：切焦点 / 点击 / 移动 / 滚动 / 拖拽 / 打字
 
-    按下鼠标键的动作（点击、滚动、拖拽、滑动）执行前都会先让遮罩整块让开，
+    按下鼠标键的动作（点击、滚动、拖拽）执行前都会先让遮罩整块让开，
     否则那一下会打在遮罩上被当成「用户终止」。
     """
     if action == "focus":
@@ -3019,9 +2866,13 @@ async def _desktop(action: str, target: str = "", x: int = 0, y: int = 0, text: 
             await _set_overlay_passthrough(False)
 
     if action == "scroll":
-        # ydotool 的滚动是按格数（一把 0x40 横向、0x41 纵向，值带符号），
-        # 而模型看截图给的是像素，换算见 _wheel_steps
-        nx, ny = _wheel_steps(dx, dy)
+        # ydotool 的滚动是按格数（一把 0x40 横向、0x41 纵向，值带符号）。
+        # 默认 dx/dy 就是格数；pixels=true 时先按 WHEEL_PX_PER_STEP 换算，
+        # 这是原来 swipe 的手势翻页用法，合并进来少一个动作和一个分支。
+        if pixels:
+            nx, ny = _wheel_steps(dx, dy)
+        else:
+            nx, ny = int(dx or 0), int(dy or 0)
         if not nx and not ny:
             return "scroll 需要提供非零的 dx 或 dy"
         await _set_overlay_passthrough(True)
@@ -3030,6 +2881,25 @@ async def _desktop(action: str, target: str = "", x: int = 0, y: int = 0, text: 
             if x or y:
                 await _move_to(x, y)
                 await asyncio.sleep(0.1)
+            if pixels:
+                # 像素模式按「连续的小幅滚轮」发：切成若干格、每格之间留一点
+                # 间隔，目标程序才会把它当成一次连续手势（翻页就靠这个）
+                px_step = -1 if nx < 0 else 1
+                py_step = -1 if ny < 0 else 1
+                left_x, left_y = abs(nx), abs(ny)
+                sent = 0
+                while left_x or left_y:
+                    if left_x:
+                        await _ydotool("click", f"0x40:{px_step}")
+                        left_x -= 1
+                    if left_y:
+                        await _ydotool("click", f"0x41:{py_step}")
+                        left_y -= 1
+                    sent += 1
+                    await asyncio.sleep(_SWIPE_INTERVAL)
+                cx, cy = await _cursor()
+                return (f"已在 ({cx}, {cy}) 模拟触摸板滑动：dx={dx}, dy={dy} 像素"
+                        f"（换算成 {abs(nx)} 格横向、{abs(ny)} 格纵向，分 {sent} 步）")
             if ny:
                 await _ydotool("click", f"0x41:{ny}")
             if nx:
@@ -3059,38 +2929,6 @@ async def _desktop(action: str, target: str = "", x: int = 0, y: int = 0, text: 
             await _ydotool("click", "0x40:0")
             cx, cy = await _cursor()
             return f"已从 ({x}, {y}) 拖到 ({cx}, {cy})，共 {len(steps)} 步"
-        finally:
-            await _set_overlay_passthrough(False)
-
-    if action == "swipe":
-        if not dx and not dy:
-            return "swipe 需要提供非零的 dx 或 dy（单位是屏幕像素）"
-        await _set_overlay_passthrough(True)
-        try:
-            # 触摸板滑动本质是「连续的小幅滚轮」：按步长切成若干格，
-            # 每格之间留一点间隔，目标程序才会把它当成一次连续手势
-            total_x, total_y = _wheel_steps(dx, dy)
-            px = x
-            py = y
-            if px or py:
-                await _move_to(px, py)
-            per_x = -1 if total_x < 0 else 1
-            per_y = -1 if total_y < 0 else 1
-            left_x, left_y = abs(total_x), abs(total_y)
-            sent = 0
-            while left_x or left_y:
-                one_x = per_x if left_x else 0
-                one_y = per_y if left_y else 0
-                if one_x:
-                    await _ydotool("click", f"0x40:{one_x}")
-                    left_x -= 1
-                if one_y:
-                    await _ydotool("click", f"0x41:{one_y}")
-                    left_y -= 1
-                sent += 1
-                await asyncio.sleep(_SWIPE_INTERVAL)
-            return (f"已模拟触摸板滑动：dx={dx}, dy={dy} 像素"
-                    f"（换算成 {abs(total_x)} 格横向、{abs(total_y)} 格纵向，分 {sent} 步）")
         finally:
             await _set_overlay_passthrough(False)
 
@@ -3316,7 +3154,7 @@ async def _remember(text: str, kind: str = "note") -> str:
 # 只调 server/media.py 的公开函数：动作名进白名单，歌名只作为数据参数，
 # 不拼 shell。media 里的 MPRIS 调用是同步 subprocess，这里统一丢线程。
 
-MUSIC_TOOLS = ("music_search", "music_play", "music_control")
+MUSIC_TOOLS = ("music_play", "music_control")
 
 
 def _music_offline() -> str:
@@ -3331,30 +3169,27 @@ def _song_line(song: dict, index: int) -> str:
     return f"{index}. {name}" + (f" - {singer}" if singer else "")
 
 
-async def _music_search(keyword: str, limit: int = 5) -> str:
-    """搜曲库，只回歌名/歌手，供模型自己判断该放哪首。"""
-    from . import media
-    keyword = str(keyword or "").strip()
-    if len(keyword) < 2:
-        return "关键词太短，至少两个字。"
-    try:
-        songs = await asyncio.to_thread(media.search_songs, keyword)
-    except media.MediaError as exc:
-        return f"{_music_offline()}（{exc.reason}）"
-    if not songs:
-        return f"曲库里没搜到「{keyword}」。"
-    top = max(1, min(int(limit or 5), 10))
-    lines = [_song_line(s, i + 1) for i, s in enumerate(songs[:top])]
-    more = f"\n（还有 {len(songs) - top} 首没列）" if len(songs) > top else ""
-    return f"「{keyword}」搜到 {len(songs)} 首，前 {len(lines)} 首：\n" + "\n".join(lines) + more
+async def _music_play(query: str, confirm: bool = True, dry_run: bool = False,
+                      limit: int = 5) -> str:
+    """搜 + 匹配 + 开播 + 回读确认，一步到位。歧义时先问，不擅自放。
 
-
-async def _music_play(query: str, confirm: bool = True) -> str:
-    """搜 + 匹配 + 开播 + 回读确认，一步到位。歧义时先问，不擅自放。"""
+    dry_run=True 时只把候选列表回给模型（原 music_search 的用法）。
+    """
     from . import media
     query = str(query or "").strip()
     if not query:
         return "要放什么？给我歌名或歌手。"
+    if dry_run:
+        try:
+            songs = await asyncio.to_thread(media.search_songs, query)
+        except media.MediaError as exc:
+            return f"{_music_offline()}（{exc.reason}）"
+        if not songs:
+            return f"曲库里没搜到「{query}」。"
+        top = max(1, min(int(limit or 5), 10))
+        lines = [_song_line(s, i + 1) for i, s in enumerate(songs[:top])]
+        more = f"\n（还有 {len(songs) - top} 首没列）" if len(songs) > top else ""
+        return f"「{query}」搜到 {len(songs)} 首，前 {len(lines)} 首：\n" + "\n".join(lines) + more
     try:
         plan = await asyncio.to_thread(media.resolve_song, query)
     except media.MediaError as exc:
@@ -3423,14 +3258,12 @@ def song_hint(text: str) -> str:
 
 
 EXECUTORS = {
-    "get_weather": _get_weather,
     "web_search": _web_search,
     "list_installed_games": _list_installed_games,
     "find_game": _find_game,
     "check_system_updates": _check_system_updates,
     "task_status": _task_status,
     "install_game": _install_game,
-    "list_emulator_roms": _list_emulator_roms,
     "run_command": _run_command,
     "desktop": _desktop,
     "screenshot": _screenshot,
@@ -3441,22 +3274,21 @@ EXECUTORS = {
     "edit_file": _edit_file,
     "self_update": _self_update,
     "remember": _remember,
-    "music_search": _music_search,
     "music_play": _music_play,
     "music_control": _music_control,
 }
 
 # 真正要出网的工具：离线模式下直接返回可读原因，不发起请求。
 # 截图、文件、命令、游戏库、安装这类本地动作不在此列，保持可用。
-_OUTBOUND_TOOLS = {"get_weather", "web_search", "find_game", "self_update"}
+_OUTBOUND_TOOLS = {"web_search", "find_game", "self_update"}
 
 
-# 不需要「保持常亮」的工具：查天气、联网搜索、读写文件这类不碰屏幕也不动
+# 不需要「保持常亮」的工具：联网搜索、读写文件这类不碰屏幕也不动
 # 设备状态的动作，几毫秒就结束，挂抑制反而是白折腾（每次都 fork 两个外部命令）
 _NO_KEEP_AWAKE = {
-    "get_weather", "web_search", "find_game", "list_installed_games",
-    "list_emulator_roms", "check_system_updates", "screenshot", "remember",
-    "music_search", "music_play", "music_control", "task_status", "ocr_image",
+    "web_search", "find_game", "list_installed_games",
+    "check_system_updates", "screenshot", "remember",
+    "music_play", "music_control", "task_status", "ocr_image",
 }
 
 
@@ -3467,14 +3299,14 @@ _NO_KEEP_AWAKE = {
 #   run_command 不设：它自己按命令类型管超时（命令可能要跑几分钟）；
 #   install_game / self_update 也是长任务，走默认值。
 _TOOL_TIMEOUT = {
-    "web_search": 60, "get_weather": 30, "find_game": 30,
-    "list_installed_games": 60, "list_emulator_roms": 30,
+    "web_search": 60, "find_game": 30,
+    "list_installed_games": 60,
     "check_system_updates": 60, "screenshot": 45, "task_status": 10,
     "read_file": 30, "write_file": 30, "edit_file": 30, "list_dir": 30,
     # 首次调用要加载 30MB 模型，Deck 上约 1 秒识别，给足余量
     "ocr_image": 90,
     # 曲库搜索/开播各有一次 RPC 超时（6 秒）兜底，再加回读确认
-    "music_search": 30, "music_play": 40, "music_control": 20,
+    "music_play": 40, "music_control": 20,
 }
 _TOOL_TIMEOUT_DEFAULT = 120
 _TOOL_NO_TIMEOUT = {"run_command", "install_game", "self_update"}

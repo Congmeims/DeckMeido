@@ -2284,11 +2284,9 @@
       case 'edit_file':   return { text: '已编辑 1个文件' };
       case 'run_command': return { text: '已运行', chip: ev.summary };
       case 'screenshot':  return { text: ev.error ? '截屏失败' : '已截屏' };
-      case 'get_weather': return { text: '已查询天气', chip: ev.summary };
       case 'web_search':  return { text: '已搜索', chip: ev.summary };
       case 'list_installed_games': return { text: '已查询游戏库' };
       case 'find_game':   return { text: '已在商店搜索', chip: ev.summary };
-      case 'list_emulator_roms': return { text: '已扫描模拟器 ROM' };
       case 'check_system_updates': return { text: '已检查系统更新' };
       case 'install_game': return { text: '已安装游戏', chip: ev.summary };
       default:            return { text: '已完成 ' + (ev.label || ev.name), chip: ev.summary };

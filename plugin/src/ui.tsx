@@ -862,16 +862,12 @@ function toolHeadInfo(ev: Extract<ChatEvent, { type: "tool" }>): { text: string;
       return { text: "已运行", chip: chipBase };
     case "screenshot":
       return { text: ev.error ? "截屏失败" : "已截屏", chip: chipBase };
-    case "get_weather":
-      return { text: "已查询天气", chip: chipBase };
     case "web_search":
       return { text: "已搜索", chip: chipBase };
     case "list_installed_games":
       return { text: "已查询游戏库" };
     case "find_game":
       return { text: "已在商店搜索", chip: chipBase };
-    case "list_emulator_roms":
-      return { text: "已扫描模拟器 ROM" };
     case "check_system_updates":
       return { text: "已检查系统更新" };
     case "install_game":

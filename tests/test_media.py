@@ -673,17 +673,17 @@ class MusicToolTests(unittest.IsolatedAsyncioTestCase):
         media._rpc = self._orig_rpc
         media._reset()
 
-    async def test_search_lists_songs(self):
-        text = await self.tools.execute("music_search", {"keyword": "周杰伦", "limit": 2})
+    async def test_dry_run_lists_songs(self):
+        text = await self.tools.execute("music_play", {"query": "周杰伦", "dry_run": True, "limit": 2})
         self.assertIn("稻香", text)
         self.assertIn("晴天", text)
         self.assertNotIn("Slam Dunk", text)
         self.assertEqual(self.loader.methods(), ["search_songs"])
 
-    async def test_search_rejects_short_keyword(self):
-        text = await self.tools.execute("music_search", {"keyword": "歌"})
-        self.assertIn("太短", text)
-        self.assertEqual(self.loader.calls, [])
+    async def test_dry_run_leaves_playback_alone(self):
+        # 只搜不放：曲库搜到了也不能触发 queue_play / play
+        await self.tools.execute("music_play", {"query": "周杰伦", "dry_run": True})
+        self.assertNotIn("queue_play", self.loader.methods())
 
     async def test_play_starts_song_and_verifies(self):
         text = await self.tools.execute("music_play", {"query": "周杰伦 稻香"})

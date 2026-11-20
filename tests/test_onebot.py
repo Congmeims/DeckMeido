@@ -1167,7 +1167,7 @@ class PolicyReadonlyTest(unittest.TestCase):
         # 群友这一轮是纯闲聊：连查询类工具也不给，防止白名单被当成后门
         ctx = policy.TurnContext(readonly=True, client="qq")
         self.assertEqual(policy.READONLY_TOOLS, set())
-        for name, args in (("get_weather", {}), ("web_search", {"query": "x"}),
+        for name, args in (("web_search", {"query": "x"}),
                            ("screenshot", {}), ("read_file", {"path": "a"})):
             decision = policy.check(name, args, ctx)
             self.assertFalse(decision.allowed, name)
