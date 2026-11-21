@@ -2679,10 +2679,14 @@
   }
   /* 两侧折叠按钮（◀ ▶）的底色和左栏仪表条的槽同口径：都跟面板透明度走。
      槽很细（6px），透出来也压不住字，所以只跟透明度、不加毛玻璃。
+     设置页左上角那颗「返回」（#setClose）是同一个按钮的换装版，
+     它不在 .side-toggle 这个类里，所以要单独列上，不然壁纸下只有它
+     还是一块实心白。
      注意这两颗按钮「底下那层」必须一样：左栏 .sb-head 自己不铺底，
      右栏 #rbHead 也必须不铺底（见上面那条），否则一边叠一层、一边叠两层 */
   html.wall-on .bar,
-  html.wall-on .side-toggle {
+  html.wall-on .side-toggle,
+  html.wall-on #setClose {
     background-color: color-mix(in srgb,
       var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
   }
