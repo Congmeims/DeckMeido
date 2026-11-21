@@ -1348,6 +1348,14 @@
     user-select: none; -webkit-user-drag: none;
   }
   [data-theme=light] .sb-brand .brand-mark { filter: none; }
+  /* 左下角 logo 也跟着「界面透明度」走：拉全透时侧栏几乎全空，logo 还是
+     一块实心图，看着像单独贴上去的。不直接用 --panel-alpha 当不透明度：
+     那个值最低到 0.08，套上去 logo 会淡到几乎看不见，而它同时是跨屏接管
+     的入口，得点得到。这里收窄到 0.35~1 区间，跟着滑条同向变淡 */
+  html.wall-on .sb-brand .brand-mark,
+  html.wall-on .sb-brand .brand-name {
+    opacity: calc(0.35 + var(--panel-alpha) * 0.65);
+  }
   /* 字标：产品名一行、版本号一行，两行居中；版本用次级色弱化。
      行距压到 2px，宽度受侧栏约束，窄视口截断而不换行，顶栏高度不变 */
   .sb-brand .brand-name {
