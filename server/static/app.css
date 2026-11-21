@@ -1976,6 +1976,14 @@
     font-variant-numeric: tabular-nums;
   }
   .field-row > label:not(.switch) { display: inline-block; margin: 0; align-self: center; }
+  /* 壁纸三条滑杆：标签 / 滑轨 / 读数挤在同一行，滑轨别再拉满整行 */
+  .tune-row {
+    display: flex; align-items: center; gap: 12px;
+    min-width: 0;
+  }
+  .tune-row > label { flex: 0 0 auto; margin: 0; white-space: nowrap; }
+  .tune-row > .rg { flex: 0 1 260px; min-width: 96px; max-width: 260px; margin: 0; }
+  .tune-row > .rg-val { flex: 0 0 auto; margin-left: auto; text-align: right; min-width: 42px; }
   /* 开关外层的 label 同时也是 .field label，会把「块级 + 灰色小字」带进来，
      这里复位成与开关等大的容器 */
   .field label.switch { display: inline-block; margin: 0; font-size: 0; }

@@ -6,8 +6,8 @@ register(app) 时才定义路由函数，保持 main.api_xxx 的既有写法。
 壁纸与配色存 config.toml 的 [appearance] 段：
     wallpaper = "wallpaper.jpg"      # 空串 = 无壁纸
     palette   = '{"dark":{...},"light":{...},"source":"#xxx"}'   # JSON 字符串
-    dim       = 45                   # 压暗 0-80
-    blur      = 0                    # 背景模糊 px 0-24
+    dim       = 45                   # 界面透明度 0-100
+    blur      = 0                    # 壁纸模糊 px 0-12
 文件本身在 userdata/wallpapers/，由 /wallpapers 静态挂载公开提供（<img> 带不了令牌）。
 """
 from __future__ import annotations
@@ -81,8 +81,8 @@ def current_theme() -> dict:
     palette = themecolor.load_palette(app.get("palette"))
     if name and not palette:
         palette = None
-    dim = _clamp_int(app.get("dim"), DIM_DEFAULT, 0, 80)
-    blur = _clamp_int(app.get("blur"), BLUR_DEFAULT, 0, 24)
+    dim = _clamp_int(app.get("dim"), DIM_DEFAULT, 0, 100)
+    blur = _clamp_int(app.get("blur"), BLUR_DEFAULT, 0, 12)
     # 壁纸的版本戳：文件名固定是 wallpaper.*，换图后同名同扩展名时
     # 光靠文件名比不出新旧，颜色和亮度全都得跟着这一张走
     ver = _mtime(name) if name else 0
@@ -218,10 +218,10 @@ def register(app) -> None:
         now = int(time.time() * 1000)
         updates = {}
         if req.dim is not None:
-            updates["dim"] = _clamp_int(req.dim, DIM_DEFAULT, 0, 80)
+            updates["dim"] = _clamp_int(req.dim, DIM_DEFAULT, 0, 100)
             updates["dim_ts"] = str(now)
         if req.blur is not None:
-            updates["blur"] = _clamp_int(req.blur, BLUR_DEFAULT, 0, 24)
+            updates["blur"] = _clamp_int(req.blur, BLUR_DEFAULT, 0, 12)
             updates["blur_ts"] = str(now)
         await _publish(updates)
         return {"ok": True, "theme": current_theme()}

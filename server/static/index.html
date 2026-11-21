@@ -1162,41 +1162,41 @@
             </div>
             <input id="wallFile" type="file" accept="image/*" hidden>
             <div class="field">
-              <div class="field-row">
+              <div class="tune-row" id="wallDimRg">
                 <label>界面透明度</label>
+                <div class="rg">
+                  <div class="rg-rail"><div class="rg-fill"></div></div>
+                  <div class="rg-knob"></div>
+                  <input id="wallDim" type="range" min="0" max="100" step="5" value="45"
+                         aria-label="界面透明度">
+                </div>
                 <span class="rg-val" id="wallDimVal">45%</span>
-              </div>
-              <div class="rg" id="wallDimRg">
-                <div class="rg-rail"><div class="rg-fill"></div></div>
-                <div class="rg-knob"></div>
-                <input id="wallDim" type="range" min="0" max="80" step="5" value="45"
-                       aria-label="界面透明度">
               </div>
               <div class="field-hint">越小界面越实、壁纸被挡得越多；拉大后顶栏、两栏、输入框变透，壁纸更明显。</div>
             </div>
             <div class="field">
-              <div class="field-row">
+              <div class="tune-row" id="wallBlurRg">
                 <label>壁纸模糊</label>
+                <div class="rg">
+                  <div class="rg-rail"><div class="rg-fill"></div></div>
+                  <div class="rg-knob"></div>
+                  <input id="wallBlur" type="range" min="0" max="12" step="1" value="0"
+                         aria-label="壁纸模糊">
+                </div>
                 <span class="rg-val" id="wallBlurVal">0px</span>
-              </div>
-              <div class="rg" id="wallBlurRg">
-                <div class="rg-rail"><div class="rg-fill"></div></div>
-                <div class="rg-knob"></div>
-                <input id="wallBlur" type="range" min="0" max="24" step="2" value="0"
-                       aria-label="壁纸模糊">
               </div>
               <div class="field-hint">图片很花、干扰阅读时往右拉一点，到最右就是完全糊开。</div>
             </div>
             <div class="field">
-              <div class="field-row">
+              <div class="tune-row" id="wallGlassRg">
                 <label>毛玻璃强度</label>
+                <div class="rg">
+                  <div class="rg-rail"><div class="rg-fill"></div></div>
+                  <div class="rg-knob"></div>
+                  <input id="wallGlass" type="range" min="0" max="20" step="1" value="0"
+                         aria-label="毛玻璃强度">
+                </div>
                 <span class="rg-val" id="wallGlassVal">0px</span>
-              </div>
-              <div class="rg" id="wallGlassRg">
-                <div class="rg-rail"><div class="rg-fill"></div></div>
-                <div class="rg-knob"></div>
-                <input id="wallGlass" type="range" min="0" max="24" step="2" value="0"
-                       aria-label="毛玻璃强度">
               </div>
               <div class="field-hint">顶栏、左右两栏、输入框背后的虚化程度。只在有壁纸时看得到效果；只影响这台设备的界面，不会同步到其他端。</div>
             </div>
@@ -11146,6 +11146,7 @@
       syncThemeBtn(document.documentElement.getAttribute('data-theme'));
       return;
     }
+    theme = themeScale(theme);
     var a = theme;
     CFG_APPEARANCE = a;
     if (a.thumb) {
@@ -11370,14 +11371,12 @@
   function syncWallRgs() {
     wallRgs.forEach(syncWallRg);
   }
-  // 滑条读数：透明度是百分比，模糊要把「实际渲染 px」显示出来——
-  // applyCfgAppearance 里 10px 之后按平方根收口，这里必须用同一公式，
-  // 否则滑条写着 24px、画面上只有 13px 的效果，用户没法对齐观感
+  // 滑条读数：透明度是百分比，模糊就是滑杆上的 px
   function wallTuneOpt(input, raw) {
     var v = Number(raw) || 0;
     if (input === wallBlur) {
-      var px = v <= 10 ? v : 10 + Math.sqrt(v - 10) * 0.9;
-      return { text: (Math.round(px * 2) / 2) + 'px' };
+      // 滑杆本身就是实际渲染的 px（10px 之后不再增益），读数照抄
+      return { text: v + 'px' };
     }
     return { text: v + '%' };
   }
@@ -11432,7 +11431,7 @@
     // 读回上次的强度（Key 不存在 = 0，和 CSS 里 --glass 的默认值一致）
     var savedGlass = 0;
     try { savedGlass = Number(localStorage.getItem(GLASS_KEY)) || 0; } catch (_) {}
-    savedGlass = Math.max(0, Math.min(24, Math.round(savedGlass / 2) * 2));
+    savedGlass = Math.max(0, Math.min(20, Math.round(savedGlass)));
     wallGlass.value = String(savedGlass);
     wallGlassVal.textContent = savedGlass + 'px';
     document.documentElement.style.setProperty('--glass', savedGlass + 'px');
@@ -15248,7 +15247,36 @@
     });
     return '#' + out.join('');
   }
+  // 旧刻度 -> 新刻度：透明度原来 0~80（--panel-alpha = 1 - dim/88），
+  // 现在 0~100（1 - dim/100）。按「实际不透明度」换算，升级后观感不变；
+  // 0 保持 0（完全实）
+  function migrateDim(v) {
+    var n = Math.max(0, Math.min(80, Number(v) || 0));
+    return n <= 0 ? 0 : Math.round((1 - (1 - n / 88)) * 100);
+  }
+  // 旧模糊刻度 0~24，10px 之后平方根收口，实际渲染最多约 13px。
+  // 现在滑杆就是实际 px（0~12），按旧公式算出的实际值就是升级后的读数
+  function migrateBlur(v) {
+    var n = Math.max(0, Math.min(24, Number(v) || 0));
+    var px = n <= 10 ? n : 10 + Math.sqrt(n - 10) * 0.9;
+    return Math.max(0, Math.min(12, Math.round(px)));
+  }
+  // 配置里的刻度还是旧的（透明度 0~80、模糊 0~24）时按上面的公式换算一次。
+  // 拖一下滑杆就会把新刻度的值存回配置
+  function themeScale(theme) {
+    if (!theme || typeof theme !== 'object' || theme.error) return theme;
+    var dim = Number(theme.dim);
+    var blur = Number(theme.blur);
+    if (dim > 100 || blur > 12) {
+      theme = Object.assign({}, theme);
+      theme.dim = migrateDim(dim);
+      theme.blur = migrateBlur(blur);
+    }
+    return theme;
+  }
   function applyCfgAppearance(theme, keepTune) {
+    // 旧刻度的配置先换算成新刻度（0~100 / 0~12），再进下面的逻辑
+    theme = themeScale(theme);
     // CFG_APPEARANCE 的声明在文件后段，而 theme_changed 广播可能在脚本还没执行到
     // 那里就到：此时它是 undefined，直接读 .palette 会抛异常并中断后面的初始化。
     // 这里先兜一个空壳，真正值稍后由 loadTheme / renderAppearanceForm 覆盖。
@@ -15277,20 +15305,18 @@
     var html = document.documentElement;
     var pal = a.palette || null;
     var on = !!(a.wallpaper && a.url);
-    var dim = Math.max(0, Math.min(80, Number(a.dim) || 0));
-    // 模糊超过 10px 基本就看不出差别了（大图整体糊成一片），滑条右半截
-    // 全是「再拉也没变化」的死区。步长 2、最大 24 的存储值不变，
-    // 这里按平方根收口：10px 之后增长得极慢，0~12 对应实际 0~7px
-    var blurRaw = Math.max(0, Math.min(24, Number(a.blur) || 0));
-    var blur = blurRaw <= 10 ? blurRaw : 10 + Math.sqrt(blurRaw - 10) * 0.9;
+    var dim = Math.max(0, Math.min(100, Number(a.dim) || 0));
+    // 模糊就是实际 px：0~12 直接用在 CSS 上，不再做平方根收口
+    var blurRaw = Math.max(0, Math.min(12, Number(a.blur) || 0));
+    var blur = blurRaw;
     var vars = {
       '--wallpaper': on ? 'url("' + a.url + '")' : 'none',
       // 「压暗壁纸」实际做的事是让上层 UI 变透明：0 = 面板全实、壁纸完全被
-      // 挡住；80 = 面板几乎全透，壁纸最清楚地透出来。壁纸层本身不压暗
-      // （以前还叠了一层 opacity，越拉壁纸越暗、面板越透，两个效果打架）
+      // 挡住；100 = 面板全透，壁纸完全露出来。新装默认 45 时原有观感不变
+      // （45 × 0.8 = 旧刻度的 36，约 55% 不透明）
       '--wall-dim': '0',
       '--wall-blur': (Math.round(blur * 2) / 2) + 'px',
-      '--panel-alpha': on ? String(Math.max(0.08, 1 - dim / 88)) : '1'
+      '--panel-alpha': on ? String(1 - dim / 100) : '1'
     };
     if (on && pal) {
       // 三档各用自己那一套：浅色用 pal.light、深色用 pal.dark、暗黑用 pal.oled。
