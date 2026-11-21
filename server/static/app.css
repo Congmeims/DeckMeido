@@ -2520,6 +2520,9 @@
     --wall-dim: 0.45;
     --wall-blur: 0px;
     --panel-alpha: 1;
+    /* 小灰字、第二层衬底的「不透明底」：由 index.html 按壁纸配色写进
+       --surface-2 对应的实色，混色时不会算成透明 */
+    --muted-base: #eceff5;
   }
   /* 必须 z-index:-1 + position:fixed并挂在 body 上：
      挂在 #app 里会被各栏的不透明背景盖住，挂在 body 上则位于所有内容之下、
@@ -2673,10 +2676,15 @@
      小灰字按「壁纸透出来的亮度」分档：浅色壁纸把面板衬得很亮时，灰字再加深一档；
      档位由后端按壁纸平均亮度算好、前端写进 data-wall-lum（light / mid / dark），
      不逐像素算——逐像素要读 canvas，Deck 上太贵 */
-  html.wall-on { --muted: color-mix(in srgb, var(--text) 72%, var(--surface)); }
-  html.wall-on[data-wall-lum="light"] { --muted: color-mix(in srgb, var(--text) 88%, var(--surface)); }
-  [data-theme=light] html.wall-on { --muted: color-mix(in srgb, var(--text) 78%, #000); }
-  [data-theme=light] html.wall-on[data-wall-lum="dark"] { --muted: color-mix(in srgb, var(--text) 88%, #000); }
+  /* 壁纸模式的小灰字：不再混 surface（面板半透时那个「surface」会把灰字
+     拉回浅灰，叠在花壁纸上照样糊），直接按当前主题的文字色往实底方向压，
+     并留一个实色兜底——老版本配色里没有 surface-2，混色会算成透明。
+     浅色主题的 --text 是深蓝黑，压在浅底上对比度高；深色主题是浅字压深底 */
+  html.wall-on { --muted: color-mix(in srgb, var(--text) 86%, var(--muted-base)); }
+  html.wall-on[data-wall-lum="light"] { --muted: color-mix(in srgb, var(--text) 94%, var(--muted-base)); }
+  [data-theme=light] html.wall-on { --muted: color-mix(in srgb, var(--text) 78%, var(--muted-base)); }
+  [data-theme=light] html.wall-on[data-wall-lum="light"] { --muted: color-mix(in srgb, var(--text) 86%, var(--muted-base)); }
+  [data-theme=light] html.wall-on[data-wall-lum="dark"] { --muted: color-mix(in srgb, var(--text) 84%, var(--muted-base)); }
   html.wall-on .tl-body,
   html.wall-on .events .msg.in-turn {
     background: color-mix(in srgb, var(--surface-2) 92%, var(--surface));

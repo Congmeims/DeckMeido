@@ -15271,14 +15271,21 @@
       // 浅色主题用浅色那套，深色/暗黑用深色那套；只覆盖配色相关的变量，
       // 线条、滚动条、代码块仍由三档主题各自决定
       var set = isLightTheme() ? pal.light : pal.dark;
-      ['brand', 'user_bubble', 'bg', 'surface'].forEach(function (k) {
+      // surface-2 也要跟壁纸配色走：小灰字、思考气泡、字段提示条、表头
+      // 全靠它衬底，不跟的话浅色档下是一块 #eceff5 的浅灰压在花壁纸上，
+      // 混出来的灰字自然读不清（以前只覆盖 brand/bg/surface 四个）
+      ['brand', 'user_bubble', 'bg', 'surface', 'surface_2'].forEach(function (k) {
         if (set && set[k]) vars['--' + k.replace('_', '-')] = set[k];
       });
+      // 小灰字的混色底要一个不透明的实色：新配色里有 surface_2 就用它，
+      // 老配色（只存了四个键）按浅深主题退回原来的固定灰
+      vars['--muted-base'] = (set && set.surface_2)
+        || (isLightTheme() ? '#eceff5' : '#2b2f3a');
     } else {
       // 没壁纸（或没取到配色）时这层内联必须撤掉：内联优先级高于
       // [data-theme=xxx]，留着上一次的配色就是「切档错乱」——
       // 浅色档带着深色底、切到暗黑还是原来的牌子色
-      ['--brand', '--user-bubble', '--bg', '--surface',
+      ['--brand', '--user-bubble', '--bg', '--surface', '--surface-2', '--muted-base',
        '--on-brand', '--on-user'].forEach(function (k) {
         html.style.removeProperty(k);
       });
@@ -15303,11 +15310,12 @@
   function clearCfgAppearanceVars() {
     var html = document.documentElement;
     ['--wallpaper', '--wall-dim', '--wall-blur', '--panel-alpha',
-     '--brand', '--user-bubble', '--bg', '--surface',
+     '--brand', '--user-bubble', '--bg', '--surface', '--surface-2', '--muted-base',
      '--on-brand', '--on-user'].forEach(function (k) {
       html.style.removeProperty(k);
     });
     html.classList.remove('wall-on');
+    html.removeAttribute('data-wall-lum');
   }
   // 拉一次主题快照。首屏用 /api/theme（不进设置页也能应用）；
   // config_changed 里用 /api/config 带回的 theme 字段

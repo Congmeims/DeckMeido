@@ -110,12 +110,17 @@ def palette_from_color(hex_color: str) -> dict:
         "user_bubble": brand,
         "bg": _hsl_hex(h, 0.18, 0.07),
         "surface": _hsl_hex(h, 0.22, 0.11),
+        # 第二层底：气泡、输入框、小灰字提示条的衬底。比 surface 再亮一档，
+        # 深色主题下这两层才分得开（以前前端只拿三档主题的固定灰，
+        # 放着壁纸配色不用，浅色档下就是一块浅灰压在花图上）
+        "surface_2": _hsl_hex(h, 0.20, 0.15),
     }
     light = {
         "brand": _hsl_hex(h, max(0.45, min(1.0, s)), 0.42),
         "user_bubble": _hsl_hex(h, max(0.45, min(1.0, s)), 0.42),
         "bg": _hsl_hex(h, 0.14, 0.97),
         "surface": _hsl_hex(h, 0.16, 0.93),
+        "surface_2": _hsl_hex(h, 0.18, 0.90),
     }
     return {"dark": dark, "light": light, "source": hex_color}
 
@@ -192,6 +197,15 @@ def load_palette(text) -> dict | None:
         return None
     if not isinstance(data, dict) or not isinstance(data.get("dark"), dict):
         return None
+    # 老配置存的是「只含 brand/bg/surface」的配色：缺的键按强调色现算补上，
+    # 不然 surface_2 没有值，壁纸模式下小灰字和第二层衬底会退回固定灰
+    src = str(data.get("source") or data["dark"].get("brand") or "")
+    fresh = palette_from_color(src)
+    for mode in ("dark", "light"):
+        got = data.get(mode) if isinstance(data.get(mode), dict) else {}
+        for k, v in fresh[mode].items():
+            got.setdefault(k, v)
+        data[mode] = got
     return data
 
 
