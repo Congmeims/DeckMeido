@@ -936,7 +936,9 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 if name == "search_wallpaper":
                     # 候选图列表随事件带给前端，直接渲染成可点选的图。
                     # 结果文本里也有 id，模型能对上编号，但图片本身不靠它
-                    event["candidates"] = tools.LAST_CANDIDATES
+                    # src_url 是后端去重用的原始地址，不往浏览器送
+                    event["candidates"] = [{k: v for k, v in c.items() if k != "src_url"}
+                                           for c in tools.LAST_CANDIDATES]
                     event["query"] = str(args.get("query") or "")
                     # 候选编号与 id 的对应表：这一轮的工具结果下一轮就进不了历史，
                     # 用户隔一轮回一句「3」时模型连候选是什么都不记得。这里先存着，

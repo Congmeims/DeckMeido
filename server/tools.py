@@ -3217,6 +3217,12 @@ WALLPAPER_TIMEOUT = 20.0
 # 和 LAST_DIFF 一样是「刚做完的那一步」的旁路数据，放在这里避免改工具返回签名
 LAST_CANDIDATES: list[dict] = []
 
+# 最近几次 search_wallpaper 用过的关键词（旧的在前）。
+# 用户说「换一批/再换」时模型往往把同一个词再搜一遍，而图库是确定性排序的，
+# 同一关键词永远返回同一批图，界面上就是「点了没反应」。检索时把这些词里
+# 已经出过图的排除掉，强制往后翻。
+_RECENT_QUERIES: list[str] = []
+
 
 async def _fetch_image(url: str, limit: int) -> tuple[bytes | None, str]:
     """下载一张图（限制大小），返回 (bytes, 错误说明)。成功时说明为空串"""
@@ -3286,15 +3292,21 @@ KONA_API = "https://konachan.net/post.json"
 YANDE_API = "https://yande.re/post.json"
 
 
-def _booru_json(api: str, tags: str, n: int, extra: str = "") -> list[dict]:
-    """问一次 booru 的 post.json，返回 {image, title} 候选"""
-    data = _get_json(api, {"tags": f"{tags} {extra}".strip(), "limit": n})
+def _booru_json(api: str, tags: str, n: int, page: int = 1) -> list[dict]:
+    """问一次 booru 的 post.json，返回 {image, title} 候选
+
+    page 用来「换一批」：同一个标签的第 2、3 页，拿到的图完全不同
+    """
+    params = {"tags": tags, "limit": n}
+    if page > 1:
+        params["page"] = page
+    data = _get_json(api, params)
     if not isinstance(data, list):
         return []
     return _anime_rows(data, n)
 
 
-def _anime_search(query: str, n: int) -> list[dict]:
+def _anime_search(query: str, n: int, page: int = 1) -> list[dict]:
     """动漫插画双源：Konachan + yande.re（都免 key，按评分取热门横图）
 
     检索词是英文标签。这两个站标签库不大（"garden" 在 Konachan 是 0 条），
@@ -3318,7 +3330,7 @@ def _anime_search(query: str, n: int) -> list[dict]:
         jobs = [(KONA_API, f"{tag} score:>10"), (YANDE_API, f"{tag} rating:safe")]
         out: list[dict] = []
         with cf.ThreadPoolExecutor(max_workers=2) as ex:
-            for fut in [ex.submit(_booru_json, api, t, n) for api, t in jobs]:
+            for fut in [ex.submit(_booru_json, api, t, n, page) for api, t in jobs]:
                 try:
                     out.extend(fut.result())
                 except Exception:
@@ -3330,19 +3342,19 @@ def _anime_search(query: str, n: int) -> list[dict]:
         rows.extend(_collect(tag))    # 整句优先，不够再拿单词补
         if len(rows) >= n:
             return rows[:n]
-    if rows:
-        return rows[:n]
+    if rows or page > 1:
+        return rows[:n]       # 翻页时别退回热门榜，否则「换一批」翻回来还是那几张
     # 关键词在这两个站上都查不到：退回横图热门榜，至少给几张能看的动漫壁纸
     rows = []
     for api, extra in ((KONA_API, "score:>20"), (YANDE_API, "rating:safe")):
         try:
-            rows.extend(_booru_json(api, "landscape", n, extra))
+            rows.extend(_booru_json(api, f"landscape {extra}", n, page))
         except Exception:
             continue
     return rows[:n]
 
 
-def _safe_search(query: str, n: int) -> list[dict]:
+def _safe_search(query: str, n: int, page: int = 1) -> list[dict]:
     """Safebooru：动漫/插画类壁纸的实际主战场，全年龄标签库
 
     返回的是 xml，条目里 file_url 要补站点前缀，sample 是缩小版；
@@ -3358,9 +3370,12 @@ def _safe_search(query: str, n: int) -> list[dict]:
     for tags in tag_forms:
         if not tags:
             continue
-        r = httpx.get(SAFE_API, params={"page": "dapi", "s": "post", "q": "index",
-                                        "json": 0, "limit": max(n * 3, 16),
-                                        "tags": f"{tags} sort:score width:>1400"},
+        params = {"page": "dapi", "s": "post", "q": "index",
+                  "json": 0, "limit": max(n * 3, 16),
+                  "tags": f"{tags} sort:score width:>1400"}
+        if page > 1:
+            params["pid"] = page         # Safebooru 的翻页参数是 pid，从 1 开始
+        r = httpx.get(SAFE_API, params=params,
                       timeout=WALLPAPER_TIMEOUT, follow_redirects=True, headers=UA_WEB)
         r.raise_for_status()
         if not r.text.lstrip().startswith("<"):
@@ -3388,12 +3403,17 @@ def _safe_search(query: str, n: int) -> list[dict]:
 WH_API = "https://wallhaven.cc/api/v1/search"
 
 
-def _wh_search(query: str, n: int) -> list[dict]:
-    """Wallhaven：公开接口免 key，风景/动漫/抽象壁纸都有，按相关度排序"""
-    data = _get_json(WH_API, {"q": query, "categories": "111",
-                              "purity": "100", "sorting": "relevance",
-                              "atleast": "1920x1080", "ratios": "16x9,16x10"}
-                     ).get("data") or []
+def _wh_search(query: str, n: int, page: int = 1) -> list[dict]:
+    """Wallhaven：公开接口免 key，风景/动漫/抽象壁纸都有，按相关度排序
+
+    page 从 1 开始：同一个关键词再搜一次时翻到下一页，换一批图
+    """
+    params = {"q": query, "categories": "111",
+              "purity": "100", "sorting": "relevance",
+              "atleast": "1920x1080", "ratios": "16x9,16x10"}
+    if page > 1:
+        params["page"] = page
+    data = _get_json(WH_API, params).get("data") or []
     return [{"image": it.get("path") or "", "title": str(it.get("id") or "")}
             for it in data if it.get("path")][:n]
 
@@ -3523,8 +3543,30 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
     # 图库都是英文站：中文关键词先翻成英文再去检索，否则一律 0 结果，
     # 只能落到 Bing 那个召回很偏的接口上（搜「樱花」能捞出实验室、旅游规划）
     ZH_RE = re.compile(r"[\u4e00-\u9fff]")
+    # 内置的常见动漫/二次元词表（中文 -> booru 标签）。翻译接口经常 429，
+    # 一失败整句就原样丢给英文站、必然 0 条，只剩 Bing 的文章配图，所以
+    # 先查表，查不到再联网翻译。词表故意只收稳定的角色/作品名
+    ZH_ANIME = {
+        "初音未来": "hatsune miku", "初音": "hatsune miku",
+        "东方project": "touhou", "东方": "touhou", "博丽灵梦": "hakurei reimu",
+        "原神": "genshin impact", "雷电将军": "raiden shogun", "胡桃": "hu tao",
+        "崩坏": "honkai", "崩坏星穹铁道": "honkai star rail",
+        "蔚蓝档案": "blue archive", "明日方舟": "arknights",
+        "舰队collection": "kantai collection", "碧蓝航线": "azur lane",
+        "レム": "rem re:zero", "雷姆": "rem re:zero", "拉姆": "ram re:zero",
+        "亚丝娜": "asuna yuuki", "刀剑神域": "sword art online",
+        "fate": "fate (series)", "命运冠位指定": "fate grand order",
+        "魔法少女": "mahou shoujo", "初音ミク": "hatsune miku",
+        "二次元": "anime girl", "动漫": "anime", "动漫少女": "anime girl",
+        "赛博朋克": "cyberpunk", "机甲": "mecha", "和风": "japanese clothes",
+        "樱花": "cherry blossoms", "星空": "starry sky", "猫咪": "cat",
+        "风景": "landscape", "夜空": "night sky",
+    }
     en_query = query
-    if ZH_RE.search(query):
+    hit = ZH_ANIME.get(query.strip().lower())
+    if hit:
+        en_query = hit
+    elif ZH_RE.search(query):
         try:
             en_query = await asyncio.to_thread(_translate_zh, query)
         except Exception:
@@ -3540,6 +3582,12 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
     # 词面命中过不了筛。所以中文提问时把 Bing 排到最后，只有前几个
     # 图库（壁纸库/插画库）连一张的凑不齐时才轮到它补
     bing_last = bool(zh_terms)
+
+    # 「换一批」的翻页页码：同一个关键词再搜一次就往后翻一页。
+    # 各图库都是确定性排序，不翻页的话同一关键词永远拿到同样那几张，
+    # 用户看到的就是「换了壁纸但内容完全没变」
+    key = " ".join(words) or query
+    page = 1 + _RECENT_QUERIES.count(key)
 
     def _relevant(r: dict) -> bool:
         """标题得对得上检索词，且不像文章/商品配图。"""
@@ -3575,11 +3623,19 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
             ("openverse", _ov_search),
             ("wikimedia", _wm_search),
         )
+        # 支持翻页的三个源（其余接口是搜索式，翻页参数无意义）：
+        # 同一个关键词第二次搜索时带 page，拿到的就是另一批图
+        paged = ("wallhaven", "anime", "safebooru")
         pool: list[dict] = []
         errors: list[str] = []
         with cf.ThreadPoolExecutor(max_workers=len(sources)) as ex:
-            futs = [(ex.submit(fn, f"{query} wallpaper" if label == "bing" else en_query,
-                               POOL_REQ), label) for label, fn in sources]
+            futs = []
+            for label, fn in sources:
+                q = f"{query} wallpaper" if label == "bing" else en_query
+                if label in paged:
+                    futs.append((ex.submit(fn, q, POOL_REQ, page), label))
+                else:
+                    futs.append((ex.submit(fn, q, POOL_REQ), label))
             for fut, label in futs:
                 try:
                     rows = fut.result()
@@ -3613,6 +3669,8 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
         order = ["wallhaven", "bing", "openverse", "wikimedia",
                  "anime", "safebooru"]
     seen: set[str] = set()
+    # 上一批出过的图这次直接跳过：「换一张」时哪怕翻页没生效，也不会端回同一张
+    seen.update(str(c.get("src_url") or "") for c in LAST_CANDIDATES)
     queues: dict[str, list[dict]] = {}
     for r in pool:
         url = str(r.get("image") or "").strip()
@@ -3651,6 +3709,8 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
             continue
         used_src[r["src"]] = used_src.get(r["src"], 0) + 1
         picked.append({"id": cid, "url": themecolor.candidate_url(cid),
+                       # src_url 只给后端自己用（下一轮去重），不下发给前端
+                       "src_url": r["image"],
                        "title": str(r.get("title") or "")[:80]})
 
     if not picked:
@@ -3658,6 +3718,9 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
         return ("图库找到了图片但都下载失败，换一组更通用的关键词再搜一次"
                 "（例如 scenic landscape、anime wallpaper）。")
     LAST_CANDIDATES[:] = picked
+    # 记下这次用的词：同一个词再来一次就从第 2 页取，出的是另一批图
+    _RECENT_QUERIES.append(key)
+    del _RECENT_QUERIES[:-6]
     # 结果文本给模型看，前端另有一份候选列表可渲染；两者顺序一致，编号从 1 开始
     lines = [f"{i + 1}. id={c['id']} {c['title']}".rstrip() for i, c in enumerate(picked)]
     return (f"找到 {len(picked)} 张候选壁纸，已经显示给用户了：\n" + "\n".join(lines) +
