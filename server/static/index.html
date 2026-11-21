@@ -15175,6 +15175,24 @@
     }
     return false;
   }
+  // 强调色上的文字颜色：按背景色的相对亮度（WCAG 那套 sRGB 线性化）选深色还是白字。
+  // 用户把强调色设成 #4aff3d 这种亮绿时，原来的白字几乎读不出来；这条规则让
+  // 亮底自动配深字、暗底继续配白字，对比度始终在 7:1 以上（AAA）。
+  // 只认 #rgb / #rrggbb；取色器给的就是这个格式，其他写法原样回退白字
+  function brandInk(color) {
+    var s = String(color || '').trim();
+    if (s.charAt(0) !== '#') return '#fff';
+    s = s.slice(1);
+    if (s.length === 3) s = s.charAt(0) + s.charAt(0) + s.charAt(1) + s.charAt(1) + s.charAt(2) + s.charAt(2);
+    if (!/^[0-9a-f]{6}$/i.test(s)) return '#fff';
+    var rgb = [0, 2, 4].map(function (i) {
+      var c = parseInt(s.substr(i, 2), 16) / 255;
+      return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    var lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+    // 白色亮度 1、这个深灰约 0.03：阈值取 0.36，两种字色的对比度都在 7:1 以上
+    return lum > 0.36 ? '#101418' : '#fff';
+  }
   function applyCfgAppearance(theme, keepTune) {
     // CFG_APPEARANCE 的声明在文件后段，而 theme_changed 广播可能在脚本还没执行到
     // 那里就到：此时它是 undefined，直接读 .palette 会抛异常并中断后面的初始化。
@@ -15230,10 +15248,17 @@
       // 没壁纸（或没取到配色）时这层内联必须撤掉：内联优先级高于
       // [data-theme=xxx]，留着上一次的配色就是「切档错乱」——
       // 浅色档带着深色底、切到暗黑还是原来的牌子色
-      ['--brand', '--user-bubble', '--bg', '--surface'].forEach(function (k) {
+      ['--brand', '--user-bubble', '--bg', '--surface',
+       '--on-brand', '--on-user'].forEach(function (k) {
         html.style.removeProperty(k);
       });
     }
+    // 压在强调色上的字色跟着强调色走（下面 brandInk 的说明）。
+    // 没壁纸时也走一遍：用三档主题自己的 --brand 重新算
+    var brand = vars['--brand'] || getComputedStyle(html).getPropertyValue('--brand');
+    var bubble = vars['--user-bubble'] || brand;
+    vars['--on-brand'] = brandInk(brand);
+    vars['--on-user'] = brandInk(bubble);
     Object.keys(vars).forEach(function (k) { html.style.setProperty(k, vars[k]); });
     html.classList.toggle('wall-on', on);
     // 自定义主题的生灭都在这里落地，左下角按钮文案跟着同步
@@ -15244,7 +15269,8 @@
   function clearCfgAppearanceVars() {
     var html = document.documentElement;
     ['--wallpaper', '--wall-dim', '--wall-blur', '--panel-alpha',
-     '--brand', '--user-bubble', '--bg', '--surface'].forEach(function (k) {
+     '--brand', '--user-bubble', '--bg', '--surface',
+     '--on-brand', '--on-user'].forEach(function (k) {
       html.style.removeProperty(k);
     });
     html.classList.remove('wall-on');

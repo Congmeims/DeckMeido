@@ -15,6 +15,12 @@
     --muted: #8b91a3;
     --brand: #1a9fff;
     --user-bubble: #1a9fff;
+    /* 压在品牌色 / 用户气泡上的字色。白字在亮强调色（比如用户选的
+       #4aff3d 亮绿）上基本读不出来，所以由前端按背景色的相对亮度算一次：
+       亮底给深字、暗底给白字（见 index.html 的 brandInk()）。
+       两档主题的属性选择器里不会重设它，保持前端算出来的值 */
+    --on-brand: #fff;
+    --on-user: #fff;
     --danger: #e8463a;
     /* 跨屏接管提示（顶部横幅 / 侧栏胶囊 / 底部提示条 / 设置卡引导）：
        默认深色主题用深底亮字；浅色主题在 [data-theme=light] 里换成浅底深字 */
@@ -266,8 +272,7 @@
   }
   .msg.user {
     align-self: flex-end;
-    background: var(--user-bubble);
-    color: #fff;
+    background: var(--user-bubble); color: var(--on-user);
     border-bottom-right-radius: 4px;
   }
   .msg.assistant {
@@ -296,7 +301,7 @@
   .voice-play {
     width: 26px; height: 26px; flex: 0 0 auto;
     border: none; border-radius: 50%;
-    background: var(--brand); color: #fff; font-size: 12px;
+    background: var(--brand); color: var(--on-brand); font-size: 12px;
     display: flex; align-items: center; justify-content: center; cursor: pointer;
   }
   .voice-wave {
@@ -424,10 +429,10 @@
   /* 用户气泡是蓝底：里面的行内代码/代码块若还用主题的代码底色，
      浅色主题下就是「浅灰块 + 继承来的白字」，整段看不见。
      这里单独给一套半透明白底 + 白字，两个主题下都成立 */
-  .msg.user code { background: rgba(255, 255, 255, .22); color: #fff; }
-  .msg.user pre { background: rgba(255, 255, 255, .16); color: #fff; }
-  .msg.user pre code { background: none; color: #fff; }
-  .msg.user h3, .msg.user h4, .msg.user a { color: #fff; }
+  .msg.user code { background: rgba(255, 255, 255, .22); color: var(--on-user); }
+  .msg.user pre { background: rgba(255, 255, 255, .16); color: var(--on-user); }
+  .msg.user pre code { background: none; color: var(--on-user); }
+  .msg.user h3, .msg.user h4, .msg.user a { color: var(--on-user); }
   .msg h3, .msg h4, .md-doc h3, .md-doc h4 { margin: 8px 0 4px; color: var(--brand); }
   .msg h3, .md-doc h3 { font-size: 16px; }
   .msg h4, .md-doc h4 { font-size: 15px; }
@@ -630,7 +635,7 @@
   .ask-input::placeholder { color: var(--muted); }
   .ask-go {
     flex: 0 0 auto; padding: 2px 9px; border-radius: 6px; cursor: pointer;
-    background: var(--brand); color: #fff; border: 1px solid var(--brand);
+    background: var(--brand); color: var(--on-brand); border: 1px solid var(--brand);
     font: inherit; font-size: 12px;
   }
   .ask-go:disabled { opacity: .5; cursor: default; }
@@ -1001,8 +1006,7 @@
     height: 34px;
     border: none;
     border-radius: 10px;
-    background: var(--brand);
-    color: #fff;
+    background: var(--brand); color: var(--on-brand);
     font-size: 15px;
     font-weight: 600;
     padding: 0 16px;
@@ -1164,7 +1168,7 @@
     width: 100%;
     height: 42px; padding: 0 20px;
     border: none; border-radius: 11px;
-    background: var(--brand); color: #fff;
+    background: var(--brand); color: var(--on-brand);
     font-size: 14.5px; font-weight: 600;
     cursor: pointer;
     transition: filter .15s ease, opacity .15s ease;
@@ -1229,7 +1233,7 @@
     font-variant-numeric: tabular-nums;
   }
   .pair-step.on .pair-step-no {
-    background: var(--brand); border-color: var(--brand); color: #fff;
+    background: var(--brand); border-color: var(--brand); color: var(--on-brand);
   }
   /* 等待允许：一颗呼吸的蓝点 + 一行字，靠左和上面的步骤对齐 */
   .pair-wait {
@@ -1738,7 +1742,7 @@
   }
   /* 选中：品牌色实心徽章 + 白字，和空心徽章一眼可分 */
   .api-current.on {
-    border-color: var(--brand); color: #fff; font-weight: 600;
+    border-color: var(--brand); color: var(--on-brand); font-weight: 600;
     background: var(--brand);
   }
   /* 删除：平时很淡，悬停才明显；窄屏也保留可点面积 */
@@ -1783,9 +1787,9 @@
      但覆盖掉上面那条次要按钮的透明底，否则会被压成灰字 */
   .api-foot .mini-btn.primary {
     border-color: var(--brand); background: var(--brand);
-    color: #fff; font-weight: 600;
+    color: var(--on-brand); font-weight: 600;
   }
-  .api-foot .mini-btn.primary:hover { color: #fff; filter: brightness(1.06); }
+  .api-foot .mini-btn.primary:hover { color: var(--on-brand); filter: brightness(1.06); }
   /* 底栏的垂直尺寸要和侧栏那条 .sb-foot 完全一样（上 8 / 下 10 / 按钮 34），
      两个分隔线才会落在同一条水平线上，不然左右各画一条、高低差一截 */
   .set-foot {
@@ -1819,7 +1823,7 @@
     margin-left: auto;
     height: 34px; min-width: 52px; padding: 0 16px;
     border: none; border-radius: 10px;
-    background: var(--brand); color: #fff;
+    background: var(--brand); color: var(--on-brand);
     font-size: 15px; font-weight: 600; font-family: inherit;
     cursor: pointer;
   }
@@ -1981,9 +1985,9 @@
   }
   .mini-btn:hover { border-color: var(--brand); color: var(--brand); }
   .mini-btn.primary {
-    background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 600;
+    background: var(--brand); border-color: var(--brand); color: var(--on-brand); font-weight: 600;
   }
-  .mini-btn.primary:hover { color: #fff; filter: brightness(1.06); }
+  .mini-btn.primary:hover { color: var(--on-brand); filter: brightness(1.06); }
   .mini-btn.danger {
     color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent);
   }
@@ -1997,9 +2001,9 @@
   .speaker-row { display: flex; gap: 8px; }
   .speaker-row .speaker-btn { flex: 1 1 0; min-width: 0; white-space: nowrap; }
   .speaker-btn.active {
-    background: var(--brand); border-color: var(--brand); color: #fff;
+    background: var(--brand); border-color: var(--brand); color: var(--on-brand);
   }
-  .speaker-btn.active:hover { color: #fff; }
+  .speaker-btn.active:hover { color: var(--on-brand); }
   /* 「语气」这类多行输入：和单行输入框同一套外观，可拖高 */
   .field textarea {
     width: 100%;
@@ -3228,7 +3232,7 @@
   /* 确认授权是这一行的主操作：实心主色，和旁边两个描边次按钮拉开层级 */
   .sc-auth-btn {
     border: 1px solid var(--brand); border-radius: 8px;
-    background: var(--brand); color: #fff; cursor: pointer;
+    background: var(--brand); color: var(--on-brand); cursor: pointer;
   }
   .sc-auth-btn:hover { filter: brightness(1.06); }
   /* 取消是次操作里的退出项：描边保持中性，hover 才转危险色，
@@ -3507,7 +3511,7 @@
   #fbUploadBtn {
     flex: 0 0 auto; min-width: 52px; height: 34px;
     border: none; border-radius: 10px; background: var(--brand);
-    color: #fff; font-size: 15px; font-weight: 600; padding: 0 16px; cursor: pointer;
+    color: var(--on-brand); font-size: 15px; font-weight: 600; padding: 0 16px; cursor: pointer;
     transition: opacity .15s ease, transform .12s ease;
   }
   #fbUploadBtn:hover { opacity: .88; }
@@ -3589,7 +3593,7 @@
     background: color-mix(in srgb, var(--brand) 12%, transparent);
   }
   .fbt-dl:hover {
-    background: var(--brand); color: #fff; border-color: var(--brand);
+    background: var(--brand); color: var(--on-brand); border-color: var(--brand);
   }
   .fbt-x {
     flex: 0 0 auto; width: 18px; height: 18px; line-height: 16px;
@@ -4094,7 +4098,7 @@
   #termRun {
     flex: 0 0 auto; min-width: 52px; height: 34px;
     border: none; border-radius: 10px; background: var(--brand);
-    color: #fff; font-size: 15px; font-weight: 600; padding: 0 16px; cursor: pointer;
+    color: var(--on-brand); font-size: 15px; font-weight: 600; padding: 0 16px; cursor: pointer;
     transition: opacity .15s ease, transform .12s ease;
   }
   #termRun:hover { opacity: .88; }
@@ -4181,7 +4185,7 @@
     padding: 6px 12px; border-radius: 9px; font-size: 12.5px;
     background: var(--surface); border: 1px solid var(--line); color: var(--text);
   }
-  .ob-chip.on { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 600; }
+  .ob-chip.on { background: var(--brand); border-color: var(--brand); color: var(--on-brand); font-weight: 600; }
   .ob-foot { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
   .ob-grow { flex: 1; }
   .ob-btn {
@@ -4189,7 +4193,7 @@
     background: var(--surface-2); color: var(--text); border: 1px solid var(--line);
   }
   .ob-btn:hover { border-color: var(--brand); }
-  .ob-btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 600; }
+  .ob-btn.primary { background: var(--brand); border-color: var(--brand); color: var(--on-brand); font-weight: 600; }
   .ob-btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
   .ob-btn[disabled] { opacity: .45; cursor: default; }
   .ob-btn[disabled]:hover { border-color: var(--line); }
