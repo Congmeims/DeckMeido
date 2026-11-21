@@ -2657,9 +2657,6 @@
   html.wall-on #composer .dd-trigger,
   html.wall-on #composer #jumpLatest,
   html.wall-on #composer #sudoAuthBox,
-  /* 设置页底部那条「保存」栏：和对话页底栏是同一个毛病，整条不透明的
-     --surface 横在壁纸上。同样的处理——跟面板透明度、补毛玻璃 */
-  html.wall-on .set-foot,
   html.wall-on #btnNewSess,
   html.wall-on .sess.current,
   html.wall-on #btnTheme,
@@ -2667,6 +2664,33 @@
     background-color: color-mix(in srgb,
       var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
     backdrop-filter: blur(calc(10px + var(--glass)));
+  }
+  /* 左栏仪表条的槽 + 两侧折叠按钮（◀ ▶）：槽是实心 --surface-2，在壁纸上
+     像四道白条；折叠按钮的底色同理。槽本身很细（6px），透出来也压不住字，
+     所以只跟面板透明度、不加毛玻璃，省一层合成 */
+  html.wall-on .bar,
+  html.wall-on .side-toggle {
+    background-color: color-mix(in srgb,
+      var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
+  }
+  /* API 接口行的「使用中」徽章是实心品牌色，在壁纸上也像一块贴上去的色块。
+     取中档（75%）：既跟半透卡片同色系，又还看得出是一枚实心徽章。
+     右侧的 × 和展开箭头平时本来就是透明底，只补一点毛玻璃，免得悬停时
+     的浅色底和周围不对 */
+  html.wall-on .api-current.on {
+    background-color: color-mix(in srgb,
+      var(--brand) calc(var(--panel-alpha) * 75%), transparent);
+  }
+  html.wall-on .api-toggle,
+  html.wall-on .api-remove {
+    backdrop-filter: blur(calc(10px + var(--glass)));
+  }
+  /* 设置页底部那条「保存」栏：和顶栏同一口径（--surface + 面板透明度 +
+     同一档毛玻璃），不能套上面那组 --surface-2——它比顶栏更白，而对话页
+     底栏自己能透是因为它底下压着 #chatView 的雾，设置页的底栏下面什么都没有 */
+  html.wall-on .set-foot {
+    background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
+    backdrop-filter: blur(calc(14px + var(--glass))) saturate(calc(1.1 + var(--glass) / 14));
   }
   /* ---- 设置页「外观」分区 ---- */
   .wall-preview {

@@ -10323,7 +10323,13 @@
         + ' value="' + escapeHtml(p.base_url) + '"'
         + ' data-asv="' + escapeHtml(p.base_url) + '"></div>'
         + '<div class="field"><label>API Key</label>'
-        + '<input class="api-key" type="password" autocomplete="new-password" data-autosave'
+        // 不用 type=password：Chrome 会把「地址栏 + 密码框」这一对当成登录表单，
+        // 每次保存都弹「要更新密码吗」。这里要的是隐藏字符，不是密码语义——
+        // 换成 text + -webkit-text-security，浏览器不再识别成密码。
+        // 旁边另配 data-lpignore / data-1p-ignore，挡掉第三方密码管理器
+        + '<input class="api-key" type="text" autocomplete="off" data-autosave'
+        + ' autocapitalize="off" autocorrect="off" spellcheck="false"'
+        + ' style="-webkit-text-security:disc;text-security:disc"'
         + ' name="deckmeido-api-key-not-a-login" data-lpignore="true" data-1p-ignore'
         + ' data-form-type="other" spellcheck="false" placeholder="'
         + escapeHtml(p.key_set ? (p.masked + '（已配置，留空不改）') : 'sk-…') + '"></div>'
