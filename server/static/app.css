@@ -2547,7 +2547,6 @@
   html.wall-on #sidebar,
   html.wall-on #sbRail,
   html.wall-on #rightbar,
-  html.wall-on #composer,
   html.wall-on #chatView {
     background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
     backdrop-filter: blur(calc(14px + var(--glass))) saturate(calc(1.1 + var(--glass) / 14));
@@ -2594,6 +2593,17 @@
      中间对话区还是实心板——三栏观感对不上。现在和其它面板同一口径 */
   html.wall-on #chatView {
     background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
+  }
+  /* 底栏（输入区 #composer）跟着对话栏一起透：它原来是单独一块 --surface，
+     叠在 #chatView 之上，于是「界面透明度」调到 45% 时上面那一片壁纸能透出来，
+     底栏却还是一条实心板，两者在交界处对不上。现在底栏自己不再上色，
+     用 #chatView 那层雾透过来，和上方的消息区同一口径 */
+  html.wall-on #composer { background: transparent; border-top-color: transparent; }
+  /* 底栏里的下拉、按钮本身带 --surface-2 底，底栏变透之后它们还是一块实心，
+     和输入框的观感不一致；这里让它们跟主面板同一个 --panel-alpha */
+  html.wall-on #composer .cb-select,
+  html.wall-on #composer .cb-btn {
+    background-color: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
   }
   /* ---- 设置页「外观」分区 ---- */
   .wall-preview {
