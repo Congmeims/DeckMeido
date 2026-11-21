@@ -2592,6 +2592,9 @@
   html.wall-on #rbHead,
   html.wall-on .ai-bar,
   html.wall-on #fbBar,
+  html.wall-on #fbBar button,
+  html.wall-on #fbPath,
+  html.wall-on .rb-seg,
   html.wall-on #fbDrop {
     background: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 70%), transparent);
   }
