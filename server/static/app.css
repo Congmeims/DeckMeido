@@ -2596,8 +2596,23 @@
   html.wall-on #fbBar button,
   html.wall-on #fbPath,
   html.wall-on .rb-seg,
+  html.wall-on #fbWarn,
   html.wall-on #fbDrop {
     background: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 70%), transparent);
+  }
+  /* 上面那条统一了「底下那层」；#fbWarn 还要把「面上那层」的色相留住：
+     它是工作区绿 / 谨慎黄 / 危险红的提示胶囊，底色不能跟路径条一样是灰的，
+     否则绿色警示条会变成一条灰胶囊。这里把同样的透明底换成同色相的浅色，
+     透明度取和路径条完全一致，旁边这几颗控件就是同一块玻璃
+     （颜色变量沿用原本写死的三个通道值） */
+  html.wall-on #fbWarn {
+    background: color-mix(in srgb, rgba(224,163,58,.18) calc(var(--panel-alpha) * 100%), transparent);
+  }
+  html.wall-on #fbWarn.workspace {
+    background: color-mix(in srgb, rgba(95,208,138,.18) calc(var(--panel-alpha) * 100%), transparent);
+  }
+  html.wall-on #fbWarn.danger {
+    background: color-mix(in srgb, rgba(228,80,80,.20) calc(var(--panel-alpha) * 100%), transparent);
   }
   /* 终端那块自己是一层实心底（xterm 要底色，不能透），有壁纸时给它
      和半透明右栏一致的外壳：留出同样的圆角内缩，看着是一块嵌在玻璃里的屏 */
