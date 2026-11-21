@@ -168,6 +168,9 @@
   }
   .hdr-right > .qq-sess-wrap { flex: 0 0 auto; }
   .hdr-right > .badge { flex: 0 1 auto; }
+  /* 设置页顶栏只留「返回 / 标题 / 搜索框」：右侧那几枚徽章（配色、上下文用量、
+     接管、模式）只在对话页出现，设置页里它们没有意义还挤占搜索框的宽度 */
+  body.settings-mode .hdr-right > .badge { display: none; }
   /* 标题占位：窄的时候最先被压到 0（.logo 自带省略号），
      轮不到徽章去换行。以前没有样式，它是个宽 0 的空 span */
   header > .spacer { flex: 1 1 auto; min-width: 0; }
@@ -1490,7 +1493,7 @@
     transform: translate(-50%, -50%);
     z-index: 2;
     align-items: center; gap: 8px;
-    width: min(440px, 46vw);
+    width: min(560px, 56vw);
     max-width: calc(100vw - 24px);
   }
   body.settings-mode .hdr-search { display: flex; }
@@ -1508,7 +1511,7 @@
   body.settings-mode header.hdr-wrap .hdr-search {
     position: static; transform: none; order: 2;
     flex: 1 0 100%; width: auto !important;
-    max-width: 440px; margin: 0 auto;
+    max-width: 560px; margin: 0 auto;
   }
   body.settings-mode header.hdr-wrap .hdr-search-count { display: none; }
   .hdr-search-field {
@@ -1845,7 +1848,7 @@
     body.settings-mode .hdr-search {
       position: static; transform: none; order: 2;
       flex: 1 0 100%; width: auto !important;
-      max-width: 440px; margin: 0 auto;
+      max-width: 560px; margin: 0 auto;
     }
     body.settings-mode .hdr-search-count { display: none; }
   }

@@ -11541,7 +11541,9 @@
       return;
     }
     hdrBar.classList.remove('hdr-wrap');
-    w = Math.min(440, w);
+    // 上限从 440 放到 560：设置页里右侧徽章已经不显示，居中框可以更宽，
+    // 窄视图下也不用再换到第二行（换行阈值仍是 96px）
+    w = Math.min(560, w);
     hdrSearch.style.width = w + 'px';
     hdrSearch.classList.toggle('compact', w < 320);
     // 窄了先缩成「搜索设置」，再窄就只留放大镜图标，输入框本身始终在
