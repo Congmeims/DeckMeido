@@ -2879,17 +2879,10 @@
     background: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
     backdrop-filter: blur(10px);
   }
-  /* 壁纸模式下的三档明暗差异。
-     没壁纸时「深色」(#0f1117) 和「暗黑」(#000) 靠底色就能分辨；一开壁纸，
-     两档都从 pal.dark 取同一套配色、面板又大半透出壁纸，屏幕上几乎完全一样，
-     只剩 --line/--hover 那点差别。这里按档位给面板压一层：
-       - 深色：底色轻微压暗，保留一点颜色层次
-       - 暗黑：压到接近纯黑，和深色拉开明显色差（OLED 那档本来就该更黑）
-     浅色档不参与（它走 pal.light，和另外两档天然不同）。
-     用不透明混色而不是叠滤镜：面板已经半透，再叠半透层会把透明度算乱 */
-  html.wall-on[data-theme="dark"] { --surface: color-mix(in srgb, #000 12%, var(--surface)); }
-  html.wall-on[data-theme="oled"] { --surface: color-mix(in srgb, #000 55%, var(--surface)); }
-  html.wall-on[data-theme="oled"] { --surface-2: color-mix(in srgb, #000 42%, var(--surface-2)); }
+  /* 壁纸模式下「深色 / 暗黑」两档的明暗差异在 applyCfgAppearance() 里算
+     （index.html），因为 --surface / --surface-2 是内联样式写上去的，
+     内联优先级高于这里的属性选择器：写在这里会被内联值直接盖掉，等于没写。
+     那边按档位把面板底色混黑：深色 12%、暗黑 55%，暗黑更接近纯黑。 */
 
   /* 壁纸下没有气泡兜底的那几类字：
      - 灰色小字（思考链标题、时间线正文、进度提示、系统提示）统一加深一档，

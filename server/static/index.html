@@ -15234,6 +15234,20 @@
     // 白色亮度 1、这个深灰约 0.03：阈值取 0.36，两种字色的对比度都在 7:1 以上
     return lum > 0.36 ? '#101418' : '#fff';
   }
+  // 两个 #rrggbb 按比例混合（t = 第二个颜色的占比），用于按档位把面板
+  // 底色往黑里压。非 #rrggbb 的写法原样返回，交给 CSS 自己去混
+  function mixHex(a, b, t) {
+    var pa = /^#([0-9a-f]{6})$/i.exec(String(a || ''));
+    var pb = /^#([0-9a-f]{6})$/i.exec(String(b || ''));
+    if (!pa || !pb) return a;
+    var out = [0, 2, 4].map(function (i) {
+      var x = parseInt(pa[1].substr(i, 2), 16);
+      var y = parseInt(pb[1].substr(i, 2), 16);
+      var v = Math.round(x + (y - x) * t);
+      return ('0' + Math.max(0, Math.min(255, v)).toString(16)).slice(-2);
+    });
+    return '#' + out.join('');
+  }
   function applyCfgAppearance(theme, keepTune) {
     // CFG_APPEARANCE 的声明在文件后段，而 theme_changed 广播可能在脚本还没执行到
     // 那里就到：此时它是 undefined，直接读 .palette 会抛异常并中断后面的初始化。
@@ -15288,6 +15302,21 @@
       ['brand', 'user_bubble', 'bg', 'surface', 'surface_2'].forEach(function (k) {
         if (set && set[k]) vars['--' + k.replace('_', '-')] = set[k];
       });
+      // 壁纸下「深色」和「暗黑」取的是同一套 pal.dark，面板又大半透出壁纸，
+      // 两档在屏幕上几乎一样。这里按档位把面板底色往黑里压，拉开差距：
+      // 暗黑该更沉、更接近 OLED 的纯黑，深色只轻压一点保留层次。
+      // 必须在 JS 里算——这几个值写在内联样式上，CSS 里同名的属性选择器
+      // （html[data-theme=oled]{--surface:...}）优先级不够，根本盖不住
+      var theme = html.getAttribute('data-theme') || 'dark';
+      if (!isLightTheme() && vars['--surface']) {
+        var k = theme === 'oled' ? 0.55 : (theme === 'dark' ? 0.12 : 0);
+        if (k > 0) {
+          vars['--surface'] = mixHex(vars['--surface'], '#000000', k);
+          if (vars['--surface-2']) {
+            vars['--surface-2'] = mixHex(vars['--surface-2'], '#000000', k * 0.76);
+          }
+        }
+      }
       // 小灰字的混色底要一个不透明的实色：新配色里有 surface_2 就用它，
       // 老配色（只存了四个键）按浅深主题退回原来的固定灰
       vars['--muted-base'] = (set && set.surface_2)
