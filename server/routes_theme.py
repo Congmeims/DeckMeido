@@ -8,6 +8,9 @@ register(app) 时才定义路由函数，保持 main.api_xxx 的既有写法。
     palette   = '{"dark":{...},"light":{...},"source":"#xxx"}'   # JSON 字符串
     dim       = 45                   # 界面透明度 0-100
     blur      = 0                    # 壁纸模糊 px 0-12
+    glass     = 0                    # 毛玻璃强度 px 0-20
+    theme     = "dark"              # 三档主题 light / dark / oled
+整段跟随后端配置：任一端的网页/客户端改完写回这里，再广播给所有连接（含 Deck 客户端）。
 文件本身在 userdata/wallpapers/，由 /wallpapers 静态挂载公开提供（<img> 带不了令牌）。
 """
 from __future__ import annotations
@@ -34,12 +37,25 @@ __all_routes__ = ("api_theme_get", "api_theme_wallpaper", "api_theme_clear",
 class _TuneReq(BaseModel):
     dim: int | None = None
     blur: int | None = None
+    glass: int | None = None
+    theme: str | None = None
+
+
+# 合法的三档主题名
+THEMES = ("light", "dark", "oled")
+
+
+def _theme_name(value, default: str = "dark") -> str:
+    """配置里的主题名，非法值按默认档"""
+    v = str(value or "").strip()
+    return v if v in THEMES else default
 
 
 # dim 在前端是「界面透明度」：越大上层 UI 越透、壁纸越清楚（见 index.html
 # 的 applyCfgAppearance）。新装默认 45，与设置页滑条的初始位置一致
 DIM_DEFAULT = 45
 BLUR_DEFAULT = 0
+GLASS_DEFAULT = 0
 
 
 class _PaletteReq(BaseModel):
@@ -83,6 +99,7 @@ def current_theme() -> dict:
         palette = None
     dim = _clamp_int(app.get("dim"), DIM_DEFAULT, 0, 100)
     blur = _clamp_int(app.get("blur"), BLUR_DEFAULT, 0, 12)
+    glass = _clamp_int(app.get("glass"), GLASS_DEFAULT, 0, 20)
     # 壁纸的版本戳：文件名固定是 wallpaper.*，换图后同名同扩展名时
     # 光靠文件名比不出新旧，颜色和亮度全都得跟着这一张走
     ver = _mtime(name) if name else 0
@@ -100,6 +117,9 @@ def current_theme() -> dict:
         "source": str((palette or {}).get("source") or ""),
         "dim": dim,
         "blur": blur,
+        # 毛玻璃强度与三档主题也跟随后端：所有网页/客户端共用同一套外观
+        "glass": glass,
+        "theme": _theme_name(app.get("theme")),
         # 壁纸平均亮度的档位（light / mid / dark）：前端拿它调小灰字深浅，
         # 浅色壁纸透上来时灰字加深、深色壁纸时反过来。没壁纸时不上报
         "wall_lum": themecolor.lum_bucket(themecolor.wallpaper_lum()) if name else "",
@@ -209,9 +229,11 @@ def register(app) -> None:
 
     @router.post("/api/theme/config")
     async def api_theme_config(req: _TuneReq):
-        """压暗 / 模糊：两个滑杆停手后落到这里，别的端立刻跟着变
+        """透明度 / 模糊 / 毛玻璃 / 主题：改完落到 config.toml，再广播给所有端
 
-        只改传上来的那一项：另一项不在 updates 里，所以不会被这次调用
+        外观全局共用一份，以后端为准：任一端（另一台浏览器、桌面客户端、
+        掌机面板）改完，其余端收到 theme_changed 立刻跟着变。
+        只改传上来的那几项：没传的项不在 updates 里，所以不会被这次调用
         顺手用「读-改-写」的旧值盖掉；同时记下这一项的落盘时间，
         前端据此丢掉自己保存之前拍下的旧快照。
         """
@@ -223,6 +245,10 @@ def register(app) -> None:
         if req.blur is not None:
             updates["blur"] = _clamp_int(req.blur, BLUR_DEFAULT, 0, 12)
             updates["blur_ts"] = str(now)
+        if req.glass is not None:
+            updates["glass"] = _clamp_int(req.glass, GLASS_DEFAULT, 0, 20)
+        if req.theme is not None:
+            updates["theme"] = _theme_name(req.theme)
         await _publish(updates)
         return {"ok": True, "theme": current_theme()}
 
