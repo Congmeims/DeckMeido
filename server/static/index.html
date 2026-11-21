@@ -2,7 +2,11 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<!-- 禁止双指缩放：这是按视口铺满的应用界面（左右栏靠媒体查询切换、输入区贴底），
+     一旦被捏到 0.6 倍，内容只占屏幕左半边、右边露壁纸、底部空一块，还没法捏回去。
+     user-scalable=no 在无障碍「强制缩放」开启时会被 Chrome 忽略，所以 app.css 里
+     另外给 html/body 设了 touch-action: pan-x pan-y 兜底 -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0f1117">
 <link rel="icon" type="image/png" href="/favicon.png">
@@ -128,8 +132,12 @@
      它留在原处不动——状态点、会话名、上下文用量、连接数、模式徽章
      在设置页里看到的和在对话里一模一样 -->
 <header>
+  <!-- 手机折叠三角：宽屏隐藏，只在窄屏断点里出现。左开合会话栏、右开合工具栏 -->
+  <button type="button" id="mtLeft" aria-label="展开会话栏">◀</button>
+  <button type="button" id="mtRight" aria-label="展开工具栏">▶</button>
   <button class="cb-btn" id="btnMenu">菜单</button>
   <button class="cb-btn" id="btnRight">工具</button>
+
   <div class="conn-wrap">
     <span class="dot" id="dot"></span>
     <div class="conn-panel" id="connPanel" hidden></div>
@@ -258,18 +266,6 @@
         <option value="full" class="opt-danger">完全访问</option>
         <option value="custom">自定义</option>
       </select>
-      <!-- 深度思考档位：无 / 低 / 中 / 高，跟着权限下拉走 -->
-      <label class="think-slider" id="thinkWrap">
-        <span id="thinkLabel">高</span>
-        <input type="range" id="thinkRange" min="0" max="3" step="1" value="3"
-               aria-label="深度思考档位" hidden>
-        <div class="think-track" id="thinkTrack">
-          <div class="think-rail"></div>
-          <div class="think-fill" id="thinkFill"></div>
-          <div class="think-ticks"><i></i><i></i><i></i><i></i></div>
-          <div class="think-knob" id="thinkKnob"></div>
-        </div>
-      </label>
     </div>
     <div class="cb-right">
       <select class="cb-select" id="modelSelect"></select>
@@ -3357,6 +3353,7 @@
     document.body.classList.toggle('rb-collapsed', collapsed);
     document.body.classList.toggle('rb-open', narrow && RB.open);
     rbSyncToggle();
+    if (typeof syncMobileToggles === 'function') syncMobileToggles();
     try {
       localStorage.setItem('deckmeido_rb', JSON.stringify({
         tab: RB.tab, collapsed: RB.collapsed, open: RB.open
@@ -8447,9 +8444,10 @@
     if (s.context) {
       var c = s.context;
       var pct = c.percent || 0;
-      // 窄屏顶栏把徽章藏了，同一份用量改在侧栏状态卡里显示（见 #ctxRow）
+      // 侧栏状态卡只放 CPU/RAM/SSD/TFC 四项。上下文用量已经在顶栏胶囊里，
+      // 再在这里插一行会话号 + 百分比，看着像第五个系统指标，用户以为是异常值
       var ctxRow = document.getElementById('ctxRow');
-      ctxRow.hidden = false;
+      ctxRow.hidden = true;
       // 窄屏没有顶栏胶囊，会话编号挪到这个标签上
       document.getElementById('ctxName').textContent = c.sid ? ('#' + String(c.sid).slice(0, 6)) : '上下文';
       setCtxBar(pct, pct + '%' + (c.used ? ' · ' + fmtTokens(c.used) : '')
@@ -8776,7 +8774,10 @@
     if (busy) {
       sendBtn.textContent = tr('终止');
       sendBtn.classList.add('stop');
-      input.placeholder = tr('按回车加入队列，等这一轮结束自动发送');
+      // 手机上没有回车键，说「按回车」等于没提示；触屏下改说「接着输入」
+      input.placeholder = tr(window.matchMedia('(pointer: coarse)').matches
+        ? '接着输入，会排队等这一轮结束自动发送'
+        : '按回车加入队列，等这一轮结束自动发送');
     } else {
       sendBtn.textContent = tr('发送');
       sendBtn.classList.remove('stop');
@@ -11590,10 +11591,12 @@
   function fitHdrSearch() {
     if (!hdrSearch || !hdrBar) return;
     hdrSearch.classList.remove('compact');
-    // <=640px 由 CSS 排进顶栏第二行独占一行，不再算宽度
-    if (window.matchMedia('(max-width: 640px)').matches) {
+    // 窄屏：搜索框已经回到 flex 流里、宽度交给 CSS（flex:1 1 0 自动收窄），
+    // 这里不再量宽度、也不再挂 .hdr-wrap，保证顶栏永远只有一行
+    if (window.matchMedia('(max-width: 560px)').matches) {
       hdrSearch.style.width = '';
-      settingsSearch.placeholder = HDR_SEARCH_PH;
+      hdrBar.classList.remove('hdr-wrap');
+      settingsSearch.placeholder = '搜索设置';
       return;
     }
     var hr = hdrBar.getBoundingClientRect();
@@ -14646,7 +14649,6 @@
           permSelect.dataset.prev = c.permission_mode;
           syncPermDanger(permSelect);
         }
-        setThinkLevel(THINK_LEVELS.indexOf(c.reasoning_effort || ''));
         // 模型下拉：先用当前模型占位，再异步补上服务商真实模型列表
         fillModelSelect([c.model]);
         if (c.model) modelSelect.value = c.model;
@@ -14823,73 +14825,8 @@
     postConfig({ permission_mode: want });
     addSystem('权限模式已切换：' + permSelect.options[permSelect.selectedIndex].text);
   });
-  // 深度思考档位：无 / 低 / 中 / 高。四档在后端只落成 llm.reasoning_effort
-  // 一个字符串（空 / low / medium / high），DeepSeek 与 OpenAI 系都认这套取值。
-  // 真正的滑块是自绘的（.think-track），下面的 range 只当前端状态用
-  var thinkWrap = document.getElementById('thinkWrap');
-  var thinkRange = document.getElementById('thinkRange');
-  var thinkLabel = document.getElementById('thinkLabel');
-  var thinkTrack = document.getElementById('thinkTrack');
-  var thinkFill = document.getElementById('thinkFill');
-  var thinkKnob = document.getElementById('thinkKnob');
-  var THINK_LEVELS = ['', 'low', 'medium', 'high'];
-  var THINK_NAMES = ['无', '低', '中', '高'];
-  function clampLevel(lv) {
-    lv = parseInt(lv, 10);
-    return isNaN(lv) ? 0 : Math.max(0, Math.min(3, lv));
-  }
-  function setThinkLevel(lv) {
-    lv = clampLevel(lv);
-    thinkRange.value = lv;
-    thinkLabel.textContent = THINK_NAMES[lv];
-    // 圆点半径的一半留在两端之外会溢出，所以两端各让出 7px
-    var pct = 'calc(' + (lv / 3 * 100) + '% + ' + ((0.5 - lv / 3) * 14).toFixed(2) + 'px)';
-    thinkFill.style.width = pct;
-    thinkKnob.style.left = pct;
-    thinkWrap.classList.remove('level-0', 'level-1', 'level-2', 'level-3');
-    thinkWrap.classList.add('level-' + lv);
-    return lv;
-  }
-  // 点击/拖动滑轨：按横向位置换算成最近的档位，松手才写配置。
-  // 拖动时不做吸附动画，松手后 setThinkLevel 会带过渡把圆点推到整档上
-  function levelFromX(clientX) {
-    var r = thinkTrack.getBoundingClientRect();
-    if (!r.width) return 0;
-    return clampLevel(Math.round((clientX - r.left - 7) / (r.width - 14) * 3));
-  }
-  var thinkDragging = false;
-  function dragTo(clientX) {
-    var lv = levelFromX(clientX);
-    if (lv !== clampLevel(thinkRange.value)) setThinkLevel(lv);
-  }
-  thinkTrack.addEventListener('pointerdown', function (e) {
-    thinkDragging = true;
-    try { thinkTrack.setPointerCapture(e.pointerId); } catch (_) {}
-    dragTo(e.clientX);
-    e.preventDefault();
-  });
-  thinkTrack.addEventListener('pointermove', function (e) {
-    if (thinkDragging) dragTo(e.clientX);
-  });
-  // 松手后先按本地档位落位，再以服务端回传的归一值校正：
-  // DeepSeek 只有 high / max，「低」「中」会被它映射成 high，滑条要如实跳回去，
-  // 免得以为设了「低」实际一直在跑高档
-  function commitThink(lv) {
-    lv = setThinkLevel(lv);
-    postConfig({ reasoning_effort: THINK_LEVELS[lv] }).then(function (c) {
-      if (!c || typeof c.reasoning_effort !== 'string') return;
-      var real = setThinkLevel(THINK_LEVELS.indexOf(c.reasoning_effort));
-      addSystem('深度思考已设为：' + THINK_NAMES[real]
-                + (real !== lv ? '（该服务商不支持「' + THINK_NAMES[lv] + '」，已按实际档位显示）' : ''));
-    });
-  }
-  thinkTrack.addEventListener('pointerup', function (e) {
-    if (!thinkDragging) return;
-    thinkDragging = false;
-    commitThink(thinkRange.value);
-  });
-  // 键盘无障碍：方向键、Home/End 也能调档
-  thinkRange.addEventListener('change', function () { commitThink(thinkRange.value); });
+  // 深度思考档位滑条已移除：推理强度走服务商推荐默认值（后端 llm.reasoning_effort
+  // 默认 high），不再开放给前端调
   modelSelect.addEventListener('change', function () {
     if (setModelSelect) setModelSelect.value = modelSelect.value;
     postConfig({ model: modelSelect.value });
@@ -15533,11 +15470,40 @@
   document.getElementById('btnMenu').addEventListener('click', function () {
     document.body.classList.toggle('sb-open');
   });
+  // 手机顶栏两端的三角：左侧开合会话栏，右侧开合工具栏，
+  // 箭头方向按当前开合状态镜像。宽屏下这两颗被 CSS 隐藏
+  document.getElementById('mtLeft').addEventListener('click', function () {
+    document.body.classList.toggle('sb-open');
+    syncMobileToggles();
+  });
+  document.getElementById('mtRight').addEventListener('click', function () {
+    RB.open = !RB.open;
+    if (RB.open) {
+      if (RB.tab === 'file' && !fb.path) fbLoad(fb.follow ? fb.aiPath : '');
+      if (RB.tab === 'term') termPoll();
+    }
+    rbApplyLayout();
+    syncMobileToggles();
+  });
+  function syncMobileToggles() {
+    var l = document.getElementById('mtLeft');
+    var r = document.getElementById('mtRight');
+    if (l) {
+      l.textContent = document.body.classList.contains('sb-open') ? '◀' : '▶';
+      l.classList.toggle('mt-on', document.body.classList.contains('sb-open'));
+    }
+    if (r) {
+      r.textContent = RB.open ? '▶' : '◀';
+      r.classList.toggle('mt-on', !!RB.open);
+    }
+  }
+  syncMobileToggles();
   // 左右抽屉统一走这一个收起入口：点遮罩、点消息区、点设置内容区都只调它，
   // 保证两侧行为一致（右栏以前没有遮罩，点空白完全收不起来）
   function closeDrawers() {
     document.body.classList.remove('sb-open');
     if (RB.open) { RB.open = false; rbApplyLayout(); }
+    syncMobileToggles();
   }
   document.getElementById('drawerMask').addEventListener('click', closeDrawers);
   // 点消息区 = 接着聊天，顺手收起抽屉

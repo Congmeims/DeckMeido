@@ -58,6 +58,11 @@
   }
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; }
+  /* 禁双指缩放的第二道保险（第一道是 index.html 的 viewport meta）：
+     Chrome 在无障碍里开了「强制缩放」时会无视 user-scalable=no，但手势仍受
+     touch-action 约束。只放行平移，双指缩放就落不下来。不能设成 none：
+     那样消息区、设置页的纵向滚动和输入框里的拖选也会一起没了 */
+  html, body { touch-action: pan-x pan-y; }
   /* 脚本回退字体在这里常常把字画成深色块，中文统一交给系统字体 */
   body {
     background: var(--bg);
@@ -426,7 +431,10 @@
   #shareBar .grow { flex: 1; font-size: 13px; color: var(--muted); }
 
   /* markdown 内容 */
-  .msg pre, .md-doc pre { background: var(--code-bg); padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 6px 0; font-size: 13px; }
+  /* min-width:0 是给窄屏兜底的：气泡是 flex 子项，默认 min-width:auto 会被
+     里面最长的那行代码撑开，overflow-x:auto 就永远不触发，代码块右侧直接
+     被裁在屏幕外。压掉下限后长行才会在气泡内部左右滚 */
+  .msg pre, .md-doc pre { min-width: 0; max-width: 100%; background: var(--code-bg); padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 6px 0; font-size: 13px; }
   .msg code, .md-doc code { background: var(--code-bg); padding: 2px 6px; border-radius: 5px; font-size: 13px; font-family: var(--font-mono); }
   .msg pre code, .md-doc pre code { background: none; padding: 0; }
   /* 用户气泡是蓝底：里面的行内代码/代码块若还用主题的代码底色，
@@ -799,55 +807,6 @@
     min-width: 34px; padding: 0 10px; height: 34px; border: none; border-radius: 10px;
     background: var(--surface-2); color: var(--muted);
     font-size: 16px; cursor: pointer; flex: 0 0 auto;
-  }
-  /* 深度思考档位：无 / 低 / 中 / 高。整块做成没有边框的胶囊，
-     左侧文字随拖动实时变化，右侧四个刻度点指示落点 */
-  .think-slider {
-    display: flex; align-items: center; gap: 8px;
-    height: 34px; padding: 0 12px 0 10px; border-radius: 10px;
-    background: var(--surface-2); flex: 0 0 auto;
-    transition: background .18s ease;
-  }
-  .think-slider:hover { background: var(--surface-3, var(--surface-1)); }
-  .think-slider span {
-    font-size: 12.5px; color: var(--muted); min-width: 2.2em;
-    transition: color .18s ease, font-weight .18s ease;
-  }
-  .think-slider.level-0 span { color: var(--muted); }
-  .think-slider.level-1 span, .think-slider.level-2 span,
-  .think-slider.level-3 span { color: var(--brand); font-weight: 600; }
-  /* 滑轨用自绘的：浏览器原生 range 在 QtWebEngine 里样式各版本不一，
-     自绘才能做「已填充段 + 圆点跟随」的动画 */
-  .think-track {
-    position: relative; width: 64px; height: 16px;
-    display: flex; align-items: center; cursor: pointer;
-  }
-  .think-rail, .think-fill {
-    position: absolute; left: 0; height: 4px; border-radius: 2px;
-  }
-  .think-rail { width: 100%; background: var(--line); }
-  .think-fill {
-    width: 0; background: var(--brand);
-    /* 值一变，填充条和圆点一起滑过去，而不是瞬移 */
-    transition: width .22s cubic-bezier(.22, .8, .3, 1);
-  }
-  .think-knob {
-    position: absolute; left: 0; width: 14px; height: 14px; border-radius: 50%;
-    background: #fff; border: 2px solid var(--brand); box-sizing: border-box;
-    transform: translateX(-50%);
-    transition: left .22s cubic-bezier(.22, .8, .3, 1), box-shadow .18s ease;
-  }
-  .think-slider:hover .think-knob,
-  .think-track:active .think-knob { box-shadow: 0 0 0 5px rgba(127, 127, 127, .18); }
-  .think-slider.level-0 .think-knob { border-color: var(--line); }
-  /* 四个刻度点：当前档位实心，其余空心，给小数点一个参照 */
-  .think-ticks {
-    position: absolute; inset: 0; display: flex; align-items: center;
-    justify-content: space-between; pointer-events: none;
-  }
-  .think-ticks i {
-    width: 3px; height: 3px; border-radius: 50%;
-    background: var(--muted); opacity: .45; transition: opacity .18s ease;
   }
   .cb-select {
     height: 34px; border: 1px solid var(--line); border-radius: 10px;
@@ -1583,7 +1542,9 @@
     width: min(560px, 56vw);
     max-width: calc(100vw - 24px);
   }
-  body.settings-mode .hdr-search { display: flex; }
+  /* 设置页顶栏没有对话页那些胶囊和模型下拉，中间空着大片，
+     搜索框可以放宽一些，便于看清较长的设置项名 */
+  body.settings-mode .hdr-search { display: flex; width: min(760px, 72vw); }
   /* 第一行实在塞不下搜索框时（fitHdrSearch 量出来不足 96px），
      由 JS 给 header 加上 .hdr-wrap：整条换行，搜索框独占第二行。
      不这样做的话，绝对居中的框会溢出顶栏、从下方露出来。 */
@@ -1933,23 +1894,6 @@
     .set-foot { padding: 8px 10px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
     /* 手机竖屏：所有网格回落单栏，不横向溢出 */
     .set-grid, .set-grid-3 { grid-template-columns: minmax(0, 1fr); }
-  }
-  /* 极窄屏顶栏放不下「左右内容 + 居中搜索」时，让搜索独占顶栏第二行。
-     左右按钮、标题仍然完整留在第一行，不压缩、不换行；搜索水平占满剩余宽度 */
-  @media (max-width: 640px) {
-    /* 同上：换行后必须让 header 自己长高，否则第二行被 45px 的固定高度压出界 */
-    body.settings-mode header {
-      flex-wrap: wrap; row-gap: 6px;
-      height: auto; min-height: 45px;
-      padding-bottom: 6px;
-      padding-top: calc(env(safe-area-inset-top) + 6px);
-    }
-    body.settings-mode .hdr-search {
-      position: static; transform: none; order: 2;
-      flex: 1 0 100%; width: auto !important;
-      max-width: 560px; margin: 0 auto;
-    }
-    body.settings-mode .hdr-search-count { display: none; }
   }
   .field { margin-bottom: var(--set-field-gap); }
   .field label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: var(--set-label-gap); }
@@ -3428,18 +3372,34 @@
   .sess:hover .s-del { opacity: 1; }
   .sess .s-del.confirm { opacity: 1; color: #fff; background: var(--danger); }
   #btnMenu { display: none; }
+  /* 手机折叠三角：全局默认隐藏，只在窄屏断点里放出来，
+     否则会跟着插进 PC 顶栏（它们的默认 display 是 flex） */
+  #mtLeft, #mtRight { display: none; }
   @media (max-width: 760px) {
     #sidebar {
       /* 抽屉是 position:fixed，已脱离 #app 的 flex 流，宽度回到写死的 310px；
          flex:none 是为了不让它再参与 1.5:4.5:4 的比例分配 */
       position: fixed; z-index: 15; left: 0; top: 0; bottom: 0;
-      width: 310px; flex: none;
+      /* 手机竖屏只有 361px 宽，写死 310px 的抽屉几乎盖满整屏，拉开后
+         正文只剩一条边、什么也点不到。抽屉宽度取屏幕的 3/5 */
+      width: 60vw; max-width: 320px; flex: none;
       transform: translateX(-105%); transition: transform .2s;
       box-shadow: 0 0 40px rgba(0,0,0,.4);
+      /* 抽屉是浮在正文之上的独立层：桌面版的半透明玻璃底（跟着
+         --panel-alpha 走）在这里会让下面的聊天/设置透上来，两行字
+         叠在一起根本读不了。抽屉必须是实底 */
+      background: var(--surface);
+      backdrop-filter: none;
     }
     /* 窄屏下侧栏本来就是抽屉，折叠态不生效：宽度交给抽屉，别留那 44px 窄条 */
     body.sb-open #sidebar { transform: none; }
-    body.sb-collapsed #sidebar { flex: none; width: 310px; }
+    /* 壁纸模式下 html.wall-on #sidebar 那条半透明玻璃底优先级更高，
+       这里要同等级覆盖回来，否则抽屉一拉开还是透字 */
+    html.wall-on #sidebar {
+      background: var(--surface);
+      backdrop-filter: none;
+    }
+    body.sb-collapsed #sidebar { flex: none; width: 60vw; max-width: 320px; }
     /* 抽屉收起时 #main 独占整行（侧栏已脱离文档流），不必再给它留比例 */
     #main { flex: 1 1 auto; }
     body.sb-collapsed .sb-body { display: flex; }
@@ -3447,12 +3407,30 @@
     body.sb-collapsed .sb-head { display: flex; }
     body.sb-collapsed #sbRail { display: none; }
     #sbToggle { display: none; }
-    /* 设置页左栏是分区导航，窄屏下以抽屉常开的形式露出；但收起态要放行，
-       否则抽屉被钉死开着，顶栏「菜单」也关不掉 */
-    body.settings-mode:not(.sb-collapsed) #sidebar {
-      transform: none; width: 310px; flex: none;
+    /* 设置页左栏是分区导航。桌面能常开，手机不行：抽屉宽 310px，屏幕才
+       361px，钉死后右侧表单只剩几十像素，设置项和抽屉糊在一起。
+       窄屏一律当抽屉用，默认收起，点顶栏「菜单」再拉开 */
+    #btnMenu, #btnRight { display: none !important; }
+    /* 两颗三角直接进顶栏两端（不 fixed 浮着），靠 order 插到标题两侧，
+       不会盖住标题，也不跟底部输入区打架 */
+    #mtLeft, #mtRight {
+      width: 30px; height: 30px;
+      display: flex; align-items: center; justify-content: center;
+      box-sizing: border-box; padding: 0;
+      border-radius: 8px;
+      font-size: 13px; line-height: 1;
+      background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+      color: var(--muted);
+      border: 1px solid var(--line);
+      -webkit-tap-highlight-color: transparent;
     }
-    #btnMenu { display: block; }
+    #mtLeft { order: -1; margin-right: 6px; }
+    #mtRight { order: 99; margin-left: 6px; }
+    #mtLeft:active, #mtRight:active,
+    #mtLeft.mt-on, #mtRight.mt-on {
+      color: var(--brand);
+      border-color: color-mix(in srgb, var(--brand) 55%, var(--line));
+    }
   }
   /* 手机竖屏（≈390px）：顶栏、时间线、输入栏都要单独收窄，否则会被挤出屏幕 */
   @media (max-width: 560px) {
@@ -3460,6 +3438,31 @@
        否则又会和侧栏折叠残片（#sbRail / #rbHead 固定 45px）对不齐 */
     header { gap: 7px; height: 45px; padding: 0 10px; padding-top: env(safe-area-inset-top); }
     .logo { font-size: 15px; }
+    /* 手机顶栏窄：标题允许收缩并省略，但不隐藏——设置页里它显示
+       「设置」，是当前页面的唯一标记。状态点和模式徽章保持不压缩 */
+    .logo {
+      flex: 0 1 auto; min-width: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    /* 吐司在桌面贴底 28px 够了，手机上输入栏常驻底部约 60px 高，
+       33px 的 bottom 会让它压在输入框和发送键上，还被迫折成两行。
+       抬到输入栏之上、放宽到整屏宽度减边距 */
+    #riToast {
+      bottom: calc(env(safe-area-inset-bottom) + 78px);
+      max-width: calc(100vw - 24px);
+      width: max-content;
+      font-size: 12.5px;
+    }
+    /* 顶栏只许占一行：搜索框默认绝对居中会盖住两侧，这里让它回到
+       flex 流里夹在中间，宽度吃掉剩余空间，不够就自己收窄 */
+    body.settings-mode .hdr-search {
+      position: static; transform: none; order: 0;
+      flex: 1 1 0; min-width: 0; width: auto; max-width: none;
+      margin: 0; z-index: auto;
+    }
+    body.settings-mode .hdr-search-count { display: none; }
+    /* 折叠三角保持原尺寸，不被搜索框挤扁 */
+    #mtLeft, #mtRight { flex: 0 0 auto; }
     .hdr-right { gap: 5px; flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; }
     .badge { padding: 3px 8px; font-size: 11px; }
     /* 手机竖屏顶栏只留模式徽章：上下文用量移进侧栏状态卡（见 #ctxRow）。
@@ -3487,7 +3490,16 @@
     #composer { padding: 8px 10px; padding-bottom: calc(8px + env(safe-area-inset-bottom)); gap: 6px; }
     #input { font-size: 15px; padding: 10px 12px; min-height: 40px; }
     #composerBar { gap: 6px; }
+    /* .cb-left 默认 flex:0 0 auto，窄屏下它和 .cb-right 谁也不让，
+       两段加起来 215+120 已经超过 341 的可用宽度，发送被挤到 519px 处
+       （直接在屏幕右外侧）。这里放开收缩，并让「发送」永不被压 */
+    .cb-left { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+    .cb-right { flex: 0 0 auto; }
     .cb-left, .cb-right { gap: 6px; }
+    /* 思考滑条在窄屏只留滑轨，标签「高」缩到 1.6em，省出的 20px 给发送 */
+    .think-slider { padding: 0 8px 0 7px; gap: 5px; }
+    .think-slider span { min-width: 1.6em; font-size: 12px; }
+    .think-track { width: 50px; }
     /* 模型框改成吃剩余宽度，保证“发送”永远露出来 */
     #modelSelect {
       width: auto; min-width: 0; max-width: none;
@@ -4503,11 +4515,17 @@
       /* 抽屉是 position:fixed，已脱离 #app 的 flex 流；flex:none 让它
          不再参与 1.5:4.5:4 的比例分配，宽度由这里的 310px 说了算 */
       position: fixed; z-index: 16; right: 0; top: 0; bottom: 0;
-      width: 310px !important; flex: none;
+      /* 与左侧抽屉同口径：手机竖屏占 3/5 屏，别把正文整片盖掉 */
+      width: 60vw !important; max-width: 320px; flex: none;
       transform: translateX(105%); transition: transform .2s;
       box-shadow: 0 0 40px rgba(0,0,0,.4);
     }
     body.rb-open #rightbar { transform: none; }
+    /* 和左侧抽屉同理：壁纸模式的半透明底会让正文透上来 */
+    html.wall-on #rightbar {
+      background: var(--surface);
+      backdrop-filter: none;
+    }
   
     body.rb-collapsed #rbHead { flex-direction: row; padding: 14px; }
     body.rb-collapsed .rb-tab { display: block; }
