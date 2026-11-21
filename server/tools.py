@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import glob
+import hashlib
 import json
 import os
 import re
@@ -3223,11 +3224,24 @@ LAST_CANDIDATES: list[dict] = []
 # 已经出过图的排除掉，强制往后翻。
 _RECENT_QUERIES: list[str] = []
 
-# 最近几批已经端给用户的图 URL（每批一个 set，旧的在前）。
-# 「换一批」时这些全部排除：只记上一批的话，中间夹一次搜不到东西，
-# 更早那批的图就会原样回来，看起来像「换了但内容完全没变」。
-_SEEN_URLS: list[set[str]] = []
-SEEN_BATCHES = 3          # 记住最近 3 批（约 12 张），再多会把图库翻穿
+# 已经端给用户的图（URL 与「文件内容指纹」两种签名，旧的在前）。
+# 「换一批」时这些全部排除：
+#   - 只记上一批的话，中间夹一次搜不到东西，更早那批的图就会原样回来；
+#   - 只按 URL 记的话，同一个站的不同镜像地址、或者不同站把同一张图
+#     （转载/同人重复）分给不同 URL 时照样会重复端出来。
+# 所以换成一张全局名单，并且下载后按内容哈希再判一次重。
+_SEEN_URLS: list[str] = []
+SEEN_LIMIT = 400          # 记最近 400 张，再多就慢慢清最早的
+
+
+def _seen_mark(sig: str) -> None:
+    """把一张图的签名记进已出名单（URL 或内容哈希）"""
+    if not sig or sig in _SEEN_URLS:
+        return
+    _SEEN_URLS.append(sig)
+    del _SEEN_URLS[:-SEEN_LIMIT]
+
+
 # 一轮对话里连搜几批时的批次号：只在用户看到结果前累加，
 # 让工具返回的文案自带「第 N 批」，模型回复时不会把几批说成一两批
 _BATCH_NO = 0
@@ -3288,7 +3302,10 @@ def _anime_rows(data: list[dict], n: int) -> list[dict]:
         h = int(it.get("height") or 0)
         if not src or w < 1400 or (h and w * 9 < h * 16):
             continue
-        rows.append({"image": src, "title": str(it.get("id") or "")})
+        # tags 交给相关度筛选用：booru 的标题只是 id，光看 id 什么都判断不出来，
+        # 顺带让模型看到图里有些什么
+        rows.append({"image": src, "title": str(it.get("id") or ""),
+                     "tags": str(it.get("tags") or "")})
         if len(rows) >= n:
             break
     return rows
@@ -3319,9 +3336,10 @@ def _anime_search(query: str, n: int, page: int = 1) -> list[dict]:
     """动漫插画双源：Konachan + yande.re（都免 key，按评分取热门横图）
 
     检索词是英文标签。这两个站标签库不大（"garden" 在 Konachan 是 0 条），
-    所以「全部词都在」查不到时，退一步拿命中词最多的那张标签再查一次；
-    还不行就取横图热门，至少给用户几张能看的动漫壁纸。多源池子里
-    它排在 Wallhaven 后面，只有别的源不够才会轮到这几张兜底图。
+    所以「全部词都在」查不到时，退一步拿命中词最多的那张标签再查一次。
+    查不到时**不**再拿固定热门榜兜底：那个榜跟关键词无关，搜「鞠姐」也会
+    端出几张不相干的热门图，用户看到的就是「搜出来的内容不符合」。
+    宁可这一批少几张，也不要拿对不上的图充数。
     """
     import concurrent.futures as cf
     words = [w for w in re.split(r"[^0-9a-z]+", query.lower()) if len(w) > 1]
@@ -3351,18 +3369,6 @@ def _anime_search(query: str, n: int, page: int = 1) -> list[dict]:
         rows.extend(_collect(tag))    # 整句优先，不够再拿单词补
         if len(rows) >= n:
             return rows[:n]
-    if rows:
-        return rows[:n]
-    # 查不到时退回横图热门榜。这个榜是固定排序的，必须按页取：
-    # 每次「换一批」都从第 1 页开始的话，端回来的永远是同一组热门图，
-    # 这也是之前「换了几次内容完全没变」的主要来源之一。
-    # 第 1 页也只在真的什么都没查到时才用。
-    rows = []
-    for api, extra in ((KONA_API, "score:>20"), (YANDE_API, "rating:safe")):
-        try:
-            rows.extend(_booru_json(api, f"landscape {extra}", n, max(1, page)))
-        except Exception:
-            continue
     return rows[:n]
 
 
@@ -3552,6 +3558,14 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
                            r"采集|转载|www\.|http|mural|peel and stick|wall ?sticker|"
                            r"decal|poster|canvas|sticker|amazon|etsy|ebay|"
                            r"aliexpress|redbubble|shutterstock|istock|stock photo", re.I)
+    # 这些词出现在标题里就说明这张图不是壁纸（条目页 / 文章配图 / 商品图）。
+    # 单独拎出来是因为它现在是「直接否决」：Bing 那种「初音未来壁纸」标题
+    # 里带「壁纸」、看着像对上了，内容其实是百科/新闻配图
+    BAD_HARD = re.compile(r"百科|新闻|资讯|攻略|教程|下载|软件|论坛|社区|博客|知乎|"
+                          r"哔哩|b站|表情包|头像|手游|app|steam|"
+                          r"采集|转载|www\.|http|mural|peel and stick|wall ?sticker|"
+                          r"decal|poster|canvas|sticker|amazon|etsy|ebay|"
+                          r"aliexpress|redbubble|shutterstock|istock|stock photo", re.I)
 
     # 图库都是英文站：中文关键词先翻成英文再去检索，否则一律 0 结果，
     # 只能落到 Bing 那个召回很偏的接口上（搜「樱花」能捞出实验室、旅游规划）
@@ -3603,20 +3617,34 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
     page = 1 + _RECENT_QUERIES.count(key)
 
     def _relevant(r: dict) -> bool:
-        """标题得对得上检索词，且不像文章/商品配图。"""
+        """标题/标签得对得上检索词，且不像文章/商品配图。
+
+        booru（safebooru / konachan / yande）的标题只是作品 id，真正能判断
+        内容的只有 tags——拿 id 去和关键词比必然对不上，以前干脆跳过判断，
+        结果「搜某个角色」端出来的经常是同一批热门人像，和图无关。
+        """
         title = str(r.get("title") or "")
-        if re.search(r"[【】《》]|\bprint\b", title, re.I):
-            return False                   # 预告片/合集类标题，配图不是壁纸
-        if title and BAD_TITLE.search(title):
-            return False
+        tags = str(r.get("tags") or "")
         # 壁纸库里没有标题（只有 id/tag），不做词面判断。
         # 翻译失败时 words 为空，退回中文两字片段，别把新闻配图当壁纸
         word_hit = words or zh_terms
-        if r.get("src") in ("wallhaven", "safebooru", "anime") or not word_hit:
+        if r.get("src") == "wallhaven" or not word_hit:
             return True
-        low = title.lower()
-        # 至少命中一半检索词：「搜 misty 出来一首叫 Misty 的歌」要挡掉
-        hits = sum(1 for w in word_hit if w in low)
+        # 标题里带百科/新闻/商品这类词的，标题本身就已经说明它是什么，
+        # 内容标签再像也不收（以前只看标题、不拿它当否决条件，会漏过去）
+        if re.search(r"[【】《》]|\bprint\b", title, re.I):
+            return False                       # 预告片/合集类标题，配图不是壁纸
+        if title and BAD_HARD.search(title):
+            return False
+        # booru 真正能判断内容的只有 tags（标题只是 id），有 tags 就只按 tags 比
+        if tags:
+            text = tags.lower()
+            flat = text.replace("_", " ").replace("-", " ")
+            if sum(1 for w in word_hit if w in flat) * 2 >= len(word_hit) + 1:
+                return True
+            return "_".join(word_hit) in text
+        flat = title.lower().replace("_", " ").replace("-", " ")
+        hits = sum(1 for w in word_hit if w in flat)
         return hits * 2 >= len(word_hit) + 1
 
     def _search() -> tuple[list[dict], list[str]]:
@@ -3681,12 +3709,7 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
         # 免得 4 张全被文章配图占满；搜索词没翻成英文时它已经是主力了
         order = ["wallhaven", "bing", "openverse", "wikimedia",
                  "anime", "safebooru"]
-    seen: set[str] = set()
-    # 最近几批出过的图全部跳过，不只是上一批：中间只要有一次没搜到东西
-    # （LAST_CANDIDATES 被清空），只看上一批的话，下一批就会把更早那批
-    # 原样端回来，用户看到的就是「换了几次都是同一张」
-    for batch in _SEEN_URLS:
-        seen.update(batch)
+    seen: set[str] = set(_SEEN_URLS)
     queues: dict[str, list[dict]] = {}
     for r in pool:
         url = str(r.get("image") or "").strip()
@@ -3700,11 +3723,14 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
             if queues.get(k):
                 ordered.append(queues[k].pop(0))
 
-    # 下载量放宽到 3 倍：有的图库给的是防盗链直链，下不到的自动跳过
+    # 下载量放宽：有的图库给的是防盗链直链，下不到的自动跳过；
+    # 同一个关键词反复搜时轮到更靠后的图库，池子也要够深
     picked: list[dict] = []
     tried = 0
     used_src: dict[str, int] = {}
-    while len(picked) < count and tried < count * 3 and ordered:
+    hashes: set[str] = set()      # 这一批内容指纹，同批两张一样的只留一张
+    last_err = ""
+    while len(picked) < count and tried < count * 5 and ordered:
         tried += 1
         # 每张成品尽量来自不同图库：单源已经占了 count-1 张就先跳过去，
         # 让前两张分别是壁纸库和通用图片，不会出现 4 张全是一个来源
@@ -3716,30 +3742,46 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
             break
         if r is None:
             r = ordered.pop(0)
-        raw, _err = await _fetch_image(r["image"], themecolor.WALLPAPER_MAX)
+        raw, err = await _fetch_image(r["image"], themecolor.WALLPAPER_MAX)
         if not raw:
+            last_err = err or last_err
+            continue
+        # 不同 URL 指向同一张图（转载、镜像、同人重复投稿）也算重复：
+        # 按内容算指纹，已经在最近几批里出过的直接丢
+        sig = "sha1:" + hashlib.sha1(raw).hexdigest()
+        if sig in hashes or sig in seen:
             continue
         try:
             cid, _ext = await asyncio.to_thread(themecolor.save_candidate, raw)
-        except ValueError:
+        except ValueError as e:
+            last_err = str(e) or last_err
             continue
+        hashes.add(sig)
         used_src[r["src"]] = used_src.get(r["src"], 0) + 1
         picked.append({"id": cid, "url": themecolor.candidate_url(cid),
-                       # src_url 只给后端自己用（下一轮去重），不下发给前端
-                       "src_url": r["image"],
+                       # src_url / sig 只给后端自己用（下一轮去重），不下发给前端
+                       "src_url": r["image"], "sig": sig,
                        "title": str(r.get("title") or "")[:80]})
 
     if not picked:
         # 这一批一张都没下成：不动 _SEEN_URLS 和 LAST_CANDIDATES，让「换一批」
-        # 仍然躲开前面几批已经出过的图，别把旧图又端回来
-        return ("图库找到了图片但都下载失败（" + "，".join(errors) + "）。"
-                "换一组更通用的关键词再搜一次（例如 scenic landscape、anime wallpaper）。")
+        # 仍然躲开前面几批已经出过的图，别把旧图又端回来。
+        # 把真实的失败原因带回去：以前这里只拼 errors（百度/维基那些源没报错
+        # 时就是空括号），模型只能自己猜，用户看到的是「都下载失败（）」
+        why = "；".join(errors) if errors else ""
+        if last_err:
+            why = (why + "；" if why else "") + last_err
+        return ("图库找到了图片但都没下载成"
+                + (f"（{why}）" if why else "") +
+                "。换一组更通用的关键词再搜一次（例如 scenic landscape、anime wallpaper），"
+                "或者直接用 set_wallpaper 指定一张图片网址。")
     LAST_CANDIDATES[:] = picked
     global _BATCH_NO
     _BATCH_NO += 1
-    # 这一批的图记进最近几批的名单，之后「换一批」时全部避让
-    _SEEN_URLS.append({str(c.get("src_url") or "") for c in picked})
-    del _SEEN_URLS[:-SEEN_BATCHES]
+    # 这一批的图记进已出名单（URL + 内容指纹），之后「换一批」时全部避让
+    for c in picked:
+        _seen_mark(str(c.get("src_url") or ""))
+        _seen_mark(str(c.get("sig") or ""))
     # 记下这次用的词：同一个词再来一次就从第 2 页取，出的是另一批图
     _RECENT_QUERIES.append(key)
     del _RECENT_QUERIES[:-6]
