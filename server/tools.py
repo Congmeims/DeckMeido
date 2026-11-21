@@ -3231,7 +3231,30 @@ _RECENT_QUERIES: list[str] = []
 #     （转载/同人重复）分给不同 URL 时照样会重复端出来。
 # 所以换成一张全局名单，并且下载后按内容哈希再判一次重。
 _SEEN_URLS: list[str] = []
-SEEN_LIMIT = 400          # 记最近 400 张，再多就慢慢清最早的
+SEEN_LIMIT = 1500         # 记最近 1500 个签名：4 张一批就是几百批，
+                          # 留少了兜底源要么不出图、要么把旧图端回来
+
+# 二次元源每一批往下翻几轮（= 几支标签 / 几页）：分页和批次数都是它，
+# _anime_any 只查这么多轮，调用方 page 也只推这么多
+BATCH = 4
+
+# 常见角色的别名 / 所属作品：小图库一个标签底下的横图就十来张，
+# 只按同一个标签往后翻，第三批就空了。换一支标签去查能接着出
+ROLE_ALIAS: dict[str, list[str]] = {
+    "akeboshi himari": ["blue archive"],
+    "sunaookami shiroko": ["blue archive"],
+    "hayase yuuka": ["blue archive"],
+    "arona": ["blue archive"],
+    "hatsune miku": ["vocaloid"],
+    "hakurei reimu": ["touhou"],
+    "kirisame marisa": ["touhou"],
+    "raiden shogun": ["genshin impact"],
+    "hu tao": ["genshin impact"],
+    "rem re:zero": ["re:zero kara hajimeru isekai seikatsu"],
+    "asuna yuuki": ["sword art online"],
+    "frieren": ["sousou no frieren"],
+    "fern": ["sousou no frieren"],
+}
 
 
 def _seen_mark(sig: str) -> None:
@@ -3280,6 +3303,9 @@ UA_WEB = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                         "Chrome/124.0 Safari/537.36",
           "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
 
+# 维基系接口只认自带身份说明的 UA（浏览器 UA 会被按爬虫拒掉）
+UA_BOT = {"User-Agent": "DeckMeido/1.0 (contact: deck@steamos.local)"}
+
 
 def _get_json(url: str, params: dict, headers: dict | None = None) -> dict:
     r = httpx.get(url, params=params, timeout=WALLPAPER_TIMEOUT,
@@ -3293,8 +3319,39 @@ def _get_json(url: str, params: dict, headers: dict | None = None) -> dict:
 SAFE_API = "https://safebooru.org/index.php"       # 动漫插画，免 key
 
 
-def _anime_rows(data: list[dict], n: int) -> list[dict]:
-    """把 booru 的 post 列表收成横图候选：只要够宽、且是横构图"""
+def _safe_tags(tags: str) -> bool:
+    """booru 的 tags 里带这些就说明是成人向/本子，整个站是「全年龄」标签库
+    也架不住用户搜的角色名底下挂着 R-18 作品。
+
+    之前只靠服务端 `rating:safe` 过滤：yande 认这个标签，Konachan 那边写的是
+    score:>10，等于没筛，于是「搜日鞠」端出来四张同一本同人志的封面。
+    """
+    t = f" {str(tags or '').lower().replace('_', ' ')} "
+    if re.search(r" (explicit|questionable|r 18|r18|r 18g|adult|hentai|nsfw) ", t):
+        return False
+    # 同人本/漫画：单张插画不会有这些标签
+    if re.search(r" (comic|doujinshi|manga|monochrome book) ", t):
+        return False
+    return True
+
+
+# 这些标签提供不了「角色/作品」信息：日鞠本身在 Konachan 只有几条，
+# 退到只拿 these 去查就等于搜热门排行，出来的必然是别的角色
+_GENERIC_TAGS = {
+    "blue", "archive", "wallpaper", "hd", "highres", "absurdres",
+    "anime", "girl", "girls", "boy", "solo", "landscape", "scenic",
+    "illustration", "digital", "art", "official", "fanart", "fan", "art",
+    "game", "cg", "series", "character", "the", "and", "for", "with", "of",
+}
+
+
+def _anime_rows(data: list[dict], n: int, need: list[str] | None = None) -> list[dict]:
+    """把 booru 的 post 列表收成横图候选：够宽、横构图、全年龄、确实对得上
+
+    need 是「必须真的出现在 tags 里」的词：Konachan 的模糊搜索会把
+    「himari」拆成 hi/mari 之类去匹配，结果跟角色毫无关系；只靠调用方
+    事后按词面比一遍的话，那批沾边的热门图就会被当成命中。
+    """
     rows = []
     for it in data:
         src = it.get("file_url") or it.get("jpeg_url") or ""
@@ -3302,10 +3359,28 @@ def _anime_rows(data: list[dict], n: int) -> list[dict]:
         h = int(it.get("height") or 0)
         if not src or w < 1400 or (h and w * 9 < h * 16):
             continue
+        tags = str(it.get("tags") or "")
+        low = tags.lower()
+        if it.get("rating") and str(it.get("rating")) not in ("s", "safe"):
+            continue
+        if not _safe_tags(low):
+            continue
+        if need:
+            # 按 tag 逐个比，不用子串：「himari」也是 omamori_himari 的子串，
+            # 那是另一个角色。中文名（译成英文前的原词）没法在 tags 里找，
+            # 这种情况只要求 tags 里出现任意检索词；
+            # 别名（见 ROLE_ALIAS）连字符写法不一，补一道归一化后的子串比
+            have = {x for x in low.split()}
+            joined = "_".join(need)
+            if joined not in have and not set(need) & have:
+                flat = low.replace("_", " ").replace("-", " ")
+                if not any(x.replace("_", " ").replace("-", " ") in flat
+                           for x in need):
+                    continue
         # tags 交给相关度筛选用：booru 的标题只是 id，光看 id 什么都判断不出来，
         # 顺带让模型看到图里有些什么
         rows.append({"image": src, "title": str(it.get("id") or ""),
-                     "tags": str(it.get("tags") or "")})
+                     "tags": tags})
         if len(rows) >= n:
             break
     return rows
@@ -3318,18 +3393,22 @@ KONA_API = "https://konachan.net/post.json"
 YANDE_API = "https://yande.re/post.json"
 
 
-def _booru_json(api: str, tags: str, n: int, page: int = 1) -> list[dict]:
-    """问一次 booru 的 post.json，返回 {image, title} 候选
+def _booru_json(api: str, tags: str, n: int, page: int = 1,
+                need: list[str] | None = None) -> list[dict]:
+    """问一次 booru 的 post.json，返回 {image, title, tags} 候选
 
     page 用来「换一批」：同一个标签的第 2、3 页，拿到的图完全不同
     """
-    params = {"tags": tags, "limit": n}
+    params = {"tags": tags, "limit": max(n * 3, 12)}
     if page > 1:
+        # 固定按 id 倒序翻页：默认排序下翻页结果会随评分/时间漂移，
+        # 同一页隔一次再要就是另一组图，去重后看着像「没换」
         params["page"] = page
+        params["order"] = "id"
     data = _get_json(api, params)
     if not isinstance(data, list):
         return []
-    return _anime_rows(data, n)
+    return _anime_rows(data, n, need)
 
 
 def _anime_search(query: str, n: int, page: int = 1) -> list[dict]:
@@ -3340,6 +3419,10 @@ def _anime_search(query: str, n: int, page: int = 1) -> list[dict]:
     查不到时**不**再拿固定热门榜兜底：那个榜跟关键词无关，搜「鞠姐」也会
     端出几张不相干的热门图，用户看到的就是「搜出来的内容不符合」。
     宁可这一批少几张，也不要拿对不上的图充数。
+
+    page 是「第几次要这个关键词的图」，不是站点页码：小站点一个标签底下
+    符合条件的横图就十来张，按页码翻，第三批必然空；所以每轮换一个标签
+    （角色名 → 所属作品，或角色名的其它写法），同一个标签隔几轮再翻一页。
     """
     import concurrent.futures as cf
     words = [w for w in re.split(r"[^0-9a-z]+", query.lower()) if len(w) > 1]
@@ -3347,29 +3430,71 @@ def _anime_search(query: str, n: int, page: int = 1) -> list[dict]:
         return []
     whole = "_".join(words)
     # 整句 + 逐个单词：多词整句在这两个站上往往是 0 条，而 anime_girl、
-    # miku 这类单词标签很常见，查不到整句就退回去逐词试
-    tags = [whole] + ([w for w in words if w != whole] if len(words) > 1 else [])
+    # miku 这类单词标签很常见，查不到整句就退回去逐词试。
+    # 但「blue archive himari」里的 blue / archive 这类词单独查等于搜排行榜，
+    # 出来的全是别的角色，所以通用词不单独查；整句查不到就换用日文名再试。
+    tags = [whole] + [w for w in words
+                      if w != whole and w not in _GENERIC_TAGS and len(w) > 3]
+    tags += [t.replace(" ", "_") for t in ROLE_ALIAS.get(" ".join(words), [])]
+    # 同一个标签在前几轮已经翻过几页，这一轮从下一页接着取。
+    # 「轮」要和 _anime_any 对齐：它一次查 BATCH 轮、第 k 轮带 page+k。
+    # 所以每支标签每轮翻一页，轮数每满 BATCH 就换下一支标签，
+    # 下一批（page + BATCH）正好接在本批查过的位置之后
+    round_ = page - 1
+    tag = tags[round_ % len(tags)]
+    page = 1 + round_ // len(tags)
 
     def _collect(tag: str) -> list[dict]:
         # 这两个站的多标签是空格分隔的 AND，「hatsune_miku」才是单个标签；
         # 标签里不能带空格，否则会变成两个标签的交集，经常直接 0 条
         tag = tag.replace(" ", "_")
+        # need：结果里必须真的出现这些词之一（整句命中，或任一词命中）。
+        # Konachan 的模糊搜索会把词拆碎，不核一遍就会把不相干的图当命中
+        need = [tag]
+        # 中文名翻译失败时会拿中文兜底拼音片段去查，二次元库是纯英文标签，
+        # 一条都不会命中，这一路直接跳过省掉几次超时
+        if re.search(r"[\u4e00-\u9fff]", tag):
+            return []
         jobs = [(KONA_API, f"{tag} score:>10"), (YANDE_API, f"{tag} rating:safe")]
         out: list[dict] = []
         with cf.ThreadPoolExecutor(max_workers=2) as ex:
-            for fut in [ex.submit(_booru_json, api, t, n, page) for api, t in jobs]:
+            for fut in [ex.submit(_booru_json, api, t, n, page, need) for api, t in jobs]:
                 try:
                     out.extend(fut.result())
                 except Exception:
                     continue
         return out
 
-    rows: list[dict] = []
-    for tag in tags:
-        rows.extend(_collect(tag))    # 整句优先，不够再拿单词补
-        if len(rows) >= n:
-            return rows[:n]
-    return rows[:n]
+    return _collect(tag)[:n]
+
+
+def _anime_any(query: str, n: int, page: int = 1) -> list[dict]:
+    """连查几轮，把结果并起来当候选池
+
+    小图库一支标签底下符合横图条件的就十来张，而且前几批已经出过的不能
+    再用，只取一轮到后面必然不够数。这里把接下来的几轮（也就是几支不同
+    的标签 / 更靠后的页）顺着查过去，各取 n 张并起来，够 pool 用了。
+
+    BATCH 是「一批」占几轮：调用方每次把 page 往后推 BATCH，这里就只查
+    这 BATCH 轮。推得和查得一样多，后面的批次才接在上一批查过的位置之后，
+    不会回头把上一批已经出过的十几张重新查一遍（那就是「换一批没换」）。
+    """
+    out: list[dict] = []
+    for k in range(BATCH):
+        try:
+            out.extend(_anime_search(query, n, page + k))
+        except Exception:
+            continue
+    # 各站查询不保证有序，并起来常是 A,A,A,B,B,C；先去重保住后面的
+    # 其它图，不然充数的第一张会把同批的第三、四张挤掉
+    uniq: list[dict] = []
+    seen: set[str] = set()
+    for r in out:
+        key = str(r.get("image") or "")
+        if key and key not in seen:
+            seen.add(key)
+            uniq.append(r)
+    return uniq
 
 
 def _safe_search(query: str, n: int, page: int = 1) -> list[dict]:
@@ -3385,6 +3510,7 @@ def _safe_search(query: str, n: int, page: int = 1) -> list[dict]:
     import xml.etree.ElementTree as ET
     words = [w for w in re.split(r"[^0-9a-z]+", query.lower()) if w]
     tag_forms = ["_".join(words)] if not words else ["_".join(words), "_".join(words) + " landscape"]
+    need = ["_".join(words)] if words else []
     for tags in tag_forms:
         if not tags:
             continue
@@ -3410,7 +3536,14 @@ def _safe_search(query: str, n: int, page: int = 1) -> list[dict]:
             if not src or w < 1400 or (h and w * 9 < h * 16):
                 continue
             t = (post.get("tags") or "").split()
-            rows.append({"image": src, "title": " ".join(t[:8])[:60]})
+            if not _safe_tags(" ".join(t)):
+                continue            # 这个库也有 R-18 投稿，服务端筛选并不可靠
+            # 拼上 landscape 的那一轮，服务端会放宽成「有横图就算」，
+            # 结果里混进一堆不相干的图，这条要求原词真的在标签里
+            if need and need[0] not in t and not set(words) & set(t):
+                continue
+            rows.append({"image": src, "title": str(post.get("id") or ""),
+                         "tags": " ".join(t)})
             if len(rows) >= n:
                 break
         if rows:
@@ -3463,10 +3596,12 @@ WM_API = "https://commons.wikimedia.org/w/api.php"
 def _wm_search(query: str, n: int) -> list[dict]:
     """维基共享资源：真实照片为主，风景/建筑/天象/花草命中很准"""
     data = _get_json(WM_API, {
+        # 维基系接口不吃浏览器 UA（回「Please respect our robot policy」403），
+        # 必须自带能标识来源的 UA，见 https://w.wiki/4wJS
         "action": "query", "format": "json", "generator": "search",
         "gsrsearch": f"{query} filetype:bitmap", "gsrlimit": max(n * 2, 8),
         "gsrnamespace": "6", "prop": "imageinfo", "iiprop": "url|size",
-        "iiurlwidth": "1920"}).get("query") or {}
+        "iiurlwidth": "1920"}, headers=UA_BOT).get("query") or {}
     rows = []
     for page in (data.get("pages") or {}).values():
         info = (page.get("imageinfo") or [{}])[0]
@@ -3506,6 +3641,13 @@ def _bing_wallpapers(query: str, n: int) -> list[dict]:
         if w and h and w < h:
             continue
         title = str(meta.get("t") or meta.get("desc") or query)
+        # 图所在页面的地址：百科 / 词典 / 新闻 / 商城页的配图不算壁纸
+        href = str(meta.get("purl") or "")
+        if (re.search(r"baike|dict|news|wiki|zhidao|detail\.tmall|item\.jd|"
+                      r"taobao|1688|amazon|shutterstock|istock", href, re.I)
+                or re.search(r"百科|新闻|资讯|攻略|教程|下载|软件|论坛|社区|头像|表情包",
+                             title, re.I)):
+            continue
         rows.append({"image": src, "title": title[:60]})
         if len(rows) >= n:
             break
@@ -3530,6 +3672,21 @@ def _translate_zh(text: str) -> str:
     parts = r.json()[0] or []
     out = "".join(str(p[0]) for p in parts if p and p[0]).strip()
     return out or text
+
+
+def _zh_words(s: str) -> list[str]:
+    """中文串切成连续两字，按标点/空格断开
+
+    「初音未来」→ 初音 / 音未 / 未来：「初音未来壁纸」这类标题里「未来」
+    是连着的，切得够细才命中得到；整串不拆只切前两字会漏
+    """
+    out: list[str] = []
+    for seg in re.split(r"[^0-9a-z\u4e00-\u9fff]+", s.lower()):
+        if re.search(r"[\u4e00-\u9fff]", seg):
+            out += [seg[i:i + 2] for i in range(len(seg) - 1)]
+        elif len(seg) > 1:
+            out.append(seg)
+    return out
 
 
 async def _search_wallpaper(query: str, count: int = 4) -> str:
@@ -3588,6 +3745,12 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
         "赛博朋克": "cyberpunk", "机甲": "mecha", "和风": "japanese clothes",
         "樱花": "cherry blossoms", "星空": "starry sky", "猫咪": "cat",
         "风景": "landscape", "夜空": "night sky",
+        # 常见角色名：翻译接口会把「日鞠」译成 the sun，拿去 booru 必然
+        # 搜不到角色号，只能落到别的角色身上
+        "日鞠": "akeboshi himari", "阿罗娜": "arona", "白子": "sunaookami shiroko",
+        "优香": "hayase yuuka", "芙莉莲": "frieren", "菲伦": "fern",
+        "孤独摇滚": "bocchi the rock", "鬼灭之刃": "kimetsu no yaiba",
+        "咒术回战": "jujutsu kaisen", "间谍过家家": "spy x family",
     }
     en_query = query
     hit = ZH_ANIME.get(query.strip().lower())
@@ -3598,13 +3761,15 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
             en_query = await asyncio.to_thread(_translate_zh, query)
         except Exception:
             en_query = query
+        # 翻译接口会把角色名糊成描述（「日鞠」→ "the sun"），拿它去 booru
+        # 必然找不到角色。译文里还把中文留着（或干脆是空）就按原词走
+        if ZH_RE.search(en_query) or not en_query.strip():
+            en_query = query
     words = [w for w in re.split(r"[^0-9a-z]+", en_query.lower()) if len(w) > 1]
     # 中文关键词翻译失败时 en_query 还是中文，上面切出来的 words 是空的
     # （只剩 "18" 之类）。兜底词从中文里取连续的两字片段：
     # 「初音未来」→「初音 / 未来」，拼进标题检索还能捞到东西
-    zh_terms: list[str] = []
-    if ZH_RE.search(query):
-        zh_terms = [query[i:i + 2] for i in range(0, max(1, len(query) - 1), 2)]
+    zh_terms: list[str] = _zh_words(query) if ZH_RE.search(query) else []
     # Bing 的召回很偏：里面全是文章配图，标题又正好带着原词，
     # 词面命中过不了筛。所以中文提问时把 Bing 排到最后，只有前几个
     # 图库（壁纸库/插画库）连一张的凑不齐时才轮到它补
@@ -3628,7 +3793,19 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
         # 壁纸库里没有标题（只有 id/tag），不做词面判断。
         # 翻译失败时 words 为空，退回中文两字片段，别把新闻配图当壁纸
         word_hit = words or zh_terms
-        if r.get("src") == "wallhaven" or not word_hit:
+        if r.get("src") == "wallhaven":
+            return True
+        # 中文提问（翻译没成功）时能判断内容的只有标题，标题里连一个中文
+        # 片段都没出现就说明这图和词无关：Bing 补词加的词面检查挡不住
+        # 「他」→「待产包清单」这种，只能在这里比
+        if not words:
+            return any(w in title.lower() for w in zh_terms)
+        # 二次元库的标题是 post id，跟英文检索词永远对不上；它们已经按
+        # tags 严格核过（见 _anime_rows / _safe_search 的 need），这里再比
+        # 一遍只会把角色号全杀掉
+        if tags:
+            return True
+        if not word_hit:
             return True
         # 标题里带百科/新闻/商品这类词的，标题本身就已经说明它是什么，
         # 内容标签再像也不收（以前只看标题、不拿它当否决条件，会漏过去）
@@ -3659,13 +3836,14 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
         sources = (
             ("wallhaven", _wh_search),
             ("safebooru", _safe_search),
-            ("anime", _anime_search),
+            ("anime", _anime_any),
             ("bing", _bing_wallpapers),
             ("openverse", _ov_search),
             ("wikimedia", _wm_search),
         )
         # 支持翻页的三个源（其余接口是搜索式，翻页参数无意义）：
-        # 同一个关键词第二次搜索时带 page，拿到的就是另一批图
+        # 同一个关键词第二次搜索时带 page，拿到的就是另一批图。
+        # anime 每轮自己会连查 BATCH 轮，所以页码按 BATCH 推，跟它对齐
         paged = ("wallhaven", "anime", "safebooru")
         pool: list[dict] = []
         errors: list[str] = []
@@ -3674,7 +3852,8 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
             for label, fn in sources:
                 q = f"{query} wallpaper" if label == "bing" else en_query
                 if label in paged:
-                    futs.append((ex.submit(fn, q, POOL_REQ, page), label))
+                    p = page * BATCH + 1 if label == "anime" else page
+                    futs.append((ex.submit(fn, q, POOL_REQ, p), label))
                 else:
                     futs.append((ex.submit(fn, q, POOL_REQ), label))
             for fut, label in futs:
@@ -3689,6 +3868,11 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
                     # 后面的下载名额；这里只看标题，不联网
                     if _relevant(r):
                         pool.append(r)
+        # 只有 Bing 这一个源有货时，这批图多半是文章/字典配图——别的库
+        # （壁纸库、插画库、照片库）全都没对上，说明关键词本身不像壁纸题材。
+        # 「他」这种单字就是这样端出四张笔顺截图的，宁可说没搜到
+        if pool and all(r.get("src") == "bing" for r in pool):
+            return [], errors
         return pool, errors
 
     try:
@@ -3698,7 +3882,10 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
                 "风景/动漫类用英文关键词（如 scenic landscape、anime portrait）"
                 "命中率更高。")
     if not pool:
-        return ("没搜到能用的图片（图库都没返回结果：" + "，".join(errors) + "）。"
+        # errors 里可能一条都没有（各源都正常返回、只是全被筛掉了），
+        # 那就别把空括号甩给模型，直接说没对上
+        why = ("图库都没返回结果：" + "，".join(errors)) if errors else "关键词没对上任何图库"
+        return (f"没搜到能用的图片（{why}）。"
                 "换一组更常见的名词再搜一次。")
 
     # 按图库轮转排队：壁纸库、插画库、Bing 交替，最后才轮到照片库
@@ -3709,19 +3896,40 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
         # 免得 4 张全被文章配图占满；搜索词没翻成英文时它已经是主力了
         order = ["wallhaven", "bing", "openverse", "wikimedia",
                  "anime", "safebooru"]
+    # 同一轮里换个说法再搜（「蓝色档案 日鞠」→「日鞠」）时，二次元库用的
+    # 是同一套 tag：同一个帖子会被两条不同的标签各查出来一次，URL 各不相同，
+    # 只有 booru 的 post id（就在 title 里）是一样的。整个池子先按 id 拦一道
+    seen_ids: set[str] = set()
+    dedup: list[dict] = []
+    for r in pool:
+        if r.get("tags") and r.get("title"):
+            key = "post:" + str(r["title"])
+            if key in seen_ids:
+                continue
+            seen_ids.add(key)
+        dedup.append(r)
+    pool = dedup
     seen: set[str] = set(_SEEN_URLS)
     queues: dict[str, list[dict]] = {}
     for r in pool:
         url = str(r.get("image") or "").strip()
         if not url or url in seen or not re.match(r"^https?://", url, re.I):
             continue
+        # booru 的 title 就是 post id；同一个帖子换个标签再查一次时 id 不变
+        if r.get("tags") and r.get("title"):
+            key = "post:" + str(r["title"])
+            if key in seen_ids:
+                continue
+            seen_ids.add(key)
         seen.add(url)
         queues.setdefault(str(r.get("src")), []).append(r)
-    ordered: list[dict] = []
-    while any(queues.get(k) for k in order):
-        for k in order:
-            if queues.get(k):
-                ordered.append(queues[k].pop(0))
+    # 池子里兜底补的 Bing 图片多半是文章配图/站点缩略图，排到最后：
+    # 别的源用完还不够数时才轮到它们（以前它插在二次元库后面）
+    strong: list[dict] = []
+    weak: list[dict] = []
+    for r in pool:
+        (weak if r.get("src") == "bing" else strong).append(r)
+    ordered = strong + weak
 
     # 下载量放宽：有的图库给的是防盗链直链，下不到的自动跳过；
     # 同一个关键词反复搜时轮到更靠后的图库，池子也要够深
@@ -3742,6 +3950,12 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
             break
         if r is None:
             r = ordered.pop(0)
+        # 同一个帖子换 URL（jpeg 版 / 原图版）还会漏过来一次，再按 id 拦一道
+        if r.get("tags") and r.get("title"):
+            key = "post:" + str(r["title"])
+            if key in hashes:
+                continue
+            hashes.add(key)
         raw, err = await _fetch_image(r["image"], themecolor.WALLPAPER_MAX)
         if not raw:
             last_err = err or last_err

@@ -12,7 +12,16 @@ import { CommonUIModule, TextField } from "@decky/ui";
 import type { ChatEvent, ChatVoice, Item } from "./useSession";
 
 // 全插件共用的颜色，QAM 与大屏页都从这里取，避免两边各抄一套。
+/** 默认强调色：只是拿不到后端配色时的兜底，实际值见 accentOf() */
 export const ACCENT = "#5aa9e6";
+
+/** #rrggbb → "r,g,b"，给 rgba() 拼透明度用 */
+export function mix(hex: string, alpha: number): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || "").trim());
+  if (!m) return `rgba(90,169,230,${alpha})`;
+  const v = parseInt(m[1], 16);
+  return `rgba(${(v >> 16) & 255},${(v >> 8) & 255},${v & 255},${alpha})`;
+}
 export const DIM = "#8b929a";
 export const ERR_COLOR = "#e06c75";
 export const TEXT = "#dcdedf";
@@ -1018,6 +1027,7 @@ function AskCard({
   base,
   busy,
   onAnswer,
+  accent = ACCENT,
 }: {
   question: string;
   options?: string[];
@@ -1025,6 +1035,7 @@ function AskCard({
   base: string;
   busy?: boolean;
   onAnswer?: (text: string) => void;
+  accent?: string;
 }) {
   const [picked, setPicked] = useState<number | null>(null);
   const locked = !!picked || !!busy || !onAnswer;
@@ -1049,9 +1060,9 @@ function AskCard({
                 style={{
                   maxWidth: "100%",
                   padding: "1px 6px",
-                  border: `1px solid ${selected ? ACCENT : "rgba(255,255,255,.16)"}`,
+                  border: `1px solid ${selected ? accent : "rgba(255,255,255,.16)"}`,
                   borderRadius: 3,
-                  background: selected ? "rgba(90,169,230,.22)" : "rgba(255,255,255,.07)",
+                  background: selected ? mix(accent, 0.22) : "rgba(255,255,255,.07)",
                   color: selected ? "#fff" : TEXT,
                   opacity: locked && !selected ? 0.45 : 1,
                   cursor: locked ? "default" : "pointer",
@@ -1074,7 +1085,9 @@ function AskCard({
 }
 
 /** 语音条：播放/暂停、进度、时长；不自动播放（与网页端一致） */
-function VoiceBar({ voice, base, size }: { voice: ChatVoice; base: string; size: number }) {
+function VoiceBar({ voice, base, size, accent = ACCENT }: {
+  voice: ChatVoice; base: string; size: number; accent?: string;
+}) {
   const src = localMediaUrl(base, voice.url || "");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -1152,7 +1165,7 @@ function VoiceBar({ voice, base, size }: { voice: ChatVoice; base: string; size:
             flex: "0 0 auto",
             border: "none",
             borderRadius: "50%",
-            background: ACCENT,
+            background: accent,
             color: "#fff",
             fontSize: 11,
             display: "flex",
@@ -1174,7 +1187,7 @@ function VoiceBar({ voice, base, size }: { voice: ChatVoice; base: string; size:
             overflow: "hidden",
           }}
         >
-          <div style={{ width: `${pct}%`, height: "100%", background: ACCENT }} />
+          <div style={{ width: `${pct}%`, height: "100%", background: accent }} />
         </div>
         <span
           style={{
@@ -1240,12 +1253,14 @@ export function MessageContent({
   align,
   busy,
   onAnswer,
+  accent = ACCENT,
 }: {
   item: Item;
   size: number;
   align?: "left" | "right";
   busy?: boolean;
   onAnswer?: (text: string) => void;
+  accent?: string;
 }) {
   const base = item.base || "";
   const body = String(item.text || "").trim();
@@ -1284,13 +1299,14 @@ export function MessageContent({
               base={base}
               busy={busy}
               onAnswer={onAnswer}
+              accent={accent}
             />
           );
         }
         return <ToolRow key={i} ev={ev} size={size} base={base} />;
       })}
       {!!body && <Md text={item.text} align={align} size={size} base={base} />}
-      {item.voice && <VoiceBar voice={item.voice} base={base} size={size} />}
+      {item.voice && <VoiceBar voice={item.voice} base={base} size={size} accent={accent} />}
     </div>
   );
 }

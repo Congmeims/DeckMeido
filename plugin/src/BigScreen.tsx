@@ -6,10 +6,10 @@ import {
   Navigation,
   showModal,
 } from "@decky/ui";
-import { ACCENT, DIM, ERR_COLOR, ImeTextArea, ImeTextField, Md, MessageContent, TEXT, ThoughtRow } from "./ui";
+import { DIM, ERR_COLOR, ImeTextArea, ImeTextField, Md, MessageContent, TEXT, ThoughtRow } from "./ui";
 import { statusLineFor } from "./statusLine";
 import { bumpOnce, stepTab } from "./tabNav";
-import { Item, useSession } from "./useSession";
+import { Item, useSession, accentOf, rgbOf, FALLBACK_ACCENT } from "./useSession";
 import { useVoiceInput } from "./useVoiceInput";
 
 // 全屏页版式：按 Deck 的 1280×800 算。
@@ -34,9 +34,9 @@ const fmtLogTime = (ts: number) => {
 const TABS = ["询问", "聊天", "设置"] as const;
 
 /** 控制盘基调：深海军底 + 细微内阴影，卡片有角色色左边条 */
-const cardStyle: React.CSSProperties = {
+const cardStyle = (accent: string): React.CSSProperties => ({
   background: "rgba(14,20,28,.92)",
-  border: "1px solid rgba(90,169,230,.08)",
+  border: `1px solid ${accentFill(accent, 0.08)}`,
   borderRadius: 3,
   padding: 8,
   display: "flex",
@@ -44,15 +44,11 @@ const cardStyle: React.CSSProperties = {
   gap: 6,
   minWidth: 0,
   boxSizing: "border-box",
-};
+});
 
-/** 主题色：所有卡片统一用同一个蓝，不再按功能分色 */
-const C = {
-  cyber: "#5AA9E6",
-  model: "#5AA9E6",
-  prompt: "#5AA9E6",
-  ops: "#5AA9E6",
-};
+/** 把主题色按不透明度拼成 rgba，只换色相不动层次 */
+const accentFill = (accent: string, alpha: number) =>
+  `rgba(${rgbOf(accent)},${alpha})`;
 
 /** 询问页、聊天页共用同一条分隔线：1px 弱线，左右各留 2px 不贴边 */
 const dividerStyle: React.CSSProperties = {
@@ -70,7 +66,7 @@ const sectionTitle: React.CSSProperties = {
   fontWeight: 600,
 };
 
-const tabStyle = (active: boolean): React.CSSProperties => ({
+const tabStyle = (active: boolean, accent: string): React.CSSProperties => ({
   flexShrink: 0,
   height: TAB_H,
   minWidth: 64,
@@ -81,16 +77,16 @@ const tabStyle = (active: boolean): React.CSSProperties => ({
   boxSizing: "border-box",
   fontSize: 12.5,
   borderRadius: 4,
-  background: active ? "rgba(90,169,230,.28)" : "rgba(255,255,255,.06)",
+  background: active ? accentFill(accent, 0.28) : "rgba(255,255,255,.06)",
   color: active ? "#eaf2fb" : DIM,
 });
 
 // 忙碌态：跑着的那个保持原位、只换文案和底色，避免焦点跳走
-const runningBtnStyle: React.CSSProperties = {
-  background: "rgba(90,169,230,.18)",
-  boxShadow: "inset 0 0 0 1px rgba(90,169,230,.55)",
+const runningBtnStyle = (accent: string): React.CSSProperties => ({
+  background: accentFill(accent, 0.18),
+  boxShadow: `inset 0 0 0 1px ${accentFill(accent, 0.55)}`,
   color: "#d9ecff",
-};
+});
 const cancelBtnStyle: React.CSSProperties = {
   background: "rgba(224,108,117,.18)",
   color: "#f0c3c7",
@@ -104,6 +100,7 @@ function ActionButton({
   description,
   style,
   compact,
+  accent = FALLBACK_ACCENT,
 }: {
   children: React.ReactNode;
   onClick: () => void;
@@ -113,6 +110,8 @@ function ActionButton({
   style?: React.CSSProperties;
   /** 紧凑高度：按钮高度压到和一行文字齐平，给设置页省纵向空间 */
   compact?: boolean;
+  /** 主题强调色，不传就退回 Steam 蓝（插件后端没连上时） */
+  accent?: string;
 }) {
   return (
     <DialogButton
@@ -135,8 +134,8 @@ function ActionButton({
         whiteSpace: "nowrap",
         boxSizing: "border-box",
         // 控制盘按钮：primary 青高亮，普通半透黑 + 青细边
-        background: primary ? "rgba(90,169,230,.28)" : "rgba(255,255,255,.04)",
-        border: `1px solid ${primary ? "rgba(90,169,230,.55)" : "rgba(255,255,255,.12)"}`,
+        background: primary ? accentFill(accent, 0.28) : "rgba(255,255,255,.04)",
+        border: `1px solid ${primary ? accentFill(accent, 0.55) : "rgba(255,255,255,.12)"}`,
         borderRadius: 3,
         color: primary ? "#eaf2fb" : TEXT,
         ...style,
@@ -217,6 +216,7 @@ function MessageBubble({
   streaming,
   busy,
   onAnswer,
+  accent = FALLBACK_ACCENT,
 }: {
   mine?: boolean;
   item?: Item;
@@ -224,6 +224,7 @@ function MessageBubble({
   streaming?: boolean;
   busy?: boolean;
   onAnswer?: (text: string) => void;
+  accent?: string;
 }) {
   const system = item?.role === "system";
   return (
@@ -247,17 +248,17 @@ function MessageBubble({
           background: system
             ? "transparent"
             : mine
-              ? "rgba(90,169,230,.16)"
+              ? accentFill(accent, 0.16)
               : "rgba(255,255,255,.06)",
           borderLeft: system
             ? "none"
             : mine
               ? "3px solid transparent"
-              : `3px solid ${ACCENT}`,
+              : `3px solid ${accent}`,
           borderRight: system
             ? "none"
             : mine
-              ? `3px solid ${ACCENT}`
+              ? `3px solid ${accent}`
               : "3px solid transparent",
           boxSizing: "border-box",
           whiteSpace: "pre-wrap",
@@ -277,6 +278,7 @@ function MessageBubble({
             align={mine ? "right" : "left"}
             busy={busy}
             onAnswer={onAnswer}
+            accent={accent}
           />
         ) : (
           <Md text={text ?? ""} align={mine ? "right" : "left"} size={CHAT_FONT} />
@@ -301,11 +303,12 @@ function SectionCard({
   /** 卡片角色色：控制标题文字 + 左边条 */
   accent?: string;
 }) {
+  const tint = accent || FALLBACK_ACCENT;
   if (inlineTitle) {
     return (
       <div
         style={{
-          ...cardStyle,
+          ...cardStyle(tint),
           flex: 1,
           minHeight: 0,
           display: "flex",
@@ -313,8 +316,8 @@ function SectionCard({
           gap: 10,
           overflow: "hidden",
           // 角色色左边条 + 顶边微光
-          borderLeft: `3px solid ${accent ?? C.cyber}`,
-          boxShadow: `inset 1px 0 0 ${accent ?? C.cyber}11`,
+          borderLeft: `3px solid ${accent ?? FALLBACK_ACCENT}`,
+          boxShadow: `inset 1px 0 0 ${accent ?? FALLBACK_ACCENT}11`,
           ...style,
         }}
       >
@@ -328,7 +331,7 @@ function SectionCard({
               writingMode: "vertical-rl",
               whiteSpace: "nowrap",
               lineHeight: 1.1,
-              color: accent ?? C.cyber,
+              color: tint ?? FALLBACK_ACCENT,
             }}
           >
             {title}
@@ -354,13 +357,13 @@ function SectionCard({
   return (
     <div
       style={{
-        ...cardStyle,
+        ...cardStyle(tint),
         minHeight: 0,
-        borderLeft: `3px solid ${accent ?? C.cyber}`,
+        borderLeft: `3px solid ${accent ?? FALLBACK_ACCENT}`,
         ...style,
       }}
     >
-      <div style={{ ...sectionTitle, color: accent ?? C.cyber }}>{title}</div>
+      <div style={{ ...sectionTitle, color: tint ?? FALLBACK_ACCENT }}>{title}</div>
       {children}
     </div>
   );
@@ -379,6 +382,7 @@ function ChatLog({
   scrollRef,
   answerBusy,
   onAnswer,
+  accent = FALLBACK_ACCENT,
 }: {
   items: Item[];
   streaming: string;
@@ -389,6 +393,7 @@ function ChatLog({
   scrollRef: React.RefObject<HTMLDivElement | null>;
   answerBusy?: boolean;
   onAnswer?: (text: string) => void;
+  accent?: string;
 }) {
   return (
     <Focusable
@@ -412,6 +417,7 @@ function ChatLog({
             item={m}
             busy={answerBusy}
             onAnswer={onAnswer}
+            accent={accent}
           />
         ))}
         {!!thought && (
@@ -423,14 +429,14 @@ function ChatLog({
               padding: "8px 10px",
               borderRadius: 6,
               background: "rgba(255,255,255,.06)",
-              borderLeft: `2px solid ${ACCENT}`,
+              borderLeft: `2px solid ${accent}`,
             }}
           >
             <ThoughtRow text={thought} size={CHAT_FONT} defaultOpen />
           </div>
         )}
-        {streaming && <MessageBubble text={streaming} streaming />}
-        {busy && !streaming && !thought && <MessageBubble text={`思考中…（${elapsed}s）`} />}
+        {streaming && <MessageBubble text={streaming} streaming accent={accent} />}
+        {busy && !streaming && !thought && <MessageBubble text={`思考中…（${elapsed}s）`} accent={accent} />}
         {!items.length && !streaming && !busy && !thought && (
           <div style={{ color: DIM, textAlign: "center", fontSize: 13, padding: "28px 0" }}>
             还没有对话，先截个图或直接问吧
@@ -452,11 +458,13 @@ function PromptEditModal({
   onChange,
   onDone,
   onCancel,
+  accent = FALLBACK_ACCENT,
 }: {
   initial: string;
   onChange: (v: string) => void;
   onDone: () => void;
   onCancel: () => void;
+  accent?: string;
 }) {
   const [draft, setDraft] = useState(initial);
   return (
@@ -493,8 +501,8 @@ function PromptEditModal({
           resize: "none",
           overflowY: "auto",
           borderRadius: 3,
-          border: "1px solid rgba(90,169,230,.22)",
-          borderLeft: "2px solid #5AA9E6",
+          border: `1px solid ${accentFill(accent, 0.22)}`,
+          borderLeft: `2px solid ${accent}`,
           background: "rgba(14,20,28,.92)",
           color: TEXT,
           fontSize: 14,
@@ -547,9 +555,11 @@ function PromptEditModal({
 function PromptEditor({
   value,
   onChange,
+  accent = FALLBACK_ACCENT,
 }: {
   value: string;
   onChange: (v: string) => void;
+  accent?: string;
 }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
   return (
@@ -566,6 +576,7 @@ function PromptEditor({
             onChange={onChange}
             onDone={() => close.Close()}
             onCancel={() => close.Close()}
+            accent={accent}
           />
         );
       }}
@@ -587,8 +598,8 @@ function PromptEditor({
           // 上下留白和模态里一致，首行文字不会贴着上边框，光标/行高也对得齐
           padding: "8px 10px",
           borderRadius: 3,
-          border: "1px solid rgba(90,169,230,.22)",
-          borderLeft: "2px solid #5AA9E6",
+          border: `1px solid ${accentFill(accent, 0.22)}`,
+          borderLeft: `2px solid ${accent}`,
           background: "rgba(14,20,28,.92)",
           color: TEXT,
           fontSize: 13,
@@ -649,7 +660,8 @@ export default function BigScreen() {
     : s.probing
       ? "连接中"
       : "未连上";
-  const coreColor = coreRunning ? ACCENT : coreStopped ? DIM : ERR_COLOR;
+  const accent = accentOf(s.status?.theme);
+  const coreColor = coreRunning ? accent : coreStopped ? DIM : ERR_COLOR;
 
   // 模型左右切换器：在列表里循环步进换模型
   const modelList = s.modelList.length ? s.modelList : s.model ? [s.model] : [];
@@ -717,6 +729,7 @@ export default function BigScreen() {
       scrollRef={scrollRef}
       answerBusy={s.busy}
       onAnswer={(t) => void s.send(t)}
+      accent={accent}
     />
   );
 
@@ -844,7 +857,7 @@ export default function BigScreen() {
             <StatusChip>{s.status ? `${s.status.ip}:${s.status.port}` : "—"}</StatusChip>
             {s.status?.game_name && <StatusChip>{s.status.game_name}</StatusChip>}
             {s.status?.preset_applied && (
-              <StatusChip color={C.prompt}>
+              <StatusChip color={accent}>
                 预设：{s.status.preset_title || "已套用"}
               </StatusChip>
             )}
@@ -869,7 +882,7 @@ export default function BigScreen() {
                 onActivate={() => setTab(i)}
                 onOKActionDescription="切换页签"
                 onCancelActionDescription="返回"
-                style={tabStyle(tab === i)}
+                style={tabStyle(tab === i, accent)}
               >
                 {name}
               </Focusable>
@@ -884,7 +897,7 @@ export default function BigScreen() {
 
       {!s.status ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ ...cardStyle, width: "min(560px, 100%)", alignItems: "stretch" }}>
+          <div style={{ ...cardStyle(accent), width: "min(560px, 100%)", alignItems: "stretch" }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: "#fff" }}>
               {s.probing ? "正在连接插件后端…" : "插件后端未连上"}
             </div>
@@ -902,7 +915,7 @@ export default function BigScreen() {
         </div>
       ) : configError ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ ...cardStyle, width: "min(560px, 100%)", alignItems: "stretch" }}>
+          <div style={{ ...cardStyle(accent), width: "min(560px, 100%)", alignItems: "stretch" }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: "#fff" }}>读不到后端配置</div>
             <div style={{ color: DIM, fontSize: 13, lineHeight: 1.5 }}>
               读不到后端配置：{configError}
@@ -933,7 +946,7 @@ export default function BigScreen() {
           {s.pendingPoke && (
             <div
               style={{
-                ...cardStyle,
+                ...cardStyle(accent),
                 flexDirection: "row",
                 alignItems: "center",
                 gap: 12,
@@ -981,8 +994,8 @@ export default function BigScreen() {
                 border:
                   s.status && !s.status.core_ok
                     ? "1px solid rgba(224,108,117,.30)"
-                    : "1px solid rgba(90,169,230,.14)",
-                borderLeft: `2px solid ${s.status && !s.status.core_ok ? "#e06c75" : "#5AA9E6"}`,
+                    : `1px solid ${accentFill(accent, 0.14)}`,
+                borderLeft: `2px solid ${s.status && !s.status.core_ok ? "#e06c75" : accent}`,
                 overflow: "hidden",
               }}
             >
@@ -1040,7 +1053,7 @@ export default function BigScreen() {
                 <ActionButton
                   onClick={() => {}}
                   description="思考中"
-                  style={{ ...runningBtnStyle, width: 138 }}
+                  style={{ ...runningBtnStyle(accent), width: 138 }}
                 >
                   思考中…（{s.elapsed}s）
                 </ActionButton>
@@ -1066,7 +1079,7 @@ export default function BigScreen() {
                 <ActionButton
                   onClick={() => {}}
                   description="思考中"
-                  style={{ ...runningBtnStyle, width: 138 }}
+                  style={{ ...runningBtnStyle(accent), width: 138 }}
                 >
                   思考中…（{s.elapsed}s）
                 </ActionButton>
@@ -1167,7 +1180,8 @@ export default function BigScreen() {
                   height: ACTION_H,
                   minHeight: ACTION_H,
                   // 录音中整块变强调色，手柄注意力在输入框上也能一眼看出在录
-                  background: voice.phase === "recording" ? ACCENT : "rgba(255,255,255,.10)",
+                  background: voice.phase === "recording" ? accent : "rgba(255,255,255,.10)",
+                  border: `1px solid ${accentFill(accent, 0.55)}`,
                   color: voice.phase === "recording" ? "#1b1b1b" : TEXT,
                 }}
               >
@@ -1189,7 +1203,7 @@ export default function BigScreen() {
                 <ActionButton
                   onClick={() => {}}
                   description="思考中"
-                  style={{ ...runningBtnStyle, height: ACTION_H, minHeight: ACTION_H }}
+                  style={{ ...runningBtnStyle(accent), height: ACTION_H, minHeight: ACTION_H }}
                 >
                   思考中…（{s.elapsed}s）
                 </ActionButton>
@@ -1236,7 +1250,7 @@ export default function BigScreen() {
                         width: `${dlPercent}%`,
                         height: "100%",
                         borderRadius: 4,
-                        background: ACCENT,
+                        background: accent,
                         transition: "width .4s ease",
                       }}
                     />
@@ -1317,7 +1331,7 @@ export default function BigScreen() {
           <SectionCard
             title="状态"
             inlineTitle
-            accent={C.cyber}
+            accent={accent}
             style={{ padding: 6, flex: 0.8 }}
           >
             {/* 四分栏两行：一行 4 列读数，一屏全展开 */}
@@ -1389,7 +1403,7 @@ export default function BigScreen() {
           <SectionCard
             title="模型选择"
             inlineTitle
-            accent={C.model}
+            accent={accent}
             style={{ padding: 6, flex: 0.95 }}
           >
             {/* 左侧模型下拉拉满剩余宽度，右栏固定 190px（与截屏卡按钮列等宽） */}
@@ -1436,8 +1450,8 @@ export default function BigScreen() {
                     justifyContent: "center",
                     padding: "0 8px",
                     borderRadius: 3,
-                    border: "1px solid rgba(90,169,230,.22)",
-                    borderLeft: "2px solid #5AA9E6",
+                    border: `1px solid ${accentFill(accent, 0.22)}`,
+                    borderLeft: `2px solid ${accent}`,
                     background: "rgba(14,20,28,.92)",
                     color: TEXT,
                     fontSize: 13,
@@ -1485,8 +1499,8 @@ export default function BigScreen() {
                     compact
                     style={{
                       // 开：蓝色（和 primary 按钮同色系）；关：灰
-                      background: s.stt ? "rgba(90,169,230,.28)" : "rgba(255,255,255,.06)",
-                      border: `1px solid ${s.stt ? "rgba(90,169,230,.55)" : "rgba(255,255,255,.10)"}`,
+                      background: s.stt ? accentFill(accent, 0.28) : "rgba(255,255,255,.06)",
+                      border: `1px solid ${s.stt ? accentFill(accent, 0.55) : "rgba(255,255,255,.10)"}`,
                       color: s.stt ? "#eaf2fb" : DIM,
                       fontSize: 12,
                       paddingLeft: 4,
@@ -1509,8 +1523,8 @@ export default function BigScreen() {
                     }
                     compact
                     style={{
-                      background: s.sttDuck ? "rgba(90,169,230,.28)" : "rgba(255,255,255,.06)",
-                      border: `1px solid ${s.sttDuck ? "rgba(90,169,230,.55)" : "rgba(255,255,255,.10)"}`,
+                      background: s.sttDuck ? accentFill(accent, 0.28) : "rgba(255,255,255,.06)",
+                      border: `1px solid ${s.sttDuck ? accentFill(accent, 0.55) : "rgba(255,255,255,.10)"}`,
                       color: s.sttDuck ? "#eaf2fb" : DIM,
                       fontSize: 12,
                       paddingLeft: 4,
@@ -1528,8 +1542,8 @@ export default function BigScreen() {
                     description="切换带图发送"
                     compact
                     style={{
-                      background: s.withShot ? "rgba(90,169,230,.28)" : "rgba(255,255,255,.06)",
-                      border: `1px solid ${s.withShot ? "rgba(90,169,230,.55)" : "rgba(255,255,255,.10)"}`,
+                      background: s.withShot ? accentFill(accent, 0.28) : "rgba(255,255,255,.06)",
+                      border: `1px solid ${s.withShot ? accentFill(accent, 0.55) : "rgba(255,255,255,.10)"}`,
                       color: s.withShot ? "#eaf2fb" : DIM,
                       fontSize: 12,
                       paddingLeft: 4,
@@ -1568,7 +1582,7 @@ export default function BigScreen() {
           <SectionCard
             title="截屏询问"
             inlineTitle
-            accent={C.prompt}
+            accent={accent}
             style={{ padding: 6, flex: 1.3 }}
           >
             {/* 左 4/5 放提示词框，右 1/5 竖排两个按钮（宽度减半给文本框让路） */}
@@ -1584,7 +1598,7 @@ export default function BigScreen() {
                 flex: 1,
               }}
             >
-              <PromptEditor value={s.askTplEdit} onChange={s.setAskTplEdit} />
+              <PromptEditor value={s.askTplEdit} onChange={s.setAskTplEdit} accent={accent} />
               <div
                 style={{
                   display: "flex",
@@ -1617,7 +1631,7 @@ export default function BigScreen() {
           <SectionCard
             title="截屏翻译"
             inlineTitle
-            accent={C.prompt}
+            accent={accent}
             style={{ padding: 6, flex: 1.3 }}
           >
             {/* 同上：左 4/5 文本框，右 1/5 按钮 */}
@@ -1633,7 +1647,7 @@ export default function BigScreen() {
                 flex: 1,
               }}
             >
-              <PromptEditor value={s.translateTplEdit} onChange={s.setTranslateTplEdit} />
+              <PromptEditor value={s.translateTplEdit} onChange={s.setTranslateTplEdit} accent={accent} />
               <div
                 style={{
                   display: "flex",
@@ -1666,7 +1680,7 @@ export default function BigScreen() {
           <SectionCard
             title="维护"
             inlineTitle
-            accent={C.ops}
+            accent={accent}
             style={{ padding: 6, flex: 0.95 }}
           >
             {/* 左栏拉满剩余宽度；右栏固定 190px 与"保存"按钮等宽 */}

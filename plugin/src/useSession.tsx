@@ -87,7 +87,47 @@ export type Status = {
   // 掌机状态行：有人尝试配对 / 连续鉴权失败时的提示，空串表示正常
   security_note?: string;
   pending_pair?: number;
+  /**
+   * 后端当前外观的强调色：theme 是浅色/深色/暗黑档，light/dark/oled 是三档
+   * 品牌色（由壁纸主色或手选色算出来）。插件所有强调色都从这里取，
+   * 后端没起来时整块缺失，用 fallbackAccent() 兜底
+   */
+  theme?: PluginTheme;
 };
+
+export type PluginTheme = {
+  theme?: string;
+  source?: string;
+  light?: string;
+  dark?: string;
+  oled?: string;
+};
+
+/** Steam 默认蓝：只在拿不到后端配色时用 */
+export const FALLBACK_ACCENT = "#5AA9E6";
+
+/** 按主题档选强调色；浅色档要在白底上跳得出来，所以和暗档分开取 */
+export function accentOf(t?: PluginTheme | null): string {
+  if (!t) return FALLBACK_ACCENT;
+  const name = String(t.theme || "").toLowerCase();
+  const pick =
+    name.indexOf("light") >= 0 ? t.light :
+    name.indexOf("oled") >= 0 || name.indexOf("darkest") >= 0 ? t.oled || t.dark :
+    t.dark;
+  return String(pick || t.source || FALLBACK_ACCENT);
+}
+
+/**
+ * 把 #rrggbb 拆成 "r,g,b"，给 rgba() 拼透明度用。
+ * 插件里大量样式是 rgba(90,169,230,.28) 这种写法，换成主题色时
+ * 只替换前三个分量，透明度（层次关系）保持原样。
+ */
+export function rgbOf(hex: string): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || "").trim());
+  if (!m) return "90,169,230";
+  const v = parseInt(m[1], 16);
+  return `${(v >> 16) & 255},${(v >> 8) & 255},${v & 255}`;
+}
 
 /** 一轮里发生过的过程事件，字段与后端 events 对齐（见 server/main.py） */
 export type ChatEvent =

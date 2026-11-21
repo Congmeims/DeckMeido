@@ -14233,15 +14233,22 @@
     if (!document.body.classList.contains('settings-mode')) openSettings();
     // openSettings 默认落在「模型接入」，这里再切到「远程连接」（接管开关和 Onebot 通道在这组）
     showSetPane('remote');
-    // 等这一帧的切页真正落定再滚动：showSetPane 会把 .set-body 的滚动位置归零
+    // 上面最后一行 showSetPane('remote') 会把外部连接页再滚回顶部，而页面最前面
+    // 就是「本机访问」那一组，接管开关在第 N 屏底下，所以以前点 logo 后被甩到
+    // OneBot 那一带或直接弹回顶部。先定位到卡片，再按卡片自身的偏移滚，
+    // 滚动容器是 .set-body（showSetPane 清的是它的 scrollTop）
     setTimeout(function () {
       if (riEnableCard) {
-        riEnableCard.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        var box = setBody || riEnableCard.parentNode;
+        var top = riEnableCard.getBoundingClientRect().top -
+                  box.getBoundingClientRect().top + box.scrollTop - 24;
+        if (box.scrollTo) box.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+        else box.scrollTop = Math.max(0, top);
         riEnableCard.classList.remove('ri-guide');
         void riEnableCard.offsetWidth;  // 强制回流，连续点两次也能重放高亮动画
         riEnableCard.classList.add('ri-guide');
       }
-      try { cfgRiEnabled.focus(); } catch (e) {}
+      try { cfgRiEnabled.focus({ preventScroll: true }); } catch (e) {}
     }, 60);
   }
 
@@ -15306,6 +15313,16 @@
     // 白色亮度 1、这个深灰约 0.03：阈值取 0.36，两种字色的对比度都在 7:1 以上
     return lum > 0.36 ? '#101418' : '#fff';
   }
+  // #rrggbb + 不透明度 → rgba()；浅色档先往黑里混一点，白底上才看得见光
+  function brandRgba(color, alpha, light) {
+    var s = String(color || '').trim().replace(/^#/, '');
+    if (!/^[0-9a-f]{6}$/i.test(s)) return 'rgba(26,159,255,' + alpha + ')';
+    if (light) s = mixHex('#' + s, '#000000', 0.12).replace(/^#/, '');
+    var r = parseInt(s.substr(0, 2), 16);
+    var g = parseInt(s.substr(2, 2), 16);
+    var b = parseInt(s.substr(4, 2), 16);
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+  }
   // 两个 #rrggbb 按比例混合（t = 第二个颜色的占比），用于按档位把面板
   // 底色往黑里压。非 #rrggbb 的写法原样返回，交给 CSS 自己去混
   function mixHex(a, b, t) {
@@ -15463,6 +15480,12 @@
     var bubble = vars['--user-bubble'] || brand;
     vars['--on-brand'] = brandInk(brand);
     vars['--on-user'] = brandInk(bubble);
+    // 接管中 logo 的边缘发光：一定要在内联 --brand 定下来之后按它现算。
+    // 交给 CSS 里 color-mix(var(--brand)) 的话，会碰上 [data-theme=light]
+    // 另一份 --brand 定义，深色档下也发浅色那圈光；这里直接算成颜色，
+    // 三档主题、有无壁纸都跟着同一个强调色
+    vars['--logo-glow'] = brandRgba(brand, isLightTheme() ? 0.62 : 0.95, isLightTheme());
+    vars['--logo-glow-soft'] = brandRgba(brand, isLightTheme() ? 0.20 : 0.30, isLightTheme());
     Object.keys(vars).forEach(function (k) { html.style.setProperty(k, vars[k]); });
     // 壁纸亮度档位给小灰字（--muted）用：浅色壁纸透上来时灰字加深。
     // 写属性而不是变量，方便 CSS 里按 [data-wall-lum=light] 分档
@@ -15479,7 +15502,7 @@
     var html = document.documentElement;
     ['--wallpaper', '--wall-dim', '--wall-blur', '--panel-alpha', '--glass',
      '--brand', '--user-bubble', '--bg', '--surface', '--surface-2', '--muted-base',
-     '--on-brand', '--on-user'].forEach(function (k) {
+     '--on-brand', '--on-user', '--logo-glow', '--logo-glow-soft'].forEach(function (k) {
       html.style.removeProperty(k);
     });
     html.classList.remove('wall-on');

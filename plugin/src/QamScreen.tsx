@@ -6,7 +6,7 @@ import {
   Navigation,
   TextField,
 } from "@decky/ui";
-import { ACCENT, DIM, ERR_COLOR, ImeTextArea, Md, MessageContent, TEXT, ThoughtRow } from "./ui";
+import { DIM, ERR_COLOR, ImeTextArea, Md, MessageContent, TEXT, ThoughtRow } from "./ui";
 import { statusLineFor } from "./statusLine";
 import { bumpOnce, stepTab } from "./tabNav";
 import { useVoiceInput } from "./useVoiceInput";
@@ -20,7 +20,17 @@ import {
   SHOT_ASK_BRIEF,
   SHOT_TRANSLATE_BRIEF,
   Status,
+  accentOf,
+  rgbOf,
+  FALLBACK_ACCENT,
 } from "./useSession";
+
+/**
+ * 把主题色按给定不透明度拼成 rgba。原样把 90,169,230 换成主题色时，
+ * 每处的透明度（层次深浅）保持不变，只换色相。
+ */
+const accentFill = (accent: string, alpha: number) =>
+  `rgba(${rgbOf(accent)},${alpha})`;
 
 declare const __PLUGIN_VERSION__: string;
 const PLUGIN_VERSION =
@@ -51,7 +61,7 @@ function steamClient(): any {
 const TITLE = "#eaf2fb";
 
 /** QAM 提示词多行框：固定 84px（11.5px 字号约 5 行），内部滚动 */
-const qamTplStyle: React.CSSProperties = {
+const qamTplStyle = (accent: string): React.CSSProperties => ({
   width: "100%",
   height: 84,
   minHeight: 84,
@@ -61,15 +71,15 @@ const qamTplStyle: React.CSSProperties = {
   resize: "none",
   overflowY: "auto",
   borderRadius: 4,
-  border: "1px solid rgba(90,169,230,.22)",
-  borderLeft: `2px solid ${ACCENT}`,
+  border: `1px solid ${accentFill(accent, 0.22)}`,
+  borderLeft: `2px solid ${accent}`,
   background: "rgba(14,20,28,.92)",
   color: TEXT,
   fontSize: 11.5,
   lineHeight: 1.45,
   fontFamily: "inherit",
   outline: "none",
-};
+});
 
 const dividerStyle: React.CSSProperties = {
   height: 1,
@@ -114,6 +124,7 @@ function Btn({
   size = 12,
   description,
   style,
+  accent = FALLBACK_ACCENT,
 }: {
   children: React.ReactNode;
   onClick: () => void;
@@ -125,6 +136,7 @@ function Btn({
   size?: number;
   description?: string;
   style?: React.CSSProperties;
+  accent?: string;
 }) {
   return (
     <DialogButton
@@ -145,20 +157,22 @@ function Btn({
         overflow: "hidden",
         textOverflow: "ellipsis",
         borderRadius: 4,
+        // 强调色走内联:主题色变量不能靠 CSS 继承（Decky 的样式表会盖掉），
+        // 所以每个控件自己拼 rgba。accent 来自后端外观快照，随壁纸/主题变
         background: danger
           ? "rgba(224,108,117,.20)"
           : running
-            ? "rgba(90,169,230,.18)"
+            ? accentFill(accent, 0.18)
             : primary
-              ? "rgba(90,169,230,.28)"
+              ? accentFill(accent, 0.28)
               : "rgba(255,255,255,.08)",
         border: `1px solid ${
           danger
             ? "rgba(224,108,117,.45)"
             : running
-              ? "rgba(90,169,230,.55)"
+              ? accentFill(accent, 0.55)
               : primary
-                ? "rgba(90,169,230,.55)"
+                ? accentFill(accent, 0.55)
                 : "rgba(255,255,255,.12)"
         }`,
         color: danger ? "#f0c3c7" : primary ? TITLE : running ? "#d9ecff" : TEXT,
@@ -174,9 +188,11 @@ function Btn({
 function Card({
   title,
   children,
+  accent = FALLBACK_ACCENT,
 }: {
   title: string;
   children: React.ReactNode;
+  accent?: string;
 }) {
   return (
     <div
@@ -190,11 +206,11 @@ function Card({
         minWidth: 0,
         borderRadius: 4,
         background: "rgba(14,20,28,.92)",
-        border: "1px solid rgba(90,169,230,.10)",
-        borderLeft: `2px solid ${ACCENT}`,
+        border: `1px solid ${accentFill(accent, 0.10)}`,
+        borderLeft: `2px solid ${accent}`,
       }}
     >
-      <div style={{ fontSize: 11, letterSpacing: 1.5, color: ACCENT, fontWeight: 600 }}>
+      <div style={{ fontSize: 11, letterSpacing: 1.5, color: accent, fontWeight: 600 }}>
         {title}
       </div>
       {children}
@@ -213,11 +229,13 @@ function SwitchRow({
   description,
   checked,
   onChange,
+  accent = FALLBACK_ACCENT,
 }: {
   label: string;
   description?: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  accent?: string;
 }) {
   return (
     <Focusable
@@ -258,8 +276,8 @@ function SwitchRow({
           borderRadius: 8,
           position: "relative",
           boxSizing: "border-box",
-          background: checked ? "rgba(90,169,230,.55)" : "rgba(255,255,255,.10)",
-          border: `1px solid ${checked ? "rgba(90,169,230,.75)" : "rgba(255,255,255,.16)"}`,
+          background: checked ? accentFill(accent, 0.55) : "rgba(255,255,255,.10)",
+          border: `1px solid ${checked ? accentFill(accent, 0.75) : "rgba(255,255,255,.16)"}`,
           transition: "background .12s ease, border-color .12s ease",
         }}
       >
@@ -308,12 +326,14 @@ function ModelPicker({
   placeholder,
   disabled,
   onSelect,
+  accent = FALLBACK_ACCENT,
 }: {
   value: string;
   options: string[];
   placeholder: string;
   disabled?: boolean;
   onSelect: (m: string) => void;
+  accent?: string;
 }) {
   const [open, setOpen] = useState(false);
   const list = options.length ? options : value ? [value] : [];
@@ -336,7 +356,7 @@ function ModelPicker({
           fontSize: 12,
           color: disabled ? DIM : value ? TEXT : DIM,
           background: "rgba(255,255,255,.06)",
-          border: `1px solid ${open ? "rgba(90,169,230,.55)" : "rgba(255,255,255,.12)"}`,
+          border: `1px solid ${open ? accentFill(accent, 0.55) : "rgba(255,255,255,.12)"}`,
           opacity: disabled ? 0.6 : 1,
         }}
       >
@@ -367,7 +387,7 @@ function ModelPicker({
               borderRadius: 4,
               padding: 3,
               background: "rgba(0,0,0,.25)",
-              border: "1px solid rgba(90,169,230,.16)",
+              border: `1px solid ${accentFill(accent, 0.16)}`,
             }}
           >
             {list.map((m) => {
@@ -389,10 +409,10 @@ function ModelPicker({
                     borderRadius: 3,
                     fontSize: 11.5,
                     color: cur ? TITLE : TEXT,
-                    background: cur ? "rgba(90,169,230,.18)" : "transparent",
+                    background: cur ? accentFill(accent, 0.18) : "transparent",
                   }}
                 >
-                  <span style={{ width: 10, flexShrink: 0, color: ACCENT }}>{cur ? "✓" : ""}</span>
+                  <span style={{ width: 10, flexShrink: 0, color: accent }}>{cur ? "✓" : ""}</span>
                   <span
                     style={{
                       minWidth: 0,
@@ -420,6 +440,7 @@ function Bubble({
   streaming,
   busy,
   onAnswer,
+  accent = FALLBACK_ACCENT,
 }: {
   mine?: boolean;
   item?: Item;
@@ -427,6 +448,7 @@ function Bubble({
   streaming?: boolean;
   busy?: boolean;
   onAnswer?: (text: string) => void;
+  accent?: string;
 }) {
   const system = item?.role === "system";
   return (
@@ -449,17 +471,17 @@ function Bubble({
           background: system
             ? "transparent"
             : mine
-              ? "rgba(90,169,230,.16)"
+              ? accentFill(accent, 0.16)
               : "rgba(255,255,255,.06)",
           borderLeft: system
             ? "none"
             : mine
               ? "2px solid transparent"
-              : `2px solid ${ACCENT}`,
+              : `2px solid ${accent}`,
           borderRight: system
             ? "none"
             : mine
-              ? `2px solid ${ACCENT}`
+              ? `2px solid ${accent}`
               : "2px solid transparent",
           boxSizing: "border-box",
           whiteSpace: "pre-wrap",
@@ -478,6 +500,7 @@ function Bubble({
             align={mine ? "right" : "left"}
             busy={busy}
             onAnswer={onAnswer}
+            accent={accent}
           />
         ) : (
           <Md text={text ?? ""} align={mine ? "right" : "left"} size={12} />
@@ -499,6 +522,7 @@ function ChatLog({
   scrollRef,
   answerBusy,
   onAnswer,
+  accent = FALLBACK_ACCENT,
 }: {
   items: Item[];
   streaming: string;
@@ -511,6 +535,7 @@ function ChatLog({
   /** 有任何一轮在跑（询问/翻译也算）：选项按钮要一起锁住 */
   answerBusy?: boolean;
   onAnswer?: (text: string) => void;
+  accent?: string;
 }) {
   return (
     <Focusable
@@ -537,6 +562,7 @@ function ChatLog({
             item={m}
             busy={answerBusy}
             onAnswer={onAnswer}
+            accent={accent}
           />
         ))}
         {!!thought && (
@@ -548,7 +574,7 @@ function ChatLog({
               padding: "6px 8px",
               borderRadius: 4,
               background: "rgba(255,255,255,.06)",
-              borderLeft: `2px solid ${ACCENT}`,
+              borderLeft: `2px solid ${accent}`,
             }}
           >
             <ThoughtRow text={thought} size={12} defaultOpen />
@@ -1261,6 +1287,8 @@ function useQamSession() {
 
   return {
     status,
+    // 强调色统一从后端外观快照里取（随壁纸/主题变），拿不到时退回 Steam 蓝
+    accent: accentOf(status?.theme),
     error,
     items,
     streaming,
@@ -1407,7 +1435,7 @@ export default function QamScreen() {
     : s.probing
       ? "连接中"
       : "未连上";
-  const coreColor = coreRunning ? ACCENT : coreStopped ? DIM : ERR_COLOR;
+  const coreColor = coreRunning ? s.accent : coreStopped ? DIM : ERR_COLOR;
 
   // 询问页忙碌态：被点的那格原地显示「思考中…」，另一格换成「中断」
   const askRunning = s.busy && s.runningAction !== "translate";
@@ -1513,7 +1541,7 @@ export default function QamScreen() {
             fontSize: 12,
             whiteSpace: "nowrap",
             borderRadius: 4,
-            background: tab === i ? "rgba(90,169,230,.28)" : "rgba(255,255,255,.06)",
+            background: tab === i ? accentFill(s.accent, 0.28) : "rgba(255,255,255,.06)",
             color: tab === i ? TITLE : DIM,
           }}
         >
@@ -1529,7 +1557,7 @@ export default function QamScreen() {
   if (!s.status) {
     return shell(
       <>
-        <Card title="连接">
+        <Card title="连接" accent={s.accent}>
           <div style={{ fontSize: 12, color: TEXT }}>
             {s.probing ? "正在连接插件后端…" : "插件后端未连上"}
           </div>
@@ -1551,7 +1579,7 @@ export default function QamScreen() {
   if (configError) {
     return shell(
       <>
-        <Card title="读不到后端配置">
+        <Card title="读不到后端配置" accent={s.accent}>
           <div style={{ fontSize: 12, color: TEXT }}>读不到后端配置：{configError}</div>
           <div style={{ fontSize: 11, color: DIM, lineHeight: 1.5 }}>
             检查数据目录里的 config.toml（通常在 userdata/），确认能读到后重试。
@@ -1611,7 +1639,7 @@ export default function QamScreen() {
             {s.status?.preset_applied && (
               <span
                 style={{
-                  color: ACCENT,
+                  color: s.accent,
                   flexShrink: 0,
                   maxWidth: 120,
                   whiteSpace: "nowrap",
@@ -1725,6 +1753,7 @@ export default function QamScreen() {
             scrollRef={scrollRef}
             answerBusy={s.busy}
             onAnswer={(t) => void s.send(t)}
+            accent={s.accent}
           />
         </div>
       )}
@@ -1804,7 +1833,7 @@ export default function QamScreen() {
                 }
                 style={{
                   background:
-                    voice.phase === "recording" ? ACCENT : "rgba(255,255,255,.08)",
+                    voice.phase === "recording" ? s.accent : "rgba(255,255,255,.08)",
                   color: voice.phase === "recording" ? "#1b1b1b" : TEXT,
                 }}
               >
@@ -1857,7 +1886,7 @@ export default function QamScreen() {
                         width: `${qdlPercent}%`,
                         height: "100%",
                         borderRadius: 3,
-                        background: ACCENT,
+                        background: s.accent,
                         transition: "width .4s ease",
                       }}
                     />
@@ -1900,6 +1929,7 @@ export default function QamScreen() {
             scrollRef={scrollRef}
             answerBusy={s.busy}
             onAnswer={(t) => void s.send(t)}
+            accent={s.accent}
           />
         </div>
       )}
@@ -1925,7 +1955,7 @@ export default function QamScreen() {
           }}
         >
           {/* 模型 */}
-          <Card title="模型">
+        <Card title="模型" accent={s.accent}>
             <div style={{ width: "100%", display: "flex" }}>
               <ModelPicker
                 value={s.model}
@@ -1944,14 +1974,14 @@ export default function QamScreen() {
             >
               {s.loadingModels ? "拉取中…" : "刷新模型列表"}
             </Btn>
-            <SwitchRow label="带画面发送" checked={s.withShot} onChange={s.toggleWithShot} />
-            <SwitchRow label="语音输入" checked={s.stt} onChange={s.toggleStt} />
-            <SwitchRow label="录音时静音外放" checked={s.sttDuck} onChange={s.toggleSttDuck} />
-            <SwitchRow label="语音播报回复" checked={s.tts} onChange={s.toggleTts} />
+            <SwitchRow label="带画面发送" accent={s.accent} checked={s.withShot} onChange={s.toggleWithShot} />
+            <SwitchRow label="语音输入" accent={s.accent} checked={s.stt} onChange={s.toggleStt} />
+            <SwitchRow label="录音时静音外放" accent={s.accent} checked={s.sttDuck} onChange={s.toggleSttDuck} />
+            <SwitchRow label="语音播报回复" accent={s.accent} checked={s.tts} onChange={s.toggleTts} />
           </Card>
 
           {/* 提示词 */}
-          <Card title="提示词">
+          <Card title="提示词" accent={s.accent}>
             <div style={{ fontSize: 11, color: DIM }}>截屏询问</div>
             <Focusable onOKActionDescription="编辑" style={{ width: "100%", padding: 0 }}>
               <ImeTextArea
@@ -1960,7 +1990,7 @@ export default function QamScreen() {
                 nMinHeight={84}
                 nMaxHeight={84}
                 spellCheck={false}
-                style={{ ...qamTplStyle }}
+                style={{ ...qamTplStyle(s.accent) }}
               />
             </Focusable>
             <div style={{ display: "flex", gap: 6, width: "100%" }}>
@@ -1994,7 +2024,7 @@ export default function QamScreen() {
                 nMinHeight={84}
                 nMaxHeight={84}
                 spellCheck={false}
-                style={{ ...qamTplStyle }}
+                style={{ ...qamTplStyle(s.accent) }}
               />
             </Focusable>
             <div style={{ display: "flex", gap: 6, width: "100%" }}>
@@ -2051,7 +2081,7 @@ export default function QamScreen() {
           </Card>
 
           {/* 连接 */}
-          <Card title="连接">
+          <Card title="连接" accent={s.accent}>
             <div
               style={{
                 display: "grid",
@@ -2122,7 +2152,7 @@ export default function QamScreen() {
           </Card>
 
           {/* 维护 */}
-          <Card title="维护">
+          <Card title="维护" accent={s.accent}>
             <div style={{ display: "flex", flexDirection: "column", gap: 3, width: "100%" }}>
               {s.logs.length ? (
                 s.logs.slice(0, 3).map((e, i) => (

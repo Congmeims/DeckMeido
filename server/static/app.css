@@ -35,6 +35,9 @@
     --ri-btn-fg: #ffffff;
     --ri-focus: rgba(26,159,255,.95);
     --ri-focus-soft: rgba(26,159,255,.28);
+    /* logo 发光色：这里只声明结构，实际色由 index.html 按内联 --brand 重算 */
+    --logo-glow: color-mix(in srgb, var(--brand) 92%, transparent);
+    --logo-glow-soft: color-mix(in srgb, var(--brand) 30%, transparent);
   }
   /* PC 网页恢复改动前（fee6bc2 之前）的字体：正文 PingFang 优先，
      等宽回到 ui-monospace 体系。Deck 环境（html[data-runtime="deck"]）
@@ -1358,6 +1361,20 @@
     backdrop-filter: blur(calc(10px + var(--glass)));
   }
   #riToast.show { display: block; }
+  /* 吐司提示：边框/底色已经按 --brand 算过，但整块还是平的，换强调色看不出来。
+     补一圈品牌色柔光和左侧色条，和接管横幅同一口径。
+     用 --logo-glow*（内联按强调色算好的实色）而不是 --ri-focus：
+     后者在浅色档是一份写死的蓝，壁纸换了也不跟 */
+  #riToast {
+    border-left: 3px solid var(--logo-glow);
+    box-shadow: var(--ri-shadow),
+                0 0 0 1px var(--logo-glow-soft),
+                inset 0 0 14px var(--logo-glow-soft);
+  }
+  #riToast.err {
+    border-left-color: var(--danger);
+    box-shadow: var(--ri-shadow), inset 0 0 14px color-mix(in srgb, var(--danger) 25%, transparent);
+  }
   /* 未开启时点 logo 的引导：设置页那张卡片闪两下，眼睛能立刻落到开关上。
      用 inset 阴影，不会像外发光那样被面板裁掉 */
   .ri-guide { animation: riGuide 0.9s ease-in-out 2; }
@@ -1374,6 +1391,32 @@
     user-select: none; -webkit-user-drag: none;
   }
   [data-theme=light] .sb-brand .brand-mark { filter: none; }
+  /* 接管中 logo 的边缘发光：原来只有底框在呼吸（riBreath），蕾丝图本身没有
+     光边，换强调色后也看不出来。这里给图像描一圈品牌色光，和底框同一个节奏；
+     drop-shadow 会跟着 alpha 走，正好沿蕾丝的轮廓描边。
+     颜色不用 --ri-focus：那组变量在 [data-theme=light] 里还有一份写死的
+     蓝，且 html 上已被 applyCfg 内联的 --brand 盖掉时算不出新色。
+     --logo-glow / --logo-glow-soft 由 index.html 在内联 --brand 之后
+     按实际强调色重算，三档主题都取到同一个色 */
+  .sb-brand.ri-active .brand-mark {
+    animation: riLogoGlow 1.6s ease-in-out infinite;
+  }
+  @keyframes riLogoGlow {
+    0%, 100% { filter: brightness(1.06)
+               drop-shadow(0 0 3px var(--logo-glow-soft))
+               drop-shadow(0 0 8px var(--logo-glow-soft)); }
+    50%      { filter: brightness(1.18)
+               drop-shadow(0 0 6px var(--logo-glow))
+               drop-shadow(0 0 18px var(--logo-glow-soft)); }
+  }
+  [data-theme=light] .sb-brand.ri-active .brand-mark {
+    animation: riLogoGlowLight 1.6s ease-in-out infinite;
+  }
+  @keyframes riLogoGlowLight {
+    0%, 100% { filter: drop-shadow(0 0 3px var(--logo-glow-soft)); }
+    50%      { filter: drop-shadow(0 0 5px var(--logo-glow))
+                       drop-shadow(0 0 14px var(--logo-glow-soft)); }
+  }
   /* 左下角 logo 也跟着「界面透明度」走：拉全透时侧栏几乎全空，logo 还是
      一块实心图，看着像单独贴上去的。不直接用 --panel-alpha 当不透明度：
      那个值最低到 0.08，套上去 logo 会淡到几乎看不见，而它同时是跨屏接管
@@ -1381,6 +1424,12 @@
   html.wall-on .sb-brand .brand-mark,
   html.wall-on .sb-brand .brand-name {
     opacity: calc(0.35 + var(--panel-alpha) * 0.65);
+  }
+  /* 接管中的 logo 不能跟着面板一起淡下去：发光要落在不透明的图边上才看得见，
+     半透明的图配光晕会糊成一块 */
+  html.wall-on .sb-brand.ri-active .brand-mark,
+  html.wall-on .sb-brand.ri-active .brand-name {
+    opacity: 1;
   }
   /* 字标：产品名一行、版本号一行，两行居中；版本用次级色弱化。
      行距压到 2px，宽度受侧栏约束，窄视口截断而不换行，顶栏高度不变 */
@@ -2769,15 +2818,10 @@
   html.wall-on header .badge {
     background: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
   }
-  /* 折叠态那圈残片（左侧 #sbRail、右侧 #rbHead）要让出来：它们就是「栏顶
-     那一条」的延续，必须和 header / 左右栏同口径（--surface + 面板透明度）。
-     展开态不在此列：那时 #rbHead 在右栏里，和左栏 .sb-head 一样不自铺底，
-     否则右上角会比左上角多叠一层亮片（见上面 .ai-bar 那组） */
-  html.wall-on #sbRail,
-  html.wall-on body.rb-collapsed #rbHead {
-    background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
-    backdrop-filter: blur(calc(14px + var(--glass))) saturate(calc(1.1 + var(--glass) / 14));
-  }
+  /* 折叠态那圈残片（左侧 #sbRail、右侧 #rbHead）不单独铺底：它就是栏顶
+     那一条的延续，底色由栏本身（#sidebar / #rightbar）透上来，和展开态
+     看到的是同一层。以前这里两边都额外补一层 --surface + 毛玻璃，折叠后
+     比展开前亮一截、还多一圈 blur 边；现在两边都不补，深浅自然一致 */
   /* API 接口行的「使用中」徽章是实心品牌色，在壁纸上也像一块贴上去的色块。
      取中档（75%）：既跟半透卡片同色系，又还看得出是一枚实心徽章。
      字色不能再用 --on-brand：那是按「实心品牌色」算出的白字，底色一透、
@@ -3037,6 +3081,9 @@
     --ri-btn-fg: #0a3f68;
     --ri-focus: rgba(11,127,212,.9);
     --ri-focus-soft: rgba(11,127,212,.2);
+    /* logo 发光跟着浅色档的强调色走（index.html 按实际 --brand 重算） */
+    --logo-glow: color-mix(in srgb, var(--brand) 90%, #000);
+    --logo-glow-soft: color-mix(in srgb, var(--brand) 26%, transparent);
     /* 告诉浏览内核当前配色，原生滚动条/表单控件才会跟着走 */
     color-scheme: light;
   }
@@ -3154,7 +3201,10 @@
     position: absolute; left: 0; top: 0;
     width: 44px; height: 45px; box-sizing: border-box;
     align-items: center; justify-content: center;
-    background: var(--surface);
+    /* 不自己铺底：折叠后它就是左栏顶那一条的残片，和右栏 #rbHead 同口径，
+       只靠 #sidebar 那层玻璃/底色透上来。以前这里额外铺了一层 --surface，
+       于是收起后左侧窄条比右侧亮一截，两颗按钮看着深浅不一 */
+    background: transparent;
     border-right: 1px solid var(--line);
     border-bottom: 1px solid var(--line);
     pointer-events: none;   /* 只有按钮本身可点，别挡住下面的内容 */
@@ -3193,8 +3243,18 @@
   /* 壁纸模式下悬停不能回到实心 --hover：那是块不透明色，
      鼠标一碰按钮就变成一块实心板。悬停色跟面板透明度走，
      两侧（左 ◀ / 右 ▶）用同一条规则，效果才一致 */
-  html.wall-on .side-toggle:hover {
-    background: color-mix(in srgb, var(--hover) calc(var(--panel-alpha) * 100%), transparent);
+  /* 悬停发光：两侧折叠按钮共用同一条规则，谁也不能多一层少一层。
+     底色同样比照 --surface-2 的透明度，否则壁纸下按钮会是一块实心方块 */
+  .side-toggle:hover,
+  .side-toggle:focus-visible {
+    border-color: var(--logo-glow);
+    color: var(--logo-glow);
+    box-shadow: 0 0 0 1px var(--logo-glow-soft),
+                0 0 10px var(--logo-glow-soft);
+  }
+  html.wall-on .side-toggle:hover,
+  html.wall-on .side-toggle:focus-visible {
+    background: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
   }
   /* 左栏顶栏：45px 高，与中间 header、右栏 #rbHead 完全齐平。
      原来设备名是 sys-card 内的第一行，被 14px 内边距压到 y=14，
@@ -3647,7 +3707,8 @@
     /* gap 必须归零：.rb-seg 淡出后仍占位，残留的 6px 间隙会把按钮推偏，
        和左侧 #sbRail 的中心对不上 */
     gap: 0;
-    background: var(--surface);
+    /* 同 #sbRail：残片不自己铺底 */
+    background: transparent;
     border-left: 1px solid var(--line);
     border-bottom: 1px solid var(--line);
     pointer-events: none;   /* 只有按钮本身可点 */

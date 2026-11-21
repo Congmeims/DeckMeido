@@ -1396,6 +1396,8 @@ class _Backend:
 
 
 _BACKEND: _Backend | None = None
+# 最近一次拿到的主题强调色：端口 → (取到的时间, 裁好的字段)
+_THEME_CACHE: dict[int, tuple[float, dict]] = {}
 _READER: asyncio.Task | None = None
 _ACC = ""            # 本轮已收到的增量正文
 _LAST_REPLY = ""     # 本轮确定下来的完整正文
@@ -2083,6 +2085,40 @@ async def _core_status(port: int) -> dict:
     return await _core_http(port, "GET", "/api/status", timeout=2.0)
 
 
+async def _theme_brief(port: int) -> dict:
+    """取后端当前外观里的强调色（浅色 / 深色 / 暗黑三档 + 主题名）
+
+    不传 theme 时：由后端 appearance_changed 广播触发重算（核心侧 refresh_theme），
+    面板自己只读缓存 —— 每轮刷新都顺着去拉一次，后端挂了会让面板整块连不上
+    """
+    return _THEME_CACHE.get(port) or {}
+
+
+async def refresh_theme(port: int) -> dict:
+    """主动去后端问一次外观，刷新缓存（后端换壁纸/切主题时的广播调它）
+
+    /api/theme 回的是整套外观快照（壁纸地址、模糊、毛玻璃…），插件只用到
+    强调色，所以在这里裁成四个字段再交给前端，面板和大屏的词表完全一致。
+    拿不到就返回上一次的值（没有就空字典），前端会退回插件自己那套默认色。
+    """
+    r = await _core_http(port, "GET", "/api/theme", timeout=2.0)
+    if not r.get("ok"):
+        return {}
+    d = r.get("data") or {}
+    pal = d.get("palette") or {}
+    out = {
+        "theme": str(d.get("theme") or "dark"),
+        # 没设壁纸时 palette 是空的，source 就是用户手选的强调色
+        "source": str(pal.get("source") or d.get("source") or ""),
+    }
+    for k in ("light", "dark", "oled"):
+        brand = str((pal.get(k) or {}).get("brand") or "")
+        if brand:
+            out[k] = brand
+    _THEME_CACHE[port] = out
+    return out
+
+
 async def _core_prefs(port: int) -> dict:
     """读后端的偏好项（语音播报、带画面、审批模式、版本号、当前模型）
 
@@ -2271,6 +2307,11 @@ class Plugin:
             "preset_title": str(preset_state.get("title") or ""),
             # 读不到后端配置：前端据此显示明确原因
             "config_error": "" if cfg else _cfg_error_text(),
+            # QAM / 大屏的强调色：以前插件里写死 #5AA9E6（Steam 蓝），
+            # 网页换壁纸换主题后这边完全不变。这里把后端那套配色带过来，
+            # 插件按 theme 选对应的那档品牌色
+            "theme": (_theme_brief(port) if _THEME_CACHE.get(port) else
+                      await refresh_theme(port)) if core.get("ok") else {},
         }
 
     async def _report_game(self, port: int, game: dict) -> dict:
