@@ -1337,12 +1337,25 @@
     color: var(--ri-btn-fg); font-size: 12px; cursor: pointer;
   }
   #riStop:hover { background: var(--ri-btn-bg-hover); }
+  /* --ri-bg 等原来是写死的深蓝黑 / 纯白，吐司和横幅一直带着默认蓝的底，
+     换强调色后只有边框和小圆点变、卡片本身还是旧色。现在统一按 --brand
+     与主题底色混出来：深色档是「底色 + 一点品牌色」，浅色档是「白 + 一点品牌色」 */
+  html { --ri-bg: color-mix(in srgb, var(--brand) 10%, #0c101a); }
+  html { --ri-btn-bg: color-mix(in srgb, var(--brand) 26%, transparent); }
+  html { --ri-btn-bg-hover: color-mix(in srgb, var(--brand) 42%, transparent); }
+  html { --ri-shadow: 0 8px 28px rgba(0,0,0,.55),
+                    0 0 22px color-mix(in srgb, var(--brand) 35%, transparent); }
+  html[data-theme="light"] { --ri-bg: color-mix(in srgb, var(--brand) 6%, #fff); }
+  html[data-theme="light"] { --ri-shadow: 0 8px 24px rgba(16,24,40,.18),
+                    0 0 16px color-mix(in srgb, var(--brand) 16%, transparent); }
+  /* 吐司贴着底栏，和接管横幅同口径加毛玻璃：壁纸/毛玻璃强度拉大时它也跟着糊 */
   #riToast {
     position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
     z-index: 90; max-width: 80vw; padding: 9px 14px; border-radius: 10px;
     background: var(--ri-bg); border: 1px solid var(--ri-line);
     color: var(--ri-fg); font-size: 12px; line-height: 1.5;
     box-shadow: var(--ri-shadow); display: none;
+    backdrop-filter: blur(calc(10px + var(--glass)));
   }
   #riToast.show { display: block; }
   /* 未开启时点 logo 的引导：设置页那张卡片闪两下，眼睛能立刻落到开关上。
