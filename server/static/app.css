@@ -2651,12 +2651,16 @@
      花壁纸的亮部上会糊；--panel-alpha 拉到底（8%）时仍有这层雾托底。
      回到底部的悬浮球和 sudo 授权行也一起收进来（都贴在输入框上下沿）。
      下拉候选面板 .dd-list 故意不放进来：它展开时只有几行，半透会把
-     背后的消息透出来，选项反而难读，保持实心 */
+     背后的消息透出来，选项反而难读，保持实心。
+     「发送」和文件面板的「上传」是同一块品牌色实心按钮，也按面板透明度走，
+     否则底栏拉透后只剩这两颗实心块 */
   html.wall-on #composer #input,
   html.wall-on #composer .think-slider,
   html.wall-on #composer .dd-trigger,
   html.wall-on #composer #jumpLatest,
   html.wall-on #composer #sudoAuthBox,
+  html.wall-on #composer #send,
+  html.wall-on #fbDropBar #fbUploadBtn,
   html.wall-on #btnNewSess,
   html.wall-on .sess.current,
   html.wall-on #btnTheme,
@@ -2664,6 +2668,13 @@
     background-color: color-mix(in srgb,
       var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
     backdrop-filter: blur(calc(10px + var(--glass)));
+  }
+  /* 品牌色按钮（发送 / 上传）：底色换成半透的品牌色，字色沿用前端按底色
+     算出来的 --on-brand，不会因为变透就白字压白底 */
+  html.wall-on #composer #send,
+  html.wall-on #fbDropBar #fbUploadBtn {
+    background-color: color-mix(in srgb,
+      var(--brand) calc(var(--panel-alpha) * 100%), transparent);
   }
   /* 左栏仪表条的槽 + 两侧折叠按钮（◀ ▶）：槽是实心 --surface-2，在壁纸上
      像四道白条；折叠按钮的底色同理。槽本身很细（6px），透出来也压不住字，
