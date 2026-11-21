@@ -2703,6 +2703,39 @@
     background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
     backdrop-filter: blur(calc(14px + var(--glass))) saturate(calc(1.1 + var(--glass) / 14));
   }
+  /* 设置页里剩下的实心小块：下拉框、输入框、记忆条目、当前选中的分区标签、
+     上传条那类带 --surface-2 底的控件。卡片已经半透，这些控件却还是一块块
+     实心白，隔着壁纸看特别扎眼。统一跟 --panel-alpha 走，并补一层毛玻璃，
+     保证透明度拉到底时字还压在自己的雾上。
+     .dd-list（展开的候选面板）故意不在这里：它悬在内容之上，半透会把背后
+     的行透出来，选项难读 */
+  html.wall-on .set-body select,
+  html.wall-on .set-body input:not([type="range"]):not([type="checkbox"]):not([type="radio"]),
+  html.wall-on .set-body .field textarea,
+  html.wall-on .set-body .dd-trigger,
+  html.wall-on .set-body .mem-item,
+  html.wall-on .set-body .mem-add input,
+  html.wall-on .set-body .mem-kind,
+  html.wall-on .set-body .mini-btn:not(.primary),
+  html.wall-on .hdr-search input,
+  html.wall-on .set-tab.on {
+    background-color: color-mix(in srgb,
+      var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
+    backdrop-filter: blur(calc(10px + var(--glass)));
+  }
+  /* 设置页的主按钮（保存、更新这类品牌色实心块）同样按面板透明度走，
+     和底栏「发送 / 上传」一个口径；字色沿用按底色算出来的 --on-brand */
+  html.wall-on .set-body .mini-btn.primary,
+  html.wall-on .set-body .speaker-btn.active {
+    background-color: color-mix(in srgb,
+      var(--brand) calc(var(--panel-alpha) * 100%), transparent);
+    border-color: color-mix(in srgb, var(--brand) calc(var(--panel-alpha) * 100%), transparent);
+  }
+  /* 分区标签默认没有底色（透明，本来就透壁纸），悬停那层 --hover 是
+     实心色，壁纸下会闪一块；换成半透的同色 */
+  html.wall-on .set-tab:hover {
+    background: color-mix(in srgb, var(--hover) calc(var(--panel-alpha) * 100%), transparent);
+  }
   /* ---- 设置页「外观」分区 ---- */
   .wall-preview {
     position: relative;
