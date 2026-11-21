@@ -11135,11 +11135,22 @@
     var a = theme;
     CFG_APPEARANCE = a;
     if (a.thumb) {
-      // 有壁纸：图 + 右下角撤销（原来那个「撤销壁纸」按钮挪到这里）
+      // 有壁纸：图 + 右下角撤销（原来那个「撤销壁纸」按钮挪到这里）。
+      // 先出 480px 缩略图（几十 KB），再换长边 960 的中间图；几 MB 的原图
+      // 只在预览框够大时才用——从设置切进来原先要等整张原图传完才看得到东西
       wallPreview.innerHTML = '';
       var img = document.createElement('img');
-      img.src = a.thumb + '?v=' + Date.now();
+      img.src = a.thumb;
       img.alt = '当前壁纸';
+      img.decoding = 'async';
+      var big = a.preview || a.url;
+      if (big) {
+        img.addEventListener('load', function () {
+          if (!this.naturalWidth) return;
+          var box = wallPreview.getBoundingClientRect().width || 0;
+          if (box > this.naturalWidth) this.src = big;
+        }, { once: true });
+      }
       wallPreview.appendChild(img);
       var swap = document.createElement('button');
       swap.type = 'button';
@@ -15260,6 +15271,10 @@
     vars['--on-brand'] = brandInk(brand);
     vars['--on-user'] = brandInk(bubble);
     Object.keys(vars).forEach(function (k) { html.style.setProperty(k, vars[k]); });
+    // 壁纸亮度档位给小灰字（--muted）用：浅色壁纸透上来时灰字加深。
+    // 写属性而不是变量，方便 CSS 里按 [data-wall-lum=light] 分档
+    if (on && a.wall_lum) html.setAttribute('data-wall-lum', a.wall_lum);
+    else html.removeAttribute('data-wall-lum');
     html.classList.toggle('wall-on', on);
     // 自定义主题的生灭都在这里落地，左下角按钮文案跟着同步
     syncThemeBtn(html.getAttribute('data-theme'));
@@ -15279,7 +15294,13 @@
   // config_changed 里用 /api/config 带回的 theme 字段
   function loadTheme() {
     return apiFetch('/api/theme').then(function (r) { return r.json(); })
-      .then(function (d) { if (d && !d.error) applyCfgAppearance(d); })
+      .then(function (d) {
+        if (!d || d.error) return;
+        applyCfgAppearance(d);
+        // 设置页的壁纸预览框只有这里能填：以前只套了页面变量，没回写表单，
+        // 所以首屏/切进设置时预览框一直是空的，直到上传或拖动滑条才出现
+        renderAppearanceForm(d);
+      })
       .catch(function () {});
   }
   loadTheme();

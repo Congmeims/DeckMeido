@@ -2667,8 +2667,14 @@
      - 灰色小字（思考链标题、时间线正文、进度提示、系统提示）统一加深一档，
        --muted 在亮色壁纸上几乎看不见；
      - 带 --surface-2 底的块（思考气泡、时间线正文、轮内过渡正文）换成实底，
-       原来跟着面板半透明，思考内容叠在壁纸上几乎读不出来 */
+       原来跟着面板半透明，思考内容叠在壁纸上几乎读不出来。
+     小灰字按「壁纸透出来的亮度」分档：浅色壁纸把面板衬得很亮时，灰字再加深一档；
+     档位由后端按壁纸平均亮度算好、前端写进 data-wall-lum（light / mid / dark），
+     不逐像素算——逐像素要读 canvas，Deck 上太贵 */
   html.wall-on { --muted: color-mix(in srgb, var(--text) 72%, var(--surface)); }
+  html.wall-on[data-wall-lum="light"] { --muted: color-mix(in srgb, var(--text) 88%, var(--surface)); }
+  [data-theme=light] html.wall-on { --muted: color-mix(in srgb, var(--text) 78%, #000); }
+  [data-theme=light] html.wall-on[data-wall-lum="dark"] { --muted: color-mix(in srgb, var(--text) 88%, #000); }
   html.wall-on .tl-body,
   html.wall-on .events .msg.in-turn {
     background: color-mix(in srgb, var(--surface-2) 92%, var(--surface));

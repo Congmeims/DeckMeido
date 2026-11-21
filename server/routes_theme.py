@@ -88,11 +88,16 @@ def current_theme() -> dict:
         # 带上修改时间：同文件名换图后浏览器不会继续用旧缓存
         "url": f"/wallpapers/{name}?v={_mtime(name)}" if name else "",
         "thumb": f"/wallpapers/wallpaper_thumb.jpg?v={_mtime(name)}" if name else "",
+        # 设置页预览框里用的中间尺寸（长边 960）：先出这张，比原图小一个量级
+        "preview": f"/wallpapers/wallpaper_preview.jpg?v={_mtime(name)}" if name else "",
         "palette": palette,
         # 壁纸取到的原始强调色：前端「恢复默认强调色」用它重算整套配色
         "source": str((palette or {}).get("source") or ""),
         "dim": dim,
         "blur": blur,
+        # 壁纸平均亮度的档位（light / mid / dark）：前端拿它调小灰字深浅，
+        # 浅色壁纸透上来时灰字加深、深色壁纸时反过来。没壁纸时不上报
+        "wall_lum": themecolor.lum_bucket(themecolor.wallpaper_lum()) if name else "",
         # 这两项的落盘时间（毫秒）。前端拿它判断一份快照是不是自己那次保存
         # 之前的旧货：/api/config 是异步拉的，回来时可能比刚存的值还旧
         "dim_ts": _stamp(str(app.get("dim_ts") or "")),

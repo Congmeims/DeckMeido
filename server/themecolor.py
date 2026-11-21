@@ -125,6 +125,56 @@ def extract_palette(img_bytes: bytes) -> dict:
     return palette_from_color(dominant_color(img_bytes))
 
 
+def image_lum(img_bytes: bytes) -> float:
+    """整张图的平均亮度（0~1，按 sRGB 相对亮度加权）。
+
+    前端拿它给 --muted（小灰字）分档：浅色壁纸透上来时面板变亮，灰字要加深，
+    深色壁纸反过来。取不出图时按 0.5（中间）处理，等于不加不减。
+    """
+    from PIL import Image
+    try:
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((32, 32))
+        px = list(img.getdata())
+    except Exception:
+        return 0.5
+    if not px:
+        return 0.5
+
+    def lin(c: int) -> float:
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    return sum(0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+               for r, g, b in px) / len(px)
+
+
+def lum_bucket(lum: float) -> str:
+    """平均亮度 -> light / mid / dark 三档（前端按档位调灰字深浅）"""
+    if lum >= 0.55:
+        return "light"
+    if lum <= 0.22:
+        return "dark"
+    return "mid"
+
+
+def wallpaper_lum() -> float:
+    """当前壁纸的平均亮度：优先读保存时记下的缓存，没有就把壁纸缩一遍现算"""
+    from . import paths
+    folder = paths.wallpapers_dir()
+    try:
+        cached = (folder / "wallpaper_lum.txt").read_text().strip()
+        return max(0.0, min(1.0, float(cached)))
+    except (OSError, ValueError):
+        pass
+    found = wallpaper_files()
+    if not found:
+        return 0.5
+    try:
+        return image_lum((folder / found[0]).read_bytes())
+    except OSError:
+        return 0.5
+
+
 def dump_palette(palette: dict) -> str:
     """配置里 palette 一栏是 JSON 字符串（TOML 里存嵌套表会丢注释，保持扁平）"""
     return json.dumps(palette, ensure_ascii=False, separators=(",", ":"))
@@ -178,6 +228,16 @@ def save_wallpaper(img_bytes: bytes) -> tuple[str, dict]:
     thumb = img.convert("RGB")
     thumb.thumbnail((480, 480))
     thumb.save(folder / "wallpaper_thumb.jpg", "JPEG", quality=82)
+    # 平均亮度顺手记下来：前端每次开设置都要读，不想每次都解一遍原图
+    try:
+        (folder / "wallpaper_lum.txt").write_text(f"{image_lum(img_bytes):.4f}")
+    except OSError:
+        pass
+    # 设置页里预览用的长边 960 图：原图动辄几 MB，从设置切进来时要等整张传完
+    # 才看得到东西；缩略图 480 太糊，这一张放在两者之间，只在需要时加载
+    preview = img.convert("RGB")
+    preview.thumbnail((960, 960))
+    preview.save(folder / "wallpaper_preview.jpg", "JPEG", quality=86)
     return name, extract_palette(img_bytes)
 
 
