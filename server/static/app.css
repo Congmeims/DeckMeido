@@ -2704,11 +2704,16 @@
   }
   /* API 接口行的「使用中」徽章是实心品牌色，在壁纸上也像一块贴上去的色块。
      取中档（75%）：既跟半透卡片同色系，又还看得出是一枚实心徽章。
+     字色不能再用 --on-brand：那是按「实心品牌色」算出的白字，底色一透、
+     压在浅色壁纸和半透卡片上就白成一片。改成 --brand 深色字，
+     配一笔同色描边把边界勾出来，淡底上也读得清。
      右侧的 × 和展开箭头平时本来就是透明底，只补一点毛玻璃，免得悬停时
      的浅色底和周围不对 */
   html.wall-on .api-current.on {
     background-color: color-mix(in srgb,
       var(--brand) calc(var(--panel-alpha) * 75%), transparent);
+    color: var(--brand);
+    border-color: var(--brand);
   }
   html.wall-on .api-toggle,
   html.wall-on .api-remove {
