@@ -394,8 +394,9 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "search_wallpaper",
-            "description": ("搜壁纸并给用户挑：在壁纸图库（Wallhaven、Openverse、维基共享、"
-                            "Bing 图片）里按关键词抓 4 张候选图，直接显示在聊天里让用户"
+            "description": ("搜壁纸并给用户挑：在壁纸与插画图库（Wallhaven、Konachan、"
+                            "yande.re、Safebooru、Openverse、维基共享、Bing 图片）里"
+                            "按关键词抓 4 张候选图，直接显示在聊天里让用户"
                             "选 1-4；用户选中后再用 set_wallpaper 传 candidate_id 应用。"
                             "用户说「换张壁纸」「找张星空背景」时先调这个，不要直接 set_wallpaper。"
                             "用户不满意就用新关键词再搜一次。"
@@ -410,6 +411,9 @@ TOOLS: list[dict] = [
                               "description": "检索关键词，英文命中率最高。用画面本身的名词"
                                              "组合，例如 starry night sky、anime girl "
                                              "cherry blossom、misty mountain forest；"
+                                             "动漫/二次元题材可以直接用角色名或作品名"
+                                             "（如 hatsune miku、genshin impact），"
+                                             "Konachan 与 yande.re 会按标签命中；"
                                              "不要写「好看的壁纸」这类套话"},
                     "count": {"type": "integer",
                               "description": "候选数量，默认 4，范围 2-4"},
@@ -3260,30 +3264,125 @@ def _get_json(url: str, params: dict, headers: dict | None = None) -> dict:
 SAFE_API = "https://safebooru.org/index.php"       # 动漫插画，免 key
 
 
+def _anime_rows(data: list[dict], n: int) -> list[dict]:
+    """把 booru 的 post 列表收成横图候选：只要够宽、且是横构图"""
+    rows = []
+    for it in data:
+        src = it.get("file_url") or it.get("jpeg_url") or ""
+        w = int(it.get("width") or 0)
+        h = int(it.get("height") or 0)
+        if not src or w < 1400 or (h and w * 9 < h * 16):
+            continue
+        rows.append({"image": src, "title": str(it.get("id") or "")})
+        if len(rows) >= n:
+            break
+    return rows
+
+
+# Konachan / yande.re 是 Moebooru 系，post.json 免 key、免登录，返回 JSON 数组。
+# 都是同人插画图站（yande.re 偏壁纸向、Konachan 偏 16:9 高清动漫），带
+# file_url 原图直链，可以直接下。标签是下划线写法，多词要分别带上。
+KONA_API = "https://konachan.net/post.json"
+YANDE_API = "https://yande.re/post.json"
+
+
+def _booru_json(api: str, tags: str, n: int, extra: str = "") -> list[dict]:
+    """问一次 booru 的 post.json，返回 {image, title} 候选"""
+    data = _get_json(api, {"tags": f"{tags} {extra}".strip(), "limit": n})
+    if not isinstance(data, list):
+        return []
+    return _anime_rows(data, n)
+
+
+def _anime_search(query: str, n: int) -> list[dict]:
+    """动漫插画双源：Konachan + yande.re（都免 key，按评分取热门横图）
+
+    检索词是英文标签。这两个站标签库不大（"garden" 在 Konachan 是 0 条），
+    所以「全部词都在」查不到时，退一步拿命中词最多的那张标签再查一次；
+    还不行就取横图热门，至少给用户几张能看的动漫壁纸。多源池子里
+    它排在 Wallhaven 后面，只有别的源不够才会轮到这几张兜底图。
+    """
+    import concurrent.futures as cf
+    words = [w for w in re.split(r"[^0-9a-z]+", query.lower()) if len(w) > 1]
+    if not words:
+        return []
+    whole = "_".join(words)
+    # 整句 + 逐个单词：多词整句在这两个站上往往是 0 条，而 anime_girl、
+    # miku 这类单词标签很常见，查不到整句就退回去逐词试
+    tags = [whole] + ([w for w in words if w != whole] if len(words) > 1 else [])
+
+    def _collect(tag: str) -> list[dict]:
+        # 这两个站的多标签是空格分隔的 AND，「hatsune_miku」才是单个标签；
+        # 标签里不能带空格，否则会变成两个标签的交集，经常直接 0 条
+        tag = tag.replace(" ", "_")
+        jobs = [(KONA_API, f"{tag} score:>10"), (YANDE_API, f"{tag} rating:safe")]
+        out: list[dict] = []
+        with cf.ThreadPoolExecutor(max_workers=2) as ex:
+            for fut in [ex.submit(_booru_json, api, t, n) for api, t in jobs]:
+                try:
+                    out.extend(fut.result())
+                except Exception:
+                    continue
+        return out
+
+    rows: list[dict] = []
+    for tag in tags:
+        rows.extend(_collect(tag))    # 整句优先，不够再拿单词补
+        if len(rows) >= n:
+            return rows[:n]
+    if rows:
+        return rows[:n]
+    # 关键词在这两个站上都查不到：退回横图热门榜，至少给几张能看的动漫壁纸
+    rows = []
+    for api, extra in ((KONA_API, "score:>20"), (YANDE_API, "rating:safe")):
+        try:
+            rows.extend(_booru_json(api, "landscape", n, extra))
+        except Exception:
+            continue
+    return rows[:n]
+
+
 def _safe_search(query: str, n: int) -> list[dict]:
     """Safebooru：动漫/插画类壁纸的实际主战场，全年龄标签库
 
     返回的是 xml，条目里 file_url 要补站点前缀，sample 是缩小版；
     插图幅面够宽的才留（booru 里大量竖构图和人像特写，铺满屏会糊）。
+
+    检索词必须写成下划线标签（"cherry blossom" → "cherry_blossom"）；
+    原词查不到时再并上 landscape——实测「garden」直查 8 条里只有 1 条
+    是横图，加了 landscape 能到 6 条。宽高筛不掉的靠这一步先收窄。
     """
     import xml.etree.ElementTree as ET
-    r = httpx.get(SAFE_API, params={"page": "dapi", "s": "post", "q": "index",
-                                    "json": 0, "limit": max(n * 2, 12),
-                                    "tags": f"{query} sort:score width:>1400"},
-                  timeout=WALLPAPER_TIMEOUT, follow_redirects=True, headers=UA_WEB)
-    r.raise_for_status()
-    rows = []
-    for post in ET.fromstring(r.text).findall("post"):
-        src = post.get("file_url") or ""
-        w = int(post.get("width") or 0)
-        h = int(post.get("height") or 0)
-        if not src or w < 1400 or (h and w * 9 < h * 16):
+    words = [w for w in re.split(r"[^0-9a-z]+", query.lower()) if w]
+    tag_forms = ["_".join(words)] if not words else ["_".join(words), "_".join(words) + " landscape"]
+    for tags in tag_forms:
+        if not tags:
             continue
-        tags = (post.get("tags") or "").split()
-        rows.append({"image": src, "title": " ".join(tags[:8])[:60]})
-        if len(rows) >= n:
-            break
-    return rows
+        r = httpx.get(SAFE_API, params={"page": "dapi", "s": "post", "q": "index",
+                                        "json": 0, "limit": max(n * 3, 16),
+                                        "tags": f"{tags} sort:score width:>1400"},
+                      timeout=WALLPAPER_TIMEOUT, follow_redirects=True, headers=UA_WEB)
+        r.raise_for_status()
+        if not r.text.lstrip().startswith("<"):
+            continue                    # 查无此标签时站点回的是空串/报错页，不是 xml
+        rows = []
+        try:
+            posts = ET.fromstring(r.text).findall("post")
+        except ET.ParseError:
+            continue
+        for post in posts:
+            src = post.get("file_url") or ""
+            w = int(post.get("width") or 0)
+            h = int(post.get("height") or 0)
+            if not src or w < 1400 or (h and w * 9 < h * 16):
+                continue
+            t = (post.get("tags") or "").split()
+            rows.append({"image": src, "title": " ".join(t[:8])[:60]})
+            if len(rows) >= n:
+                break
+        if rows:
+            return rows
+    return []
 
 
 WH_API = "https://wallhaven.cc/api/v1/search"
@@ -3431,6 +3530,16 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
         except Exception:
             en_query = query
     words = [w for w in re.split(r"[^0-9a-z]+", en_query.lower()) if len(w) > 1]
+    # 中文关键词翻译失败时 en_query 还是中文，上面切出来的 words 是空的
+    # （只剩 "18" 之类）。兜底词从中文里取连续的两字片段：
+    # 「初音未来」→「初音 / 未来」，拼进标题检索还能捞到东西
+    zh_terms: list[str] = []
+    if ZH_RE.search(query):
+        zh_terms = [query[i:i + 2] for i in range(0, max(1, len(query) - 1), 2)]
+    # Bing 的召回很偏：里面全是文章配图，标题又正好带着原词，
+    # 词面命中过不了筛。所以中文提问时把 Bing 排到最后，只有前几个
+    # 图库（壁纸库/插画库）连一张的凑不齐时才轮到它补
+    bing_last = bool(zh_terms)
 
     def _relevant(r: dict) -> bool:
         """标题得对得上检索词，且不像文章/商品配图。"""
@@ -3439,13 +3548,15 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
             return False                   # 预告片/合集类标题，配图不是壁纸
         if title and BAD_TITLE.search(title):
             return False
-        # 壁纸库里没有标题（只有 id/tag），不做词面判断
-        if r.get("src") in ("wallhaven", "safebooru") or not words:
+        # 壁纸库里没有标题（只有 id/tag），不做词面判断。
+        # 翻译失败时 words 为空，退回中文两字片段，别把新闻配图当壁纸
+        word_hit = words or zh_terms
+        if r.get("src") in ("wallhaven", "safebooru", "anime") or not word_hit:
             return True
         low = title.lower()
         # 至少命中一半检索词：「搜 misty 出来一首叫 Misty 的歌」要挡掉
-        hits = sum(1 for w in words if w in low)
-        return hits * 2 >= len(words) + 1
+        hits = sum(1 for w in word_hit if w in low)
+        return hits * 2 >= len(word_hit) + 1
 
     def _search() -> tuple[list[dict], list[str]]:
         """并行问几个图库，各取几张当候选池。
@@ -3459,6 +3570,7 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
         sources = (
             ("wallhaven", _wh_search),
             ("safebooru", _safe_search),
+            ("anime", _anime_search),
             ("bing", _bing_wallpapers),
             ("openverse", _ov_search),
             ("wikimedia", _wm_search),
@@ -3493,7 +3605,13 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
                 "换一组更常见的名词再搜一次。")
 
     # 按图库轮转排队：壁纸库、插画库、Bing 交替，最后才轮到照片库
-    order = ["wallhaven", "safebooru", "bing", "openverse", "wikimedia"]
+    order = ["wallhaven", "anime", "safebooru", "bing", "openverse", "wikimedia"]
+    if bing_last:
+        # 翻译没成功时，中文词丢给 anime/safebooru 必然 0 条，能出图的只有
+        # Bing（召回偏但标题带原词，能过筛）。让它跟壁纸库交替，
+        # 免得 4 张全被文章配图占满；搜索词没翻成英文时它已经是主力了
+        order = ["wallhaven", "bing", "openverse", "wikimedia",
+                 "anime", "safebooru"]
     seen: set[str] = set()
     queues: dict[str, list[dict]] = {}
     for r in pool:
