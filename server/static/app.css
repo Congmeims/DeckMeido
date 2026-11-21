@@ -2783,12 +2783,15 @@
     background: color-mix(in srgb, var(--brand) 11%,
       color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 100%), transparent));
   }
-  /* 设置页底部那条「保存」栏：和顶栏同一口径（--surface + 面板透明度 +
-     同一档毛玻璃），不能套上面那组 --surface-2——它比顶栏更白，而对话页
-     底栏自己能透是因为它底下压着 #chatView 的雾，设置页的底栏下面什么都没有 */
+  /* 设置页底部那条「保存」栏：和对话页底栏（#composer）同一个做法——
+     自己不铺色，用 #settingsPanel 那层雾透上来。以前这里铺了一层 --surface，
+     叠在已经铺了 --bg 雾的 #settingsPanel 上等于两层底，所以拉透时这条
+     总比上面的内容区更实、更亮，怎么看都不一致。分隔线保留（底栏和正文
+     需要一条分界），上边距也留在原处，高度不变 */
   html.wall-on .set-foot {
-    background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
-    backdrop-filter: blur(calc(14px + var(--glass))) saturate(calc(1.1 + var(--glass) / 14));
+    background: transparent;
+    border-top-color: var(--line);
+    backdrop-filter: none;
   }
   /* 设置页里剩下的实心小块：下拉框、输入框、记忆条目、当前选中的分区标签、
      上传条那类带 --surface-2 底的控件。卡片已经半透，这些控件却还是一块块
@@ -2815,10 +2818,17 @@
   /* 设置页的主按钮（保存、更新这类品牌色实心块）同样按面板透明度走，
      和底栏「发送 / 上传」一个口径；字色沿用按底色算出来的 --on-brand */
   html.wall-on .set-body .mini-btn.primary,
-  html.wall-on .set-body .speaker-btn.active {
+  html.wall-on .set-body .speaker-btn.active,
+  html.wall-on .set-foot #saveCfg,
+  html.wall-on .set-foot #updApply {
     background-color: color-mix(in srgb,
       var(--brand) calc(var(--panel-alpha) * 100%), transparent);
     border-color: color-mix(in srgb, var(--brand) calc(var(--panel-alpha) * 100%), transparent);
+  }
+  /* 主按钮描边在透明底上几乎看不见，补一点内发光让它仍有边界 */
+  html.wall-on .set-foot #saveCfg,
+  html.wall-on .set-foot #updApply {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 55%, transparent);
   }
   /* 分区标签默认没有底色（透明，本来就透壁纸），悬停那层 --hover 是
      实心色，壁纸下会闪一块；换成半透的同色 */
