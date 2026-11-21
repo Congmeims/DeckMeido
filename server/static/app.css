@@ -1304,6 +1304,7 @@
   .sb-brand.ri-active .bn-ri { display: inline; }
   /* 接管中顶部标识：所有端（远程控制端 / Deck 客户端）都走同一条广播。
      颜色走 --ri-* 变量，浅色主题下是浅底深字，不会变成黑底黑字 */
+  /* 浮标条本身也有 backdrop-filter，不跟的话毛玻璃强度拉大后只有它没变化 */
   #riBanner {
     position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
     z-index: 80; display: flex; align-items: center; gap: 10px;
@@ -1311,7 +1312,7 @@
     border: 1px solid var(--ri-line);
     background: var(--ri-bg); color: var(--ri-fg); font-weight: 500;
     box-shadow: var(--ri-shadow);
-    backdrop-filter: blur(10px); font-size: 12px; white-space: nowrap;
+    backdrop-filter: blur(calc(10px + var(--glass))); font-size: 12px; white-space: nowrap;
   }
   #riBanner[hidden] { display: none !important; }
   #riBanner .ri-dot {
@@ -2554,9 +2555,10 @@
      中间对话区没有气泡的裸字（思考链、时间线、系统提示、进度小字）也直接
      压在壁纸上，所以对话栏本身铺一层很淡的雾面，字才有底——不铺的话
      亮色壁纸配 --muted 灰字基本读不出来。
-     --glass 是「毛玻璃强度」，只在设置页出现、默认 0：
-     为 0 时下面两处 backdrop-filter 恰好是 blur(0)，观感与之前完全一致；
-     拉大后各面板背后虚化更强、saturate 提高，玻璃感更明显。 */
+     --glass 是「毛玻璃强度」：它影响所有开了 backdrop-filter 的面板
+     （主结构、设置页卡片、弹窗、浮标条、壁纸预览上的药丸）。默认 0，
+     为 0 时各处恰好是原本的 blur 值，观感与以前完全一致；拉大后
+     面板背后虚化更强、saturate 提高，玻璃感更明显。 */
   :root { --glass: 0px; }
   html.wall-on header,
   html.wall-on #sidebar,
@@ -2565,6 +2567,22 @@
   html.wall-on #chatView {
     background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
     backdrop-filter: blur(calc(14px + var(--glass))) saturate(calc(1.1 + var(--glass) / 14));
+  }
+  /* 弹窗 / 菜单 / 下拉这些「浮起来」的层：以前为了不糊字保持完全不透明，
+     壁纸模式下它们就是一块块实心板。这里给它们半透 + 毛玻璃：强度同样
+     叠加 --glass，但不透明度的起点更高（78%），0 强度时字仍然压在
+     自己的底色上，和以前一样看得清。--glass 为 0 时只是多了层
+     blur(0)，观感不变。选择器用的是实际存在的类：#fullAccessMask 的
+     弹窗卡、文件面板的确认框。菜单按钮（分享栏那排）本身就是药丸形，
+     只跟随毛玻璃强度，底色保持原样，免得一排按钮在壁纸上看成半透的 */
+  html.wall-on .fa-card,
+  html.wall-on .fb-confirm {
+    background-color: color-mix(in srgb,
+      var(--surface-2) calc(var(--panel-alpha) * 78%), transparent);
+    backdrop-filter: blur(var(--glass)) saturate(calc(1.05 + var(--glass) / 20));
+  }
+  html.wall-on .menu-btn {
+    backdrop-filter: blur(var(--glass));
   }
   /* 右栏（文件管理器 / 终端）以前整栏是一块不透明的 --surface，和左栏的
      半透明玻璃对不上。上面已经把 #rightbar 加进半透明名单，这里再让里面
@@ -2652,7 +2670,7 @@
     font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
     border-radius: 999px; cursor: pointer; color: #fff;
     background: rgba(12,16,26,.62); border: 1px solid rgba(255,255,255,.28);
-    backdrop-filter: blur(6px);
+    backdrop-filter: blur(calc(6px + var(--glass)));
   }
   .wall-swap { left: 8px; }
   .wall-clear { right: 8px; }
@@ -4182,7 +4200,7 @@
   #onboardMask {
     position: fixed; inset: 0; z-index: 300; display: flex;
     align-items: center; justify-content: center; padding: 16px;
-    background: rgba(6,8,14,.72); backdrop-filter: blur(3px);
+    background: rgba(6,8,14,.72); backdrop-filter: blur(calc(3px + var(--glass)));
     animation: obFade .18s ease;
   }
   #onboardMask[hidden] { display: none; }
