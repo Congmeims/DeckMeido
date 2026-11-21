@@ -3016,7 +3016,12 @@
   }
   .side-toggle:hover { background: var(--hover); color: var(--text); }
   .side-toggle:active { transform: scale(.9); }
-  #sbToggle:hover { background: var(--hover); color: var(--text); }
+  /* 壁纸模式下悬停不能回到实心 --hover：那是块不透明色，
+     鼠标一碰按钮就变成一块实心板。悬停色跟面板透明度走，
+     两侧（左 ◀ / 右 ▶）用同一条规则，效果才一致 */
+  html.wall-on .side-toggle:hover {
+    background: color-mix(in srgb, var(--hover) calc(var(--panel-alpha) * 100%), transparent);
+  }
   /* 左栏顶栏：45px 高，与中间 header、右栏 #rbHead 完全齐平。
      原来设备名是 sys-card 内的第一行，被 14px 内边距压到 y=14，
      比另外两栏矮一截；现在提成独立一条，三栏顶边在同一水平线上。
