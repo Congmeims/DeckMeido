@@ -2654,6 +2654,9 @@
   html.wall-on #composer .dd-trigger,
   html.wall-on #composer #jumpLatest,
   html.wall-on #composer #sudoAuthBox,
+  /* 设置页底部那条「保存」栏：和对话页底栏是同一个毛病，整条不透明的
+     --surface 横在壁纸上。同样的处理——跟面板透明度、补毛玻璃 */
+  html.wall-on .set-foot,
   html.wall-on #btnNewSess,
   html.wall-on .sess.current,
   html.wall-on #btnTheme,
