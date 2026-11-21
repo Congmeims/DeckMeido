@@ -1667,6 +1667,18 @@
   .card > .card-title + .card-desc { margin-top: 0; }
   .card > .card-desc:last-child { margin-bottom: 0; }
   .card > .field:last-child { margin-bottom: 0; }
+  /* 卡片里的三个分区（壁纸 / 滑杆 / 配色来源）之间要看得出来是一段一段的：
+     后一段顶上压一条细横线，两端贴齐内容边、不铺到卡片圆角上。
+     外层卡片不再铺底色和边框，三块看起来是同一张卡里的三段 */
+  .card > .card {
+    background: none; border: 0; border-radius: 0;
+    padding: 0; margin-bottom: 0;
+    margin-top: var(--set-card-gap);
+  }
+  .card > .card + .card {
+    padding-top: var(--set-card-gap);
+    border-top: 1px solid var(--line);
+  }
   /* 字段网格：单行控件（开关 / 数字 / 下拉 / 短文本）并排成一栏或两栏，
      说明文字仍在各自控件下方的小字里；长文本域不要放进网格 */
   .set-grid {
@@ -1976,14 +1988,17 @@
     font-variant-numeric: tabular-nums;
   }
   .field-row > label:not(.switch) { display: inline-block; margin: 0; align-self: center; }
-  /* 壁纸三条滑杆：标签 / 滑轨 / 读数挤在同一行，滑轨别再拉满整行 */
+  /* 壁纸三条滑杆：标签 / 滑轨 / 读数挤在同一行。
+     标签宽度固定，三条滑轨才能起止一致、一样长；滑轨再撑满中间剩余宽度 */
   .tune-row {
     display: flex; align-items: center; gap: 12px;
     min-width: 0;
   }
-  .tune-row > label { flex: 0 0 auto; margin: 0; white-space: nowrap; }
-  .tune-row > .rg { flex: 0 1 260px; min-width: 96px; max-width: 260px; margin: 0; }
-  .tune-row > .rg-val { flex: 0 0 auto; margin-left: auto; text-align: right; min-width: 42px; }
+  .tune-row > label {
+    flex: 0 0 84px; margin: 0; white-space: nowrap;
+  }
+  .tune-row > .rg { flex: 1 1 auto; min-width: 96px; margin: 0; }
+  .tune-row > .rg-val { flex: 0 0 42px; text-align: right; }
   /* 开关外层的 label 同时也是 .field label，会把「块级 + 灰色小字」带进来，
      这里复位成与开关等大的容器 */
   .field label.switch { display: inline-block; margin: 0; font-size: 0; }
@@ -2666,6 +2681,12 @@
   html.wall-on .set-body .card {
     background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
     backdrop-filter: blur(calc(8px + var(--glass))) saturate(1.05);
+  }
+  /* 卡片内的三个分区本身不是一张卡：只借外层那一层雾，自己不再铺底、不再叠毛玻璃，
+     否则同一块玻璃会被叠三层，壁纸上看起来比旁边的卡片实一截 */
+  html.wall-on .set-body .card > .card {
+    background: none;
+    backdrop-filter: none;
   }
   /* 分区标题（左侧蓝条那种小标题）：品牌色底在壁纸上会淡成透明，
      叠一层同色相的实色底，保证在任何壁纸上都能读。
