@@ -1278,17 +1278,29 @@
     cursor: pointer; position: relative; border-radius: 14px;
     transition: box-shadow .18s ease, background .18s ease;
   }
-  .sb-brand:hover { background: rgba(26,159,255,.06); }
+  /* 悬停与接管中的底色都取自 --brand，不再写死 26,159,255：
+     用户换强调色或壁纸配色后，接管发光圈不该还停在默认蓝 */
+  .sb-brand:hover { background: color-mix(in srgb, var(--brand) 8%, transparent); }
   /* 接管中：一圈高亮描边 + 呼吸，避免用户不知道现在是不是在接管。
      侧栏贴屏幕左缘，外发光会被页面裁掉，所以只用 inset 阴影画在元素内部 */
   .sb-brand.ri-active {
     animation: riBreath 1.6s ease-in-out infinite;
-    background: rgba(26,159,255,.10);
+    background: color-mix(in srgb, var(--brand) 14%, transparent);
   }
   @keyframes riBreath {
     0%, 100% { box-shadow: inset 0 0 0 1px var(--ri-focus-soft), inset 0 0 10px var(--ri-focus-soft); }
     50%      { box-shadow: inset 0 0 0 2px var(--ri-focus), inset 0 0 18px var(--ri-focus-soft); }
   }
+  /* --ri-focus / --ri-focus-soft 原来在 :root 和浅色主题里写死成蓝色，
+     接管发光圈、输入框聚焦、引导闪烁全用它，所以换了强调色这几处都不变。
+     下面按 --brand 重新算：深色档用品牌色本身，浅色档混一点黑保证在浅底上看得见。
+     --ri-line / --ri-accent 同为「强调色」角色，一并对齐 */
+  html { --ri-focus: color-mix(in srgb, var(--brand) 92%, transparent); }
+  html { --ri-focus-soft: color-mix(in srgb, var(--brand) 30%, transparent); }
+  html[data-theme="light"] { --ri-focus: color-mix(in srgb, var(--brand) 88%, #000); }
+  html[data-theme="light"] { --ri-focus-soft: color-mix(in srgb, var(--brand) 24%, transparent); }
+  html[data-theme="light"] { --ri-accent: color-mix(in srgb, var(--brand) 82%, #000); }
+  html[data-theme="light"] { --ri-line: color-mix(in srgb, var(--brand) 55%, transparent); }
   @keyframes riDotPulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
   /* 「接管中」小字：跟随主题（深色深底亮字 / 浅色浅底深字），不糊在侧栏背景里 */
   .sb-brand .bn-ri {
