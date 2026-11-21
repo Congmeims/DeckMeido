@@ -2723,6 +2723,23 @@
   html.wall-on .api-remove {
     backdrop-filter: blur(calc(10px + var(--glass)));
   }
+  /* 接口配置那几张卡（.api-profile）是「--surface-2 与 --bg 混出的实底色」，
+     选中项还压 11% 品牌色，壁纸下整块不透明，和外面的半透卡片对不上。
+     这里按面板透明度重混一遍：底色换成 --surface-2 半透（--bg 那一半
+     在壁纸下会把背景重新盖实，所以不再保留），选中项的品牌色也按同比例
+     混进去，保留「哪条在用」的色差。
+     卡片上还有输入框和状态字，补一层毛玻璃，免得文字直接压在花壁纸上 */
+  html.wall-on .api-profile {
+    background: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
+    backdrop-filter: blur(calc(10px + var(--glass)));
+  }
+  html.wall-on .api-profile:not(.on):hover {
+    background: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 100% + 12%), transparent);
+  }
+  html.wall-on .api-profile.on {
+    background: color-mix(in srgb, var(--brand) 11%,
+      color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 100%), transparent));
+  }
   /* 设置页底部那条「保存」栏：和顶栏同一口径（--surface + 面板透明度 +
      同一档毛玻璃），不能套上面那组 --surface-2——它比顶栏更白，而对话页
      底栏自己能透是因为它底下压着 #chatView 的雾，设置页的底栏下面什么都没有 */
