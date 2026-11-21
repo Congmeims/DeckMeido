@@ -1156,10 +1156,8 @@
           <h4 class="set-sect">壁纸与配色</h4>
           <div class="card">
             <div class="card-title">当前壁纸</div>
-            <div id="wallPreview" class="wall-preview"><span class="wall-empty">还没有壁纸，主题就是内置的浅色 / 深色 / 暗黑</span></div>
+            <div id="wallPreview" class="wall-preview"></div>
             <div class="wall-actions">
-              <button id="wallPick" class="mini-btn" type="button">选择图片</button>
-              <button id="wallClear" class="mini-btn" type="button">撤销壁纸</button>
               <div class="field-hint" id="wallHint">支持 PNG / JPG / WEBP / GIF / BMP，20MB 以内。也可以让 AI 联网找一张。</div>
             </div>
             <input id="wallFile" type="file" accept="image/*" hidden>
@@ -1205,17 +1203,23 @@
           </div>
           <div class="card">
             <div class="card-title">配色来源</div>
-            <div class="field">
-              <label>从壁纸自动取色</label>
-              <div class="field-hint" id="wallPaletteHint">导入壁纸后会自动取主色，生成浅色 / 深色两套配色。</div>
-            </div>
-            <div class="field">
-              <label>手动改强调色</label>
-              <div class="wall-color-row">
-                <input id="wallColor" type="color" value="#1a9fff">
-                <button id="wallColorApply" class="mini-btn" type="button">应用</button>
-                <span class="field-hint">只换按钮、气泡等强调色，背景仍跟壁纸走。</span>
+            <div class="wall-grid">
+              <div class="field">
+                <label>从壁纸自动取色</label>
+                <div class="field-hint" id="wallPaletteHint">导入壁纸后会自动取主色，生成浅色 / 深色两套配色。</div>
               </div>
+              <div class="field">
+                <label>手动改强调色</label>
+                <div class="wall-color-row">
+                  <input id="wallColor" type="color" value="#1a9fff">
+                  <button id="wallColorApply" class="mini-btn" type="button">应用</button>
+                </div>
+                <div class="field-hint">只换按钮、气泡等强调色，背景仍跟壁纸走。</div>
+              </div>
+            </div>
+            <div class="wall-actions">
+              <button id="wallColorReset" class="mini-btn" type="button">恢复默认强调色</button>
+              <span class="field-hint">改回壁纸自动取到的主色，手动调整丢掉。</span>
             </div>
           </div>
           <h4 class="set-sect">运行与更新</h4>
@@ -7316,12 +7320,13 @@
           break;
         case 'theme_changed':
           // AI 换了壁纸，或另一台设备改了外观：整站立刻跟着变，不用刷新
-          applyCfgAppearance(msg.data || {});
           {
-            // 广播里带的是完整快照，设置页表单还没渲染过时也能直接用；
-            // 不传参数走「主题快照还没到」的占位分支，别把表单写成空值
-            var th = msg.data;
-            if (th && th.wallpaper !== undefined) renderAppearanceForm(th, true);
+            // 比本地刚保存的还旧的快照整份丢掉：不然滑条刚拖完就被打回原值；
+            // 正在拖的那条滑杆也不接受远端值（拖完会自己保存，见 saveWallTune）
+            if (msg.data && !wallTuneEl && !cfgAppearanceStale(msg.data)) {
+              applyCfgAppearance(msg.data);
+              if (msg.data.wallpaper !== undefined) renderAppearanceForm(msg.data, true);
+            }
           }
           break;
         case 'session_changed':
@@ -11104,12 +11109,18 @@
   var wallPreview = document.getElementById('wallPreview');
   var wallHint = document.getElementById('wallHint');
   var wallDim = document.getElementById('wallDim');
+  // 本端最近一次保存压暗 / 模糊的本地时间：比它旧的快照不能拿来刷滑杆。
+  // 声明放在滑杆初始化之前，后面的赋值都在这之后执行
+  var wallDimSavedAt = 0;
+  var wallBlurSavedAt = 0;
   var wallBlur = document.getElementById('wallBlur');
   var wallDimVal = document.getElementById('wallDimVal');
   var wallBlurVal = document.getElementById('wallBlurVal');
   var wallColor = document.getElementById('wallColor');
   var wallPaletteHint = document.getElementById('wallPaletteHint');
   var WALL_HINT_BASE = wallHint.textContent;
+  // 还没选壁纸时预览框里那句话；大号加号也写这句，别两处各写一份
+  var UPLOAD_HINT = '选一张图做壁纸，会自动取出主色生成整套配色';
 
   // 快照没到（theme 为空或带 error）时只同步按钮文案，不写表单：
   // 否则壁纸/配色还没拉下来就先把设置页刷成「没有壁纸」，看着像丢了设置
@@ -11124,35 +11135,52 @@
     var a = theme;
     CFG_APPEARANCE = a;
     if (a.thumb) {
+      // 有壁纸：图 + 右下角撤销（原来那个「撤销壁纸」按钮挪到这里）
       wallPreview.innerHTML = '';
       var img = document.createElement('img');
       img.src = a.thumb + '?v=' + Date.now();
       img.alt = '当前壁纸';
       wallPreview.appendChild(img);
+      var swap = document.createElement('button');
+      swap.type = 'button';
+      swap.className = 'wall-swap';
+      swap.textContent = '换一张';
+      wallPreview.appendChild(swap);
+      var clr = document.createElement('button');
+      clr.type = 'button';
+      clr.className = 'wall-clear';
+      clr.textContent = '撤销壁纸';
+      wallPreview.appendChild(clr);
     } else {
-      wallPreview.innerHTML = '<span class="wall-empty">还没有壁纸，主题就是内置的浅色 / 深色 / 暗黑</span>';
+      // 没有壁纸时预览框本身就是「加号入口」：点一下就能选图，不必再往下找按钮
+      wallPreview.innerHTML = '<span class="wall-add"><b>+</b><i>' + UPLOAD_HINT + '</i></span>';
     }
-    var hold = !!remote && wallTuneBusy();
-    if (!hold || !wallTuneEl || wallTuneEl === wallDim) {
+    // 快照里这一项的落盘时间比本地刚保存的还旧，说明是保存之前拍下的旧货，
+    // 跳过，别把刚拖到的值刷回去（拖拽中的值本来就不会走这条渲染）
+    var dimStale = Number(a.dim_ts) < wallDimSavedAt;
+    var blurStale = Number(a.blur_ts) < wallBlurSavedAt;
+    if (!dimStale) {
       wallDim.value = String(Number(a.dim) || 0);
-      wallDimVal.textContent = wallDim.value + '%';
-      if (!hold) CFG_APPEARANCE.dim = Number(a.dim) || 0;
+      wallDimVal.textContent = wallTuneOpt(wallDim, wallDim.value).text;
+      CFG_APPEARANCE.dim = Number(a.dim) || 0;
     }
-    if (!hold || !wallTuneEl || wallTuneEl === wallBlur) {
+    if (!blurStale) {
       wallBlur.value = String(Number(a.blur) || 0);
-      wallBlurVal.textContent = wallBlur.value + 'px';
-      if (!hold) CFG_APPEARANCE.blur = Number(a.blur) || 0;
+      wallBlurVal.textContent = wallTuneOpt(wallBlur, wallBlur.value).text;
+      CFG_APPEARANCE.blur = Number(a.blur) || 0;
     }
     syncWallRgs();
     var brand = a.palette && a.palette.dark ? a.palette.dark.brand : '';
     if (brand) {
+      // 主色可能已被「恢复默认强调色」改过，和壁纸取到的原主色不同
       wallColor.value = brand;
-      wallPaletteHint.textContent = '当前主色 ' + brand + '，浅色 / 深色两套配色已自动生成。';
+      wallPaletteHint.textContent = a.source && brand !== a.source
+        ? '当前主色 ' + brand + '（已手动调整），浅色 / 深色两套配色已同步。'
+        : '当前主色 ' + brand + '，浅色 / 深色两套配色已自动生成。';
     } else {
-      wallPaletteHint.textContent = '导入壁纸后会自动取主色，生成浅色 / 深色两套配色。';
+      wallPaletteHint.textContent = UPLOAD_HINT;
     }
-    document.getElementById('wallClear').disabled = !a.wallpaper;
-    // 后端广播/撤销壁纸后也会走到这里，顺带把左下角按钮的「自定义」文案对齐
+    // 撤销按钮在预览框里，每次渲染都会重建；用委托绑定，别在渲染里逐个挂
     syncThemeBtn(document.documentElement.getAttribute('data-theme'));
   }
   // 压暗 / 模糊：本地先预览，停手后落盘。拖动的中间值不发请求，
@@ -11160,6 +11188,11 @@
   // 以前这里把两项一起发，而广播回程/别处的旧值会把另一项盖回去，
   // 表现就是「一拉就归零」
   var wallTuneTimer = null;
+  // 正在这条滑杆上操作：别的端推来的快照不能把表单刷回去，
+  // 否则刚拖到的值立刻被打回旧值。松手后还有 2.5 秒保护窗口，
+  // 窗口内的旧快照一律先不碰这两条滑杆
+  var wallTuneEl = null;
+  var wallTuneEndAt = 0;
   // el = 本次动的那一条；不传 = 本次这里什么都没改（比如只是刷新了主题），
   // 此时不提交，免得把别的端刚存的压暗/模糊用本地旧值写回去
   function saveWallTune(el, delay) {
@@ -11169,32 +11202,43 @@
     // 拖动结果换成旧值，「滑到 40% 下一秒自己归零」
     if (!el) { applyCfgAppearance(); return; }
     wallTuneTimer = setTimeout(function () {
-      wallTuneEl = null;
-      wallTuneEndAt = Date.now() + 900;
       var body = {};
+      // 本地时间戳用「现在」而不是回包里的：保存请求在路上时任何回程快照
+      // 都必然比它旧，全都不能拿来刷表单
+      var now = Date.now();
       if (el === wallDim) {
         CFG_APPEARANCE.dim = Number(wallDim.value) || 0;
         body.dim = CFG_APPEARANCE.dim;
+        wallDimSavedAt = now;
       } else if (el === wallBlur) {
         CFG_APPEARANCE.blur = Number(wallBlur.value) || 0;
         body.blur = CFG_APPEARANCE.blur;
+        wallBlurSavedAt = now;
       }
       applyCfgAppearance();
+      // 本地值已经写进快照、也画上了，从这一刻起这条滑杆就受保护到
+      // 本次保存的结果回来（见下）
+      wallTuneEl = null;
+      wallTuneEndAt = now + 2500;
       apiFetch('/api/theme/config', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       }).then(function (r) { return r.json(); })
-        .then(function (d) { if (d && !d.error) renderAppearanceForm(d); })
+        .then(function (d) {
+          if (!d || !d.theme) return;
+          // 后端已经记下这一项的新时间戳，保护窗口没必要再等；
+          // 回包里的快照比本地旧时 renderAppearanceForm 自己会跳过这一项
+          wallTuneEndAt = 0;
+          renderAppearanceForm(d.theme);
+        })
         .catch(function () {});
     }, delay || 400);
   }
   // 正在这条滑杆上操作：别的端推来的快照不能把表单刷回去，
-  // 否则刚拖到的值立刻被打回旧值
+  // 否则刚拖到的值立刻被打回旧值。松手后还有 2.5 秒保护窗口，
+  // 窗口内的远端值一律先不碰这两条滑杆
   var wallTuneEl = null;
   var wallTuneEndAt = 0;
-  function wallTuneBusy() {
-    return !!wallTuneEl || Date.now() < wallTuneEndAt;
-  }
   function startWallTune(el) {
     wallTuneEl = el;
     wallTuneEndAt = 0;
@@ -11301,17 +11345,30 @@
   function syncWallRgs() {
     wallRgs.forEach(syncWallRg);
   }
+  // 滑条读数：透明度是百分比，模糊要把「实际渲染 px」显示出来——
+  // applyCfgAppearance 里 10px 之后按平方根收口，这里必须用同一公式，
+  // 否则滑条写着 24px、画面上只有 13px 的效果，用户没法对齐观感
+  function wallTuneOpt(input, raw) {
+    var v = Number(raw) || 0;
+    if (input === wallBlur) {
+      var px = v <= 10 ? v : 10 + Math.sqrt(v - 10) * 0.9;
+      return { text: (Math.round(px * 2) / 2) + 'px' };
+    }
+    return { text: v + '%' };
+  }
   [wallDim, wallBlur].forEach(function (el) {
     wallRgs.push(el);
     syncWallRg(el);
     bindWallRg(el);
     el.addEventListener('input', function () {
-      wallDimVal.textContent = wallDim.value + '%';
-      wallBlurVal.textContent = wallBlur.value + 'px';
-      // 本地即时值同步进快照，再由 applyCfgAppearance 统一换算成 CSS 变量，
-      // 拖动时的实时观感与松手后、刷新后完全一致（两处换算口径不再分叉）
+      // 输入时以两条控件的当前值为准写回快照，再让 applyCfgAppearance 按时
+      // 换算成 CSS 变量，拖动时的实时观感与松手后、刷新后完全一致
       CFG_APPEARANCE.dim = Number(wallDim.value) || 0;
       CFG_APPEARANCE.blur = Number(wallBlur.value) || 0;
+      wallDimVal.textContent = wallTuneOpt(wallDim, CFG_APPEARANCE.dim).text;
+      wallBlurVal.textContent = wallTuneOpt(wallBlur, CFG_APPEARANCE.blur).text;
+      // 本地即时值同步进快照，再由 applyCfgAppearance 统一换算成 CSS 变量，
+      // 拖动时的实时观感与松手后、刷新后完全一致（两处换算口径不再分叉）
       applyCfgAppearance();
       syncWallRg(el);
       // 拖动中：值由 .rg 的指针事件直接给，只防抖保存；键盘改值没有指针
@@ -11356,8 +11413,23 @@
     document.documentElement.style.setProperty('--glass', savedGlass + 'px');
     syncWallRg(wallGlass);
   }
-  document.getElementById('wallPick').addEventListener('click', function () {
-    document.getElementById('wallFile').click();
+  // 选图入口：空预览框本身（大号加号）和「换一张」都指向同一个 file input
+  document.getElementById('wallPreview').addEventListener('click', function (e) {
+    if (e.target.closest('.wall-swap') || e.target.closest('.wall-add')) {
+      document.getElementById('wallFile').click();
+      return;
+    }
+    if (e.target.closest('.wall-clear')) {
+      apiFetch('/api/theme/clear', { method: 'POST' })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d && d.ok) {
+            clearCfgAppearanceVars();
+            applyCfgAppearance(d.theme || {});
+            renderAppearanceForm(d.theme);
+          }
+        }).catch(function () {});
+    }
   });
   document.getElementById('wallFile').addEventListener('change', function () {
     var f = this.files && this.files[0];
@@ -11379,18 +11451,6 @@
         }
       }).catch(function () { wallHint.textContent = '导入失败，请重试'; });
   });
-  document.getElementById('wallClear').addEventListener('click', function () {
-    apiFetch('/api/theme/clear', { method: 'POST' })
-      .then(function (r) { return r.json(); })
-      .then(function (d) {
-        if (d && d.ok) {
-          CFG_APPEARANCE = d.theme || { wallpaper: '', url: '', thumb: '', palette: null, dim: 45, blur: 0 };
-          clearCfgAppearanceVars();
-          applyCfgAppearance(CFG_APPEARANCE);
-          renderAppearanceForm(CFG_APPEARANCE);
-        }
-      }).catch(function () {});
-  });
   document.getElementById('wallColorApply').addEventListener('click', function () {
     apiFetch('/api/theme/palette', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -11402,6 +11462,26 @@
           applyCfgAppearance(d.theme);
         } else {
           wallPaletteHint.textContent = (d && d.error) || '应用失败';
+        }
+      }).catch(function () {});
+  });
+  // 恢复默认强调色：用壁纸自己取到的主色重算一套（current_theme 里的 source）
+  document.getElementById('wallColorReset').addEventListener('click', function () {
+    var cur = CFG_APPEARANCE || {};
+    if (!cur.source) {
+      wallPaletteHint.textContent = '现在还没有壁纸可取色，先选一张图片。';
+      return;
+    }
+    apiFetch('/api/theme/palette', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ brand: cur.source })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.ok) {
+          renderAppearanceForm(d.theme);
+          applyCfgAppearance(d.theme);
+        } else {
+          wallPaletteHint.textContent = (d && d.error) || '恢复失败';
         }
       }).catch(function () {});
   });
@@ -14491,12 +14571,16 @@
           applyIdlePh();
         }
         // 自定义主题：别的端（另一台浏览器/掌机面板）改了设置时，
-        // /api/config 会带回最新快照，这边按它重拉一次壁纸与配色
+        // /api/config 会带回最新快照，这边按它重拉一次壁纸与配色。
+        // /api/config 是异步拉的，回来时外观可能已经被别处更新过（版本更新 /
+        // 自己刚拖完的滑条 / 广播），拿这份更旧的快照直接覆盖 = 设置被「恢复」。
+        // 所以只接受比本地新（壁纸和配色没被改）的快照，且拖滑条时不覆盖这两项
         if (c.theme) {
-          applyCfgAppearance(c.theme);
-          // 只在设置面板已渲染过时回写表单：没渲染过时它的引用还是 undefined
-          // （下面是 var 声明，不会提升），而且用户正在拖的滑杆不该被重置
-          if (typeof setBody !== 'undefined' && setBody) renderAppearanceForm(c.theme, true);
+          var stale = !wallTuneEl && cfgAppearanceStale(c.theme);
+          if (!stale) applyCfgAppearance(c.theme);
+          // 只在设置面板已渲染过时回写表单（下面是 var 声明，不会提升），
+          // 表单内部的逐项过期判断见 renderAppearanceForm
+          if (!stale && typeof setBody !== 'undefined' && setBody) renderAppearanceForm(c.theme, true);
         }
         // 权限等 select 的 value 刚被恢复，同步刷新自绘下拉的 label，别显示成第一项
         ddRefreshAll();
@@ -15065,7 +15149,31 @@
     return document.documentElement.getAttribute('data-theme') === 'light';
   }
   // 把后端的 theme 快照套到页面上。wall.url 为空 = 没壁纸，原样恢复内置主题
-  function applyCfgAppearance(theme) {
+  // 快照是不是比本地更旧：壁纸换成了别的那张、或配色被改成另一套，说明
+  // 这份 /api/config 是拍照更早的响应（慢请求回来得晚）。返回 true = 旧的，丢掉
+  function cfgAppearanceStale(t) {
+    var cur = CFG_APPEARANCE || {};
+    // 压暗 / 模糊：快照里带的落盘时间不比本地保存时间新，就是旧货。
+    // /api/config 是异步拉的，回来时常比刚保存的值还旧；以前这里只看壁纸和
+    // 配色，于是「点一下滑条闪一下又归零」——那就是被更早拍下的快照刷回去了
+    if (tuneSnapStale(t)) return true;
+    if (String(t.wallpaper || '') !== String(cur.wallpaper || '')) return true;
+    var a = (t.palette && t.palette.dark && t.palette.dark.brand) || '';
+    var b = (cur.palette && cur.palette.dark && cur.palette.dark.brand) || '';
+    return !!a && !!b && a !== b;
+  }
+  // 某项的「本地最近一次落盘时间」，用来丢掉比它更旧的快照
+  function tuneSnapStale(t) {
+    var pairs = [['dim', wallDimSavedAt], ['blur', wallBlurSavedAt]];
+    for (var i = 0; i < pairs.length; i++) {
+      var k = pairs[i][0];
+      var local = pairs[i][1];
+      var snap = Number(t[k + '_ts']) || 0;
+      if (local && snap < local) return true;
+    }
+    return false;
+  }
+  function applyCfgAppearance(theme, keepTune) {
     // CFG_APPEARANCE 的声明在文件后段，而 theme_changed 广播可能在脚本还没执行到
     // 那里就到：此时它是 undefined，直接读 .palette 会抛异常并中断后面的初始化。
     // 这里先兜一个空壳，真正值稍后由 loadTheme / renderAppearanceForm 覆盖。
@@ -15076,11 +15184,18 @@
     // 以前这种情况会把本地值原样写回 CFG_APPEARANCE，等于把别的端推来的
     // 旧值也认成自己的，再一保存就把拖动结果盖掉了
     if (theme && typeof theme === 'object' && !(theme instanceof Event)) {
-      // 本端正在拖压暗/模糊，别处的广播里这两个数是旧的：壁纸、配色照收，
-      // 这两项留给本端拖完那次保存的结果（否则拖动中途整页会闪回旧效果）
-      if (typeof wallTuneEl !== 'undefined' && wallTuneEl) theme = Object.assign({}, theme, {
-        dim: Number(CFG_APPEARANCE.dim) || 0, blur: Number(CFG_APPEARANCE.blur) || 0
-      });
+      // 这两项：本端这条滑杆正在拖、或快照的落盘时间比本地刚保存的还旧，
+      // 就一律用本地值。以前整份快照照收，于是刚点完滑条马上被一份更早
+      // 拍下的 /api/config 打回原值（「闪一下就归零」）
+      var dragging = !!(typeof wallTuneEl !== 'undefined' && wallTuneEl) || keepTune;
+      var fix = {};
+      if (dragging || Number(theme.dim_ts) < wallDimSavedAt) {
+        fix.dim = Number(CFG_APPEARANCE.dim) || 0;
+      }
+      if (dragging || Number(theme.blur_ts) < wallBlurSavedAt) {
+        fix.blur = Number(CFG_APPEARANCE.blur) || 0;
+      }
+      theme = Object.assign({}, theme, fix);
       CFG_APPEARANCE = theme;
     }
     var a = CFG_APPEARANCE;

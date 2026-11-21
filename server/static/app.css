@@ -2594,20 +2594,50 @@
   }
   /* ---- 设置页「外观」分区 ---- */
   .wall-preview {
+    position: relative;
     width: 100%; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden;
     background: var(--surface-2); border: 1px solid var(--line);
     display: flex; align-items: center; justify-content: center;
   }
   .wall-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .wall-empty { color: var(--muted); font-size: 13px; }
+  /* 空状态就是一个加号入口：整框可点，虚线框提示「这里能放东西」 */
+  .wall-add {
+    width: 100%; height: 100%; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+    color: var(--muted); font-size: 13px; text-align: center; padding: 0 18px;
+    border-radius: 10px; transition: color .15s, background .15s;
+  }
+  .wall-add b {
+    width: 46px; height: 46px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px; font-weight: 400; line-height: 1;
+    color: var(--brand); background: color-mix(in srgb, var(--brand) 16%, transparent);
+    border: 1px dashed color-mix(in srgb, var(--brand) 55%, transparent);
+  }
+  .wall-add i { font-style: normal; }
+  .wall-add:hover { color: var(--text); background: rgba(255,255,255,.04); }
+  /* 有壁纸时：右下角放撤销，左下角「换一张」，都是浮在图上的小药丸 */
+  .wall-swap, .wall-clear {
+    position: absolute; bottom: 8px; z-index: 2;
+    font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    border-radius: 999px; cursor: pointer; color: #fff;
+    background: rgba(12,16,26,.62); border: 1px solid rgba(255,255,255,.28);
+    backdrop-filter: blur(6px);
+  }
+  .wall-swap { left: 8px; }
+  .wall-clear { right: 8px; }
+  .wall-swap:hover, .wall-clear:hover { background: rgba(12,16,26,.82); }
+  .wall-clear:hover { border-color: rgba(232,70,58,.75); color: #ffb4ad; }
   .wall-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0 4px; }
   .wall-actions .field-hint { flex: 1 1 220px; margin: 0; }
+  /* 配色来源分两栏：左边自动取色、右边手动强调色，窄屏再叠回去 */
+  .wall-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 20px; align-items: start; }
+  @media (max-width: 760px) { .wall-grid { grid-template-columns: 1fr; } }
   .wall-color-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .wall-color-row input[type="color"] {
     width: 44px; height: 30px; padding: 0; border: 1px solid var(--line);
     border-radius: 6px; background: var(--surface-2); cursor: pointer;
   }
-  .wall-color-row .field-hint { flex: 1 1 200px; margin: 0; }
 
   /* 助手气泡同理：它体量大、贴着壁纸，最容易让人觉得「字浮在图上」。
      直接写 .msg.assistant（与上面的背景声明同优先级、位置更靠后），

@@ -394,7 +394,8 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "search_wallpaper",
-            "description": ("搜壁纸并给用户挑：按关键词抓 4 张候选图，直接显示在聊天里让用户"
+            "description": ("搜壁纸并给用户挑：在壁纸图库（Wallhaven、Openverse、维基共享、"
+                            "Bing 图片）里按关键词抓 4 张候选图，直接显示在聊天里让用户"
                             "选 1-4；用户选中后再用 set_wallpaper 传 candidate_id 应用。"
                             "用户说「换张壁纸」「找张星空背景」时先调这个，不要直接 set_wallpaper。"
                             "用户不满意就用新关键词再搜一次。"
@@ -406,7 +407,10 @@ TOOLS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "query": {"type": "string",
-                              "description": "英文关键词更容易搜到图，例如 starry night sky、anime girl"},
+                              "description": "检索关键词，英文命中率最高。用画面本身的名词"
+                                             "组合，例如 starry night sky、anime girl "
+                                             "cherry blossom、misty mountain forest；"
+                                             "不要写「好看的壁纸」这类套话"},
                     "count": {"type": "integer",
                               "description": "候选数量，默认 4，范围 2-4"},
                 },
@@ -3230,6 +3234,167 @@ async def _fetch_image(url: str, limit: int) -> tuple[bytes | None, str]:
         return None, f"下载失败 {type(e).__name__}"
 
 
+# ---------- 壁纸检索：固定用下面几个图库，不走通用搜图引擎 ----------
+# 原来用 DuckDuckGo 图片搜索，拿到的是网页里零散的缩略图：标题和画面经常对不上
+# （词不达意）、尺寸参差、夹广告图。这里改成几个能按关键词精确检索的图库，
+# 统一成 {image, title} 再走原来的下载/落盘流程。
+
+# 每个源要几张：多要一些当备胎，下载失败或内容不相关时顺位补上
+POOL_REQ = 10
+
+UA_WEB = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0 Safari/537.36",
+          "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
+
+
+def _get_json(url: str, params: dict, headers: dict | None = None) -> dict:
+    r = httpx.get(url, params=params, timeout=WALLPAPER_TIMEOUT,
+                  follow_redirects=True, headers=headers or UA_WEB)
+    r.raise_for_status()
+    return r.json()
+
+
+# ---------- 按关键词检索，英文站 ----------
+
+SAFE_API = "https://safebooru.org/index.php"       # 动漫插画，免 key
+
+
+def _safe_search(query: str, n: int) -> list[dict]:
+    """Safebooru：动漫/插画类壁纸的实际主战场，全年龄标签库
+
+    返回的是 xml，条目里 file_url 要补站点前缀，sample 是缩小版；
+    插图幅面够宽的才留（booru 里大量竖构图和人像特写，铺满屏会糊）。
+    """
+    import xml.etree.ElementTree as ET
+    r = httpx.get(SAFE_API, params={"page": "dapi", "s": "post", "q": "index",
+                                    "json": 0, "limit": max(n * 2, 12),
+                                    "tags": f"{query} sort:score width:>1400"},
+                  timeout=WALLPAPER_TIMEOUT, follow_redirects=True, headers=UA_WEB)
+    r.raise_for_status()
+    rows = []
+    for post in ET.fromstring(r.text).findall("post"):
+        src = post.get("file_url") or ""
+        w = int(post.get("width") or 0)
+        h = int(post.get("height") or 0)
+        if not src or w < 1400 or (h and w * 9 < h * 16):
+            continue
+        tags = (post.get("tags") or "").split()
+        rows.append({"image": src, "title": " ".join(tags[:8])[:60]})
+        if len(rows) >= n:
+            break
+    return rows
+
+
+WH_API = "https://wallhaven.cc/api/v1/search"
+
+
+def _wh_search(query: str, n: int) -> list[dict]:
+    """Wallhaven：公开接口免 key，风景/动漫/抽象壁纸都有，按相关度排序"""
+    data = _get_json(WH_API, {"q": query, "categories": "111",
+                              "purity": "100", "sorting": "relevance",
+                              "atleast": "1920x1080", "ratios": "16x9,16x10"}
+                     ).get("data") or []
+    return [{"image": it.get("path") or "", "title": str(it.get("id") or "")}
+            for it in data if it.get("path")][:n]
+
+
+OV_API = "https://api.openverse.org/v1/images/"
+
+
+def _ov_search(query: str, n: int) -> list[dict]:
+    """Openverse（CC 授权图库，免 key）：照片与插画都覆盖
+
+    不用 Unsplash 的网页接口——它现在会先跳到 .within.website 的人机验证，
+    服务器端一律 401/403，不稳定。
+    """
+    data = _get_json(OV_API, {"q": query, "page_size": max(n * 2, 8),
+                              "aspect_ratio": "wide", "size": "large",
+                              "mature": "false"}).get("results") or []
+    rows = []
+    for it in data:
+        src = it.get("url") or ""
+        w, h = it.get("width") or 0, it.get("height") or 0
+        if src and (not w or not h or w >= h):
+            rows.append({"image": src, "title": str(it.get("title") or "")[:60]})
+    return rows[:n]
+
+
+WM_API = "https://commons.wikimedia.org/w/api.php"
+
+
+def _wm_search(query: str, n: int) -> list[dict]:
+    """维基共享资源：真实照片为主，风景/建筑/天象/花草命中很准"""
+    data = _get_json(WM_API, {
+        "action": "query", "format": "json", "generator": "search",
+        "gsrsearch": f"{query} filetype:bitmap", "gsrlimit": max(n * 2, 8),
+        "gsrnamespace": "6", "prop": "imageinfo", "iiprop": "url|size",
+        "iiurlwidth": "1920"}).get("query") or {}
+    rows = []
+    for page in (data.get("pages") or {}).values():
+        info = (page.get("imageinfo") or [{}])[0]
+        src = info.get("thumburl") or info.get("url") or ""
+        w, h = info.get("width") or 0, info.get("height") or 0
+        if src and w >= h:
+            title = str(page.get("title") or "").replace("File:", "")
+            rows.append({"image": src, "title": title[:60]})
+    return rows[:n]
+
+
+BING_API = "https://www.bing.com/images/async"
+
+
+def _bing_wallpapers(query: str, n: int) -> list[dict]:
+    """Bing 图片检索兜底：中文关键词也认（其余几个源都是英文站）
+
+    结果页里 murl 是原图地址、t 是标题；竖图直接跳过。
+    """
+    params = {"q": query, "first": 0, "count": max(n * 4, 16),
+              "mkt": "zh-CN", "mmasync": 1}
+    r = httpx.get(BING_API, params=params, timeout=WALLPAPER_TIMEOUT,
+                  follow_redirects=True, headers=UA_WEB)
+    r.raise_for_status()
+    import html as _html
+    rows = []
+    # 每张图都是一个 <a m="{...}">，题注在 meta 的 t 里
+    for m in re.finditer(r'm="(\{[^"]+?\})"', r.text):
+        try:
+            meta = json.loads(_html.unescape(m.group(1)))
+        except ValueError:
+            continue
+        src = str(meta.get("murl") or "")
+        w, h = meta.get("w") or 0, meta.get("h") or 0
+        if not src.startswith(("http://", "https://")):
+            continue
+        if w and h and w < h:
+            continue
+        title = str(meta.get("t") or meta.get("desc") or query)
+        rows.append({"image": src, "title": title[:60]})
+        if len(rows) >= n:
+            break
+    return rows
+
+
+# ---------- 中文关键词的翻译通道 ----------
+
+TRANS_API = "https://translate.googleapis.com/translate_a/single"
+
+
+def _translate_zh(text: str) -> str:
+    """中文关键词 -> 英文，用作英文图库的检索词
+
+    不翻的话，几个英文图库对中文一律 0 结果，只能落到 Bing 那个召回很偏的
+    接口上（搜「樱花」能捞出实验室、旅游规划）。失败就退回原文。
+    """
+    r = httpx.get(TRANS_API, params={"client": "gtx", "sl": "auto", "tl": "en",
+                                     "dt": "t", "q": text},
+                  timeout=8, follow_redirects=True, headers=UA_WEB)
+    r.raise_for_status()
+    parts = r.json()[0] or []
+    out = "".join(str(p[0]) for p in parts if p and p[0]).strip()
+    return out or text
+
+
 async def _search_wallpaper(query: str, count: int = 4) -> str:
     """按关键词抓几张候选图，落盘后把编号与 id 交给模型，由前端渲染成可选卡片。
 
@@ -3248,52 +3413,131 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
     except (TypeError, ValueError):
         count = 4
 
-    def _search() -> list[dict]:
-        from ddgs import DDGS
-        # 多要几张：有的图床会 403 或不是图片，下载失败的要跳过，得留出余量
-        last_exc = None
-        # DDG 偶尔会对某个查询回 malformed headers / 空结果，换个后端再试一次；
-        # 两次都不行才算真失败
-        for backend in ("duckduckgo", "brave"):
-            try:
-                rows = DDGS().images(query, max_results=count * 3, backend=backend) or []
-            except Exception as e:
-                last_exc = e
-                continue
-            if rows:
-                return rows
-        if last_exc is not None:
-            raise last_exc
-        return []
+    # 标题里带这些词的一律不收：Bing 经常混进文章配图、百科条目、表情包、商品
+    BAD_TITLE = re.compile(r"百度百科|维基百科|百科|新闻|资讯|攻略|教程|下载|软件|"
+                           r"表情包|头像|手游|手机|app|论坛|社区|博客|知乎|哔哩|b站|"
+                           r"新番|动画|漫画|漫迷|游侠|游民|3dm|steam|"
+                           r"采集|转载|www\.|http|mural|peel and stick|wall ?sticker|"
+                           r"decal|poster|canvas|sticker|amazon|etsy|ebay|"
+                           r"aliexpress|redbubble|shutterstock|istock|stock photo", re.I)
+
+    # 图库都是英文站：中文关键词先翻成英文再去检索，否则一律 0 结果，
+    # 只能落到 Bing 那个召回很偏的接口上（搜「樱花」能捞出实验室、旅游规划）
+    ZH_RE = re.compile(r"[\u4e00-\u9fff]")
+    en_query = query
+    if ZH_RE.search(query):
+        try:
+            en_query = await asyncio.to_thread(_translate_zh, query)
+        except Exception:
+            en_query = query
+    words = [w for w in re.split(r"[^0-9a-z]+", en_query.lower()) if len(w) > 1]
+
+    def _relevant(r: dict) -> bool:
+        """标题得对得上检索词，且不像文章/商品配图。"""
+        title = str(r.get("title") or "")
+        if re.search(r"[【】《》]|\bprint\b", title, re.I):
+            return False                   # 预告片/合集类标题，配图不是壁纸
+        if title and BAD_TITLE.search(title):
+            return False
+        # 壁纸库里没有标题（只有 id/tag），不做词面判断
+        if r.get("src") in ("wallhaven", "safebooru") or not words:
+            return True
+        low = title.lower()
+        # 至少命中一半检索词：「搜 misty 出来一首叫 Misty 的歌」要挡掉
+        hits = sum(1 for w in words if w in low)
+        return hits * 2 >= len(words) + 1
+
+    def _search() -> tuple[list[dict], list[str]]:
+        """并行问几个图库，各取几张当候选池。
+
+        Wallhaven、Safebooru 是壁纸/插画库，命中率最高；Bing 图片补中文
+        题材；Openverse、维基共享补真实照片。一个源挂了只记一笔。
+        中文提问时，Bing 用中文原词（它的中文召回还行），其余用译文。
+        """
+        import concurrent.futures as cf
+
+        sources = (
+            ("wallhaven", _wh_search),
+            ("safebooru", _safe_search),
+            ("bing", _bing_wallpapers),
+            ("openverse", _ov_search),
+            ("wikimedia", _wm_search),
+        )
+        pool: list[dict] = []
+        errors: list[str] = []
+        with cf.ThreadPoolExecutor(max_workers=len(sources)) as ex:
+            futs = [(ex.submit(fn, f"{query} wallpaper" if label == "bing" else en_query,
+                               POOL_REQ), label) for label, fn in sources]
+            for fut, label in futs:
+                try:
+                    rows = fut.result()
+                except Exception as e:      # 单个源挂了不算失败
+                    errors.append(f"{label}:{type(e).__name__}")
+                    continue
+                for r in rows:
+                    r["src"] = label
+                    # 先过一轮基本过滤：商品图、文章标题都不要，免得占掉
+                    # 后面的下载名额；这里只看标题，不联网
+                    if _relevant(r):
+                        pool.append(r)
+        return pool, errors
 
     try:
-        results = await asyncio.to_thread(_search)
+        pool, errors = await asyncio.to_thread(_search)
     except Exception as e:
         return (f"搜图失败：{e}。可以换个关键词再试，"
-                "英文关键词（如 scenic landscape）命中率更高。")
+                "风景/动漫类用英文关键词（如 scenic landscape、anime portrait）"
+                "命中率更高。")
+    if not pool:
+        return ("没搜到能用的图片（图库都没返回结果：" + "，".join(errors) + "）。"
+                "换一组更常见的名词再搜一次。")
 
-    picked: list[dict] = []
-    seen = set()
-    for r in results:
-        if len(picked) >= count:
-            break
-        url = str(r.get("image") or r.get("thumbnail") or "").strip()
+    # 按图库轮转排队：壁纸库、插画库、Bing 交替，最后才轮到照片库
+    order = ["wallhaven", "safebooru", "bing", "openverse", "wikimedia"]
+    seen: set[str] = set()
+    queues: dict[str, list[dict]] = {}
+    for r in pool:
+        url = str(r.get("image") or "").strip()
         if not url or url in seen or not re.match(r"^https?://", url, re.I):
             continue
         seen.add(url)
-        raw, _err = await _fetch_image(url, themecolor.WALLPAPER_MAX)
+        queues.setdefault(str(r.get("src")), []).append(r)
+    ordered: list[dict] = []
+    while any(queues.get(k) for k in order):
+        for k in order:
+            if queues.get(k):
+                ordered.append(queues[k].pop(0))
+
+    # 下载量放宽到 3 倍：有的图库给的是防盗链直链，下不到的自动跳过
+    picked: list[dict] = []
+    tried = 0
+    used_src: dict[str, int] = {}
+    while len(picked) < count and tried < count * 3 and ordered:
+        tried += 1
+        # 每张成品尽量来自不同图库：单源已经占了 count-1 张就先跳过去，
+        # 让前两张分别是壁纸库和通用图片，不会出现 4 张全是一个来源
+        r = None
+        for i, cand in enumerate(ordered):
+            if used_src.get(cand["src"], 0) >= count - 1:
+                continue
+            r = ordered.pop(i)
+            break
+        if r is None:
+            r = ordered.pop(0)
+        raw, _err = await _fetch_image(r["image"], themecolor.WALLPAPER_MAX)
         if not raw:
             continue
         try:
             cid, _ext = await asyncio.to_thread(themecolor.save_candidate, raw)
         except ValueError:
             continue
+        used_src[r["src"]] = used_src.get(r["src"], 0) + 1
         picked.append({"id": cid, "url": themecolor.candidate_url(cid),
                        "title": str(r.get("title") or "")[:80]})
 
     if not picked:
         LAST_CANDIDATES.clear()
-        return ("没搜到能用的图片。换一组更通用的关键词再搜一次"
+        return ("图库找到了图片但都下载失败，换一组更通用的关键词再搜一次"
                 "（例如 scenic landscape、anime wallpaper）。")
     LAST_CANDIDATES[:] = picked
     # 结果文本给模型看，前端另有一份候选列表可渲染；两者顺序一致，编号从 1 开始

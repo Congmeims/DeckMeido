@@ -28,6 +28,30 @@ delay=2
 # 显示环境是否真的可用。切模式后旧会话的 DISPLAY 可能还留在环境里，
 # 只判断变量存在会在「有 DISPLAY 但连不上」时误判可用，随后 Qt 平台
 # 初始化失败会 abort 并产生 coredump；这里对 X 也做一次真实探测。
+#
+# 环境里的 WAYLAND_DISPLAY 常是残留值：手动从 SSH 拉起时会被设成
+# gamescope-0，切回桌面模式后这个 socket 已关闭，但 wayland-0 是好的。
+# 所以先按优先级在 socket 目录里找现有的连接点，找到了就 export 回去。
+pick_display() {
+  local rt="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  local wd="${WAYLAND_DISPLAY:-}" c
+  # gamescope-0 这个 socket 文件在切回桌面后仍然留在目录里（旧会话的残留），
+  # 文件存在不代表能连上：实际连会 Connection refused。桌面模式的合成器
+  # 是 kwin，socket 名字固定是 wayland-0，所以先认它。
+  for c in wayland-0 wayland-1 "$wd" gamescope-0; do
+    [ -n "$c" ] || continue
+    [ -e "$rt/$c" ] && { echo "$c"; return 0; }
+  done
+  # 没有 Wayland 就退回 X：优先用 Xwayland 真在监听的那个
+  if [ -e "/tmp/.X11-unix/X0" ]; then
+    echo "DISPLAY=:0"
+  elif [ -e "/tmp/.X11-unix/X1" ]; then
+    echo "DISPLAY=:1"
+  else
+    return 1
+  fi
+}
+
 display_ready() {
   if [ -n "${WAYLAND_DISPLAY:-}" ]; then
     [ -e "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/$WAYLAND_DISPLAY" ]
@@ -53,8 +77,24 @@ display_ready() {
 }
 
 while :; do
+  # 每轮起客户端前按现存 socket 校正显示环境：残留的 gamescope-0 会让
+  # Qt 平台插件初始化失败 → abort → 每 30 秒一个 coredump
+  pick="$(pick_display)" || {
+    echo "[launch] 找不到可用的显示环境（没有任何 Wayland socket / X display），停止重试" >&2
+    exit 1
+  }
+  case "$pick" in
+    DISPLAY=*) export DISPLAY="${pick#DISPLAY=}"; unset WAYLAND_DISPLAY ;;
+    *) export WAYLAND_DISPLAY="$pick" ;;
+  esac
+  [ -n "${XDG_RUNTIME_DIR:-}" ] || export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  # 上一次的崩溃如果留下 Wayland 连接打不开的痕迹，这几行会写进 /tmp/deckmeido_client.log
   "$PY" "$MAIN"
   rc=$?
+  if [ "$rc" = "134" ]; then
+    echo "[launch] 平台插件初始化失败（rc 134）：本轮 WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-<空>} DISPLAY=${DISPLAY:-<空>}，socket 目录：" >&2
+    ls "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" 2>/dev/null | grep -E '^(wayland|gamescope)' >&2
+  fi
   # 0 = 用户主动退出；130/143 = Ctrl-C / SIGTERM，都属于正常收摊
   if [ "$rc" = "0" ] || [ "$rc" = "130" ] || [ "$rc" = "143" ]; then
     exit "$rc"
@@ -72,7 +112,7 @@ while :; do
   # 不要无限重试——每次重试都会让 Qt 平台初始化失败并 abort，刷 coredump
   ready=0
   for _ in $(seq 1 30); do
-    if display_ready; then
+    if pick_display >/dev/null; then
       ready=1
       break
     fi

@@ -13,6 +13,7 @@ register(app) 时才定义路由函数，保持 main.api_xxx 的既有写法。
 from __future__ import annotations
 
 import re
+import time
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -88,9 +89,23 @@ def current_theme() -> dict:
         "url": f"/wallpapers/{name}?v={_mtime(name)}" if name else "",
         "thumb": f"/wallpapers/wallpaper_thumb.jpg?v={_mtime(name)}" if name else "",
         "palette": palette,
+        # 壁纸取到的原始强调色：前端「恢复默认强调色」用它重算整套配色
+        "source": str((palette or {}).get("source") or ""),
         "dim": dim,
         "blur": blur,
+        # 这两项的落盘时间（毫秒）。前端拿它判断一份快照是不是自己那次保存
+        # 之前的旧货：/api/config 是异步拉的，回来时可能比刚存的值还旧
+        "dim_ts": _stamp(str(app.get("dim_ts") or "")),
+        "blur_ts": _stamp(str(app.get("blur_ts") or "")),
     }
+
+
+def _stamp(value: str) -> int:
+    """配置里的保存时间戳（毫秒字符串）-> int；没有或坏数据按 0"""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _mtime(name: str) -> int:
@@ -186,14 +201,19 @@ def register(app) -> None:
     async def api_theme_config(req: _TuneReq):
         """压暗 / 模糊：两个滑杆停手后落到这里，别的端立刻跟着变
 
-        只改传上来的那一项，另一项按调用方看到的值回写并原样推送：
-        这一项自己的值以本次操作为准，不会被另一台的旧值盖回去。
+        只改传上来的那一项：另一项不在 updates 里，所以不会被这次调用
+        顺手用「读-改-写」的旧值盖掉；同时记下这一项的落盘时间，
+        前端据此丢掉自己保存之前拍下的旧快照。
         """
-        cur = current_theme()
-        dim = cur["dim"] if req.dim is None else _clamp_int(req.dim, DIM_DEFAULT, 0, 80)
-        blur = cur["blur"] if req.blur is None else _clamp_int(req.blur, BLUR_DEFAULT, 0, 24)
-        await _publish({"dim": dim, "blur": blur},
-                       dict(cur, dim=dim, blur=blur))
+        now = int(time.time() * 1000)
+        updates = {}
+        if req.dim is not None:
+            updates["dim"] = _clamp_int(req.dim, DIM_DEFAULT, 0, 80)
+            updates["dim_ts"] = str(now)
+        if req.blur is not None:
+            updates["blur"] = _clamp_int(req.blur, BLUR_DEFAULT, 0, 24)
+            updates["blur_ts"] = str(now)
+        await _publish(updates)
         return {"ok": True, "theme": current_theme()}
 
     @router.get("/api/theme/candidates/{cid}")
