@@ -15139,17 +15139,22 @@
   syncPermDanger(cfgPerm);
 
   // ---------- 三档主题：浅色 / 深色 / 暗黑 ----------
-  // 按这个顺序循环；按钮上写的是「点一下会切到的下一档」，和原来两档时的语义一致
+  // 按这个顺序循环；按钮上写的是「当前正在用的这一档」
   var THEMES = ['light', 'dark', 'oled'];
+  // 有壁纸时这三档实际上是在「自定义壁纸 + 某档明暗」上取值，
+  // 光叫「浅色模式」会让人以为是内置那套配色，所以文案前面加「自定」
   var THEME_NAME = { light: '浅色模式', dark: '深色模式', oled: '暗黑模式' };
-  // 左下角按钮文案：始终写「点一下会切到的下一档」。
-  // 设了壁纸后三档会自动带上壁纸底色（见 applyCfgAppearance），
-  // 所以这里不再有单独的「自定义」档，文案也不变
+  function themeLabel(t, wallOn) {
+    var name = THEME_NAME[t] || THEME_NAME.dark;
+    return wallOn ? '自定' + name.replace('模式', '') : name;
+  }
+  // 左下角按钮文案 = 当前主题，不再是「点一下会切到的下一档」。
+  // 有没有壁纸由 html.wall-on 判断（applyCfgAppearance 切这个类）
   function syncThemeBtn(t) {
     var el = document.getElementById('btnTheme');
     if (!el) return;
-    var idx = THEMES.indexOf(t);
-    el.textContent = THEME_NAME[THEMES[(idx < 0 ? 0 : idx + 1) % THEMES.length]];
+    if (THEMES.indexOf(t) === -1) t = 'dark';
+    el.textContent = themeLabel(t, document.documentElement.classList.contains('wall-on'));
   }
   function applyTheme(t) {
     if (THEMES.indexOf(t) === -1) t = 'dark';
@@ -15309,6 +15314,7 @@
     else html.removeAttribute('data-wall-lum');
     html.classList.toggle('wall-on', on);
     // 自定义主题的生灭都在这里落地，左下角按钮文案跟着同步
+    // （有没有壁纸会决定写「浅色模式」还是「自定浅色」）
     syncThemeBtn(html.getAttribute('data-theme'));
   }
   // 切三档主题时配色变量跟着换深浅那一套（见 applyTheme 里的调用）
@@ -15322,6 +15328,8 @@
     });
     html.classList.remove('wall-on');
     html.removeAttribute('data-wall-lum');
+    // 壁纸没了，「自定浅色」要退回「浅色模式」
+    syncThemeBtn(html.getAttribute('data-theme'));
   }
   // 拉一次主题快照。首屏用 /api/theme（不进设置页也能应用）；
   // config_changed 里用 /api/config 带回的 theme 字段
