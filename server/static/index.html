@@ -15320,16 +15320,28 @@
       vars['--muted-base'] = (set && set.surface_2)
         || (isLightTheme() ? '#eceff5' : '#2b2f3a');
     } else {
-      // 没壁纸（或没取到配色）时这层内联必须撤掉：内联优先级高于
-      // [data-theme=xxx]，留着上一次的配色就是「切档错乱」——
-      // 浅色档带着深色底、切到暗黑还是原来的牌子色
-      ['--brand', '--user-bubble', '--bg', '--surface', '--surface-2', '--muted-base',
-       '--on-brand', '--on-user'].forEach(function (k) {
+      // 没壁纸时不铺整套配色（底色、面板、灰字底都回到三档主题自己的固定值），
+      // 但手动指定的强调色要留下：设置页改的牌子色在无壁纸时同样生效。
+      // 旧配色没有 oled 一栏，暗黑档退回 pal.dark（和上面有壁纸时的取法一致）
+      var th = html.getAttribute('data-theme') || 'dark';
+      var ps = pal ? (isLightTheme() ? pal.light : (th === 'oled' && pal.oled ? pal.oled : pal.dark)) : null;
+      if (ps && ps.brand) {
+        vars['--brand'] = ps.brand;
+        vars['--user-bubble'] = ps.user_bubble || ps.brand;
+      }
+      // 其余配色变量必须撤掉：内联优先级高于 [data-theme=xxx]，
+      // 留着上一次的配色就是「切档错乱」——浅色档带着深色底、切到暗黑还是原来的底色
+      ['--bg', '--surface', '--surface-2', '--muted-base'].forEach(function (k) {
         html.style.removeProperty(k);
       });
+      if (!vars['--brand']) {
+        // 没有手动强调色时也不留旧内联，交还给三档主题
+        html.style.removeProperty('--brand');
+        html.style.removeProperty('--user-bubble');
+      }
     }
     // 压在强调色上的字色跟着强调色走（下面 brandInk 的说明）。
-    // 没壁纸时也走一遍：用三档主题自己的 --brand 重新算
+    // 没壁纸时也走一遍：用留下的手动强调色（或三档主题自己的 --brand）重新算
     var brand = vars['--brand'] || getComputedStyle(html).getPropertyValue('--brand');
     var bubble = vars['--user-bubble'] || brand;
     vars['--on-brand'] = brandInk(brand);
