@@ -2620,10 +2620,13 @@
     backdrop-filter: blur(calc(8px + var(--glass))) saturate(1.05);
   }
   /* 分区标题（左侧蓝条那种小标题）：品牌色底在壁纸上会淡成透明，
-     叠一层同色相的实色底，保证在任何壁纸上都能读 */
+     叠一层同色相的实色底，保证在任何壁纸上都能读。
+     底下没有壁纸时它只是薄薄一条带，壁纸一透过来，标题字就压在花图上；
+     和卡片同补一层同一档毛玻璃，标题条才和下面的卡片是一块「玻璃」 */
   html.wall-on .set-sect {
     background: color-mix(in srgb, var(--brand) 16%,
       color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent));
+    backdrop-filter: blur(calc(8px + var(--glass))) saturate(1.05);
   }
   /* 对话栏这层雾要比侧栏更淡：太实会把壁纸的构图整块切掉。
      以前乘了个 42%，于是「界面透明度」拉满时左栏/右栏几乎全透，
