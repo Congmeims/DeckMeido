@@ -2809,10 +2809,18 @@
   html.wall-on .set-body .mem-add input,
   html.wall-on .set-body .mem-kind,
   html.wall-on .set-body .mini-btn:not(.primary),
-  html.wall-on .hdr-search input,
-  html.wall-on .set-tab.on {
+  html.wall-on .hdr-search input {
     background-color: color-mix(in srgb,
       var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
+    backdrop-filter: blur(calc(10px + var(--glass)));
+  }
+  /* 左侧分区导航的「当前选中项」：底色和对话页左栏的会话项同一口径
+     （--surface，不是更亮的 --surface-2）。壁纸模式下设置页已经铺了
+     .set-body 的雾，这一条再叠 --surface-2 就会比对话页那一列更亮，
+     两页同一个位置的选中条一道深一道浅 */
+  html.wall-on .set-tab.on {
+    background-color: color-mix(in srgb,
+      var(--surface) calc(var(--panel-alpha) * 100%), transparent);
     backdrop-filter: blur(calc(10px + var(--glass)));
   }
   /* 设置页的主按钮（保存、更新这类品牌色实心块）同样按面板透明度走，
