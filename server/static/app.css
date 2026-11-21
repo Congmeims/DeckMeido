@@ -2714,6 +2714,8 @@
   html.wall-on .set-body .field textarea,
   html.wall-on .set-body .dd-trigger,
   html.wall-on .set-body .mem-item,
+  /* 已配对设备 / 待确认请求的每一行（设备名 + IP + 时间 + 改名/移除） */
+  html.wall-on .set-body .pair-row,
   html.wall-on .set-body .mem-add input,
   html.wall-on .set-body .mem-kind,
   html.wall-on .set-body .mini-btn:not(.primary),
