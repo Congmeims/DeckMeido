@@ -3014,6 +3014,20 @@
     font-size: 11px; line-height: 1; padding: 0;
     transition: background .15s ease, color .15s ease, transform .12s ease;
   }
+  /* 壁纸模式下把「按钮底下那层」也补上：◀ 是贴在栏顶最左端的圆角按钮，
+     ▶ 却紧挨着分段控件 .rb-seg（那一整条 --surface-2 的槽 + 2px 内边距），
+     于是左边按钮直接压在栏的 --surface 上，右边按钮坐在一条浅色槽上，
+     两者看起来深浅不同。给 ◀ 补一块和 .rb-seg 同色、同高度的槽面：
+     用 ::before 铺一层绝对定位的底色，尺寸不再受按钮限制（按钮保持 26×26
+     不变），也不会撑动左右布局 */
+  body:not(.sb-collapsed) .sb-head #sbToggle { position: relative; }
+  body:not(.sb-collapsed) .sb-head #sbToggle::before {
+    content: ''; position: absolute;
+    left: -4px; right: -4px; top: -4px; bottom: -4px;
+    background: var(--surface-2);
+    border-radius: 8px;
+    z-index: -1;
+  }
   .side-toggle:hover { background: var(--hover); color: var(--text); }
   .side-toggle:active { transform: scale(.9); }
   /* 壁纸模式下悬停不能回到实心 --hover：那是块不透明色，
