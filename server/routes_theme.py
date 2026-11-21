@@ -83,10 +83,15 @@ def current_theme() -> dict:
         palette = None
     dim = _clamp_int(app.get("dim"), DIM_DEFAULT, 0, 80)
     blur = _clamp_int(app.get("blur"), BLUR_DEFAULT, 0, 24)
+    # 壁纸的版本戳：文件名固定是 wallpaper.*，换图后同名同扩展名时
+    # 光靠文件名比不出新旧，颜色和亮度全都得跟着这一张走
+    ver = _mtime(name) if name else 0
     return {
         "wallpaper": name,
+        # 前端用它判断「这份快照和本地是不是同一张壁纸」
+        "wall_ver": ver,
         # 带上修改时间：同文件名换图后浏览器不会继续用旧缓存
-        "url": f"/wallpapers/{name}?v={_mtime(name)}" if name else "",
+        "url": f"/wallpapers/{name}?v={ver}" if name else "",
         "thumb": f"/wallpapers/wallpaper_thumb.jpg?v={_mtime(name)}" if name else "",
         # 设置页预览框里用的中间尺寸（长边 960）：先出这张，比原图小一个量级
         "preview": f"/wallpapers/wallpaper_preview.jpg?v={_mtime(name)}" if name else "",

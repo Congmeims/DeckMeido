@@ -2604,10 +2604,12 @@
      用 #chatView 那层雾透过来，和上方的消息区同一口径 */
   html.wall-on #composer { background: transparent; border-top-color: transparent; }
   /* 底栏里的下拉、按钮本身带 --surface-2 底，底栏变透之后它们还是一块实心，
-     和输入框的观感不一致；这里让它们跟主面板同一个 --panel-alpha */
+     和输入框的观感不一致；这里让它们跟主面板同一个 --panel-alpha
+     （它是 0~1 的无单位数，按比例换回百分比） */
   html.wall-on #composer .cb-select,
   html.wall-on #composer .cb-btn {
-    background-color: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
+    background-color: color-mix(in srgb,
+      var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
   }
   /* ---- 设置页「外观」分区 ---- */
   .wall-preview {
@@ -2680,9 +2682,12 @@
     background: color-mix(in srgb, var(--surface-2) 92%, var(--surface));
   }
   /* 思考气泡要比普通消息再实一点、深一点：深浅两档的「加深」方向相反——
-     深色主题往黑里压，浅色主题往灰里压，不能用同一个混色方向 */
+     深色主题往黑里压，浅色主题往灰里压，不能用同一个混色方向。
+     浅色那一档要看主题属性，写成 [data-theme=light] html.wall-on：
+     写成 [data-theme=light] 单选择器权重更高，会把没壁纸时的浅色档
+     也一起套进这层加深，气泡比原来更灰 */
   html.wall-on { --think-bg: color-mix(in srgb, var(--surface-2) 70%, #000); }
-  [data-theme=light] { --think-bg: color-mix(in srgb, var(--surface-2) 62%, #6b7385); }
+  [data-theme=light] html.wall-on { --think-bg: color-mix(in srgb, var(--surface-2) 62%, #6b7385); }
   html.wall-on .tl-body { background: var(--think-bg); }
   /* 思考气泡里的推理正文：比灰字再亮一点，长段文字才不吃力 */
   html.wall-on .tl-body { color: color-mix(in srgb, var(--text) 86%, var(--surface)); }

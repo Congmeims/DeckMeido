@@ -1561,6 +1561,9 @@
   // 文件后段的初始化执行到之前就到，那时若还是 undefined 会在 applyCfgAppearance
   // 里抛异常，连带后面的初始化全部中断。真正取值由 loadTheme 拉 /api/theme 填入。
   var CFG_APPEARANCE = { wallpaper: '', url: '', thumb: '', palette: null, dim: 45, blur: 0 };
+  // 最近一次拿到的主题快照。设置页那一段比 loadTheme 晚执行，
+  // 进设置页 / 切到「外观」分区时按它补画表单，免得预览框和滑条空着
+  var THEME_SNAPSHOT = null;
   // 后端进程的启动标识（history 消息里的 boot）。变了 = 后端重启过，
   // 没变 = 只是 WebSocket 断了一下，这一轮还在跑，不该走缓存补回
   var lastBoot = '';
@@ -7321,9 +7324,11 @@
         case 'theme_changed':
           // AI 换了壁纸，或另一台设备改了外观：整站立刻跟着变，不用刷新
           {
-            // 比本地刚保存的还旧的快照整份丢掉：不然滑条刚拖完就被打回原值；
+            // 只丢掉「本端刚保存的滑条比它还新」的那种回程旧货；壁纸/配色
+            // 变了恰恰是要跟的，不能拿「配色不一致」当成旧快照挡掉——
+            // 那样换壁纸后本页还停在上一张的配色和亮度档上，得刷新才生效。
             // 正在拖的那条滑杆也不接受远端值（拖完会自己保存，见 saveWallTune）
-            if (msg.data && !wallTuneEl && !cfgAppearanceStale(msg.data)) {
+            if (msg.data && !wallTuneEl && !tuneSnapStale(msg.data)) {
               applyCfgAppearance(msg.data);
               if (msg.data.wallpaper !== undefined) renderAppearanceForm(msg.data, true);
             }
@@ -11128,6 +11133,9 @@
   // 拖着（或刚松手，广播还在路上），这种时候不能把表单刷回去，
   // 只接受后端已经落盘的那一个值；本端拖完的那次保存回来时会带上最终值
   function renderAppearanceForm(theme, remote) {
+    // 没打开过设置页时这些节点还没初始化（整段脚本是顺序执行的），
+    // 此时只做页面层面的渲染，跳过表单同步；等进设置页会按快照补画
+    if (!wallPreview) return;
     if (!theme || theme.error) {
       syncThemeBtn(document.documentElement.getAttribute('data-theme'));
       return;
@@ -11732,6 +11740,11 @@
       p.classList.toggle('on', p.dataset.pane === name);
     });
     setBody.scrollTop = 0;
+    // 外观分区在脚本后段才初始化，而主题快照是首屏就拉好的：
+    // 切进来时按手里那份快照补画一次，别让预览框、滑条和主色停在默认值
+    if (name === 'about' && typeof renderAppearanceForm === 'function' && THEME_SNAPSHOT) {
+      renderAppearanceForm(THEME_SNAPSHOT);
+    }
     // 语音引擎里的语音回复卡要看模型/下载的实时状态，切过来时刷新一次
     if (name === 'voice') loadTtsStatus();
     // 按游戏预设可能在 Deck 上刚存过，切到插件页时重新拉一份
@@ -15170,7 +15183,13 @@
     // /api/config 是异步拉的，回来时常比刚保存的值还旧；以前这里只看壁纸和
     // 配色，于是「点一下滑条闪一下又归零」——那就是被更早拍下的快照刷回去了
     if (tuneSnapStale(t)) return true;
+    // 壁纸是否同一张：文件名固定是 wallpaper.*，换图后名字不变，
+    // 所以比版本戳（修改时间）。只比文件名的话，换一张壁纸后广播/首屏
+    // 拉回来的快照会被当成「旧货」整份丢掉，页面还停在上一张的配色和亮度上
     if (String(t.wallpaper || '') !== String(cur.wallpaper || '')) return true;
+    var va = Number(t.wall_ver) || 0;
+    var vb = Number(cur.wall_ver) || 0;
+    if (va && vb && va !== vb) return true;
     var a = (t.palette && t.palette.dark && t.palette.dark.brand) || '';
     var b = (cur.palette && cur.palette.dark && cur.palette.dark.brand) || '';
     return !!a && !!b && a !== b;
@@ -15297,8 +15316,11 @@
       .then(function (d) {
         if (!d || d.error) return;
         applyCfgAppearance(d);
+        // 把快照留一份：进设置页时直接按它填表单，不用再等一次网络
+        THEME_SNAPSHOT = d;
         // 设置页的壁纸预览框只有这里能填：以前只套了页面变量，没回写表单，
         // 所以首屏/切进设置时预览框一直是空的，直到上传或拖动滑条才出现
+        // （这段脚本比设置页那一段先执行，没初始化时函数内部会自己跳过）
         renderAppearanceForm(d);
       })
       .catch(function () {});
