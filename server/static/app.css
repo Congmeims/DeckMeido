@@ -2640,6 +2640,28 @@
     background-color: color-mix(in srgb,
       var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
   }
+  /* 底栏里剩下的几块实心白：输入框本身、深度思考胶囊、下拉触发器，
+     以及侧栏的同色小件（新建按钮、当前会话行、底部两个按钮）。它们原本
+     都是不透明的 --surface-2，面板拉透之后就成了一条横贯屏幕的白带，
+     和周围的玻璃对不上。
+     统一按 --panel-alpha 半透，并补一层毛玻璃：不补的话，字直接压在
+     花壁纸的亮部上会糊；--panel-alpha 拉到底（8%）时仍有这层雾托底。
+     回到底部的悬浮球和 sudo 授权行也一起收进来（都贴在输入框上下沿）。
+     下拉候选面板 .dd-list 故意不放进来：它展开时只有几行，半透会把
+     背后的消息透出来，选项反而难读，保持实心 */
+  html.wall-on #composer #input,
+  html.wall-on #composer .think-slider,
+  html.wall-on #composer .dd-trigger,
+  html.wall-on #composer #jumpLatest,
+  html.wall-on #composer #sudoAuthBox,
+  html.wall-on #btnNewSess,
+  html.wall-on .sess.current,
+  html.wall-on #btnTheme,
+  html.wall-on #settingsBtn {
+    background-color: color-mix(in srgb,
+      var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
+    backdrop-filter: blur(calc(10px + var(--glass)));
+  }
   /* ---- 设置页「外观」分区 ---- */
   .wall-preview {
     position: relative;
