@@ -3033,6 +3033,16 @@
     padding: 0 8px; border-bottom: 1px solid var(--line);
     font-size: 14px; font-weight: 600;
   }
+  /* 有壁纸时左右两侧的顶栏要「一样实」。
+     左侧 ◀ 上面只压着 #sidebar 这一层，右侧 ▶ 却同时压着 #rbHead 和
+     #rightbar 两层（分段控件 .rb-seg 还自带一条 --surface-2 的槽），
+     叠下来右边比左边亮一截，两颗按钮看着深浅不同。
+     给 .sb-head 也铺一层和 #rbHead 同口径的底色（--surface + 面板透明度），
+     左边就同样变成两层叠加，按钮坐到同一深度的底上。
+     展开和收起态都要有：收起的残片 #sbRail 本来就是按这个口径画的 */
+  html.wall-on .sb-head {
+    background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
+  }
   /* 设备名 / IP 双行容器：169px 窄栏里横排会重叠（按钮 26px + 设备名 + IP
      放不下），改成纵向两行。设备名 12px / IP 10px，两行总高约 24px，
      在 45px 高的 .sb-head 里垂直居中仍有余量，不破坏三栏顶边对齐 */
