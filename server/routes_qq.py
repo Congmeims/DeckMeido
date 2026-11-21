@@ -386,8 +386,12 @@ def _qq_voice_wav(text: str) -> Path:
 
     robot 走 espeak-ng，maid 走 piper-plus；两者失败都抛 TTSError，
     由 onebot 记 voice.synth 后只发文字（现有回退逻辑不变）。
+    synth_wav 是 TTS 实例的方法，模块级只有 active() 取实例。
     """
-    return tts.synth_wav(text)
+    engine = tts.active()
+    if engine is None:
+        raise RuntimeError("TTS 未初始化")
+    return engine.synth_wav(text)
 
 
 async def _qq_synth_voice(text: str) -> Path:

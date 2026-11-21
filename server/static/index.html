@@ -77,7 +77,14 @@
     <div class="sys-row"><span class="sys-name">RAM</span><div class="bar"><div class="fill" id="memFill"></div></div><span class="sys-val" id="memVal">–</span></div>
     <div class="sys-row"><span class="sys-name">SSD</span><div class="bar"><div class="fill" id="ssdFill"></div></div><span class="sys-val" id="ssdVal">–</span></div>
     <div class="sys-row" id="sdRow" hidden><span class="sys-name">TFC</span><div class="bar"><div class="fill" id="sdFill"></div></div><span class="sys-val" id="sdVal">–</span></div>
-    <div class="sys-row" id="ctxRow" hidden><span class="sys-name" id="ctxName">上下文</span><div class="bar"><div class="fill" id="ctxFill"></div></div><span class="sys-val" id="ctxVal">–</span></div>
+    <!-- 窄屏状态详情：第一排「会话号 + 控件自检 + 模式」三枚胶囊，第二排上下文用量。
+         宽屏这整块不显示（.sys-badges 里的两枚徽章由脚本放回顶栏） -->
+    <div class="ctx-line" id="ctxLine">
+      <span class="badge ctx-sid" id="ctxName">上下文</span>
+      <span class="badge ctrl" id="ctrlBadge" hidden></span>
+      <span class="badge" id="modeBadge" hidden></span>
+    </div>
+    <div class="ctx-line ctx-line-2" id="ctxUsage"><span id="ctxVal">–</span></div>
     <div class="sys-sub" id="sysSub"></div>
   </div>
   <!-- 音乐条：检测到在放歌才显示（.on），否则整块隐藏，不占侧栏高度 -->
@@ -147,8 +154,8 @@
   <div class="hdr-right">
     <!-- QQ 会话专属：OneBot 状态灯 + 快捷开关（状态与设置页共用同一份后端配置） -->
     <div class="qq-sess-wrap" id="qqSessWrap" hidden>
-      <button type="button" class="qq-sess-btn" id="qqSessBtn">
-        <span class="qq-sess-dot" id="qqSessDot"></span>
+      <button type="button" class="qq-sess-btn badge ctrl" id="qqSessBtn">
+        <span class="lamp sess-dot" id="qqSessDot"></span>
         <span class="qq-sess-label" id="qqSessLabel">QQ</span>
       </button>
       <div class="qq-sess-panel" id="qqSessPanel" hidden>
@@ -168,8 +175,8 @@
     </div>
     <span class="badge stale-tag" id="staleTag" hidden>已停止更新</span>
     <span class="badge" id="ctxBadge" hidden></span>
-    <span class="badge ctrl" id="ctrlBadge" hidden></span>
-    <span class="badge" id="modeBadge" hidden></span>
+    <!-- 控件自检（6/6）与模式徽章：宽屏由脚本移回这里（见 placeBadges），
+         窄屏留在侧栏状态卡的第一排 -->
   </div>
   <!-- 设置页全局搜索：只在设置模式出现，绝对居中在顶栏正中间；
        不参与 header 的 flex，左右按钮/标题/徽章不会被挤压或换行 -->
@@ -266,9 +273,10 @@
         <option value="full" class="opt-danger">完全访问</option>
         <option value="custom">自定义</option>
       </select>
+      <!-- 模型选择挨着权限框：放右栏时紧贴「发送」，窄屏手指容易连带误触发送 -->
+      <select class="cb-select" id="modelSelect"></select>
     </div>
     <div class="cb-right">
-      <select class="cb-select" id="modelSelect"></select>
       <button id="send">发送</button>
       <!-- 语音输入：只有 Native 客户端显示（网页与大屏/QAM 不加），
            点击开始/停止录音，识别结果填进输入框不自动发送 -->
@@ -761,8 +769,12 @@
             <div class="field">
               <label>访问令牌（access_token，与 NapCat 的 WebSocket 服务器一致）</label>
               <div class="token-row">
-                <input id="cfgQqToken" type="password" placeholder="NapCat 里设置的令牌"
-                       autocomplete="new-password" name="naqcat-token-not-a-login"
+                <!-- 不用 type=password：Chrome 会把上面的地址框 + 这个密码框当成登录表单，
+                     每次打开设置都弹「要更新密码吗」。这里要的只是隐藏字符，
+                     用 text + -webkit-text-security 打码，浏览器不再识别成密码 -->
+                <input id="cfgQqToken" class="token-masked" type="text" placeholder="NapCat 里设置的令牌"
+                       autocomplete="off" autocapitalize="off" autocorrect="off"
+                       name="naqcat-token-not-a-login"
                        data-lpignore="true" data-1p-ignore data-form-type="other"
                        spellcheck="false">
                 <button id="qqTokenReveal" class="mini-btn" type="button">显示</button>
@@ -1497,6 +1509,38 @@
   var ctrlBadge = document.getElementById('ctrlBadge');
   var modeBadge = document.getElementById('modeBadge');
   var ctxBadge = document.getElementById('ctxBadge');
+  // 顶栏胶囊在窄屏被藏起来，改由侧栏状态卡的文字行显示上下文用量
+  var mqNarrow = window.matchMedia('(max-width: 560px)');
+  // 窄屏放不下顶栏那一组徽章：控件自检和模式徽章挪进侧栏状态卡第一排。
+  // 宽屏放回顶栏原位，PC 布局与改动前完全一致
+  function placeBadges() {
+    var narrow = mqNarrow.matches;
+    var box = narrow ? document.getElementById('ctxLine') : document.querySelector('.hdr-right');
+    if (!box) return;
+    var ctrl = document.getElementById('ctrlBadge');
+    var mode = document.getElementById('modeBadge');
+    // 会话状态胶囊（已连接 / 未连接）也一起挪：窄屏顶栏只剩一颗标题，
+    // 右侧整组收空（.hdr-right:empty 会连 padding 一起收掉）
+    var sess = document.getElementById('qqSessWrap');
+    if (narrow) {
+      // 顺序「● 已连接  #会话号  ● 6/6  模式」
+      if (sess && sess.previousSibling !== null) box.insertBefore(sess, box.firstChild);
+      var sid = document.getElementById('ctxName');
+      if (ctrl && ctrl.previousSibling !== sid) sid.after(ctrl);
+      if (mode && mode.previousSibling !== ctrl) ctrl.after(mode);
+    } else {
+      if (sess && sess.parentNode !== box) {
+        var stale = document.getElementById('staleTag');
+        if (stale && stale.parentNode === box) box.insertBefore(sess, stale);
+        else box.insertBefore(sess, box.firstChild);
+      }
+      if (ctrl && ctrl.parentNode !== box) box.appendChild(ctrl);
+      if (mode && mode.parentNode !== box) box.appendChild(mode);
+    }
+  }
+  placeBadges();
+  if (mqNarrow.addEventListener) mqNarrow.addEventListener('change', placeBadges);
+  else if (mqNarrow.addListener) mqNarrow.addListener(placeBadges);
   var authOverlay = document.getElementById('authOverlay');
   var authErr = document.getElementById('authErr');
   var authVer = document.getElementById('authVer');
@@ -8445,13 +8489,18 @@
       var c = s.context;
       var pct = c.percent || 0;
       // 侧栏状态卡只放 CPU/RAM/SSD/TFC 四项。上下文用量已经在顶栏胶囊里，
-      // 再在这里插一行会话号 + 百分比，看着像第五个系统指标，用户以为是异常值
-      var ctxRow = document.getElementById('ctxRow');
-      ctxRow.hidden = true;
+      // 再在这里插一行会话号 + 百分比，看着像第五个系统指标，用户以为是异常值。
+      // 只有窄屏（顶栏胶囊被藏起来时）才显示这块纯文字的胶囊行
+      var ctxRow = document.getElementById('ctxLine');
+      ctxRow.hidden = !mqNarrow.matches;
       // 窄屏没有顶栏胶囊，会话编号挪到这个标签上
       document.getElementById('ctxName').textContent = c.sid ? ('#' + String(c.sid).slice(0, 6)) : '上下文';
-      setCtxBar(pct, pct + '%' + (c.used ? ' · ' + fmtTokens(c.used) : '')
-        + ((c.cache && c.cache.prompt) ? (' · 缓存 ' + Math.round(c.cache.percent) + '%') : ''));
+      // 不用「·」分隔：这一行在窄屏去掉分隔符、靠两个胶囊之间的间距分段。
+      // 百分比和 token 数字各自带单位，分不清「3% 3.9k」谁是谁，
+      // 所以显式写「已用」；缓存只在非 0 时出现，省一格宽度
+      var cachePct2 = (c.cache && c.cache.prompt) ? Math.round(c.cache.percent) : 0;
+      setCtxBar(pct, '已用 ' + pct + '%' + (c.used ? '  ' + fmtTokens(c.used) : '')
+        + (cachePct2 > 0 ? ('  缓存 ' + cachePct2 + '%') : ''));
       ctxBadge.hidden = false;
       // 命中率直接摆在徽章上，省得为了看一个数去悬停
       var cache = c.cache || null;
@@ -8463,7 +8512,7 @@
         + (cachePct > 0 ? (' · 缓存 ' + Math.round(cachePct) + '%') : '');
       // DeepSeek 的前缀缓存命中率：命中越高越便宜（命中部分按更低价计费）。
       // 数字突然掉下来通常意味着前缀被打断（换会话、改人设、升级后第一轮）
-      var tip = ctxRow.title;
+      var tip = '';
       if (c.sid) tip += '\n会话编号 #' + c.sid;
       if (c.messages != null) {
         tip += '\n会话 ' + c.messages + ' 条消息'
@@ -8484,6 +8533,9 @@
         tip += '\n前缀缓存：还没有数据（发起一次对话后才有，服务商不返回则为空）';
       }
       // 顶栏徽章和侧栏状态卡共用同一份说明
+      tip = tip.replace(/^\n+/, '');
+      ctxBadge.title = tip;
+      ctxRow.title = tip;
       // 用量越接近上限越醒目：85% 起变黄，95% 变红
       ctxBadge.classList.toggle('warn', pct >= 85 && pct < 95);
       ctxBadge.classList.toggle('danger', pct >= 95);
@@ -11582,56 +11634,93 @@
   var hdrSearch = document.getElementById('hdrSearch');
   var hdrBar = document.querySelector('#main > header');
   var hdrRight = hdrBar ? hdrBar.querySelector('.hdr-right') : null;
+  var hSpacer = hdrBar ? hdrBar.querySelector(':scope > .spacer') : null;
   var HDR_SEARCH_PH = '搜索设置项，例如：限频、唤醒、API';
   var HDR_SEARCH_PH_SHORT = '搜索设置';
 
-  // 搜索框是绝对居中的，宽度只吃左右两侧之间的空档：
+  // 搜索框默认是绝对居中的，宽度只吃左右两侧之间的空档：
   // 先量左边内容最右缘、右边徽章最左缘，再以页面中线为轴取对称宽度，
   // 这样它始终在正中，也不会把按钮/标题/徽章挤小。
-  function fitHdrSearch() {
-    if (!hdrSearch || !hdrBar) return;
-    hdrSearch.classList.remove('compact');
-    // 窄屏：搜索框已经回到 flex 流里、宽度交给 CSS（flex:1 1 0 自动收窄），
-    // 这里不再量宽度、也不再挂 .hdr-wrap，保证顶栏永远只有一行
-    if (window.matchMedia('(max-width: 560px)').matches) {
-      hdrSearch.style.width = '';
-      hdrBar.classList.remove('hdr-wrap');
-      settingsSearch.placeholder = '搜索设置';
-      return;
+  // 空档本身不够宽时改走 flex 流，不硬塞绝对定位
+  //
+  // 把搜索框插进 header 的 flex 流：排在 spacer（左半边之后的空占位）后面、
+  // 右半边组之前，宽度吃剩下的空档。挤的时候跟着流走才不会把顶栏撑出界
+  function hdrSearchInline(on) {
+    if (on) {
+      // spacer 是空的占位，flex 流里放在它后面就是「紧跟左半边」
+      if (hSpacer && hdrSearch.previousSibling !== hSpacer) {
+        hSpacer.after(hdrSearch);
+      }
+    } else if (hdrSearch.parentNode === hdrBar) {
+      hdrBar.appendChild(hdrSearch);
     }
-    var hr = hdrBar.getBoundingClientRect();
-    var pad = parseFloat(getComputedStyle(hdrBar).paddingLeft) || 0;
-    var leftEnd = pad;
+  }
+
+  // header 里除搜索框、占位 spacer、右半边组之外的元素占据的右缘（相对 header）
+  function hdrLeftEnd(hr, pad) {
+    var end = pad;
     Array.prototype.forEach.call(hdrBar.children, function (el) {
-      if (el === hdrSearch || el.classList.contains('spacer') ||
-          el.classList.contains('hdr-right')) return;
+      if (el === hdrSearch || el === hSpacer ||
+          el.classList.contains('spacer') || el.classList.contains('hdr-right')) return;
       var cs = getComputedStyle(el);
       if (cs.display === 'none' || cs.visibility === 'hidden') return;
       var r = el.getBoundingClientRect();
-      if (r.width) leftEnd = Math.max(leftEnd, r.right - hr.left);
+      if (r.width) end = Math.max(end, r.right - hr.left);
     });
+    return end;
+  }
+
+  function fitHdrSearch() {
+    if (!hdrSearch || !hdrBar) return;
+    hdrSearch.classList.remove('compact');
+    hdrBar.classList.remove('hdr-wrap');
+
+    // 窄屏：搜索框进 flex 流、夹在标题和右侧三角之间，宽度交给 CSS 的
+    // flex 自己收（见 app.css 里 body.settings-mode .hdr-search）。
+    // 这里只负责把它插对位置——以前窄屏直接 return 没插，它会停在
+    // 宽屏时被 appendChild 到末尾的位置，于是贴着右三角右对齐
+    if (window.matchMedia('(max-width: 560px)').matches) {
+      hdrSearchInline(true);
+      hdrSearch.style.width = '';
+      hdrSearch.style.flex = '';
+      hdrSearch.style.maxWidth = '';
+      settingsSearch.placeholder = '搜索设置';
+      return;
+    }
+
+    // 宽屏：先把它挪回末尾，量出来的才是「左右两侧真实内容」之间的空档
+    hdrSearchInline(false);
+    hdrSearch.style.flex = '';
+    hdrSearch.style.maxWidth = '';
+    hdrSearch.style.width = '';
+
+    var hr = hdrBar.getBoundingClientRect();
+    var pad = parseFloat(getComputedStyle(hdrBar).paddingLeft) || 0;
+    var leftEnd = hdrLeftEnd(hr, pad);
     var rightStart = hr.width - pad;
     if (hdrRight && getComputedStyle(hdrRight).display !== 'none') {
       var rr = hdrRight.getBoundingClientRect();
       if (rr.width) rightStart = Math.min(rightStart, rr.left - hr.left);
     }
-    var half = Math.min(hr.width / 2 - leftEnd, rightStart - hr.width / 2);
-    // 左右各留 12px 呼吸
-    var w = Math.floor(half * 2 - 24);
-    // 两侧真的挤不下时，不要硬塞一个 96px 的框：绝对居中的框会溢出顶栏、
-    // 从下方露出来（某些窄窗口尺寸就是这么翻车的）。这时改走到第二行独占，
-    // 和 <=640px 同一套排版（见 CSS 里 body.settings-mode header 的 flex-wrap）。
-    if (w < 96) {
-      hdrSearch.style.width = '';
-      hdrSearch.classList.remove('compact');
-      hdrBar.classList.add('hdr-wrap');
-      settingsSearch.placeholder = HDR_SEARCH_PH;
+    // 真正能用的空档：左边内容右缘到右边内容左缘
+    var gap = Math.floor(rightStart - leftEnd - 24);   // 左右各留 12px 呼吸
+
+    // 挤不下 96px 的框：回到流里接着收窄，别硬塞一个绝对居中的框
+    // （那样会压到标题和胶囊上，看着像顶栏溢出）
+    if (gap < 96) {
+      hdrSearchInline(true);
+      hdrSearch.style.flex = '0 1 auto';
+      hdrSearch.style.maxWidth = Math.max(96, gap) + 'px';
+      hdrSearch.classList.add('compact');
+      settingsSearch.placeholder = '';
       return;
     }
-    hdrBar.classList.remove('hdr-wrap');
-    // 上限从 440 放到 560：设置页里右侧徽章已经不显示，居中框可以更宽，
-    // 窄视图下也不用再换到第二行（换行阈值仍是 96px）
-    w = Math.min(560, w);
+
+    // 够宽：绝对居中，宽度取「对称可用量」和「整段空档」的较小值，上限 560。
+    // 两个约束都要有——只按对称算，空档本身比中线两侧还窄时会压到胶囊上；
+    // 只按空档算，又会在空档偏心时盖住左边标题
+    var half = Math.min(hr.width / 2 - leftEnd, rightStart - hr.width / 2);
+    var w = Math.max(0, Math.min(560, gap, Math.floor(half * 2 - 24)));
     hdrSearch.style.width = w + 'px';
     hdrSearch.classList.toggle('compact', w < 320);
     // 窄了先缩成「搜索设置」，再窄就只留放大镜图标，输入框本身始终在
@@ -11753,8 +11842,15 @@
     });
     if (q) {
       // 命中后直接切到第一个命中项所在的分页；其余命中的分页仍由
-      // body.set-searching .set-pane.search-hit 保留可见，方便横向对照
-      if (firstPane) showSetPane(firstPane.dataset.pane);
+      // body.set-searching .set-pane.search-hit 保留可见，方便横向对照。
+      // 但不能调 showSetPane：它会把其他未命中的分页也挂上 .on，
+      // 于是没命中的整块卡片跟着露出来，看着像搜索没过滤干净
+      if (firstPane) {
+        var fp = firstPane.dataset.pane || '';
+        Array.prototype.forEach.call(setNav.querySelectorAll('.set-tab'), function (b) {
+          b.classList.toggle('on', b.dataset.pane === fp);
+        });
+      }
       setBody.scrollTop = 0;
       var paneCount = Object.keys(panesHit).length;
       settingsNoMatch.hidden = !!paneCount;
@@ -11980,19 +12076,22 @@
     return last ? cfgItemName(last) : '';
   }
 
+  // 局域网开关是否被用户真的改过。基准值 dataset.asv 由 rememberAutoSave()
+  // 在设置表单回填完成后写入，所以回填没完成时这里一律返回 false —— 那种
+  // 时候提交上去的值不可信，宁可这次不写 [server].lan_enable
+  function lanDirty() {
+    var lan = document.getElementById('cfgLanEnable');
+    if (!lan || !lan.dataset.asv) return false;
+    return String(lan.value || '') !== lan.dataset.asv;
+  }
+
   // 这次保存带上了局域网开关 / 端口时，底栏额外补一句需要重启后端。
   // 以前是直接看后端回的 restart_required，可那个字段是「当前配置与运行中的
   // 进程不一致」，改一次之后每次保存都会回 true，提示就一直挂着不走
   function autoSaveNeedsRestart() {
-    var lan = document.getElementById('cfgLanEnable');
+    if (lanDirty()) return true;
     var port = document.getElementById('cfgPort');
-    var els = [lan, port];
-    for (var i = 0; i < els.length; i++) {
-      var el = els[i];
-      if (!el || !el.dataset.asv) continue;
-      var cur = String(el.value || '');
-      if (cur !== el.dataset.asv) return true;
-    }
+    if (port && port.dataset.asv && String(port.value || '') !== port.dataset.asv) return true;
     return false;
   }
 
@@ -12299,8 +12398,12 @@
       remote_input_enabled: !!cfgRiEnabled.checked,
       remote_input_sensitivity: Number(cfgRiSens.value) || 1.5,
       remote_input_max_minutes: parseInt(cfgRiMax.value, 10) || 30,
-      // 局域网开关与端口：写入 [server]，绑定地址/端口需重启后端生效
-      lan_enable: cfgLanEnable.value === 'on',
+      // 局域网开关与端口：写入 [server]，绑定地址/端口需重启后端生效。
+      // 只有用户真的动过这个下拉框才提交：它跟其它项一起走自动保存，
+      // 要是回填还没完成 / 读到的还是默认 off 时顺手带上，就会把用户
+      // 一直开着的局域网写成 false（配置里只剩一份备份，事后查不出来）。
+      // 没动过就传 undefined，后端按「没传」跳过，不会碰 [server].lan_enable
+      lan_enable: lanDirty() ? (cfgLanEnable.value === 'on') : undefined,
       port: port || undefined,
       // 开发者模式：写入 [runtime]，保存即生效（日志级别与细节记录不用重启）
       dev_mode: cfgDevMode ? (cfgDevMode.value === 'on') : false,
@@ -13109,11 +13212,21 @@
   function renderQqSessState(s) {
     var state = String((s && s.state) || '');
     qqSessState = state;
-    var cls = 'qq-sess-dot';
+    // 顶栏胶囊里的灯走 .badge.ctrl 的「灯 + 文字」结构，
+    // 已连接蓝、未连接灰、连接中黄呼吸（.sess-dot 见 app.css）
+    var cls = 'lamp sess-dot';
     if (state === 'connected') cls += ' on';
     else if (state === 'connecting' || state === 'reconnecting') cls += ' wait';
+    else cls += ' off';
     if (qqSessDot) qqSessDot.className = cls;
-    if (qqSessDot2) qqSessDot2.className = cls;
+    // 窄屏状态卡里的只读副本（顶栏那颗整组在窄屏隐藏），灯色和文字要同步，
+    // 否则窄屏第一排会缺一枚胶囊
+    if (qqSessMirrorDot) qqSessMirrorDot.className = cls;
+    // 面板里那颗沿用原来的 .qq-sess-dot
+    var pcls = 'qq-sess-dot';
+    if (state === 'connected') pcls += ' on';
+    else if (state === 'connecting' || state === 'reconnecting') pcls += ' wait';
+    if (qqSessDot2) qqSessDot2.className = pcls;
     // 胶囊里跟一个短词，光一个小圆点太抽象；未知状态只留「QQ」
     if (qqSessLabel) {
       qqSessLabel.textContent = s ? (QQ_SESS_SHORT[state] || 'QQ') : 'QQ';
@@ -13225,7 +13338,7 @@
       qqAutoSaved = !!c.auto_connect;
       cfgQqUrl.value = c.ws_url || '';
       cfgQqToken.value = c.access_token || '';
-      cfgQqToken.type = 'password';
+      cfgQqToken.classList.add('token-masked');
       qqTokenReveal.textContent = '显示';
       var admins = c.admin_qq || [];
       cfgQqAdmins.value = admins[0] || '';
@@ -13776,9 +13889,8 @@
 
   // 令牌默认掩码显示；点「显示」才切成明文，再点切回
   qqTokenReveal.addEventListener('click', function () {
-    var show = cfgQqToken.type === 'password';
-    cfgQqToken.type = show ? 'text' : 'password';
-    qqTokenReveal.textContent = show ? '隐藏' : '显示';
+    var masked = cfgQqToken.classList.toggle('token-masked');
+    qqTokenReveal.textContent = masked ? '显示' : '隐藏';
   });
 
   // 提示词是「唯一数据源」：网页/客户端与插件大屏/QAM 都读写同一份
@@ -15530,11 +15642,11 @@
   }
   // 侧栏上下文行：85% 起变黄，95% 变红，与顶栏徽章同一套阈值（见 .fill.warn）
   function setCtxBar(pct, text) {
-    var fill = document.getElementById('ctxFill');
-    fill.style.width = Math.min(pct, 100) + '%';
-    fill.classList.toggle('warn', pct >= 85 && pct < 95);
-    fill.classList.toggle('hot', pct >= 95);
-    document.getElementById('ctxVal').textContent = text;
+    var val = document.getElementById('ctxVal');
+    val.textContent = text;
+    // 纯文字行，没有进度条可染色：用量越接近上限，文字越醒目
+    val.classList.toggle('warn', pct >= 85 && pct < 95);
+    val.classList.toggle('hot', pct >= 95);
   }
   function pollSys() {
     if (!deviceSession && !isHomePage) return;

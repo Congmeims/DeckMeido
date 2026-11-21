@@ -192,15 +192,24 @@
   /* QQ 会话头部的 OneBot 状态灯 + 快捷面板 */
   .qq-sess-wrap { position: relative; display: inline-flex; flex: 0 0 auto; }
   .qq-sess-wrap[hidden] { display: none; }
-  /* 按钮本身就是一个胶囊，和右边的 .badge（会话标记）同口径：
-     12px 字号 × 1.55 行高 + 4px 上下内边距 + 1px 边框 = 28.6px 高 */
+  /* 会话状态胶囊：外壳直接借用「x/x」那枚控件自检徽章的 .badge.ctrl
+     （同背景、同圆角、同字号、同样的灯 + 文字间距），只是里面的灯换成
+     蓝点（已连接）/ 灰点（未连接）/ 黄点呼吸（连接中）。按钮原来自带
+     的边框和背景全部交给 .badge.ctrl，免得和旁边几枚胶囊两种口径 */
   .qq-sess-btn {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 4px 10px; border-radius: 999px;
-    font-size: 12px; line-height: 1.55; color: var(--muted);
-    background: var(--surface-2); border: 1px solid var(--line);
-    cursor: pointer; white-space: nowrap;
+    font-family: inherit;
+    color: var(--muted);
+    cursor: pointer;
   }
+  .sess-dot,
+  .sess-dot.on { background: #2fa8ff; }
+  .sess-dot.off { background: #7b8194; }
+  .sess-dot.wait { background: #e6b422; animation: qqBreathe 1.4s ease-in-out infinite; }
+  /* 灯上的那圈内阴影（.ctrl .lamp 的 inset box-shadow）在浅色背景上看着
+     就是一圈黑描边，会话胶囊这颗不要 */
+  .sess-dot { box-shadow: none; }
+  @media (prefers-reduced-motion: reduce) { .sess-dot { animation: none !important; } }
+  .qq-sess-btn:focus, .qq-sess-btn:focus-visible { outline: none; }
   .qq-sess-btn:hover { color: var(--text); }
   /* 状态灯收成胶囊前的圆点，不再单独占一个圆按钮 */
   .qq-sess-dot {
@@ -1542,9 +1551,12 @@
     width: min(560px, 56vw);
     max-width: calc(100vw - 24px);
   }
-  /* 设置页顶栏没有对话页那些胶囊和模型下拉，中间空着大片，
-     搜索框可以放宽一些，便于看清较长的设置项名 */
-  body.settings-mode .hdr-search { display: flex; width: min(760px, 72vw); }
+  /* 设置页搜索框宽度由 fitHdrSearch() 逐个像素量出来写在行内 style 上：
+     「左边内容的右缘」到「右边组件的左缘」之间那段空档有多少就给多少，
+     居中对称、上限 560px。以前这里写死 min(760px, 72vw)，在 900~1200px
+     这种窗口里 72vw 比实际空档宽，绝对居中的框就压到标题、还有右上角
+     会话胶囊上，顶栏看着像溢出。行内宽度和这里冲突的写在这里也一律让位 */
+  body.settings-mode .hdr-search { display: flex; width: min(560px, 40vw); }
   /* 第一行实在塞不下搜索框时（fitHdrSearch 量出来不足 96px），
      由 JS 给 header 加上 .hdr-wrap：整条换行，搜索框独占第二行。
      不这样做的话，绝对居中的框会溢出顶栏、从下方露出来。 */
@@ -2020,6 +2032,9 @@
   /* 输入框 + 按钮一行（API Key / 端口 / 局域网地址都用它） */
   .token-row { display: flex; gap: 8px; align-items: stretch; }
   .token-row input { flex: 1; min-width: 0; font-family: var(--font-mono); letter-spacing: 1px; }
+  /* 令牌/密钥的打码显示：刻意不用 type=password（会被浏览器当成登录密码保存），
+     用 -webkit-text-security 只把字符画成圆点 */
+  .token-masked { -webkit-text-security: disc; text-security: disc; }
   /* 按钮三档统一：次操作(.mini-btn) / 主操作(.primary) / 危险操作(.danger)。
      同高 32、同圆角、同字号；行内按钮永远靠右，卡片底部按钮靠右 */
   .mini-btn {
@@ -3242,9 +3257,35 @@
   .fill.warn { background: #e6b422; }
   .sys-val { font-size: 10.5px; text-align: center; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
-  /* 上下文行：窄屏时顶栏徽章被隐藏，改由这一行显示；宽屏有徽章就不重复占地方 */
-  #ctxRow { display: none; }
-  @media (max-width: 560px) { #ctxRow { display: grid; } }
+  /* 窄屏状态详情：第一排三枚胶囊（会话号 / 6-6 绿点 / 模式），第二排是上下文用量。
+     宽屏整块不显示——顶栏有胶囊，两枚徽章也被脚本放回 .hdr-right */
+  .ctx-line {
+    display: none;
+    flex-wrap: wrap; gap: 5px;
+    justify-content: center; align-items: center;
+    margin: 5px 0 0;
+  }
+  .ctx-line-2 { margin-top: 4px; }
+  .ctx-line .badge,
+  .ctx-line-2 > span {
+    padding: 3px 9px; border-radius: 999px;
+    border: 0;                 /* 两排统一：无描边 */
+    background: var(--surface-2);
+    color: var(--text);
+    font-family: inherit; font-size: 10.5px; line-height: 1.55;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 100%;
+  }
+  /* 会话号那枚淡一档，和后面的状态徽章区分主次 */
+  .ctx-line .badge.ctx-sid { color: var(--muted); }
+  /* 会话状态胶囊挪进侧栏后外壳已换成 .badge.ctrl，跟着几枚徽章一起按窄屏
+     尺寸显示即可（宽度够，不需要再收窄字号） */
+  .ctx-line .qq-sess-btn:hover { color: inherit; }
+  .ctx-line-2 > span.warn { color: #e6b422; }
+  .ctx-line-2 > span.hot { color: var(--danger); }
+  @media (max-width: 560px) {
+    .ctx-line:not([hidden]) { display: flex; }
+  }
   /* 副行（电量/充电状态）强制单行：以前内容一长就折成两行，
      「已运行 2小时31分」的「分」被挤到第二行，卡片高度来回跳。
      现在超宽就省略，同时略缩字号、收紧左右内边距，给文字更多横向空间 */
@@ -3372,6 +3413,12 @@
   .sess:hover .s-del { opacity: 1; }
   .sess .s-del.confirm { opacity: 1; color: #fff; background: var(--danger); }
   #btnMenu { display: none; }
+  /* 这两颗兜底按钮（「菜单」/「工具」）是侧栏、工具栏抽屉的旧入口，
+     已经被顶栏两端折叠三角取代。以前只在 760px 以下藏掉，
+     1080px 的 #btnRight 规则还会在 1080 以上把它们放出来——
+     窗口一回到宽屏、设置页里就冒出个「工具」。
+     全局一律不显示，任何断点都不许再放开 */
+  #btnMenu, #btnRight { display: none !important; }
   /* 手机折叠三角：全局默认隐藏，只在窄屏断点里放出来，
      否则会跟着插进 PC 顶栏（它们的默认 display 是 flex） */
   #mtLeft, #mtRight { display: none; }
@@ -3434,10 +3481,15 @@
   }
   /* 手机竖屏（≈390px）：顶栏、时间线、输入栏都要单独收窄，否则会被挤出屏幕 */
   @media (max-width: 560px) {
-    /* 高度仍锁 45px：窄屏只收左右内边距和间距，别让高度跟着内容变，
+    /* 这一档（顶栏那一组胶囊挪进侧栏）里，所有元素的字号/高度/内边距
+       必须和宽一档完全一致：之前这里把 logo 收到 15px、气泡收到
+       15px/9+12px、模型与权限下拉收到 12px、发送键压到 52px，
+       窗口一越过 560px 整块 UI 就小一号，看着像被整体缩放了。
+       窄屏只允许收「左右留白」和「宽度上限」，不再动字号和高度 */
+    /* 高度仍锁 45px：只收左右内边距和间距，别让高度跟着内容变，
        否则又会和侧栏折叠残片（#sbRail / #rbHead 固定 45px）对不齐 */
     header { gap: 7px; height: 45px; padding: 0 10px; padding-top: env(safe-area-inset-top); }
-    .logo { font-size: 15px; }
+    .logo { font-size: 17px; }
     /* 手机顶栏窄：标题允许收缩并省略，但不隐藏——设置页里它显示
        「设置」，是当前页面的唯一标记。状态点和模式徽章保持不压缩 */
     .logo {
@@ -3453,28 +3505,42 @@
       width: max-content;
       font-size: 12.5px;
     }
-    /* 顶栏只许占一行：搜索框默认绝对居中会盖住两侧，这里让它回到
-       flex 流里夹在中间，宽度吃掉剩余空间，不够就自己收窄 */
+    /* 挤不下时（JS 量出来空档不足 96px）走这条：搜索框已经插进 flex 流里，
+       这里让它跟标题、三角同排，宽度由行内 maxWidth 卡住 */
     body.settings-mode .hdr-search {
       position: static; transform: none; order: 0;
       flex: 1 1 0; min-width: 0; width: auto; max-width: none;
       margin: 0; z-index: auto;
     }
+    /* 搜索框自己吃掉整条剩余宽度，别只按内容宽撑着 */
+    body.settings-mode .hdr-search-field { flex: 1 1 auto; min-width: 0; }
+    body.settings-mode .hdr-search input { width: 100%; }
     body.settings-mode .hdr-search-count { display: none; }
+    /* 标题「设置」只占自己那点宽度，别跟搜索框抢空间：
+       .logo 可收缩（flex: 0 1 auto），和 flex:1 的搜索框放一起时，
+       两边按内容宽度分摊，搜索框就只拿到半截——量出来比空档小一大截 */
+    body.settings-mode #hdrTitle { flex: 0 0 auto; max-width: none; }
+    /* spacer 是给宽屏「标题靠左、徽章靠右」撑空档用的；设置页搜索框
+       自己就吃满中间，再留一个 flex:1 的占位只会把搜索框挤成半宽 */
+    body.settings-mode header > .spacer { display: none; }
+    /* 对话页（没进设置）这颗框是 display:none，别让上面的 flex:1 把它撑出宽度 */
+    body:not(.settings-mode) .hdr-search { flex: 0 0 auto; }
     /* 折叠三角保持原尺寸，不被搜索框挤扁 */
     #mtLeft, #mtRight { flex: 0 0 auto; }
     .hdr-right { gap: 5px; flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; }
     .badge { padding: 3px 8px; font-size: 11px; }
-    /* 手机竖屏顶栏只留模式徽章：上下文用量移进侧栏状态卡（见 #ctxRow）。
-       模式徽章本身要留——在游戏模式里刷 QAM 以外的网页时，它就靠这个
-       认出「当前是游戏模式」，藏掉反而让人以为回桌面了 */
-    #ctxBadge { display: none !important; }
-    /* 极窄屏（<360px）：模式徽章也收窄，但必须留着 */
+    /* 手机竖屏顶栏放不下右侧那一整组：会话状态胶囊、绿点「6/6」和「游戏模式」
+       由脚本全部挪进侧栏状态卡第一排（见 .ctx-line），上下文用量放第二排
+       （.ctx-line-2），顶栏右侧整组清空后由 .hdr-right:empty 收起 */
+    #ctxBadge, .hdr-right > .qq-sess-wrap { display: none !important; }
+    /* 极窄屏（<360px）：模式徽章在侧栏里也收窄 */
     #modeBadge { padding: 3px 7px; font-size: 10.5px; }
     .hdr-right:empty { display: none; }
 
-    #messages { padding: 10px 10px; gap: 8px; }
-    .msg { max-width: 92%; font-size: 15px; padding: 9px 12px; }
+    /* 气泡字号和宽高与宽屏保持一致：窄屏只收两边的留白，
+       字号一动整页看着就像被缩放了一档 */
+    #messages { padding: 10px 10px; gap: 10px; }
+    .msg { max-width: 85%; font-size: 15.5px; padding: 10px 14px; }
     .events { max-width: 100%; padding-left: 18px; }
     .events::before { left: 5px; }
     .tl-ico { left: -15px; }
@@ -3487,31 +3553,56 @@
     /* 提问气泡里的附图同理：跟着 92% 的气泡收窄，别顶出右下角 */
     .msg .msg-shot { max-width: 60vw; max-height: 34vh; }
 
-    #composer { padding: 8px 10px; padding-bottom: calc(8px + env(safe-area-inset-bottom)); gap: 6px; }
-    #input { font-size: 15px; padding: 10px 12px; min-height: 40px; }
-    #composerBar { gap: 6px; }
-    /* .cb-left 默认 flex:0 0 auto，窄屏下它和 .cb-right 谁也不让，
-       两段加起来 215+120 已经超过 341 的可用宽度，发送被挤到 519px 处
-       （直接在屏幕右外侧）。这里放开收缩，并让「发送」永不被压 */
-    .cb-left { flex: 0 1 auto; min-width: 0; overflow: hidden; }
-    .cb-right { flex: 0 0 auto; }
-    .cb-left, .cb-right { gap: 6px; }
-    /* 思考滑条在窄屏只留滑轨，标签「高」缩到 1.6em，省出的 20px 给发送 */
-    .think-slider { padding: 0 8px 0 7px; gap: 5px; }
-    .think-slider span { min-width: 1.6em; font-size: 12px; }
-    .think-track { width: 50px; }
-    /* 模型框改成吃剩余宽度，保证“发送”永远露出来 */
-    #modelSelect {
-      width: auto; min-width: 0; max-width: none;
-      flex: 1 1 auto; font-size: 12px; padding: 0 6px;
+    /* 底栏高度与宽屏一档一致（上下 10px、输入框与工具栏之间 8px）：
+       之前这里收到 8/6px，跨过 560px 整条底栏就矮一截，看着像缩了一号 */
+    #composer { padding: 10px 10px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); gap: 8px; }
+    /* 输入框字号/内边距/高度原样沿用宽屏那一档（16px / 12+14 / 44px），
+       只收左右留白。之前这里收到 15px/10+12/40px，跨过 560px
+       输入框就矮一截、字也小一号 */
+    #input { font-size: 16px; padding: 12px 14px; min-height: 44px; }
+    #composerBar { gap: 8px; }
+    /* 窄屏工具栏：权限框和模型框挨在一起整体靠左，「发送」被 margin-left:auto
+       顶到最右。模型放右栏时紧贴「发送」，手指点模型容易连带点发送误发；
+       挪到左边后两者之间隔着一整段空白，两个下拉也变成一组。
+       模型框不再各吃一半，改用内容宽度，省下来的空间全给中间那段空白 */
+    .cb-left { flex: 1 1 auto; min-width: 0; gap: 8px; justify-content: flex-start; }
+    .cb-right { flex: 0 0 auto; min-width: 0; gap: 8px; margin-left: auto; }
+    /* 权限框给足四字宽度，免得「完全访问」被下拉箭头占位挤成「完全访…」 */
+    #permSelect {
+      flex: 0 1 auto;
+      width: auto; min-width: 84px; max-width: none;
+      font-size: 12.5px; padding: 0 6px;
     }
-    #permSelect { max-width: 88px; font-size: 12px; padding: 0 6px; }
-    #send { min-width: 48px; padding: 0 12px; font-size: 14px; }
+    #modelSelect {
+      flex: 0 1 auto;
+      width: auto; min-width: 0; max-width: none;
+      font-size: 12.5px; padding: 0 6px;
+    }
+    /* 但原生 select 已被 .dd select{display:none} 藏起来，屏幕上真正可见的是
+       包装层 .dd-model（宽屏写死 240px / 最小 180px）。不覆盖它，窄屏这一格
+       会被撑破、下拉箭头被裁掉，点开也看不到模型名 */
+    .dd-model { width: auto; min-width: 0; max-width: 48vw; flex: 0 1 auto; }
+    .dd-model .dd-trigger {
+      width: 100%; min-width: 0; font-size: 12.5px; padding: 0 26px 0 10px;
+      justify-content: flex-start;
+    }
+    .dd-model .dd-list { max-width: calc(100vw - 20px); }
+    /* 发送和语音是固定宽度，永远完整显示 */
+    #send { flex: 0 0 auto; min-width: 52px; padding: 0 16px; font-size: 15px; }
+    #micBtn { flex: 0 0 auto; }
     .cb-btn { padding: 0 8px; }
     /* 清空按钮在输入框内，窄屏只收到 28px，不占工具栏宽度、也不挤「发送」 */
     #clearBtn { width: 28px; height: 28px; min-width: 28px; right: 5px; }
     /* 极窄的原生窗口里去掉「（R1）」后缀，按钮宽度给发送让位，避免换行错位 */
     body.native #micBtn:not(.rec):not(.busy)::after { content: none; }
+    /* 徽章从顶栏挪进侧栏这一档起（与 placeBadges 的 560px 同一阈值），
+       底栏字号/高度立即统一到同一套值：不兜的话这一档以下会跟着视口
+       一路缩小，和宽一档的截图比就是「整排突然小一圈」 */
+    #composer #input { font-size: 16px; padding: 12px 14px; min-height: 44px; }
+    #composer #permSelect,
+    #composer #modelSelect { font-size: 12.5px; padding: 0 6px; }
+    #composer .dd-model .dd-trigger { font-size: 12.5px; padding: 0 26px 0 10px; }
+    #composer #send { font-size: 15px; padding: 0 16px; }
   }
   #ctrlBadge { cursor: pointer; }
   #ctrlBadge:active { opacity: .7; }
@@ -4532,8 +4623,6 @@
     body.rb-collapsed .rb-pane.on { display: flex; }
     #rbToggle { display: none; }
   }
-  #btnRight { display: none; }
-  @media (max-width: 1080px) { #btnRight { display: block; } }
   /* 左右抽屉共用同一层遮罩：任何一边拉开时显示，点一下就把两边都收起。
      抽屉自身（z-15 / z-16）在遮罩之上，点面板内部照常可用、不会误关 */
   #drawerMask {
