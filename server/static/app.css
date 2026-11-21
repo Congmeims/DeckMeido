@@ -2686,6 +2686,13 @@
     background-color: color-mix(in srgb,
       var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
   }
+  /* 顶栏右侧那几枚徽章（会话号 · 上下文用量、控制自检 x/x、游戏模式）也是
+     实心 --surface-2 的胶囊，壁纸下像一排贴上去的白片，和顶栏的玻璃脱节。
+     和折叠按钮同口径：只跟面板透明度，不加毛玻璃（胶囊本身就压在顶栏
+     那层雾上，再叠一层 blur 收益不大还多一层合成） */
+  html.wall-on header .badge {
+    background: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
+  }
   /* 折叠态那圈残片（左侧 #sbRail、右侧 #rbHead）要让出来：它们就是「栏顶
      那一条」的延续，必须和 header / 左右栏同口径（--surface + 面板透明度）。
      展开态不在此列：那时 #rbHead 在右栏里，和左栏 .sb-head 一样不自铺底，
