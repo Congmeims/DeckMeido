@@ -3014,6 +3014,13 @@
     font-size: 11px; line-height: 1; padding: 0;
     transition: background .15s ease, color .15s ease, transform .12s ease;
   }
+  /* 两侧底色对齐：右侧 ▶ 前面紧挨着分段控件 .rb-seg，它自己铺了一层
+     --surface-2 的浅色小卡，▶ 是压在那张卡上的；左侧 ◀ 背后只有整条栏的
+     --surface，看着就比右边深一截。用 box-shadow 给 ◀ 补同一层底色
+     （不占布局、不撑按钮，仍钉在最左端），两边的「按钮底下是什么」
+     就一样了。--surface-2 是半透明混出来的颜色，盖上去后就是 .rb-seg
+     那层观感 */
+  #sbToggle { box-shadow: 0 0 0 4px var(--surface-2); }
   .side-toggle:hover { background: var(--hover); color: var(--text); }
   .side-toggle:active { transform: scale(.9); }
   /* 壁纸模式下悬停不能回到实心 --hover：那是块不透明色，
