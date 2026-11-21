@@ -2587,8 +2587,10 @@
      半透明玻璃对不上。上面已经把 #rightbar 加进半透明名单，这里再让里面
      自成一块的「浅色底块」跟着透明：顶部页签条、AI 状态条、路径栏、
      文件列表里的文件夹行。它们的 --surface-2 在壁纸上看像一块实心板，
-     混一点 --surface 让它们变成「压在玻璃上的浅色卡片」 */
-  html.wall-on #rbHead,
+     混一点 --surface 让它们变成「压在玻璃上的浅色卡片」。
+     #rbHead 不在这里：它是右栏的顶栏，必须和左栏 .sb-head 一样「自己不铺底」，
+     只靠 #rightbar 那一层玻璃透上来。以前它额外铺了一层 --surface-2，
+     于是右上角比左上角多叠一层、明显更亮，两颗折叠按钮看着深浅不一 */
   html.wall-on .ai-bar,
   html.wall-on #fbBar,
   html.wall-on #fbBar button,
@@ -2675,21 +2677,21 @@
     background-color: color-mix(in srgb,
       var(--brand) calc(var(--panel-alpha) * 100%), transparent);
   }
-  /* 左栏仪表条的槽 + 两侧折叠按钮（◀ ▶）：槽是实心 --surface-2，在壁纸上
-     像四道白条；折叠按钮的底色同理。槽本身很细（6px），透出来也压不住字，
-     所以只跟面板透明度、不加毛玻璃，省一层合成。
-     折叠态按钮外面那圈残片（左侧 #sbRail、右侧 #rbHead）要让出来，
-     它们本身就是「栏顶那一条」的延续，必须和 header / 左右栏同口径：
-     --surface + 面板透明度 + 14px 那一档毛玻璃。以前 #sbRail 挂在
-     sidebar 那一组里、#rbHead 谁都没管，于是左边残片跟着栏透得发亮，
-     右边仍是实心 --surface，两边看着像两块不同的板 */
+  /* 两侧折叠按钮（◀ ▶）的底色和左栏仪表条的槽同口径：都跟面板透明度走。
+     槽很细（6px），透出来也压不住字，所以只跟透明度、不加毛玻璃。
+     注意这两颗按钮「底下那层」必须一样：左栏 .sb-head 自己不铺底，
+     右栏 #rbHead 也必须不铺底（见上面那条），否则一边叠一层、一边叠两层 */
   html.wall-on .bar,
   html.wall-on .side-toggle {
     background-color: color-mix(in srgb,
       var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
   }
+  /* 折叠态那圈残片（左侧 #sbRail、右侧 #rbHead）要让出来：它们就是「栏顶
+     那一条」的延续，必须和 header / 左右栏同口径（--surface + 面板透明度）。
+     展开态不在此列：那时 #rbHead 在右栏里，和左栏 .sb-head 一样不自铺底，
+     否则右上角会比左上角多叠一层亮片（见上面 .ai-bar 那组） */
   html.wall-on #sbRail,
-  html.wall-on #rbHead {
+  html.wall-on body.rb-collapsed #rbHead {
     background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
     backdrop-filter: blur(calc(14px + var(--glass))) saturate(calc(1.1 + var(--glass) / 14));
   }
@@ -3032,16 +3034,6 @@
     /* 左右内边距对称（与右栏 #rbHead 的 0 8px 一致），按钮才能贴到最左边缘 */
     padding: 0 8px; border-bottom: 1px solid var(--line);
     font-size: 14px; font-weight: 600;
-  }
-  /* 有壁纸时左右两侧的顶栏要「一样实」。
-     左侧 ◀ 上面只压着 #sidebar 这一层，右侧 ▶ 却同时压着 #rbHead 和
-     #rightbar 两层（分段控件 .rb-seg 还自带一条 --surface-2 的槽），
-     叠下来右边比左边亮一截，两颗按钮看着深浅不同。
-     给 .sb-head 也铺一层和 #rbHead 同口径的底色（--surface + 面板透明度），
-     左边就同样变成两层叠加，按钮坐到同一深度的底上。
-     展开和收起态都要有：收起的残片 #sbRail 本来就是按这个口径画的 */
-  html.wall-on .sb-head {
-    background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
   }
   /* 设备名 / IP 双行容器：169px 窄栏里横排会重叠（按钮 26px + 设备名 + IP
      放不下），改成纵向两行。设备名 12px / IP 10px，两行总高约 24px，
