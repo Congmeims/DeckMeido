@@ -2562,7 +2562,6 @@
   :root { --glass: 0px; }
   html.wall-on header,
   html.wall-on #sidebar,
-  html.wall-on #sbRail,
   html.wall-on #rightbar,
   html.wall-on #chatView {
     background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
@@ -2678,11 +2677,21 @@
   }
   /* 左栏仪表条的槽 + 两侧折叠按钮（◀ ▶）：槽是实心 --surface-2，在壁纸上
      像四道白条；折叠按钮的底色同理。槽本身很细（6px），透出来也压不住字，
-     所以只跟面板透明度、不加毛玻璃，省一层合成 */
+     所以只跟面板透明度、不加毛玻璃，省一层合成。
+     折叠态按钮外面那圈残片（左侧 #sbRail、右侧 #rbHead）要让出来，
+     它们本身就是「栏顶那一条」的延续，必须和 header / 左右栏同口径：
+     --surface + 面板透明度 + 14px 那一档毛玻璃。以前 #sbRail 挂在
+     sidebar 那一组里、#rbHead 谁都没管，于是左边残片跟着栏透得发亮，
+     右边仍是实心 --surface，两边看着像两块不同的板 */
   html.wall-on .bar,
   html.wall-on .side-toggle {
     background-color: color-mix(in srgb,
       var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
+  }
+  html.wall-on #sbRail,
+  html.wall-on #rbHead {
+    background: color-mix(in srgb, var(--surface) calc(var(--panel-alpha) * 100%), transparent);
+    backdrop-filter: blur(calc(14px + var(--glass))) saturate(calc(1.1 + var(--glass) / 14));
   }
   /* API 接口行的「使用中」徽章是实心品牌色，在壁纸上也像一块贴上去的色块。
      取中档（75%）：既跟半透卡片同色系，又还看得出是一枚实心徽章。
