@@ -2910,14 +2910,58 @@
   .wall-clear:hover { border-color: rgba(232,70,58,.75); color: #ffb4ad; }
   .wall-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0 4px; }
   .wall-actions .field-hint { flex: 1 1 220px; margin: 0; }
-  /* 配色来源分两栏：左边自动取色、右边手动强调色，窄屏再叠回去 */
-  .wall-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 20px; align-items: start; }
+  /* 配色来源分两栏：左边自动取色、右边手动强调色，窄屏再叠回去。
+     两栏基线对齐——左边是「标题 + 一行说明」，右边是「标题行 + 输入行 + 示例行」，
+     默认 stretch 会让左栏那块看着浮在半空 */
+  .wall-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 8px 20px; align-items: start;
+  }
   @media (max-width: 760px) { .wall-grid { grid-template-columns: 1fr; } }
-  .wall-color-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  /* 手动改色：标题在左，「恢复默认」贴右；下一行依次是色值、取色块、应用 */
+  .wall-color-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; margin-bottom: 8px;
+  }
+  .wall-color-head > label { margin: 0; }
+  .mini-btn.ghost {
+    background: transparent; color: var(--muted);
+    border-color: var(--line); box-shadow: none;
+  }
+  .mini-btn.ghost:hover { color: var(--text); }
+  .wall-color-row {
+    display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
+    min-width: 0;
+  }
+  .wall-color-row .wall-hex {
+    flex: 0 0 96px; min-width: 0;
+    font-family: var(--font-mono); font-size: 13px; letter-spacing: .3px;
+    padding: 5px 8px; border-radius: 6px;
+    color: var(--text); background: var(--surface-2);
+    border: 1px solid var(--line);
+  }
+  .wall-color-row .wall-hex:focus { outline: none; border-color: var(--brand); }
   .wall-color-row input[type="color"] {
-    width: 44px; height: 30px; padding: 0; border: 1px solid var(--line);
+    flex: 0 0 auto;
+    width: 40px; height: 30px; padding: 0; border: 1px solid var(--line);
     border-radius: 6px; background: var(--surface-2); cursor: pointer;
   }
+  .wall-color-row .mini-btn { flex: 0 0 auto; }
+  /* 强调色示例：真按钮 / 真气泡 / 真链接，--sw 由脚本实时改写。
+     压在上面的字色直接用主题算好的 --on-brand / --on-user，
+     手动挑了亮色时示例里的字也不会看不见 */
+  .wall-swatch {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-top: 10px;
+    --sw: var(--brand);
+  }
+  .wall-swatch > span {
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; line-height: 1; padding: 7px 12px; border-radius: 6px;
+  }
+  .wall-swatch .ws-btn { color: var(--on-brand, #fff); background: var(--sw); }
+  .wall-swatch .ws-bubble { color: var(--on-user, #fff); background: var(--sw); border-radius: 999px; }
+  .wall-swatch .ws-link { padding: 0; color: var(--sw); text-decoration: underline; }
 
   /* 助手气泡同理：它体量大、贴着壁纸，最容易让人觉得「字浮在图上」。
      直接写 .msg.assistant（与上面的背景声明同优先级、位置更靠后），

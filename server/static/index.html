@@ -1209,20 +1209,28 @@
             <div class="wall-grid">
               <div class="field">
                 <label>从壁纸自动取色</label>
-                <div class="field-hint" id="wallPaletteHint">导入壁纸后会自动取主色，生成浅色 / 深色两套配色。</div>
+                <div class="field-hint" id="wallPaletteHint">导入壁纸后会自动取主色，生成浅色 / 深色 / 暗黑三套配色。</div>
               </div>
               <div class="field">
-                <label>手动改强调色</label>
+                <div class="wall-color-head">
+                  <label for="wallColor">手动改强调色</label>
+                  <button id="wallColorReset" class="mini-btn ghost" type="button">恢复默认</button>
+                </div>
                 <div class="wall-color-row">
-                  <input id="wallColor" type="color" value="#1a9fff">
+                  <!-- 色值和取色块、应用排同一行，色值在前 -->
+                  <input id="wallColorHex" class="wall-hex" type="text" maxlength="7"
+                         spellcheck="false" autocomplete="off" value="#1a9fff"
+                         aria-label="强调色色值">
+                  <input id="wallColor" type="color" value="#1a9fff" aria-label="选颜色">
                   <button id="wallColorApply" class="mini-btn" type="button">应用</button>
                 </div>
-                <div class="field-hint">只换按钮、气泡等强调色，背景仍跟壁纸走。</div>
+                <!-- 示例：真实的按钮 / 气泡 / 链接，颜色跟着所选色值实时变 -->
+                <div class="wall-swatch" id="wallSwatch" aria-hidden="true">
+                  <span class="ws-btn">按钮</span>
+                  <span class="ws-bubble">气泡</span>
+                  <span class="ws-link">链接</span>
+                </div>
               </div>
-            </div>
-            <div class="wall-actions">
-              <button id="wallColorReset" class="mini-btn" type="button">恢复默认强调色</button>
-              <span class="field-hint">改回壁纸自动取到的主色，手动调整丢掉。</span>
             </div>
           </div>
           <h4 class="set-sect">运行与更新</h4>
@@ -11211,11 +11219,14 @@
     if (brand) {
       // 主色可能已被「恢复默认强调色」改过，和壁纸取到的原主色不同
       wallColor.value = brand;
+      document.getElementById('wallColorHex').value = brand;
+      paintSwatch(brand);
       wallPaletteHint.textContent = a.source && brand !== a.source
-        ? '当前主色 ' + brand + '（已手动调整），浅色 / 深色 / 暗黑三套配色已同步。'
-        : '当前主色 ' + brand + '，浅色 / 深色 / 暗黑三套配色已自动生成。';
+        ? '当前主色 ' + brand + '（手动调整）'
+        : '当前主色 ' + brand + '，三套配色已自动生成。';
     } else {
       wallPaletteHint.textContent = UPLOAD_HINT;
+      paintSwatch('');
     }
     // 撤销按钮在预览框里，每次渲染都会重建；用委托绑定，别在渲染里逐个挂
     syncThemeBtn(document.documentElement.getAttribute('data-theme'));
@@ -11500,9 +11511,11 @@
       }).catch(function () { wallHint.textContent = '导入失败，请重试'; });
   });
   document.getElementById('wallColorApply').addEventListener('click', function () {
+    var hex = syncWallColorHex();
+    if (!hex) { wallPaletteHint.textContent = '色值要写成 #rrggbb'; return; }
     apiFetch('/api/theme/palette', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ brand: wallColor.value })
+      body: JSON.stringify({ brand: hex })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.ok) {
@@ -11513,7 +11526,31 @@
         }
       }).catch(function () {});
   });
-  // 恢复默认强调色：用壁纸自己取到的主色重算一套（current_theme 里的 source）
+  // 色块与色值互相跟随：拖色块立刻改示例、改色值；色值框回车或失焦时校验并回填
+  function paintSwatch(hex) {
+    var sw = document.getElementById('wallSwatch');
+    if (!sw) return;
+    if (hex) sw.style.setProperty('--sw', hex); else sw.style.removeProperty('--sw');
+  }
+  function syncWallColorHex() {
+    var t = document.getElementById('wallColorHex');
+    var v = String(t.value || '').trim();
+    if (!/^(#?[0-9a-f]{3}|#?[0-9a-f]{6})$/i.test(v)) return '';
+    if (v.charAt(0) !== '#') v = '#' + v;
+    if (v.length === 4) v = '#' + v[1] + v[1] + v[2] + v[2] + v[3] + v[3];
+    v = v.toLowerCase();
+    t.value = v;
+    wallColor.value = v;
+    paintSwatch(v);
+    return v;
+  }
+  wallColor.addEventListener('input', function () {
+    document.getElementById('wallColorHex').value = wallColor.value;
+    paintSwatch(wallColor.value);
+  });
+  document.getElementById('wallColorHex').addEventListener('change', function () {
+    if (!syncWallColorHex()) wallPaletteHint.textContent = '色值要写成 #rrggbb';
+  });
   document.getElementById('wallColorReset').addEventListener('click', function () {
     var cur = CFG_APPEARANCE || {};
     if (!cur.source) {
