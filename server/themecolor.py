@@ -95,19 +95,59 @@ def dominant_color(img_bytes: bytes) -> str:
     return _hsl_hex(h, max(0.45, min(1.0, s * 1.1)), 0.62)
 
 
+def _luminance(hx: str) -> float:
+    """#rrggbb 的相对亮度（0~1，sRGB 加权），用来判断配色够不够亮/暗"""
+    m = re.fullmatch(r"#([0-9a-fA-F]{6})", (hx or "").strip())
+    if not m:
+        return 0.0
+    v = int(m.group(1), 16)
+    r, g, b = (v >> 16) & 255, (v >> 8) & 255, v & 255
+
+    def lin(c: int) -> float:
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+
+
 def palette_from_color(hex_color: str) -> dict:
-    """由一个强调色生成深/浅两套主题变量"""
+    """由一个强调色生成浅色 / 深色 / 暗黑三套主题变量
+
+    同一张壁纸在三档主题下应该拿到三个不同亮度的强调色：浅色档要鲜亮，
+    深色档要沉一点，暗黑档最暗但不能是黑（黑字压在黑底上等于消失）。
+    HSL 的明度 0.5 附近就是纯色本身，往上加亮饱和度会掉、往下压会发灰，
+    所以三档这样取：
+        浅色 0.50（饱和度高，压在浅底上跳得出）
+        深色 0.44（略沉）
+        暗黑 0.36（最暗，但仍保证相对亮度 ≥ 0.10，不会糊进 #000）
+    色相始终来自壁纸主色，三档是「同一个色、不同明度」。
+    """
     m = re.fullmatch(r"#([0-9a-fA-F]{6})", (hex_color or "").strip())
     if not m:
         hex_color = FALLBACK
         m = re.fullmatch(r"#([0-9a-fA-F]{6})", hex_color)
     v = int(m.group(1), 16)
     r, g, b = (v >> 16) & 255, (v >> 8) & 255, v & 255
-    h, l, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
-    brand = _hsl_hex(h, max(0.45, min(1.0, s * 1.1)), 0.62)
+    h, _l, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
+    sat = max(0.45, min(1.0, s * 1.1))
+
+    def brand_at(lum: float, sat_v: float = sat) -> str:
+        """按目标明度出一个强调色；过暗时往上提，保证不是近黑色"""
+        out = _hsl_hex(h, sat_v, lum)
+        floor = 0.10
+        for _ in range(6):
+            if _luminance(out) >= floor:
+                break
+            lum = min(0.9, lum + 0.05)
+            out = _hsl_hex(h, sat_v, lum)
+        return out
+
+    brand_light = brand_at(0.50, max(0.55, min(1.0, s * 1.25)))
+    brand_dark = brand_at(0.44)
+    brand_oled = brand_at(0.36)
     dark = {
-        "brand": brand,
-        "user_bubble": brand,
+        "brand": brand_dark,
+        "user_bubble": brand_dark,
         "bg": _hsl_hex(h, 0.18, 0.07),
         "surface": _hsl_hex(h, 0.22, 0.11),
         # 第二层底：气泡、输入框、小灰字提示条的衬底。比 surface 再亮一档，
@@ -116,17 +156,26 @@ def palette_from_color(hex_color: str) -> dict:
         "surface_2": _hsl_hex(h, 0.20, 0.15),
     }
     light = {
-        "brand": _hsl_hex(h, max(0.45, min(1.0, s)), 0.42),
-        "user_bubble": _hsl_hex(h, max(0.45, min(1.0, s)), 0.42),
+        "brand": brand_light,
+        "user_bubble": brand_light,
         "bg": _hsl_hex(h, 0.14, 0.97),
         "surface": _hsl_hex(h, 0.16, 0.93),
         "surface_2": _hsl_hex(h, 0.18, 0.90),
     }
-    return {"dark": dark, "light": light, "source": hex_color}
+    # 暗黑档：除了强调色更暗，底色也要比深色档更黑（面板本来是半透的，
+    # 只改 surface 的话两档在屏幕上几乎一样，所以 bg/surface 一起压）
+    oled = {
+        "brand": brand_oled,
+        "user_bubble": brand_oled,
+        "bg": "#000000",
+        "surface": _hsl_hex(h, 0.22, 0.06),
+        "surface_2": _hsl_hex(h, 0.20, 0.10),
+    }
+    return {"dark": dark, "light": light, "oled": oled, "source": hex_color}
 
 
 def extract_palette(img_bytes: bytes) -> dict:
-    """壁纸字节 -> {dark, light, source}"""
+    """壁纸字节 -> {dark, light, oled, source}"""
     return palette_from_color(dominant_color(img_bytes))
 
 

@@ -11200,8 +11200,8 @@
       // 主色可能已被「恢复默认强调色」改过，和壁纸取到的原主色不同
       wallColor.value = brand;
       wallPaletteHint.textContent = a.source && brand !== a.source
-        ? '当前主色 ' + brand + '（已手动调整），浅色 / 深色两套配色已同步。'
-        : '当前主色 ' + brand + '，浅色 / 深色两套配色已自动生成。';
+        ? '当前主色 ' + brand + '（已手动调整），浅色 / 深色 / 暗黑三套配色已同步。'
+        : '当前主色 ' + brand + '，浅色 / 深色 / 暗黑三套配色已自动生成。';
     } else {
       wallPaletteHint.textContent = UPLOAD_HINT;
     }
@@ -15293,22 +15293,20 @@
       '--panel-alpha': on ? String(Math.max(0.08, 1 - dim / 88)) : '1'
     };
     if (on && pal) {
-      // 浅色主题用浅色那套，深色/暗黑用深色那套；只覆盖配色相关的变量，
-      // 线条、滚动条、代码块仍由三档主题各自决定
-      var set = isLightTheme() ? pal.light : pal.dark;
+      // 三档各用自己那一套：浅色用 pal.light、深色用 pal.dark、暗黑用 pal.oled。
+      // 强调色在这一步就分开了（后端按档位算了不同明度：浅色最鲜、暗黑最沉），
+      // 老壁纸的配色里没有 oled 一栏，退回 pal.dark（此时下面还会再压一次底色）
+      var theme = html.getAttribute('data-theme') || 'dark';
+      var set = isLightTheme() ? pal.light : (theme === 'oled' && pal.oled ? pal.oled : pal.dark);
       // surface-2 也要跟壁纸配色走：小灰字、思考气泡、字段提示条、表头
       // 全靠它衬底，不跟的话浅色档下是一块 #eceff5 的浅灰压在花壁纸上，
       // 混出来的灰字自然读不清（以前只覆盖 brand/bg/surface 四个）
       ['brand', 'user_bubble', 'bg', 'surface', 'surface_2'].forEach(function (k) {
         if (set && set[k]) vars['--' + k.replace('_', '-')] = set[k];
       });
-      // 壁纸下「深色」和「暗黑」取的是同一套 pal.dark，面板又大半透出壁纸，
-      // 两档在屏幕上几乎一样。这里按档位把面板底色往黑里压，拉开差距：
-      // 暗黑该更沉、更接近 OLED 的纯黑，深色只轻压一点保留层次。
-      // 必须在 JS 里算——这几个值写在内联样式上，CSS 里同名的属性选择器
-      // （html[data-theme=oled]{--surface:...}）优先级不够，根本盖不住
-      var theme = html.getAttribute('data-theme') || 'dark';
-      if (!isLightTheme() && vars['--surface']) {
+      // 老配色没有 oled 一栏时，暗黑档还得靠这里手动压暗，不然和深色档
+      // 在屏幕上看不出区别。新配色已经自带更黑的 bg/surface，跳过
+      if (!isLightTheme() && !pal.oled && vars['--surface']) {
         var k = theme === 'oled' ? 0.55 : (theme === 'dark' ? 0.12 : 0);
         if (k > 0) {
           vars['--surface'] = mixHex(vars['--surface'], '#000000', k);

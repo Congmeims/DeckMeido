@@ -3223,6 +3223,15 @@ LAST_CANDIDATES: list[dict] = []
 # 已经出过图的排除掉，强制往后翻。
 _RECENT_QUERIES: list[str] = []
 
+# 最近几批已经端给用户的图 URL（每批一个 set，旧的在前）。
+# 「换一批」时这些全部排除：只记上一批的话，中间夹一次搜不到东西，
+# 更早那批的图就会原样回来，看起来像「换了但内容完全没变」。
+_SEEN_URLS: list[set[str]] = []
+SEEN_BATCHES = 3          # 记住最近 3 批（约 12 张），再多会把图库翻穿
+# 一轮对话里连搜几批时的批次号：只在用户看到结果前累加，
+# 让工具返回的文案自带「第 N 批」，模型回复时不会把几批说成一两批
+_BATCH_NO = 0
+
 
 async def _fetch_image(url: str, limit: int) -> tuple[bytes | None, str]:
     """下载一张图（限制大小），返回 (bytes, 错误说明)。成功时说明为空串"""
@@ -3342,13 +3351,16 @@ def _anime_search(query: str, n: int, page: int = 1) -> list[dict]:
         rows.extend(_collect(tag))    # 整句优先，不够再拿单词补
         if len(rows) >= n:
             return rows[:n]
-    if rows or page > 1:
-        return rows[:n]       # 翻页时别退回热门榜，否则「换一批」翻回来还是那几张
-    # 关键词在这两个站上都查不到：退回横图热门榜，至少给几张能看的动漫壁纸
+    if rows:
+        return rows[:n]
+    # 查不到时退回横图热门榜。这个榜是固定排序的，必须按页取：
+    # 每次「换一批」都从第 1 页开始的话，端回来的永远是同一组热门图，
+    # 这也是之前「换了几次内容完全没变」的主要来源之一。
+    # 第 1 页也只在真的什么都没查到时才用。
     rows = []
     for api, extra in ((KONA_API, "score:>20"), (YANDE_API, "rating:safe")):
         try:
-            rows.extend(_booru_json(api, f"landscape {extra}", n, page))
+            rows.extend(_booru_json(api, f"landscape {extra}", n, max(1, page)))
         except Exception:
             continue
     return rows[:n]
@@ -3521,6 +3533,7 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
     """
     from . import themecolor
 
+    global _BATCH_NO
     query = str(query or "").strip()
     if not query:
         return "请给一个搜索关键词，例如 starry night sky。"
@@ -3669,8 +3682,11 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
         order = ["wallhaven", "bing", "openverse", "wikimedia",
                  "anime", "safebooru"]
     seen: set[str] = set()
-    # 上一批出过的图这次直接跳过：「换一张」时哪怕翻页没生效，也不会端回同一张
-    seen.update(str(c.get("src_url") or "") for c in LAST_CANDIDATES)
+    # 最近几批出过的图全部跳过，不只是上一批：中间只要有一次没搜到东西
+    # （LAST_CANDIDATES 被清空），只看上一批的话，下一批就会把更早那批
+    # 原样端回来，用户看到的就是「换了几次都是同一张」
+    for batch in _SEEN_URLS:
+        seen.update(batch)
     queues: dict[str, list[dict]] = {}
     for r in pool:
         url = str(r.get("image") or "").strip()
@@ -3714,18 +3730,31 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
                        "title": str(r.get("title") or "")[:80]})
 
     if not picked:
-        LAST_CANDIDATES.clear()
-        return ("图库找到了图片但都下载失败，换一组更通用的关键词再搜一次"
-                "（例如 scenic landscape、anime wallpaper）。")
+        # 这一批一张都没下成：不动 _SEEN_URLS 和 LAST_CANDIDATES，让「换一批」
+        # 仍然躲开前面几批已经出过的图，别把旧图又端回来
+        return ("图库找到了图片但都下载失败（" + "，".join(errors) + "）。"
+                "换一组更通用的关键词再搜一次（例如 scenic landscape、anime wallpaper）。")
     LAST_CANDIDATES[:] = picked
+    global _BATCH_NO
+    _BATCH_NO += 1
+    # 这一批的图记进最近几批的名单，之后「换一批」时全部避让
+    _SEEN_URLS.append({str(c.get("src_url") or "") for c in picked})
+    del _SEEN_URLS[:-SEEN_BATCHES]
     # 记下这次用的词：同一个词再来一次就从第 2 页取，出的是另一批图
     _RECENT_QUERIES.append(key)
     del _RECENT_QUERIES[:-6]
-    # 结果文本给模型看，前端另有一份候选列表可渲染；两者顺序一致，编号从 1 开始
+    # 结果文本给模型看，前端另有一份候选列表可渲染；两者顺序一致，编号从 1 开始。
+    # 同一轮对话里可能连搜好几次，编号各自从 1 开始，得让模型知道这是第几批，
+    # 否则它回复时会把两批混成「两批」或者干脆只提最后一批
+    batch = _BATCH_NO
+    head = (f"找到 {len(picked)} 张候选壁纸，已经显示给用户了（第 {batch} 批）：\n"
+            if batch > 1 else
+            f"找到 {len(picked)} 张候选壁纸，已经显示给用户了：\n")
     lines = [f"{i + 1}. id={c['id']} {c['title']}".rstrip() for i, c in enumerate(picked)]
-    return (f"找到 {len(picked)} 张候选壁纸，已经显示给用户了：\n" + "\n".join(lines) +
-            "\n\n等用户回复编号后，把对应 id 传给 set_wallpaper(candidate_id=...)。"
-            "如果用户说不满意，就换个关键词再调 search_wallpaper。")
+    return (head + "\n".join(lines) +
+            f"\n\n这批图已经排除之前几批出过的（不重复）。等用户回复编号后，"
+            f"把对应 id 传给 set_wallpaper(candidate_id=...)。"
+            f"如果用户说不满意，就换个关键词再调 search_wallpaper。")
 
 
 async def _set_wallpaper(url: str = "", clear: bool = False,
