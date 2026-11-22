@@ -1582,10 +1582,27 @@ export default function QamScreen() {
             {s.probing ? "正在连接插件后端…" : "插件后端未连上"}
           </div>
           <div style={{ fontSize: 11, color: DIM, lineHeight: 1.5 }}>
-            后端由 Decky 插件管理；一直连不上就重试，或在设置页启动后端。
+            后端由 Decky 插件管理。重试没用就直接重启一次；确实不想它跑着就点停止，
+            停止后只有「启动核心」能恢复。
           </div>
           <Btn primary onClick={() => void s.refreshStatus()} description="重试">
             重试连接
+          </Btn>
+          {/* 连不上时后端很可能已经半死：插件的启动逻辑会先看端口占用再决定复用，
+              重启就是「收掉旧进程 + 按启动命令重放一遍」，比让用户去终端手动 pkill 靠谱 */}
+          <Btn
+            onClick={() => void s.coreRestart()}
+            disabled={s.restarting || s.probing}
+            description="重启后端"
+          >
+            {s.restarting ? "重启中…" : "重启后端"}
+          </Btn>
+          <Btn
+            onClick={() => void s.coreKill()}
+            disabled={s.killing || s.probing}
+            description="停止后端"
+          >
+            {s.killing ? "停止中…" : "停止后端"}
           </Btn>
           <Btn height={26} size={11} onClick={s.openBigScreen} description="打开大屏">
             打开大屏

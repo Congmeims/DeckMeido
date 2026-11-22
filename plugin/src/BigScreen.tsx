@@ -944,7 +944,8 @@ export default function BigScreen() {
               {s.probing ? "正在连接插件后端…" : "插件后端未连上"}
             </div>
             <div style={{ color: DIM, fontSize: 13, lineHeight: 1.5 }}>
-              后端由 Decky 插件管理；若一直连不上，可重试，或按 B 返回 QAM 启动后端。
+              后端由 Decky 插件管理。重试没用就直接重启一次；确实不想它跑着就点停止，
+              停止后只有「启动核心」能恢复。
             </div>
             <ActionButton
               onClick={() => void s.refreshStatus()}
@@ -953,6 +954,24 @@ export default function BigScreen() {
             >
               重试连接
             </ActionButton>
+            <div style={{ display: "flex", gap: 8 }}>
+              <ActionButton
+                onClick={() => void s.coreRestart()}
+                disabled={s.restarting}
+                description="重启后端"
+                style={{ flex: 1 }}
+              >
+                {s.restarting ? "重启中…" : "重启后端"}
+              </ActionButton>
+              <ActionButton
+                onClick={() => void s.coreKill()}
+                disabled={s.killing}
+                description="停止后端"
+                style={{ flex: 1 }}
+              >
+                {s.killing ? "停止中…" : "停止后端"}
+              </ActionButton>
+            </div>
           </div>
         </div>
       ) : configError ? (
@@ -1015,8 +1034,11 @@ export default function BigScreen() {
               alignItems: "center",
               gap: 8,
               width: "100%",
-              height: ACTION_H,
+              // 核心挂了时回执卡里要塞「重新探测 / 启动核心 / 重启后端 / 停止后端」
+              // 四颗按钮，1280 宽也放不下：允许折行，行高交给内容撑
+              minHeight: ACTION_H,
               flexShrink: 0,
+              flexWrap: "wrap",
             }}
           >
             {/* 回执卡：核心停止/异常时整卡转红并带「启动核心」按钮 */}
@@ -1024,7 +1046,7 @@ export default function BigScreen() {
               style={{
                 flex: 1,
                 minWidth: 0,
-                height: ACTION_H,
+                minHeight: ACTION_H,
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
@@ -1092,6 +1114,37 @@ export default function BigScreen() {
                     }}
                   >
                     {s.starting ? "启动中…" : "启动核心"}
+                  </ActionButton>
+                  {/* 连不上时后端常常是半死的（旧进程占着端口、或卡在启动里），
+                      「启动核心」看到端口被占会直接复用那份坏进程，所以必须给
+                      「重启」：由插件收掉旧进程再按启动命令重放一遍 */}
+                  <ActionButton
+                    onClick={() => void s.coreRestart()}
+                    disabled={s.restarting}
+                    description="重启后端"
+                    compact
+                    style={{
+                      width: 104,
+                      flex: "0 0 104px",
+                      fontSize: 12,
+                      background: "rgba(255,255,255,.08)",
+                    }}
+                  >
+                    {s.restarting ? "重启中…" : "重启后端"}
+                  </ActionButton>
+                  <ActionButton
+                    onClick={() => void s.coreKill()}
+                    disabled={s.killing}
+                    description="停止后端"
+                    compact
+                    style={{
+                      width: 96,
+                      flex: "0 0 96px",
+                      fontSize: 12,
+                      background: "rgba(255,255,255,.08)",
+                    }}
+                  >
+                    {s.killing ? "停止中…" : "停止后端"}
                   </ActionButton>
                 </>
               )}
