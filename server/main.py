@@ -508,8 +508,11 @@ def _build_llm_msgs_sync(hist: list[dict], sys_prompt: str, sid: str = "",
         if cands and isinstance(content, str):
             lines = [f"{c['no']}. {c.get('title') or '（无标题）'} · id={c['id']}"
                      for c in cands]
-            content = (content + "\n\n【本轮展示给用户的壁纸候选，用户可能用编号回复】\n"
-                       + "\n".join(lines))
+            content = (content + "\n\n【这一轮展示给用户的壁纸候选，用户可能用编号回复】\n"
+                       + "\n".join(lines) +
+                       "\n注意：同一轮对话里可能搜过好几批，各批编号都从 1 开始。"
+                       "用户回复的编号若带着 candidate_id（形如「3（candidate_id=xxx）」），"
+                       "以 candidate_id 为准直接传给 set_wallpaper；没有 id 时才按最近一批理解。")
         # 历史里还存了 ts / events 供界面回放，发给模型时只保留 role 和 content
         msgs.append({"role": m["role"], "content": content,
                      "tool_calls": m.get("tool_calls"),

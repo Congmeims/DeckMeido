@@ -3104,7 +3104,9 @@
             el.classList.remove('picked');
           });
           settle([b]);
-          doSend(String(i + 1));
+          // 必须把 candidate_id 一起带上：同一轮刷新过好几批时，光发编号「3」
+          // 模型会当成本批（最新一批）的第 3 张，用户点的是第 1 批的第 3 张就对不上
+          doSend(String(i + 1) + (c.id ? '（candidate_id=' + c.id + '）' : ''));
           return;
         }
         toggle(b, i + 1);
@@ -3127,9 +3129,16 @@
           if (nos.indexOf(k + 1) >= 0) els.push(el);
         });
         settle(els);
+        // 同样带上 id：多批候选混在一起时，编号会指向最新那批
+        var ids = [];
+        nos.forEach(function (no) {
+          var c = list[no - 1];
+          if (c && c.id) ids.push(no + '=' + c.id);
+        });
+        var tail = ids.length ? '（candidate_id: ' + ids.join('，') + '）' : '';
         // 只点了一张就直接问编号，和点图的老行为一致
-        doSend(nos.length === 1 ? String(nos[0])
-          : '把第 ' + nos.join('、') + ' 张都发给我看看大图');
+        doSend((nos.length === 1 ? String(nos[0])
+          : '把第 ' + nos.join('、') + ' 张都发给我看看大图') + tail);
       });
       card.appendChild(okBtn);
     }
