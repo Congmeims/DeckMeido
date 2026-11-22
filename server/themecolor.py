@@ -22,6 +22,7 @@ import colorsys
 import io
 import json
 import re
+import sys
 import uuid
 
 WALLPAPER_MAX = 20 * 1024 * 1024          # 与附件上限一致
@@ -304,6 +305,9 @@ def accent_pick(pool: list[tuple], five: list[tuple], tier: str) -> tuple[str, s
     「饱和度 × 占比^0.35」排序：一张图里只有眼睛两抹红时，红虽然面积小，
     但饱和度高，排在灰蓝前面；大面积的低饱和天空色则靠占比补回来。
     只有本档池子里一个彩色都没有（暗黑档经常如此）时才跨档兜底。
+
+    强调色取了偏亮的彩色时，气泡色优先挑明度差得够开的那个：
+    两格贴在壁纸上看差别更大，不然用户看到的是「强调和气泡一个颜色」。
     """
     def score(c) -> float:
         return c[2] * (max(c[1], 1e-6) ** 0.35)
@@ -316,7 +320,7 @@ def accent_pick(pool: list[tuple], five: list[tuple], tier: str) -> tuple[str, s
     if len(cand) < 2 and pool:
         cand = colorful(pool) or colorful(five) or list(five)
     cand = sorted(cand or list(five), key=score, reverse=True)
-    # 强调色和气泡色得是两个颜色：色相岔开，或饱和度明显不同都行；
+    # 强调色和气泡色得是两个颜色：色相岔开，或饱和度/明度明显不同都行；
     # 全都太像时（壁纸只有一抹同色相的红）就复用同一个色
     a = cand[0][3]
     h1, l1, s1 = _hls(a)
@@ -329,6 +333,45 @@ def accent_pick(pool: list[tuple], five: list[tuple], tier: str) -> tuple[str, s
             b = c[3]
             break
     return a, b
+
+
+# 用户逐档挑的强调 / 气泡：{tier: {"brand": hex, "user_bubble": hex}}。
+# 独立于 slots 记：slots 里第 3/4 格是同名的值，改底/面板时会被整份重写，
+# 靠它回填才不会被顺手抹掉
+ACCENT_KEYS = ("light", "dark", "oled")
+
+
+def _tier_accent(pal: dict, tier: str) -> dict:
+    acc = (pal.get("accents") or {}).get(tier)
+    if isinstance(acc, dict) and acc.get("brand"):
+        return {"brand": acc["brand"],
+                "user_bubble": acc.get("user_bubble") or acc["brand"]}
+    five = (pal.get("slots") or {}).get(tier) or []
+    if len(five) >= 5:
+        return {"brand": five[3], "user_bubble": five[4]}
+    got = pal.get(tier) or {}
+    return {"brand": got.get("brand") or "",
+            "user_bubble": got.get("user_bubble") or got.get("brand") or ""}
+
+
+def _sync_slots(out: dict) -> dict:
+    """按 tier 的派生值把 slots 第 3/4 格、accents 对齐，保证两边说的是同一件事"""
+    out["slots"] = {k: list(v) for k, v in (out.get("slots") or {}).items()}
+    accents = {k: dict(v) for k, v in (out.get("accents") or {}).items()}
+    for tier in ACCENT_KEYS:
+        got = out.get(tier)
+        if not isinstance(got, dict) or not got.get("brand"):
+            continue
+        accents[tier] = {"brand": got["brand"],
+                         "user_bubble": got.get("user_bubble") or got["brand"]}
+        five = out["slots"].get(tier) or []
+        if len(five) >= 5:
+            five[3] = got["brand"]
+            five[4] = accents[tier]["user_bubble"]
+            out["slots"][tier] = five
+    if accents:
+        out["accents"] = accents
+    return out
 
 
 def _tune(hex_color: str, target: float) -> str:
@@ -373,7 +416,7 @@ def palette_from_wallpaper(img_bytes: bytes) -> dict | None:
     # 全灰图里的一点红）落在哪一段是碰运气，按段取就只剩灰
     pool = sorted(colors, key=lambda r: r[2] * (max(r[1], 1e-6) ** 0.35),
                   reverse=True)
-    pal: dict = {"tiers": {}, "slots": {}, "source": ""}
+    pal: dict = {"tiers": {}, "slots": {}, "accents": {}, "source": ""}
     for tier, seg in segs.items():
         five = [r[3] for r in sorted(seg, key=lambda r: r[0])]     # 从暗到亮
         got = tier_palette(seg, tier, pool)
@@ -384,6 +427,8 @@ def palette_from_wallpaper(img_bytes: bytes) -> dict | None:
         # 槽位：0=底 1=面板 2=第二层 3=强调 4=气泡
         pal["slots"][tier] = [got["bg"], got["surface"], got["surface_2"],
                               got["brand"], got["user_bubble"]]
+        pal["accents"][tier] = {"brand": got["brand"],
+                                "user_bubble": got["user_bubble"]}
     # source 用深色档的强调色：设置页「手动调整」是拿它比对的
     pal["source"] = pal["dark"]["brand"]
     return pal
@@ -526,39 +571,56 @@ def extract_palette(img_bytes: bytes) -> dict:
     return palette_from_color(dominant_color(img_bytes))
 
 
-def retint_palette(palette: dict, brand: str) -> dict:
-    """用户手动指定强调色：底/面板/第二层保留壁纸给的骨架，只换强调色与气泡色
+def retint_palette(palette: dict, brand: str, tier: str | None = None) -> dict:
+    """用户手动指定强调色：只改指定那一档，其余档保持壁纸原配色
 
-    十五色模式（有 slots）才有骨架可留；没有 slots 时返回原值，
-    调用方会走 `palette_from_color` 由这个色重推三档。
+    以前这里三档一起改 —— 用户想改浅色档的强调色，深色/暗黑档跟着变成
+    同一个值，而三档底子明暗不同，同一个色在其中两档根本看不清。
+    不传 tier 时改当前正在用的那档（没有就用深色），前端会把当时显示的
+    档位一起发上来。
+
+    底色三格不动，只换强调色与气泡色，`slots` 第 3/4 格和 `accents`
+    一起对齐（见 `_sync_slots`）。tier 不在三档里时按深色档处理。
 
     `source` 保持壁纸取到的原强调色不动 —— 它是「恢复壁纸原配色」的
     唯一依据，早期版本写成了用户手动色，按一次就再也回不去了。
-    壁纸原值另存在 `origin`（第一次手动改时快照整份 slots 留底），
-    点过某一格、改过底色之后也能整体还原。
+    壁纸原值另存在 `origin`（第一次手动改时快照整份 slots 留底）。
     """
     slots = (palette or {}).get("slots")
     if not isinstance(slots, dict) or not slots:
         return palette
+    # 前端没带 tier 时按深色档处理（设置页「整体强调色」的约定），
+    # 不能当成「三档一起改」：那样一次手动改色会把三档全刷成同一个色
+    if tier not in ACCENT_KEYS:
+        tier = "dark"
     out = {"slots": {}, "tiers": palette.get("tiers") or {},
            "source": palette.get("source") or "",
+           "accents": {k: dict(v) for k, v in (palette.get("accents") or {}).items()},
            "origin": palette.get("origin") or {
                "slots": {k: list(v) for k, v in slots.items()},
                "tiers": palette.get("tiers") or {},
                "source": palette.get("source") or "",
-               "brands": {t: (palette.get(t) or {}).get("brand") or ""
-                          for t in ("light", "dark", "oled")},
+               "accents": {k: dict(v) for k, v in (palette.get("accents") or {}).items()},
            }}
-    for tier in ("light", "dark", "oled"):
-        got = palette.get(tier) or {}
-        five = slots.get(tier) or []
+    for t in ACCENT_KEYS:
+        got = dict(palette.get(t) or {})
+        five = slots.get(t) or []
         if len(five) < 5:
             return palette
-        p = dict(got)
-        p["brand"] = brand
-        p["user_bubble"] = brand
-        out[tier] = p
-        out["slots"][tier] = [p.get("bg"), p.get("surface"), p.get("surface_2"), brand, brand]
+        if t == tier:
+            got["brand"] = brand
+            got["user_bubble"] = brand
+        out[t] = got
+        out["slots"][t] = list(five)
+    out = _sync_slots(out)
+    # 有点奇怪但必要：_sync_slots 会按每档的派生值回填 slots，
+    # 上面没动的档要保持原样，所以再按原 slots 校正一遍没改的档
+    for t in ACCENT_KEYS:
+        if t != tier and slots.get(t):
+            out["slots"][t] = list(slots[t])
+            prev = palette.get("accents") or {}
+            if prev.get(t):
+                out["accents"][t] = dict(prev[t])
     return out
 
 
@@ -577,12 +639,17 @@ def restore_palette(palette: dict) -> dict | None:
         out["slots"] = {k: list(v) for k, v in origin["slots"].items()}
         out["tiers"] = origin.get("tiers") or {}
         out["source"] = origin.get("source") or ""
+        if origin.get("accents"):
+            out["accents"] = {k: dict(v) for k, v in origin["accents"].items()}
+        else:
+            out.pop("accents", None)
         for tier in ("light", "dark", "oled"):
             five = out["slots"].get(tier) or []
             if len(five) < 5:
                 continue
-            out[tier] = {"brand": five[3], "user_bubble": five[4], "bg": five[0],
-                         "surface": five[1], "surface_2": five[2]}
+            acc = _tier_accent(out, tier)
+            out[tier] = {"brand": acc["brand"], "user_bubble": acc["user_bubble"],
+                         "bg": five[0], "surface": five[1], "surface_2": five[2]}
         if out["slots"]:
             return out
     wall = _current_wallpaper_bytes()
@@ -605,17 +672,22 @@ def _current_wallpaper_bytes() -> bytes | None:
         return None
 
 
-def palette_from_five(palette: dict, tier: str, five: list[str]) -> dict:
-    """用户手动改了某一档的 5 个色块：只重算这一档，其余档保持不变
+def palette_from_five(palette: dict, tier: str, five: list[str],
+                      only: int | None = None) -> dict:
+    """用户手动改了某一档的色块：只重算这一档，其余档保持不变
 
     five 的槽位顺序与 slots 一致：底 / 面板 / 第二层 / 强调 / 气泡。
-    五格原样落地 —— 用户选的色就是最终色。
+    传了 only 就只采纳那一格 —— 前端把整档 5 个值一起回传（底下的派生值
+    可能已经过期），只认用户动过的那一格，其余以服务端现值为准。
+    不传时五格原样落地（用户选的色就是最终色）。
+
+    强调/气泡两格还要留一份在 accents 里：改底、面板时这两格不跟着变。
     """
     if not isinstance(palette, dict) or len(five) < 5:
         return palette
     out = dict(palette)
     out["tiers"] = dict(palette.get("tiers") or {})
-    out["slots"] = dict(palette.get("slots") or {})
+    out["slots"] = {k: list(v) for k, v in (palette.get("slots") or {}).items()}
     # 逐格改色同样要留一份原件：第一次改之前快照整份 slots，
     # 「恢复壁纸原配色」才有东西还原
     if not out.get("origin"):
@@ -623,7 +695,19 @@ def palette_from_five(palette: dict, tier: str, five: list[str]) -> dict:
             "slots": {k: list(v) for k, v in out["slots"].items()},
             "tiers": dict(out["tiers"]),
             "source": palette.get("source") or "",
+            "accents": {k: dict(v) for k, v in (palette.get("accents") or {}).items()},
         }
+    cur = _tier_accent(palette, tier)
+    five = list(five)
+    # 强调/气泡以服务端现值为准：前端那份整档快照可能已被别处改过
+    # （比如另一台设备刚改过强调色），回写时不能顺手覆盖
+    five[3] = cur["brand"] or five[3]
+    five[4] = cur["user_bubble"] or five[4]
+    if only is not None and 0 <= only < 5:
+        prev = ((palette.get("slots") or {}).get(tier) or [])
+        for i in (0, 1, 2):
+            if i != only and len(prev) > i:
+                five[i] = prev[i]
     out[tier] = {
         "brand": five[3],
         "user_bubble": five[4],
@@ -633,7 +717,7 @@ def palette_from_five(palette: dict, tier: str, five: list[str]) -> dict:
     }
     out["slots"][tier] = list(five)
     out["tiers"][tier] = list(five)
-    return out
+    return _sync_slots(out)
 
 
 def image_lum(img_bytes: bytes) -> float:
@@ -785,6 +869,11 @@ def clear_wallpaper() -> None:
 # 候选图单独放一个目录，不碰 wallpaper.* 那一族，所以预览阶段完全不影响当前壁纸。
 # 上限 16 张：一轮最多给 4 张，连搜几次也不会把盘塞满
 CANDIDATE_KEEP = 16
+# 会话里还引用着的候选图不按张数裁：聊天记录里那张预览要能点开，
+# 一搜四张、连搜四五轮就把前面几轮的前三张删了，界面上就只剩
+# 「已过期」的灰块（用户看到的就是「发了四张，三张过期」）。
+# 这里单独给一个上限，只防止会话越攒越多时盘被撑爆
+CANDIDATE_LIVE_MAX = 120
 
 
 def candidates_dir():
@@ -794,10 +883,15 @@ def candidates_dir():
     return d
 
 
-def save_candidate(img_bytes: bytes) -> tuple[str, str]:
+def save_candidate(img_bytes: bytes, trim: bool = True) -> tuple[str, str]:
     """把下载到的候选图落盘，返回 (id, 扩展名)。只校验不取色。
 
     取色留到真正应用时再做：用户挑不中的图没必要跑一遍量化。
+
+    trim=False 留给「一次搜一批」的场景：调用方把整批都写完再统一裁一次。
+    以前每存一张就裁一次，而这时会话还没把 id 记进历史，新存的图在
+    orphan_candidate_ids 眼里全是孤儿（只有最后一张因为排在 CANDIDATE_KEEP
+    以内被留住）——用户看到的就是「发了四张，三张已过期」。
     """
     from PIL import Image
 
@@ -816,18 +910,46 @@ def save_candidate(img_bytes: bytes) -> tuple[str, str]:
     cid = uuid.uuid4().hex[:12]
     folder = candidates_dir()
     (folder / f"{cid}.{ext}").write_bytes(img_bytes)
-    _trim_candidates()
+    if trim:
+        _trim_candidates()
     return cid, ext
 
 
 def _trim_candidates() -> None:
-    """按修改时间保留最新 CANDIDATE_KEEP 张，旧的直接删"""
+    """裁掉没人再引用的旧候选图
+
+    以前只按修改时间留最新 CANDIDATE_KEEP 张，发出去的那几批只要超过 16 张，
+    前几批的前几张就会被删掉——聊天记录里的预览随即变成「已过期」。
+    现在先把「会话 / 回收站 / 当前壁纸还在引用」的 id 挑出来：
+    引用的最多留 CANDIDATE_LIVE_MAX 张（超出按时间删最老的，极端情况才会触发），
+    没被引用的才按 CANDIDATE_KEEP 裁。引用判定复用 session_store，
+    和删会话时的孤儿图回收是同一套口径
+    """
     folder = candidates_dir()
     files = []
     for pat in ("*.png", "*.jpg", "*.webp", "*.gif", "*.bmp"):
         files.extend(folder.glob(pat))
     files.sort(key=lambda p: p.stat().st_mtime)
-    for p in files[:-CANDIDATE_KEEP]:
+
+    live: set[str] = set()
+    try:
+        # 延迟导入：session_store 会反过来 import 本模块
+        from . import session_store
+        orphan = session_store.orphan_candidate_ids()
+    except Exception as e:
+        # 读不到会话就当全都还在用：宁可这次不裁，也不能把聊天里的图删成破图
+        print(f"[DeckMeido] 候选图引用扫描失败，跳过裁剪：{e!r}", file=sys.stderr)
+        return
+    live = {p.stem for p in files if p.stem not in orphan}
+
+    live_files = [p for p in files if p.stem in live]
+    dead_files = [p for p in files if p.stem not in live]
+    doomed = []
+    if len(live_files) > CANDIDATE_LIVE_MAX:
+        doomed += live_files[:-CANDIDATE_LIVE_MAX]
+    if len(dead_files) > CANDIDATE_KEEP:
+        doomed += dead_files[:-CANDIDATE_KEEP]
+    for p in doomed:
         try:
             p.unlink()
         except OSError:

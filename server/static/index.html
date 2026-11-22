@@ -1246,31 +1246,47 @@
             </div>
             <div class="field-hint" id="colrPreviewHint">预览里的颜色跟着下面三档实际配色走，切换明暗档会一起变。</div>
 
+            <!-- 上下两块用同一套「玻璃内衬」：灰底 + 描边 + 内嵌高光，
+                 不再是两条挂着分隔线的裸内容 -->
             <div class="colr-sect">
               <div class="colr-head">
                 <span>自动配色</span>
                 <span class="colr-head-note" id="colrSourceNote">未选壁纸，暂用默认强调色</span>
+                <button id="colrEditReset" class="mini-btn ghost" type="button" hidden>退出编辑</button>
               </div>
-              <!-- 三排 × 五格：壁纸量化出的 15 色按亮度切三段，最暗给暗黑、
-                   居中给深色、最亮给浅色。每格对应一个固定槽位，点哪格改哪格 -->
+              <!-- 三排 × 五格：每格对应一个固定槽位（底/面板/第二层/强调/气泡），
+                   点哪格改哪格。强调色不再按亮度抢槽位，是从壁纸里挑最有
+                   存在感的彩色，所以三档各不一样 -->
               <div class="colr-board" id="colrBoard"></div>
               <div class="colr-slots" id="colrSlots"></div>
             </div>
 
-            <div class="colr-sect">
+            <div class="colr-sect" id="colrManual">
               <div class="colr-head">
                 <span>手动设置</span>
                 <button id="wallColorReset" class="mini-btn ghost" type="button">恢复壁纸原配色</button>
               </div>
-              <div class="wall-color-row">
-                <input id="wallColor" type="color" value="#1a9fff" aria-label="选颜色">
-                <input id="wallColorHex" class="wall-hex" type="text" maxlength="7"
-                       spellcheck="false" autocomplete="off" value="#1a9fff"
-                       aria-label="强调色色值">
-                <button id="wallColorApply" class="mini-btn" type="button">应用</button>
+              <!-- 在改哪一格：和色板同一套措辞，这里先亮出来。
+                   收成一整条，编辑/未编辑只换文字和色 -->
+              <div class="colr-target" id="colrTarget">整体强调色 · 深色</div>
+              <!-- 取色区和预设色共用一张「子卡片」：色块、色值、应用按钮
+                   统一 32px 高、10px 圆角，和上面的控件同一档 -->
+              <div class="colr-pick">
+                <div class="colr-pick-row">
+                  <span class="colr-swatch"><input id="wallColor" type="color" value="#1a9fff" aria-label="选颜色"></span>
+                  <input id="wallColorHex" class="wall-hex" type="text" maxlength="7"
+                         spellcheck="false" autocomplete="off" value="#1a9fff"
+                         aria-label="强调色色值">
+                  <button id="wallColorApply" class="mini-btn primary colr-apply" type="button">应用</button>
+                </div>
+                <div class="colr-pick-row colr-presets-row">
+                  <span class="colr-presets-label">常用</span>
+                  <div class="colr-presets" id="colrPresets"></div>
+                </div>
               </div>
-              <div class="wall-color-row colr-presets" id="colrPresets"></div>
-              <div class="field-hint" id="wallPaletteHint">强调色会按明暗档自动调亮或压暗，保证文字看得清。</div>
+              <!-- 未点色格时改的是「整站强调色」：只动当前这一档，
+                   不是三档一起刷（见后端 retint_palette） -->
+              <div class="field-hint" id="wallPaletteHint">不点任何色格时，这里改的是当前档的整体强调色；先点上面某一格，再改色只影响那一格。</div>
             </div>
           </div>
           <h4 class="set-sect">运行与更新</h4>
@@ -11742,8 +11758,12 @@
     // 毛玻璃也以后端为准：别端的值推过来时把滑条和 CSS 一起对齐。
     // 和 dim / blur 一样按落盘时间过滤：本端刚松手、保存还在路上时，
     // 任何回程快照都必然更旧，照收就会把滑条拽回上一个值
-    if (wallGlass && a.glass != null &&
-        !(Number(a.glass_ts) < wallGlassSavedAt)) {
+    var glassStale = Number(a.glass_ts) < wallGlassSavedAt;
+    if (glassStale) {
+      // 和 dim / blur 同样处理：本端刚松手的值比这份快照新，留着表单值，
+      // 别把滑条拽回上一个刻度
+      CFG_APPEARANCE.glass = Number(wallGlass.value) || 0;
+    } else if (wallGlass && a.glass != null) {
       var gsnap = Math.max(0, Math.min(20, Math.round(Number(a.glass) || 0)));
       if (wallGlass.value !== String(gsnap)) wallGlass.value = String(gsnap);
       if (wallGlassVal.textContent !== gsnap + 'px') wallGlassVal.textContent = gsnap + 'px';
@@ -11786,7 +11806,11 @@
     // 拖动结果换成旧值，「滑到 40% 下一秒自己归零」
     if (!el) { applyCfgAppearance(); return; }
     // 本次要落盘的值：保存结果回来时拿它比对，确认回包就是手停住时的那次
-    var sent = el === wallDim ? Number(wallDim.value) || 0 : Number(wallBlur.value) || 0;
+    // 三条滑杆各自取自己的值。以前这里只有 dim / blur 两支，
+    // 毛玻璃会落到 blur 那一支，拿模糊的读数当毛玻璃的「本次值」比对，
+    // 回包永远对不上，滑条怎么拉都保存不了
+    var sent = el === wallDim ? Number(wallDim.value) || 0
+      : (el === wallBlur ? Number(wallBlur.value) || 0 : Number(wallGlass.value) || 0);
     wallTuneTimer = setTimeout(function () {
       var body = {};
       // 本地时间戳用「现在」而不是回包里的：保存请求在路上时任何回程快照
@@ -11800,6 +11824,11 @@
         CFG_APPEARANCE.blur = Number(wallBlur.value) || 0;
         body.blur = CFG_APPEARANCE.blur;
         wallBlurSavedAt = now;
+      } else if (typeof wallGlass !== 'undefined' && el === wallGlass) {
+        // 毛玻璃走同一条路：拖动中实时改 CSS，松手把最终值落盘
+        CFG_APPEARANCE.glass = Number(wallGlass.value) || 0;
+        body.glass = CFG_APPEARANCE.glass;
+        wallGlassSavedAt = now;
       }
       // keepTune：本地值刚写进快照，重画时别反过来又把滑杆刷成快照旧值
       applyCfgAppearance(null, true);
@@ -11818,7 +11847,8 @@
           wallTuneEndAt = 0;
           // 回包前用户又动过这一条：这份快照拍的是更早的值，整份丢掉，
           // 否则滑杆会被「上一次松手」的结果往回拽一下，看着就是闪烁
-          var nowVal = el === wallDim ? Number(wallDim.value) || 0 : Number(wallBlur.value) || 0;
+          var nowVal = el === wallDim ? Number(wallDim.value) || 0
+            : (el === wallBlur ? Number(wallBlur.value) || 0 : Number(wallGlass.value) || 0);
           if (nowVal !== sent) return;
           renderAppearanceForm(d.theme);
         })
@@ -11980,6 +12010,12 @@
   // 拖动时先改 CSS，松手再写回 /api/theme/config；localStorage 只做首帧缓存
   var wallGlass = document.getElementById('wallGlass');
   var wallGlassVal = document.getElementById('wallGlassVal');
+  // 同一条「自绘滑轨」的绑定。以前毛玻璃这条没接 bindWallRg，
+  // 只有里面那层透明的原生 range 在接事件：
+  //  · 触摸/触控板被拖拽手势接管后事件到不了 range，滑轨完全拖不动；
+  //  · 原生 range 是按整条长度算值的，按在轨道（只占 1/3 宽）上却按全宽换算，
+  //    点在滑块位置也不跳值。
+  // 现在和其它两条一样走指针事件，拖动实时改值，松手落盘
   var GLASS_KEY = 'deckmeido_glass';
   var glassSaveT = 0;
   // 本端最近一次落盘毛玻璃的时间（毫秒）。和 dim / blur 的 *_SavedAt 同口径：
@@ -11989,21 +12025,10 @@
     wallRgs.push(wallGlass);
     syncWallRg(wallGlass);
     bindWallRg(wallGlass);
-    // 拖的时候先改到 CSS（不写回 input），松手再落盘，避免每动一格写一次 localStorage
-    wallGlass.addEventListener('input', function () {
-      var v = Number(wallGlass.value) || 0;
-      document.documentElement.style.setProperty('--glass', v + 'px');
-      wallGlassVal.textContent = v + 'px';
-      syncWallRg(wallGlass);
-    });
-    wallGlass.addEventListener('change', function () {
-      syncWallRg(wallGlass);
-      var v = Number(wallGlass.value) || 0;
-      try { localStorage.setItem(GLASS_KEY, String(v)); } catch (_) {}
-      if (CFG_APPEARANCE && typeof CFG_APPEARANCE === 'object') CFG_APPEARANCE.glass = v;
-      // 先把自己的落盘时间记上：保存请求在路上时任何回程快照都比它旧
-      wallGlassSavedAt = Date.now();
-      // 防抖写回后端：后端落盘后广播 theme_changed，其余端跟着变
+    // 拖动中：实时改 CSS + 读数，只防抖保存（不每动一格就发请求）。
+    // 松手时 .rg 会派 change（bindWallRg → syncWallRg + 这里再补一次），
+    // 键盘改值没有指针事件，同样走短防抖
+    function saveGlass(v) {
       clearTimeout(glassSaveT);
       glassSaveT = setTimeout(function () {
         apiFetch('/api/theme/config', {
@@ -12018,6 +12043,26 @@
           })
           .catch(function () {});
       }, 250);
+    }
+    // 上面 bindWallRg 已经把拖动转成 input 事件，这里只负责「画 + 落盘时间」。
+    // 真正的保存由 endWallTune → saveWallTune 的 glass 分支完成，
+    // 一次拖动只发一个请求；键盘改值没有指针事件，交给下面的 change 兜底
+    wallGlass.addEventListener('input', function () {
+      var v = Number(wallGlass.value) || 0;
+      document.documentElement.style.setProperty('--glass', v + 'px');
+      wallGlassVal.textContent = v + 'px';
+      syncWallRg(wallGlass);
+      if (CFG_APPEARANCE && typeof CFG_APPEARANCE === 'object') CFG_APPEARANCE.glass = v;
+      // 记一个「本端刚动过」的时间：保存请求在路上时任何回程快照都比它旧，
+      // 不能拿来把滑条拽回去
+      wallGlassSavedAt = Date.now();
+      try { localStorage.setItem(GLASS_KEY, String(v)); } catch (_) {}
+    });
+    wallGlass.addEventListener('change', function () {
+      // 原生 range 的 change（键盘方向键 / 旧浏览器没走到 .rg 指针事件）
+      var v = Number(wallGlass.value) || 0;
+      wallGlassSavedAt = Date.now();
+      saveGlass(v);
     });
     // 首帧先用 localStorage 缓存的强度；真正的值以 /api/theme 快照为准。
     // 这里不能再按「CFG_APPEARANCE.glass 是否为 null」判断要不要写 CSS：
@@ -12077,12 +12122,20 @@
     { k: 'dark', name: '深色' },
     { k: 'oled', name: '暗黑' }
   ];
-  // 五个槽位的名字，顺序与后端 slots / tiers 一致
+  // 五个槽位的名字，下标顺序与后端 slots / tiers 一致（底 / 面板 / 第二层 / 强调 / 气泡）
   var PALETTE_SLOTS = ['底', '面板', '第二层', '强调', '气泡'];
+  // 展示顺序：气泡 → 强调 → 第二层 → 面板 → 底。用户最常改的是气泡和强调，
+  // 底色基本只用算法取的值，所以放到最后。这里只改画的次序，
+  // 提交给后端的 slot 下标仍是 PALETTE_SLOTS 里的原下标
+  var PALETTE_COLS = [4, 3, 2, 1, 0];
   // 常用色：够用就行，不上整套色轮，省得用户还得自己想色值
   var PALETTE_PRESETS = ['#1a9fff', '#b48b9a', '#5fd3a5', '#e8894a', '#9b7bd4', '#d9534f'];
   // 正在改的那一格：{ tier, idx }；null 表示没在改
   var colrEdit = null;
+  // 每次整板重画 +1。快照随时可能被广播刷一遍（换壁纸、别处改色），
+  // 旧板子的节点已经不在 DOM 里，但滑条松手/色值回车这类异步动作
+  // 只能晚一步再发请求 —— 发之前比一下这个数，板子被重画过就不发
+  var colrGen = 0;
 
   function paintPaletteBoard(a, brand) {
     var board = document.getElementById('colrBoard');
@@ -12090,12 +12143,15 @@
     var presets = document.getElementById('colrPresets');
     var pv = document.getElementById('colrPreview');
     if (!board || !presets) return;
+    colrGen += 1;
     var pal = (a && a.palette) || {};
     var cur = String(document.documentElement.getAttribute('data-theme') || 'dark');
     if (cur !== 'light' && cur !== 'oled') cur = 'dark';
     var hasTiers = !!(pal.slots && (pal.slots.dark || []).length);
 
-    // 三排：每排一档，五个色格按槽位排列。当前档描一圈
+    // 三排：每排一档，五个色格按槽位排列。当前档描一圈，正在编辑的
+    // 那一格描一圈强调色并浮出槽位名 —— 光靠下面一行提示，用户滑开屏幕
+    // 就不知道自己在改哪格
     board.innerHTML = '';
     PALETTE_MODES.forEach(function (m) {
       var five = (pal.slots && pal.slots[m.k]) || null;
@@ -12106,10 +12162,16 @@
       }
       var row = document.createElement('div');
       row.className = 'cb-row' + (m.k === cur ? ' on' : '');
+      // 档名左边那颗小色点取这一档的「气泡」色：它在展示上排第一，
+      // 用强调色会和第一格重复，看不出区别
       var head = document.createElement('button');
       head.type = 'button';
       head.className = 'cb-name';
-      head.textContent = m.name;
+      // 「当前」是真正的行内节点而不是 ::after：伪元素没法单独裁切，
+      // 窄屏档名列一挤就会折成两行，留下半个字
+      head.innerHTML = '<b>' + escapeHtml(m.name) +
+        (m.k === cur ? '<span class="cb-tag">当前</span>' : '') + '</b>' +
+        '<small>' + escapeHtml(five[3] || '') + '</small>';
       head.title = '切到' + m.name;
       head.addEventListener('click', function () {
         applyTheme(m.k);
@@ -12118,32 +12180,51 @@
       row.appendChild(head);
       var chips = document.createElement('span');
       chips.className = 'cb-chips';
-      five.forEach(function (hex, i) {
-        var c = document.createElement('button');
-        c.type = 'button';
-        c.className = 'cb-chip';
-        c.style.background = escapeHtml(hex || '#000000');
-        c.title = m.name + ' · ' + PALETTE_SLOTS[i] + ' ' + (hex || '');
-        c.setAttribute('aria-label', m.name + PALETTE_SLOTS[i] + '：' + (hex || ''));
-        c.addEventListener('click', function () {
+      // 按展示顺序摆：i 是后端槽位下标（提交时也用它），视觉列由数组次序决定
+      PALETTE_COLS.forEach(function (i) {
+        var hex = five[i];
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        var editing = !!(colrEdit && colrEdit.tier === m.k && colrEdit.idx === i);
+        chip.className = 'cb-chip' + (editing ? ' editing' : '') +
+          // 底色三格靠近任何一边都可能和背景糊在一起，描一道细边保证看得见
+          (i < 3 ? ' base' : '');
+        chip.style.background = escapeHtml(hex || '#000000');
+        chip.title = m.name + ' · ' + PALETTE_SLOTS[i] + ' ' + (hex || '');
+        chip.setAttribute('aria-label', m.name + PALETTE_SLOTS[i] + '：' + (hex || ''));
+        // 色格下方直接压一个槽位名：五格靠颜色分辨不出谁是谁，
+        // 尤其浅色档三格底全是浅灰
+        chip.innerHTML = '<i>' + escapeHtml(PALETTE_SLOTS[i]) + '</i>';
+        chip.addEventListener('click', function (e) {
+          e.stopPropagation();
           if (!hasTiers) {
             wallPaletteHint.textContent = '这一档来自单色推导，先选一张颜色更丰富的壁纸才能逐格改。';
             return;
           }
+          // 已经在改这一格：再点一次就退出，回到「整体强调色」。
+          // 以前重复点同一格什么也不做，加上保存完会自动退出编辑，
+          // 用户看不到「正在改」的提示后就以为选格这一步丢掉了
+          if (colrEdit && colrEdit.tier === m.k && colrEdit.idx === i) {
+            clearSlotEdit(false);
+            return;
+          }
           pickSlot(m.k, i);
         });
-        chips.appendChild(c);
+        chips.appendChild(chip);
       });
       row.appendChild(chips);
       board.appendChild(row);
     });
 
-    // 槽位名一行，和上面的色格列对齐
+    // 槽位名已经压在色格上了，这一行改成显示深色档的色值，
+    // 和上面三排的列对齐
     if (slots) {
       slots.innerHTML = '';
-      PALETTE_SLOTS.forEach(function (n) {
+      var darkFive = (pal.slots && pal.slots.dark) || [];
+      PALETTE_COLS.forEach(function (i) {
         var s = document.createElement('span');
-        s.textContent = n;
+        s.textContent = darkFive[i] || '';
+        s.className = 'colr-hex';
         slots.appendChild(s);
       });
     }
@@ -12172,12 +12253,17 @@
       else src.textContent = '未选壁纸，使用默认强调色';
     }
 
+    // 预设色：只把「当前正在改的那个值」标成选中。以前一律拿强调色比，
+    // 在改「底」的时候还会亮着一颗蓝点，看着像有两个选中项
+    var presetCur = colrEdit
+      ? String((((pal.slots && pal.slots[colrEdit.tier]) || [])[colrEdit.idx]) || '').toLowerCase()
+      : String(brand || '').toLowerCase();
     presets.innerHTML = '';
     PALETTE_PRESETS.forEach(function (hex) {
       var sw = document.createElement('button');
       sw.type = 'button';
-      sw.className = 'colr-preset' + (hex === brand ? ' on' : '');
-      sw.style.background = hex;
+      sw.className = 'colr-preset' + (hex.toLowerCase() === presetCur ? ' on' : '');
+      sw.style.setProperty('--pc', hex);
       sw.title = hex;
       sw.setAttribute('aria-label', '使用 ' + hex);
       sw.addEventListener('click', function () {
@@ -12189,51 +12275,127 @@
     });
   }
 
-  // 点某一格：把色值同步到下方取色器，提示改的是哪一格
+  // 「正在改什么」那条：未编辑时说明改的是整体强调色，编辑时换成档名 + 槽位名。
+  // 这句话以前只写在最底部的小灰字里，离开视线就忘了；现在贴在取色区上方
+  function paintColrTarget() {
+    var el = document.getElementById('colrTarget');
+    if (!el) return;
+    // 编辑态跟着当前快照走：别处（另一台设备 / 壁纸自动换）改完配色，
+    // 这块提示不能还挂着已经过期的那一格
+    if (colrEdit && !(CFG_APPEARANCE && CFG_APPEARANCE.palette &&
+                      CFG_APPEARANCE.palette.slots &&
+                      CFG_APPEARANCE.palette.slots[colrEdit.tier])) {
+      colrEdit = null;
+      document.getElementById('colrEditReset').hidden = true;
+    }
+    if (colrEdit) {
+      el.textContent = '正在改：' + tierName(colrEdit.tier) + ' · ' + PALETTE_SLOTS[colrEdit.idx];
+      el.classList.add('on');
+      el.title = '点「退出编辑」或色板空白处取消';
+    } else {
+      // 说清「现在改的是哪一档」：以前这里写死「深色档」，用户在暗黑档
+      // 点色格、或者在哪一档上手动改色，都读不出落盘会落到哪档
+      var curTier = String(document.documentElement.getAttribute('data-theme') || '');
+      if (curTier !== 'light' && curTier !== 'dark' && curTier !== 'oled') curTier = 'dark';
+      el.textContent = '整体强调色 · ' + tierName(curTier) + '档（点上方某一格只改那一格）';
+      el.classList.remove('on');
+      el.title = '先点上方某一格，就能只改那一格';
+    }
+  }
+
+  // 点某一格：记下正在改哪一格，把色值同步到下方取色器。
+  // 选中状态必须画在色板上 —— 以前只写一行提示，用户点完「底」回头
+  // 一拖取色器根本不知道自己在改哪一格，改了发现强调色也变了还以为是 bug
   function pickSlot(tier, idx) {
-    var pal = (CFG_APPEARANCE && CFG_APPEARANCE.palette) || {};
-    var five = (pal.slots && pal.slots[tier]) || [];
+    var five = ((CFG_APPEARANCE && CFG_APPEARANCE.palette &&
+                 CFG_APPEARANCE.palette.slots && CFG_APPEARANCE.palette.slots[tier]) || []);
     var hex = five[idx] || '#1a9fff';
     colrEdit = { tier: tier, idx: idx };
     wallColor.value = hex;
     document.getElementById('wallColorHex').value = hex;
-    wallPaletteHint.textContent = '正在改「' + tierName(tier) + ' · ' + PALETTE_SLOTS[idx] + '」，改完自动保存';
-    wallColor.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    paintPaletteBoard(CFG_APPEARANCE, hex);
+    paintColrTarget();
+    document.getElementById('colrEditReset').hidden = false;
+    var hint = document.getElementById('wallPaletteHint');
+    hint.className = 'field-hint editing';
+    hint.textContent = '正在改「' + tierName(tier) + ' · ' + PALETTE_SLOTS[idx] +
+      '」，松手即保存；点空白处或「退出编辑」取消';
   }
+
+  /** 退出单格编辑：回到「整体强调色」模式，取色器跟着当前档强调色 */
+  function clearSlotEdit(quiet) {
+    colrEdit = null;
+    document.getElementById('colrEditReset').hidden = true;
+    var pal = (CFG_APPEARANCE && CFG_APPEARANCE.palette) || {};
+    var brand = pal.dark ? pal.dark.brand : '';
+    if (brand) {
+      wallColor.value = brand;
+      document.getElementById('wallColorHex').value = brand;
+    }
+    paintPaletteBoard(CFG_APPEARANCE, brand);
+    paintColrTarget();
+    var hint = document.getElementById('wallPaletteHint');
+    hint.className = 'field-hint';
+    if (!quiet) hint.textContent = '已退出单格编辑，现在改的是整体强调色。';
+  }
+  document.getElementById('colrEditReset').addEventListener('click', function () {
+    clearSlotEdit(false);
+  });
+  // 点色板空白处也退出单格编辑：和「点外面取消」一样的直觉，
+  // 免得用户点完一格又忘了，下一次改色落到错的地方
+  document.getElementById('colrBoard').addEventListener('click', function () {
+    if (colrEdit) clearSlotEdit(false);
+  });
 
   function tierName(k) {
     var m = PALETTE_MODES.filter(function (x) { return x.k === k; })[0];
     return m ? m.name : k;
   }
 
-  // 把某一档的某一格改成 hex：其余四格照旧，整档 5 个一起提交
-  function applySlot(hex) {
-    if (!colrEdit) return Promise.resolve();
-    var pal = (CFG_APPEARANCE && CFG_APPEARANCE.palette) || {};
-    var five = ((pal.slots && pal.slots[colrEdit.tier]) || []).slice();
-    if (five.length !== 5) { colrEdit = null; return Promise.resolve(); }
-    five[colrEdit.idx] = hex;
+  // 把某一档的某一格改成 hex：只提交这一格（带上 slot 下标），
+  // 其余格以服务端现值为准。以前整档 5 个一起发，前端这份快照一过期
+  // 就会把别处刚改的强调/气泡覆盖回去；后端也只认这一格
+  function applySlot(hex, at) {
+    // at 是提交那一刻定下的目标格；不传就按当前的 colrEdit。
+    // 取色器松手是异步提交的，必须用点击时记下的那一格，
+    // 不能等发请求时再读 colrEdit（那时可能已经被清掉）
+    var target = at || (colrEdit ? { tier: colrEdit.tier, idx: colrEdit.idx } : null);
+    if (!target) return Promise.resolve();
+    var five = (((CFG_APPEARANCE && CFG_APPEARANCE.palette &&
+                  CFG_APPEARANCE.palette.slots && CFG_APPEARANCE.palette.slots[target.tier]) || [])).slice();
+    if (five.length !== 5) { clearSlotEdit(true); return Promise.resolve(); }
+    five[target.idx] = hex;
     return apiFetch('/api/theme/palette', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tier: colrEdit.tier, colors: five })
+      body: JSON.stringify({ tier: target.tier, colors: five, slot: target.idx })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.ok) {
-          colrEdit = null;
           renderAppearanceForm(d.theme);
           applyCfgAppearance(d.theme);
-          wallPaletteHint.textContent = '已保存';
+          // 保存完退出编辑：拖完一下再从底/面板跳到强调上，不该继续
+          // 挂在上一格上。取色器回到整体强调色，提示改成结果
+          clearSlotEdit(true);
+          document.getElementById('wallPaletteHint').textContent =
+            '已保存「' + tierName(target.tier) + ' · ' + PALETTE_SLOTS[target.idx] + '」';
+          document.getElementById('wallPaletteHint').className = 'field-hint';
         } else {
           wallPaletteHint.textContent = (d && d.error) || '应用失败';
+          document.getElementById('wallPaletteHint').className = 'field-hint';
         }
-      }).catch(function () { wallPaletteHint.textContent = '应用失败，请重试'; });
+      }).catch(function () {
+        wallPaletteHint.textContent = '应用失败，请重试';
+        document.getElementById('wallPaletteHint').className = 'field-hint';
+      });
   }
 
-  // 统一的应用入口：色块、色值、预设三处都走这里，省得各写一遍
+  // 统一的应用入口：色块、色值、预设三处都走这里，省得各写一遍。
+  // 正在改某一格时按格提交，否则改整体强调色（只动深色档）
   function applyPalette(hex, quiet) {
+    if (colrEdit) return applySlot(hex);
     return apiFetch('/api/theme/palette', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ brand: hex })
+      body: JSON.stringify({ brand: hex, tier: 'dark' })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.ok) {
@@ -12259,14 +12421,25 @@
     return v;
   }
   // 取色器拖一下就是几十个 input：只更新色值和预览框，不发请求；
-  // 松手（change）才真正落盘。点过某一格时走单格改色，否则改整站强调色
+  // 松手（change）才真正落盘。点过某一格时走单格改色，否则改整站强调色。
+  // 两者都要晚一拍再提交：change 之后还可能跟着一次 click（浏览器在色块上
+  // 松手会补发 click，冒泡到 colrBoard 就成了「点空白处退出编辑」）。
+  // 同步发请求时 colrEdit 已经清空，单格改色会掉进「整体强调色」分支，
+  // 表现就是选了暗黑档的格子、颜色却落到深色档上
   wallColor.addEventListener('input', function () {
     document.getElementById('wallColorHex').value = wallColor.value;
     wallPaletteHint.textContent = colrEdit ? '预览中，松手后应用这一格' : '预览中，松手后应用';
   });
   wallColor.addEventListener('change', function () {
-    if (colrEdit) applySlot(wallColor.value);
-    else applyPalette(wallColor.value);
+    var v = wallColor.value;
+    var gen = colrGen;
+    var target = colrEdit ? { tier: colrEdit.tier, idx: colrEdit.idx } : null;
+    setTimeout(function () {
+      // 板子在等待期间被广播重画过：这次的颜色已经没有对应目标，丢弃
+      if (gen !== colrGen) return;
+      if (target) applySlot(v, target);
+      else applyPalette(v);
+    }, 0);
   });
   document.getElementById('wallColorApply').addEventListener('click', function () {
     var v = syncWallColorHex();
@@ -12275,7 +12448,10 @@
     else applyPalette(v);
   });
   document.getElementById('wallColorHex').addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') document.getElementById('wallColorApply').click();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      document.getElementById('wallColorApply').click();
+    }
   });
   // 进设置页时按当前快照补画一次：脚本首次执行时快照可能还没到，
   // 那时这些节点还不存在，paintPaletteBoard 只能拿默认色占位。
@@ -14899,11 +15075,11 @@
     brandLogo.classList.toggle('ri-active', riActive);
     riBanner.hidden = !riActive;
     if (riActive) {
+      // 文案要短：窄屏是一枚贴顶的胶囊，长句会被 nowrap 顶出屏幕。
+      // 三档按「空间最紧 → 最松」排：手机 / 远端 / Deck 本机
       riBannerText.textContent = IS_NATIVE
-        ? '远端正在接管 Deck · 按 Esc 停止接管（或点 logo 释放）'
-        : (riState.by
-            ? ('正在接管 Deck · 来源 ' + riState.by + ' · 按 Esc 停止接管')
-            : '正在接管 Deck · 按 Esc 停止接管');
+        ? '远端接管中 · Esc 停止'
+        : (riState.by ? ('接管中 · ' + riState.by) : '接管中 · Esc 停止');
     }
   }
 
@@ -16099,11 +16275,13 @@
     return Math.max(0, Math.min(12, Math.round(px)));
   }
   // 配置里的刻度还是旧的（透明度 0~80、模糊 0~24）时按上面的公式换算一次。
-  // 拖一下滑杆就会把新刻度的值存回配置
-  function themeScale(theme) {
+  // 拖一下滑杆就会把新刻度的值存回配置。
+  // 注意它可能在脚本后段（themeScale 的声明处）之前被调用：函数声明会提升，
+  // 所以实际值是当时的 theme.dim/blur，这里的默认参数只是兜住取不到的情况
+  function themeScale(theme, dim, blur) {
     if (!theme || typeof theme !== 'object' || theme.error) return theme;
-    var dim = Number(theme.dim);
-    var blur = Number(theme.blur);
+    dim = Number(dim != null ? dim : theme.dim);
+    blur = Number(blur != null ? blur : theme.blur);
     if (dim > 100 || blur > 12) {
       theme = Object.assign({}, theme);
       theme.dim = migrateDim(dim);
