@@ -549,6 +549,26 @@
   .tl-head.err { color: #d9534f; }
   .tl-head.err .tl-ico { background: #d9534f; opacity: .9; }
   .tl-err { color: #d9534f; word-break: break-word; }
+  /* 截图失败详情卡：左侧一道按成因着色的竖线，标题 / 处置建议 / 技术细节三层。
+     三种成因用同一套版式，只换强调色，免得用户每次失败都要重新认一遍结构 */
+  .shot-err {
+    padding: 8px 10px 8px 12px;
+    border-left: 3px solid #d9534f;
+    border-radius: 6px;
+    background: rgba(217,83,79,.08);
+    line-height: 1.6;
+    word-break: break-word;
+  }
+  .shot-err.k-off { border-left-color: #e6b422; background: rgba(230,180,34,.09); }
+  .shot-err.k-black { border-left-color: #d9534f; }
+  .shot-err.k-missing { border-left-color: #8b91a3; background: rgba(139,145,163,.10); }
+  .shot-err.plain { padding: 0; border: 0; background: none; }
+  .shot-err .se-title { color: var(--text); font-weight: 600; }
+  .shot-err .se-hint { color: var(--text); opacity: .78; margin-top: 2px; }
+  .shot-err .se-detail {
+    color: var(--muted); font-size: 12px; margin-top: 6px;
+    font-family: var(--font-mono);
+  }
   .tl-ico {
     position: absolute; left: -19px; top: 8px;
     width: 7px; height: 7px; border-radius: 50%;
@@ -576,6 +596,19 @@
     transition: transform .15s ease, color .15s ease, opacity .15s ease;
   }
   .tl-head.clickable:hover .tl-arrow { opacity: 1; color: var(--brand); }
+  /* 执行中的工具行：左侧圆点呼吸、右端秒表走字。
+     秒表用等宽数字，宽度不随秒数跳动，免得整行左右抖 */
+  .tl-elapsed {
+    flex: 0 0 auto; margin-left: auto;
+    font-family: var(--font-mono); font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted); opacity: .85;
+  }
+  .tl-tip { flex: 0 0 auto; font-size: 11.5px; color: #c99a17; }
+  .tl-head.running .tl-ico { background: var(--brand); opacity: 1; animation: tlRun 1.2s ease-in-out infinite; }
+  .tl-head.running.slow .tl-ico { background: #e6b422; }
+  @keyframes tlRun { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(.55); opacity: .45; } }
+  @media (prefers-reduced-motion: reduce) { .tl-head.running .tl-ico { animation: none !important; } }
   /* 展开时箭头转 90°（朝右变朝下），绕盒子中心转，不偏不甩 */
   .tl.open .tl-arrow { transform: rotate(90deg); opacity: 1; color: var(--brand); }
   .tl-body {

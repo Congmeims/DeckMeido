@@ -64,6 +64,7 @@ TOOL_CN: dict[str, str] = {
     "music_control": "控制播放",
     "set_wallpaper": "更换壁纸",
     "search_wallpaper": "搜索壁纸",
+    "search_image": "搜索图片",
 }
 
 
@@ -394,15 +395,14 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "search_wallpaper",
-            "description": ("搜壁纸并给用户挑：在壁纸与插画图库（Wallhaven、Konachan、"
-                            "yande.re、Safebooru、Openverse、维基共享、Bing 图片）里"
-                            "按关键词抓 4 张候选图，直接显示在聊天里让用户"
-                            "选 1-4；用户选中后再用 set_wallpaper 传 candidate_id 应用。"
-                            "用户说「换张壁纸」「找张星空背景」时先调这个，不要直接 set_wallpaper。"
+            "name": "search_image",
+            "description": ("找图并让用户挑（纯看图，不换壁纸）：在多个图库里按关键词抓 4 张图"
+                            "（Wallhaven、Konachan、yande.re、Safebooru、Openverse、"
+                            "维基共享、Bing 图片），直接显示在聊天里让用户选 1-4。"
+                            "「找张图」「搜几张图看看」「来个星空的图」这类只是要看图的请求"
+                            "用这个；搜出来只是展示，用户不选也不会改变任何东西。"
+                            "用户若要换壁纸，才用 search_wallpaper（它会多一步格式/尺寸把关）。"
                             "用户不满意就用新关键词再搜一次。"
-                            "用户只回一个编号（例如「3」）时，对照上一轮回答里附带的候选清单"
-                            "直接 set_wallpaper；清单里没有编号可对，就再搜一批，别反问他。"
                             "候选图由界面自己渲染，不要再用 run_command 打开看图软件、"
                             "也不要用 screenshot 截图桌面给用户挑。"),
             "parameters": {
@@ -416,6 +416,31 @@ TOOLS: list[dict] = [
                                              "（如 hatsune miku、genshin impact），"
                                              "Konachan 与 yande.re 会按标签命中；"
                                              "不要写「好看的壁纸」这类套话"},
+                    "count": {"type": "integer",
+                              "description": "候选数量，默认 4，范围 2-4"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_wallpaper",
+            "description": ("换壁纸专用：按关键词搜 4 张横向高清图并在聊天里显示，用户选 1-4；"
+                            "选中后把编号对应的 candidate_id 传给 set_wallpaper 应用。"
+                            "用户说「换张壁纸」「这个主题太难看了」「找张星空背景当壁纸」"
+                            "才用这个，单纯找图用 search_image。"
+                            "用户不满意就用新关键词再搜一次。"
+                            "用户只回一个编号（例如「3」）时，对照上一轮回答里附带的候选清单"
+                            "直接 set_wallpaper；清单里没有编号可对，就再搜一批，别反问他。"
+                            "不要用 run_command 打开看图软件，也不要用 screenshot 截图桌面。"),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string",
+                              "description": "检索关键词，英文命中率最高。用画面本身的名词"
+                                             "组合，例如 starry night sky、misty mountain forest"},
                     "count": {"type": "integer",
                               "description": "候选数量，默认 4，范围 2-4"},
                 },
@@ -1813,6 +1838,14 @@ def _has_bounded_child(pid: int | None) -> bool:
 # 全盘/大范围扫描类命令：会持续刷大量 IO、经常跑不完，用户看到的只有「执行中」。
 # 给这类命令一条更短的默认预算，并把「可能较久」的原因带到界面上。
 SLOW_SCAN_TIMEOUT = 30
+# 包管理 / 更新类：几乎不可能在 60s 内跑完，但又必须同步看结果（装完才能验证），
+# 所以不能直接放后台。给一条比扫描更宽、比默认更短的预算：等一分钟就放弃，
+# 并明确告诉模型改用带输出日志的后台写法，而不是让它反复重试、每轮干等一分钟
+SLOW_PKG_TIMEOUT = 120
+_SLOW_PKG_RE = re.compile(
+    r"(^|[;&|]\s*)\s*(?:sudo\s+)?(?:pacman|yay|paru|flatpak|snap|apt|apt-get|dnf|"
+    r"zypper|nix-env|npm|pnpm|yarn|pip|pip3|cargo|go)\b[^;&|]*?"
+    r"(?:\s-[A-Za-z]*[Ss][A-Za-z]*\b|\s(?:install|update|upgrade|sync|add)\b)")
 _SLOW_SCAN_PROGRAMS = {
     "find", "du", "grep", "egrep", "fgrep", "rg", "fd", "fdfind",
     "tree", "ncdu", "locate", "clamscan",
@@ -1855,6 +1888,8 @@ def slow_scan_hint(command: str) -> str:
             parts = [p for p in token.split("/") if p]
             if len(parts) == 2 and ("/" + parts[0]) in _SLOW_SCAN_ROOTS:
                 return "全盘/大范围递归扫描，可能较久"
+    if _SLOW_PKG_RE.search(command or ""):
+        return "软件包安装/更新，通常远超一分钟"
     return ""
 
 
@@ -1862,12 +1897,17 @@ def command_budget(command: str, timeout: int | None) -> tuple[int, str]:
     """返回（实际超时秒数, 慢命令原因）
 
     显式要求更长时间（timeout > 60）时尊重调用方：用户可以主动延长；
-    默认预算内则压到 SLOW_SCAN_TIMEOUT，避免一直读秒。
+    默认预算内扫描类压到 SLOW_SCAN_TIMEOUT，安装/更新类放宽到 SLOW_PKG_TIMEOUT。
     """
     budget = max(1, min(int(timeout or 60), 300))
     hint = slow_scan_hint(command)
     if hint and budget <= 60:
-        budget = min(budget, SLOW_SCAN_TIMEOUT)
+        # 扫描类再压一档；安装/更新类反而放宽，它只是在默认预算里跑不完，
+        # 不是「该立刻停」的那一类
+        if _SLOW_PKG_RE.search(command or ""):
+            budget = min(300, max(budget, SLOW_PKG_TIMEOUT))
+        else:
+            budget = min(budget, SLOW_SCAN_TIMEOUT)
     return budget, hint
 
 
@@ -2051,6 +2091,13 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
         # 否则 find / 会一直跑，用户看到的只有不停读秒
         if slow_hint:
             await _kill_tree(proc)
+            if _SLOW_PKG_RE.search(command or ""):
+                return (f"命令超时（{timeout}s），已终止这条安装/更新命令。\n"
+                        f"原因：{slow_hint}。这类命令靠加超时硬等多半还是等不完，"
+                        "而且中途被杀可能留下半装状态，不要反复重试。\n"
+                        "请改成放后台并留日志，例如："
+                        "nohup sudo pacman -S --noconfirm 包名 > /tmp/pkg.log 2>&1 & "
+                        "然后隔一会儿用 tail -n 40 /tmp/pkg.log 看进度和结果。")
             return (f"命令超时（{timeout}s），已按全盘/大范围扫描的短超时终止。\n"
                     f"这条命令可能扫很久（{slow_hint}），先停下以免一直卡住。\n"
                     "需要继续可以让我延长超时（例如 timeout=180），"
@@ -2170,7 +2217,7 @@ def summarize_tool(name: str, args: dict) -> str:
         return cmd if len(cmd) <= 120 else cmd[:120] + "…"
     if name == "web_search":
         return f"「{args.get('query', '')}」"
-    if name == "search_wallpaper":
+    if name in ("search_wallpaper", "search_image"):
         return f"「{args.get('query', '')}」"
     if name == "find_game":
         return f"「{args.get('name', '')}」"
@@ -2539,21 +2586,27 @@ async def _screenshot_gamescope(path: Path) -> str:
     """
     node = await _gamescope_pw_node()
     if not node:
-        return "没找到 gamescope 的 PipeWire 视频节点（pw-dump 里没有 node.name=gamescope）"
+        # 节点不在分两种：pw-dump 本身没有 = 缺组件；有 pw-dump 但没 gamescope
+        # 节点 = 会话/输出不在（多半是屏灭了或者刚退出游戏）
+        if not shutil.which("pw-dump"):
+            return "missing|没装 pw-dump（pipewire），查不到 gamescope 的视频节点"
+        return ("off|没找到 gamescope 的 PipeWire 视频节点（pw-dump 里没有 "
+                "node.name=gamescope），屏幕可能没亮或游戏已退出")
     if not shutil.which("gst-launch-1.0"):
-        return "没装 gst-launch-1.0（gstreamer1.0-tools），抓不了帧"
+        return "missing|没装 gst-launch-1.0（gstreamer1.0-tools），抓不了帧"
     sess = _session_user()
     if not sess:
-        return "找不到 gamescope 所在的用户会话（/run/user/* 下没有活的图形会话）"
+        return ("off|找不到 gamescope 所在的用户会话（/run/user/* 下没有活的图形会话），"
+                "屏幕可能已灭")
     uid, user = sess
     raw = path.with_suffix(".raw.png")
     # 只试抓 1.5 秒：画面静止时 gamescope 不产生新帧，等久了只是白等。
     # 抓不到就直接报出来，让用户动一下——插件那边也会据此弹重试卡片。
     ok, err_text = await _gst_grab(node, raw, uid, user, timeout=1.5)
     if not ok and not err_text:
-        return "画面静止，gamescope 没有输出新帧（随便动一下摇杆或触摸板再试）"
+        return "black|画面静止，gamescope 没有输出新帧（随便动一下摇杆或触摸板再试）"
     if not ok:
-        return "抓帧没拿到有效图像" + (f"：{err_text}" if err_text else "")
+        return "black|抓帧没拿到有效图像" + (f"：{err_text}" if err_text else "")
     # pngenc 连续多帧会覆盖同一文件，取到的就是最后一帧，直接搬过来
     raw.replace(path)
     return ""
@@ -2564,6 +2617,36 @@ async def _screenshot_gamescope(path: Path) -> str:
 # 这里原本写 /dev/uinput 建一只虚拟 Xbox 手柄，供 AI 在游戏模式里按键。
 # 已按要求整体删除：软件不再创建、也不再使用任何虚拟手柄，
 # 游戏模式下 AI 只做只读操作与截图，需要操作时由用户自己按手柄。
+
+
+# 截图失败的三种成因，前端弹窗按这个分类给建议：
+#   off      —— 屏灭了 / 没亮的输出，什么都抓不到
+#   black    —— 有输出但只拿到黑帧（会话在、画面没出来、或截图被当成黑屏）
+#   missing  —— 抓帧工具本身不在（pw-dump / gst-launch / spectacle 都没装）
+_SHOT_KIND_HINTS = {
+    "off": ("屏幕是灭的，没有可截的画面",
+            "按一下电源键把屏幕点亮（或唤醒 Deck）再让它截图。"),
+    "black": ("只截到一张黑屏",
+              "会话还在但画面没输出：稍等再试，或切回桌面/游戏画面后再截。"),
+    "missing": ("系统里缺少抓帧组件",
+                "缺 pw-dump（pipewire）、gst-launch-1.0（gstreamer1.0-tools）"
+                "或 spectacle，装好后重试。"),
+}
+
+
+def _shot_fail(kind: str, detail: str) -> str:
+    """记下失败分类 + 细节，返回给模型的说明文字
+
+    holder 里同时写 kind / hint，前端弹窗直接读这两项，不用再解析中文句子。
+    """
+    label, hint = _SHOT_KIND_HINTS.get(kind, _SHOT_KIND_HINTS["black"])
+    SHOT_STATE.clear()
+    SHOT_STATE.update({"error": detail or label, "error_kind": kind,
+                       "error_hint": hint})
+    return (f"截图失败：{label}。{hint}"
+            + (f"\n技术细节：{detail}" if detail and detail != label else "")
+            + "\n现在没有当前画面可用，请直接告诉用户这次没截到图、以及原因，"
+              "不要凭空描述屏幕内容。")
 
 
 async def _screenshot() -> str:
@@ -2598,10 +2681,10 @@ async def _screenshot() -> str:
         err = await _screenshot_gamescope(path)
         if not err:
             return await _finish_shot(path, name, shots_dir, time, holder)
-        holder["error"] = err
-        print(f"[DeckMeido] 游戏模式截图失败：{err}", file=sys.stderr)
-        return (f"截图失败：{err}。现在没有当前画面可用，"
-                "请直接告诉用户这次没截到图、以及原因，不要凭空描述屏幕内容。")
+        # 失败原因带「成因|细节」前缀，拆开写进状态，前端弹窗按成因给建议
+        kind, _, detail = err.partition("|")
+        print(f"[DeckMeido] 游戏模式截图失败（{kind}）：{detail}", file=sys.stderr)
+        return _shot_fail(kind, detail)
 
     print("[DeckMeido] 截图走桌面模式（spectacle/mss）")
 
@@ -2630,12 +2713,17 @@ async def _screenshot() -> str:
     finally:
         await _set_overlay_lift(False)
     if not path.exists() or path.stat().st_size < 10000:
-        holder["error"] = "spectacle 与 mss 都不可用（或截到的是黑色画面）"
-        print(f"[DeckMeido] 桌面模式截图失败：{holder['error']}", file=sys.stderr)
+        # 一个工具都没有 = 缺组件；有工具却出不了图 = 黑帧（桌面会话灭了也算）
+        if not shutil.which("spectacle") and not _have_mss():
+            kind = "missing"
+            detail = "spectacle 与 mss 都没装，桌面模式截不了图"
+        else:
+            kind = "black"
+            detail = "spectacle 与 mss 都没给出有效画面（多半是黑屏）"
+        print(f"[DeckMeido] 桌面模式截图失败（{kind}）：{detail}", file=sys.stderr)
         # 黑屏也会留下几十字节的残片，不删掉下次会被当成「已有截图」
         path.unlink(missing_ok=True)
-        return (f"截图失败：{holder['error']}。现在没有当前画面可用，"
-                "请直接告诉用户这次没截到图，不要凭空描述屏幕内容。")
+        return _shot_fail(kind, detail)
     return await _finish_shot(path, name, shots_dir, time, holder)
 
 
@@ -3015,6 +3103,15 @@ def new_shot_state() -> dict:
     global SHOT_STATE
     SHOT_STATE = {}
     return SHOT_STATE
+
+
+def _have_mss() -> bool:
+    """mss 能不能 import。截图失败归因要用它区分「没装组件」和「装了就黑屏」"""
+    try:
+        import mss  # noqa: F401
+    except Exception:
+        return False
+    return True
 
 # 最近一次文件写入/编辑的增删行数（供 UI 展示 diff 统计）
 LAST_DIFF: dict | None = None
@@ -3689,10 +3786,12 @@ def _zh_words(s: str) -> list[str]:
     return out
 
 
-async def _search_wallpaper(query: str, count: int = 4) -> str:
+async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool = True) -> str:
     """按关键词抓几张候选图，落盘后把编号与 id 交给模型，由前端渲染成可选卡片。
 
     候选阶段不碰当前壁纸：只写 wallpapers/candidates/，等用户选了才走 set_wallpaper。
+    for_wallpaper=False 是 search_image（单纯找图看）：检索、落盘、去重完全一致，
+    只是结果文案不再引导模型去 set_wallpaper。
     """
     from . import themecolor
 
@@ -4003,14 +4102,26 @@ async def _search_wallpaper(query: str, count: int = 4) -> str:
     # 同一轮对话里可能连搜好几次，编号各自从 1 开始，得让模型知道这是第几批，
     # 否则它回复时会把两批混成「两批」或者干脆只提最后一批
     batch = _BATCH_NO
-    head = (f"找到 {len(picked)} 张候选壁纸，已经显示给用户了（第 {batch} 批）：\n"
+    noun = "候选壁纸" if for_wallpaper else "图片"
+    tool = "search_wallpaper" if for_wallpaper else "search_image"
+    head = (f"找到 {len(picked)} 张{noun}，已经显示给用户了（第 {batch} 批）：\n"
             if batch > 1 else
-            f"找到 {len(picked)} 张候选壁纸，已经显示给用户了：\n")
+            f"找到 {len(picked)} 张{noun}，已经显示给用户了：\n")
     lines = [f"{i + 1}. id={c['id']} {c['title']}".rstrip() for i, c in enumerate(picked)]
+    if not for_wallpaper:
+        return (head + "\n".join(lines) +
+                f"\n\n这批图已经排除之前几批出过的（不重复）。用户只是要看图，"
+                f"说明一下这几张是什么就行，不要主动换壁纸；用户说想用其中某张当壁纸时，"
+                f"用 set_wallpaper(candidate_id=...) 应用。不满意就换个关键词再调 {tool}。")
     return (head + "\n".join(lines) +
             f"\n\n这批图已经排除之前几批出过的（不重复）。等用户回复编号后，"
             f"把对应 id 传给 set_wallpaper(candidate_id=...)。"
-            f"如果用户说不满意，就换个关键词再调 search_wallpaper。")
+            f"如果用户说不满意，就换个关键词再调 {tool}。")
+
+
+async def _search_image(query: str, count: int = 4) -> str:
+    """单纯找图看：检索与落盘同 _search_wallpaper，只是不引导成换壁纸"""
+    return await _search_wallpaper(query, count, for_wallpaper=False)
 
 
 async def _set_wallpaper(url: str = "", clear: bool = False,
@@ -4028,7 +4139,7 @@ async def _set_wallpaper(url: str = "", clear: bool = False,
     if candidate_id:
         p = themecolor.candidate_path(candidate_id)
         if p is None or not p.exists():
-            return "这张候选图已经过期了（候选图只保留最近 16 张），重新 search_wallpaper 搜一次。"
+            return "这张候选图已经过期了（候选图只保留最近 16 张），重新搜一次。"
         try:
             raw = p.read_bytes()
         except OSError as e:
@@ -4043,7 +4154,7 @@ async def _set_wallpaper(url: str = "", clear: bool = False,
     url = str(url or "").strip()
     if not re.match(r"^https?://", url, re.I):
         return ("需要候选图 id，或者一个 http/https 的图片直链。"
-                "想给用户挑图就先用 search_wallpaper 搜几张。")
+                "想给用户挑图当壁纸就用 search_wallpaper 搜几张，只看图用 search_image。")
     raw, err = await _fetch_image(url, themecolor.WALLPAPER_MAX)
     if raw is None:
         return f"{err}。换一张试试。"
@@ -4183,13 +4294,14 @@ EXECUTORS = {
     "music_play": _music_play,
     "music_control": _music_control,
     "search_wallpaper": _search_wallpaper,
+    "search_image": _search_image,
     "set_wallpaper": _set_wallpaper,
 }
 
 # 真正要出网的工具：离线模式下直接返回可读原因，不发起请求。
 # 截图、文件、命令、游戏库、安装这类本地动作不在此列，保持可用。
 _OUTBOUND_TOOLS = {"web_search", "find_game", "self_update", "set_wallpaper",
-                   "search_wallpaper"}
+                   "search_wallpaper", "search_image"}
 
 
 # 不需要「保持常亮」的工具：联网搜索、读写文件这类不碰屏幕也不动
@@ -4198,7 +4310,7 @@ _NO_KEEP_AWAKE = {
     "web_search", "find_game", "list_installed_games",
     "check_system_updates", "screenshot", "remember",
     "music_play", "music_control", "task_status", "ocr_image",
-    "search_wallpaper", "set_wallpaper",
+    "search_wallpaper", "search_image", "set_wallpaper",
 }
 
 
@@ -4220,7 +4332,7 @@ _TOOL_TIMEOUT = {
     # 下载 + 解码 + 取色，图大时留足余量（下载本身 20 秒超时）
     "set_wallpaper": 40,
     # 搜图接口 + 逐张下载（可能几张都 403，要多试几次），比单张宽
-    "search_wallpaper": 75,
+    "search_wallpaper": 75, "search_image": 75,
 }
 _TOOL_TIMEOUT_DEFAULT = 120
 _TOOL_NO_TIMEOUT = {"run_command", "install_game", "self_update"}

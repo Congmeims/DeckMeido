@@ -3497,11 +3497,8 @@ async def api_tts_say(req: TTSSayRequest):
     if lang and lang not in LANGUAGES:
         raise HTTPException(status_code=400, detail="不支持的 language")
     try:
-        # synth_wav 是 TTS 实例的方法，模块级只暴露 active()
-        engine = tts.active()
-        if engine is None:
-            raise RuntimeError("TTS 未初始化")
-        path = await asyncio.to_thread(engine.synth_wav, text, lang)
+        # tts 是下面建好的 TTS 实例，synth_wav 直接挂在它身上
+        path = await asyncio.to_thread(tts.synth_wav, text, lang)
     except TTSError as e:
         raise HTTPException(status_code=503, detail=f"语音合成失败：{e}") from e
     except Exception as e:

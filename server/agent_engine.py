@@ -865,6 +865,14 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 # 否则这批字会晚于工具卡片到达，前端顺序就是乱的
                 m.flush_delta_now(turn_sid)
                 await m.manager.broadcast({"type": "tool_activity", "text": activity, "ts": time.time(), **m._turn_tag()})
+                # 工具开跑：带上这一刻的时间戳。前端拿它显示「进行中 12s」，
+                # 长任务（装包、扫盘、抓帧）不再只有一个转圈，用户能看出还在动
+                tool_started = time.time()
+                await m.manager.broadcast({"type": "tool_start", "name": name,
+                                           "label": label, "summary": summary,
+                                           "slow": slow_hint,
+                                           "started": tool_started,
+                                           "ts": tool_started, **m._turn_tag()})
                 # 终端联动：必须在执行之前推「开跑」，面板据此立刻挂一条执行中的记录
                 # 并开始轮询实时输出。放到执行后面就只剩「已结束」一条，
                 # 执行中的动画和进度全看不见了
@@ -933,7 +941,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 event["output"] = result[:1500] + ("\n…（截断）" if len(result) > 1500 else "")
                 if name in ("write_file", "edit_file") and tools.LAST_DIFF:
                     event["diff"] = tools.LAST_DIFF
-                if name == "search_wallpaper":
+                if name in ("search_wallpaper", "search_image"):
                     # 候选图列表随事件带给前端，直接渲染成可点选的图。
                     # 结果文本里也有 id，模型能对上编号，但图片本身不靠它
                     # src_url 是后端去重用的原始地址，不往浏览器送
@@ -952,8 +960,16 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         event["image"] = m2.group(0)
                     else:
                         # 抓帧失败：接口层要把原因带到前端，不能让用户只看到
-                        # 一行「已截屏」却一直没有画面
+                        # 一行「已截屏」却一直没有画面。
+                        # kind/hint 是归因（off / black / missing）与对应建议，
+                        # 前端据此弹一个带处置办法的卡片，而不是只甩一行红字
                         event["error"] = shot_state.get("error") or "未知原因"
+                        event["error_kind"] = shot_state.get("error_kind") or ""
+                        event["error_hint"] = shot_state.get("error_hint") or ""
+                # 这一步花了多久：前端在工具行右侧显示「1.8s」，执行中的卡片
+                # 也据此停表。落盘后刷新页面仍能看到
+                event["elapsed"] = round(time.time() - tool_started, 2)
+                event["started"] = tool_started
                 event["seq"] = _next_seq()
                 events.append(event)
                 await m.manager.broadcast({"type": "tool_done", "event": event,

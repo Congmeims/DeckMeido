@@ -1220,10 +1220,11 @@ class OneBotClient:
             self._log("warn", "群聊白名单为空",
                       "allow_groups=[]：所有群消息一律不响应（空 = 全禁）；"
                       "主人私聊不受影响")
-        # 配置热更新只做「关闭」：enable 改成 false 时断开现有连接。
+        # 配置热更新只做「关闭」：总开关一关就整条断干净（WS、回合、
+        # 排队中的消息、等回执的 API、挂起确认全清），不等重连退避走完。
         # 绝不在这里自动建连——保存配置不是连接动作，冷启动的自动连接
         # 由 main.py 的 startup 钩子按 auto_connect 决定。
-        if self._booted and running and not cfg.enable:
+        if self._booted and (running or self._ws is not None) and not cfg.enable:
             self._schedule_restart()
 
     def _schedule_restart(self) -> asyncio.Task | None:
@@ -1308,6 +1309,8 @@ class OneBotClient:
                 await turn
             except (asyncio.CancelledError, Exception):
                 pass
+        # dispatch 任务同样是「总开关关了就该停」的：它们会继续跑一轮对话、
+        # 跑完还想往 WS 发消息。stop 里统一取消，_drop_pending 之外也兜住
         for t in list(self._dispatch_tasks):
             t.cancel()
         self._dispatch_tasks.clear()
