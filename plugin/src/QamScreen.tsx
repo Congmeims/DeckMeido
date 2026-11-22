@@ -1232,6 +1232,23 @@ function useQamSession() {
     }
   };
 
+  const setAutostart = async (enabled: boolean) => {
+    try {
+      const r = (await call<[boolean], { ok: boolean; autostart?: boolean }>(
+        "set_autostart",
+        enabled
+      )) as { ok: boolean; autostart?: boolean };
+      if (!r.ok) throw new Error("开关没有写进去");
+      await refreshStatus();
+      pushLog(
+        enabled ? "CORE_AUTOSTART_ON" : "CORE_AUTOSTART_OFF",
+        enabled ? "已开启开机自动启动" : "已关闭开机自动启动，需要时手动启动"
+      );
+    } catch (e: any) {
+      fail("CORE_AUTOSTART_FAILED", `切换开机自启失败：${String(e?.message ?? e)}`);
+    }
+  };
+
   useEffect(() => {
     void refreshStatus();
   }, []);
@@ -1357,6 +1374,7 @@ function useQamSession() {
     coreStart,
     coreRestart,
     coreKill,
+    setAutostart,
     openBigScreen,
   };
 }
@@ -1573,37 +1591,61 @@ export default function QamScreen() {
     </Focusable>
   );
 
-  // 没有状态：只留连接卡片和重试
-  if (!s.status) {
+  // 关了「开机自动启动」且后端当前没跑：停在连接页，只给一颗「启动后端」。
+  // 这种状态下后端没起来是用户预期的，不该进主界面看一屏「连不上」
+  const idleStopped =
+    !!s.status && s.status.autostart === false && !s.status.core_ok && !s.probing;
+
+  if (!s.status || idleStopped) {
     return shell(
       <>
         <Card title="连接" accent={s.accent}>
           <div style={{ fontSize: 12, color: TEXT }}>
-            {s.probing ? "正在连接插件后端…" : "插件后端未连上"}
+            {s.probing
+              ? "正在连接插件后端…"
+              : idleStopped
+                ? "后端未运行"
+                : "插件后端未连上"}
           </div>
           <div style={{ fontSize: 11, color: DIM, lineHeight: 1.5 }}>
-            后端由 Decky 插件管理。重试没用就直接重启一次；确实不想它跑着就点停止，
-            停止后只有「启动核心」能恢复。
+            {idleStopped
+              ? "已关闭开机自动启动，需要时点下面的「启动后端」。"
+              : "后端由 Decky 插件管理。重试没用就直接重启一次；确实不想它跑着就点停止，停止后只有「启动核心」能恢复。"}
           </div>
-          <Btn primary onClick={() => void s.refreshStatus()} description="重试">
-            重试连接
-          </Btn>
-          {/* 连不上时后端很可能已经半死：插件的启动逻辑会先看端口占用再决定复用，
-              重启就是「收掉旧进程 + 按启动命令重放一遍」，比让用户去终端手动 pkill 靠谱 */}
-          <Btn
-            onClick={() => void s.coreRestart()}
-            disabled={s.restarting || s.probing}
-            description="重启后端"
-          >
-            {s.restarting ? "重启中…" : "重启后端"}
-          </Btn>
-          <Btn
-            onClick={() => void s.coreKill()}
-            disabled={s.killing || s.probing}
-            description="停止后端"
-          >
-            {s.killing ? "停止中…" : "停止后端"}
-          </Btn>
+          {idleStopped ? (
+            <Btn
+              primary
+              onClick={() => void s.coreStart()}
+              disabled={s.starting}
+              description="启动后端"
+            >
+              {s.starting ? "启动中…" : "启动后端"}
+            </Btn>
+          ) : (
+            <Btn primary onClick={() => void s.refreshStatus()} description="重试">
+              重试连接
+            </Btn>
+          )}
+          {!idleStopped && (
+            <>
+              {/* 连不上时后端很可能已经半死：插件的启动逻辑会先看端口占用再决定复用，
+                  重启就是「收掉旧进程 + 按启动命令重放一遍」，比让用户去终端手动 pkill 靠谱 */}
+              <Btn
+                onClick={() => void s.coreRestart()}
+                disabled={s.restarting || s.probing}
+                description="重启后端"
+              >
+                {s.restarting ? "重启中…" : "重启后端"}
+              </Btn>
+              <Btn
+                onClick={() => void s.coreKill()}
+                disabled={s.killing || s.probing}
+                description="停止后端"
+              >
+                {s.killing ? "停止中…" : "停止后端"}
+              </Btn>
+            </>
+          )}
           <Btn height={26} size={11} onClick={s.openBigScreen} description="打开大屏">
             打开大屏
           </Btn>
@@ -2271,6 +2313,19 @@ export default function QamScreen() {
               </div>
             </div>
 
+            {/* 开机自启开关：关掉后插件加载/开机不再自动拉起后端，省下一份常驻内存，
+                要用时点上面的「启动核心」。这一只是长期设置，和「关闭核心」的临时停止分开 */}
+            <SwitchRow
+              label="开机自动启动后端"
+              description={
+                s.status?.autostart === false
+                  ? "已关闭：需要时手动点「启动核心」"
+                  : "开着：开机进 Decky 时自动拉起后端"
+              }
+              checked={s.status?.autostart !== false}
+              onChange={(v) => void s.setAutostart(v)}
+            />
+
             <div style={{ display: "flex", gap: 6, width: "100%" }}>
               <div style={{ flex: "1 1 0", minWidth: 0 }}>
                 <Btn
@@ -2296,7 +2351,9 @@ export default function QamScreen() {
             <div style={{ fontSize: 10, color: DIM, lineHeight: 1.4 }}>
               {coreStopped
                 ? "核心已停止：不会自动拉起，只有点「启动核心」才恢复。"
-                : "关闭核心后保持停止；「重启核心」只在运行中可用。"}
+                : s.status?.autostart === false
+                  ? "已关闭开机自启：重启后不会自动起，点「启动核心」手动拉起。"
+                  : "关闭核心后保持停止；「重启核心」只在运行中可用。"}
             </div>
           </Card>
         </Focusable>

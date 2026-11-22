@@ -945,14 +945,18 @@ export default function BigScreen() {
                 ? "正在连接插件后端…"
                 : !s.status
                   ? "插件后端未连上"
-                  : s.status.core_stopped
-                    ? "核心已停止"
-                    : "核心异常"}
+                  : s.status.autostart === false && !s.status.core_ok
+                    ? "后端未运行"
+                    : s.status.core_stopped
+                      ? "核心已停止"
+                      : "核心异常"}
             </div>
             <div style={{ color: DIM, fontSize: 13, lineHeight: 1.5 }}>
-              {s.status && !s.status.core_ok && !s.status.core_stopped
-                ? `${s.status.core_error || "无响应"}。可以重启后端；不想它跑着就点停止。`
-                : "后端由 Decky 插件管理。重试没用就直接重启一次；确实不想它跑着就点停止，停止后只有「启动核心」能恢复。"}
+              {s.status && !s.status.core_ok && s.status.autostart === false
+                ? "已关闭开机自动启动，需要时点下面的「启动核心」。"
+                : s.status && !s.status.core_ok && !s.status.core_stopped
+                  ? `${s.status.core_error || "无响应"}。可以重启后端；不想它跑着就点停止。`
+                  : "后端由 Decky 插件管理。重试没用就直接重启一次；确实不想它跑着就点停止，停止后只有「启动核心」能恢复。"}
             </div>
             <ActionButton
               onClick={() => void s.refreshStatus()}
@@ -994,6 +998,20 @@ export default function BigScreen() {
                 {s.killing ? "停止中…" : "停止后端"}
               </ActionButton>
             </div>
+            {/* 长期设置：关掉后开机/插件加载都不再自动拉起后端，要用时手动启动。
+                和上面的「停止后端」不同——那个只是这次先关掉 */}
+            <ActionButton
+              onClick={() => void s.setAutostart(s.status?.autostart === false)}
+              description={s.status?.autostart === false ? "开启开机自启" : "关闭开机自启"}
+              style={{
+                background:
+                  s.status?.autostart === false ? "rgba(255,255,255,.05)" : "rgba(26,159,255,.16)",
+              }}
+            >
+              {s.status?.autostart === false
+                ? "开机自启：关（点此开启）"
+                : "开机自启：开（点此关闭）"}
+            </ActionButton>
           </div>
         </div>
       ) : configError ? (

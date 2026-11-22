@@ -146,9 +146,18 @@ UNIT=$(ssh "$HOST" "systemctl --user list-units --all --no-legend --plain 'app-D
 if [ -z "$UNIT" ] && ssh "$HOST" "systemctl --user cat deckmeido-backend >/dev/null 2>&1"; then
   UNIT=deckmeido-backend
 fi
-[ -n "$UNIT" ] || die "找不到 DeckMeido 的 systemd 用户单元（app-DeckMeido@*.service 或 deckmeido-backend）"
-log "2/5 重启 $UNIT"
-ssh "$HOST" "systemctl --user restart $UNIT" || die "重启 $UNIT 失败"
+# 没有 systemd 单元时后端可能是手动起的（nohup/setsid）：端口上有进程就先放行，
+# 稍后按「能否返回 200」判定，再决定要不要自己拉一个
+if [ -z "$UNIT" ]; then
+  if ssh "$HOST" "curl -s -o /dev/null -m 2 -w '%{http_code}' http://127.0.0.1:$PORT/api/status 2>/dev/null" | grep -q '^200$'; then
+    log "2/5 没有 systemd 用户单元，后端已在 $PORT 应答，跳过重启"
+  else
+    die "找不到 DeckMeido 的 systemd 用户单元（app-DeckMeido@*.service 或 deckmeido-backend），且 $PORT 上没有后端"
+  fi
+else
+  log "2/5 重启 $UNIT"
+  ssh "$HOST" "systemctl --user restart $UNIT" || die "重启 $UNIT 失败"
+fi
 
 # ---------- 3. 最小自检 ----------
 # 接口 200 / 文件哈希一致 ≠ 页面可用：曾出现 index.html 顶层 JS 报错，
@@ -169,7 +178,11 @@ for _ in $(seq 1 20); do
 done
 if [ "$CODE" != "200" ]; then
   printf '\n最近 40 行后端日志：\n'
-  ssh "$HOST" "journalctl --user -u $UNIT --since '2 min ago' --no-pager | tail -40" || true
+  if [ -n "$UNIT" ]; then
+    ssh "$HOST" "journalctl --user -u $UNIT --since '2 min ago' --no-pager | tail -40" || true
+  else
+    ssh "$HOST" "tail -40 /tmp/dm_boot.log 2>/dev/null" || true
+  fi
   die "后端没有在 20 秒内返回 200（当前 $CODE）"
 fi
 printf '  /api/status -> 200\n'
