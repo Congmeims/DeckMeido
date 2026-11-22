@@ -724,10 +724,11 @@
     font-size: 12px; color: var(--muted);
   }
   .wall-pick .wp-hint { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  /* 发过一轮之后整卡压暗，但仍保持可点：换壁纸选错了要能直接点另一张改 */
   .wall-pick.answered { opacity: .55; }
-  .wall-pick.answered .wp-item { cursor: default; }
+  .wall-pick.answered:hover { opacity: .75; }
   /* 多选态：选中的图多一圈内描边（2px 边框 + 内阴影），比单靠边框更容易分辨 */
-  .wall-pick:not(.answered) .wp-item.picked { box-shadow: 0 0 0 2px var(--brand) inset; }
+  .wall-pick .wp-item.picked { box-shadow: 0 0 0 2px var(--brand) inset; }
   .wp-item.picked { border-color: var(--brand); }
   .wp-item.picked .wp-n { background: var(--brand); border-color: var(--brand); }
   .wp-ok {

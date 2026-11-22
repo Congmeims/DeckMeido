@@ -1301,6 +1301,45 @@ def register(app) -> None:
         """
         return FileResponse(_workspace_file(path), filename=Path(path).name)
 
+    @router.post("/api/theme/wallpaper-from-path")
+    async def api_theme_wallpaper_from_path(payload: dict):
+        """把磁盘上的图片直接设成软件背景（文件管理器右键用）
+
+        和 /api/theme/wallpaper 走同一个落盘逻辑，只是图片来自本地路径而不是上传。
+        只接受图片扩展名，大小上限沿用 WALLPAPER_MAX，免得右键一张 4K 视频封面
+        之外的怪文件把壁纸目录撑爆。
+        """
+        from . import routes_theme, themecolor
+
+        raw_path = str((payload or {}).get("path") or "")
+        if not raw_path:
+            raise HTTPException(status_code=400, detail="缺少 path")
+        p = Path(raw_path).expanduser()
+        try:
+            p = p.resolve(strict=True)
+        except OSError:
+            raise HTTPException(status_code=404, detail="文件不存在") from None
+        if not p.is_file():
+            raise HTTPException(status_code=400, detail="不是文件")
+        if _file_kind(p.name) != "image":
+            raise HTTPException(status_code=400, detail="这个文件不是图片")
+        if p.stat().st_size > themecolor.WALLPAPER_MAX:
+            raise HTTPException(status_code=400,
+                                detail=f"图片超过 {themecolor.WALLPAPER_MAX // (1024 * 1024)}MB")
+        try:
+            raw = p.read_bytes()
+        except OSError as e:
+            raise HTTPException(status_code=400, detail=f"读取失败：{e}") from None
+        try:
+            name, palette = themecolor.save_wallpaper(raw)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from None
+        await routes_theme._publish({
+            "wallpaper": name,
+            "palette": themecolor.dump_palette(palette),
+        })
+        return {"ok": True, "theme": routes_theme.current_theme()}
+
     @router.get("/api/transfers")
     async def api_transfers():
         """模型正在执行的搬运任务（mv / cp -r / rsync）：文件管理器据此画进度卡"""
