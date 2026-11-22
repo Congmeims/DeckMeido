@@ -152,7 +152,55 @@ def prune_trash(target_dir: Path | None = None) -> list[str]:
             removed.append(old.name)
         except OSError:
             pass
+    if removed:
+        # 被淘汰的备份再也不会被恢复，它们独有的候选图跟着清掉（失败不影响删除本身）
+        try:
+            from . import themecolor
+            themecolor.delete_candidates(orphan_candidate_ids())
+        except Exception:
+            pass
     return removed
+
+
+def orphan_candidate_ids(exclude_sid: str = "") -> set[str]:
+    """候选图里已经没有会话再引用的那批 id。
+
+    「引用」把回收站里的备份也算上：会话软删除后还能一键恢复，图先删了
+    恢复出来的会话就只剩破图。exclude_sid 用于删除前先把这份会话排除掉，
+    再判断剩下的会话（含回收站）还认不认它。
+    """
+    from . import themecolor
+
+    def refs_of(p: Path) -> set[str]:
+        try:
+            return themecolor.candidates_in(json.loads(p.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            return set()
+
+    wild = re.compile(r"[0-9a-f]{12}")
+    live: set[str] = set()
+    for p in all_session_files():
+        if exclude_sid and p.stem == exclude_sid:
+            continue
+        live |= refs_of(p)
+    try:
+        for p in paths.trash_dir().glob("*.json"):
+            if exclude_sid and _trash_sid(p.name) == exclude_sid:
+                continue
+            live |= refs_of(p)
+    except OSError:
+        pass
+    # 当前壁纸的调色板/文件名里的 id 也算在用（候选图设成壁纸后正文可能已清）
+    try:
+        app = json.loads(paths.config_path().read_text(encoding="utf-8")).get("appearance") or {}
+    except (OSError, ValueError, AttributeError):
+        app = {}
+    live |= themecolor.candidates_in(app)
+    try:
+        on_disk = {p.stem for p in themecolor.candidates_dir().iterdir() if wild.fullmatch(p.stem)}
+    except OSError:
+        return set()
+    return on_disk - live
 
 
 def _atomic_write(p: Path, body: str) -> None:

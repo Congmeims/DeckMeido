@@ -3968,6 +3968,101 @@
     });
   }
 
+  // 右键「解压到当前目录」：和打包反过来 —— 文件已经在 Deck 上，
+  // 只把它旁边解开。沿用上传/打包那张任务卡（kind='extract'），进度靠轮询。
+  // 落点由后端决定：包里只有一个顶层目录就直接铺在压缩包旁边，否则建同名目录。
+  function fbExtract(path, name) {
+    var task = fbTaskCreate(fb.path || '', { preparing: true, phaseText: '正在准备解压…' });
+    task.kind = 'extract';
+    task.zipLabel = name || path;
+    task.extractTimer = null;
+    task.finished = false;
+    fbTaskBind();
+    fbTaskRender();
+
+    function fail(msg) {
+      if (task.extractTimer) { clearTimeout(task.extractTimer); task.extractTimer = null; }
+      task.preparing = false;
+      task.status = 'cancelled';
+      task.finished = true;
+      task.files = [{ rel: name || path, name: name || path, status: 'fail', err: msg }];
+      fbTaskRender();
+    }
+
+    function poll() {
+      if (task.cancelled) { fbTaskRemove(task); return; }
+      if (!task.extractId) return;
+      apiFetch('/api/extract/progress?id=' + encodeURIComponent(task.extractId))
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (!d || d.ok === false) throw new Error((d && d.detail) || '任务已失效');
+          if (d.status === 'error') { fail(d.error || '解压失败'); return; }
+          if (d.status === 'cancelled') {
+            task.extractTimer = null;
+            task.status = 'cancelled';
+            task.finished = true;
+            task.files = [{ rel: name || path, name: name || path, status: 'cancelled' }];
+            fbTaskRender();
+            return;
+          }
+          var pct = Number(d.percent) || 0;
+          task.preparing = false;
+          task.status = 'running';
+          task.phaseText = d.total_bytes
+            ? (fbFmtBytes(d.done_bytes) + ' / ' + fbFmtBytes(d.total_bytes) +
+               ' · ' + (d.file_count || 0) + ' 个文件')
+            : '正在解压…';
+          // 解压的「总量」= 解出来的字节数，所以拿 done/total 填进同一套进度口径
+          task.files = [{
+            rel: d.current || '', name: name || path, size: d.total_bytes || 0,
+            loaded: d.done_bytes || 0, status: 'uploading'
+          }];
+          fbTaskPaint(task);
+          if (d.status === 'done' || pct >= 100) {
+            task.extractTimer = null;
+            task.preparing = false;
+            task.status = 'done';
+            task.finished = true;
+            task.phaseText = '';
+            task.extractDir = d.out_dir || '';
+            task.files = [{
+              rel: name || path, name: name || path, size: d.total_bytes || 0,
+              loaded: d.total_bytes || 0, status: 'done'
+            }];
+            fbTaskRender();
+            fbToast('已解压到 ' + (d.dest || '当前目录'), 'file');
+            // 落在当前目录里就顺带刷新，用户能立刻看到新出现的文件夹
+            fbKeepScroll(function () { return fbLoad(fb.path || '', '', true, true); });
+            return;
+          }
+          task.extractTimer = setTimeout(poll, 500);
+        })
+        .catch(function (err) {
+          task.extractTimer = null;
+          fail(err.message || '轮询失败');
+        });
+    }
+
+    apiFetch('/api/extract/job', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: path })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        return { ok: r.ok, d: d || {} };
+      });
+    }).then(function (res) {
+      if (!res.d.id) throw new Error(res.d.detail || res.d.error || ('HTTP 创建失败'));
+      task.extractId = res.d.id;
+      // 建任务时后端已经算好落点，先写进卡片副行，用户能提前看到会出现在哪
+      task.phaseText = '解压到 ' + (res.d.dest || '当前目录');
+      fbTaskPaint(task);
+      poll();
+    }).catch(function (err) {
+      fail(err.message || '无法创建解压任务');
+    });
+  }
+
   function fbPreview(path, name) {
     rbEl('fbViewer').classList.add('show');
     rbEl('fvName').textContent = name;
@@ -4282,7 +4377,7 @@
   }
 
   // 文件行右键：根据是否目录给出不同菜单项
-  function fbOpenFileCtx(e, path, name, isDir) {
+  function fbOpenFileCtx(e, path, name, isDir, archive) {
     e.preventDefault();
     e.stopPropagation();
     var m = rbEl('ctxMenu');
@@ -4308,6 +4403,11 @@
         fbCtxItem('设为 Meido 背景', function () { fbSetWallpaper(path, name); });
       }
       fbCtxItem('下载到本机', function () { fbDownload(path, name); });
+      // 后端扫目录时按文件头认出来的压缩包才有这一项（改名成 .zip 的普通文件不会出现）
+      if (archive) {
+        fbCtxItem('解压到当前目录', function () { fbExtract(path, name); },
+                  { disabled: ro });
+      }
       fbCtxItem('引用到对话', function () { fbQuote(path); });
       fbCtxSep();
     }
@@ -4675,20 +4775,21 @@
       });
       if (!e.dir) fbMakeDraggable(row, full);
       row.addEventListener('contextmenu', function (ev) {
-        fbOpenFileCtx(ev, full, e.name, !!e.dir);
+        fbOpenFileCtx(ev, full, e.name, !!e.dir, !!e.archive);
       });
       box.appendChild(row);
     });
   }
 
-  // 后端把文件名里的坏字节（非 UTF-8 的老 GBK 文件名）转义成了 \udcXX。
+  // 后端把文件名里的坏字节（非 UTF-8 的老 GBK 文件名）转义成了 \udcXX，
   // 这里还原成原始字节串：fetch 请求路径与 XHR 都能原样发送，磁盘上才能找到。
-  // 正常路径不含转义，直接原样返回
+  // GBK 老名字解不成中文时后端退回单字节显示（U+0080~U+00FF，显示成乱码），
+  // 那种字面量要按 latin-1 收成原字节，否则拼出来的路径对不上磁盘
   function fbRaw(s) {
     s = String(s == null ? '' : s);
-    if (!/\\udc[0-9a-f]{2}/i.test(s)) return s;
-    return s.replace(/\\udc([0-9a-f]{2})/gi, function (m, h) {
-      return String.fromCharCode(0xdc00 + parseInt(h, 16));
+    return s.replace(/[\u0080-\u00ff]|\\udc([0-9a-f]{2})/gi, function (m, h) {
+      if (h) return String.fromCharCode(0xdc00 + parseInt(h, 16));
+      return String.fromCharCode(m.charCodeAt(0));
     });
   }
 
@@ -4854,9 +4955,14 @@
     else if (task.preparing) {
       title.textContent = task.kind === 'zip'
         ? '正在打包 · 统计文件中'
-        : '正在读取文件列表 · 已发现 ' + st.total + ' 个文件';
+        : (task.kind === 'extract'
+            ? '正在解压 · 读取压缩包'
+            : '正在读取文件列表 · 已发现 ' + st.total + ' 个文件');
     } else if (task.kind === 'zip') {
       title.textContent = '正在打包 ' + (task.zipLabel || '') +
+        (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : '');
+    } else if (task.kind === 'extract') {
+      title.textContent = '正在解压 ' + (task.zipLabel || '') +
         (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : '');
     } else {
       title.textContent = '上传 ' + st.total + ' 个文件' +
@@ -4924,6 +5030,19 @@
       dl.textContent = '下载 ' + fbFmtBytes(task.zipSize || 0);
       dlRow.appendChild(dl);
       card.appendChild(dlRow);
+    }
+
+    // 解压完成：直接给一个「打开目录」，省得用户自己在列表里再找一遍
+    if (task.kind === 'extract' && task.finished && task.extractDir) {
+      var openRow = document.createElement('div');
+      openRow.className = 'fbt-actions';
+      var op = document.createElement('button');
+      op.className = 'fbt-btn';
+      op.type = 'button';
+      op.setAttribute('data-act', 'extract-open');
+      op.textContent = '打开 ' + task.extractDir;
+      openRow.appendChild(op);
+      card.appendChild(openRow);
     }
 
     var detail = document.createElement('div');
@@ -5114,12 +5233,17 @@
         : task.preparing
           ? (task.kind === 'zip'
               ? '正在打包 · 统计文件中'
-              : '正在读取文件列表 · 已发现 ' + st.total + ' 个文件')
+              : (task.kind === 'extract'
+                  ? '正在解压 · 读取压缩包'
+                  : '正在读取文件列表 · 已发现 ' + st.total + ' 个文件'))
           : task.kind === 'zip'
             ? ('正在打包 ' + (task.zipLabel || '') +
                (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : ''))
-            : ('上传 ' + st.total + ' 个文件' +
-               (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : ''));
+            : task.kind === 'extract'
+              ? ('正在解压 ' + (task.zipLabel || '') +
+                 (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : ''))
+              : ('上传 ' + st.total + ' 个文件' +
+                 (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : ''));
       if (title.textContent !== titleText) {
         title.textContent = titleText;
       }
@@ -5181,6 +5305,8 @@
         fbTaskRemove(task);
       } else if (act === 'zip-download') {
         if (task.onZipDownload) task.onZipDownload();
+      } else if (act === 'extract-open') {
+        if (task.extractDir) { fbStopFollow(); fbLoad(task.extractDir); }
       } else if (act === 'zip-discard') {
         // 等于放弃这个包：后端临时文件靠 TTL 回收，这里只把卡片收掉
         task.zipTicket = '';
@@ -5320,6 +5446,15 @@
         apiFetch('/api/zip/job/' + encodeURIComponent(task.zipId),
                  { method: 'DELETE' }).catch(function () {});
         task.zipId = '';
+      }
+    }
+    // 解压任务：停轮询，并让后端停手（半截的同名目录由后端自己收掉）
+    if (task.kind === 'extract') {
+      if (task.extractTimer) { clearTimeout(task.extractTimer); task.extractTimer = null; }
+      if (task.extractId) {
+        apiFetch('/api/extract/job/' + encodeURIComponent(task.extractId),
+                 { method: 'DELETE' }).catch(function () {});
+        task.extractId = '';
       }
     }
     var xhr = task.xhr;

@@ -68,6 +68,12 @@ function fbTaskSummary(task) {
     if (st.totalBytes > 0) z.push(fbFmtBytes(st.totalBytes));
     return z.join(' · ');
   }
+  if (task && task.kind === 'extract') {
+    // 解压的「总量」是解出来的字节数，说清「解压完成」+ 体积就行
+    var x = ['解压完成'];
+    if (st.totalBytes > 0) x.push(fbFmtBytes(st.totalBytes));
+    return x.join(' · ');
+  }
   var parts = [st.total + ' 个文件'];
   if (st.totalBytes > 0) parts.push(fbFmtBytes(st.totalBytes));
   if (task && task.status === 'cancelled') parts.push('已取消');
@@ -92,12 +98,14 @@ function fbPctText(p) {
 function fbTaskSubText(task, st) {
   st = st || fbTaskStats(task);
   var isZip = task && task.kind === 'zip';
+  var isEx = task && task.kind === 'extract';
   if (task && task.preparing) {
     if (isZip) return '正在统计文件…';
+    if (isEx) return '正在读取压缩包…';
     return '已发现 ' + st.total + ' 个文件' +
       (st.totalBytes ? ' · ' + fbFmtBytes(st.totalBytes) : '');
   }
-  if (isZip) {
+  if (isZip || isEx) {
     return '已完成 ' + fbFmtBytes(st.sentBytes) +
       (st.totalBytes ? ' / ' + fbFmtBytes(st.totalBytes) : '');
   }
@@ -108,10 +116,14 @@ function fbTaskSubText(task, st) {
 function fbTaskNowText(task, st) {
   st = st || fbTaskStats(task);
   var isZip = task && task.kind === 'zip';
+  var isEx = task && task.kind === 'extract';
   if (st.current) {
-    return (isZip ? '正在压缩：' : '正在上传：') + fbMidPath(st.current, 52);
+    return (isZip ? '正在压缩：' : (isEx ? '正在解压：' : '正在上传：')) +
+      fbMidPath(st.current, 52);
   }
-  if (task && task.preparing) return isZip ? '正在统计文件…' : '正在读取文件夹…';
+  if (task && task.preparing) {
+    return isZip ? '正在统计文件…' : (isEx ? '正在读取压缩包…' : '正在读取文件夹…');
+  }
   return (task && task.phaseText) ? task.phaseText : '准备中…';
 }
 
@@ -121,8 +133,8 @@ function fbPickTask(tasks) {
   for (var i = 0; i < tasks.length; i++) {
     var t = tasks[i];
     if (!t || t.finished || t.cancelled) continue;
-    // 打包任务是只读的下载任务，由自己的轮询驱动，别被当成上传推进
-    if (t.kind === 'zip') continue;
+    // 打包/解压都是独立任务，各自由自己的轮询驱动，别被当成上传推进
+    if (t.kind === 'zip' || t.kind === 'extract') continue;
     if (t.status === 'wait' || t.status === 'running') return t;
   }
   return null;

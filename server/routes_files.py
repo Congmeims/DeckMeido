@@ -16,6 +16,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
 import zipfile
@@ -112,6 +113,12 @@ def _fs_name(name: str) -> str:
         else:
             out.append(chr(raw[i]))         # 解不了的字节按 latin-1 占位
             i += 1
+    # GBK 老名字里夹着「A4 40」这种映射到私用区 (U+E000~U+F8FF) 的字节对，
+    # 解出来既打不了字，前端拼路径时也会当成普通字符再编一次，导致点不开。
+    # 这种解不能用，整串退回 latin-1：显示成乱码，但 _gbk_bytes 能一字不差
+    # 编回磁盘原名
+    if any("\ue000" <= ch <= "\uf8ff" for ch in out):
+        return "".join(chr(b) for b in raw)
     return "".join(out)
 
 
@@ -167,12 +174,10 @@ def _emit(s: str) -> str:
     """把带 surrogate 的串（os.fsdecode 还原出的坏字节，或含这种名字的整条路径）
     换成能进 JSON 的形式：坏字节写成 \\udcXX 文本，前端按同一规则还原后
     就是原始字节，可以原样用来拼磁盘路径。"""
-    try:
-        s.encode("utf-8")
-        return s
-    except UnicodeEncodeError:
-        pass
-    return "".join(ch if ch < "\ud800" or ch > "\udfff" else f"\\udc{ord(ch) - 0xdc00:02x}"
+    # 逐字符判断而不是先整体试 encode：宽字符里夹着坏字节时，整串都编不过，
+    # 连正常的中文/日文也会被拆成 \\udcXX 文本，前端拼出来的路径就再也对不上磁盘。
+    # 只把真正的代理区字符转义，其余原样保留
+    return "".join(ch if not ("\ud800" <= ch <= "\udfff") else f"\\udc{ord(ch) - 0xdc00:02x}"
                    for ch in s)
 
 
@@ -189,10 +194,24 @@ def _fs_path(s: str) -> str:
     中文目录混在一层）逐段还原：每段先按 utf-8 编码回原字节，再交给
     _raw_bytes 按 GBK 对照表编回去。
     """
-    if not s or s.isascii() or any("\udc80" <= ch <= "\udcff" for ch in s):
-        return s          # 正常串，或前端已经还原好的原始字节（surrogate）
+    if not s:
+        return s
+    if any("\udc80" <= ch <= "\udcff" for ch in s):
+        # 前端已经还原过的原始字节，但整串只要有一段还原过就都变 surrogate 了，
+        # 不能整串原样返回：_gbk_bytes 会把 surrogate 按 gb18030 编成三个字节，
+        # 磁盘上根本没这个路径。逐段还原：UTF-8 段原样，surrogate 段按原字节收
+        parts = s.split("/")
+        return "/".join(_raw_bytes(p) if any("\udc80" <= ch <= "\udcff" for ch in p) else p
+                        for p in parts)
+    if s.isascii():
+        return s          # 正常串，os 编码出来就是磁盘上的样子
     if all(ord(ch) < 0x100 for ch in s):
         return bytes(ord(ch) for ch in s).decode("utf-8", errors="surrogateescape")
+    if os.path.exists(s):
+        # 名字本身就是合法 UTF-8（中文目录 + 中文文件名是常态），磁盘上能找到就别改。
+        # 以前这里一律拿尾段去试 GBK：中文既能按 GBK 编回去，于是「测试gbk目录」
+        # 被改成一个磁盘上不存在的路径，整个目录 500。
+        return s
     head, sep, tail = s.rpartition("/")
     return head + sep + _raw_bytes(tail)
 
@@ -555,6 +574,276 @@ def _zip_safe_name(name: str) -> str:
     return safe
 
 
+# ---------- 解压：文件面板右键「解压到当前目录」 ----------
+# 打包是「挑目录 → 后端压 → 浏览器下载」，解压正好相反：文件已经在 Deck 上，
+# 只把用户自己选的压缩包解开，落到它旁边。所以这里不经过模型、不写新工具，
+# 免得为了一个右键动作再走一轮对话。
+#
+# 格式判定先看魔数再看扩展名：.7z.001（分卷首片）看起来是「001」，按扩展名
+# 认不出来，但它的头部同样以 7z 魔数开头。tar.* 一律交给 tarfile（它自己会处理
+# gz/bz2/xz/zst 压缩），zip 系列交给 zipfile——这两个都是标准库，不依赖系统工具。
+_EXTRACT_MAGIC = (
+    (b"7z\xbc\xaf\x27\x1c", "7z"),
+    (b"PK\x03\x04", "zip"),
+    (b"PK\x05\x06", "zip"),                 # 空包
+    (b"Rar!\x1a\x07", "rar"),
+    (b"\x1f\x8b", "tar"),                   # gzip
+    (b"BZh", "tar"),                        # bzip2
+    (b"\xfd7zXZ\x00", "tar"),               # xz
+    (b"\x28\xb5\x2f\xfd", "tar"),           # zstd
+    (b"ustar", "tar"),                      # 未压缩 tar（偏移 257，见 _probe_archive）
+)
+# 压缩包改名后扩展名不可信，真正解压时让 7z 自己判断格式
+_SEVEN_ZIP = shutil.which("7z") or shutil.which("7zz") or shutil.which("7za")
+_TAR_SUFFIX = re.compile(r"\.(tar|tar\.gz|tgz|tar\.bz2|tbz2?|tar\.xz|txz|tar\.zst)$", re.I)
+# 扩展名先粗筛一遍，命中的再读文件头确认（目录列表里不能每个文件都开一次）
+_ARCHIVE_EXT = re.compile(r"\.(7z|zip|rar|tar|tgz|tbz2?|txz|gz|bz2|xz|zst)$"
+                          r"|\.(7z|zip|rar)\.\d{3}$", re.I)
+
+
+def _probe_archive(p: Path) -> str:
+    """看文件头判断是什么格式；认不出来返回空串
+
+    只读前 512 字节：tar 的 "ustar" 标记在第 257 字节，其它魔数都在开头。
+    """
+    try:
+        with p.open("rb") as f:
+            head = f.read(512)
+    except OSError:
+        return ""
+    for magic, kind in _EXTRACT_MAGIC:
+        if kind == "tar" and magic == b"ustar":
+            continue
+        if head.startswith(magic):
+            return kind
+    if head[257:262] == b"ustar":
+        return "tar"
+    return ""
+
+
+def archive_kind(p: Path) -> str:
+    """给前端判断「这一行要不要显示解压菜单」；不是压缩包返回空串
+
+    分卷包的后续分片（.002/.003）不该单独解压，返回空串把它们排除掉。
+    """
+    name = p.name
+    if re.search(r"\.(7z|zip|rar)\.\d{3}$", name, re.I):
+        head = _probe_archive(p)
+        # 首片带魔数、后续分片是裸数据流；只有头部认得出才当家
+        return head if head else ""
+    return _probe_archive(p)
+
+
+def _extract_dest_dir(p: Path) -> tuple[Path, str]:
+    """压缩包解开落在哪个目录，以及按包名推出来的目录名
+
+    单层包（foo/ 里装着一堆文件，或者包里只有一个 foo/）直接铺在这个目录里；
+    多层的先建一个同名目录再解开，免得几万个文件糊满当前目录。
+    用包名当目录名，去掉压缩后缀：w210_2.7z.001 -> w210_2。
+    """
+    name = re.sub(r"\.(7z|zip|rar)\.\d{3}$", "", p.name, flags=re.I)
+    name = re.sub(_TAR_SUFFIX, "", name)
+    name = re.sub(r"\.(7z|zip)$", "", name, flags=re.I) or name
+    dest = p.parent / name
+    n = 1
+    while dest.exists():
+        n += 1
+        dest = p.parent / f"{name}_{n}"
+    return dest, dest.name
+
+
+def _extract_common_root(p: Path) -> str:
+    """压缩包里如果只有一个顶层目录，返回它；否则返回空串
+
+    zip / tar 读成员表很快（只读中央目录 / 头），拿这一条决定要不要多套一层。
+    7z / rar 没有廉价的办法枚举，直接按包名建目录。
+    """
+    names: list[str] = []
+    try:
+        if zipfile.is_zipfile(p):
+            with zipfile.ZipFile(p) as zf:
+                names = [i.filename for i in zf.infolist()]
+        elif tarfile.is_tarfile(p):
+            with tarfile.open(p) as tf:
+                names = tf.getnames()
+    except (OSError, zipfile.BadZipFile, tarfile.TarError):
+        return ""
+    tops = set()
+    for nm in names:
+        nm = nm.replace("\\", "/").lstrip("./")
+        if not nm:
+            continue
+        tops.add(nm.split("/", 1)[0])
+        if len(tops) > 1:
+            return ""
+    return next(iter(tops)) if len(tops) == 1 else ""
+
+
+def _extract_plain(src: Path, dest: Path, prog: dict) -> None:
+    """zip / tar：用标准库解开，边解边写进度
+
+    zipfile 的符号链接条目（外部属性里的 S_IFLNK）和 tarfile 的一样不落盘：
+    包是从网上下的，里面的链接可能指向 /etc，落出来等于开后门。
+    """
+    if zipfile.is_zipfile(src):
+        with zipfile.ZipFile(src) as zf:
+            infos = [i for i in zf.infolist() if not i.is_dir()]
+            prog["total"] = sum(i.file_size for i in infos)
+            prog["file_count"] = len(infos)
+            for i in infos:
+                if prog.get("cancel"):
+                    return
+                prog["current"] = i.filename
+                # 用 ZipInfo 解：能拿到真实文件名编码，中文名不会变乱码
+                out = dest / i.filename
+                if not _safe_dest(out, dest):
+                    continue
+                if i.external_attr >> 16 & 0o170000 == 0o120000:
+                    continue
+                out.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(i) as fsrc, out.open("wb") as fdst:
+                    n = 0
+                    while True:
+                        if prog.get("cancel"):
+                            return
+                        chunk = fsrc.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        fdst.write(chunk)
+                        n += len(chunk)
+                        prog["done"] += n
+                        n = 0
+                        prog["percent"] = min(
+                            99.0, prog["done"] / prog["total"] * 100 if prog["total"] else 0)
+                # 保留权限位（可执行脚本解出来还能跑）
+                mode = (i.external_attr >> 16) & 0o777
+                if mode:
+                    try:
+                        os.chmod(out, mode)
+                    except OSError:
+                        pass
+            return
+    with tarfile.open(src) as tf:
+        members = [m for m in tf.getmembers() if m.isfile()]
+        prog["total"] = sum(m.size for m in members)
+        prog["file_count"] = len(members)
+        for m in members:
+            if prog.get("cancel"):
+                return
+            prog["current"] = m.name
+            out = dest / m.name
+            if not _safe_dest(out, dest):
+                continue
+            out.parent.mkdir(parents=True, exist_ok=True)
+            fsrc = tf.extractfile(m)
+            if fsrc is None:
+                continue
+            with fsrc, out.open("wb") as fdst:
+                shutil.copyfileobj(fsrc, fdst, 1024 * 1024)
+            prog["done"] += m.size
+            prog["percent"] = min(99.0, prog["done"] / prog["total"] * 100 if prog["total"] else 0)
+            try:
+                os.chmod(out, m.mode & 0o777)
+            except OSError:
+                pass
+
+
+def _safe_dest(out: Path, root: Path) -> bool:
+    """解出来的路径必须落在目标目录里（挡 ../ 越权和绝对路径）"""
+    try:
+        out.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _extract_seven_zip(src: Path, dest: Path, prog: dict) -> None:
+    """7z / rar / 认不出的格式交给系统 7z（Deck 上 pacman 自带，7zip 26.x）
+
+    7z 的进度在 stdout 里（-bsp1 把它从 stderr 挪过来），按「NN%」逐个更新。
+    它把「是否多套一层目录」的选择权留给我们：外面已经建好同名目录了，
+    所以这里始终带 -spe，不额外嵌套。
+    """
+    if not _SEVEN_ZIP:
+        raise RuntimeError("系统里没有 7z，装一个 7zip 或 p7zip 再试")
+    cmd = [_SEVEN_ZIP, "x", str(src), f"-o{dest}", "-y", "-bsp1", "-bso1"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, errors="replace", bufsize=1)
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if prog.get("cancel"):
+                proc.terminate()
+                break
+            line = line.strip()
+            m = re.search(r"(\d{1,3})%", line)
+            if m:
+                prog["percent"] = min(99.0, float(m.group(1)))
+            # 「- filename」是 7z 报的当前正在解的文件
+            elif line.startswith("- "):
+                prog["current"] = line[2:].strip()
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+        code = proc.wait()
+    if prog.get("cancel"):
+        return
+    if code != 0:
+        raise RuntimeError(f"7z 解压失败（退出码 {code}）")
+
+
+def _extract_job_run(jid: str) -> None:
+    """线程里解压，进度写回任务字典（和打包任务同一套轮询口径）"""
+    job = _EXTRACT_JOBS.get(jid)
+    if not job:
+        return
+    src = Path(job["src"])
+    dest = Path(job["dest"])
+    prog = job["prog"]
+    try:
+        if not archive_kind(src):
+            raise RuntimeError("不是能识别的压缩包")
+        root = _extract_common_root(src)
+        # 包里只有一个顶层目录：直接解在压缩包旁边，不再多套一层同名目录
+        target = src.parent if root else dest
+        job["out_dir"] = str(target)
+        job["mkdir"] = not root
+        target.mkdir(parents=True, exist_ok=True)
+        kind = archive_kind(src)
+        if kind == "zip":
+            _extract_plain(src, target, prog)
+        elif kind == "tar" and _TAR_SUFFIX.search(src.name):
+            _extract_plain(src, target, prog)
+        else:
+            # 7z / rar / 分卷首片 / 认不出的：交给系统 7z，它自己判断格式
+            _extract_seven_zip(src, target, prog)
+        if prog.get("cancel"):
+            job["status"] = "cancelled"
+            return
+        prog["percent"] = 100.0
+        job["status"] = "done"
+    except Exception as exc:                      # noqa: BLE001
+        job["error"] = f"解压失败：{exc}"
+        job["status"] = "error"
+    finally:
+        if job["status"] == "cancelled" and job.get("mkdir"):
+            # 取消时把我们建的那个同名目录收掉（里面有半截文件，留着用户也分不清）。
+            # 解在压缩包旁边（包里只有一层目录）时不删 —— 那里混着用户原有的文件
+            try:
+                shutil.rmtree(job["dest"], ignore_errors=True)
+            except OSError:
+                pass
+
+
+def _extract_job_prune() -> None:
+    now = time.time()
+    for jid in [k for k, v in _EXTRACT_JOBS.items() if now - v["at"] > _ZIP_TTL]:
+        _EXTRACT_JOBS.pop(jid, None)
+    while len(_EXTRACT_JOBS) > 20:
+        oldest = min(_EXTRACT_JOBS, key=lambda k: _EXTRACT_JOBS[k]["at"])
+        _EXTRACT_JOBS.pop(oldest, None)
+
+
 def _zip_tmp_file() -> Path:
     tmp_dir = paths.data_dir() / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -580,6 +869,9 @@ _ZIP_JOBS: dict[str, dict] = {}
 _ZIP_TTL = 30 * 60
 # 一次性下载票：浏览器直连下载带不了 Authorization 头，靠这张票放行
 _ZIP_TICKETS: dict[str, dict] = {}
+
+# 解压任务：和打包同一套「建任务 → 轮询进度」，只是没有最终文件可取
+_EXTRACT_JOBS: dict[str, dict] = {}
 
 
 def _zip_job_prune() -> None:
@@ -1040,6 +1332,14 @@ def register(app) -> None:
                     if not is_dir:
                         # kind 给前端挑图标和预览方式用（image/video/audio/pdf/text/other）
                         item["kind"] = _file_kind(name)
+                        # 这一行右键能不能出现「解压」：先看扩展名，像压缩包的再看文件头，
+                        # 免得把同名的普通文件也标出来（扫描本身只读前 512 字节）
+                        if _ARCHIVE_EXT.search(name):
+                            try:
+                                item["archive"] = bool(archive_kind(target / raw_name))
+                            except OSError:
+                                item["archive"] = False
+
                     # 大小与修改时间：目录也带 mtime，条目一律显示「类型/大小/修改时间」
                     try:
                         st = e.stat(follow_symlinks=False)
@@ -1545,6 +1845,70 @@ def register(app) -> None:
             background=BackgroundTask(_cleanup),
             headers={"Content-Length": str(size)},
         )
+
+    @router.post("/api/extract/job")
+    async def api_extract_job_create(payload: dict):
+        """建一个解压任务，立刻返回 id；解压在后台线程跑，前端轮询进度
+
+        body: {path: 压缩包的绝对路径}
+        落到压缩包旁边：包里只有一个顶层目录时直接铺在那里，否则先建一个
+        去掉压缩后缀的同名目录（w210_2.7z.001 → w210_2/）。
+        """
+        raw = str(payload.get("path") or "").strip()
+        if not raw:
+            raise HTTPException(status_code=400, detail="没有指定压缩包")
+        try:
+            src = Path(_fs_path(raw)).expanduser().resolve()
+        except OSError:
+            return {"ok": False, "error": "路径无效"}
+        denied = _fs_denied_response(src)
+        if denied:
+            return denied
+        # 写的是 src.parent，父目录同样要在可写分区里
+        denied = _fs_denied_response(src.parent)
+        if denied:
+            return denied
+        if not src.is_file():
+            return {"ok": False, "error": "文件不存在"}
+        if not archive_kind(src):
+            return {"ok": False, "error": "不是能识别的压缩包"}
+        dest, dest_name = _extract_dest_dir(src)
+        _extract_job_prune()
+        jid = "x" + secrets.token_hex(8)
+        _EXTRACT_JOBS[jid] = {
+            "at": time.time(), "status": "extracting", "src": str(src),
+            "dest": str(dest), "name": dest_name,
+            "out_dir": "", "error": "", "size": src.stat().st_size, "mkdir": False,
+            "prog": {"percent": 0.0, "done": 0, "total": 0,
+                     "file_count": 0, "current": ""},
+        }
+        asyncio.get_running_loop().run_in_executor(None, _extract_job_run, jid)
+        return {"ok": True, "id": jid, "dest": dest_name}
+
+    @router.get("/api/extract/progress")
+    async def api_extract_progress(id: str = Query(default="")):
+        """查解压进度；done 后前端刷新列表"""
+        job = _EXTRACT_JOBS.get(id)
+        if not job:
+            raise HTTPException(status_code=404, detail="任务不存在或已过期")
+        prog = job["prog"]
+        return {
+            "ok": True, "status": job["status"],
+            "percent": 100.0 if job["status"] == "done" else prog.get("percent", 0.0),
+            "done_bytes": prog.get("done", 0),
+            "total_bytes": prog.get("total", 0),
+            "file_count": prog.get("file_count", 0),
+            "current": prog.get("current", ""),
+            "dest": job["name"], "out_dir": job["out_dir"], "error": job["error"],
+        }
+
+    @router.delete("/api/extract/job/{jid}")
+    async def api_extract_job_cancel(jid: str):
+        """取消解压：线程看到标记会停手并清掉半截目录"""
+        job = _EXTRACT_JOBS.pop(jid, None)
+        if job:
+            job["prog"]["cancel"] = True
+        return {"ok": True}
 
     @router.post("/api/file_stat")
     async def api_file_stat(payload: dict):

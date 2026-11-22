@@ -386,6 +386,49 @@ def candidate_url(cid: str) -> str:
     return f"/api/theme/candidates/{cid}"
 
 
+def _cid_re() -> re.Pattern:
+    return re.compile(r"[0-9a-f]{12}")
+
+
+def candidates_in(obj) -> set[str]:
+    """扫一份会话 / 回收站会话里引用到的候选图 id。
+
+    引用点有三处：工具事件里的 candidates（每张一个 id）、落盘时挂在回答上的
+    候选清单（编号 ↔ id，见 main.handle_chat 的 cand_tag）、以及正文里可能出现的
+    id 文本。宁可多认几个也不能漏——漏一个就会把还在用的图删掉。
+    """
+    pat = _cid_re()
+    found: set[str] = set()
+
+    def walk(v) -> None:
+        if isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                walk(x)
+        elif isinstance(v, str):
+            found.update(m.group(0) for m in pat.finditer(v))
+
+    walk(obj)
+    return found
+
+
+def delete_candidates(cids) -> int:
+    """删掉这些候选图，返回实际删掉的张数（文件已不在的不算）"""
+    n = 0
+    for cid in set(cids or ()):
+        p = candidate_path(cid)
+        if not p:
+            continue
+        try:
+            p.unlink()
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
 def wallpaper_files() -> list[str]:
     """现存壁纸文件名（用于配置里记录的旧名字已不存在时做兜底查找）"""
     from . import paths

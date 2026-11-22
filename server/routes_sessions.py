@@ -14,7 +14,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from . import audit, devlog, onebot, session_store, tools
+from . import audit, devlog, onebot, session_store, themecolor, tools
 from .session_store import store
 
 router = APIRouter()
@@ -360,6 +360,16 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         # 流式副档案跟着一起删：留着的话下次启动会把它当「被中断的回答」恢复出来，
         # 删掉的会话就凭空冒出一条消息
         await asyncio.to_thread(session_store.io_submit(store.drop_stream_side, sid).result)
+        # 候选图（搜索图 / 壁纸候选）清理：先算出「删掉这份会话后，还有没有人引用」，
+        # 只删没人认领的那批。回收站里的备份也算引用，所以软删除期间图还在，
+        # 撤销恢复后照常能看；真正的清理发生在会话被回收站淘汰或彻底删掉之后
+        purged = 0
+        try:
+            orphans = await asyncio.to_thread(
+                session_store.io_submit(session_store.orphan_candidate_ids, sid).result)
+            purged = await asyncio.to_thread(themecolor.delete_candidates, orphans)
+        except Exception as exc:
+            devlog.debug("main.api_session_delete", error=repr(exc))
         if sid == store.current_sid:
             # 删掉的是当前会话。以前这里无条件 _fresh_sid() 再落盘一个空会话，
             # 于是「删一个」必然「多一个」；现在先试着切到剩下最新的那个，
@@ -397,7 +407,8 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
             await m.manager.broadcast({"type": "history", "messages": store.history,
                                        "sid": store.current_sid})
             await m.manager.broadcast({"type": "session_changed", "current": store.current_sid})
-        return {"ok": True, "current": store.current_sid, "trash": trash_name}
+        return {"ok": True, "current": store.current_sid, "trash": trash_name,
+                "purged": purged}
 
     @router.post("/api/sessions/restore")
     async def api_session_restore(req: RestoreReq, request: Request):
