@@ -15726,9 +15726,9 @@
       ['brand', 'user_bubble', 'bg', 'surface', 'surface_2'].forEach(function (k) {
         if (set && set[k]) vars['--' + k.replace('_', '-')] = set[k];
       });
-      // 老配色没有 oled 一栏时，暗黑档还得靠这里手动压暗，不然和深色档
-      // 在屏幕上看不出区别。新配色已经自带更黑的 bg/surface，跳过
-      if (!isLightTheme() && !pal.oled && vars['--surface']) {
+      // 暗黑档再固定压一道黑：老配色（没有 oled 一栏）靠这里整档调暗；
+      // 新配色自带很黑的 bg/surface，压完仍保留一点层次，不会全糊成纯黑
+      if (!isLightTheme() && vars['--surface']) {
         var k = theme === 'oled' ? 0.55 : (theme === 'dark' ? 0.12 : 0);
         if (k > 0) {
           vars['--surface'] = mixHex(vars['--surface'], '#000000', k);

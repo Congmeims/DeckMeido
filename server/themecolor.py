@@ -168,8 +168,10 @@ def palette_from_color(hex_color: str) -> dict:
         "brand": brand_oled,
         "user_bubble": brand_oled,
         "bg": "#000000",
-        "surface": _hsl_hex(h, 0.22, 0.06),
-        "surface_2": _hsl_hex(h, 0.20, 0.10),
+        # 明度压到 0.02 / 0.04：面板是半透叠加在壁纸上的，明度再往上一点
+        # 在屏幕上就和纯黑分不开了，用户反馈「暗黑还不够黑」就是在说这一档
+        "surface": _hsl_hex(h, 0.22, 0.02),
+        "surface_2": _hsl_hex(h, 0.20, 0.04),
     }
     return {"dark": dark, "light": light, "oled": oled, "source": hex_color}
 
