@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import devlog, onebot, paths, policy, qqtext, session_store, tools, tts
+from . import devlog, onebot, paths, policy, qqtext, session_store, themecolor, tools, tts
 from .session_store import store
 from .tts import SPEAKER_LABELS, TTS
 
@@ -292,6 +292,18 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
     turn_started = time.time()
     # 群聊来源：sid 形如 qq-g-<群号>（见 onebot.session_sid），私聊是 qq-p-<QQ号>
     is_group = sid.startswith("qq-g-")
+    if is_group:
+        # 会话标题要写「群名 · 尾号」，群名在这里先备好：走的是 OneBot 的
+        # 10 分钟缓存，常见情况下不产生网络请求；取不到就只显示尾号，不阻塞这一轮
+        gid = sid.split("-")[2] if sid.count("-") >= 2 else ""
+        client = onebot_client
+        try:
+            names = await asyncio.wait_for(
+                client.group_names([gid]), timeout=3.0) if (gid and client) else {}
+        except Exception:
+            names = {}
+        if names.get(gid):
+            store.qq_group_names[sid] = names[gid]
     # 场景策略表：群友档零工具/无长期记忆/400 字/脱敏；主人档能力不变
     turn_policy = policy.GUEST_POLICY if readonly else policy.OWNER_POLICY
     # 群友提示词也留着给 _guest_reply 做灰度回退用
@@ -343,6 +355,37 @@ async def _qq_run_turn(text: str, *, sid: str, device: str,
             out["image"] = blob
             out["caption"] = out.get("caption") or out["reply"] or qqtext.get("shot_caption")
             m._qq_log("info", "回合附图", f"{len(blob)} 字节")
+    # 本轮 search_image / search_wallpaper 搜到的图：网页端是聊天里的候选图网格，
+    # QQ 侧原本只有一句「已经铺在聊天里啦」，图全丢在服务端，用户什么都看不到。
+    # 这里把这些图按顺序原样发回去（群聊也发：搜的是网图，不是 Deck 桌面）。
+    cands = _turn_candidate_blobs(result.get("events") or [])
+    if cands:
+        out["candidates"] = cands
+        m._qq_log("info", "回合候选图", f"{len(cands)} 张")
+    return out
+
+
+def _turn_candidate_blobs(events: list) -> list[bytes]:
+    """取本轮搜图工具落盘的原图，按候选顺序返回可发送的字节。
+
+    只认工具事件里明确挂上的 candidates；单张超过发送上限的直接跳过，
+    不在这里压图（压图归发送层管，这里只负责把文件读出来）。
+    """
+    out: list[bytes] = []
+    for ev in events:
+        if not isinstance(ev, dict) or ev.get("type") != "tool":
+            continue
+        for c in ev.get("candidates") or []:
+            cid = str((c or {}).get("id") or "")
+            try:
+                p = themecolor.candidate_path(cid)
+                if p is None or not p.is_file():
+                    continue
+                blob = p.read_bytes()
+            except OSError:
+                continue
+            if blob:
+                out.append(blob)
     return out
 
 

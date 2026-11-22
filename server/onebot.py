@@ -1719,6 +1719,50 @@ class OneBotClient:
         except (OSError, wave.Error, EOFError):
             return None
 
+    async def _send_images(self, ev: MessageEvent, blobs: list[bytes]) -> int:
+        """按顺序连发多张图，返回成功发出的张数。
+
+        走和单图同一条 base64 通道，但每张单独一条消息：多数 OneBot 实现
+        对一条消息里的图片段数量有上限，塞在一起会整条失败。
+        某张失败不影响后面的：QQ 侧尽量都送到，缺几张由返回值告诉调用方。
+        """
+        sent = 0
+        for blob in blobs:
+            if not blob:
+                continue
+            b64 = base64.b64encode(blob).decode("ascii")
+            if len(b64) > IMAGE_SEND_MAX_BASE64 and self._image_optimizer is not None:
+                try:
+                    smaller = self._image_optimizer(blob)
+                except Exception as e:
+                    self._log("warn", "候选图压缩失败", type(e).__name__)
+                    smaller = None
+                if smaller:
+                    blob = smaller
+                    b64 = base64.b64encode(blob).decode("ascii")
+            if len(b64) > IMAGE_SEND_MAX_BASE64:
+                self._log("warn", "候选图跳过", f"base64 {len(b64)} 字节超限")
+                continue
+            seg_image = {"type": "image", "data": {"file": f"base64://{b64}"}}
+            try:
+                if ev.group_id is None:
+                    await self._call_api("send_private_msg",
+                                         {"user_id": _to_uid(ev.uin),
+                                          "message": [seg_image]}, timeout=30)
+                else:
+                    # 只在第一张上 @ 人，后面几张纯图，刷屏感轻一点
+                    segs = [seg_image] if sent else [self._at_segment(ev.uin), seg_image]
+                    await self._call_api("send_group_msg",
+                                         {"group_id": _to_uid(ev.group_id),
+                                          "message": segs}, timeout=30)
+            except Exception as e:
+                self._log("warn", "候选图发送失败", type(e).__name__)
+                continue
+            sent += 1
+        if sent:
+            self._log("info", "候选图发送成功", f"{sent}/{len(blobs)} 张")
+        return sent
+
     async def _send_image(self, ev: MessageEvent, blob: bytes, caption: str) -> bool:
         """单条 [text, image] 发送；base64 超限先压图，仍超限就明确回失败"""
         if not reply_eligible(self._cfg, ev):
@@ -2120,6 +2164,13 @@ class OneBotClient:
         if isinstance(blob, (bytes, bytearray)) and blob:
             caption = str(result.get("caption") or result.get("reply") or "截图已奉上")
             await self._send_image(ev, bytes(blob), caption)
+            return
+        # 本轮搜到的图：先把文字回完，再按顺序把图补上。文字里已经写了找了几张，
+        # 图跟在后面就是「转发」的观感；图发失败也不影响文字已经送达
+        cands = result.get("candidates")
+        if isinstance(cands, list) and cands:
+            await self._send_chunks(ev, str(result.get("reply") or ""), preface=image_note)
+            await self._send_images(ev, [bytes(b) for b in cands if isinstance(b, (bytes, bytearray)) and b])
             return
         await self._send_chunks(ev, str(result.get("reply") or ""), preface=image_note)
 

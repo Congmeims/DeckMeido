@@ -2767,7 +2767,9 @@
   // 渲染单个事件（思维链 / 过渡正文 / 工具调用+终端输出 / 文件改动）到容器
   function renderEvent(ev, box) {
     if (ev.type === 'thought') {
-      var tr = makeThoughtRow(ev.text, false);
+      // 默认展开：折叠状态下整段思考只显示成一行「思考 ▸」，用户反馈
+      // 「网页端看不到思考过程」。想看回答的人再手动收起这一块即可。
+      var tr = makeThoughtRow(ev.text, true);
       if (tr) box.appendChild(tr);   // 空思考返回 null，不能直接 appendChild
       return;
     }

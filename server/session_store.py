@@ -290,6 +290,9 @@ class SessionStore:
         # 会话来源 {sid: origin}：侧栏按它自动分组（web/mobile/client/qam/qq/wake）。
         # 一轮对话在 handle_chat 里认出来源后写进来，随落盘一起进会话文件与索引
         self.origin_map: dict[str, str] = {}
+        # QQ 群会话的群名 {sid: 群名}：标题用「群名 · 尾号」，
+        # 写盘路径是同步的不能查网络，所以由 QQ 轮次取到群名后放这里供 set_title 用
+        self.qq_group_names: dict[str, str] = {}
         # 会话归属设备 {sid: device_id}：发起这一轮的那台机器（网页端生成的 uuid，
         # 原生客户端固定 native-client）。只用于排障和排查「换台电脑就变分组」，
         # 不参与分组；没带 device 的端（QQ / 唤醒 / 老页面）就是空
@@ -471,7 +474,7 @@ class SessionStore:
             data = {"id": sid, "created": self.created_map.get(sid) or time.time(),
                     "updated": time.time() if touch else (prev or time.time()),
                     "history": hist}
-            set_title(data, hist)
+            set_title(data, hist, group_name=self.qq_group_names.get(sid, ""))
             # 压缩游标必须一起落盘：否则重启后模型重新吃到全量历史，
             # 白白撑爆上下文窗口，又要再压缩一遍
             comp = self.compact_for(sid)
@@ -933,13 +936,17 @@ def attach_voice(hist: list[dict], voice: dict) -> float | None:
     return None
 
 
-def qq_session_title(sid: str) -> str:
-    """QQ 会话的固定标题：QQ + 触发方标识后 5 位
+def qq_session_title(sid: str, group_name: str = "") -> str:
+    """QQ 会话的固定标题：群名 + 群号后 4 位（私聊用 QQ 号后 4 位）
 
     群聊取群号（qq-g-<群号>），私聊取对方 QQ 号（qq-p-<QQ号>）。
     老数据 qq-g-<群号>-<QQ号> 同样只认群号：标题以会话标识为准，
     不参与任何判定，所以群内换了发言人也不会改名。
-    不足 5 位按实际位数，不补零；取不到数字返回空串，由调用方回退。
+
+    尾号取 4 位而不是 5 位：QQ 群号本身是 9~10 位，长群号的后 5 位看着像
+    随机串，短群号又动辄重复；4 位配合群名足够区分，也不会把标题撑长。
+    群名由调用方带进来（取不到就只显示尾号），这里不查网络 ——
+    标题在每轮写盘时都会重算，不能每轮打一次 OneBot。
     """
     parts = str(sid or "").split("-")
     if len(parts) < 3 or parts[0] != "qq" or parts[1] not in ("g", "p"):
@@ -947,10 +954,18 @@ def qq_session_title(sid: str) -> str:
     digits = "".join(ch for ch in parts[2] if ch.isdigit())
     if not digits:
         return ""
-    return "QQ" + digits[-5:]
+    # 尾号取 4 位；末 4 位全是 0 时（群号 10000、120000 这类整数群号）
+    # 前一位补进来，"0000" 变成 "10000"/"20000" 才认得出是哪个群
+    tail = digits[-4:]
+    if tail.strip("0") == "" and len(digits) > 4:
+        tail = digits[-5:]
+    if parts[1] == "p":
+        return "QQ" + tail
+    name = " ".join(str(group_name or "").split())[:16]
+    return f"{name} · {tail}" if name else "群" + tail
 
 
-def set_title(data: dict, hist: list[dict]) -> None:
+def set_title(data: dict, hist: list[dict], group_name: str = "") -> None:
     """给没有标题的空会话补一个标题，避免侧栏出现两个一模一样的「新会话」
 
     优先用 brief：截屏询问那轮真正的 content 是整段提示词（一百多字），
@@ -961,7 +976,7 @@ def set_title(data: dict, hist: list[dict]) -> None:
     write_session 每轮都会重建 data 再调这里，算出来的值始终相同，
     因此相当于只在首次创建时写了一次，后续消息不会把它改成别的名字。
     """
-    fixed = qq_session_title(str(data.get("id") or ""))
+    fixed = qq_session_title(str(data.get("id") or ""), group_name)
     if fixed:
         data["title"] = fixed
         return
