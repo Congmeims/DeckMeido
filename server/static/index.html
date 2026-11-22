@@ -3046,7 +3046,13 @@
           fbToast('设置失败：' + (j.detail || j.error || ('HTTP ' + r.status)), 'chat', true);
           return;
         }
-        if (j.theme) applyTheme(j.theme);
+        // 必须走 applyCfgAppearance：换壁纸要写 --wallpaper / wall-on / 配色，
+        // applyTheme 只管三档主题切换，单走它时无背景的情况整页毫无变化
+        CFG_APPEARANCE = j.theme;
+        applyCfgAppearance(j.theme);
+        if (typeof renderAppearanceForm === 'function' && setBody) renderAppearanceForm(j.theme, true);
+        // 文件面板里如果正开着，可能刚好在看壁纸目录，刷一下让人看到新图
+        if (RB.tab === 'file' && fb.path) fbLoad(fb.path);
         fbToast('已设为 Meido 背景', 'chat');
       });
     }).catch(function () { fbToast('设置失败：网络错误', 'chat', true); });
