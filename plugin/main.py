@@ -1432,8 +1432,9 @@ class _Backend:
 
 
 _BACKEND: _Backend | None = None
-# 最近一次拿到的主题强调色：端口 → (取到的时间, 裁好的字段)
-_THEME_CACHE: dict[int, tuple[float, dict]] = {}
+# 最近一次拿到的主题强调色：端口 → 裁好的字段（theme/source/light/dark/oled）
+# 注意存的是裸字典：refresh_theme 写它、get_status 原样回给前端，两边字段一致
+_THEME_CACHE: dict[int, dict] = {}
 _READER: asyncio.Task | None = None
 _ACC = ""            # 本轮已收到的增量正文
 _LAST_REPLY = ""     # 本轮确定下来的完整正文
@@ -1804,6 +1805,12 @@ async def _read_loop(bk: _Backend):
     对齐，并把本端没等到收尾的那一轮标成中断（它的 final 永远等不到了）。
     """
     global _ACC, _BACKEND, _STREAM_RUNNING, _STREAM_SINCE
+    # 重拉主题要端口：_Backend 只存了 url（ws://127.0.0.1:<port>/ws），
+    # 从里面取一次，取不到就不主动去拉（广播里通常已经带全了配色）
+    try:
+        _port = int(str(getattr(bk, "url", "")).rsplit(":", 1)[1].split("/", 1)[0])
+    except Exception:
+        _port = 0
     delay = 1.0
     while True:
         try:
@@ -1867,6 +1874,25 @@ async def _read_loop(bk: _Backend):
             decky.logger.info("收到后端 config_changed，通知前端刷新设置")
             _emit({"kind": "config_changed",
                    "prefs": msg.get("data") or {}})
+            continue
+        if typ == "theme_changed":
+            # 别的端换了壁纸 / 主题档：重拉一次强调色，再让前端刷新。
+            # 以前没有任何地方订阅这条广播，缓存在首轮 get_status 里拿过就再也不更新，
+            # 网页换壁纸后插件配色一直停在上一次的颜色。
+            data = msg.get("data") or {}
+            pal = data.get("palette") or {}
+            fresh = {"theme": str(data.get("theme") or "dark"),
+                     "source": str(pal.get("source") or data.get("source") or "")}
+            for k in ("light", "dark", "oled"):
+                brand = str((pal.get(k) or {}).get("brand") or "")
+                if brand:
+                    fresh[k] = brand
+            # 广播自带完整配色，直接用它；字段不全时再向后端要一次
+            if not fresh.get("dark") and _port:
+                fresh = await refresh_theme(_port)
+            elif _port:
+                _THEME_CACHE[_port] = fresh
+            _emit({"kind": "theme_changed", "theme": fresh})
             continue
         if typ == "user_message":
             item = _thread_item({
@@ -2165,15 +2191,6 @@ async def _core_status(port: int) -> dict:
     return await _core_http(port, "GET", "/api/status", timeout=2.0)
 
 
-async def _theme_brief(port: int) -> dict:
-    """取后端当前外观里的强调色（浅色 / 深色 / 暗黑三档 + 主题名）
-
-    不传 theme 时：由后端 appearance_changed 广播触发重算（核心侧 refresh_theme），
-    面板自己只读缓存 —— 每轮刷新都顺着去拉一次，后端挂了会让面板整块连不上
-    """
-    return _THEME_CACHE.get(port) or {}
-
-
 async def refresh_theme(port: int) -> dict:
     """主动去后端问一次外观，刷新缓存（后端换壁纸/切主题时的广播调它）
 
@@ -2397,13 +2414,15 @@ class Plugin:
             # QAM / 大屏的强调色：以前插件里写死 #5AA9E6（Steam 蓝），
             # 网页换壁纸换主题后这边完全不变。这里把后端那套配色带过来，
             # 插件按 theme 选对应的那档品牌色。
-            # 注意这里的三元必须整体用 await 包住：写成
-            # `(_theme_brief(...) if cond else await refresh_theme(...))` 时，
-            # await 的优先级比条件表达式低，整个 return 会变成 coroutine，
-            # Decky 序列化时报 "Object of type coroutine is not JSON serializable"，
-            # 面板/大屏只能显示「连不上」
-            "theme": (await (_theme_brief(port) if _THEME_CACHE.get(port)
-                             else refresh_theme(port))) if core.get("ok") else {},
+            # 注意 await 必须直接作用在 refresh_theme 上：写成
+            # `(cond if x else await f())` 时 await 的优先级比条件表达式低，
+            # 整个 return 会变成 coroutine，Decky 序列化时报
+            # "Object of type coroutine is not JSON serializable"，面板只能显示「连不上」
+            # 缓存命中就原样回（裸字典）；没命中才去后端拉一次。
+            # 用 `in` 而不是真值判断：配色字段有可能整份为空（没壁纸 + 没强调色），
+            # 空字典本身也是一个有效结果，不该被当成「没缓存」反复去拉。
+            "theme": ((_THEME_CACHE[port] if port in _THEME_CACHE
+                       else await refresh_theme(port))) if core.get("ok") else {},
         }
 
     async def _report_game(self, port: int, game: dict) -> dict:

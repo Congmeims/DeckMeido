@@ -34,6 +34,9 @@ export type Status = {
   core_mode: string;
   // 用户点过「关闭核心」且没再点「启动核心」：显示「已停止」并禁用重启核心
   core_stopped: boolean;
+  // 开机/插件加载时是否自动拉起后端（面板里可切）。关掉后后端不常驻，
+  // 需要时手动点「启动后端」
+  autostart?: boolean;
   workspace: string;
   tts: boolean;
   // 带画面询问：后端 [agent] with_shot，面板重开后按它恢复
@@ -181,6 +184,8 @@ export type Delta =
   | { kind: "status"; running: boolean; since?: number }
   // 别的端（网页/客户端）改了设置：prefs 是后端当时的偏好快照，前端据此重拉
   | { kind: "config_changed"; prefs?: Record<string, unknown> }
+  // 别的端换了壁纸 / 主题档：theme 是插件裁好的强调色，收到就重拉状态
+  | { kind: "theme_changed"; theme?: PluginTheme }
   | { kind: "thread"; items: Item[] };
 
 export type ActionKind = "" | "ask" | "translate" | "send";
@@ -829,6 +834,23 @@ export function useSession() {
     }
   };
 
+  const setAutostart = async (enabled: boolean) => {
+    try {
+      const r = (await call<[boolean], { ok: boolean; autostart?: boolean }>(
+        "set_autostart",
+        enabled
+      )) as { ok: boolean; autostart?: boolean };
+      if (!r.ok) throw new Error("开关没有写进去");
+      await refreshStatus();
+      pushLog(
+        enabled ? "CORE_AUTOSTART_ON" : "CORE_AUTOSTART_OFF",
+        enabled ? "已开启开机自动启动" : "已关闭开机自动启动，需要时手动启动"
+      );
+    } catch (e: any) {
+      fail("CORE_AUTOSTART_FAILED", `切换开机自启失败：${String(e?.message ?? e)}`);
+    }
+  };
+
   useEffect(() => {
     void refreshStatus();
   }, []);
@@ -853,6 +875,12 @@ export function useSession() {
       if (msg.kind === "config_changed") {
         // 网页/客户端刚改了设置（审批模式、带画面、语音输入等）：重拉一次状态，
         // 面板上的开关才会跟着变，而不是停在打开面板那一刻的旧值
+        void refreshStatusRef.current?.();
+        return;
+      }
+      if (msg.kind === "theme_changed") {
+        // 别的端换了壁纸 / 主题档：get_status 里带着最新的强调色，重拉就能跟着换色。
+        // 面板打开着的时候换主题，不会再停在旧配色上
         void refreshStatusRef.current?.();
         return;
       }
@@ -967,6 +995,7 @@ export function useSession() {
     coreStart,
     coreRestart,
     coreKill,
+    setAutostart,
     setError,
   };
 }

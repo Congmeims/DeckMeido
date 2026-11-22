@@ -433,6 +433,7 @@ function ChatLog({
       }}
     >
     <Focusable
+      flow-children="column"
       onOKActionDescription="浏览"
       style={{ display: "block", minHeight: "100%", padding: "2px 4px 2px 0", boxSizing: "border-box" }}
     >
@@ -1034,7 +1035,9 @@ export default function BigScreen() {
           </div>
         </div>
       ) : tab === 0 ? (
-        <div
+        <Focusable
+          flow-children="column"
+          onOKActionDescription="选择"
           style={{
             flex: 1,
             minHeight: 0,
@@ -1256,9 +1259,11 @@ export default function BigScreen() {
           <div style={dividerStyle} />
 
           {chatLog()}
-        </div>
+        </Focusable>
       ) : tab === 1 ? (
-        <div
+        <Focusable
+          flow-children="column"
+          onOKActionDescription="选择"
           style={{
             flex: 1,
             minHeight: 0,
@@ -1465,7 +1470,7 @@ export default function BigScreen() {
           <div style={dividerStyle} />
 
           {chatLog()}
-        </div>
+        </Focusable>
       ) : (
         <Focusable
           flow-children="vertical"

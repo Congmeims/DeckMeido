@@ -570,7 +570,11 @@ function ChatLog({
         scrollPaddingBottom: 4,
       }}
     >
-    <Focusable onOKActionDescription="浏览" style={{ display: "block", minHeight: "100%" }}>
+    <Focusable
+      flow-children="column"
+      onOKActionDescription="浏览"
+      style={{ display: "block", minHeight: "100%" }}
+    >
       <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
         {items.map((m, i) => (
           <Bubble
@@ -1705,7 +1709,11 @@ export default function QamScreen() {
 
       {/* ================= 询问页 ================= */}
       {tab === 0 && (
-        <div
+        <Focusable
+          // 页签内容层也必须声明流向：普通 div 不会给方向键建立兄弟关系，
+          // 里面的按钮就串不起来，表现为「只能触屏」。三页的内容根写法一致。
+          flow-children="column"
+          onOKActionDescription="选择"
           style={{
             flex: 1,
             minHeight: 0,
@@ -1860,12 +1868,14 @@ export default function QamScreen() {
             onScroll={chat.onScroll}
             accent={s.accent}
           />
-        </div>
+        </Focusable>
       )}
 
       {/* ================= 聊天页 ================= */}
       {tab === 1 && (
-        <div
+        <Focusable
+          flow-children="column"
+          onOKActionDescription="选择"
           style={{
             flex: 1,
             minHeight: 0,
@@ -2049,7 +2059,7 @@ export default function QamScreen() {
               accent={s.accent}
             />
           </div>
-        </div>
+        </Focusable>
       )}
 
       {/* ================= 设置页 ================= */}
