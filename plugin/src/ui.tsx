@@ -343,12 +343,17 @@ export function JumpLatest({
   onClick,
   size,
   accent = ACCENT,
+  floating = false,
 }: {
   show: boolean;
   fresh: boolean;
   onClick: () => void;
   size: number;
   accent?: string;
+  /** 挂在会滚动的容器内部时置 true，用 fixed 钉在右下角；
+      挂在不会滚的外层（QAM）时保持 absolute —— QAM 的面板有裁剪，
+      fixed 会跑出面板边界 */
+  floating?: boolean;
 }) {
   return (
     <div
@@ -360,7 +365,10 @@ export function JumpLatest({
         if (show) onClick();
       }}
       style={{
-        position: "absolute",
+        // fixed 而不是 absolute：这个按钮现在挂在滚动容器里面（大屏那边
+        // 必须这样，否则会被铺满整块的内容层盖住），absolute 会跟着内容一起
+        // 滚走，fixed 才能一直钉在右下角
+        position: floating ? "fixed" : "absolute",
         right: 10,
         bottom: 10,
         width: size,

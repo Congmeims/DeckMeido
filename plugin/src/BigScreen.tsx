@@ -394,6 +394,7 @@ function ChatLog({
   answerBusy,
   onAnswer,
   onScroll,
+  corner,
   accent = FALLBACK_ACCENT,
 }: {
   items: Item[];
@@ -407,22 +408,33 @@ function ChatLog({
   onAnswer?: (text: string) => void;
   /** 用户自己滚动时通知外层，用来判断还要不要跟随最新消息 */
   onScroll?: () => void;
+  /** 浮在右下角的按钮（「回到底部」）。必须挂在滚动容器内部，
+      否则会被铺满整块的内层内容层盖住 */
+  corner?: React.ReactNode;
   accent?: string;
 }) {
   return (
-    <Focusable
+    // 滚动交给外层普通 div：给了 onScroll 回调的 Focusable 会退出 Steam 的
+    // 原生滚动模式，改成由回调自己处理滚动 —— 此时 el.scrollTop = / scrollTo()
+    // 都不再生效，「回到底部」按钮点了没反应就是这个原因。
+    // 这里把真正的滚动容器放在外层，内层 Focusable 只留焦点与按键说明，
+    // 还顺带给右边那颗按钮提供了 position: relative 的定位基准。
+    <div
       ref={scrollRef as React.Ref<HTMLDivElement>}
-      onOKActionDescription="浏览"
       onScroll={onScroll}
       style={{
+        position: "relative",
         flex: 1,
         minHeight: 0,
         width: "100%",
         overflowY: "auto",
         display: "block",
-        padding: "2px 4px 2px 0",
         boxSizing: "border-box",
       }}
+    >
+    <Focusable
+      onOKActionDescription="浏览"
+      style={{ display: "block", minHeight: "100%", padding: "2px 4px 2px 0", boxSizing: "border-box" }}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
         {items.map((m, i) => (
@@ -459,6 +471,8 @@ function ChatLog({
         )}
       </div>
     </Focusable>
+    {corner}
+    </div>
   );
 }
 
@@ -733,29 +747,32 @@ export default function BigScreen() {
   // 核心异常提示已并入底部回执卡片（coreAlert 大红条已移除）
 
   const chatLog = () => (
-    <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex" }}>
-      <ChatLog
-        items={s.items}
-        streaming={s.streaming}
-        thought={s.thought}
-        // 只有聊天页自己发起的那轮才显示「思考中」占位；
-        // 询问页发起的（ask/translate）在这个页签下不显示
-        busy={s.busy && s.runningAction === "send"}
-        elapsed={s.elapsed}
-        scrollRef={scrollRef}
-        answerBusy={s.busy}
-        onAnswer={(t) => void s.send(t)}
-        onScroll={chat.onScroll}
-        accent={accent}
-      />
-      <JumpLatest
-        show={!chat.atBottom}
-        fresh={chat.fresh}
-        onClick={chat.toBottom}
-        size={34}
-        accent={accent}
-      />
-    </div>
+    <ChatLog
+      items={s.items}
+      streaming={s.streaming}
+      thought={s.thought}
+      // 只有聊天页自己发起的那轮才显示「思考中」占位；
+      // 询问页发起的（ask/translate）在这个页签下不显示
+      busy={s.busy && s.runningAction === "send"}
+      elapsed={s.elapsed}
+      scrollRef={scrollRef}
+      answerBusy={s.busy}
+      onAnswer={(t) => void s.send(t)}
+      onScroll={chat.onScroll}
+      accent={accent}
+      // 按钮放在滚动容器里面：内层 Focusable 现在是铺满整块的内容层，
+      // 放在外面会被它整个盖住（看得见、点不到）
+      corner={
+        <JumpLatest
+          show={!chat.atBottom}
+          fresh={chat.fresh}
+          onClick={chat.toBottom}
+          size={34}
+          accent={accent}
+          floating
+        />
+      }
+    />
   );
 
   // 维护行只显示最新一条，展开后看最近 3 条

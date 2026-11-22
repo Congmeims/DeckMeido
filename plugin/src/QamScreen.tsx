@@ -551,9 +551,11 @@ function ChatLog({
   accent?: string;
 }) {
   return (
-    <Focusable
+    // 同大屏：给了 onScroll 的 Focusable 会退出 Steam 原生滚动，DOM 的
+    // scrollTop / scrollTo 就失效了，「回到底部」按钮点了没反应。
+    // 真正的滚动容器放外层普通 div，内层 Focusable 只做焦点与按键说明。
+    <div
       ref={scrollRef as React.Ref<HTMLDivElement>}
-      onOKActionDescription="浏览"
       onScroll={onScroll}
       style={{
         flex: 1,
@@ -568,6 +570,7 @@ function ChatLog({
         scrollPaddingBottom: 4,
       }}
     >
+    <Focusable onOKActionDescription="浏览" style={{ display: "block", minHeight: "100%" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
         {items.map((m, i) => (
           <Bubble
@@ -603,6 +606,7 @@ function ChatLog({
         )}
       </div>
     </Focusable>
+    </div>
   );
 }
 
