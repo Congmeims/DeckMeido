@@ -1193,10 +1193,10 @@
                 <div class="rg">
                   <div class="rg-rail"><div class="rg-fill"></div></div>
                   <div class="rg-knob"></div>
-                  <input id="wallDim" type="range" min="0" max="100" step="5" value="45"
+                  <input id="wallDim" type="range" min="0" max="100" step="5" value="70"
                          aria-label="界面透明度">
                 </div>
-                <span class="rg-val" id="wallDimVal">45%</span>
+                <span class="rg-val" id="wallDimVal">70%</span>
               </div>
               <div class="field-hint">越小界面越实、壁纸被挡得越多；拉大后顶栏、两栏、输入框变透，壁纸更明显。</div>
             </div>
@@ -1206,10 +1206,10 @@
                 <div class="rg">
                   <div class="rg-rail"><div class="rg-fill"></div></div>
                   <div class="rg-knob"></div>
-                  <input id="wallBlur" type="range" min="0" max="12" step="1" value="0"
+                  <input id="wallBlur" type="range" min="0" max="12" step="1" value="2"
                          aria-label="壁纸模糊">
                 </div>
-                <span class="rg-val" id="wallBlurVal">0px</span>
+                <span class="rg-val" id="wallBlurVal">2px</span>
               </div>
               <div class="field-hint">图片很花、干扰阅读时往右拉一点，到最右就是完全糊开。</div>
             </div>
@@ -1219,10 +1219,10 @@
                 <div class="rg">
                   <div class="rg-rail"><div class="rg-fill"></div></div>
                   <div class="rg-knob"></div>
-                  <input id="wallGlass" type="range" min="0" max="20" step="1" value="0"
+                  <input id="wallGlass" type="range" min="0" max="20" step="1" value="8"
                          aria-label="毛玻璃强度">
                 </div>
-                <span class="rg-val" id="wallGlassVal">0px</span>
+                <span class="rg-val" id="wallGlassVal">8px</span>
               </div>
               <div class="field-hint">顶栏、左右两栏、输入框背后的虚化程度。只在有壁纸时看得到效果；只影响这台设备的界面，不会同步到其他端。</div>
             </div>
@@ -1657,7 +1657,7 @@
   // 自定义主题快照（壁纸 + 配色）。提前声明：WS 的 theme_changed 广播可能在
   // 文件后段的初始化执行到之前就到，那时若还是 undefined 会在 applyCfgAppearance
   // 里抛异常，连带后面的初始化全部中断。真正取值由 loadTheme 拉 /api/theme 填入。
-  var CFG_APPEARANCE = { wallpaper: '', url: '', thumb: '', palette: null, dim: 45, blur: 0, glass: 0, theme: '' };
+  var CFG_APPEARANCE = { wallpaper: '', url: '', thumb: '', palette: null, dim: 70, blur: 2, glass: 8, theme: '' };
   // 最近一次拿到的主题快照。设置页那一段比 loadTheme 晚执行，
   // 进设置页 / 切到「外观」分区时按它补画表单，免得预览框和滑条空着
   var THEME_SNAPSHOT = null;
@@ -3096,7 +3096,9 @@
         }
         // 必须走 applyCfgAppearance：换壁纸要写 --wallpaper / wall-on / 配色，
         // applyTheme 只管三档主题切换，单走它时无背景的情况整页毫无变化
-        CFG_APPEARANCE = j.theme;
+        // 不整份替换：快照没带的旧字段（各 * 落盘时间、theme）留着，
+        // 否则过后拖滑杆时「比本地旧就丢掉」的判断会全部失效
+        CFG_APPEARANCE = Object.assign({}, CFG_APPEARANCE, j.theme);
         applyCfgAppearance(j.theme);
         if (typeof renderAppearanceForm === 'function' && setBody) renderAppearanceForm(j.theme, true);
         // 文件面板里如果正开着，可能刚好在看壁纸目录，刷一下让人看到新图
@@ -11669,6 +11671,8 @@
   // 本端最近一次保存压暗 / 模糊的本地时间：比它旧的快照不能拿来刷滑杆。
   // 声明放在滑杆初始化之前，后面的赋值都在这之后执行
   var wallDimSavedAt = 0;
+  // 本端最近一次切档的本地时间戳：对应的快照（theme_ts）比它旧就不采用
+  var wallThemeSavedAt = 0;
   var wallBlurSavedAt = 0;
   var wallBlur = document.getElementById('wallBlur');
   var wallDimVal = document.getElementById('wallDimVal');
@@ -11693,7 +11697,30 @@
     }
     theme = themeScale(theme);
     var a = theme;
-    CFG_APPEARANCE = a;
+    // 部分覆盖而不是整份替换：/api/config 这类快照没带 theme_ts 等字段时，
+    // 会把上文的落盘时间一起抹掉，之后的过期判断就全失效了
+    var prevApp = (CFG_APPEARANCE && typeof CFG_APPEARANCE === 'object') ? CFG_APPEARANCE : {};
+    CFG_APPEARANCE = Object.assign({}, prevApp, a);
+    a = CFG_APPEARANCE;
+    // 快照里这一项的落盘时间比本地刚保存的还旧，说明是保存之前拍下的旧货，
+    // 跳过，别把刚拖到的值刷回去（拖拽中的值本来就不会走这条渲染）
+    var dimStale = Number(a.dim_ts) < wallDimSavedAt;
+    // theme 也要参与同样的时间戳比较：本端刚切完档、POST 还在路上时，
+    // 旧快照里的 theme 会把页面直接拽回上一档（浅/深来回跳的来源之一）
+    // 必须放在下面判档之前算：以前它声明在后面，这里是 undefined，
+    // 判旧永远不生效，旧快照照样把档位拽回去
+    var themeStale = Number(a.theme_ts) < wallThemeSavedAt;
+    var blurStale = Number(a.blur_ts) < wallBlurSavedAt;
+    // 主题档也以后端为准：别端（手机、另一台电脑、掌机插件）切了档，
+    // 广播/回包里带着新档名，这里必须跟着换。
+    // fromRemote = 不是本端点的按钮，不回写配置，免得两端来回广播。
+    // 以前快照里的 theme 根本没人读，页面永远停在 localStorage 里自己那档，
+    // 于是「手机上换成浅色，电脑还是深色」，看着就是主题自己跳
+    var snapTheme = themeStale ? '' : String(a.theme || '');
+    if (THEMES.indexOf(snapTheme) !== -1 &&
+        document.documentElement.getAttribute('data-theme') !== snapTheme) {
+      applyTheme(snapTheme, true);
+    }
     // 以下是把快照回填到表单，需要节点存在（脚本首次执行时快照还没到，
     // 那时这里只留个快照，进设置页时会按它重画）
     if (!wallPreview) return;
@@ -11729,10 +11756,6 @@
       // 没有壁纸时预览框本身就是「加号入口」：点一下就能选图，不必再往下找按钮
       wallPreview.innerHTML = '<span class="wall-add"><b>+</b><i>' + UPLOAD_HINT + '</i></span>';
     }
-    // 快照里这一项的落盘时间比本地刚保存的还旧，说明是保存之前拍下的旧货，
-    // 跳过，别把刚拖到的值刷回去（拖拽中的值本来就不会走这条渲染）
-    var dimStale = Number(a.dim_ts) < wallDimSavedAt;
-    var blurStale = Number(a.blur_ts) < wallBlurSavedAt;
     if (dimStale) {
       // 本地刚存的值比这份快照新：不走「用表单值回写快照」那条路，
       // 否则滑杆会被快照里的旧值拽回去再被本地值拽回来，看着就是闪
@@ -11783,7 +11806,8 @@
     } else {
       wallPaletteHint.textContent = '强调色会按明暗档自动调亮或压暗，保证文字看得清。';
     }
-    paintPaletteBoard(theme, brand);
+    paintPaletteBoard(theme, brand,
+      String(document.documentElement.getAttribute('data-theme') || 'dark'));
     // 撤销按钮在预览框里，每次渲染都会重建；用委托绑定，别在渲染里逐个挂
     syncThemeBtn(document.documentElement.getAttribute('data-theme'));
   }
@@ -12137,7 +12161,7 @@
   // 只能晚一步再发请求 —— 发之前比一下这个数，板子被重画过就不发
   var colrGen = 0;
 
-  function paintPaletteBoard(a, brand) {
+  function paintPaletteBoard(a, brand, curTier) {
     var board = document.getElementById('colrBoard');
     var slots = document.getElementById('colrSlots');
     var presets = document.getElementById('colrPresets');
@@ -12145,7 +12169,9 @@
     if (!board || !presets) return;
     colrGen += 1;
     var pal = (a && a.palette) || {};
-    var cur = String(document.documentElement.getAttribute('data-theme') || 'dark');
+    // curTier 由调用方（applyTheme / 渲染设置页）传进来；不传就退回 DOM 上的档位。
+    // 不能只读 DOM：applyTheme 先写 data-theme 再调这里，顺序反过来就会标错档
+    var cur = String(curTier || document.documentElement.getAttribute('data-theme') || 'dark');
     if (cur !== 'light' && cur !== 'oled') cur = 'dark';
     var hasTiers = !!(pal.slots && (pal.slots.dark || []).length);
 
@@ -12459,8 +12485,12 @@
   // 可能还没换算过，所以先过一遍 themeScale
   (function () {
     var snap = themeScale(CFG_APPEARANCE);
-    paintPaletteBoard(snap,
-      snap.palette && snap.palette.dark ? snap.palette.dark.brand : '');
+    // 档位取「DOM 上的当前档」和快照里的一致值：快照里的档可能还没被
+    // applyTheme 应用（首帧），以 DOM 为准更贴近用户眼下看到的配色
+    var snapTier = String(document.documentElement.getAttribute('data-theme') || 'dark');
+    var snapPal = snap.palette;
+    paintPaletteBoard(snap, snapPal && snapPal[snapTier] ? snapPal[snapTier].brand : '',
+      snapTier);
   })();
   // 恢复壁纸原配色：后端优先还原第一次手动改之前留下的原件（连逐格
   // 改过的底/面板一起回滚），壁纸还在就按算法重新取色；都没有才回默认蓝。
@@ -16125,6 +16155,8 @@
   // ---------- 三档主题：浅色 / 深色 / 暗黑 ----------
   // 按这个顺序循环；按钮上写的是「当前正在用的这一档」
   var THEMES = ['light', 'dark', 'oled'];
+  // 当前主题档的权威来源是后端配置；localStorage 只在首帧渲染前兜底用，
+  // 一旦本端把档位提交给后端，后面就以服务端为准（见 renderAppearanceForm）
   // 有壁纸时这三档实际上是在「自定义壁纸 + 某档明暗」上取值，
   // 光叫「浅色模式」会让人以为是内置那套配色，所以文案前面加「自定」
   var THEME_NAME = { light: '浅色模式', dark: '深色模式', oled: '暗黑模式' };
@@ -16145,17 +16177,22 @@
     document.documentElement.setAttribute('data-theme', t);
     try { localStorage.setItem('deckmeido_theme', t); } catch (e) {}
     syncThemeBtn(t);
-    // 设置页里的配色板要跟着换「当前」标记和预览配色；节点还没建时静默跳过
+    // 设置页里的配色板要跟着换「当前」标记和预览配色；节点还没建时静默跳过。
+    // 必须传当前档的名称：以前固定传 dark，浅色/暗黑档下配色板也把
+    // 深色那排标成「当前」，改色时更容易串档
     if (typeof paintPaletteBoard === 'function' && typeof CFG_APPEARANCE === 'object') {
       paintPaletteBoard(CFG_APPEARANCE,
-        CFG_APPEARANCE.palette && CFG_APPEARANCE.palette.dark
-          ? CFG_APPEARANCE.palette.dark.brand : '');
+        CFG_APPEARANCE.palette && CFG_APPEARANCE.palette[t]
+          ? CFG_APPEARANCE.palette[t].brand : '', t);
     }
     // 外观（主题 / 压暗 / 模糊 / 毛玻璃）以后端为准：本端主动切档就写回配置，
     // 别的端收到 theme_changed 广播后跟着换。fromRemote = 已经是后端推来的值，
     // 不再回写，免得两端来回广播
     if (!fromRemote && typeof apiFetch === 'function') {
       if (CFG_APPEARANCE && typeof CFG_APPEARANCE === 'object') CFG_APPEARANCE.theme = t;
+      // 记下本端切档的时刻：之后回来的快照若 theme_ts 比它旧就不能采用，
+      // 否则会被上一档的旧快照拽回去（见 applyCfgAppearance）
+      wallThemeSavedAt = Date.now();
       apiFetch('/api/theme/config', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ theme: t })
@@ -16167,7 +16204,12 @@
   }
   // 先拿本地缓存画一帧（防闪），后端快照 /api/theme 回来后以它为准：
   // 主题、壁纸、配色、透明度、模糊、毛玻璃全部以后端配置为唯一来源
-  applyTheme(localStorage.getItem('deckmeido_theme') || 'dark', true);
+  // 首帧只按本地缓存画，不当成本端主动切档：不该写回配置，也不该占住
+  // theme 的时间戳（否则首帧之后别的端推来的真档位会被它挡住）
+  (function () {
+    var boot = localStorage.getItem('deckmeido_theme');
+    applyTheme(THEMES.indexOf(boot) === -1 ? 'dark' : boot, true);
+  })();
   var btnThemeEl = document.getElementById('btnTheme');
   if (btnThemeEl) btnThemeEl.addEventListener('click', function () {
     var cur = document.documentElement.getAttribute('data-theme');
@@ -16196,6 +16238,10 @@
     // /api/config 是异步拉的，回来时常比刚保存的值还旧；以前这里只看壁纸和
     // 配色，于是「点一下滑条闪一下又归零」——那就是被更早拍下的快照刷回去了
     if (tuneSnapStale(t)) return true;
+    // 主题档：本端刚切完档时，比它更旧的快照不能拿来刷 page 上的档位。
+    // 这里判旧就整份丢（档名和「当前档」派生出来的配色是一套的，
+    // 只丢掉档名会拼出半新半旧的页面）
+    if (wallThemeSavedAt && (Number(t.theme_ts) || 0) < wallThemeSavedAt) return true;
     // 壁纸是否同一张：文件名固定是 wallpaper.*，换图后名字不变，
     // 所以比版本戳（修改时间）。只比文件名的话，换一张壁纸后广播/首屏
     // 拉回来的快照会被当成「旧货」整份丢掉，页面还停在上一张的配色和亮度上
@@ -16296,7 +16342,7 @@
     // 那里就到：此时它是 undefined，直接读 .palette 会抛异常并中断后面的初始化。
     // 这里先兜一个空壳，真正值稍后由 loadTheme / renderAppearanceForm 覆盖。
     if (!CFG_APPEARANCE || typeof CFG_APPEARANCE !== 'object') {
-      CFG_APPEARANCE = { wallpaper: '', url: '', thumb: '', palette: null, dim: 45, blur: 0, glass: 0 };
+      CFG_APPEARANCE = { wallpaper: '', url: '', thumb: '', palette: null, dim: 70, blur: 2, glass: 8 };
     }
     // 没传快照（或被当成事件对象传进来）时只是「按本地快照重画一遍」。
     // 以前这种情况会把本地值原样写回 CFG_APPEARANCE，等于把别的端推来的
@@ -16338,10 +16384,20 @@
       if (typeof syncWallRgs === 'function') syncWallRgs();
     }
     // 主题与毛玻璃也是后端下发的：快照里带了就按它对齐本端（不回写、不广播），
-    // 这样 A 端改了主题/毛玻璃，其余端和应用内 Deck 客户端都会跟着变
+    // 这样 A 端改了主题/毛玻璃，其余端和应用内 Deck 客户端都会跟着变。
+    // 但拖动那几条滑杆时不认档位：拖透明度/模糊/毛玻璃只会 POST 对应那几项，
+    // 回包里带的 theme 是后端现读的档位，本端刚点完档、POST 还没落盘时
+    // 它就是上一档 —— 照着刷一下就把「自定深色」拽回「自定浅色」。
+    // 时间戳同理：比本地切档更旧的快照也不认
     if (CFG_APPEARANCE.theme && CFG_APPEARANCE.theme !==
         document.documentElement.getAttribute('data-theme')) {
-      applyTheme(CFG_APPEARANCE.theme, true);
+      var tuneBusy = !!(typeof wallTuneEl !== 'undefined' && wallTuneEl) || !!keepTune;
+      if (!tuneBusy && Number(CFG_APPEARANCE.theme_ts || 0) >= wallThemeSavedAt) {
+        applyTheme(CFG_APPEARANCE.theme, true);
+      } else {
+        // 不跟着换档，快照里的档名也别留着，否则下一次无参重画又会被它带偏
+        CFG_APPEARANCE.theme = document.documentElement.getAttribute('data-theme');
+      }
     }
     if (CFG_APPEARANCE.glass != null) {
       var gv = Math.max(0, Math.min(20, Math.round(Number(CFG_APPEARANCE.glass) || 0)));
@@ -16369,8 +16425,8 @@
     var vars = {
       '--wallpaper': on ? 'url("' + a.url + '")' : 'none',
       // 「压暗壁纸」实际做的事是让上层 UI 变透明：0 = 面板全实、壁纸完全被
-      // 挡住；100 = 面板全透，壁纸完全露出来。新装默认 45 时原有观感不变
-      // （45 × 0.8 = 旧刻度的 36，约 55% 不透明）
+      // 挡住；100 = 面板全透，壁纸完全露出来
+      // 新装默认 70%（面板 30% 不透明），壁纸 2px 模糊 + 8px 毛玻璃
       '--wall-dim': '0',
       '--wall-blur': (Math.round(blur * 2) / 2) + 'px',
       '--panel-alpha': on ? String(1 - dim / 100) : '1',

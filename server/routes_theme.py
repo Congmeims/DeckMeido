@@ -53,10 +53,11 @@ def _theme_name(value, default: str = "dark") -> str:
 
 
 # dim 在前端是「界面透明度」：越大上层 UI 越透、壁纸越清楚（见 index.html
-# 的 applyCfgAppearance）。新装默认 45，与设置页滑条的初始位置一致
-DIM_DEFAULT = 45
-BLUR_DEFAULT = 0
-GLASS_DEFAULT = 0
+# 的 applyCfgAppearance）。新装默认 70% 透明度 / 2px 壁纸模糊 / 8px 毛玻璃，
+# 与设置页滑条的初始位置一致（用户确认的初始观感）
+DIM_DEFAULT = 70
+BLUR_DEFAULT = 2
+GLASS_DEFAULT = 8
 
 
 class _PaletteReq(BaseModel):
@@ -64,6 +65,8 @@ class _PaletteReq(BaseModel):
     # 手动改某一档的 5 个色块：顺序 = 底 / 面板 / 第二层 / 强调 / 气泡
     tier: str | None = None
     colors: list[str] | None = None
+    # 只采纳这一格（0~4）：前面三格是底/面板/第二层，3/4 是强调/气泡
+    slot: int | None = None
     # true：丢掉手动调整，恢复壁纸原配色；没有壁纸可取时恢复默认蓝
     reset: bool = False
 
@@ -135,6 +138,9 @@ def current_theme() -> dict:
         "dim_ts": _stamp(str(app.get("dim_ts") or "")),
         "blur_ts": _stamp(str(app.get("blur_ts") or "")),
         "glass_ts": _stamp(str(app.get("glass_ts") or "")),
+        # 主题档也带时间戳：前端刚点完档位、POST 还在路上时，
+        # 回来的旧快照不能把页面拽回上一档（浅/深来回跳的来源）
+        "theme_ts": _stamp(str(app.get("theme_ts") or "")),
     }
 
 
@@ -227,9 +233,11 @@ def register(app) -> None:
         """改配色，四种用法：
 
         - {}：按当前配置原样重发一次（前端「跟随壁纸」重算）
-        - {brand}：手动强调色。十五色模式下只把强调色和气泡色换掉，
-          底色骨架保留；单色模式按这个色重推三档
-        - {tier, colors[5]}：设置页里直接改某一档的 5 个色块
+        - {brand, tier}：手动强调色，只改 tier 这一档；不传 tier 时改
+          当前在用那档（默认深色）。单色模式按这个色重推三档
+        - {tier, colors[5], slot}：设置页里改某一档的某一格，slot 是
+          0~4（底 / 面板 / 第二层 / 强调 / 气泡）。只采纳这一格，
+          其余以服务端现值为准，避免整档快照把别处刚改过的值带回去
         - {reset: true}：丢掉手动调整，还原壁纸算出来的那套配色
           （连逐格改过的底色一起还原）；没有壁纸可取色时恢复默认蓝
         """
@@ -242,7 +250,9 @@ def register(app) -> None:
             brand = req.brand.strip().lower()
             if not re.fullmatch(r"#[0-9a-f]{6}", brand):
                 return {"ok": False, "error": "颜色格式应为 #rrggbb"}
-            palette = themecolor.retint_palette(palette, brand)
+            if req.tier is not None and req.tier not in THEMES:
+                return {"ok": False, "error": "档位应为 light / dark / oled"}
+            palette = themecolor.retint_palette(palette, brand, req.tier)
             if not palette.get("slots"):
                 palette = themecolor.palette_from_color(brand)
         elif req.tier is not None:
@@ -254,7 +264,8 @@ def register(app) -> None:
                 return {"ok": False, "error": "需要 5 个 #rrggbb 色值"}
             if not palette:
                 return {"ok": False, "error": "当前没有配色可调"}
-            palette = themecolor.palette_from_five(palette, req.tier, colors)
+            palette = themecolor.palette_from_five(palette, req.tier, colors,
+                                                  req.slot)
         elif not palette:
             return {"ok": False, "error": "当前没有配色可调"}
         await _publish({"palette": themecolor.dump_palette(palette)})
@@ -283,6 +294,7 @@ def register(app) -> None:
             updates["glass_ts"] = str(now)
         if req.theme is not None:
             updates["theme"] = _theme_name(req.theme)
+            updates["theme_ts"] = str(now)
         await _publish(updates)
         # 回包直接用这次的落盘时间：热重载后的 CFG 从文件里读回的 glass_ts
         # 是字符串，任何一步没跟上，前端都会把快照判成「旧货」拒收
@@ -294,6 +306,9 @@ def register(app) -> None:
             snap["dim_ts"] = now
         if req.blur is not None:
             snap["blur_ts"] = now
+        if req.theme is not None:
+            snap["theme_ts"] = now
+            snap["theme"] = updates["theme"]
         return {"ok": True, "theme": snap}
 
     @router.post("/api/theme/candidates/{cid}/apply")
