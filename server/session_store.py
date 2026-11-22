@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import sys
 import threading
@@ -88,15 +89,64 @@ def trash_session(sid: str) -> Path | None:
     return target
 
 
+def restore_session(trash_name: str) -> str | None:
+    """把回收站里的一份会话移回 sessions/，返回它的 sid；文件不在了返回 None。
+
+    只接受 trash_session 写出的文件名（<sid>-<时间戳>[-n].json）：路径全部由
+    调用方拼好再传进来太危险，这里按文件名反解 sid，并校验剥掉后缀之后
+    确实以 "-" 分隔的日期结尾，避免把回收站里的任意文件搬回会话目录。
+    """
+    name = os.path.basename(str(trash_name or ""))
+    if not name.endswith(".json"):
+        return None
+    # sid 本身可能带 "-"（qq-p-123456），按末尾的「-日期-时间[-序号]」整条剥掉
+    sid = _trash_sid(name)
+    if not sid or "/" in sid or "\\" in sid:
+        return None
+    src = paths.trash_dir() / name
+    if not src.is_file():
+        return None
+    dst = sessions_dir() / f"{sid}.json"
+    # 同名会话还在（比如从别的机器上又恢复了同名文件）就别覆盖，直接报失败
+    if dst.exists():
+        raise FileExistsError(sid)
+    os.replace(src, dst)
+    return sid
+
+
+def _trash_sid(name: str) -> str:
+    """回收站文件名 -> 会话号（剥掉末尾的 -日期-时间[-序号]）"""
+    stem = name[: -len(".json")] if name.endswith(".json") else name
+    m = re.search(r"-\d{8}-\d{6}(-\d+)?$", stem)
+    return stem[: m.start()] if m and m.start() > 0 else ""
+
+
 def prune_trash(target_dir: Path | None = None) -> list[str]:
-    """只保留最近 TRASH_KEEP 份回收站会话，返回被清掉的文件名"""
+    """只保留最近 TRASH_KEEP 份回收站会话，返回被清掉的文件名
+
+    按「不同会话」计数而不是按文件数：同一个会话删了十几次就会攒下十几种
+    文件名（带时间戳），按文件数截断会把别的会话的备份挤出去。
+    """
     d = target_dir or paths.trash_dir()
     try:
         files = sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:
         return []
+    kept: set[str] = set()
+    dropped: list[Path] = []
+    for p in files:
+        sid = _trash_sid(p.name)
+        # 认不出会话号的文件不动它，交给用户自己处理
+        if not sid:
+            continue
+        if sid in kept:
+            continue
+        if len(kept) < TRASH_KEEP:
+            kept.add(sid)
+        else:
+            dropped.append(p)
     removed: list[str] = []
-    for old in files[TRASH_KEEP:]:
+    for old in dropped:
         try:
             old.unlink()
             removed.append(old.name)

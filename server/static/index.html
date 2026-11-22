@@ -3178,13 +3178,43 @@
     return card;
   }
 
-  function addSystem(text) {
+  // 系统提示行。action 可选：{ label, run, once } —— 在文字后面挂一个按钮
+  // （如删除会话后的「撤销」）。once 为真时点一次就换成 doneText 并禁用，
+  // 避免同一个撤销按钮连点把回收站里的另一份也拖回来
+  function addSystem(text, action) {
     var el = document.createElement('div');
     el.className = 'msg system';
-    el.textContent = text;
+    var span = document.createElement('span');
+    span.textContent = text;
+    el.appendChild(span);
+    if (action && action.label) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'sys-act';
+      btn.textContent = action.label;
+      btn.addEventListener('click', function () {
+        if (btn.disabled) return;
+        btn.disabled = true;
+        var p = action.run && action.run();
+        if (p && typeof p.then === 'function') {
+          p.then(function (ok) {
+            if (!action.once) { btn.disabled = false; return; }
+            btn.textContent = ok ? '已撤销' : '撤销失败';
+            if (!ok) btn.disabled = false;
+          }, function () {
+            btn.textContent = '撤销失败';
+            btn.disabled = false;
+          });
+        } else if (action.once) {
+          btn.textContent = '已撤销';
+        }
+      });
+      el.appendChild(btn);
+    }
     messages.appendChild(el);
     trimMessages();
     scrollBottomSafe();
+    return el;
   }
 
   // ---- 终端页的 AI 状态条 ----
@@ -16193,6 +16223,32 @@
     title.className = 's-title';
     title.textContent = s.title || '会话';
     row.appendChild(title);
+    // 删除成功后的「撤销」：一个删除动作只对应一条提示，点过就把它换掉。
+    // 同一时间只留最近一条可撤销的提示，免得侧栏删几次之后冒出好几个撤销按钮
+    var lastUndo = null;
+    function sysUndo(text, trash) {
+      if (lastUndo && lastUndo.parentNode) lastUndo.parentNode.removeChild(lastUndo);
+      lastUndo = addSystem(text, {
+        label: '撤销',
+        once: true,
+        run: function () {
+          return apiFetch('/api/sessions/restore', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ trash: trash })
+          }).then(function (r) {
+            if (!r.ok) {
+              return r.json().catch(function () { return {}; }).then(function (j) {
+                addSystem('撤销失败：' + (j.detail || ('HTTP ' + r.status)));
+                return false;
+              });
+            }
+            loadSessions();
+            return true;
+          });
+        }
+      });
+    }
     var del = document.createElement('button');
     del.className = 's-del';
     del.textContent = '删除';
@@ -16207,17 +16263,26 @@
       }
       apiFetch('/api/sessions/' + s.id + '', { method: 'DELETE' })
         .then(function (r) {
-          // 失败也要有反馈：以前不管成没成都刷新列表，删除被服务端拒绝时
-          // 界面上什么都没变，看起来像「点了没反应」
-          if (!r.ok) {
-            addSystem('删除会话失败（HTTP ' + r.status + '）');
-          } else {
-            addSystem('会话已移入回收站（userdata/trash），需要时可手工找回');
-            // 删的是当前会话：右栏的命令记录也跟着清掉，
-            // 否则对话框空了、右边还挂着一屏上一个会话的执行记录
-            if (s.id === currentSid) termResetList();
-          }
-          loadSessions();
+          return r.json().catch(function () { return {}; }).then(function (j) {
+            // 失败也要有反馈：以前不管成没成都刷新列表，删除被服务端拒绝时
+            // 界面上什么都没变，看起来像「点了没反应」
+            if (!r.ok) {
+              addSystem('删除会话失败（HTTP ' + r.status + '）');
+            } else {
+              var trash = (j && j.trash) || '';
+              var tip = trash ? '会话已移入回收站' : '会话已删除';
+              if (trash) {
+                // 误触时点这一下就能把刚删的这份移回 sessions/ 并重新出现在侧栏
+                sysUndo(tip + '，需要时可手工找回', trash);
+              } else {
+                addSystem(tip + '，需要时可手工找回');
+              }
+              // 删的是当前会话：右栏的命令记录也跟着清掉，
+              // 否则对话框空了、右边还挂着一屏上一个会话的执行记录
+              if (s.id === currentSid) termResetList();
+            }
+            loadSessions();
+          });
         })
         .catch(function () { addSystem('删除会话失败：连不上后端'); });
     });

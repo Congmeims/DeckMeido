@@ -24,6 +24,11 @@ class SwitchReq(BaseModel):
     id: str
 
 
+class RestoreReq(BaseModel):
+    """撤销删除：回收站里的文件名（删除接口返回的 trash）"""
+    trash: str = ""
+
+
 class CreateReq(BaseModel):
     """新建会话的发起端（client/mobile/qam/...）+ 发起设备，用于侧栏分组与排障"""
     client: str = ""
@@ -312,6 +317,9 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         # 先拉黑再删文件：反过来的话，删完到拉黑之间那一瞬间的落盘（流式回调）
         # 就能把文件写回来，等于白删
         store.deleted_sids.add(sid)
+        # 记下移进回收站后的文件名：前端「撤销」就靠它找回这一次删掉的那一份
+        trash_name = ""
+
         # 内存里按 sid 挂着的摘要/意图/流式缓冲也一并清掉。QQ 通道的 sid 是按
         # uin/群号算死的，不清的话同一个人下一条消息又会把旧摘要当上文复读
         store.forget_session(sid)
@@ -335,8 +343,10 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
             try:
                 # 软删除：移进 userdata/trash/ 而不是直接 unlink。误删（含自动化脚本
                 # 连点两次确认）还能从回收站找回，列表则因为索引已摘除而不再返回
-                await asyncio.to_thread(
+                dest = await asyncio.to_thread(
                     session_store.io_submit(session_store.trash_session, sid).result)
+                # 回收站里的实际文件名（带时间戳），前端「撤销」靠它精确找回这一份
+                trash_name = dest.name if dest else ""
             except OSError as e:
                 store.deleted_sids.discard(sid)
                 audit.record("session", "delete", "fail",
@@ -387,7 +397,52 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
             await m.manager.broadcast({"type": "history", "messages": store.history,
                                        "sid": store.current_sid})
             await m.manager.broadcast({"type": "session_changed", "current": store.current_sid})
-        return {"ok": True, "current": store.current_sid}
+        return {"ok": True, "current": store.current_sid, "trash": trash_name}
+
+    @router.post("/api/sessions/restore")
+    async def api_session_restore(req: RestoreReq, request: Request):
+        """撤销删除：把回收站里的那一份移回 sessions/ 并重新进索引
+
+        误触「删除」时前端弹出的那条系统消息里带「撤销」，点的就是这里。
+        trash 是删除接口返回的文件名（<sid>-<时间戳>.json），不是会话号：
+        同一个 sid 可能被删过多次，按名字才能精确找回这一次删掉的那份。
+        """
+        m = get_main()
+        name = (req.trash or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="缺少回收站文件名")
+        try:
+            sid = await asyncio.to_thread(
+                session_store.io_submit(session_store.restore_session, name).result)
+        except FileExistsError as e:
+            raise HTTPException(status_code=409,
+                                detail=f"同名会话已存在（{e.args[0] if e.args else sid}），未覆盖") from None
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"恢复失败：{e}") from None
+        if not sid:
+            raise HTTPException(status_code=404, detail="回收站里已经没有这份会话了")
+        # 文件回来了，之前拉黑的那条 sid 就得放开，否则后续落盘全被丢弃
+        store.deleted_sids.discard(sid)
+        idx = store.index().get(sid) or {}
+        try:
+            body = await asyncio.to_thread(store.sess_path(sid).read_text, encoding="utf-8")
+            data = json.loads(body)
+            if not isinstance(data, dict):
+                raise ValueError("会话文件格式异常")
+            hist = data.get("history") or []
+            title = data.get("title") or idx.get("title") or "会话"
+            # 落盘时间用文件 mtime：恢复的会话不该被顶到列表最前面
+            updated = store.sess_path(sid).stat().st_mtime
+        except Exception as e:
+            # 文件能搬回来但读不出来：留在 sessions/ 里让用户能手工处理，同时明确报错
+            raise HTTPException(status_code=500,
+                                detail=f"已恢复到 sessions/，但会话文件读取失败：{e}") from None
+        # 索引已随删除摘掉，这里补回去，侧栏刷新后才能重新看到它
+        store.index_put_mem(sid, title, updated, len(hist))
+        await m.manager.broadcast({"type": "session_changed", "current": store.current_sid})
+        audit.record("session", "restore", "ok",
+                     ip=client_ip(request), detail=f"{name} -> {sid}")
+        return {"ok": True, "id": sid, "title": title}
 
     @router.post("/api/checkpoint")
     async def api_checkpoint():

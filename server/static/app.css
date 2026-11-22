@@ -306,6 +306,26 @@
     margin-bottom: 0;
     line-height: 1.4;
   }
+  /* 系统提示行里挂的操作按钮（删除会话后的「撤销」）：贴着文字，
+     用强调色区分于灰字，点过禁用后变回灰色 */
+  .msg.system .sys-act {
+    margin-left: 8px;
+    padding: 1px 8px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: transparent;
+    color: var(--brand);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    vertical-align: baseline;
+  }
+  .msg.system .sys-act:disabled {
+    color: var(--muted);
+    border-color: var(--line);
+    cursor: default;
+    opacity: .75;
+  }
   /* 语音条：可点击播放的助手消息附件（QQ 语音回复本地回放） */
   .voice-bubble {
     display: flex; align-items: center; gap: 8px;
