@@ -103,16 +103,7 @@ const cancelBtnStyle: React.CSSProperties = {
   color: "#f0c3c7",
 };
 
-function ActionButton({
-  children,
-  onClick,
-  disabled,
-  primary,
-  description,
-  style,
-  compact,
-  accent = FALLBACK_ACCENT,
-}: {
+type ActionButtonProps = {
   children: React.ReactNode;
   onClick: () => void;
   disabled?: boolean;
@@ -123,7 +114,18 @@ function ActionButton({
   compact?: boolean;
   /** 主题强调色，不传就退回 Steam 蓝（插件后端没连上时） */
   accent?: string;
-}) {
+};
+
+function ActionButton({
+  children,
+  onClick,
+  disabled,
+  primary,
+  description,
+  style,
+  compact,
+  accent = FALLBACK_ACCENT,
+}: ActionButtonProps) {
   return (
     <DialogButton
       disabled={disabled}
@@ -292,7 +294,7 @@ function MessageBubble({
             accent={accent}
           />
         ) : (
-          <Md text={text ?? ""} align={mine ? "right" : "left"} size={CHAT_FONT} />
+          <Md text={text ?? ""} align={mine ? "right" : "left"} size={CHAT_FONT} accent={accent} />
         )}
         {streaming && <span style={{ color: DIM }}>▍</span>}
       </div>
@@ -558,7 +560,7 @@ function PromptEditModal({
         }}
       >
         <div style={{ flex: "0 0 132px", maxWidth: 132 }}>
-          <ActionButton onClick={onCancel} description="取消" style={{ height: 40, minHeight: 40 }}>
+          <ActionButton onClick={onCancel} description="取消" style={{ height: 40, minHeight: 40 }} accent={accent}>
             取消
           </ActionButton>
         </div>
@@ -567,6 +569,7 @@ function PromptEditModal({
             primary
             description="保存"
             style={{ height: 40, minHeight: 40 }}
+            accent={accent}
             onClick={() => {
               onChange(draft);
               onDone();
@@ -694,6 +697,10 @@ export default function BigScreen() {
       ? "连接中"
       : "未连上";
   const accent = accentOf(s.status?.theme);
+  // 大屏页的按钮统一跟主题强调色：ActionButton 默认是兜底蓝，靠每个调用点
+  // 手写 accent={accent} 迟早漏几个。这里声明一份绑好色的版本，JSX 里
+  // 大写开头的标签优先用它，页内所有按钮都会随之换色
+  const ActionBtn = (p: ActionButtonProps) => ActionButton({ ...p, accent });
   const coreColor = coreRunning ? accent : coreStopped ? DIM : ERR_COLOR;
 
   // 模型左右切换器：在列表里循环步进换模型
@@ -966,16 +973,16 @@ export default function BigScreen() {
                   ? `${s.status.core_error || "无响应"}。可以重启后端；不想它跑着就点停止。`
                   : "后端由 Decky 插件管理。重试没用就直接重启一次；确实不想它跑着就点停止，停止后只有「启动核心」能恢复。"}
             </div>
-            <ActionButton
+            <ActionBtn
               onClick={() => void s.refreshStatus()}
               primary
               description="重试"
             >
               重试连接
-            </ActionButton>
+            </ActionBtn>
             {/* 核心是被「停止后端」关掉的：唯一能救回来的就是启动核心 */}
             {s.status && !s.status.core_ok && (
-              <ActionButton
+              <ActionBtn
                 onClick={() => void s.coreStart()}
                 disabled={s.starting}
                 description="启动核心"
@@ -986,40 +993,41 @@ export default function BigScreen() {
                 }}
               >
                 {s.starting ? "启动中…" : "启动核心"}
-              </ActionButton>
+              </ActionBtn>
             )}
             <div style={{ display: "flex", gap: 8 }}>
-              <ActionButton
+              <ActionBtn
                 onClick={() => void s.coreRestart()}
                 disabled={s.restarting}
                 description="重启后端"
                 style={{ flex: 1 }}
               >
                 {s.restarting ? "重启中…" : "重启后端"}
-              </ActionButton>
-              <ActionButton
+              </ActionBtn>
+              <ActionBtn
                 onClick={() => void s.coreKill()}
                 disabled={s.killing}
                 description="停止后端"
                 style={{ flex: 1 }}
               >
                 {s.killing ? "停止中…" : "停止后端"}
-              </ActionButton>
+              </ActionBtn>
             </div>
             {/* 长期设置：关掉后开机/插件加载都不再自动拉起后端，要用时手动启动。
                 和上面的「停止后端」不同——那个只是这次先关掉 */}
-            <ActionButton
+            <ActionBtn
               onClick={() => void s.setAutostart(s.status?.autostart === false)}
               description={s.status?.autostart === false ? "开启开机自启" : "关闭开机自启"}
+              accent={accent}
               style={{
                 background:
-                  s.status?.autostart === false ? "rgba(255,255,255,.05)" : "rgba(26,159,255,.16)",
+                  s.status?.autostart === false ? "rgba(255,255,255,.05)" : accentFill(accent, 0.16),
               }}
             >
               {s.status?.autostart === false
                 ? "开机自启：关（点此开启）"
                 : "开机自启：开（点此关闭）"}
-            </ActionButton>
+            </ActionBtn>
           </div>
         </div>
       ) : configError ? (
@@ -1032,9 +1040,9 @@ export default function BigScreen() {
             <div style={{ color: DIM, fontSize: 13, lineHeight: 1.5 }}>
               检查数据目录里的 config.toml（通常在 userdata/），确认能读到后重试。
             </div>
-            <ActionButton onClick={() => void s.refreshStatus()} primary description="重试">
+            <ActionBtn onClick={() => void s.refreshStatus()} primary description="重试">
               重试连接
-            </ActionButton>
+            </ActionBtn>
           </div>
         </div>
       ) : tab === 0 ? (
@@ -1069,9 +1077,9 @@ export default function BigScreen() {
                 画面静止，截不到图。随便动一下摇杆或触摸板，再重新截图。
               </div>
               <div style={{ width: 170, flex: "0 0 170px" }}>
-                <ActionButton onClick={() => void s.retryPoke()} description="重试">
+                <ActionBtn onClick={() => void s.retryPoke()} description="重试">
                   重新截图
-                </ActionButton>
+                </ActionBtn>
               </div>
             </div>
           )}
@@ -1135,7 +1143,7 @@ export default function BigScreen() {
                 <>
                   {/* 探测一次就定生死：后端晚几步起来、或插件刚重载时，
                       这里不重试就会一直挂在「核心异常」，只能退出页面再进 */}
-                  <ActionButton
+                  <ActionBtn
                     onClick={() => void s.refreshStatus()}
                     disabled={s.probing}
                     description="重新探测"
@@ -1148,8 +1156,8 @@ export default function BigScreen() {
                     }}
                   >
                     {s.probing ? "探测中…" : "重新探测"}
-                  </ActionButton>
-                  <ActionButton
+                  </ActionBtn>
+                  <ActionBtn
                     onClick={() => void s.coreStart()}
                     disabled={s.starting}
                     description="启动核心"
@@ -1164,11 +1172,11 @@ export default function BigScreen() {
                     }}
                   >
                     {s.starting ? "启动中…" : "启动核心"}
-                  </ActionButton>
+                  </ActionBtn>
                   {/* 连不上时后端常常是半死的（旧进程占着端口、或卡在启动里），
                       「启动核心」看到端口被占会直接复用那份坏进程，所以必须给
                       「重启」：由插件收掉旧进程再按启动命令重放一遍 */}
-                  <ActionButton
+                  <ActionBtn
                     onClick={() => void s.coreRestart()}
                     disabled={s.restarting}
                     description="重启后端"
@@ -1181,8 +1189,8 @@ export default function BigScreen() {
                     }}
                   >
                     {s.restarting ? "重启中…" : "重启后端"}
-                  </ActionButton>
-                  <ActionButton
+                  </ActionBtn>
+                  <ActionBtn
                     onClick={() => void s.coreKill()}
                     disabled={s.killing}
                     description="停止后端"
@@ -1195,7 +1203,7 @@ export default function BigScreen() {
                     }}
                   >
                     {s.killing ? "停止中…" : "停止后端"}
-                  </ActionButton>
+                  </ActionBtn>
                 </>
               )}
             </div>
@@ -1203,7 +1211,7 @@ export default function BigScreen() {
             {/* 四个按钮统一 138px，回执卡（flex:1）自动收缩匹配 */}
             <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
               {!s.busy ? (
-                <ActionButton
+                <ActionBtn
                   primary
                   disabled={!ready}
                   onClick={() => void s.shotAsk()}
@@ -1211,49 +1219,49 @@ export default function BigScreen() {
                   style={{ width: 138 }}
                 >
                   截屏询问
-                </ActionButton>
+                </ActionBtn>
               ) : askRunning ? (
-                <ActionButton
+                <ActionBtn
                   onClick={() => {}}
                   description="思考中"
                   style={{ ...runningBtnStyle(accent), width: 138 }}
                 >
                   思考中…（{s.elapsed}s）
-                </ActionButton>
+                </ActionBtn>
               ) : (
-                <ActionButton
+                <ActionBtn
                   onClick={() => void s.cancel()}
                   description="中断"
                   style={{ ...cancelBtnStyle, width: 138 }}
                 >
                   中断
-                </ActionButton>
+                </ActionBtn>
               )}
               {!s.busy ? (
-                <ActionButton
+                <ActionBtn
                   disabled={!ready}
                   onClick={() => void s.shotTranslate()}
                   description="截屏翻译"
                   style={{ width: 138 }}
                 >
                   截屏翻译
-                </ActionButton>
+                </ActionBtn>
               ) : translateRunning ? (
-                <ActionButton
+                <ActionBtn
                   onClick={() => {}}
                   description="思考中"
                   style={{ ...runningBtnStyle(accent), width: 138 }}
                 >
                   思考中…（{s.elapsed}s）
-                </ActionButton>
+                </ActionBtn>
               ) : (
-                <ActionButton
+                <ActionBtn
                   onClick={() => void s.cancel()}
                   description="中断"
                   style={{ ...cancelBtnStyle, width: 138 }}
                 >
                   中断
-                </ActionButton>
+                </ActionBtn>
               )}
             </div>
           </div>
@@ -1327,7 +1335,7 @@ export default function BigScreen() {
               />
             </Focusable>
             <div style={{ flex: "0 0 138px", width: 138, height: ACTION_H }}>
-              <ActionButton
+              <ActionBtn
                 // 询问页发起思考时语音仍可用（照常说话转文字填入输入框），
                 // 只有聊天页自己发起的那轮才锁语音
                 disabled={(s.busy && s.runningAction === "send") || voice.phase === "working" || !voice.ready}
@@ -1351,11 +1359,11 @@ export default function BigScreen() {
                 }}
               >
                 {voice.phase === "working" ? "识别中" : voice.phase === "recording" ? "松开" : "语音"}
-              </ActionButton>
+              </ActionBtn>
             </div>
             <div style={{ flex: "0 0 138px", width: 138, height: ACTION_H }}>
               {!s.busy ? (
-                <ActionButton
+                <ActionBtn
                   primary
                   disabled={!input.trim()}
                   onClick={submit}
@@ -1363,23 +1371,23 @@ export default function BigScreen() {
                   style={{ height: ACTION_H, minHeight: ACTION_H }}
                 >
                   发送
-                </ActionButton>
+                </ActionBtn>
               ) : s.runningAction === "send" ? (
-                <ActionButton
+                <ActionBtn
                   onClick={() => {}}
                   description="思考中"
                   style={{ ...runningBtnStyle(accent), height: ACTION_H, minHeight: ACTION_H }}
                 >
                   思考中…（{s.elapsed}s）
-                </ActionButton>
+                </ActionBtn>
               ) : (
-                <ActionButton
+                <ActionBtn
                   onClick={() => void s.cancel()}
                   description="中断"
                   style={{ ...cancelBtnStyle, height: ACTION_H, minHeight: ACTION_H }}
                 >
                   中断
-                </ActionButton>
+                </ActionBtn>
               )}
             </div>
             {/* 语音提示/下载进度：作为独立一行放在输入行下面，不再绝对定位压住消息区 */}
@@ -1421,13 +1429,13 @@ export default function BigScreen() {
                     />
                   </div>
                   <span style={{ fontSize: 11, color: DIM, whiteSpace: "nowrap" }}>{dlSizeText}</span>
-                  <ActionButton
+                  <ActionBtn
                     onClick={voice.cancelDownload}
                     description="取消下载"
                     style={{ width: "auto", height: 26, minHeight: 26, padding: "0 10px", fontSize: 12 }}
                   >
                     取消
-                  </ActionButton>
+                  </ActionBtn>
                 </>
               ) : voiceTip ? (
                 <>
@@ -1449,7 +1457,7 @@ export default function BigScreen() {
                     {voiceTip.text}
                   </span>
                   {voiceTip.canDownload && (
-                    <ActionButton
+                    <ActionBtn
                       disabled={voice.downloading}
                       onClick={voice.downloadModel}
                       description="下载语音模型"
@@ -1463,7 +1471,7 @@ export default function BigScreen() {
                       }}
                     >
                       {voice.downloading ? "下载中…" : "下载模型"}
-                    </ActionButton>
+                    </ActionBtn>
                   )}
                 </>
               ) : null}
@@ -1597,7 +1605,7 @@ export default function BigScreen() {
                   width: "100%",
                 }}
               >
-                <ActionButton
+                <ActionBtn
                   onClick={() => stepModel(-1)}
                   disabled={!s.status?.core_ok || modelList.length < 2}
                   description="上一个模型"
@@ -1605,7 +1613,7 @@ export default function BigScreen() {
                   style={{ fontSize: 18, padding: 0 }}
                 >
                   ‹
-                </ActionButton>
+                </ActionBtn>
                 <div
                   style={{
                     minWidth: 0,
@@ -1628,7 +1636,7 @@ export default function BigScreen() {
                 >
                   {s.loadingModels ? "加载中…" : s.model || "未选择"}
                 </div>
-                <ActionButton
+                <ActionBtn
                   onClick={() => stepModel(1)}
                   disabled={!s.status?.core_ok || modelList.length < 2}
                   description="下一个模型"
@@ -1636,7 +1644,7 @@ export default function BigScreen() {
                   style={{ fontSize: 18, padding: 0 }}
                 >
                   ›
-                </ActionButton>
+                </ActionBtn>
               </div>
               {/* 右栏两行 1fr 1fr 均分卡高：第一行两个开关，第二行刷新模型 */}
               <div
@@ -1658,7 +1666,7 @@ export default function BigScreen() {
                     minHeight: 0,
                   }}
                 >
-                  <ActionButton
+                  <ActionBtn
                     onClick={() => void s.toggleStt(!s.stt)}
                     description="切换语音输入"
                     compact
@@ -1678,8 +1686,8 @@ export default function BigScreen() {
                     }}
                   >
                     语音输入
-                  </ActionButton>
-                  <ActionButton
+                  </ActionBtn>
+                  <ActionBtn
                     onClick={() => void s.toggleSttDuck(!s.sttDuck)}
                     description={
                       s.sttDuckAvailable
@@ -1701,8 +1709,8 @@ export default function BigScreen() {
                     }}
                   >
                     静音外放
-                  </ActionButton>
-                  <ActionButton
+                  </ActionBtn>
+                  <ActionBtn
                     onClick={() => void s.toggleWithShot(!s.withShot)}
                     description="切换带图发送"
                     compact
@@ -1720,9 +1728,9 @@ export default function BigScreen() {
                     }}
                   >
                     带图发送
-                  </ActionButton>
+                  </ActionBtn>
                 </div>
-                <ActionButton
+                <ActionBtn
                   onClick={() => void s.loadModels()}
                   disabled={s.loadingModels}
                   description="刷新"
@@ -1738,7 +1746,7 @@ export default function BigScreen() {
                   }}
                 >
                   {s.loadingModels ? "拉取中…" : "刷新模型"}
-                </ActionButton>
+                </ActionBtn>
               </div>
             </div>
           </SectionCard>
@@ -1772,22 +1780,22 @@ export default function BigScreen() {
                   // 上下均分撑满整卡高度（按钮各自 flex:1）
                 }}
               >
-                <ActionButton
+                <ActionBtn
                   onClick={() => void s.saveAskTpl()}
                   description="保存"
                   compact
                   style={{ flex: 1, minHeight: 0 }}
                 >
                   保存
-                </ActionButton>
-                <ActionButton
+                </ActionBtn>
+                <ActionBtn
                   onClick={() => s.setAskTplEdit(s.askTplDefault)}
                   description="恢复默认"
                   compact
                   style={{ flex: 1, minHeight: 0 }}
                 >
                   恢复默认
-                </ActionButton>
+                </ActionBtn>
               </div>
             </div>
           </SectionCard>
@@ -1821,22 +1829,22 @@ export default function BigScreen() {
                   // 上下均分撑满整卡高度（按钮各自 flex:1）
                 }}
               >
-                <ActionButton
+                <ActionBtn
                   onClick={() => void s.saveTranslateTpl()}
                   description="保存"
                   compact
                   style={{ flex: 1, minHeight: 0 }}
                 >
                   保存
-                </ActionButton>
-                <ActionButton
+                </ActionBtn>
+                <ActionBtn
                   onClick={() => s.setTranslateTplEdit(s.translateTplDefault)}
                   description="恢复默认"
                   compact
                   style={{ flex: 1, minHeight: 0 }}
                 >
                   恢复默认
-                </ActionButton>
+                </ActionBtn>
               </div>
             </div>
           </SectionCard>
@@ -1915,7 +1923,7 @@ export default function BigScreen() {
                       alignContent: "stretch",
                     }}
                   >
-                    <ActionButton
+                    <ActionBtn
                       onClick={() => void s.coreStart()}
                       disabled={coreRunning || s.starting || s.restarting || s.killing}
                       primary={!coreRunning}
@@ -1923,23 +1931,23 @@ export default function BigScreen() {
                       compact
                     >
                       {s.starting ? "核心启动中…" : "启动核心"}
-                    </ActionButton>
-                    <ActionButton
+                    </ActionBtn>
+                    <ActionBtn
                       onClick={() => void s.coreRestart()}
                       disabled={!coreRunning || s.starting || s.restarting || s.killing}
                       description="重启核心"
                       compact
                     >
                       {s.restarting ? "核心重启中…" : "重启核心"}
-                    </ActionButton>
-                    <ActionButton
+                    </ActionBtn>
+                    <ActionBtn
                       onClick={() => void s.coreKill()}
                       disabled={!coreRunning || s.starting || s.restarting || s.killing}
                       description="关闭核心"
                       compact
                     >
                       {s.killing ? "核心关闭中…" : "关闭核心"}
-                    </ActionButton>
+                    </ActionBtn>
                   </div>
                 </div>
 
@@ -1953,7 +1961,7 @@ export default function BigScreen() {
                     minHeight: 0,
                   }}
                 >
-                  <ActionButton
+                  <ActionBtn
                     onClick={() => void s.newSession()}
                     disabled={s.busy || s.newing}
                     description="新会话"
@@ -1961,17 +1969,17 @@ export default function BigScreen() {
                     style={{ minHeight: 0 }}
                   >
                     {s.newing ? "新建中…" : "新会话"}
-                  </ActionButton>
-                  <ActionButton
+                  </ActionBtn>
+                  <ActionBtn
                     onClick={() => void s.savePreset()}
                     description="存为预设"
                     compact
                     style={{ minHeight: 0 }}
                   >
                     存为预设
-                  </ActionButton>
+                  </ActionBtn>
                   {/* B 键由 Steam 原生路由返回处理；这里再给一个显式入口，原生返回不生效时也不至于卡在页里 */}
-                  <ActionButton
+                  <ActionBtn
                     onClick={() => {
                       try {
                         Navigation.NavigateBack();
@@ -1984,7 +1992,7 @@ export default function BigScreen() {
                     style={{ minHeight: 0 }}
                   >
                     返回游戏
-                  </ActionButton>
+                  </ActionBtn>
                 </div>
             </div>
           </SectionCard>

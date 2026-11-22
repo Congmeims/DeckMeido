@@ -625,7 +625,7 @@ function parseMd(src: string): Block[] {
 const INLINE_RE =
   /(`[^`\n]+`)|(!\[[^\]]*\]\(\/uploads\/[^)\s]+\))|(\[[^\]]+\]\(https?:[^)\s]+\))|(\[[^\]]+\]\(\/files\/[^)\s]+\))|(\*\*[^*\n]+\*\*)|(\*[^*\n]+\*)/g;
 
-function inline(text: string, size: number, base: string): ReactNode[] {
+function inline(text: string, size: number, base: string, linkColor = "#6fc3ff"): ReactNode[] {
   const nodes: ReactNode[] = [];
   let last = 0;
   let k = 0;
@@ -677,7 +677,7 @@ function inline(text: string, size: number, base: string): ReactNode[] {
                 /* CEF 拦截了就保持面板不动 */
               }
             }}
-            style={{ color: "#6fc3ff", textDecoration: "underline", wordBreak: "break-all" }}
+            style={{ color: linkColor, textDecoration: "underline", wordBreak: "break-all" }}
           >
             {lm[1]}
           </a>
@@ -758,13 +758,16 @@ export function Md({
   align,
   size = 12.5,
   base = "",
+  accent,
 }: {
   text: string;
   align?: "left" | "right";
   size?: number;
   base?: string;
+  accent?: string;
 }) {
   const blocks = parseMd(text);
+  const linkColor = accent || "#6fc3ff";
   return (
     // 对齐挂在最外层：用户消息靠右显示，自己说的话右边缘对齐才顺眼。
     <div style={{ textAlign: align ?? "left", minWidth: 0, maxWidth: "100%" }}>
@@ -775,7 +778,7 @@ export function Md({
               key={i}
               style={{ fontWeight: 700, fontSize: size, color: "#fff", margin: "6px 0 3px" }}
             >
-              {inline(b.text, size, base)}
+              {inline(b.text, size, base, linkColor)}
             </div>
           );
         }
@@ -851,7 +854,7 @@ export function Md({
                           maxWidth: 260,
                         }}
                       >
-                        {inline(cell, size, base)}
+                        {inline(cell, size, base, linkColor)}
                       </th>
                     ))}
                   </tr>
@@ -874,7 +877,7 @@ export function Md({
                             verticalAlign: "top",
                           }}
                         >
-                          {inline(cell, size, base)}
+                          {inline(cell, size, base, linkColor)}
                         </td>
                       ))}
                     </tr>
@@ -890,7 +893,7 @@ export function Md({
             <Tag key={i} style={{ margin: "3px 0", paddingLeft: 18, textAlign: "left" }}>
               {b.items.map((it, j) => (
                 <li key={j} style={{ margin: "1px 0" }}>
-                  {inline(it, size, base)}
+                  {inline(it, size, base, linkColor)}
                 </li>
               ))}
             </Tag>
@@ -899,7 +902,7 @@ export function Md({
         return (
           <div key={i} style={{ margin: "3px 0" }}>
             {b.text.split("\n").map((ln, j) => (
-              <div key={j}>{inline(ln, size, base)}</div>
+              <div key={j}>{inline(ln, size, base, linkColor)}</div>
             ))}
           </div>
         );
@@ -1319,7 +1322,7 @@ function AskCard({
   const locked = !!picked || !!busy || !onAnswer;
   return (
     <div style={{ margin: "4px 0", minWidth: 0 }}>
-      {!!question.trim() && <Md text={question} size={size} base={base} />}
+      {!!question.trim() && <Md text={question} size={size} base={base} accent={accent} />}
       {!!options?.length && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
           {options.map((o, i) => {
@@ -1563,7 +1566,7 @@ export function MessageContent({
           if (!t || t === body) return null;
           return (
             <div key={i} style={{ margin: "3px 0" }}>
-              <Md text={ev.text} size={size} align={align} base={base} />
+              <Md text={ev.text} size={size} align={align} base={base} accent={accent} />
             </div>
           );
         }
@@ -1597,7 +1600,7 @@ export function MessageContent({
         }
         return <ToolRow key={i} ev={ev} size={size} base={base} />;
       })}
-      {!!body && <Md text={item.text} align={align} size={size} base={base} />}
+      {!!body && <Md text={item.text} align={align} size={size} base={base} accent={accent} />}
       {item.voice && <VoiceBar voice={item.voice} base={base} size={size} accent={accent} />}
     </div>
   );

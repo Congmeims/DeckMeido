@@ -123,7 +123,22 @@ const pushLogStore = (code: string, detail = "") => {
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** 紧凑按钮：窄屏里统一高度和最小宽度，避免 DialogButton 默认 min-width 撑爆行 */
-function Btn({
+type BtnProps = {
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  primary?: boolean;
+  danger?: boolean;
+  running?: boolean;
+  height?: number;
+  size?: number;
+  description?: string;
+  style?: React.CSSProperties;
+  /** 主题强调色，不传就退回兜底蓝（插件后端没连上时） */
+  accent?: string;
+};
+
+function BtnImpl({
   children,
   onClick,
   disabled,
@@ -135,19 +150,7 @@ function Btn({
   description,
   style,
   accent = FALLBACK_ACCENT,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  disabled?: boolean;
-  primary?: boolean;
-  danger?: boolean;
-  running?: boolean;
-  height?: number;
-  size?: number;
-  description?: string;
-  style?: React.CSSProperties;
-  accent?: string;
-}) {
+}: BtnProps) {
   return (
     <DialogButton
       disabled={disabled}
@@ -195,15 +198,17 @@ function Btn({
 }
 
 /** 设置页卡片：统一内边距、卡片间距和左强调条 */
+type CardProps = {
+  title: string;
+  children: React.ReactNode;
+  accent?: string;
+};
+
 function Card({
   title,
   children,
   accent = FALLBACK_ACCENT,
-}: {
-  title: string;
-  children: React.ReactNode;
-  accent?: string;
-}) {
+}: CardProps) {
   return (
     <div
       style={{
@@ -234,19 +239,21 @@ function Card({
  * 放在这些小卡片里比周围的 11~12px 文字明显大一号，行距也不一致。
  * 这里自绘一行：左侧标签 12px，右侧 30×16 的胶囊开关，整体与 Btn/Card 同一套尺寸。
  */
+type SwitchRowProps = {
+  label: string;
+  description?: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  accent?: string;
+};
+
 function SwitchRow({
   label,
   description,
   checked,
   onChange,
   accent = FALLBACK_ACCENT,
-}: {
-  label: string;
-  description?: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  accent?: string;
-}) {
+}: SwitchRowProps) {
   return (
     <Focusable
       onActivate={() => onChange(!checked)}
@@ -330,6 +337,15 @@ function StatCell({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 /** 小屏模型选择器：就地展开折叠列表，不用 DropdownItem（它的全屏菜单在小 QAM 里很挤） */
+type ModelPickerProps = {
+  value: string;
+  options: string[];
+  placeholder: string;
+  disabled?: boolean;
+  onSelect: (m: string) => void;
+  accent?: string;
+};
+
 function ModelPicker({
   value,
   options,
@@ -337,14 +353,7 @@ function ModelPicker({
   disabled,
   onSelect,
   accent = FALLBACK_ACCENT,
-}: {
-  value: string;
-  options: string[];
-  placeholder: string;
-  disabled?: boolean;
-  onSelect: (m: string) => void;
-  accent?: string;
-}) {
+}: ModelPickerProps) {
   const [open, setOpen] = useState(false);
   const list = options.length ? options : value ? [value] : [];
   return (
@@ -513,7 +522,7 @@ function Bubble({
             accent={accent}
           />
         ) : (
-          <Md text={text ?? ""} align={mine ? "right" : "left"} size={12} />
+          <Md text={text ?? ""} align={mine ? "right" : "left"} size={12} accent={accent} />
         )}
         {streaming && <span style={{ color: DIM }}>▍</span>}
       </div>
@@ -1274,6 +1283,12 @@ function useQamSession() {
 
   useEffect(() => {
     const onDelta = (msg: Delta) => {
+      if (msg.kind === "theme_changed") {
+        // 换壁纸/改配色后后端会广播整份外观快照，这里重拉一次 status 拿到新强调色。
+        // 不挂这个分支时，QAM 只在挂载时刷一次，开着面板改主题颜色不会跟着变
+        void refreshStatus();
+        return;
+      }
       if (msg.kind === "thread") {
         setItems(msg.items);
         return;
@@ -1389,6 +1404,15 @@ function useQamSession() {
 
 export default function QamScreen() {
   const s = useQamSession();
+  // 整个面板的按钮统一走主题强调色：Btn 默认用兜底蓝，之前每个调用点都得
+  // 手写 accent={s.accent}，漏一个就是一块蓝色。这里声明一个绑好色的版本
+  // （JSX 里大写开头的标签会被当成组件，正好覆盖外层模块级的 Btn）
+  const accent = s.accent;
+  const AccentBtn = (p: BtnProps) => BtnImpl({ ...p, accent });
+  // 卡片、开关、模型选择器同理：默认色都是兜底蓝，同样在这里统一绑上主题色
+  const AccentCard = (p: CardProps) => Card({ ...p, accent });
+  const AccentSwitch = (p: SwitchRowProps) => SwitchRow({ ...p, accent });
+  const AccentPicker = (p: ModelPickerProps) => ModelPicker({ ...p, accent });
   const [tab, setTabState] = useState(lastTab);
   const setTab = (t: number | ((prev: number) => number)) => {
     setTabState((prev) => {
@@ -1633,21 +1657,20 @@ export default function QamScreen() {
             : `${s.status.core_error || "无响应"}。可以重启后端；不想它跑着就点停止。`;
     return shell(
       <>
-        <Card title="连接" accent={s.accent}>
+        <AccentCard title="连接">
           <div style={{ fontSize: 13, fontWeight: 700, color: TITLE, lineHeight: 1.3 }}>
             {title}
           </div>
           <div style={{ fontSize: 11, color: DIM, lineHeight: 1.5 }}>{desc}</div>
-          <Btn primary onClick={() => void s.refreshStatus()} disabled={s.probing} description="重试">
+          <AccentBtn primary onClick={() => void s.refreshStatus()} disabled={s.probing} description="重试">
             {s.probing ? "连接中…" : "重试连接"}
-          </Btn>
+          </AccentBtn>
           {/* 核心是被「停止后端」关掉的，或自启关着没起：唯一的救法就是启动核心 */}
           {(idleStopped || (s.status && !s.status.core_ok)) && (
-            <Btn
+            <AccentBtn
               onClick={() => void s.coreStart()}
               disabled={s.starting}
               description="启动核心"
-              accent={s.accent}
               style={{
                 background: "rgba(224,108,117,.18)",
                 borderColor: "rgba(224,108,117,.45)",
@@ -1655,48 +1678,48 @@ export default function QamScreen() {
               }}
             >
               {s.starting ? "启动中…" : "启动核心"}
-            </Btn>
+            </AccentBtn>
           )}
           {/* 连不上时后端很可能已经半死：插件的启动逻辑会先看端口占用再决定复用，
               重启就是「收掉旧进程 + 按启动命令重放一遍」，比让用户去终端手动 pkill 靠谱 */}
           <div style={{ display: "flex", gap: 6 }}>
             <div style={{ flex: "1 1 0", minWidth: 0 }}>
-              <Btn
+              <AccentBtn
                 onClick={() => void s.coreRestart()}
                 disabled={s.restarting || s.probing}
                 description="重启后端"
               >
                 {s.restarting ? "重启中…" : "重启后端"}
-              </Btn>
+              </AccentBtn>
             </div>
             <div style={{ flex: "1 1 0", minWidth: 0 }}>
-              <Btn
+              <AccentBtn
                 onClick={() => void s.coreKill()}
                 disabled={s.killing || s.probing}
                 description="停止后端"
               >
                 {s.killing ? "停止中…" : "停止后端"}
-              </Btn>
+              </AccentBtn>
             </div>
           </div>
           {/* 长期设置：关掉后开机/插件加载都不再自动拉起后端，要用时手动启动。
               和上面的「停止后端」不同——那个只是这次先关掉 */}
-          <Btn
+          <AccentBtn
             onClick={() => void s.setAutostart(s.status?.autostart === false)}
             description={s.status?.autostart === false ? "开启开机自启" : "关闭开机自启"}
             style={{
               background:
-                s.status?.autostart === false ? "rgba(255,255,255,.05)" : "rgba(26,159,255,.16)",
+                s.status?.autostart === false ? "rgba(255,255,255,.05)" : accentFill(s.accent, 0.16),
             }}
           >
             {s.status?.autostart === false
               ? "开机自启：关（点此开启）"
               : "开机自启：开（点此关闭）"}
-          </Btn>
-          <Btn height={26} size={11} onClick={s.openBigScreen} description="打开大屏">
+          </AccentBtn>
+          <AccentBtn height={26} size={11} onClick={s.openBigScreen} description="打开大屏">
             打开大屏
-          </Btn>
-        </Card>
+          </AccentBtn>
+        </AccentCard>
       </>
     );
   }
@@ -1705,18 +1728,18 @@ export default function QamScreen() {
   if (configError) {
     return shell(
       <>
-        <Card title="读不到后端配置" accent={s.accent}>
+        <AccentCard title="读不到后端配置">
           <div style={{ fontSize: 12, color: TEXT }}>读不到后端配置：{configError}</div>
           <div style={{ fontSize: 11, color: DIM, lineHeight: 1.5 }}>
             检查数据目录里的 config.toml（通常在 userdata/），确认能读到后重试。
           </div>
-          <Btn primary onClick={() => void s.refreshStatus()} description="重试">
+          <AccentBtn primary onClick={() => void s.refreshStatus()} description="重试">
             重试连接
-          </Btn>
-          <Btn height={26} size={11} onClick={s.openBigScreen} description="打开大屏">
+          </AccentBtn>
+          <AccentBtn height={26} size={11} onClick={s.openBigScreen} description="打开大屏">
             打开大屏
-          </Btn>
-        </Card>
+          </AccentBtn>
+        </AccentCard>
       </>
     );
   }
@@ -1816,14 +1839,14 @@ export default function QamScreen() {
                 画面静止，动一下摇杆再截
               </span>
               <div style={{ flex: "0 0 92px", width: 92 }}>
-                <Btn
+                <AccentBtn
                   height={24}
                   size={11}
                   onClick={() => void s.retryPoke()}
                   description="重新截图"
                 >
                   重新截图
-                </Btn>
+                </AccentBtn>
               </div>
             </div>
           )}
@@ -1840,32 +1863,32 @@ export default function QamScreen() {
           >
             <div style={{ flex: "1 1 0", minWidth: 0 }}>
               {!s.busy ? (
-                <Btn primary onClick={() => void s.shotAsk()} description="截屏询问">
+                <AccentBtn primary onClick={() => void s.shotAsk()} description="截屏询问">
                   截屏询问
-                </Btn>
+                </AccentBtn>
               ) : askRunning ? (
-                <Btn running onClick={() => {}} description="思考中">
+                <AccentBtn running onClick={() => {}} description="思考中">
                   思考中…（{s.elapsed}s）
-                </Btn>
+                </AccentBtn>
               ) : (
-                <Btn danger onClick={() => void s.cancel()} description="中断">
+                <AccentBtn danger onClick={() => void s.cancel()} description="中断">
                   中断
-                </Btn>
+                </AccentBtn>
               )}
             </div>
             <div style={{ flex: "1 1 0", minWidth: 0 }}>
               {!s.busy ? (
-                <Btn onClick={() => void s.shotTranslate()} description="截屏翻译">
+                <AccentBtn onClick={() => void s.shotTranslate()} description="截屏翻译">
                   截屏翻译
-                </Btn>
+                </AccentBtn>
               ) : translateRunning ? (
-                <Btn running onClick={() => {}} description="思考中">
+                <AccentBtn running onClick={() => {}} description="思考中">
                   思考中…（{s.elapsed}s）
-                </Btn>
+                </AccentBtn>
               ) : (
-                <Btn danger onClick={() => void s.cancel()} description="中断">
+                <AccentBtn danger onClick={() => void s.cancel()} description="中断">
                   中断
-                </Btn>
+                </AccentBtn>
               )}
             </div>
           </div>
@@ -1946,7 +1969,7 @@ export default function QamScreen() {
               />
             </Focusable>
             <div style={{ flex: "0 0 48px", width: 48, height: INPUT_H }}>
-              <Btn
+              <AccentBtn
                 height={INPUT_H}
                 size={11}
                 disabled={
@@ -1971,11 +1994,11 @@ export default function QamScreen() {
                 }}
               >
                 {voice.phase === "working" ? "识别中" : voice.phase === "recording" ? "松开" : "语音"}
-              </Btn>
+              </AccentBtn>
             </div>
             <div style={{ flex: "0 0 60px", width: 60, height: INPUT_H }}>
               {!s.busy ? (
-                <Btn
+                <AccentBtn
                   primary
                   height={INPUT_H}
                   size={11}
@@ -1984,15 +2007,15 @@ export default function QamScreen() {
                   description="发送"
                 >
                   发送
-                </Btn>
+                </AccentBtn>
               ) : s.runningAction === "send" ? (
-                <Btn running height={INPUT_H} size={11} onClick={() => {}} description="思考中">
+                <AccentBtn running height={INPUT_H} size={11} onClick={() => {}} description="思考中">
                   思考中
-                </Btn>
+                </AccentBtn>
               ) : (
-                <Btn danger height={INPUT_H} size={11} onClick={() => void s.cancel()} description="中断">
+                <AccentBtn danger height={INPUT_H} size={11} onClick={() => void s.cancel()} description="中断">
                   中断
-                </Btn>
+                </AccentBtn>
               )}
             </div>
           </div>
@@ -2025,9 +2048,9 @@ export default function QamScreen() {
                     />
                   </div>
                   <div style={{ flex: "0 0 44px", width: 44 }}>
-                    <Btn height={22} size={10} onClick={voice.cancelDownload} description="取消下载">
+                    <AccentBtn height={22} size={10} onClick={voice.cancelDownload} description="取消下载">
                       取消
-                    </Btn>
+                    </AccentBtn>
                   </div>
                 </>
               ) : qVoiceTip ? (
@@ -2035,7 +2058,7 @@ export default function QamScreen() {
                   <span style={{ fontSize: 10, color: qVoiceTip.color, flex: 1, minWidth: 0 }}>{qVoiceTip.text}</span>
                   {qVoiceTip.canDownload && (
                     <div style={{ flex: "0 0 56px", width: 56 }}>
-                      <Btn
+                      <AccentBtn
                         height={22}
                         size={10}
                         disabled={voice.downloading}
@@ -2043,7 +2066,7 @@ export default function QamScreen() {
                         description="下载语音模型"
                       >
                         下载
-                      </Btn>
+                      </AccentBtn>
                     </div>
                   )}
                 </>
@@ -2087,7 +2110,7 @@ export default function QamScreen() {
               fresh={chat.fresh}
               onClick={chat.toBottom}
               size={30}
-              accent={s.accent}
+              accent={accent}
             />
           </div>
         </Focusable>
@@ -2114,9 +2137,9 @@ export default function QamScreen() {
           }}
         >
           {/* 模型 */}
-        <Card title="模型" accent={s.accent}>
+        <AccentCard title="模型">
             <div style={{ width: "100%", display: "flex" }}>
-              <ModelPicker
+              <AccentPicker
                 value={s.model}
                 options={s.modelList}
                 placeholder={s.loadingModels ? "加载中…" : "选择模型"}
@@ -2124,7 +2147,7 @@ export default function QamScreen() {
                 onSelect={(m) => void s.changeModel(m)}
               />
             </div>
-            <Btn
+            <AccentBtn
               height={26}
               size={11}
               disabled={s.loadingModels}
@@ -2132,15 +2155,15 @@ export default function QamScreen() {
               description="刷新模型列表"
             >
               {s.loadingModels ? "拉取中…" : "刷新模型列表"}
-            </Btn>
-            <SwitchRow label="带画面发送" accent={s.accent} checked={s.withShot} onChange={s.toggleWithShot} />
-            <SwitchRow label="语音输入" accent={s.accent} checked={s.stt} onChange={s.toggleStt} />
-            <SwitchRow label="录音时静音外放" accent={s.accent} checked={s.sttDuck} onChange={s.toggleSttDuck} />
-            <SwitchRow label="语音播报回复" accent={s.accent} checked={s.tts} onChange={s.toggleTts} />
-          </Card>
+            </AccentBtn>
+            <AccentSwitch label="带画面发送" checked={s.withShot} onChange={s.toggleWithShot} />
+            <AccentSwitch label="语音输入" checked={s.stt} onChange={s.toggleStt} />
+            <AccentSwitch label="录音时静音外放" checked={s.sttDuck} onChange={s.toggleSttDuck} />
+            <AccentSwitch label="语音播报回复" checked={s.tts} onChange={s.toggleTts} />
+          </AccentCard>
 
           {/* 提示词 */}
-          <Card title="提示词" accent={s.accent}>
+          <AccentCard title="提示词">
             <div style={{ fontSize: 11, color: DIM }}>截屏询问</div>
             <Focusable onOKActionDescription="编辑" style={{ width: "100%", padding: 0 }}>
               <ImeTextArea
@@ -2154,24 +2177,24 @@ export default function QamScreen() {
             </Focusable>
             <div style={{ display: "flex", gap: 6, width: "100%" }}>
               <div style={{ flex: "1 1 0", minWidth: 0 }}>
-                <Btn
+                <AccentBtn
                   height={26}
                   size={11}
                   onClick={() => void s.saveAskTpl()}
                   description="保存询问提示词"
                 >
                   保存
-                </Btn>
+                </AccentBtn>
               </div>
               <div style={{ flex: "1 1 0", minWidth: 0 }}>
-                <Btn
+                <AccentBtn
                   height={26}
                   size={11}
                   onClick={() => s.setAskTplEdit(s.askTplDefault)}
                   description="恢复默认询问提示词"
                 >
                   恢复默认
-                </Btn>
+                </AccentBtn>
               </div>
             </div>
 
@@ -2188,24 +2211,24 @@ export default function QamScreen() {
             </Focusable>
             <div style={{ display: "flex", gap: 6, width: "100%" }}>
               <div style={{ flex: "1 1 0", minWidth: 0 }}>
-                <Btn
+                <AccentBtn
                   height={26}
                   size={11}
                   onClick={() => void s.saveTranslateTpl()}
                   description="保存翻译提示词"
                 >
                   保存
-                </Btn>
+                </AccentBtn>
               </div>
               <div style={{ flex: "1 1 0", minWidth: 0 }}>
-                <Btn
+                <AccentBtn
                   height={26}
                   size={11}
                   onClick={() => s.setTranslateTplEdit(s.translateTplDefault)}
                   description="恢复默认翻译提示词"
                 >
                   恢复默认
-                </Btn>
+                </AccentBtn>
               </div>
             </div>
 
@@ -2227,20 +2250,20 @@ export default function QamScreen() {
                   : (s.status?.game_name ? "暂无" : "未运行游戏")}
               </div>
               <div style={{ flex: "0 0 96px", width: 96 }}>
-                <Btn
+                <AccentBtn
                   height={26}
                   size={11}
                   onClick={() => void s.savePreset()}
                   description="把当前生效提示词保存为当前游戏的预设"
                 >
                   存为预设
-                </Btn>
+                </AccentBtn>
               </div>
             </div>
-          </Card>
+          </AccentCard>
 
           {/* 连接 */}
-          <Card title="连接" accent={s.accent}>
+          <AccentCard title="连接">
             <div
               style={{
                 display: "grid",
@@ -2297,7 +2320,7 @@ export default function QamScreen() {
               />
             </div>
             {!coreRunning && (
-              <Btn
+              <AccentBtn
                 height={26}
                 size={11}
                 primary
@@ -2306,12 +2329,12 @@ export default function QamScreen() {
                 description="启动后端"
               >
                 {s.starting ? "正在启动后端…" : "启动后端"}
-              </Btn>
+              </AccentBtn>
             )}
-          </Card>
+          </AccentCard>
 
           {/* 维护 */}
-          <Card title="维护" accent={s.accent}>
+          <AccentCard title="维护">
             <div style={{ display: "flex", flexDirection: "column", gap: 3, width: "100%" }}>
               {s.logs.length ? (
                 s.logs.slice(0, 3).map((e, i) => (
@@ -2344,7 +2367,7 @@ export default function QamScreen() {
 
             <div style={{ display: "flex", gap: 6, width: "100%" }}>
               <div style={{ flex: "1 1 0", minWidth: 0 }}>
-                <Btn
+                <AccentBtn
                   height={26}
                   size={11}
                   primary={!coreRunning}
@@ -2353,10 +2376,10 @@ export default function QamScreen() {
                   description="启动核心"
                 >
                   {s.starting ? "核心启动中…" : "启动核心"}
-                </Btn>
+                </AccentBtn>
               </div>
               <div style={{ flex: "1 1 0", minWidth: 0 }}>
-                <Btn
+                <AccentBtn
                   height={26}
                   size={11}
                   disabled={!coreRunning || s.starting || s.restarting || s.killing}
@@ -2364,10 +2387,10 @@ export default function QamScreen() {
                   description="重启核心"
                 >
                   {s.restarting ? "核心重启中…" : "重启核心"}
-                </Btn>
+                </AccentBtn>
               </div>
               <div style={{ flex: "1 1 0", minWidth: 0 }}>
-                <Btn
+                <AccentBtn
                   height={26}
                   size={11}
                   disabled={!coreRunning || s.starting || s.restarting || s.killing}
@@ -2375,13 +2398,13 @@ export default function QamScreen() {
                   description="关闭核心"
                 >
                   {s.killing ? "核心关闭中…" : "关闭核心"}
-                </Btn>
+                </AccentBtn>
               </div>
             </div>
 
             {/* 开机自启开关：关掉后插件加载/开机不再自动拉起后端，省下一份常驻内存，
                 要用时点上面的「启动核心」。这一只是长期设置，和「关闭核心」的临时停止分开 */}
-            <SwitchRow
+            <AccentSwitch
               label="开机自动启动后端"
               description={
                 s.status?.autostart === false
@@ -2394,7 +2417,7 @@ export default function QamScreen() {
 
             <div style={{ display: "flex", gap: 6, width: "100%" }}>
               <div style={{ flex: "1 1 0", minWidth: 0 }}>
-                <Btn
+                <AccentBtn
                   height={26}
                   size={11}
                   disabled={s.busy || s.newing}
@@ -2402,12 +2425,12 @@ export default function QamScreen() {
                   description="新会话"
                 >
                   {s.newing ? "新建中…" : "新会话"}
-                </Btn>
+                </AccentBtn>
               </div>
               <div style={{ flex: "1 1 0", minWidth: 0 }}>
-                <Btn height={26} size={11} onClick={s.openBigScreen} description="打开大屏">
+                <AccentBtn height={26} size={11} onClick={s.openBigScreen} description="打开大屏">
                   打开大屏
-                </Btn>
+                </AccentBtn>
               </div>
             </div>
 
@@ -2421,7 +2444,7 @@ export default function QamScreen() {
                   ? "已关闭开机自启：重启后不会自动起，点「启动核心」手动拉起。"
                   : "关闭核心后保持停止；「重启核心」只在运行中可用。"}
             </div>
-          </Card>
+          </AccentCard>
         </Focusable>
       )}
     </>
