@@ -1675,6 +1675,20 @@ export default function QamScreen() {
               </Btn>
             </div>
           </div>
+          {/* 长期设置：关掉后开机/插件加载都不再自动拉起后端，要用时手动启动。
+              和上面的「停止后端」不同——那个只是这次先关掉 */}
+          <Btn
+            onClick={() => void s.setAutostart(s.status?.autostart === false)}
+            description={s.status?.autostart === false ? "开启开机自启" : "关闭开机自启"}
+            style={{
+              background:
+                s.status?.autostart === false ? "rgba(255,255,255,.05)" : "rgba(26,159,255,.16)",
+            }}
+          >
+            {s.status?.autostart === false
+              ? "开机自启：关（点此开启）"
+              : "开机自启：开（点此关闭）"}
+          </Btn>
           <Btn height={26} size={11} onClick={s.openBigScreen} description="打开大屏">
             打开大屏
           </Btn>
