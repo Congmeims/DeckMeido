@@ -358,11 +358,21 @@ TOOLS: list[dict] = [
                             "用户说「放首歌」「来点周杰伦」「播放稻香」时用它，不要用 run_command 调播放器。"
                             "只想确认是哪一首、先别放：带上 dry_run=true，只返回候选列表。"
                             "结果说「是 XXX 吗」表示有多个相近候选：把这句话原样问用户，"
-                            "用户点头后再调一次并把 confirm 设为 false"),
+                            "用户点头后再调一次并把 confirm 设为 false。"
+                            "用户要连着放好几首（「放 20 首周杰伦」「把这些歌都放上」）："
+                            "queries 填一组歌名/歌手/「歌手 歌名」，或 query 填歌手再带 count，"
+                            "一次调用整批入队，不要逐首反复调用"),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "歌名、歌手或「歌手 歌名」"},
+                    "query": {"type": "string",
+                              "description": "歌名、歌手或「歌手 歌名」；和 queries 二选一"},
+                    "queries": {"type": "array", "items": {"type": "string"},
+                                "description": ("整批点播：一组关键词，按顺序入队并播放第一首。"
+                                                "和 query 二选一，最多 30 条")},
+                    "count": {"type": "integer",
+                              "description": ("整批点播的数量：query 填歌手时取这个歌手的前 count 首"
+                                              "（最多 30）。只配 query 用")},
                     "confirm": {"type": "boolean",
                                 "description": "默认 true；上一次返回「是 XXX 吗」且用户确认后，这一次传 false"},
                     "dry_run": {"type": "boolean",
@@ -4063,7 +4073,7 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
         if sig in hashes or sig in seen:
             continue
         try:
-            cid, _ext = await asyncio.to_thread(themecolor.save_candidate, raw)
+            cid, _ext = await asyncio.to_thread(themecolor.save_candidate, raw, False)
         except ValueError as e:
             last_err = str(e) or last_err
             continue
@@ -4087,6 +4097,9 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
                 "。换一组更通用的关键词再搜一次（例如 scenic landscape、anime wallpaper），"
                 "或者直接用 set_wallpaper 指定一张图片网址。")
     LAST_CANDIDATES[:] = picked
+    # 整批落盘之后再裁一次旧图：这时这批 id 已经进了 LAST_CANDIDATES，
+    # 引用扫描认得出它们，不会被当成孤儿删掉
+    await asyncio.to_thread(themecolor._trim_candidates)
     global _BATCH_NO
     _BATCH_NO += 1
     # 这一批的图记进已出名单（URL + 内容指纹），之后「换一批」时全部避让
@@ -4184,14 +4197,20 @@ def _song_line(song: dict, index: int) -> str:
     return f"{index}. {name}" + (f" - {singer}" if singer else "")
 
 
-async def _music_play(query: str, confirm: bool = True, dry_run: bool = False,
-                      limit: int = 5) -> str:
+async def _music_play(query: str = "", confirm: bool = True, dry_run: bool = False,
+                      limit: int = 5, queries: list | None = None,
+                      count: int | None = None) -> str:
     """搜 + 匹配 + 开播 + 回读确认，一步到位。歧义时先问，不擅自放。
 
     dry_run=True 时只把候选列表回给模型（原 music_search 的用法）。
+    queries（一组关键词）或 query + count（按歌手取前 count 首）走整批：
+    解析完一次 play_queue 全部入队，播放第一首。
     """
     from . import media
     query = str(query or "").strip()
+    wants = [str(q or "").strip() for q in (queries or []) if str(q or "").strip()]
+    if wants or (query and count):
+        return await _music_play_batch(query, wants, count)
     if not query:
         return "要放什么？给我歌名或歌手。"
     if dry_run:
@@ -4219,6 +4238,126 @@ async def _music_play(query: str, confirm: bool = True, dry_run: bool = False,
         # 放不了的时候给模型一个明确的下一步，别让它反复重试同一首
         return f"「{plan.label}」没放出来：{exc.reason}。跟用户说一声，可以换一首或搜同歌手的其他歌。"
     return f"已经在放了：{plan.label}"
+
+
+def _pick_batch_songs(query: str, songs: list, want: int) -> list[dict]:
+    """按歌手/关键词挑一整批：先去重，同歌手优先，其次按关键词相关度。"""
+    from . import media
+
+    def singer_of(song: dict) -> str:
+        return str(song.get("singer") or "")
+
+    # 搜索结果只有 mid（网易云的歌曲编号），id 是 resolve_song 之后才有的；
+    # 这里按 mid 去重和传参，play_queue 认的就是 mid
+    for song in songs:
+        if not str(song.get("id") or "").strip() and str(song.get("mid") or "").strip():
+            song["id"] = str(song["mid"])
+    primary = [song for song in songs if query in singer_of(song)]
+    pool = primary if primary else songs
+    seen = set()
+    rows = []
+    for song in pool:
+        key = str(song.get("id") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        rows.append((media.score_song(query, song), song))
+    rows.sort(key=lambda p: (
+        query not in singer_of(p[1]),
+        -p[0],
+    ))
+    return [song for _, song in rows[:want]]
+
+
+def _batch_queue_ready(items: list) -> bool:
+    """队列里是不是已经有这批歌（用于建队回读失败后的复查）"""
+    from . import media
+    try:
+        queue = media._rpc("get_queue")
+    except Exception:
+        return False
+    have = [str(it.get("id") or "")
+            for it in ((queue.get("items") if isinstance(queue, dict) else None) or [])
+            if isinstance(it, dict)]
+    return all(str(it.get("id") or "") in have for it in items)
+
+
+async def _music_play_batch(query: str, wants: list, count: int | None) -> str:
+    """整批点播：解析成一组歌，一次 play_queue 全部入队并播放第一首。
+
+    与逐首调用的区别：只发一次建队请求，队列里不会因为反复调用堆出重复项
+    （之前「放 20 首」留下 23 首、里面夹着几个重复的江南）。
+    """
+    from . import media
+    try:
+        limit = int(count or len(wants) or 20)
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 30))
+    items: list[dict] = []
+    missed: list[str] = []
+    seen: set = set()
+
+    def take(song: dict) -> None:
+        key = str(song.get("id") or "")
+        if not key or key in seen:
+            return
+        seen.add(key)
+        items.append(song)
+
+    try:
+        if wants:
+            # 先各自搜一遍；只有所有关键词都没搜到时，才可能是播放器/曲库离线
+            offline = []
+            for w in wants[:limit]:
+                try:
+                    found = await asyncio.to_thread(media.search_songs, w)
+                except media.MediaError as exc:
+                    offline.append(str(exc.reason))
+                    found = []
+                # 一条关键词也按歌手批处理那套挑：直接取第一条会混进同名翻唱
+                # （「江南」搜出来第一条常常是 Jason Chen 的）
+                picked = _pick_batch_songs(w, found, 1)
+                if not picked:
+                    missed.append(w)
+                    continue
+                take(picked[0])
+            if not items and offline and not missed:
+                return f"{_music_offline()}（{offline[0]}）"
+        if len(items) < limit and query:
+            try:
+                songs = await asyncio.to_thread(media.search_songs, query)
+            except media.MediaError as exc:
+                if not items:
+                    return f"{_music_offline()}（{exc.reason}）"
+                songs = []
+            for song in _pick_batch_songs(query, songs, limit):
+                take(song)
+                if len(items) >= limit:
+                    break
+    except Exception as exc:  # 兜底：不能因为批量链路把整轮对话打断
+        return f"整批点歌失败：{exc}"
+    if not items:
+        what = query or "、".join(wants[:3])
+        return f"曲库里没搜到「{what}」。"
+    try:
+        await asyncio.to_thread(media.play_plan, items)
+    except media.MediaError as exc:
+        # 建队请求可能已经到插件、只是回读超时/连接抖了一下：这时队列里其实
+        # 已经有这批歌了，再让用户点一次就会叠成两份。先复查当前队列再决定措辞
+        if await asyncio.to_thread(_batch_queue_ready, items):
+            head = items[0]
+            return (f"已整批入队 {len(items)} 首：{_song_line(head, 1)}"
+                    f"（回读确认那一步没拿到结果：{exc.reason}）")
+        return f"整批点歌没放出来：{exc.reason}。跟用户说一声，可以换一批或先检查播放器。"
+    head = items[0]
+    lines = [f"已整批入队 {len(items)} 首，正在放第 1 首：{_song_line(head, 1)}"]
+    if len(items) > 1:
+        lines.append("后面 " + "、".join(
+            str(s.get("name") or "") for s in items[1:4]) + ("等" if len(items) > 4 else ""))
+    if missed:
+        lines.append("没找到：" + "、".join(missed[:5]))
+    return "\n".join(lines)
 
 
 async def _music_control(action: str) -> str:

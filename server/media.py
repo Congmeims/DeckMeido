@@ -858,12 +858,32 @@ def _verify_playing(item: dict) -> None:
             "没放出来")
 
 
-def play_plan(item: dict | None) -> None:
-    """放一首歌，并回读确认真的开始播放。
+def play_plan(item: dict | list | None) -> None:
+    """放一首（或一批）歌，并回读确认真的开始播放。
 
-    队列是普通模式且当前有位置：插到当前下一首再跳过去，用户原来的队列保留；
-    电台模式（插入会被插件静默忽略）或空队列：直接用它开一个新队列。
+    单首：队列是普通模式且当前有位置时插到当前下一首再跳过去，用户原来的
+    队列保留；电台模式（插入会被插件静默忽略）或空队列：直接用它开新队列。
+
+    一批（list）：整批一次 `play_queue(items, 0)` 开新队列，第一首就是传进来的
+    第一首。以前「放 20 首」只能一次一首地插队，重复调用还会把同一批歌
+    反复插进队列（出现 23 首里夹着几个重复的江南），整批一次建队不会有这问题。
     """
+    if isinstance(item, list):
+        items = [it for it in item
+                 if isinstance(it, dict) and str(it.get("id") or "").strip()]
+        if not items:
+            raise MediaError("点播计划不完整", "播放失败")
+        if len(items) == 1:
+            play_plan(items[0])
+            return
+        with _lock:
+            _rpc("play_queue", items, 0)
+            devlog.log("media.song.play", id=str(items[0].get("id")),
+                       name=str(items[0].get("name") or ""), route="batch",
+                       count=len(items))
+            # 回读确认第一首真的开播；失败时不重试整批，交给调用方如实报
+            _verify_playing(items[0])
+        return
     if not isinstance(item, dict) or not str(item.get("id") or "").strip():
         raise MediaError("点播计划不完整", "播放失败")
     with _lock:
