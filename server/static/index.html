@@ -1155,7 +1155,7 @@
         </section>
 
         <section class="set-pane on" data-pane="about">
-          <h3>关于更新</h3>
+          <h3>通用设置</h3>
           <p class="pane-desc">界面偏好、壁纸外观，以及版本信息与升级渠道。升级会保留配置、会话与长期记忆。</p>
           <h4 class="set-sect">界面偏好</h4>
           <div class="card">
@@ -1220,32 +1220,46 @@
             </div>
           </div>
           <div class="card">
-            <div class="card-title">配色来源</div>
-            <div class="wall-grid">
-              <div class="field">
-                <label>从壁纸自动取色</label>
-                <div class="field-hint" id="wallPaletteHint">导入壁纸后会自动取主色，生成浅色 / 深色 / 暗黑三套配色。</div>
-              </div>
-              <div class="field">
-                <div class="wall-color-head">
-                  <label for="wallColor">手动改强调色</label>
-                  <button id="wallColorReset" class="mini-btn ghost" type="button">恢复默认</button>
-                </div>
-                <div class="wall-color-row">
-                  <!-- 色值和取色块、应用排同一行，色值在前 -->
-                  <input id="wallColorHex" class="wall-hex" type="text" maxlength="7"
-                         spellcheck="false" autocomplete="off" value="#1a9fff"
-                         aria-label="强调色色值">
-                  <input id="wallColor" type="color" value="#1a9fff" aria-label="选颜色">
-                  <button id="wallColorApply" class="mini-btn" type="button">应用</button>
-                </div>
-                <!-- 示例：真实的按钮 / 气泡 / 链接，颜色跟着所选色值实时变 -->
-                <div class="wall-swatch" id="wallSwatch" aria-hidden="true">
-                  <span class="ws-btn">按钮</span>
-                  <span class="ws-bubble">气泡</span>
-                  <span class="ws-link">链接</span>
+            <div class="card-title">配色</div>
+            <!-- 上图下色：预览复刻对话页的骨架（顶栏 / 侧栏 / 气泡 / 输入框），
+                 下面并排三档主题各自的强调色和底色，一眼能看出「换个明暗档会变成什么样」，
+                 再往下才是手动取色。色块由脚本按后端下发的调色板填，不在 HTML 里写死 -->
+            <div class="colr-preview" id="colrPreview" aria-hidden="true">
+              <div class="cp-bar"><i></i><b>Lumine</b><span></span></div>
+              <div class="cp-body">
+                <div class="cp-side"><i class="on"></i><i></i><i></i><i></i></div>
+                <div class="cp-main">
+                  <span class="cp-bub user">今晚想听什么？</span>
+                  <span class="cp-bub ai">放一张歌单，<em>边听边聊</em>。</span>
+                  <span class="cp-inp"><i></i></span>
                 </div>
               </div>
+              <div class="cp-tag" id="colrPreviewTag">当前：深色</div>
+            </div>
+            <div class="field-hint" id="colrPreviewHint">预览里的颜色跟着下面三档实际配色走，切换明暗档会一起变。</div>
+
+            <div class="colr-sect">
+              <div class="colr-head">
+                <span>自动配色</span>
+                <span class="colr-head-note" id="colrSourceNote">未选壁纸，暂用默认强调色</span>
+              </div>
+              <div class="colr-modes" id="colrModes"></div>
+            </div>
+
+            <div class="colr-sect">
+              <div class="colr-head">
+                <span>手动设置</span>
+                <button id="wallColorReset" class="mini-btn ghost" type="button">跟随壁纸</button>
+              </div>
+              <div class="wall-color-row">
+                <input id="wallColor" type="color" value="#1a9fff" aria-label="选颜色">
+                <input id="wallColorHex" class="wall-hex" type="text" maxlength="7"
+                       spellcheck="false" autocomplete="off" value="#1a9fff"
+                       aria-label="强调色色值">
+                <button id="wallColorApply" class="mini-btn" type="button">应用</button>
+              </div>
+              <div class="wall-color-row colr-presets" id="colrPresets"></div>
+              <div class="field-hint" id="wallPaletteHint">强调色会按明暗档自动调亮或压暗，保证文字看得清。</div>
             </div>
           </div>
           <h4 class="set-sect">运行与更新</h4>
@@ -11611,7 +11625,7 @@
   var setNav = document.getElementById('setNav');
   [['model', '模型接入'], ['persona', '女仆人设'],
    ['voice', '语音引擎'], ['external', '外部连接'],
-   ['plugin', '插件设置'], ['about', '关于更新']].forEach(function (it) {
+   ['plugin', '插件设置'], ['about', '通用设置']].forEach(function (it) {
     var b = document.createElement('button');
     b.type = 'button';
     b.className = 'set-tab';
@@ -11653,9 +11667,8 @@
   // 拖着（或刚松手，广播还在路上），这种时候不能把表单刷回去，
   // 只接受后端已经落盘的那一个值；本端拖完的那次保存回来时会带上最终值
   function renderAppearanceForm(theme, remote) {
-    // 没打开过设置页时这些节点还没初始化（整段脚本是顺序执行的），
-    // 此时只做页面层面的渲染，跳过表单同步；等进设置页会按快照补画
-    if (!wallPreview) return;
+    // 只在两个地方早退：快照坏了，或表单还没初始化过。
+    // 配色板不依赖壁纸预览节点，所以要在第二个判空之前先画出来
     if (!theme || theme.error) {
       syncThemeBtn(document.documentElement.getAttribute('data-theme'));
       return;
@@ -11663,6 +11676,9 @@
     theme = themeScale(theme);
     var a = theme;
     CFG_APPEARANCE = a;
+    // 以下是把快照回填到表单，需要节点存在（脚本首次执行时快照还没到，
+    // 那时这里只留个快照，进设置页时会按它重画）
+    if (!wallPreview) return;
     if (a.thumb) {
       // 有壁纸：图 + 右下角撤销（原来那个「撤销壁纸」按钮挪到这里）。
       // 先出 480px 缩略图（几十 KB），再换长边 960 的中间图；几 MB 的原图
@@ -11735,14 +11751,13 @@
       // 主色可能已被「恢复默认强调色」改过，和壁纸取到的原主色不同
       wallColor.value = brand;
       document.getElementById('wallColorHex').value = brand;
-      paintSwatch(brand);
       wallPaletteHint.textContent = a.source && brand !== a.source
         ? '当前主色 ' + brand + '（手动调整）'
-        : '当前主色 ' + brand + '，三套配色已自动生成。';
+        : '当前主色 ' + brand;
     } else {
-      wallPaletteHint.textContent = UPLOAD_HINT;
-      paintSwatch('');
+      wallPaletteHint.textContent = '强调色会按明暗档自动调亮或压暗，保证文字看得清。';
     }
+    paintPaletteBoard(theme, brand);
     // 撤销按钮在预览框里，每次渲染都会重建；用委托绑定，别在渲染里逐个挂
     syncThemeBtn(document.documentElement.getAttribute('data-theme'));
   }
@@ -12036,10 +12051,90 @@
         }
       }).catch(function () { wallHint.textContent = '导入失败，请重试'; });
   });
-  document.getElementById('wallColorApply').addEventListener('click', function () {
-    var hex = syncWallColorHex();
-    if (!hex) { wallPaletteHint.textContent = '色值要写成 #rrggbb'; return; }
-    apiFetch('/api/theme/palette', {
+  // ---------- 配色板：预览 + 三档 + 手动取色 ----------
+  // 快照里的 palette 就是后端生成的三套（light / dark / oled），
+  // 这里只负责把它画出来，任何颜色都不在前端另算一遍
+  var PALETTE_MODES = [
+    { k: 'light', name: '浅色' },
+    { k: 'dark', name: '深色' },
+    { k: 'oled', name: '暗黑' }
+  ];
+  // 常用色：够用就行，不上整套色轮，省得用户还得自己想色值
+  var PALETTE_PRESETS = ['#1a9fff', '#b48b9a', '#5fd3a5', '#e8894a', '#9b7bd4', '#d9534f'];
+
+  function paintPaletteBoard(a, brand) {
+    var modes = document.getElementById('colrModes');
+    var presets = document.getElementById('colrPresets');
+    var pv = document.getElementById('colrPreview');
+    if (!modes || !presets) return;
+    var pal = (a && a.palette) || {};
+    var cur = String(document.documentElement.getAttribute('data-theme') || 'dark');
+    if (cur === 'light') cur = 'light'; else if (cur === 'oled') cur = 'oled'; else cur = 'dark';
+
+    // 三档色卡：强调色块 + 底色块 + 名字。当前档描一圈外框
+    modes.innerHTML = '';
+    PALETTE_MODES.forEach(function (m) {
+      var p = pal[m.k] || {};
+      var on = m.k === cur;
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'colr-mode' + (on ? ' on' : '');
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.innerHTML =
+        '<span class="cm-chips">'
+        + '<i style="background:' + escapeHtml(p.brand || '#1a9fff') + '"></i>'
+        + '<i style="background:' + escapeHtml(p.user_bubble || p.brand || '#1a9fff') + '"></i>'
+        + '<i style="background:' + escapeHtml(p.bg || '#151719') + '"></i>'
+        + '<i style="background:' + escapeHtml(p.surface || '#1d2024') + '"></i>'
+        + '</span>'
+        + '<span class="cm-name">' + m.name + '</span>';
+      b.addEventListener('click', function () {
+        applyTheme(m.k);
+        paintPaletteBoard(CFG_APPEARANCE, brand);
+      });
+      modes.appendChild(b);
+    });
+
+    // 预览：把当前档的底色/气泡色直接落到预览框里（内联变量，不碰全局主题）
+    if (pv) {
+      var cp = pal[cur] || {};
+      var on = PALETTE_MODES.filter(function (m) { return m.k === cur; })[0];
+      pv.style.setProperty('--cp-bg', cp.bg || '#151719');
+      pv.style.setProperty('--cp-surface', cp.surface || '#1d2024');
+      pv.style.setProperty('--cp-accent', cp.brand || '#1a9fff');
+      pv.style.setProperty('--cp-bubble', cp.user_bubble || cp.brand || '#1a9fff');
+      var tag = document.getElementById('colrPreviewTag');
+      if (tag) tag.textContent = '当前：' + (on ? on.name : cur);
+    }
+
+    // 来源说明：有壁纸就报出处，没有就说在用默认色
+    var src = document.getElementById('colrSourceNote');
+    if (src) {
+      if (a && a.source && brand && brand !== a.source) src.textContent = '壁纸取色 ' + a.source + '，已手动调整';
+      else if (a && a.source) src.textContent = '取自壁纸 ' + a.source;
+      else src.textContent = '未选壁纸，使用默认强调色';
+    }
+
+    presets.innerHTML = '';
+    PALETTE_PRESETS.forEach(function (hex) {
+      var sw = document.createElement('button');
+      sw.type = 'button';
+      sw.className = 'colr-preset' + (hex === brand ? ' on' : '');
+      sw.style.background = hex;
+      sw.title = hex;
+      sw.setAttribute('aria-label', '使用 ' + hex);
+      sw.addEventListener('click', function () {
+        document.getElementById('wallColorHex').value = hex;
+        wallColor.value = hex;
+        applyPalette(hex);
+      });
+      presets.appendChild(sw);
+    });
+  }
+
+  // 统一的应用入口：色块、色值、预设三处都走这里，省得各写一遍
+  function applyPalette(hex, quiet) {
+    return apiFetch('/api/theme/palette', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ brand: hex })
     }).then(function (r) { return r.json(); })
@@ -12047,17 +12142,13 @@
         if (d && d.ok) {
           renderAppearanceForm(d.theme);
           applyCfgAppearance(d.theme);
-        } else {
+        } else if (!quiet) {
           wallPaletteHint.textContent = (d && d.error) || '应用失败';
         }
       }).catch(function () {});
-  });
-  // 色块与色值互相跟随：拖色块立刻改示例、改色值；色值框回车或失焦时校验并回填
-  function paintSwatch(hex) {
-    var sw = document.getElementById('wallSwatch');
-    if (!sw) return;
-    if (hex) sw.style.setProperty('--sw', hex); else sw.style.removeProperty('--sw');
   }
+  // 兼容旧调用点：以前只画那个小示例条，现在整块配色板一起刷
+  function paintSwatch() { paintPaletteBoard(CFG_APPEARANCE, wallColor.value); }
   function syncWallColorHex() {
     var t = document.getElementById('wallColorHex');
     var v = String(t.value || '').trim();
@@ -12070,13 +12161,32 @@
     paintSwatch(v);
     return v;
   }
+  // 取色器拖一下就是几十个 input：只更新色值和预览框，不发请求；
+  // 松手（change）才真正落盘
   wallColor.addEventListener('input', function () {
     document.getElementById('wallColorHex').value = wallColor.value;
-    paintSwatch(wallColor.value);
+    wallPaletteHint.textContent = '预览中，松手后应用';
   });
-  document.getElementById('wallColorHex').addEventListener('change', function () {
-    if (!syncWallColorHex()) wallPaletteHint.textContent = '色值要写成 #rrggbb';
+  wallColor.addEventListener('change', function () {
+    applyPalette(wallColor.value);
   });
+  document.getElementById('wallColorApply').addEventListener('click', function () {
+    var v = syncWallColorHex();
+    if (!v) { wallPaletteHint.textContent = '色值要写成 #rrggbb'; return; }
+    applyPalette(v);
+  });
+  document.getElementById('wallColorHex').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') document.getElementById('wallColorApply').click();
+  });
+  // 进设置页时按当前快照补画一次：脚本首次执行时快照可能还没到，
+  // 那时这些节点还不存在，paintPaletteBoard 只能拿默认色占位。
+  // 放在表单变量初始化之后，节点已经在 DOM 里了；快照的压暗刻度
+  // 可能还没换算过，所以先过一遍 themeScale
+  (function () {
+    var snap = themeScale(CFG_APPEARANCE);
+    paintPaletteBoard(snap,
+      snap.palette && snap.palette.dark ? snap.palette.dark.brand : '');
+  })();
   document.getElementById('wallColorReset').addEventListener('click', function () {
     var cur = CFG_APPEARANCE || {};
     if (!cur.source) {
@@ -15752,6 +15862,12 @@
     document.documentElement.setAttribute('data-theme', t);
     try { localStorage.setItem('deckmeido_theme', t); } catch (e) {}
     syncThemeBtn(t);
+    // 设置页里的配色板要跟着换「当前」标记和预览配色；节点还没建时静默跳过
+    if (typeof paintPaletteBoard === 'function' && typeof CFG_APPEARANCE === 'object') {
+      paintPaletteBoard(CFG_APPEARANCE,
+        CFG_APPEARANCE.palette && CFG_APPEARANCE.palette.dark
+          ? CFG_APPEARANCE.palette.dark.brand : '');
+    }
     // 外观（主题 / 压暗 / 模糊 / 毛玻璃）以后端为准：本端主动切档就写回配置，
     // 别的端收到 theme_changed 广播后跟着换。fromRemote = 已经是后端推来的值，
     // 不再回写，免得两端来回广播
@@ -16725,9 +16841,9 @@
       body: '侧栏那排就是全部设置：<ul>'
         + '<li><b>外部连接</b>：手机、外接设备、端口</li>'
         + '<li><b>插件设置</b>：Decky 插件端与大屏页</li>'
-        + '<li><b>关于更新</b>：版本、界面语言、离线模式、检查更新</li></ul>'
+        + '<li><b>通用设置</b>：界面语言、壁纸外观、版本与检查更新</li></ul>'
         + '以后想找我，点侧栏底部的 <b>设置</b> 就行；随时按「跳过」我也不会多嘴。',
-      art: ['外部连接', '插件设置', '关于更新'],
+      art: ['外部连接', '插件设置', '通用设置'],
     },
     {
       title: '⑥ 那么，主人请吩咐',

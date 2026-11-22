@@ -64,6 +64,7 @@ EN: dict[str, str] = {
     "设备": "Device",
     "远程访问": "Remote access",
     "关于更新": "About & updates",
+    "通用设置": "General",
     "界面语言": "Language",
     "版本": "Version",
     "更新源": "Update sources",
