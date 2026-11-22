@@ -1243,7 +1243,10 @@
                 <span>自动配色</span>
                 <span class="colr-head-note" id="colrSourceNote">未选壁纸，暂用默认强调色</span>
               </div>
-              <div class="colr-modes" id="colrModes"></div>
+              <!-- 三排 × 五格：壁纸量化出的 15 色按亮度切三段，最暗给暗黑、
+                   居中给深色、最亮给浅色。每格对应一个固定槽位，点哪格改哪格 -->
+              <div class="colr-board" id="colrBoard"></div>
+              <div class="colr-slots" id="colrSlots"></div>
             </div>
 
             <div class="colr-sect">
@@ -12051,7 +12054,7 @@
         }
       }).catch(function () { wallHint.textContent = '导入失败，请重试'; });
   });
-  // ---------- 配色板：预览 + 三档 + 手动取色 ----------
+  // ---------- 配色板：预览 + 三档 × 五格 + 手动取色 ----------
   // 快照里的 palette 就是后端生成的三套（light / dark / oled），
   // 这里只负责把它画出来，任何颜色都不在前端另算一遍
   var PALETTE_MODES = [
@@ -12059,52 +12062,87 @@
     { k: 'dark', name: '深色' },
     { k: 'oled', name: '暗黑' }
   ];
+  // 五个槽位的名字，顺序与后端 slots / tiers 一致
+  var PALETTE_SLOTS = ['底', '面板', '第二层', '强调', '气泡'];
   // 常用色：够用就行，不上整套色轮，省得用户还得自己想色值
   var PALETTE_PRESETS = ['#1a9fff', '#b48b9a', '#5fd3a5', '#e8894a', '#9b7bd4', '#d9534f'];
+  // 正在改的那一格：{ tier, idx }；null 表示没在改
+  var colrEdit = null;
 
   function paintPaletteBoard(a, brand) {
-    var modes = document.getElementById('colrModes');
+    var board = document.getElementById('colrBoard');
+    var slots = document.getElementById('colrSlots');
     var presets = document.getElementById('colrPresets');
     var pv = document.getElementById('colrPreview');
-    if (!modes || !presets) return;
+    if (!board || !presets) return;
     var pal = (a && a.palette) || {};
     var cur = String(document.documentElement.getAttribute('data-theme') || 'dark');
-    if (cur === 'light') cur = 'light'; else if (cur === 'oled') cur = 'oled'; else cur = 'dark';
+    if (cur !== 'light' && cur !== 'oled') cur = 'dark';
+    var hasTiers = !!(pal.slots && (pal.slots.dark || []).length);
 
-    // 三档色卡：强调色块 + 底色块 + 名字。当前档描一圈外框
-    modes.innerHTML = '';
+    // 三排：每排一档，五个色格按槽位排列。当前档描一圈
+    board.innerHTML = '';
     PALETTE_MODES.forEach(function (m) {
-      var p = pal[m.k] || {};
-      var on = m.k === cur;
-      var b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'colr-mode' + (on ? ' on' : '');
-      b.setAttribute('aria-pressed', on ? 'true' : 'false');
-      b.innerHTML =
-        '<span class="cm-chips">'
-        + '<i style="background:' + escapeHtml(p.brand || '#1a9fff') + '"></i>'
-        + '<i style="background:' + escapeHtml(p.user_bubble || p.brand || '#1a9fff') + '"></i>'
-        + '<i style="background:' + escapeHtml(p.bg || '#151719') + '"></i>'
-        + '<i style="background:' + escapeHtml(p.surface || '#1d2024') + '"></i>'
-        + '</span>'
-        + '<span class="cm-name">' + m.name + '</span>';
-      b.addEventListener('click', function () {
+      var five = (pal.slots && pal.slots[m.k]) || null;
+      if (!five) {
+        // 没有壁纸/颜色太少：这一档退回单色推导，五格画同一套派生值
+        var p0 = pal[m.k] || {};
+        five = [p0.bg, p0.surface, p0.surface_2, p0.brand, p0.user_bubble];
+      }
+      var row = document.createElement('div');
+      row.className = 'cb-row' + (m.k === cur ? ' on' : '');
+      var head = document.createElement('button');
+      head.type = 'button';
+      head.className = 'cb-name';
+      head.textContent = m.name;
+      head.title = '切到' + m.name;
+      head.addEventListener('click', function () {
         applyTheme(m.k);
         paintPaletteBoard(CFG_APPEARANCE, brand);
       });
-      modes.appendChild(b);
+      row.appendChild(head);
+      var chips = document.createElement('span');
+      chips.className = 'cb-chips';
+      five.forEach(function (hex, i) {
+        var c = document.createElement('button');
+        c.type = 'button';
+        c.className = 'cb-chip';
+        c.style.background = escapeHtml(hex || '#000000');
+        c.title = m.name + ' · ' + PALETTE_SLOTS[i] + ' ' + (hex || '');
+        c.setAttribute('aria-label', m.name + PALETTE_SLOTS[i] + '：' + (hex || ''));
+        c.addEventListener('click', function () {
+          if (!hasTiers) {
+            wallPaletteHint.textContent = '这一档来自单色推导，先选一张颜色更丰富的壁纸才能逐格改。';
+            return;
+          }
+          pickSlot(m.k, i);
+        });
+        chips.appendChild(c);
+      });
+      row.appendChild(chips);
+      board.appendChild(row);
     });
+
+    // 槽位名一行，和上面的色格列对齐
+    if (slots) {
+      slots.innerHTML = '';
+      PALETTE_SLOTS.forEach(function (n) {
+        var s = document.createElement('span');
+        s.textContent = n;
+        slots.appendChild(s);
+      });
+    }
 
     // 预览：把当前档的底色/气泡色直接落到预览框里（内联变量，不碰全局主题）
     if (pv) {
       var cp = pal[cur] || {};
-      var on = PALETTE_MODES.filter(function (m) { return m.k === cur; })[0];
+      var onm = PALETTE_MODES.filter(function (m) { return m.k === cur; })[0];
       pv.style.setProperty('--cp-bg', cp.bg || '#151719');
       pv.style.setProperty('--cp-surface', cp.surface || '#1d2024');
       pv.style.setProperty('--cp-accent', cp.brand || '#1a9fff');
       pv.style.setProperty('--cp-bubble', cp.user_bubble || cp.brand || '#1a9fff');
       var tag = document.getElementById('colrPreviewTag');
-      if (tag) tag.textContent = '当前：' + (on ? on.name : cur);
+      if (tag) tag.textContent = '当前：' + (onm ? onm.name : cur);
     }
 
     // 来源说明：有壁纸就报出处，没有就说在用默认色
@@ -12130,6 +12168,46 @@
       });
       presets.appendChild(sw);
     });
+  }
+
+  // 点某一格：把色值同步到下方取色器，提示改的是哪一格
+  function pickSlot(tier, idx) {
+    var pal = (CFG_APPEARANCE && CFG_APPEARANCE.palette) || {};
+    var five = (pal.slots && pal.slots[tier]) || [];
+    var hex = five[idx] || '#1a9fff';
+    colrEdit = { tier: tier, idx: idx };
+    wallColor.value = hex;
+    document.getElementById('wallColorHex').value = hex;
+    wallPaletteHint.textContent = '正在改「' + tierName(tier) + ' · ' + PALETTE_SLOTS[idx] + '」，改完自动保存';
+    wallColor.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
+  function tierName(k) {
+    var m = PALETTE_MODES.filter(function (x) { return x.k === k; })[0];
+    return m ? m.name : k;
+  }
+
+  // 把某一档的某一格改成 hex：其余四格照旧，整档 5 个一起提交
+  function applySlot(hex) {
+    if (!colrEdit) return Promise.resolve();
+    var pal = (CFG_APPEARANCE && CFG_APPEARANCE.palette) || {};
+    var five = ((pal.slots && pal.slots[colrEdit.tier]) || []).slice();
+    if (five.length !== 5) { colrEdit = null; return Promise.resolve(); }
+    five[colrEdit.idx] = hex;
+    return apiFetch('/api/theme/palette', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tier: colrEdit.tier, colors: five })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.ok) {
+          colrEdit = null;
+          renderAppearanceForm(d.theme);
+          applyCfgAppearance(d.theme);
+          wallPaletteHint.textContent = '已保存';
+        } else {
+          wallPaletteHint.textContent = (d && d.error) || '应用失败';
+        }
+      }).catch(function () { wallPaletteHint.textContent = '应用失败，请重试'; });
   }
 
   // 统一的应用入口：色块、色值、预设三处都走这里，省得各写一遍
@@ -12162,18 +12240,20 @@
     return v;
   }
   // 取色器拖一下就是几十个 input：只更新色值和预览框，不发请求；
-  // 松手（change）才真正落盘
+  // 松手（change）才真正落盘。点过某一格时走单格改色，否则改整站强调色
   wallColor.addEventListener('input', function () {
     document.getElementById('wallColorHex').value = wallColor.value;
-    wallPaletteHint.textContent = '预览中，松手后应用';
+    wallPaletteHint.textContent = colrEdit ? '预览中，松手后应用这一格' : '预览中，松手后应用';
   });
   wallColor.addEventListener('change', function () {
-    applyPalette(wallColor.value);
+    if (colrEdit) applySlot(wallColor.value);
+    else applyPalette(wallColor.value);
   });
   document.getElementById('wallColorApply').addEventListener('click', function () {
     var v = syncWallColorHex();
     if (!v) { wallPaletteHint.textContent = '色值要写成 #rrggbb'; return; }
-    applyPalette(v);
+    if (colrEdit) applySlot(v);
+    else applyPalette(v);
   });
   document.getElementById('wallColorHex').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') document.getElementById('wallColorApply').click();

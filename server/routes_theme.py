@@ -61,6 +61,9 @@ GLASS_DEFAULT = 0
 
 class _PaletteReq(BaseModel):
     brand: str | None = None
+    # 手动改某一档的 5 个色块：顺序 = 底 / 面板 / 第二层 / 强调 / 气泡
+    tier: str | None = None
+    colors: list[str] | None = None
 
 
 def init(require_auth_fn, get_main_fn) -> None:
@@ -217,12 +220,32 @@ def register(app) -> None:
 
     @router.post("/api/theme/palette")
     async def api_theme_palette(req: _PaletteReq):
+        """改配色，三种用法：
+
+        - {}：按当前配置原样重发一次（前端「跟随壁纸」重算）
+        - {brand}：手动强调色。十五色模式下只把强调色和气泡色换掉，
+          底色骨架保留；单色模式按这个色重推三档
+        - {tier, colors[5]}：设置页里直接改某一档的 5 个色块
+        """
         app_cfg = _appearance()
         palette = themecolor.load_palette(app_cfg.get("palette")) or {}
         if req.brand is not None:
-            if not re.fullmatch(r"#[0-9a-fA-F]{6}", req.brand.strip()):
+            brand = req.brand.strip().lower()
+            if not re.fullmatch(r"#[0-9a-f]{6}", brand):
                 return {"ok": False, "error": "颜色格式应为 #rrggbb"}
-            palette = themecolor.palette_from_color(req.brand.strip())
+            palette = themecolor.retint_palette(palette, brand)
+            if not palette.get("slots"):
+                palette = themecolor.palette_from_color(brand)
+        elif req.tier is not None:
+            if req.tier not in THEMES:
+                return {"ok": False, "error": "档位应为 light / dark / oled"}
+            colors = [str(c or "").strip() for c in (req.colors or [])]
+            if len(colors) != 5 or any(
+                    not re.fullmatch(r"#[0-9a-fA-F]{6}", c) for c in colors):
+                return {"ok": False, "error": "需要 5 个 #rrggbb 色值"}
+            if not palette:
+                return {"ok": False, "error": "当前没有配色可调"}
+            palette = themecolor.palette_from_five(palette, req.tier, colors)
         elif not palette:
             return {"ok": False, "error": "当前没有配色可调"}
         await _publish({"palette": themecolor.dump_palette(palette)})

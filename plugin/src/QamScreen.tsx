@@ -6,7 +6,17 @@ import {
   Navigation,
   TextField,
 } from "@decky/ui";
-import { DIM, ERR_COLOR, ImeTextArea, Md, MessageContent, TEXT, ThoughtRow } from "./ui";
+import {
+  DIM,
+  ERR_COLOR,
+  ImeTextArea,
+  JumpLatest,
+  Md,
+  MessageContent,
+  TEXT,
+  ThoughtRow,
+  useChatScroll,
+} from "./ui";
 import { statusLineFor } from "./statusLine";
 import { bumpOnce, stepTab } from "./tabNav";
 import { useVoiceInput } from "./useVoiceInput";
@@ -522,6 +532,7 @@ function ChatLog({
   scrollRef,
   answerBusy,
   onAnswer,
+  onScroll,
   accent = FALLBACK_ACCENT,
 }: {
   items: Item[];
@@ -535,12 +546,15 @@ function ChatLog({
   /** 有任何一轮在跑（询问/翻译也算）：选项按钮要一起锁住 */
   answerBusy?: boolean;
   onAnswer?: (text: string) => void;
+  /** 用户自己滚动时通知外层，用来判断还要不要跟随最新消息 */
+  onScroll?: () => void;
   accent?: string;
 }) {
   return (
     <Focusable
       ref={scrollRef as React.Ref<HTMLDivElement>}
       onOKActionDescription="浏览"
+      onScroll={onScroll}
       style={{
         flex: 1,
         minHeight: 0,
@@ -1354,7 +1368,9 @@ export default function QamScreen() {
     });
   };
   const [input, setInput] = useState("");
-  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // 消息区的贴底跟随与「回到底部」按钮，见 ui.tsx 的 useChatScroll
+  const chat = useChatScroll(s.items, tab);
+  const scrollRef = chat.ref;
   // 语音结果追加到已有输入后面，不覆盖已经打的字
   const voice = useVoiceInput((t) =>
     setInput((prev) => (prev.trim() ? prev.replace(/\s*$/, " ") + t : t))
@@ -1378,10 +1394,10 @@ export default function QamScreen() {
     return null;
   })();
 
-  // 窄屏按时间顺序排列，最新一条贴底
+  // 窄屏按时间顺序排列，最新一条贴底（跟随逻辑在 useChatScroll 里，
+  // 用户往上翻看历史时不会被新内容拽回底部）
   useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    chat.onNewContent();
   }, [s.items, s.streaming, tab]);
 
   // 进设置页拉一次模型列表
@@ -1753,6 +1769,7 @@ export default function QamScreen() {
             scrollRef={scrollRef}
             answerBusy={s.busy}
             onAnswer={(t) => void s.send(t)}
+            onScroll={chat.onScroll}
             accent={s.accent}
           />
         </div>
@@ -1920,17 +1937,27 @@ export default function QamScreen() {
 
           <div style={dividerStyle} />
 
-          <ChatLog
-            items={s.items}
-            streaming={s.streaming}
-            thought={s.thought}
-            busy={s.busy && s.runningAction === "send"}
-            elapsed={s.elapsed}
-            scrollRef={scrollRef}
-            answerBusy={s.busy}
-            onAnswer={(t) => void s.send(t)}
-            accent={s.accent}
-          />
+          <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex" }}>
+            <ChatLog
+              items={s.items}
+              streaming={s.streaming}
+              thought={s.thought}
+              busy={s.busy && s.runningAction === "send"}
+              elapsed={s.elapsed}
+              scrollRef={scrollRef}
+              answerBusy={s.busy}
+              onAnswer={(t) => void s.send(t)}
+              onScroll={chat.onScroll}
+              accent={s.accent}
+            />
+            <JumpLatest
+              show={!chat.atBottom}
+              fresh={chat.fresh}
+              onClick={chat.toBottom}
+              size={30}
+              accent={s.accent}
+            />
+          </div>
         </div>
       )}
 

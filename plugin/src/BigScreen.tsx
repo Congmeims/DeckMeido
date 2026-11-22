@@ -6,7 +6,18 @@ import {
   Navigation,
   showModal,
 } from "@decky/ui";
-import { DIM, ERR_COLOR, ImeTextArea, ImeTextField, Md, MessageContent, TEXT, ThoughtRow } from "./ui";
+import {
+  DIM,
+  ERR_COLOR,
+  ImeTextArea,
+  ImeTextField,
+  JumpLatest,
+  Md,
+  MessageContent,
+  TEXT,
+  ThoughtRow,
+  useChatScroll,
+} from "./ui";
 import { statusLineFor } from "./statusLine";
 import { bumpOnce, stepTab } from "./tabNav";
 import { Item, useSession, accentOf, rgbOf, FALLBACK_ACCENT } from "./useSession";
@@ -382,6 +393,7 @@ function ChatLog({
   scrollRef,
   answerBusy,
   onAnswer,
+  onScroll,
   accent = FALLBACK_ACCENT,
 }: {
   items: Item[];
@@ -393,12 +405,15 @@ function ChatLog({
   scrollRef: React.RefObject<HTMLDivElement | null>;
   answerBusy?: boolean;
   onAnswer?: (text: string) => void;
+  /** 用户自己滚动时通知外层，用来判断还要不要跟随最新消息 */
+  onScroll?: () => void;
   accent?: string;
 }) {
   return (
     <Focusable
       ref={scrollRef as React.Ref<HTMLDivElement>}
       onOKActionDescription="浏览"
+      onScroll={onScroll}
       style={{
         flex: 1,
         minHeight: 0,
@@ -618,8 +633,6 @@ let lastTab = 0;
 
 export default function BigScreen() {
   const s = useSession();
-  // 聊天区的滚动容器：追加消息后自动贴底（chatLog 里的 ChatLog 挂这个 ref）
-  const scrollRef = useRef<HTMLDivElement | null>(null);
   const [tab, setTabState] = useState(lastTab);
   const setTab = (t: number | ((prev: number) => number)) => {
     setTabState((prev) => {
@@ -628,16 +641,18 @@ export default function BigScreen() {
       return next;
     });
   };
+  // 聊天区的滚动容器，贴底跟随与「回到底部」按钮由 useChatScroll 负责
+  const chat = useChatScroll(s.items, tab);
+  const scrollRef = chat.ref;
   const [input, setInput] = useState("");
   // 语音结果追加到已有输入后面，不覆盖用户已经打的字
   const voice = useVoiceInput((t) =>
     setInput((prev) => (prev.trim() ? prev.replace(/\s*$/, " ") + t : t))
   );
 
-  // 大屏上最新一条应该在最下面；切页签后消息区会重新挂载，也要贴底
+  // 大屏上最新一条应该在最下面；往上翻看历史时不再强行拽回底部
   useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    chat.onNewContent();
   }, [s.items, s.streaming, tab]);
 
   // 进设置页拉模型列表（配对信息在 QAM 里看，大屏不再轮询）
@@ -718,19 +733,29 @@ export default function BigScreen() {
   // 核心异常提示已并入底部回执卡片（coreAlert 大红条已移除）
 
   const chatLog = () => (
-    <ChatLog
-      items={s.items}
-      streaming={s.streaming}
-      thought={s.thought}
-      // 只有聊天页自己发起的那轮才显示「思考中」占位；
-      // 询问页发起的（ask/translate）在这个页签下不显示
-      busy={s.busy && s.runningAction === "send"}
-      elapsed={s.elapsed}
-      scrollRef={scrollRef}
-      answerBusy={s.busy}
-      onAnswer={(t) => void s.send(t)}
-      accent={accent}
-    />
+    <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex" }}>
+      <ChatLog
+        items={s.items}
+        streaming={s.streaming}
+        thought={s.thought}
+        // 只有聊天页自己发起的那轮才显示「思考中」占位；
+        // 询问页发起的（ask/translate）在这个页签下不显示
+        busy={s.busy && s.runningAction === "send"}
+        elapsed={s.elapsed}
+        scrollRef={scrollRef}
+        answerBusy={s.busy}
+        onAnswer={(t) => void s.send(t)}
+        onScroll={chat.onScroll}
+        accent={accent}
+      />
+      <JumpLatest
+        show={!chat.atBottom}
+        fresh={chat.fresh}
+        onClick={chat.toBottom}
+        size={34}
+        accent={accent}
+      />
+    </div>
   );
 
   // 维护行只显示最新一条，展开后看最近 3 条

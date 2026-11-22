@@ -9,10 +9,12 @@
   配置写入沿用 main.update_config，路由和 AI 工具各自调。
 
 配色规则：
-- 主色 `brand`：主色相 + 饱和度，明度抬到 0.62（深色底上作强调色可读）
-- 深色 `bg/surface`：同色相，低饱和（0.18/0.22），明度 0.07/0.11
-- 浅色 `bg/surface`：同色相，低饱和，明度 0.97/0.93
-- `user_bubble` 与 `brand` 一致
+- 十五色模式（默认）：壁纸量化成 15 个实际出现过的颜色，按亮度切成
+  最暗 5 / 居中 5 / 最亮 5，分别给暗黑、深色、浅色三档；每档内部
+  底 / 面板 / 第二层底 按明暗取三位，强调色和气泡色取段内最「跳」的两个
+- 单色模式（一张图颜色太少时兜底）：主色相 + 饱和度推出三档，明度
+  浅色 0.50 / 深色 0.44 / 暗黑 0.36，底色用同色相低饱和
+- 用户手动改强调色：`retint_palette` 保留底色骨架，只换强调色/气泡色
 """
 from __future__ import annotations
 
@@ -51,6 +53,199 @@ def _hex(rgb) -> str:
 def _hsl_hex(h: float, s: float, l: float) -> str:
     r, g, b = colorsys.hls_to_rgb(h % 1.0, max(0.0, min(1.0, l)), max(0.0, min(1.0, s)))
     return _hex((r * 255, g * 255, b * 255))
+
+
+def wallpaper_colors(img_bytes: bytes, n: int = 15) -> list[tuple[float, float, float, str]]:
+    """把壁纸分成 15 色：最亮的 5 个 / 居中的 5 个 / 最暗的 5 个。
+
+    参考「色采」那类取色 App：一张图先量化成若干种实际出现过的颜色，
+    按亮度排序后切三段，三档主题各用其中一段，段内按亮度从小到大
+    依次对应「底 / 面板 / 第二层 / 强调 / 气泡」五个槽位。
+    返回 [(亮度, 占比, 饱和度, #rrggbb)]，按亮度从暗到亮。
+    取不出图时返回空列表，调用方退回单色推导。
+    """
+    from PIL import Image
+    try:
+        raw = Image.open(io.BytesIO(img_bytes))
+        raw.load()
+        img = raw.convert("RGBA")
+        # 透明底先垫白，否则 PNG 图标类壁纸的主色会是黑
+        bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+        bg.alpha_composite(img)
+        # 缩到 96×96 后自己按 8 级色桶做直方图，不用 Pillow 的 quantize：
+        # 本机 Pillow 13 的 MEDIANCUT / ADAPTIVE 会把红绿通道算错
+        # （源像素 (227,205,85) 量化成 #48931b 绿色），出来的配色整体偏绿。
+        # 自己在 RGB 空间分桶没有这个问题，且能拿到每桶的真实占比。
+        img = bg.convert("RGB").resize((96, 96))
+        pixels = img.tobytes()
+    except Exception:
+        return []
+    buckets: dict[tuple[int, int, int], list[int]] = {}
+    for i in range(0, len(pixels), 3):
+        r, g, b = pixels[i], pixels[i + 1], pixels[i + 2]
+        key = (r >> 5, g >> 5, b >> 5)              # 每通道 8 级，共 512 桶
+        acc = buckets.get(key)
+        if acc is None:
+            buckets[key] = [r, g, b, 1]
+        else:
+            acc[0] += r
+            acc[1] += g
+            acc[2] += b
+            acc[3] += 1
+    total = float(sum(a[3] for a in buckets.values())) or 1.0
+    entries = []
+    for r, g, b, cnt in buckets.values():
+        r, g, b = r / cnt, g / cnt, b / cnt
+        h, l, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
+        # 占比不到 0.4% 的桶是噪点/抗锯齿边缘，丢掉
+        if cnt / total < 0.004:
+            continue
+        entries.append([h, s, l, _luminance(_hex((r, g, b))), float(cnt)])
+    if not entries:
+        return []
+    # 相邻色桶先聚成「一种颜色」：壁纸里大片天空/渐变会被分进好几个桶，
+    # 不聚的话 15 个名额会被同一片深蓝占满，三档底色几乎一样。
+    # 按亮度排序后，与上一个颜色足够接近（明度 6% + 色相差 12° 内）就并进去
+    entries.sort(key=lambda x: x[3])
+    clusters: list[list[float]] = []
+    for e in entries:
+        if clusters:
+            last = clusters[-1]
+            dh = abs(e[0] - last[0])
+            if dh > 0.5:
+                dh = 1 - dh
+            # 跟「上一次并入的色」比而不是跟簇的原色比，避免渐变一路连成一片；
+            # 这里用簇中心的亮度比，等价于与上次并入色比较
+            if abs(e[3] - last[3]) < 0.05 and dh < 0.03:
+                w = last[4] + e[4]
+                last[0] = (last[0] * last[4] + e[0] * e[4]) / w
+                last[1] = (last[1] * last[4] + e[1] * e[4]) / w
+                last[2] = (last[2] * last[4] + e[2] * e[4]) / w
+                last[4] = w
+                last[3] = (last[3] * (w - e[4]) + e[3] * e[4]) / w
+                continue
+        clusters.append(list(e))
+    # 聚完还超过 15 种时：最暗两个、最亮两个锁住（三档各自的「底」靠它们），
+    # 中间按占比挑 —— 只按占比挑会把两端的极端色全丢掉，浅色档就取不到
+    # 真正亮的颜色，底色会变成一片灰米色
+    clusters.sort(key=lambda x: x[3])
+    if len(clusters) > n:
+        ends = clusters[:2] + clusters[-2:]
+        take = sorted(clusters[2:-2], key=lambda x: x[4], reverse=True)[:n - 4]
+        clusters = sorted(ends + take, key=lambda x: x[3])
+    merged = clusters
+    while len(merged) < n:
+        # 颜色不足 15 个（纯色图、窄色阶截图）：在两色之间插值补齐。
+        # 优先补占比够、颜色不重复的那一对，并把补出来的色号标成低占比，
+        # 免得凑数的插值色被排到前面顶掉真实颜色
+        best, bi = None, -1
+        for i in range(len(merged) - 1):
+            a, b = merged[i], merged[i + 1]
+            if abs(a[2] - b[2]) < 0.004 and abs(a[0] - b[0]) < 0.01:
+                continue
+            score = b[3] - a[3]
+            if best is None or score > best:
+                best, bi = score, i
+        if bi < 0:
+            break
+        a, b = merged[bi], merged[bi + 1]
+        mid = [(a[k] + b[k]) / 2 for k in range(4)] + [min(a[4], b[4])]
+        merged.insert(bi + 1, mid)
+    return [(m[3], m[4] / total, m[1], _hsl_hex(m[0], m[1], m[2])) for m in merged]
+
+
+def tier_palette(five: list[str], tier: str) -> dict:
+    """一整段 5 色 -> 一套主题变量（bg / surface / surface_2 / brand / user_bubble）
+
+    five 已经按亮度从暗到亮排好（第 0 个最暗、第 4 个最亮），五个槽位是：
+
+        第 0 格  底       （浅色档取最亮，深色/暗黑档取最暗）
+        第 1 格  面板
+        第 2 格  第二层底 （气泡衬底、输入框、提示条）
+        第 3 格  强调色
+        第 4 格  用户气泡
+
+    槽位就是「固定分配」：浅色档正着取 -> 底最亮，深色/暗黑档倒着取 ->
+    底最暗；强调色/气泡色取反差最大的两个。色相全部原样保留，只有
+    底色三格会把明度收进可读区间（见 `_tune`）。
+    slots 就是用户能在设置页里逐格改的那 5 个颜色。
+    """
+    if len(five) < 5:
+        return {}
+    if tier == "light":
+        # 浅底：底/面板/第二层压到接近白，仍带原色相；强调色用段内偏暗的两个
+        bg = _tune(five[4], 0.958)
+        surface = _tune(five[3], 0.918)
+        surface_2 = _tune(five[2], 0.878)
+        brand, bubble = five[1], five[0]
+    else:
+        # 暗底：明度压到很低，深色档比暗黑档略亮一点，两档才分得开
+        lo, step = (0.02, 0.03) if tier == "oled" else (0.06, 0.04)
+        bg = _tune(five[0], lo)
+        surface = _tune(five[1], lo + step)
+        surface_2 = _tune(five[2], lo + step * 2)
+        brand, bubble = five[3], five[4]
+    return {
+        "brand": brand,
+        "user_bubble": bubble,
+        "bg": bg,
+        "surface": surface,
+        "surface_2": surface_2,
+    }
+
+
+def _tune(hex_color: str, target: float) -> str:
+    """把颜色按 HSL 明度挪到 target，色相不动
+
+    只调明度，所以出来的还是「这张图的颜色」—— 灰度图得到的仍是灰度，
+    不会被凭空染上一层红/蓝。
+    底色必须收敛饱和度：明度越接近白，饱和度上限压得越低（0.90 明度
+    时只剩 ~30% 原饱和）。否则一眼好看的天空色压成 #f9e1c7 这种米黄底，
+    整片界面上所有文字都像蒙了一层蜡。
+    """
+    m = re.fullmatch(r"#([0-9a-fA-F]{6})", hex_color or "")
+    if not m:
+        return hex_color
+    v = int(m.group(1), 16)
+    h, _l, s = colorsys.rgb_to_hls(((v >> 16) & 255) / 255,
+                                   ((v >> 8) & 255) / 255, (v & 255) / 255)
+    # 目标越亮，允许的饱和度越低：0.80 明度起开始收，到 0.95 只剩两成。
+    # 暗底不压，低明度下高饱和也压得住
+    if target > 0.80:
+        s = s * max(0.0, min(1.0, (1.0 - target) / 0.15))
+    return _hsl_hex(h, s, target)
+
+
+def palette_from_wallpaper(img_bytes: bytes) -> dict | None:
+    """壁纸 -> 十五色三档主题。分不出足够颜色时返回 None（调用方退回单色）
+
+    每档各取一段 5 色：暗黑档用最暗的 5 个、深色档用居中的 5 个、
+    浅色档用最亮的 5 个。段内按亮度从暗到亮排成五个槽位，三档共用
+    同一套槽位定义（见 `tier_palette`）：
+
+        0 底 / 1 面板 / 2 第二层底 / 3 强调 / 4 用户气泡
+
+    这样 5 格全部有确定位置 —— 浅色档第 4 格是底，深色/暗黑档第 0 格
+    是底，设置页把 3×5 的色板画出来，用户点哪格改哪格就行。
+    """
+    colors = wallpaper_colors(img_bytes)
+    if len(colors) < 15:
+        return None
+    segs = {"oled": colors[:5], "dark": colors[5:10], "light": colors[10:]}
+    pal: dict = {"tiers": {}, "slots": {}, "source": ""}
+    for tier, seg in segs.items():
+        five = [r[3] for r in sorted(seg, key=lambda r: r[0])]     # 从暗到亮
+        got = tier_palette(five, tier)
+        if not got:
+            return None
+        pal[tier] = got
+        pal["tiers"][tier] = list(five)
+        # 槽位：0=底 1=面板 2=第二层 3=强调 4=气泡
+        pal["slots"][tier] = [got["bg"], got["surface"], got["surface_2"],
+                              got["brand"], got["user_bubble"]]
+    # source 用深色档的强调色：设置页「手动调整」是拿它比对的
+    pal["source"] = pal["dark"]["brand"]
+    return pal
 
 
 def dominant_color(img_bytes: bytes) -> str:
@@ -177,8 +372,63 @@ def palette_from_color(hex_color: str) -> dict:
 
 
 def extract_palette(img_bytes: bytes) -> dict:
-    """壁纸字节 -> {dark, light, oled, source}"""
+    """壁纸字节 -> {dark, light, oled, tiers, slots, source}
+
+    优先走「十五色」：壁纸里最亮 / 居中 / 最暗各 5 色分别给三档主题，
+    底色、面板、第二层底、强调色、气泡色全部来自这张图本身。
+    颜色种类太少（纯色图、灰度很小的截图）时退回单色推导，
+    那时没有 tiers/slots，设置页只画得出一档四个色块。
+    """
+    pal = palette_from_wallpaper(img_bytes)
+    if pal:
+        return pal
     return palette_from_color(dominant_color(img_bytes))
+
+
+def retint_palette(palette: dict, brand: str) -> dict:
+    """用户手动指定强调色：底/面板/第二层保留壁纸给的骨架，只换强调色与气泡色
+
+    十五色模式（有 slots）才有骨架可留；没有 slots 时返回原值，
+    调用方会走 `palette_from_color` 由这个色重推三档。
+    """
+    slots = (palette or {}).get("slots")
+    if not isinstance(slots, dict) or not slots:
+        return palette
+    out = {"slots": {}, "tiers": palette.get("tiers") or {}, "source": brand}
+    for tier in ("light", "dark", "oled"):
+        got = palette.get(tier) or {}
+        five = slots.get(tier) or []
+        if len(five) < 5:
+            return palette
+        p = dict(got)
+        p["brand"] = brand
+        p["user_bubble"] = brand
+        out[tier] = p
+        out["slots"][tier] = [p.get("bg"), p.get("surface"), p.get("surface_2"), brand, brand]
+    return out
+
+
+def palette_from_five(palette: dict, tier: str, five: list[str]) -> dict:
+    """用户手动改了某一档的 5 个色块：只重算这一档，其余档保持不变
+
+    five 的槽位顺序与 slots 一致：底 / 面板 / 第二层 / 强调 / 气泡。
+    五格原样落地 —— 用户选的色就是最终色。
+    """
+    if not isinstance(palette, dict) or len(five) < 5:
+        return palette
+    out = dict(palette)
+    out["tiers"] = dict(palette.get("tiers") or {})
+    out["slots"] = dict(palette.get("slots") or {})
+    out[tier] = {
+        "brand": five[3],
+        "user_bubble": five[4],
+        "bg": five[0],
+        "surface": five[1],
+        "surface_2": five[2],
+    }
+    out["slots"][tier] = list(five)
+    out["tiers"][tier] = list(five)
+    return out
 
 
 def image_lum(img_bytes: bytes) -> float:
@@ -252,11 +502,19 @@ def load_palette(text) -> dict | None:
     # 不然 surface_2 没有值，壁纸模式下小灰字和第二层衬底会退回固定灰
     src = str(data.get("source") or data["dark"].get("brand") or "")
     fresh = palette_from_color(src)
-    for mode in ("dark", "light"):
-        got = data.get(mode) if isinstance(data.get(mode), dict) else {}
+    for mode in ("dark", "light", "oled"):
+        if not isinstance(data.get(mode), dict):
+            data[mode] = dict(fresh[mode])
+            continue
         for k, v in fresh[mode].items():
-            got.setdefault(k, v)
-        data[mode] = got
+            data[mode].setdefault(k, v)
+        # 老配置没有 slots（十五色模式才写）：按这一档最终的五个色值补出来，
+        # 设置页才画得出可以点的 5 格色板
+        slots = data.setdefault("slots", {})
+        if isinstance(slots, dict) and not slots.get(mode):
+            m = data[mode]
+            slots[mode] = [m.get("bg"), m.get("surface"), m.get("surface_2"),
+                           m.get("brand"), m.get("user_bubble")]
     return data
 
 

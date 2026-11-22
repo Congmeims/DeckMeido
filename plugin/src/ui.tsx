@@ -249,6 +249,166 @@ export async function copyText(text: string): Promise<void> {
 
 type Align = "" | "left" | "right" | "center";
 
+/** 「回到底部」的判定：离底部不足这个距离就算已经在看最新内容 */
+const BOTTOM_GAP = 40;
+
+/**
+ * 消息区的贴底与「回到底部」按钮（QAM 窄屏和大屏共用）。
+ *
+ * 不能只在有新内容时无条件滚到底：用户往上翻着看历史时会被一直拽回去。
+ * 这里用「上一次是不是在底部」决定要不要跟随：
+ * - 在底部：随新内容自动贴底；
+ * - 用户往上翻：停手，右下角浮出按钮，有新内容时按钮上带红点；
+ * - 点按钮：平滑滚回底部，恢复跟随。
+ * 调用方在内容变化时调 onNewContent()，切页签时调 reset()。
+ */
+export function useChatScroll(dep: unknown, tab: unknown) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [atBottom, setAtBottom] = useState(true);
+  const [fresh, setFresh] = useState(false);
+  // 跟随与「未读」都放在 ref 里：滚动事件很多，走 state 会带来多余重渲染
+  const follow = useRef(true);
+  const prev = useRef(0);
+  const lastTab = useRef(tab);
+
+  const measure = () => {
+    const el = ref.current;
+    if (!el) return true;
+    const at = el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_GAP;
+    follow.current = at;
+    setAtBottom(at);
+    if (at) setFresh(false);
+    return at;
+  };
+
+  /** 挂载或切换页签后调用：新页签的内容从头开始看，重新贴底并恢复跟随 */
+  const reset = () => {
+    follow.current = true;
+    prev.current = 0;
+    setAtBottom(true);
+    setFresh(false);
+  };
+
+  // 内容变化：跟随状态下贴底；用户在看历史就只点亮按钮
+  const onNewContent = () => {
+    const el = ref.current;
+    if (!el) return;
+    if (lastTab.current !== tab) {
+      lastTab.current = tab;
+      reset();
+    }
+    if (follow.current) {
+      el.scrollTop = el.scrollHeight;
+      prev.current = el.scrollHeight;
+      measure();
+    } else if (el.scrollHeight !== prev.current) {
+      prev.current = el.scrollHeight;
+      setFresh(true);
+    }
+  };
+
+  const onScroll = () => {
+    measure();
+  };
+
+  const toBottom = () => {
+    const el = ref.current;
+    follow.current = true;
+    setAtBottom(false);
+    setFresh(false);
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    // 平滑滚动是异步的，内容还在长时要追上新的底
+    const started = Date.now();
+    const chase = () => {
+      if (!el || !follow.current) return;
+      el.scrollTop = el.scrollHeight;
+      measure();
+      if (Date.now() - started < 400) requestAnimationFrame(chase);
+    };
+    requestAnimationFrame(chase);
+  };
+
+  return { ref, atBottom, fresh, onScroll, onNewContent, reset, toBottom };
+}
+
+/**
+ * 浮在消息区右下角的「回到底部」按钮。
+ * 焦点顺序里排在最前（tabIndex 为负），手柄浏览消息时不会先跳到它上面；
+ * 想用时把焦点移到它上面再按 A 即可。
+ */
+export function JumpLatest({
+  show,
+  fresh,
+  onClick,
+  size,
+  accent = ACCENT,
+}: {
+  show: boolean;
+  fresh: boolean;
+  onClick: () => void;
+  size: number;
+  accent?: string;
+}) {
+  return (
+    <div
+      tabIndex={-1}
+      role="button"
+      aria-label="回到最新"
+      aria-hidden={!show}
+      onClick={() => {
+        if (show) onClick();
+      }}
+      style={{
+        position: "absolute",
+        right: 10,
+        bottom: 10,
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "rgba(24,28,34,.92)",
+        border: `1px solid ${mix(accent, 0.55)}`,
+        color: TEXT,
+        boxShadow: "0 4px 14px rgba(0,0,0,.45)",
+        opacity: show ? 1 : 0,
+        transform: show ? "none" : "translateY(6px)",
+        pointerEvents: show ? "auto" : "none",
+        transition: "opacity .15s ease, transform .15s ease",
+        zIndex: 5,
+      }}
+    >
+      <svg
+        width={size * 0.5}
+        height={size * 0.5}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2.2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M12 5v14M5 12l7 7 7-7" />
+      </svg>
+      {fresh && (
+        <span
+          style={{
+            position: "absolute",
+            top: 2,
+            right: 2,
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background: ERR_COLOR,
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 type Block =
   | { t: "h"; text: string }
   | { t: "ul"; items: string[] }

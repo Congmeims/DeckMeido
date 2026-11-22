@@ -3125,26 +3125,34 @@
     font-weight: 400; font-size: 11.5px; color: var(--muted);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .colr-modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-  @media (max-width: 620px) { .colr-modes { grid-template-columns: 1fr; } }
-  .colr-mode {
-    display: flex; flex-direction: column; gap: 6px; align-items: stretch;
-    padding: 7px 8px; border-radius: 8px; cursor: pointer;
-    border: 1px solid var(--ri-line); background: var(--ri-bg); color: var(--ri-fg);
+  /* 三排 × 五格色板：左侧档名 52px 固定，右侧 5 格等分，上下两块的列对齐 */
+  .colr-board { display: flex; flex-direction: column; gap: 6px; }
+  .cb-row {
+    display: grid; grid-template-columns: 52px 1fr; align-items: center; gap: 8px;
+    padding: 4px; border-radius: 8px; border: 1px solid transparent;
   }
-  .colr-mode:hover { border-color: color-mix(in srgb, var(--brand) 50%, var(--ri-line)); }
-  .colr-mode.on {
-    border-color: var(--brand);
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 55%, transparent);
+  .cb-row.on { border-color: var(--brand); background: var(--ri-bg); }
+  .cb-name {
+    padding: 0; border: 0; background: none; cursor: pointer;
+    font-size: 11.5px; color: var(--muted); text-align: left;
   }
-  .cm-chips { display: flex; gap: 3px; }
-  .cm-chips i {
-    flex: 1; height: 18px; border-radius: 4px;
-    border: 1px solid color-mix(in srgb, #000 22%, transparent);
+  .cb-row.on .cb-name { color: var(--ri-fg); font-weight: 600; }
+  .cb-chips { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+  .cb-chip {
+    height: 26px; padding: 0; border-radius: 5px; cursor: pointer;
+    border: 1px solid color-mix(in srgb, #000 24%, transparent);
   }
-  .cm-chips i:first-child { flex: 1.4; }
-  .cm-name { font-size: 11.5px; color: var(--muted); text-align: left; }
-  .colr-mode.on .cm-name { color: var(--ri-fg); }
+  .cb-chip:hover { box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 70%, transparent); }
+  /* 槽位名一行：左侧留出与档名同宽的空白，右侧五列与色格对齐 */
+  .colr-slots {
+    display: grid; grid-template-columns: 52px repeat(5, 1fr);
+    gap: 4px; margin-top: 4px; padding: 0 4px;
+  }
+  .colr-slots::before { content: ''; }
+  .colr-slots span {
+    font-size: 10.5px; color: var(--muted); text-align: center;
+  }
+
   .colr-presets { gap: 8px; }
   .colr-preset {
     flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border-radius: 50%;
