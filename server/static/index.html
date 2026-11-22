@@ -15870,6 +15870,11 @@
     // 三档主题、有无壁纸都跟着同一个强调色
     vars['--logo-glow'] = brandRgba(brand, isLightTheme() ? 0.62 : 0.95, isLightTheme());
     vars['--logo-glow-soft'] = brandRgba(brand, isLightTheme() ? 0.20 : 0.30, isLightTheme());
+    // 跨屏接管提示（横幅 / 吐司 / 侧栏「接管中」）的强调色色源。
+    // 不能让它去读 --brand：CSS 里必须用 html 级选择器盖住 [data-theme] 里
+    // 那份写死的蓝，而那样写会在浅色档跨档时把品牌色换成另一份。
+    // 这里按当前档位算成实色直接写内联，三档主题、有无壁纸都取同一个色。
+    vars['--ri-brand'] = isLightTheme() ? mixHex(brand, '#000000', 0.20) : brand;
     Object.keys(vars).forEach(function (k) { html.style.setProperty(k, vars[k]); });
     // 壁纸亮度档位给小灰字（--muted）用：浅色壁纸透上来时灰字加深。
     // 写属性而不是变量，方便 CSS 里按 [data-wall-lum=light] 分档
@@ -15886,7 +15891,8 @@
     var html = document.documentElement;
     ['--wallpaper', '--wall-dim', '--wall-blur', '--panel-alpha', '--glass',
      '--brand', '--user-bubble', '--bg', '--surface', '--surface-2', '--muted-base',
-     '--on-brand', '--on-user', '--logo-glow', '--logo-glow-soft'].forEach(function (k) {
+     '--on-brand', '--on-user', '--logo-glow', '--logo-glow-soft',
+     '--ri-brand'].forEach(function (k) {
       html.style.removeProperty(k);
     });
     html.classList.remove('wall-on');

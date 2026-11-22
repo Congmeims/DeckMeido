@@ -22,8 +22,11 @@
     --on-brand: #fff;
     --on-user: #fff;
     --danger: #e8463a;
-    /* 跨屏接管提示（顶部横幅 / 侧栏胶囊 / 底部提示条 / 设置卡引导）：
-       默认深色主题用深底亮字；浅色主题在 [data-theme=light] 里换成浅底深字 */
+    /* 跨屏接管提示的强调色色源：index.html 定完 --brand 后按当前档位写成内联，
+       这里只是 :root 兜底（脚本还没跑、或内联被清掉时）。有壁纸时取壁纸配色，
+       没壁纸时取三档主题自己的默认强调色，都不写死在下面这组里 */
+    --ri-brand: #1a9fff;
+    /* 跨屏接管提示的颜色在下面按 --ri-brand 统一覆盖，这里只保留兜底值 */
     --ri-bg: rgba(12,16,26,.96);
     --ri-fg: #eaf4ff;
     --ri-line: rgba(120,200,255,.85);
@@ -32,7 +35,8 @@
     --ri-shadow-sm: 0 2px 10px rgba(0,0,0,.28);
     --ri-btn-bg: rgba(26,159,255,.26);
     --ri-btn-bg-hover: rgba(26,159,255,.42);
-    --ri-btn-fg: #ffffff;
+    /* 按钮字色跟强调色走：透明底上直接铺强调色，写死白字时浅强调色会糊掉 */
+    --ri-btn-fg: var(--ri-brand);
     --ri-focus: rgba(26,159,255,.95);
     --ri-focus-soft: rgba(26,159,255,.28);
     /* logo 发光色：这里只声明结构，实际色由 index.html 按内联 --brand 重算 */
@@ -1328,21 +1332,16 @@
   }
   /* --ri-focus / --ri-focus-soft 原来在 :root 和浅色主题里写死成蓝色，
      接管发光圈、输入框聚焦、引导闪烁全用它，所以换了强调色这几处都不变。
-     下面按 --brand 重新算：深色档用品牌色本身，浅色档混一点黑保证在浅底上看得见。
-     --ri-line / --ri-accent 同为「强调色」角色，一并对齐 */
-  html { --ri-focus: color-mix(in srgb, var(--brand) 92%, transparent); }
-  html { --ri-focus-soft: color-mix(in srgb, var(--brand) 30%, transparent); }
-  html[data-theme="light"] { --ri-focus: color-mix(in srgb, var(--brand) 88%, #000); }
-  html[data-theme="light"] { --ri-focus-soft: color-mix(in srgb, var(--brand) 24%, transparent); }
-  html[data-theme="light"] { --ri-accent: color-mix(in srgb, var(--brand) 82%, #000); }
-  html[data-theme="light"] { --ri-line: color-mix(in srgb, var(--brand) 55%, transparent); }
+     统一挪到下面 1386 行那一组里按 --brand 重算，这里不再重复定义 */
   @keyframes riDotPulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
   /* 「接管中」小字：跟随主题（深色深底亮字 / 浅色浅底深字），不糊在侧栏背景里 */
   .sb-brand .bn-ri {
-    /* 绝对定位在右上角：品牌名/版本已是两行，接管中胶囊不再多占一行撑高 */
+    /* 绝对定位在右上角：品牌名/版本已是两行，接管中胶囊不再多占一行撑高。
+       文字直接用强调色：底色是少量品牌色混主题底，浅色档已把品牌色压深，
+       两档都能看清，不再需要单独的字色变量 */
     position: absolute; top: 10px; right: 10px;
     display: none; flex: 0 0 auto; align-self: center;
-    font-size: 11px; font-weight: 600; color: var(--ri-fg);
+    font-size: 11px; font-weight: 600; color: var(--ri-brand);
     background: var(--ri-bg);
     border: 1px solid var(--ri-line); border-radius: 999px;
     padding: 1px 7px; line-height: 1.2; white-space: nowrap;
@@ -1363,8 +1362,8 @@
   }
   #riBanner[hidden] { display: none !important; }
   #riBanner .ri-dot {
-    width: 8px; height: 8px; border-radius: 50%; background: var(--ri-accent);
-    box-shadow: 0 0 8px var(--ri-accent); animation: riDotPulse 1.4s ease-in-out infinite;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--ri-brand);
+    box-shadow: 0 0 8px var(--ri-brand); animation: riDotPulse 1.4s ease-in-out infinite;
   }
   #riStop {
     height: 24px; padding: 0 12px; border-radius: 999px;
@@ -1373,16 +1372,24 @@
   }
   #riStop:hover { background: var(--ri-btn-bg-hover); }
   /* --ri-bg 等原来是写死的深蓝黑 / 纯白，吐司和横幅一直带着默认蓝的底，
-     换强调色后只有边框和小圆点变、卡片本身还是旧色。现在统一按 --brand
-     与主题底色混出来：深色档是「底色 + 一点品牌色」，浅色档是「白 + 一点品牌色」 */
-  html { --ri-bg: color-mix(in srgb, var(--brand) 10%, #0c101a); }
-  html { --ri-btn-bg: color-mix(in srgb, var(--brand) 26%, transparent); }
-  html { --ri-btn-bg-hover: color-mix(in srgb, var(--brand) 42%, transparent); }
+     换强调色后只有边框和小圆点变、卡片本身还是旧色。现在统一按强调色色源
+     --ri-brand 与主题底色混出来：深色档是「底色 + 一点强调色」，浅色档是
+     「白 + 一点强调色」。--ri-brand 由 index.html 在定完 --brand 之后内联写入
+     （有壁纸取壁纸配色、没壁纸取默认强调色，口径完全一致），所以这里不需要
+     也不应该读 --brand —— [data-theme=light] 里还有一份写死的 --brand，
+     用它会在浅色档串成另一套蓝 */
+  html { --ri-accent: var(--ri-brand); }
+  html { --ri-line: color-mix(in srgb, var(--ri-brand) 70%, transparent); }
+  html { --ri-bg: color-mix(in srgb, var(--ri-brand) 10%, #0c101a); }
+  html { --ri-btn-bg: color-mix(in srgb, var(--ri-brand) 26%, transparent); }
+  html { --ri-btn-bg-hover: color-mix(in srgb, var(--ri-brand) 42%, transparent); }
   html { --ri-shadow: 0 8px 28px rgba(0,0,0,.55),
-                    0 0 22px color-mix(in srgb, var(--brand) 35%, transparent); }
-  html[data-theme="light"] { --ri-bg: color-mix(in srgb, var(--brand) 6%, #fff); }
+                    0 0 22px color-mix(in srgb, var(--ri-brand) 35%, transparent); }
+  html { --ri-focus: color-mix(in srgb, var(--ri-brand) 92%, transparent); }
+  html { --ri-focus-soft: color-mix(in srgb, var(--ri-brand) 30%, transparent); }
+  html[data-theme="light"] { --ri-bg: color-mix(in srgb, var(--ri-brand) 6%, #fff); }
   html[data-theme="light"] { --ri-shadow: 0 8px 24px rgba(16,24,40,.18),
-                    0 0 16px color-mix(in srgb, var(--brand) 16%, transparent); }
+                    0 0 16px color-mix(in srgb, var(--ri-brand) 16%, transparent); }
   /* 吐司贴着底栏，和接管横幅同口径加毛玻璃：壁纸/毛玻璃强度拉大时它也跟着糊 */
   #riToast {
     position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
@@ -3092,18 +3099,12 @@
     /* 滚动条 */
     --sb-thumb: rgba(16,24,40,.22); --sb-thumb-hover: rgba(16,24,40,.38);
     /* 接管提示跟随浅色主题：浅底 + 深字，避免 0.6.2 的深底配 --text 深字
-       （浅色主题下就是黑底黑字）。描边/发光同步换成品牌蓝的深色版本 */
+       （浅色主题下就是黑底黑字）。强调色系列在下面按 --brand 覆盖，
+       这里只留亮度相关的兜底 */
     --ri-bg: rgba(255,255,255,.97);
     --ri-fg: #10233a;
-    --ri-line: rgba(11,127,212,.55);
-    --ri-accent: #0b7fd4;
-    --ri-shadow: 0 8px 24px rgba(16,24,40,.18), 0 0 16px rgba(11,127,212,.16);
+    --ri-btn-fg: var(--ri-brand);
     --ri-shadow-sm: 0 2px 8px rgba(16,24,40,.14);
-    --ri-btn-bg: rgba(11,127,212,.14);
-    --ri-btn-bg-hover: rgba(11,127,212,.24);
-    --ri-btn-fg: #0a3f68;
-    --ri-focus: rgba(11,127,212,.9);
-    --ri-focus-soft: rgba(11,127,212,.2);
     /* logo 发光跟着浅色档的强调色走（index.html 按实际 --brand 重算） */
     --logo-glow: color-mix(in srgb, var(--brand) 90%, #000);
     --logo-glow-soft: color-mix(in srgb, var(--brand) 26%, transparent);
