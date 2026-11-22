@@ -47,9 +47,11 @@ ROTATE_INTERVAL = 600.0
 DEBUG_POOL_BYTES = 2 * LOG_CAP
 _ROTATE_LOCK = threading.Lock()
 _ROTATOR_STARTED = False
-# 正在被进程持有句柄的文件：只能 truncate，unlink 在 Linux 下看起来删了、
-# 实际空间不释放（fd 继续写已删除的 inode）
+# 正在被进程持有句柄的日志：只能 truncate，unlink 在 Linux 下看起来删了、
+# 实际空间不释放（fd 继续写已删除的 inode）。
+# client-crash.log 由桌面客户端进程写，同属这类（名字按前缀匹配，带轮转后缀也算）。
 _ACTIVE_NAMES = {"backend.log", "overlay.log"}
+_ACTIVE_PREFIXES = ("client-crash",)
 _LOG_CATEGORIES = ("debug", "run", "install")
 _USAGE_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
 # 最近一次清理的结果：清不掉的文件数会透出到 /api/status
@@ -479,8 +481,9 @@ def start_rotator() -> None:
 
 
 def _active_file_names(files: list[Path]) -> set[str]:
-    """正在被进程写着的文件：当前 debug handler 的 base 文件 + backend/overlay"""
-    names = {p.name for p in files if p.name in _ACTIVE_NAMES}
+    """正在被进程写着的文件：当前 debug handler 的 base 文件 + backend/overlay + 客户端崩溃日志"""
+    names = {p.name for p in files
+             if p.name in _ACTIVE_NAMES or p.name.startswith(_ACTIVE_PREFIXES)}
     try:
         if _HANDLER is not None:
             names.add(Path(_HANDLER.baseFilename).name)
