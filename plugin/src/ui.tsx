@@ -801,6 +801,116 @@ function ShotThumb({
   );
 }
 
+/**
+ * 搜壁纸/搜图的候选图网格（对齐网页端的 .wall-pick）：
+ * 4 张两列，点一张就发「编号（candidate_id=xxx）」，和网页端发给模型的格式完全一致
+ * —— 带上 id 才不会在「同一轮搜过好几批、编号都从 1 开始」时选错图。
+ */
+function CandidateGrid({
+  ev,
+  size,
+  busy,
+  onAnswer,
+  accent = ACCENT,
+}: {
+  ev: Extract<ChatEvent, { type: "tool" }>;
+  size: number;
+  busy?: boolean;
+  onAnswer?: (text: string) => void;
+  accent?: string;
+}) {
+  const [picked, setPicked] = useState(-1);
+  const list = (ev.candidates || []).slice(0, 4);
+  const base = "";
+  const isImage = ev.name === "search_image";
+  if (!list.length) return null;
+  return (
+    <div
+      style={{
+        margin: "4px 0",
+        padding: "5px 6px",
+        borderRadius: 4,
+        background: "rgba(255,255,255,.04)",
+        minWidth: 0,
+      }}
+    >
+      <div style={{ color: DIM, fontSize: size * 0.9, marginBottom: 4 }}>
+        {ev.query
+          ? `「${ev.query}」${isImage ? "找到这些图" : "想用哪张？"}`
+          : isImage
+            ? "找到这些图"
+            : "想用哪张？"}
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 4,
+        }}
+      >
+        {list.map((c, i) => (
+          <button
+            key={c.id || i}
+            type="button"
+            disabled={busy || !onAnswer}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (busy || !onAnswer) return;
+              setPicked(i);
+              onAnswer(`${i + 1}${c.id ? `（candidate_id=${c.id}）` : ""}`);
+            }}
+            style={{
+              position: "relative",
+              padding: 0,
+              border: "none",
+              background: "transparent",
+              borderRadius: 3,
+              overflow: "hidden",
+              outline: picked === i ? `2px solid ${accent}` : "none",
+              opacity: busy ? 0.55 : 1,
+              cursor: busy || !onAnswer ? "default" : "pointer",
+            }}
+          >
+            {/* 图块统一裁成 1:1 铺满格子：候选图宽高比各异，不裁会出现
+                格子高矮不齐、第二列被挤下去 */}
+            <div style={{ position: "relative", width: "100%", paddingTop: "100%" }}>
+              <div style={{ position: "absolute", inset: 0 }}>
+                <img
+                  src={localMediaUrl(base, c.url)}
+                  alt={c.title || `候选图 ${i + 1}`}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "cover",
+                    display: "block",
+                  }}
+                />
+              </div>
+            </div>
+            <span
+              style={{
+                position: "absolute",
+                left: 3,
+                top: 2,
+                fontSize: size * 0.8,
+                color: "#fff",
+                background: "rgba(0,0,0,.5)",
+                borderRadius: 3,
+                padding: "0 4px",
+              }}
+            >
+              {i + 1}
+            </span>
+          </button>
+        ))}
+      </div>
+      <div style={{ color: DIM, fontSize: size * 0.85, marginTop: 4 }}>
+        {isImage ? "点图看大图" : "点一张就设为背景"}
+      </div>
+    </div>
+  );
+}
+
 /** 思考块：默认收起（与网页历史回放一致），放在正文之前 */
 export function ThoughtRow({
   text,
@@ -1297,6 +1407,20 @@ export function MessageContent({
               options={ev.options}
               size={size}
               base={base}
+              busy={busy}
+              onAnswer={onAnswer}
+              accent={accent}
+            />
+          );
+        }
+        if (ev.candidates && ev.candidates.length) {
+          // 搜索类工具直接铺图：网页端就是这么做的，光一行「搜索 4 张图」
+          // 或者只留一句「图已经铺开了」，在面板上等于什么都没有
+          return (
+            <CandidateGrid
+              key={i}
+              ev={ev}
+              size={size}
               busy={busy}
               onAnswer={onAnswer}
               accent={accent}

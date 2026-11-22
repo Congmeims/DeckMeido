@@ -1551,6 +1551,24 @@ def _tool_event(ev: dict) -> dict:
     files = [str(f)[:300] for f in (ev.get("files") or []) if str(f).strip()][:10]
     if files:
         out["files"] = files
+    # 搜索壁纸/搜图的候选图：网页端会把这一批图铺成可点的网格，面板以前整条丢掉了
+    # （模型在正文里只说「图已经铺开了」，用户看到的就是「只有电脑两个字」）。
+    # 只留前端渲染要用的字段；src_url 是去重用的原始地址，不往面板送
+    cands = []
+    for c in (ev.get("candidates") or [])[:4]:
+        if not isinstance(c, dict):
+            continue
+        cid = str(c.get("id") or "").strip()
+        url = _shot_url(str(c.get("url") or "")) or (_media_url("/api/theme/candidates/" + cid)
+                                                   if cid else "")
+        if not url:
+            continue
+        cands.append({"id": cid, "url": url, "title": str(c.get("title") or "")[:80]})
+    if cands:
+        out["candidates"] = cands
+        query = str(ev.get("query") or "").strip()
+        if query:
+            out["query"] = query[:200]
     return out
 
 

@@ -148,6 +148,10 @@ export type ChatEvent =
       diff?: { add?: number; del?: number };
       path?: string;
       image?: string;
+      /** 搜壁纸/搜图这一批的候选（id + 回环 url），面板渲染成可点的图块 */
+      candidates?: { id?: string; url: string; title?: string }[];
+      /** 这一批是用什么关键词搜出来的，显示在候选图上方的标题里 */
+      query?: string;
     };
 
 /** TTS 留档：url 只指向本机后端，seconds/speaker 来自 metadata */
