@@ -559,7 +559,11 @@ function ChatLog({
       onScroll={onScroll}
       style={{
         flex: 1,
+        // 关键：flex 子项默认 min-height:auto，内容一多就会把它撑到全高、
+        // flex:1 失效，滚动条变成 0 长度，外层 shell 固定 PAGE_H 且 hidden，
+        // 底下一截直接被裁掉——表现就是「往下拉再上拉，有一段完全看不到」
         minHeight: 0,
+        height: 0,
         width: "100%",
         overflowY: "auto",
         display: "block",
@@ -2049,7 +2053,20 @@ export default function QamScreen() {
 
           <div style={dividerStyle} />
 
-          <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex" }}>
+          <div
+            style={{
+              position: "relative",
+              flex: 1,
+              minHeight: 0,
+              // 也要 height:0：否则这一层按内容撑高，里面的 ChatLog 再设 minHeight:0
+              // 也只是缩到「这一层的高度」，还是比可视区高
+              height: 0,
+              display: "flex",
+              // 纵向排：ChatLog 的 flex:1 是高度方向上的伸展，
+              // 用默认的 row 会让它被按宽度去分
+              flexDirection: "column",
+            }}
+          >
             <ChatLog
               // 核心没起来时不能把内存里缓存的旧对话当成现状显示出来：
               // 停止核心后关闭再打开 QAM，以前还能看到一整屏历史，像后端还活着

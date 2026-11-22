@@ -98,6 +98,9 @@ _log_handle = None
 # 「关闭后保持停止、只有用户点启动才起来」。插件点「启动」会删掉它；
 # 手动打开客户端属于显式启动，不受这个标记限制。
 CORE_STOP_MARKER = _DATA_DIR / "core.stopped"
+# 插件面板里「开机自动启动后端」关掉时留下的标记：watchdog 不再自动重拉。
+# 和 core.stopped 的区别是它常驻（重启后仍生效），只有在面板里重新打开才删。
+CORE_NO_AUTOSTART = _DATA_DIR / "core.no_autostart"
 # 网页端点了「重启后端」只会落这个标记（后端不杀自己），由客户端看门狗重放
 RESTART_REQUEST = _DATA_DIR / "restart.request"
 
@@ -1685,6 +1688,11 @@ def main() -> int:
             restart_core()
             return
         if CORE_STOP_MARKER.exists():
+            watch_state["misses"] = 0
+            return
+        # 用户在插件面板里关了「开机自动启动」：和后端的自动拉起保持一致，
+        # 客户端也不再自作主张把它拉回来（需要时用户会手动点启动）
+        if CORE_NO_AUTOSTART.exists():
             watch_state["misses"] = 0
             return
         proc = backend["proc"]

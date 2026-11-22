@@ -425,7 +425,10 @@ function ChatLog({
       style={{
         position: "relative",
         flex: 1,
+        // 同 QAM：flex 子项默认 min-height:auto，内容一多就把自己撑到全高、
+        // flex:1 失效，滚动条长度接近 0，外层 overflow:hidden 直接裁掉底部一截
         minHeight: 0,
+        height: 0,
         width: "100%",
         overflowY: "auto",
         display: "block",
