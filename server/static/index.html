@@ -555,7 +555,7 @@
         <section class="set-pane" data-pane="external">
           <h3>外部连接</h3>
           <p class="pane-desc">本机权限与局域网接入、从别的设备远程接管，以及 OneBot 的 QQ 通道。全部只在你明确打开后才生效。</p>
-          <h4 class="set-sect">本机访问</h4>
+          <h4 class="set-sect" id="localAccessSect">本机访问</h4>
           <div class="card">
             <div class="card-title">权限与工作区</div>
             <div class="set-grid perm-ws-grid">
@@ -8384,28 +8384,37 @@
 
   var ctrlScrollSeq = 0;
   function scrollSetBodyBottom() {
-    // 按实际内容高度滚到底，不依赖固定偏移或条目数量；快速连点时只认最后一次，
-    // 自检结果是异步渲染的，fetch 完成后再滚一次才能停在真正的底部。
-    // 不能平滑滚动：从「设置」进来时内容区刚由 display:none 变成可见，
-    // 这里若用 behavior:'smooth'，浏览器会把动画起点算在旧高度上，
-    // 中途内容又长高了，最后就停在半空 —— 用户看到的是「点绿点没滚到底部」。
-    // 直接定位到底部，再在内容落定后补一次，保证 6/6 那截卡片完整露出来
-    var seq = ++ctrlScrollSeq;
+    // 旧逻辑是「滚到内容最底部」，但底部现在是局域网访问、接管那些卡片，
+    // 徽章对应的「桌面控件自检」已经被甩到上面看不到。改成定位那张卡片本身
+    scrollSetBodyTo(document.querySelector('.ctrl-card'));
+  }
+
+  // 把 .set-body 滚到某个元素上沿（留 16px 余量）
+  var setBodyScrollSeq = 0;
+  function scrollSetBodyTo(el) {
+    var seq = ++setBodyScrollSeq;
     function jump() {
-      if (seq !== ctrlScrollSeq) return;
-      setBody.scrollTop = setBody.scrollHeight;
+      if (seq !== setBodyScrollSeq || !el || !setBody) return;
+      var box = setBody.getBoundingClientRect();
+      var top = el.getBoundingClientRect().top - box.top + setBody.scrollTop - 16;
+      setBody.scrollTop = Math.max(0, top);
     }
-    jump();
-    requestAnimationFrame(jump);
+    // 内容区刚从隐藏变可见、自检清单又是异步渲染的：等两帧再量一次才准
+    requestAnimationFrame(function () {
+      jump();
+      requestAnimationFrame(jump);
+    });
     setTimeout(jump, 120);
   }
 
   function openCtrlPanel() {
-    // 跳转到「设置 → 本地连接」里的自检子模块，而不是弹独立窗口
+    // 跳转到「设置 → 外部连接 → 本机访问」里的自检卡片，而不是弹独立窗口
     if (!document.body.classList.contains('settings-mode')) openSettings();
-    showSetPane('device');
-    scrollSetBodyBottom();
-    return fetchCtrl().then(scrollSetBodyBottom);
+    showSetPane('external');
+    scrollSetBodyTo(document.getElementById('localAccessSect'));
+    return fetchCtrl().then(function () {
+      scrollSetBodyTo(document.getElementById('localAccessSect'));
+    });
   }
 
   function fetchCtrl() {
