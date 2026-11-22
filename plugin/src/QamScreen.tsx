@@ -1447,7 +1447,7 @@ export default function QamScreen() {
       ? "核心运行中"
       : coreStopped
         ? "核心已停止"
-        : "核心异常"
+        : `核心异常：${s.status.core_error || "无响应"}`
     : s.probing
       ? "连接中"
       : "未连上";

@@ -1039,26 +1039,44 @@ export default function BigScreen() {
                 {s.status && !s.status.core_ok
                   ? coreStopped
                     ? "核心已停止（不会自动拉起，点「启动核心」恢复）"
-                    : "核心异常（点「启动核心」恢复）"
+                    : `核心异常：${s.status.core_error || "无响应"}`
                   : statusLineFor(s.status, s.busy)}
               </span>
               {s.status && !s.status.core_ok && (
-                <ActionButton
-                  onClick={() => void s.coreStart()}
-                  disabled={s.starting}
-                  description="启动核心"
-                  compact
-                  style={{
-                    width: 120,
-                    flex: "0 0 120px",
-                    fontSize: 12,
-                    background: "rgba(224,108,117,.18)",
-                    borderColor: "rgba(224,108,117,.45)",
-                    color: "#f0c3c7",
-                  }}
-                >
-                  {s.starting ? "启动中…" : "启动核心"}
-                </ActionButton>
+                <>
+                  {/* 探测一次就定生死：后端晚几步起来、或插件刚重载时，
+                      这里不重试就会一直挂在「核心异常」，只能退出页面再进 */}
+                  <ActionButton
+                    onClick={() => void s.refreshStatus()}
+                    disabled={s.probing}
+                    description="重新探测"
+                    compact
+                    style={{
+                      width: 96,
+                      flex: "0 0 96px",
+                      fontSize: 12,
+                      background: "rgba(255,255,255,.08)",
+                    }}
+                  >
+                    {s.probing ? "探测中…" : "重新探测"}
+                  </ActionButton>
+                  <ActionButton
+                    onClick={() => void s.coreStart()}
+                    disabled={s.starting}
+                    description="启动核心"
+                    compact
+                    style={{
+                      width: 120,
+                      flex: "0 0 120px",
+                      fontSize: 12,
+                      background: "rgba(224,108,117,.18)",
+                      borderColor: "rgba(224,108,117,.45)",
+                      color: "#f0c3c7",
+                    }}
+                  >
+                    {s.starting ? "启动中…" : "启动核心"}
+                  </ActionButton>
+                </>
               )}
             </div>
 

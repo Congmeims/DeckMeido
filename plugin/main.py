@@ -1416,6 +1416,8 @@ _THREAD: list[dict] = []
 _THREAD_MAX = 20
 # 最近一次推给面板的 thread 快照，等界面 ready 时补发（见 _emit）
 _LAST_THREAD: dict | None = None
+# 最近一次核心探测的地址与失败原因（见 _core_http）
+_LAST_PROBE: dict = {"addr": "", "error": ""}
 # 最近一次截图落盘的本地路径：它比后端回显的 /shots/ 更早可用。
 # 后端要等 ws 把 16MB 的图收完才落盘，这段空窗里各端（尤其电脑网页）只看到
 # 一条没有画面的提问，看起来就像「插件截的图在电脑端不显示」
@@ -2013,11 +2015,17 @@ async def _core_http(port: int, method: str, path: str,
 
     不走 ws：这类请求都只要一个结论，HTTP 一步拿到。插件与后端同机，
     回环请求免鉴权，因此不再附带令牌头。
+    _LAST_PROBE 记下最后一次探测的地址与失败原因，面板在「核心异常」时
+    直接显示出来 —— 只说「异常」时用户没法判断是端口不对、进程没起还是
+    配置读不到。
     """
+    global _LAST_PROBE
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        _LAST_PROBE = {"addr": f"127.0.0.1:{port}", "error": ""}
     except Exception as exc:
-        return {"ok": False, "error": f"连不上 :{port}（{exc}）"}
+        _LAST_PROBE = {"addr": f"127.0.0.1:{port}", "error": f"连不上 :{port}（{exc}）"}
+        return {"ok": False, "error": _LAST_PROBE["error"]}
     try:
         payload = b""
         extra = ""
@@ -2043,6 +2051,7 @@ async def _core_http(port: int, method: str, path: str,
             chunks.append(chunk)
         raw = b"".join(chunks)
     except Exception as exc:
+        _LAST_PROBE["error"] = str(exc)
         return {"ok": False, "error": str(exc)}
     finally:
         writer.close()
@@ -2267,6 +2276,10 @@ class Plugin:
             "proxy": "websockets" if _ws_connect else "raw",
             # 面板第二行显示成「192.168.x.x:18765」，别的设备照这个地址连
             "ip": lan_ip,
+            # 核心探测用的地址与失败原文：核心异常时面板把它显示出来，
+            # 用户才能分辨是端口不对、进程没起还是别的
+            "core_addr": str(_LAST_PROBE.get("addr") or ""),
+            "core_error": str(_LAST_PROBE.get("error") or ""),
             # 「局域网访问」区块：地址，前端展示并提供复制
             # lan_enable=false 时只监听回环，前端把地址标成「仅本机」并给出开关提示
             "lan_enable": bool(cfg.get("lan_enable", False)),

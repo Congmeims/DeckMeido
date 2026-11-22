@@ -28,6 +28,9 @@ export type Status = {
   ip: string;
   core_ok: boolean;
   core_reason: string;
+  // 核心异常时面板直接展示：探测的地址 + 失败原文
+  core_addr?: string;
+  core_error?: string;
   core_mode: string;
   // 用户点过「关闭核心」且没再点「启动核心」：显示「已停止」并禁用重启核心
   core_stopped: boolean;
