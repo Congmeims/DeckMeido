@@ -13538,9 +13538,11 @@
     else if (state === 'connecting' || state === 'reconnecting') cls += ' wait';
     else cls += ' off';
     if (qqSessDot) qqSessDot.className = cls;
-    // 窄屏状态卡里的只读副本（顶栏那颗整组在窄屏隐藏），灯色和文字要同步，
-    // 否则窄屏第一排会缺一枚胶囊
-    if (qqSessMirrorDot) qqSessMirrorDot.className = cls;
+    // 窄屏状态卡里的只读副本：顶栏那颗整组在窄屏用 placeBadges() 移进 #ctxLine，
+    // 这里没有单独的镜像节点。曾经写过 qqSessMirrorDot，但那个变量从没声明过，
+    // 一读就抛 ReferenceError，把 renderQqSessState 整段打断 —— 表现就是
+    // 每次刷新会话列表都刷出一条「qqSessMirrorDot is not defined」。
+    // 灯色跟着 qqSessDot 一起走，宽窄屏是同一个节点，不需要第二份。
     // 面板里那颗沿用原来的 .qq-sess-dot
     var pcls = 'qq-sess-dot';
     if (state === 'connected') pcls += ' on';
