@@ -1488,6 +1488,10 @@ export default function QamScreen() {
   // 与控制器消息回调共用 bumpOnce 去重，同一次按键只翻一页。
   const shell = (children: React.ReactNode) => (
     <Focusable
+      // flow-children 必须给：Steam 的方向键导航按「父节点声明了哪个流向」建立
+      // 上下关系。不写时根容器只当作一个可聚焦的整体，方向键在它身上无从下移，
+      // 表现就是「进了插件只能用触屏，方向键完全不动」。大屏根节点同理。
+      flow-children="column"
       onButtonDown={(evt) => {
         const d = evt?.detail;
         if (!d || d.is_repeat) return;
@@ -1556,6 +1560,8 @@ export default function QamScreen() {
 
   const tabRow = (
     <Focusable
+      // 同根容器：页签之间要能用左右键切换，必须声明横向流向
+      flow-children="row"
       style={{ display: "flex", gap: 6, width: "100%", height: TAB_H, flexShrink: 0 }}
       onCancelActionDescription="返回"
     >

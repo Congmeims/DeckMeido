@@ -917,6 +917,9 @@ export default function BigScreen() {
             }}
           >
             <KeyCap>L1</KeyCap>
+            {/* 页签容器本身要声明横向流向，否则方向键只在页签这一层「进得去出不来」：
+                Steam 的导航靠 flow-children 建立兄弟关系，不写就只剩整块可聚焦 */}
+            <Focusable flow-children="row" style={{ display: "flex", alignItems: "center", gap: 6 }}>
             {TABS.map((name, i) => (
               <Focusable
                 key={name}
@@ -929,6 +932,7 @@ export default function BigScreen() {
                 {name}
               </Focusable>
             ))}
+            </Focusable>
             <KeyCap>R1</KeyCap>
           </div>
         )}
