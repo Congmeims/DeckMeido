@@ -726,8 +726,18 @@
   .wall-pick .wp-hint { margin-top: 6px; font-size: 12px; color: var(--muted); }
   .wall-pick.answered { opacity: .55; }
   .wall-pick.answered .wp-item { cursor: default; }
+  /* 多选态：选中的图多一圈内描边（2px 边框 + 内阴影），比单靠边框更容易分辨 */
+  .wall-pick:not(.answered) .wp-item.picked { box-shadow: 0 0 0 2px var(--brand) inset; }
   .wp-item.picked { border-color: var(--brand); }
   .wp-item.picked .wp-n { background: var(--brand); border-color: var(--brand); }
+  .wp-ok {
+    display: block; width: 100%; margin-top: 8px; padding: 8px 12px;
+    font: inherit; font-size: 13px; cursor: pointer;
+    color: var(--on-brand); background: var(--brand);
+    border: 0; border-radius: 8px;
+  }
+  .wp-ok[hidden] { display: none; }
+  .wp-ok:hover { filter: brightness(1.08); }
   @media (max-width: 520px) { .wp-grid { grid-template-columns: minmax(0, 1fr); } }
 
   /* 分享图片预览 */

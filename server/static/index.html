@@ -3011,11 +3011,28 @@
       ? (ev.query ? ('找到这些图（「' + ev.query + '」）') : '找到这些图')
       : (ev.query ? ('想用哪张？（「' + ev.query + '」）') : '想用哪张？');
     card.appendChild(head);
-    function settle(picked) {
+    var picked = [];   // 已选中的编号，可多选
+    function toggle(b, no) {
+      var at = picked.indexOf(no);
+      if (at >= 0) {
+        picked.splice(at, 1);
+        b.classList.remove('picked');
+      } else {
+        picked.push(no);
+        b.classList.add('picked');
+      }
+      picked.sort(function (x, y) { return x - y; });
+      // 只有「找图」值得一次看多张；换壁纸只能落一张，多选没有意义
+      okBtn.hidden = !(isImage && picked.length >= 2);
+      if (okBtn.hidden) return;
+      okBtn.textContent = '看看这 ' + picked.length + ' 张';
+    }
+    function settle(pickedEls) {
       card.classList.add('answered');
-      if (picked) picked.classList.add('picked');
-      var all = card.querySelectorAll('button');
+      (pickedEls || []).forEach(function (el) { el.classList.add('picked'); });
+      var all = card.querySelectorAll('.wp-item');
       Array.prototype.forEach.call(all, function (el) { el.disabled = true; });
+      if (okBtn) okBtn.hidden = true;
     }
     var box = document.createElement('div');
     box.className = 'wp-grid';
@@ -3042,16 +3059,42 @@
       b.addEventListener('click', function (e) {
         e.stopPropagation();
         if (card.classList.contains('answered') || busy) return;
-        settle(b);
-        doSend(String(i + 1));
+        if (!isImage) {
+          // 换壁纸点哪张就是哪张，保持原来的一步到底
+          settle([b]);
+          doSend(String(i + 1));
+          return;
+        }
+        toggle(b, i + 1);
       });
       box.appendChild(b);
     });
     card.appendChild(box);
+    var okBtn = null;
+    if (isImage) {
+      okBtn = document.createElement('button');
+      okBtn.type = 'button';
+      okBtn.className = 'wp-ok';
+      okBtn.hidden = true;
+      okBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (card.classList.contains('answered') || busy || !picked.length) return;
+        var nos = picked.slice();
+        var els = [];
+        Array.prototype.forEach.call(box.querySelectorAll('.wp-item'), function (el, k) {
+          if (nos.indexOf(k + 1) >= 0) els.push(el);
+        });
+        settle(els);
+        // 只点了一张就直接问编号，和点图的老行为一致
+        doSend(nos.length === 1 ? String(nos[0])
+          : '把第 ' + nos.join('、') + ' 张都发给我看看大图');
+      });
+      card.appendChild(okBtn);
+    }
     var hint = document.createElement('div');
     hint.className = 'wp-hint';
     hint.textContent = isImage
-      ? '点图或回复编号看大图；想拿去当壁纸就说「用第几张」'
+      ? '点图或回复编号看大图；想看几张可以多选后一起发。想拿去当壁纸就说「用第几张」'
       : '点图或回复编号选用；都不满意就说「换一批」';
     card.appendChild(hint);
     return card;
