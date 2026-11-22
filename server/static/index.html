@@ -650,12 +650,19 @@
             <div id="pairHostHint" class="field-hint"></div>
           </div>
           <div class="card">
-            <div class="card-title">已配对设备</div>
-            <div id="pairDevList" class="pair-list"></div>
-            <div class="mem-foot">
-              <span id="pairDevCount" class="field-hint"></span>
-              <button id="pairRemoveAll" class="mini-btn danger" type="button">移除全部设备</button>
-            </div>
+            <!-- 设备一多，这张卡会把「远程接管 / 局域网访问」全挤出屏幕，所以整块可折叠；
+                 默认收起，标题行右侧显示台数，点一下展开列表 -->
+            <details id="pairDevFold" class="pair-fold">
+              <summary class="card-title">
+                <span>已配对设备</span>
+                <span id="pairDevCount" class="pair-fold-count"></span>
+              </summary>
+              <div id="pairDevList" class="pair-list"></div>
+              <div class="mem-foot">
+                <span></span>
+                <button id="pairRemoveAll" class="mini-btn danger" type="button">移除全部设备</button>
+              </div>
+            </details>
           </div>
         </section>
 
@@ -10694,7 +10701,7 @@
               + devTime(fails[0].ts);
           }
         }
-        pairDevCount.textContent = '共 ' + devices.length + ' 台设备';
+        pairDevCount.textContent = devices.length ? devices.length + ' 台' : '';
         pairRemoveAll.disabled = !devices.length;
         pairHostHint.textContent = (all[0] && all[0].detail) || (all[1] && all[1].detail) || '';
       })
