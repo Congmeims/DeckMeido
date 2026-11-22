@@ -3592,8 +3592,10 @@ def _safe_search(query: str, n: int, page: int = 1) -> list[dict]:
         params = {"page": "dapi", "s": "post", "q": "index",
                   "json": 0, "limit": max(n * 3, 16),
                   "tags": f"{tags} sort:score width:>1400"}
-        if page > 1:
-            params["pid"] = page         # Safebooru 的翻页参数是 pid，从 1 开始
+        # 翻页：一个标签底下的横图（宽 >=1400 且 16:9）常常只有十几张，
+        # 永远从第 1 页取的话第二批起全是「已经出过、被 _SEEN_URLS 滤掉」，
+        # 结果就是每次换一批都没换。这里让页号跟着批次一起推
+        params["pid"] = page
         r = httpx.get(SAFE_API, params=params,
                       timeout=WALLPAPER_TIMEOUT, follow_redirects=True, headers=UA_WEB)
         r.raise_for_status()
@@ -3922,34 +3924,52 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
         # 同一个关键词第二次搜索时带 page，拿到的就是另一批图。
         # anime 每轮自己会连查 BATCH 轮，所以页码按 BATCH 推，跟它对齐
         paged = ("wallhaven", "anime", "safebooru")
-        pool: list[dict] = []
-        errors: list[str] = []
-        with cf.ThreadPoolExecutor(max_workers=len(sources)) as ex:
-            futs = []
-            for label, fn in sources:
-                q = f"{query} wallpaper" if label == "bing" else en_query
-                if label in paged:
-                    p = page * BATCH + 1 if label == "anime" else page
-                    futs.append((ex.submit(fn, q, POOL_REQ, p), label))
-                else:
-                    futs.append((ex.submit(fn, q, POOL_REQ), label))
-            for fut, label in futs:
-                try:
-                    rows = fut.result()
-                except Exception as e:      # 单个源挂了不算失败
-                    errors.append(f"{label}:{type(e).__name__}")
+
+        def _ask(term: str) -> tuple[list[dict], list[str]]:
+            pool: list[dict] = []
+            errors: list[str] = []
+            with cf.ThreadPoolExecutor(max_workers=len(sources)) as ex:
+                futs = []
+                for label, fn in sources:
+                    q = f"{term} wallpaper" if label == "bing" else term
+                    if label in paged:
+                        p = page * BATCH + 1 if label == "anime" else page
+                        futs.append((ex.submit(fn, q, POOL_REQ, p), label))
+                    else:
+                        futs.append((ex.submit(fn, q, POOL_REQ), label))
+                for fut, label in futs:
+                    try:
+                        rows = fut.result()
+                    except Exception as e:      # 单个源挂了不算失败
+                        errors.append(f"{label}:{type(e).__name__}")
+                        continue
+                    for r in rows:
+                        r["src"] = label
+                        # 先过一轮基本过滤：商品图、文章标题都不要，免得占掉
+                        # 后面的下载名额；这里只看标题，不联网
+                        if _relevant(r):
+                            pool.append(r)
+            # 只有 Bing 这一个源有货时，这批图多半是文章/字典配图——别的库
+            # （壁纸库、插画库、照片库）全都没对上，说明关键词本身不像壁纸题材。
+            # 「他」这种单字就是这样端出四张笔顺截图的，宁可说没搜到
+            if pool and all(r.get("src") == "bing" for r in pool):
+                return [], errors
+            return pool, errors
+
+        pool, errors = _ask(en_query)
+        # 图库都是「所有词都得命中」的 AND 检索：三个词以上的长句（模型很爱
+        # 自己拼 "cute anime girl pastel background"）几乎一律 0 条，于是这一
+        # 批只剩 Bing 那几张、或者干脆空白。整句查空就用去掉常见修饰词后的
+        # 词重查一次——同一个空词不管搜多少遍都是空，用户看到的就是「每次一样」
+        if not pool:
+            core = [w for w in words if w not in _GENERIC_TAGS]
+            for size in (2, 1):
+                alt = " ".join(core[:size])
+                if not alt or alt == " ".join(words):
                     continue
-                for r in rows:
-                    r["src"] = label
-                    # 先过一轮基本过滤：商品图、文章标题都不要，免得占掉
-                    # 后面的下载名额；这里只看标题，不联网
-                    if _relevant(r):
-                        pool.append(r)
-        # 只有 Bing 这一个源有货时，这批图多半是文章/字典配图——别的库
-        # （壁纸库、插画库、照片库）全都没对上，说明关键词本身不像壁纸题材。
-        # 「他」这种单字就是这样端出四张笔顺截图的，宁可说没搜到
-        if pool and all(r.get("src") == "bing" for r in pool):
-            return [], errors
+                again = _ask(alt)
+                if again[0]:
+                    return again
         return pool, errors
 
     try:
