@@ -8175,7 +8175,12 @@
         btn.disabled = false;
         if (x.ok && x.j && x.j.ok) {
           hide();
-          fbToast('已授权：' + reuseText(x.j.expires_in));
+          if (x.j.resumed === false) {
+            // 上一轮还没跑完，后端没有自动续跑；说清楚，别让用户以为已经执行了
+            fbToast('已授权，但上一轮还在跑：这条命令需要你再说一句「继续」');
+          } else {
+            fbToast('已授权：' + reuseText(x.j.expires_in));
+          }
           return;
         }
         err.textContent = (x.j && (x.j.error || x.j.reason)) || '授权失败，请重试';

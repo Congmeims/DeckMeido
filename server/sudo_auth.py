@@ -236,7 +236,10 @@ def command_uses_sudo(command: str) -> bool:
 
 
 def silent_sudo(now: float | None = None) -> bool:
-    """免密 sudo 是否可用（只探 `sudo -n true`，不读密码、不弹窗）"""
+    """免密 sudo 是否可用（只探 `sudo -n true`，不读密码、不弹窗）
+
+    保留给自检/状态展示用；执行路径上不再依赖它（SteamOS 没有免密 sudo）。
+    """
     global _probe
     now = _now(now)
     if _probe and now - _probe[0] < SILENT_PROBE_TTL:
@@ -340,24 +343,27 @@ def _request_message(source: str) -> str:
     return ("这条命令需要管理员权限（sudo），但当前没有可用授权，所以没有执行。"
             f"授权入口已经打开：请在输入框上方的「需要授权」行输入一次管理员密码，"
             f"通过后 {minutes} 分钟内 sudo 命令会直接复用，不会再问。"
-            "不要在对话里把密码明文发给我，也不要使用 echo 密码 | sudo -S 这类写法。"
+            "不要在对话里把密码明文发给我。"
             "授权完成后会自动重新执行这条命令，不需要你再催我。")
 
 
 def prepare(command: str, source: str = "run_command",
-            now: float | None = None) -> dict:
+            now: float | None = None, inline_password: bool = False) -> dict:
     """执行 sudo 命令前的准备：
 
     - 不是 sudo 命令 → mode=none；
-    - 免密 sudo 可用 → mode=silent；
-    - 内存里有有效授权 → mode=askpass（密码由调用方放进子进程环境）；
-    - 否则登记一条待授权请求、广播给界面，并返回 need_auth（不执行命令）。
+    - 命令里自带密码（echo 密码 | sudo -S）→ mode=none，照原样执行；
+    - 缓存里有密码 → mode=askpass，直接执行；
+    - 都没有 → 登记一条待授权请求、广播给界面并返回 need_auth（命令不执行）。
+
+    这里不探 `sudo -n`：SteamOS 出厂就没有免密 sudo，deck 设密码后也必须走密码。
+    真要用免密，sudo 自己的 NOPASSWD 规则会让 askpass 送不送密码都无所谓。
     """
     global _pending
     if not command_uses_sudo(command):
         return {"ok": True, "mode": "none"}
-    if silent_sudo(now):
-        return {"ok": True, "mode": "silent"}
+    if inline_password:
+        return {"ok": True, "mode": "inline"}
     password = cached_password(now)
     if password:
         return {"ok": True, "mode": "askpass", "password": password}

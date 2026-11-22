@@ -3435,7 +3435,7 @@ def _resume_after_sudo(held: dict) -> bool:
     之前只做了一半：命令被拦下 → 用户输密码 → 授权成功，但没有任何环节
     重新发起那一轮，模型就停在那儿等用户催（会话 042b6a 就是这么卡住的）。
 
-    这里用 announce=False 起一轮新对话，不让界面重复出现一条「用户消息」；
+    这里直接重放那条命令（而不是让模型重写一遍），把输出交回对话；
     上一轮还在跑时不抢跑（current_task 单例会被覆盖），改由界面提示用户。
     """
     if _chat_busy():
@@ -3446,14 +3446,17 @@ def _resume_after_sudo(held: dict) -> bool:
     if not command:
         return False
     text = (f"管理员授权已经通过。刚才被拦下、没有执行的命令是：\n{command}\n"
-            "请现在直接重新执行它（sudo 参数已经可用，不要向我索要密码），"
-            "然后把执行结果告诉我，并继续完成原来那一轮剩下的步骤。")
+            "我已经直接把它重新执行了一遍，结果如下。"
+            "请据此继续完成原来那一轮剩下的步骤，不要向我索要密码。")
 
     async def _run() -> None:
         try:
-            await start_chat(text, announce=False)
+            out = await tools.execute("run_command", {"command": command,
+                                                       "reason": "sudo 授权后续跑"})
         except Exception as exc:
             devlog.debug("main._resume_after_sudo", error=repr(exc))
+            out = f"重新执行失败：{exc}"
+        await start_chat(text + "\n\n" + str(out or ""), announce=False)
 
     _spawn(_run(), "_resume_after_sudo")
     devlog.debug("main._resume_after_sudo", reason="started",
