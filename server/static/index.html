@@ -7299,9 +7299,12 @@
       startHeartbeat();
       // 网页在前台才算「用户正看着」：页面可见才登记，后台标签页不登记
       if (document.visibilityState === 'visible') startViewReport();
-      // 重连后补拉接管状态：广播只在状态变化时发，断线期间可能错过
+      // 重连后补拉各类状态：广播只在状态变化时发，断线期间可能错过。
+      // 外观两项也在这里补：theme_changed 是广播，断线期间别端改的滑杆/档位/
+      // 壁纸这边收不到，光等下一次广播可能要等很久
       if (typeof loadRemoteStatus === 'function') loadRemoteStatus();
       if (typeof loadSudoAuth === 'function') loadSudoAuth();
+      if (typeof resyncAppearance === 'function') resyncAppearance();
     };
 
     ws.onmessage = function (ev) {
@@ -7894,13 +7897,14 @@
         case 'theme_changed':
           // AI 换了壁纸，或另一台设备改了外观：整站立刻跟着变，不用刷新
           {
-            // 只丢掉「本端刚保存的滑条比它还新」的那种回程旧货；壁纸/配色
-            // 变了恰恰是要跟的，不能拿「配色不一致」当成旧快照挡掉——
-            // 那样换壁纸后本页还停在上一张的配色和亮度档上，得刷新才生效。
-            // 正在拖的那条滑杆也不接受远端值（拖完会自己保存，见 saveWallTune）
-            if (msg.data && !wallTuneEl && !tuneSnapStale(msg.data)) {
-              applyCfgAppearance(msg.data);
-              if (msg.data.wallpaper !== undefined) renderAppearanceForm(msg.data, true);
+            // 按字段合并而不是整份丢弃：本端刚保存/正在拖的那一项保留本地值，
+            // 其余字段（壁纸、配色、别端改的档位与滑杆）照收。
+            // 以前只要有一项比本地旧就整份不要，一台设备拖着滑杆时，
+            // 另一台改的档位或换的壁纸这边就一直不跟
+            if (msg.data) {
+              var tuneData = mergeTuneSnap(msg.data);
+              applyCfgAppearance(tuneData);
+              if (msg.data.wallpaper !== undefined) renderAppearanceForm(tuneData, true);
             }
           }
           break;
@@ -11739,14 +11743,13 @@
     CFG_APPEARANCE = Object.assign({}, prevApp, a);
     a = CFG_APPEARANCE;
     // 快照里这一项的落盘时间比本地刚保存的还旧，说明是保存之前拍下的旧货，
-    // 跳过，别把刚拖到的值刷回去（拖拽中的值本来就不会走这条渲染）
-    var dimStale = Number(a.dim_ts) < wallDimSavedAt;
+    // 跳过，别把刚拖到的值刷回去（拖拽中的值本来就不会走这条渲染）。
+    // 三项滑杆 + 档位统一走 tuneFieldStale，别再各写一份比较
+    var dimStale = tuneFieldStale(a, 'dim');
     // theme 也要参与同样的时间戳比较：本端刚切完档、POST 还在路上时，
     // 旧快照里的 theme 会把页面直接拽回上一档（浅/深来回跳的来源之一）
-    // 必须放在下面判档之前算：以前它声明在后面，这里是 undefined，
-    // 判旧永远不生效，旧快照照样把档位拽回去
-    var themeStale = Number(a.theme_ts) < wallThemeSavedAt;
-    var blurStale = Number(a.blur_ts) < wallBlurSavedAt;
+    var themeStale = tuneFieldStale(a, 'theme');
+    var blurStale = tuneFieldStale(a, 'blur');
     // 主题档也以后端为准：别端（手机、另一台电脑、掌机插件）切了档，
     // 广播/回包里带着新档名，这里必须跟着换。
     // fromRemote = 不是本端点的按钮，不回写配置，免得两端来回广播。
@@ -11817,7 +11820,7 @@
     // 毛玻璃也以后端为准：别端的值推过来时把滑条和 CSS 一起对齐。
     // 和 dim / blur 一样按落盘时间过滤：本端刚松手、保存还在路上时，
     // 任何回程快照都必然更旧，照收就会把滑条拽回上一个值
-    var glassStale = Number(a.glass_ts) < wallGlassSavedAt;
+    var glassStale = tuneFieldStale(a, 'glass');
     if (glassStale) {
       // 和 dim / blur 同样处理：本端刚松手的值比这份快照新，留着表单值，
       // 别把滑条拽回上一个刻度
@@ -15971,6 +15974,13 @@
         if (pc.net !== undefined) permCustomNet.checked = !!pc.net;
       }
     }
+    // 外观快照跟着同一份广播过来：设置页不必再单独请求 /api/theme。
+    // 按字段合并（本端正拖的滑杆/刚切的档保留本地值），别的端改的照收
+    if (prefs.appearance) {
+      var appData = mergeTuneSnap(prefs.appearance);
+      applyCfgAppearance(appData);
+      renderAppearanceForm(appData, true);
+    }
     // 自绘下拉的 label 也要跟着刷新，否则显示的还是上一项的文字
     ddRefreshAll();
   }
@@ -16571,7 +16581,7 @@
     // 主题档：本端刚切完档时，比它更旧的快照不能拿来刷 page 上的档位。
     // 这里判旧就整份丢（档名和「当前档」派生出来的配色是一套的，
     // 只丢掉档名会拼出半新半旧的页面）
-    if (wallThemeSavedAt && (Number(t.theme_ts) || 0) < wallThemeSavedAt) return true;
+    if (tuneFieldStale(t, 'theme')) return true;
     // 壁纸是否同一张：文件名固定是 wallpaper.*，换图后名字不变，
     // 所以比版本戳（修改时间）。只比文件名的话，换一张壁纸后广播/首屏
     // 拉回来的快照会被当成「旧货」整份丢掉，页面还停在上一张的配色和亮度上
@@ -16583,16 +16593,61 @@
     var b = (cur.palette && cur.palette.dark && cur.palette.dark.brand) || '';
     return !!a && !!b && a !== b;
   }
-  // 某项的「本地最近一次落盘时间」，用来丢掉比它更旧的快照
-  function tuneSnapStale(t) {
-    var pairs = [['dim', wallDimSavedAt], ['blur', wallBlurSavedAt]];
+  // 三项外观滑杆 + 主题档的「本地最近一次落盘时间」：比它更旧的快照不能采用。
+  // 所有逐项判旧都走这里（tuneFieldStale 判单项、tuneSnapStale 判整份），
+  // 以前 theme / glass 各写一份比较，漏掉一处就会出现「档位被旧快照拽回去」
+  function tuneLocalStamps() {
+    return [
+      ['dim', wallDimSavedAt],
+      ['blur', wallBlurSavedAt],
+      ['glass', typeof wallGlassSavedAt === 'undefined' ? 0 : wallGlassSavedAt],
+      ['theme', wallThemeSavedAt]
+    ];
+  }
+  // 单项：快照里这一项的落盘时间比本地保存的还旧
+  function tuneFieldStale(t, key) {
+    if (!t) return false;
+    var pairs = tuneLocalStamps();
     for (var i = 0; i < pairs.length; i++) {
-      var k = pairs[i][0];
+      if (pairs[i][0] !== key) continue;
       var local = pairs[i][1];
-      var snap = Number(t[k + '_ts']) || 0;
-      if (local && snap < local) return true;
+      return !!local && (Number(t[key + '_ts']) || 0) < local;
     }
     return false;
+  }
+  // 整份：有任意一项是旧的。只在「整份接收／整份丢弃」的场合用
+  // （比如 /api/config 回包），广播按字段合并，见 mergeTuneSnap
+  function tuneSnapStale(t) {
+    var pairs = tuneLocalStamps();
+    for (var i = 0; i < pairs.length; i++) {
+      if (tuneFieldStale(t, pairs[i][0])) return true;
+    }
+    return false;
+  }
+  // 按字段合并远端快照：本端刚保存/正在拖的那一项保留本地值，
+  // 其余字段（含壁纸、配色）照收。以前 theme_changed 是整份丢弃，
+  // 一台设备拖滑杆时，另一台改的档位/壁纸就收不到了
+  function mergeTuneSnap(t) {
+    if (!t || typeof t !== 'object') return t;
+    var out = Object.assign({}, t);
+    var local = CFG_APPEARANCE || {};
+    // 正在拖的那条滑杆也算一项：别的端的值不覆盖手指下的读数
+    var dragKey = !wallTuneEl ? '' :
+      (wallTuneEl === wallDim ? 'dim' : (wallTuneEl === wallBlur ? 'blur' : 'glass'));
+    ['dim', 'blur', 'glass'].forEach(function (k) {
+      if (k === dragKey || tuneFieldStale(t, k)) {
+        if (local[k] != null) out[k] = Number(local[k]) || 0;
+        // 时间戳一并抹掉：留着远端更旧的那个，下游 renderAppearanceForm
+        // 按它再判一次还会把这一项当成旧货跳过（本地值已经覆盖上了）
+        delete out[k + '_ts'];
+      }
+    });
+    if (dragKey || tuneFieldStale(t, 'theme')) {
+      // 档名和「当前档」派生出来的配色是一套的，档名保留本地时
+      // data-theme 也不动；配色仍按快照收（配色跟壁纸走，不跟档位走）
+      delete out.theme;
+    }
+    return out;
   }
   // 强调色上的文字颜色：按背景色的相对亮度（WCAG 那套 sRGB 线性化）选深色还是白字。
   // 用户把强调色设成 #4aff3d 这种亮绿时，原来的白字几乎读不出来；这条规则让
@@ -16686,14 +16741,14 @@
       // 拍下的 /api/config 打回原值（「闪一下就归零」）
       var dragging = !!(typeof wallTuneEl !== 'undefined' && wallTuneEl) || keepTune;
       var fix = {};
-      if (dragging || Number(theme.dim_ts) < wallDimSavedAt) {
+      if (dragging || tuneFieldStale(theme, 'dim')) {
         fix.dim = Number(CFG_APPEARANCE.dim) || 0;
       }
-      if (dragging || Number(theme.blur_ts) < wallBlurSavedAt) {
+      if (dragging || tuneFieldStale(theme, 'blur')) {
         fix.blur = Number(CFG_APPEARANCE.blur) || 0;
       }
       // 毛玻璃同口径：拖动中或快照更旧，一律用本地值
-      if ((dragging || Number(theme.glass_ts) < wallGlassSavedAt) &&
+      if ((dragging || tuneFieldStale(theme, 'glass')) &&
           CFG_APPEARANCE && CFG_APPEARANCE.glass != null) {
         fix.glass = Number(CFG_APPEARANCE.glass) || 0;
       }
@@ -16722,7 +16777,7 @@
     if (CFG_APPEARANCE.theme && CFG_APPEARANCE.theme !==
         document.documentElement.getAttribute('data-theme')) {
       var tuneBusy = !!(typeof wallTuneEl !== 'undefined' && wallTuneEl) || !!keepTune;
-      if (!tuneBusy && Number(CFG_APPEARANCE.theme_ts || 0) >= wallThemeSavedAt) {
+      if (!tuneBusy && !tuneFieldStale(CFG_APPEARANCE, 'theme')) {
         applyTheme(CFG_APPEARANCE.theme, true);
       } else {
         // 不跟着换档，快照里的档名也别留着，否则下一次无参重画又会被它带偏
@@ -16737,8 +16792,7 @@
         try { localStorage.setItem(GLASS_KEY, String(gv)); } catch (e) {}
         // 拖动中或快照比本地保存更旧时不动滑条：CSS 那边由 fix 保住本地值，
         // 这里再把 input 拽回去，松手后读数就会和实际效果对不上
-        var gstale = (typeof wallGlassSavedAt !== 'undefined' &&
-                      Number(CFG_APPEARANCE.glass_ts) < wallGlassSavedAt) ||
+        var gstale = tuneFieldStale(CFG_APPEARANCE, 'glass') ||
                      (typeof dragging !== 'undefined' && dragging);
         var gel = gstale ? null : document.getElementById('wallGlass');
         if (gel) gel.value = String(gv);
@@ -16870,6 +16924,26 @@
       .catch(function () {});
   }
   loadTheme();
+
+  // 重连补拉：/api/theme 拿到壁纸与外观四项，/api/config 拿到其余设置。
+  // 两个接口并行取，各走各的判旧（cfgAppearanceStale 认壁纸/配色/时间戳），
+  // 拉回来的旧响应不会盖掉本端刚拖的值
+  var resyncBusy = false;
+  function resyncAppearance() {
+    if (resyncBusy) return;
+    resyncBusy = true;
+    var done = function () { resyncBusy = false; };
+    loadTheme().then(done, done);
+    apiFetch('/api/config').then(function (r) { return r.json(); })
+      .then(function (cfg) {
+        if (!cfg || cfg.error || !cfg.appearance) return;
+        var app = cfg.appearance;
+        if (typeof cfgAppearanceStale === 'function' && cfgAppearanceStale(app)) return;
+        applyCfgAppearance(app);
+        if (typeof renderAppearanceForm === 'function') renderAppearanceForm(app, true);
+      })
+      .catch(done);
+  }
 
   // 窄屏（手机）侧栏抽屉。设置页用的是同一条顶栏，所以这一颗按钮
   // 在设置里自动就变成「拉出分区导航」的那颗，不用再绑一份

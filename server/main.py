@@ -1108,6 +1108,10 @@ def config_prefs() -> dict:
         "wake_enabled": wake_service.enabled,
         "ui_language": UI_LANG,
         "reasoning_effort": llm.reasoning_effort,
+        # 外观快照（壁纸/配色/透明度/模糊/毛玻璃/主题档 + 各项落盘时间）。
+        # 以前只走单独一条 theme_changed，设置页对齐外观得再请求一次 /api/theme；
+        # 现在 config_changed 一份就够，断线补拉也只需一次
+        "appearance": routes_theme.current_theme(),
     }
 
 
