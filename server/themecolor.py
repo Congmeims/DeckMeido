@@ -55,12 +55,66 @@ def _hsl_hex(h: float, s: float, l: float) -> str:
     return _hex((r * 255, g * 255, b * 255))
 
 
+def _grid_colors(img, cols: int = 8, rows: int = 8) -> list[tuple[float, float, float, int]]:
+    """把图切成 cols×rows 网格，每格出两个样本：均值色、格内最饱和的像素色。
+
+    返回 [(r, g, b, 权重)]，权重是该格像素数。
+    只取均值会把格内的小面积亮色（招牌、眼睛高光、晚霞）跟周围背景平均掉，
+    整张图越平均越灰 —— 15 个名额里就没有一个能当强调色。所以每格额外
+    记一个饱和度最高的原始像素：底色靠均值（渐变/噪点被平滑掉），
+    强调色靠这支最饱和的样本，两边的优点都留得住。
+    """
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        return []
+    px = img.tobytes()
+    out = []
+    for gy in range(rows):
+        y0, y1 = gy * h // rows, (gy + 1) * h // rows
+        if y1 <= y0:
+            continue
+        for gx in range(cols):
+            x0, x1 = gx * w // cols, (gx + 1) * w // cols
+            if x1 <= x0:
+                continue
+            sr = sg = sb = 0
+            n = 0
+            best = None          # (饱和度 + 明度权重, r, g, b)
+            for y in range(y0, y1):
+                base = y * w * 3
+                for x in range(x0, x1):
+                    i = base + x * 3
+                    r, g, b = px[i], px[i + 1], px[i + 2]
+                    sr += r
+                    sg += g
+                    sb += b
+                    n += 1
+                    if n % 3:            # 每 3 个像素评一次，够用且省一半开销
+                        continue
+                    mx, mn = max(r, g, b), min(r, g, b)
+                    if not mx:
+                        continue
+                    sat = (mx - mn) / mx
+                    score = sat * (0.3 + mx / 255)   # 太暗的高饱和像素也不算
+                    if best is None or score > best[0]:
+                        best = (score, r, g, b)
+            if n:
+                out.append((sr / n, sg / n, sb / n, n))
+            # 格内最饱和样本只在真有颜色时才加：纯灰格里它还是灰，
+            # 加进来只会多塞一堆重复的无彩色
+            if best is not None and best[0] >= 0.18:
+                # 最饱和样本按格子的三分之一权重参与统计，不压过成片的底色
+                out.append((best[1], best[2], best[3], max(1, n // 3)))
+    return out
+
+
 def wallpaper_colors(img_bytes: bytes, n: int = 15) -> list[tuple[float, float, float, str]]:
     """把壁纸分成 15 色：最亮的 5 个 / 居中的 5 个 / 最暗的 5 个。
 
-    参考「色采」那类取色 App：一张图先量化成若干种实际出现过的颜色，
-    按亮度排序后切三段，三档主题各用其中一段，段内按亮度从小到大
-    依次对应「底 / 面板 / 第二层 / 强调 / 气泡」五个槽位。
+    一张图先按网格取样（每格出均值色和格内最饱和色两个样本），再统计成
+    若干种实际出现过的颜色；进桶前把纯灰丢掉、把近黑近白降权，避免
+    白墙/黑边/灰阴影占满名额。按亮度排序后切三段，三档主题各用其中一段，
+    段内按亮度从小到大依次对应「底 / 面板 / 第二层 / 强调 / 气泡」五个槽位。
     返回 [(亮度, 占比, 饱和度, #rrggbb)]，按亮度从暗到亮。
     取不出图时返回空列表，调用方退回单色推导。
     """
@@ -72,27 +126,46 @@ def wallpaper_colors(img_bytes: bytes, n: int = 15) -> list[tuple[float, float, 
         # 透明底先垫白，否则 PNG 图标类壁纸的主色会是黑
         bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
         bg.alpha_composite(img)
+        img = bg.convert("RGB")
+        # 先按 8×8 网格取每格均值：逐像素统计时，一段渐变会碎成十几个
+        # 相邻桶、噪点和文字边缘也会各自占一桶，十几个名额被同一片色占满。
+        # 取均值等于先做一次局部平滑，留下的才是「成片的颜色」。
         # 缩到 96×96 后自己按 8 级色桶做直方图，不用 Pillow 的 quantize：
         # 本机 Pillow 13 的 MEDIANCUT / ADAPTIVE 会把红绿通道算错
         # （源像素 (227,205,85) 量化成 #48931b 绿色），出来的配色整体偏绿。
         # 自己在 RGB 空间分桶没有这个问题，且能拿到每桶的真实占比。
-        img = bg.convert("RGB").resize((96, 96))
-        pixels = img.tobytes()
+        img = img.resize((96, 96))
     except Exception:
         return []
+    samples = _grid_colors(img)
+    if not samples:
+        return []
     buckets: dict[tuple[int, int, int], list[int]] = {}
-    for i in range(0, len(pixels), 3):
-        r, g, b = pixels[i], pixels[i + 1], pixels[i + 2]
-        key = (r >> 5, g >> 5, b >> 5)              # 每通道 8 级，共 512 桶
+    drop_grey = 0.0          # 被丢掉的中灰度：纯灰撑不起强调色，占比也不该压过彩色
+    for r, g, b, w in samples:
+        _h, l, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
+        # 近黑 / 近白按四分之一权重留下：它们是三档主题的「底」唯一能来的方向
+        # （浅色档要白底、暗黑档要黑底），但也不能让一片纯白/纯黑把整段占满
+        weight = w if 0.03 <= l <= 0.93 else max(1, w // 4)
+        # 中间的灰（明度 0.53~0.79 且饱和度 < 0.19）直接丢；两端的低饱和色
+        # 保住 —— 黑白灰壁纸的底色本来就该是黑白灰
+        if 0.53 <= l <= 0.79 and s < 0.19:
+            drop_grey += weight
+            continue
+        key = (int(r) >> 5, int(g) >> 5, int(b) >> 5)   # 每通道 8 级，共 512 桶
         acc = buckets.get(key)
         if acc is None:
-            buckets[key] = [r, g, b, 1]
+            buckets[key] = [r * weight, g * weight, b * weight, weight]
         else:
-            acc[0] += r
-            acc[1] += g
-            acc[2] += b
-            acc[3] += 1
-    total = float(sum(a[3] for a in buckets.values())) or 1.0
+            acc[0] += r * weight
+            acc[1] += g * weight
+            acc[2] += b * weight
+            acc[3] += weight
+    if not buckets:
+        return []
+    # 占比的分母用未被丢掉的像素：一张图大半是灰墙时，剩下那点颜色
+    # 在整图里本来就只占一小块，不能让灰把它的占比摊薄
+    total = float(sum(a[3] for a in buckets.values()) + drop_grey) or 1.0
     entries = []
     for r, g, b, cnt in buckets.values():
         r, g, b = r / cnt, g / cnt, b / cnt
@@ -144,6 +217,10 @@ def wallpaper_colors(img_bytes: bytes, n: int = 15) -> list[tuple[float, float, 
             if abs(a[2] - b[2]) < 0.004 and abs(a[0] - b[0]) < 0.01:
                 continue
             score = b[3] - a[3]
+            # 亮度差太小的一对不插值：插出来的色几乎和两端一样，白白占掉
+            # 一个名额，还会把这一档的强调色名额挤成一片同色
+            if score < 0.02:
+                continue
             if best is None or score > best:
                 best, bi = score, i
         if bi < 0:
