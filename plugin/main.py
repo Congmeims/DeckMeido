@@ -245,6 +245,42 @@ def _restart_marker() -> Path:
     return _data_dir() / "restart.request"
 
 
+def _autostart_marker() -> Path:
+    """「开机自动启动后端」开关的落盘位置（存在 = 关）
+
+    和 core.stopped 分开：那个是「这次先关掉，下次点启动就恢复」，重启 Deck
+    后是否自动拉起是另一件事，用户要的是长期设置。用「反向标记」而不是
+    settings.json 里一个键，是为了不需要为它引入一套读写 settings 的代码，
+    root 插件和 deck 客户端也能各自 stat。
+    """
+    return _data_dir() / "core.no_autostart"
+
+
+def _autostart_enabled() -> bool:
+    try:
+        return not _autostart_marker().exists()
+    except Exception:
+        return True
+
+
+def _set_autostart(enabled: bool) -> None:
+    path = _autostart_marker()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if enabled:
+            path.unlink(missing_ok=True)
+            return
+        path.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+        os.chmod(path, 0o600)
+        if os.getuid() == 0:
+            # 插件是 root，标记要交给 deck（客户端那边以 deck 读写），
+            # 属组一并改，免得留下 root:root 的文件让客户端删不掉
+            uid = _target_uid()
+            os.chown(path, uid, uid)
+    except Exception as exc:
+        decky.logger.warning(f"写入开机自启开关失败：{exc}")
+
+
 def _core_stopped() -> bool:
     try:
         return _core_stopped_path().exists()
@@ -2311,6 +2347,9 @@ class Plugin:
             # 用户点过「关闭核心」且没再点「启动」：前端据此显示「已停止」
             # 而不是「异常」，并把「重启」置灰
             "core_stopped": _core_stopped(),
+            # 「开机自动启动」开关（面板里可切）：关掉后插件加载不再自动拉起，
+            # 只有用户点「启动后端」才起
+            "autostart": _autostart_enabled(),
             # 设置区：语音播报开关（由后端 tts.enable 决定）与版本号（底部显示）
             "tts": bool(prefs.get("tts")),
             # 带画面询问开关：面板一关一开组件会重挂载，状态得从后端补回来
@@ -2902,6 +2941,17 @@ class Plugin:
         _drop_thread_cache()
         return {"ok": True}
 
+    async def set_autostart(self, enabled: bool) -> dict:
+        """切「开机自动启动后端」
+
+        关掉时插件加载不再自动拉起后端（省下那一份常驻内存），需要时从面板
+        点「启动后端」；重新打开后下次插件加载/开机就会恢复自动拉起。
+        这只影响「自动」，不碰已经在跑的后端：关开关不会把它停掉。
+        """
+        _set_autostart(bool(enabled))
+        decky.logger.info(f"开机自动启动后端：{'开' if enabled else '关'}")
+        return {"ok": True, "autostart": _autostart_enabled()}
+
     async def screenshot(self, hide: bool = False) -> dict:
         """抓当前游戏画面
 
@@ -3128,6 +3178,11 @@ class Plugin:
         if _core_stopped():
             decky.logger.info("自动启动后端跳过：用户已点过「关闭核心」")
             return
+        # 用户在面板里关了「开机自动启动」：开机/插件加载一律不拉起，
+        # 需要时由用户点「启动后端」。和 core.stopped 不同，这个开关常驻。
+        if not _autostart_enabled():
+            decky.logger.info("自动启动后端跳过：用户已关闭开机自动启动")
+            return
         cfg = _load_server_cfg()
         port = int(cfg.get("port", 18765))
         if not cfg:
@@ -3135,9 +3190,12 @@ class Plugin:
             return
         for attempt in range(1, retries + 1):
             await asyncio.sleep(3 if attempt == 1 else 10)
-            # 等待期间用户可能在大屏页点了「关闭核心」：每一轮都重新检查
+            # 等待期间用户可能在大屏页点了「关闭核心」或关了自动启动：每一轮都重新检查
             if _core_stopped():
                 decky.logger.info("自动启动后端中止：用户已点过「关闭核心」")
+                return
+            if not _autostart_enabled():
+                decky.logger.info("自动启动后端中止：用户已关闭开机自动启动")
                 return
             core = await _core_http(port, "GET", "/api/status", timeout=2.0)
             if core.get("ok"):
