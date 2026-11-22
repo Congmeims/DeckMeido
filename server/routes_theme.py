@@ -131,6 +131,7 @@ def current_theme() -> dict:
         # 之前的旧货：/api/config 是异步拉的，回来时可能比刚存的值还旧
         "dim_ts": _stamp(str(app.get("dim_ts") or "")),
         "blur_ts": _stamp(str(app.get("blur_ts") or "")),
+        "glass_ts": _stamp(str(app.get("glass_ts") or "")),
     }
 
 
@@ -271,10 +272,21 @@ def register(app) -> None:
             updates["blur_ts"] = str(now)
         if req.glass is not None:
             updates["glass"] = _clamp_int(req.glass, GLASS_DEFAULT, 0, 20)
+            updates["glass_ts"] = str(now)
         if req.theme is not None:
             updates["theme"] = _theme_name(req.theme)
         await _publish(updates)
-        return {"ok": True, "theme": current_theme()}
+        # 回包直接用这次的落盘时间：热重载后的 CFG 从文件里读回的 glass_ts
+        # 是字符串，任何一步没跟上，前端都会把快照判成「旧货」拒收
+        snap = current_theme()
+        if req.glass is not None:
+            snap["glass_ts"] = now
+            snap["glass"] = updates["glass"]
+        if req.dim is not None:
+            snap["dim_ts"] = now
+        if req.blur is not None:
+            snap["blur_ts"] = now
+        return {"ok": True, "theme": snap}
 
     @router.post("/api/theme/candidates/{cid}/apply")
     async def api_theme_candidate_apply(cid: str):

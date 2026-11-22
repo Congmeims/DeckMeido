@@ -111,6 +111,14 @@
   </div>
   <div class="sb-sess-block">
   <div class="sb-sess-head"><span>会话</span><button id="btnNewSess">＋</button></div>
+  <!-- 删除会话后的「撤销」固定贴在这里：以前这条提示是往聊天区追加一条系统消息，
+       而删完紧接着就 loadSessions() 重画侧栏，聊天区又是另一个会话的，
+       提示经常一闪就找不到（或在别的会话里根本看不到） -->
+  <div id="sessUndo" class="sess-undo" hidden>
+    <span class="su-text" id="sessUndoText"></span>
+    <button type="button" class="su-act" id="sessUndoBtn">撤销</button>
+    <button type="button" class="su-close" id="sessUndoClose" aria-label="关闭">×</button>
+  </div>
   <div id="sessList"></div>
   </div>
   <!-- 设置模式下的左栏：会话区整块换成设置分区导航，logo / 版本 / 底部按钮都保留。
@@ -4356,9 +4364,15 @@
           fbToast('设置失败：' + (j.detail || j.error || ('HTTP ' + r.status)), 'file', true);
           return;
         }
-        // 后端会广播 theme_changed，这里只管提示；本地也同步一份，免得
-        // 广播没到（离线/重连中）时背景还是旧图
-        if (j.theme) applyTheme(j.theme);
+        // 后端会广播 theme_changed，这里也同步一份，免得广播没到（重连中）时
+        // 背景还停在旧图。注意 j.theme 是整份主题快照（壁纸 / 配色 / 压暗…），
+        // applyTheme 只吃主题名字符串 —— 以前把整份快照传进去，被判成非法档位
+        // 回落到 dark，新壁纸和新配色一个字都没用上，这就是「右键换了壁纸
+        // 预览图和配色都不刷新」的原因
+        if (j.theme) {
+          applyCfgAppearance(j.theme);
+          renderAppearanceForm(j.theme);
+        }
         fbToast('已设为 Meido 背景', 'file');
       });
     }).catch(function () { fbToast('设置失败：网络错误', 'file', true); });
@@ -10091,10 +10105,16 @@
   var saveCfg = document.getElementById('saveCfg');
   var cfgHint = document.getElementById('cfgHint');
   // 底栏左侧那行字：平时不占位，只有真的需要说话（保存中 / 保存失败 /
-  // 已自动保存：<改动项> / 导出结果）才显出来，说完再收回
-  function setCfgHint(msg) {
+  // 已自动保存：<改动项> / 导出结果）才显出来，说完再收回。
+  // keep 为真时是「进行中」这类临时状态，不自动收回（由后续结果覆盖）
+  var cfgHintTimer = 0;
+  function setCfgHint(msg, keep) {
     cfgHint.textContent = msg || '';
     cfgHint.hidden = !msg;
+    clearTimeout(cfgHintTimer);
+    // 成功类提示 3 秒后自己收回：以前写完就一直挂着，下一次「保存中…」
+    // 把它覆盖掉，看起来就是提示被吞了 / 永远慢半拍
+    if (msg && !keep) cfgHintTimer = setTimeout(function () { setCfgHint(''); }, 3000);
   }
   var cfgDevMode = document.getElementById('cfgDevMode');
   // 离线模式开关与顶部横幅：横幅在两种视图下都存在，开关在「关于更新」里
@@ -11719,12 +11739,16 @@
       }
       CFG_APPEARANCE.blur = Number(a.blur) || 0;
     }
-    // 毛玻璃也以后端为准：别端的值推过来时把滑条和 CSS 一起对齐
-    if (wallGlass && a.glass != null) {
+    // 毛玻璃也以后端为准：别端的值推过来时把滑条和 CSS 一起对齐。
+    // 和 dim / blur 一样按落盘时间过滤：本端刚松手、保存还在路上时，
+    // 任何回程快照都必然更旧，照收就会把滑条拽回上一个值
+    if (wallGlass && a.glass != null &&
+        !(Number(a.glass_ts) < wallGlassSavedAt)) {
       var gsnap = Math.max(0, Math.min(20, Math.round(Number(a.glass) || 0)));
       if (wallGlass.value !== String(gsnap)) wallGlass.value = String(gsnap);
       if (wallGlassVal.textContent !== gsnap + 'px') wallGlassVal.textContent = gsnap + 'px';
       savedGlass = gsnap;
+      CFG_APPEARANCE.glass = gsnap;
       document.documentElement.style.setProperty('--glass', gsnap + 'px');
     }
     syncWallRgs();
@@ -11958,6 +11982,9 @@
   var wallGlassVal = document.getElementById('wallGlassVal');
   var GLASS_KEY = 'deckmeido_glass';
   var glassSaveT = 0;
+  // 本端最近一次落盘毛玻璃的时间（毫秒）。和 dim / blur 的 *_SavedAt 同口径：
+  // 快照的 glass_ts 比它旧就是保存之前拍的旧货，不能拿来刷滑条
+  var wallGlassSavedAt = 0;
   if (wallGlass) {
     wallRgs.push(wallGlass);
     syncWallRg(wallGlass);
@@ -11974,25 +12001,34 @@
       var v = Number(wallGlass.value) || 0;
       try { localStorage.setItem(GLASS_KEY, String(v)); } catch (_) {}
       if (CFG_APPEARANCE && typeof CFG_APPEARANCE === 'object') CFG_APPEARANCE.glass = v;
+      // 先把自己的落盘时间记上：保存请求在路上时任何回程快照都比它旧
+      wallGlassSavedAt = Date.now();
       // 防抖写回后端：后端落盘后广播 theme_changed，其余端跟着变
       clearTimeout(glassSaveT);
       glassSaveT = setTimeout(function () {
         apiFetch('/api/theme/config', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ glass: v })
-        }).catch(function () {});
+        }).then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (!d || !d.theme) return;
+            // 回包前用户又拖过：这份快照是更早的值，整份丢掉
+            if ((Number(wallGlass.value) || 0) !== v) return;
+            renderAppearanceForm(d.theme);
+          })
+          .catch(function () {});
       }, 250);
     });
-    // 首帧先用 localStorage 缓存的强度，真正的值随后端快照（/api/theme）覆盖；
-    // 以前这里是唯一来源，现在只是缓存
+    // 首帧先用 localStorage 缓存的强度；真正的值以 /api/theme 快照为准。
+    // 这里不能再按「CFG_APPEARANCE.glass 是否为 null」判断要不要写 CSS：
+    // 那个快照对象在首屏就是 {}，glass 恒为 null，所以永远用缓存值盖住
+    // 后端刚下发的真实值（刷新后被「打回」旧值的直接原因之一）
     savedGlass = 0;
     try { savedGlass = Number(localStorage.getItem(GLASS_KEY)) || 0; } catch (_) {}
     savedGlass = Math.max(0, Math.min(20, Math.round(savedGlass)));
     wallGlass.value = String(savedGlass);
     wallGlassVal.textContent = savedGlass + 'px';
-    if (!(CFG_APPEARANCE && CFG_APPEARANCE.glass != null)) {
-      document.documentElement.style.setProperty('--glass', savedGlass + 'px');
-    }
+    document.documentElement.style.setProperty('--glass', savedGlass + 'px');
     syncWallRg(wallGlass);
   }
   // 选图入口：空预览框本身（大号加号）和「换一张」都指向同一个 file input
@@ -12776,7 +12812,12 @@
   // 这里给一个「我就是要马上存」的出口，走同一条路径
   // 手动保存也要报「已自动保存：<改动项>」：没记过 trigger 就由
   // autoSaveChangedLabel 按当前脏控件兜底挑一个
-  saveCfg.addEventListener('click', function () { cfgPermGateThenSave(); });
+  saveCfg.addEventListener('click', function () {
+    // 自动保存已经把改动都落盘了：这里只做兜底，没有未保存的改动就不发请求，
+    // 免得每次点都刷一遍「保存中… → 已自动保存」，反倒把真正的提示挤掉
+    if (!autoSaveDirty()) { setCfgHint('没有待保存的改动'); return; }
+    cfgPermGateThenSave();
+  });
 
   // ---------- 设置页自动保存 ----------
   // 改完就存：输入框停手 800ms 后提交，开关/下拉/失焦立刻提交。
@@ -12988,7 +13029,7 @@
       if (done) done(false);
       return;
     }
-    setCfgHint('保存中…');
+    setCfgHint('保存中…', true);
     apiProfileHint.style.color = 'var(--muted)';
     apiProfileHint.textContent = '保存中…';
     // 提示词模板带 data-autosave，改动后和别的设置项一起提交：只带真的改了的那个，
@@ -16090,6 +16131,11 @@
       if (dragging || Number(theme.blur_ts) < wallBlurSavedAt) {
         fix.blur = Number(CFG_APPEARANCE.blur) || 0;
       }
+      // 毛玻璃同口径：拖动中或快照更旧，一律用本地值
+      if ((dragging || Number(theme.glass_ts) < wallGlassSavedAt) &&
+          CFG_APPEARANCE && CFG_APPEARANCE.glass != null) {
+        fix.glass = Number(CFG_APPEARANCE.glass) || 0;
+      }
       theme = Object.assign({}, theme, fix);
       CFG_APPEARANCE = theme;
     } else if (typeof wallDim !== 'undefined' && wallDim && CFG_APPEARANCE && CFG_APPEARANCE.dim != null) {
@@ -16118,7 +16164,12 @@
       if (typeof savedGlass !== 'undefined' && savedGlass !== gv) {
         savedGlass = gv;
         try { localStorage.setItem(GLASS_KEY, String(gv)); } catch (e) {}
-        var gel = document.getElementById('wallGlass');
+        // 拖动中或快照比本地保存更旧时不动滑条：CSS 那边由 fix 保住本地值，
+        // 这里再把 input 拽回去，松手后读数就会和实际效果对不上
+        var gstale = (typeof wallGlassSavedAt !== 'undefined' &&
+                      Number(CFG_APPEARANCE.glass_ts) < wallGlassSavedAt) ||
+                     (typeof dragging !== 'undefined' && dragging);
+        var gel = gstale ? null : document.getElementById('wallGlass');
         if (gel) gel.value = String(gv);
       }
     }
@@ -16560,32 +16611,6 @@
     title.className = 's-title';
     title.textContent = s.title || '会话';
     row.appendChild(title);
-    // 删除成功后的「撤销」：一个删除动作只对应一条提示，点过就把它换掉。
-    // 同一时间只留最近一条可撤销的提示，免得侧栏删几次之后冒出好几个撤销按钮
-    var lastUndo = null;
-    function sysUndo(text, trash) {
-      if (lastUndo && lastUndo.parentNode) lastUndo.parentNode.removeChild(lastUndo);
-      lastUndo = addSystem(text, {
-        label: '撤销',
-        once: true,
-        run: function () {
-          return apiFetch('/api/sessions/restore', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ trash: trash })
-          }).then(function (r) {
-            if (!r.ok) {
-              return r.json().catch(function () { return {}; }).then(function (j) {
-                addSystem('撤销失败：' + (j.detail || ('HTTP ' + r.status)));
-                return false;
-              });
-            }
-            loadSessions();
-            return true;
-          });
-        }
-      });
-    }
     var del = document.createElement('button');
     del.className = 's-del';
     del.textContent = '删除';
@@ -16607,12 +16632,11 @@
               addSystem('删除会话失败（HTTP ' + r.status + '）');
             } else {
               var trash = (j && j.trash) || '';
-              var tip = trash ? '会话已移入回收站' : '会话已删除';
               if (trash) {
                 // 误触时点这一下就能把刚删的这份移回 sessions/ 并重新出现在侧栏
-                sysUndo(tip + '，需要时可手工找回', trash);
+                sessUndoShow('已移入回收站：' + (s.title || '会话'), trash);
               } else {
-                addSystem(tip + '，需要时可手工找回');
+                addSystem('会话已删除，需要时可手工找回');
               }
               // 删的是当前会话：右栏的命令记录也跟着清掉，
               // 否则对话框空了、右边还挂着一屏上一个会话的执行记录
@@ -16637,6 +16661,60 @@
     });
     return row;
   }
+  // 侧栏「撤销删除」提示条：同一时间只留最近一条，30 秒后自己收掉。
+  // 放在侧栏而不是聊天区，是因为删完会立刻重画列表、也可能已经在别的会话里，
+  // 聊天区那条系统消息很容易被刷走（这就是「删了找不到撤销」的原因）
+  var sessUndoState = { trash: '', timer: 0, busy: false };
+  function sessUndoHide() {
+    clearTimeout(sessUndoState.timer);
+    sessUndoState.timer = 0;
+    sessUndoState.trash = '';
+    var box = document.getElementById('sessUndo');
+    if (box) box.hidden = true;
+  }
+  function sessUndoShow(text, trash) {
+    var box = document.getElementById('sessUndo');
+    var label = document.getElementById('sessUndoText');
+    var btn = document.getElementById('sessUndoBtn');
+    if (!box) return;
+    sessUndoState.trash = trash || '';
+    sessUndoState.busy = false;
+    if (label) label.textContent = text || '会话已移入回收站';
+    if (btn) { btn.disabled = !sessUndoState.trash; btn.textContent = '撤销'; }
+    box.hidden = false;
+    clearTimeout(sessUndoState.timer);
+    sessUndoState.timer = setTimeout(sessUndoHide, 30000);
+  }
+  (function bindSessUndo() {
+    var btn = document.getElementById('sessUndoBtn');
+    var close = document.getElementById('sessUndoClose');
+    if (close) close.addEventListener('click', sessUndoHide);
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      if (sessUndoState.busy || !sessUndoState.trash) return;
+      sessUndoState.busy = true;
+      btn.disabled = true;
+      btn.textContent = '撤销中…';
+      apiFetch('/api/sessions/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trash: sessUndoState.trash })
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          if (!r.ok) throw new Error((j && (j.detail || j.message)) || ('HTTP ' + r.status));
+          sessUndoHide();
+          loadSessions();
+          addSystem('已撤销删除：' + ((j && j.title) || '会话'));
+        });
+      }).catch(function (e) {
+        sessUndoState.busy = false;
+        btn.disabled = false;
+        btn.textContent = '重试';
+        var label = document.getElementById('sessUndoText');
+        if (label) label.textContent = '撤销失败：' + ((e && e.message) || '连不上后端');
+      });
+    });
+  })();
   function loadSessions(retried) {
     // 局域网页面要等 /api/auth/session 回来 deviceSession 才为真。初始化时
     // 这一次调用常常赶在它之前，以前直接 return，侧栏就整块空白，
