@@ -64,6 +64,8 @@ class _PaletteReq(BaseModel):
     # 手动改某一档的 5 个色块：顺序 = 底 / 面板 / 第二层 / 强调 / 气泡
     tier: str | None = None
     colors: list[str] | None = None
+    # true：丢掉手动调整，恢复壁纸原配色；没有壁纸可取时恢复默认蓝
+    reset: bool = False
 
 
 def init(require_auth_fn, get_main_fn) -> None:
@@ -117,7 +119,8 @@ def current_theme() -> dict:
         # 设置页预览框里用的中间尺寸（长边 960）：先出这张，比原图小一个量级
         "preview": f"/wallpapers/wallpaper_preview.jpg?v={_mtime(name)}" if name else "",
         "palette": palette,
-        # 壁纸取到的原始强调色：前端「恢复默认强调色」用它重算整套配色
+        # 壁纸取到的原始强调色：手动改过的配色靠它（及 palette.origin）
+        # 还原，切壁纸前一直不变
         "source": str((palette or {}).get("source") or ""),
         "dim": dim,
         "blur": blur,
@@ -221,16 +224,21 @@ def register(app) -> None:
 
     @router.post("/api/theme/palette")
     async def api_theme_palette(req: _PaletteReq):
-        """改配色，三种用法：
+        """改配色，四种用法：
 
         - {}：按当前配置原样重发一次（前端「跟随壁纸」重算）
         - {brand}：手动强调色。十五色模式下只把强调色和气泡色换掉，
           底色骨架保留；单色模式按这个色重推三档
         - {tier, colors[5]}：设置页里直接改某一档的 5 个色块
+        - {reset: true}：丢掉手动调整，还原壁纸算出来的那套配色
+          （连逐格改过的底色一起还原）；没有壁纸可取色时恢复默认蓝
         """
         app_cfg = _appearance()
         palette = themecolor.load_palette(app_cfg.get("palette")) or {}
-        if req.brand is not None:
+        if req.reset:
+            palette = themecolor.restore_palette(palette) \
+                or themecolor.palette_from_color(themecolor.FALLBACK)
+        elif req.brand is not None:
             brand = req.brand.strip().lower()
             if not re.fullmatch(r"#[0-9a-f]{6}", brand):
                 return {"ok": False, "error": "颜色格式应为 #rrggbb"}

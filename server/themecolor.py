@@ -231,48 +231,104 @@ def wallpaper_colors(img_bytes: bytes, n: int = 15) -> list[tuple[float, float, 
     return [(m[3], m[4] / total, m[1], _hsl_hex(m[0], m[1], m[2])) for m in merged]
 
 
-def tier_palette(five: list[str], tier: str) -> dict:
+def tier_palette(five: list[str], tier: str,
+                 accent: list[str] | None = None) -> dict:
     """一整段 5 色 -> 一套主题变量（bg / surface / surface_2 / brand / user_bubble）
 
-    five 已经按亮度从暗到亮排好（第 0 个最暗、第 4 个最亮），五个槽位是：
+    tier 是这一档的颜色池，按亮度从暗到亮排好。底色三格固定按亮度取
+    （浅色档取最亮三个，深色/暗黑档取最暗三个，见 `bg_pick`）；
+    强调色和气泡色不再按亮度固定挑，而是取池内「存在感」最高的两个
+    （见 `accent_pick`）—— 一张几乎全灰、只有眼睛一抹红的壁纸，
+    红在亮度序里排不进前几格，以前三档的强调色就全是灰。
 
-        第 0 格  底       （浅色档取最亮，深色/暗黑档取最暗）
-        第 1 格  面板
-        第 2 格  第二层底 （气泡衬底、输入框、提示条）
-        第 3 格  强调色
-        第 4 格  用户气泡
+    accent 是整张图里最跳的颜色（跨三档共用）：本档池子里没有彩色时
+    用它兜底，深色档的强调色配浅色底也在可读范围内。
 
-    槽位就是「固定分配」：浅色档正着取 -> 底最亮，深色/暗黑档倒着取 ->
-    底最暗；强调色/气泡色取反差最大的两个。色相全部原样保留，只有
-    底色三格会把明度收进可读区间（见 `_tune`）。
     slots 就是用户能在设置页里逐格改的那 5 个颜色。
     """
     if len(five) < 5:
         return {}
+    pool = accent or []
     if tier == "light":
         # 浅底：从底到气泡一条从亮到暗的阶梯，每格固定往下走 8~9 个百分点。
-        # 以前强调/气泡两格直接拿 five[1]/five[0] 原色，明度不受控，
-        # 遇到壁纸里两种亮色挨得很近时，第 4、5 格几乎一模一样（实测差 0.011），
-        # 整排看着不是阶梯而是三格渐变加两个同色块。
-        ladder = [0.958, 0.868, 0.778, 0.688, 0.598]
-        out = [_tune(c, t) for c, t in zip(reversed(five), ladder)]
-        bg, surface, surface_2, brand, bubble = out
+        # 以前强调/气泡两格直接拿原色，明度不受控，遇到壁纸里两种亮色
+        # 挨得很近时，第 4、5 格几乎一模一样（实测差 0.011），整排看着
+        # 不是阶梯而是三格渐变加两个同色块。
+        step = [0.958, 0.868, 0.778]
+        brand_l, bubble_l = 0.688, 0.598
     else:
-        # 暗底：同理一条从暗到亮的阶梯，深色档比暗黑档整体略亮，两档才分得开。
-        # 五格全部按 ladder 定明度，壁纸原色只提供色相/饱和度。以前强调、
-        # 气泡两格保留原色明度，结果第 3 格直接跳到 0.62、第 4 格又落回 0.44
-        # （实测），色板是一段暗 + 一颗亮 + 一颗中间色，不是阶梯。
-        ladder = [0.060, 0.180, 0.300, 0.420, 0.540] if tier == "dark" \
-            else [0.020, 0.078, 0.136, 0.194, 0.252]
-        out = [_tune(c, t) for c, t in zip(five, ladder)]
-        bg, surface, surface_2, brand, bubble = out
+        # 暗底：同理一条从暗到亮的阶梯，深色档比暗黑档整体略亮，两档才分得开
+        if tier == "dark":
+            step, brand_l, bubble_l = [0.060, 0.180, 0.300], 0.420, 0.540
+        else:
+            step, brand_l, bubble_l = [0.020, 0.078, 0.136], 0.194, 0.252
+    brand_c, bubble_c = accent_pick(pool, five, tier)
+    bg, surface, surface_2 = bg_pick(five, tier)
+    out = [_tune(c, t) for c, t in zip([bg, surface, surface_2], step)]
+    brand = _tune(brand_c, brand_l)
+    bubble = _tune(bubble_c, bubble_l)
     return {
         "brand": brand,
         "user_bubble": bubble,
-        "bg": bg,
-        "surface": surface,
-        "surface_2": surface_2,
+        "bg": out[0],
+        "surface": out[1],
+        "surface_2": out[2],
     }
+
+
+def _hls(hex_color: str):
+    m = re.fullmatch(r"#([0-9a-fA-F]{6})", hex_color or "")
+    if not m:
+        return 0.0, 0.0, 0.0
+    v = int(m.group(1), 16)
+    return colorsys.rgb_to_hls(((v >> 16) & 255) / 255,
+                               ((v >> 8) & 255) / 255, (v & 255) / 255)
+
+
+def bg_pick(five: list[tuple], tier: str) -> list[str]:
+    """底色三格（底 / 面板 / 第二层）：按亮度取，浅色档取最亮三个
+
+    five 是 [(亮度, 占比, 饱和度, 色值)]，已按亮度从暗到亮排好。
+    底色只认亮度：浅色主题底下垫什么色，观感差别比「有没有彩色」大得多。
+    """
+    ordered = sorted(five, key=lambda r: r[0])
+    seg = ordered[-3:] if tier == "light" else ordered[:3]
+    cols = [r[3] for r in seg]
+    return cols if tier == "light" else list(reversed(cols))
+
+
+def accent_pick(pool: list[tuple], five: list[tuple], tier: str) -> tuple[str, str]:
+    """强调色 / 气泡色：取池子里「存在感」最高的两个颜色
+
+    候选只留饱和度够的彩色（黑白灰当强调色等于没有强调色），按
+    「饱和度 × 占比^0.35」排序：一张图里只有眼睛两抹红时，红虽然面积小，
+    但饱和度高，排在灰蓝前面；大面积的低饱和天空色则靠占比补回来。
+    只有本档池子里一个彩色都没有（暗黑档经常如此）时才跨档兜底。
+    """
+    def score(c) -> float:
+        return c[2] * (max(c[1], 1e-6) ** 0.35)
+
+    def colorful(rows):
+        return [c for c in rows if c[2] >= 0.15]
+
+    cand = colorful(five)
+    # 暗黑档的池子本来就整段近黑，饱和度高也救不回来：直接用整图的候选
+    if len(cand) < 2 and pool:
+        cand = colorful(pool) or colorful(five) or list(five)
+    cand = sorted(cand or list(five), key=score, reverse=True)
+    # 强调色和气泡色得是两个颜色：色相岔开，或饱和度明显不同都行；
+    # 全都太像时（壁纸只有一抹同色相的红）就复用同一个色
+    a = cand[0][3]
+    h1, l1, s1 = _hls(a)
+    b = a
+    for c in cand[1:]:
+        h2, l2, s2 = _hls(c[3])
+        dh = abs(h1 - h2)
+        dh = min(dh, 1 - dh)
+        if dh >= 0.08 or abs(s2 - s1) >= 0.12 or abs(l2 - l1) >= 0.12:
+            b = c[3]
+            break
+    return a, b
 
 
 def _tune(hex_color: str, target: float) -> str:
@@ -313,10 +369,14 @@ def palette_from_wallpaper(img_bytes: bytes) -> dict | None:
     if len(colors) < 15:
         return None
     segs = {"oled": colors[:5], "dark": colors[5:10], "light": colors[10:]}
+    # 强调色的候选来自整张图，不按亮度切段：壁纸里最跳的颜色（比如一张
+    # 全灰图里的一点红）落在哪一段是碰运气，按段取就只剩灰
+    pool = sorted(colors, key=lambda r: r[2] * (max(r[1], 1e-6) ** 0.35),
+                  reverse=True)
     pal: dict = {"tiers": {}, "slots": {}, "source": ""}
     for tier, seg in segs.items():
         five = [r[3] for r in sorted(seg, key=lambda r: r[0])]     # 从暗到亮
-        got = tier_palette(five, tier)
+        got = tier_palette(seg, tier, pool)
         if not got:
             return None
         pal[tier] = got
@@ -471,11 +531,24 @@ def retint_palette(palette: dict, brand: str) -> dict:
 
     十五色模式（有 slots）才有骨架可留；没有 slots 时返回原值，
     调用方会走 `palette_from_color` 由这个色重推三档。
+
+    `source` 保持壁纸取到的原强调色不动 —— 它是「恢复壁纸原配色」的
+    唯一依据，早期版本写成了用户手动色，按一次就再也回不去了。
+    壁纸原值另存在 `origin`（第一次手动改时快照整份 slots 留底），
+    点过某一格、改过底色之后也能整体还原。
     """
     slots = (palette or {}).get("slots")
     if not isinstance(slots, dict) or not slots:
         return palette
-    out = {"slots": {}, "tiers": palette.get("tiers") or {}, "source": brand}
+    out = {"slots": {}, "tiers": palette.get("tiers") or {},
+           "source": palette.get("source") or "",
+           "origin": palette.get("origin") or {
+               "slots": {k: list(v) for k, v in slots.items()},
+               "tiers": palette.get("tiers") or {},
+               "source": palette.get("source") or "",
+               "brands": {t: (palette.get(t) or {}).get("brand") or ""
+                          for t in ("light", "dark", "oled")},
+           }}
     for tier in ("light", "dark", "oled"):
         got = palette.get(tier) or {}
         five = slots.get(tier) or []
@@ -489,6 +562,49 @@ def retint_palette(palette: dict, brand: str) -> dict:
     return out
 
 
+def restore_palette(palette: dict) -> dict | None:
+    """「恢复壁纸原配色 / 恢复默认蓝」：把手动改过的配色整份还原
+
+    - origin 里有壁纸原件的，原样还原（含逐格改过的底色）；
+    - 没有 origin（从没手动改过，或者配色是旧版本留下的）但壁纸还在的，
+      用壁纸按算法重新取一次色；
+    - 两者都没有（没壁纸、配色来自旧版手动色推导）返回 None，
+      调用方改回默认蓝。
+    """
+    origin = (palette or {}).get("origin")
+    if isinstance(origin, dict) and origin.get("slots"):
+        out = {k: v for k, v in palette.items() if k != "origin"}
+        out["slots"] = {k: list(v) for k, v in origin["slots"].items()}
+        out["tiers"] = origin.get("tiers") or {}
+        out["source"] = origin.get("source") or ""
+        for tier in ("light", "dark", "oled"):
+            five = out["slots"].get(tier) or []
+            if len(five) < 5:
+                continue
+            out[tier] = {"brand": five[3], "user_bubble": five[4], "bg": five[0],
+                         "surface": five[1], "surface_2": five[2]}
+        if out["slots"]:
+            return out
+    wall = _current_wallpaper_bytes()
+    if wall:
+        fresh = palette_from_wallpaper(wall)
+        if fresh:
+            return fresh
+    return None
+
+
+def _current_wallpaper_bytes() -> bytes | None:
+    """当前壁纸的原始字节；没有壁纸或读不到时 None"""
+    from . import paths
+    try:
+        found = wallpaper_files()
+        if not found:
+            return None
+        return (paths.wallpapers_dir() / found[0]).read_bytes()
+    except Exception:
+        return None
+
+
 def palette_from_five(palette: dict, tier: str, five: list[str]) -> dict:
     """用户手动改了某一档的 5 个色块：只重算这一档，其余档保持不变
 
@@ -500,6 +616,14 @@ def palette_from_five(palette: dict, tier: str, five: list[str]) -> dict:
     out = dict(palette)
     out["tiers"] = dict(palette.get("tiers") or {})
     out["slots"] = dict(palette.get("slots") or {})
+    # 逐格改色同样要留一份原件：第一次改之前快照整份 slots，
+    # 「恢复壁纸原配色」才有东西还原
+    if not out.get("origin"):
+        out["origin"] = {
+            "slots": {k: list(v) for k, v in out["slots"].items()},
+            "tiers": dict(out["tiers"]),
+            "source": palette.get("source") or "",
+        }
     out[tier] = {
         "brand": five[3],
         "user_bubble": five[4],

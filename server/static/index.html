@@ -1260,7 +1260,7 @@
             <div class="colr-sect">
               <div class="colr-head">
                 <span>手动设置</span>
-                <button id="wallColorReset" class="mini-btn ghost" type="button">跟随壁纸</button>
+                <button id="wallColorReset" class="mini-btn ghost" type="button">恢复壁纸原配色</button>
               </div>
               <div class="wall-color-row">
                 <input id="wallColor" type="color" value="#1a9fff" aria-label="选颜色">
@@ -11754,11 +11754,11 @@
     syncWallRgs();
     var brand = a.palette && a.palette.dark ? a.palette.dark.brand : '';
     if (brand) {
-      // 主色可能已被「恢复默认强调色」改过，和壁纸取到的原主色不同
+      // 主色可能已被手动改过（配色里有 origin 就是改过）
       wallColor.value = brand;
       document.getElementById('wallColorHex').value = brand;
-      wallPaletteHint.textContent = a.source && brand !== a.source
-        ? '当前主色 ' + brand + '（手动调整）'
+      wallPaletteHint.textContent = (a.palette && a.palette.origin)
+        ? '当前主色 ' + brand + '，手动调整中；点「恢复壁纸原配色」可还原'
         : '当前主色 ' + brand;
     } else {
       wallPaletteHint.textContent = '强调色会按明暗档自动调亮或压暗，保证文字看得清。';
@@ -12160,11 +12160,15 @@
       if (tag) tag.textContent = '当前：' + (onm ? onm.name : cur);
     }
 
-    // 来源说明：有壁纸就报出处，没有就说在用默认色
+    // 来源说明：有壁纸就报出处，没有就说在用默认色。
+    // 「有没有手动改过」看 palette.origin（改之前留的原件），不能拿
+    // 强调色和 source 比 —— source 现在是壁纸原色，而三档强调色本来就不一样，
+    // 那样比永远判成「已手动调整」
     var src = document.getElementById('colrSourceNote');
+    var d0 = (a && a.palette) || {};
     if (src) {
-      if (a && a.source && brand && brand !== a.source) src.textContent = '壁纸取色 ' + a.source + '，已手动调整';
-      else if (a && a.source) src.textContent = '取自壁纸 ' + a.source;
+      if (d0.source && d0.origin) src.textContent = '壁纸取色 ' + d0.source + '，已手动调整';
+      else if (d0.source) src.textContent = '取自壁纸 ' + d0.source;
       else src.textContent = '未选壁纸，使用默认强调色';
     }
 
@@ -12282,24 +12286,27 @@
     paintPaletteBoard(snap,
       snap.palette && snap.palette.dark ? snap.palette.dark.brand : '');
   })();
+  // 恢复壁纸原配色：后端优先还原第一次手动改之前留下的原件（连逐格
+  // 改过的底/面板一起回滚），壁纸还在就按算法重新取色；都没有才回默认蓝。
+  // 早期版本这里是把 source 当成原色再走一遍手动改色，而 source 那会儿
+  // 已经被覆盖成手动色，于是「跟随壁纸」等于什么都没做 —— 别改回去
   document.getElementById('wallColorReset').addEventListener('click', function () {
-    var cur = CFG_APPEARANCE || {};
-    if (!cur.source) {
-      wallPaletteHint.textContent = '现在还没有壁纸可取色，先选一张图片。';
-      return;
-    }
+    colrEdit = null;
     apiFetch('/api/theme/palette', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ brand: cur.source })
+      body: JSON.stringify({ reset: true })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.ok) {
           renderAppearanceForm(d.theme);
           applyCfgAppearance(d.theme);
+          wallPaletteHint.textContent = d.theme && d.theme.source
+            ? '已恢复壁纸原配色'
+            : '没有壁纸可取色，已恢复默认蓝';
         } else {
           wallPaletteHint.textContent = (d && d.error) || '恢复失败';
         }
-      }).catch(function () {});
+      }).catch(function () { wallPaletteHint.textContent = '恢复失败，请重试'; });
   });
 
   // 切页时内容区回到顶部，否则从长页（人设）切到短页会停在半空
