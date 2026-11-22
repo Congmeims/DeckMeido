@@ -11488,21 +11488,33 @@
     // 跳过，别把刚拖到的值刷回去（拖拽中的值本来就不会走这条渲染）
     var dimStale = Number(a.dim_ts) < wallDimSavedAt;
     var blurStale = Number(a.blur_ts) < wallBlurSavedAt;
-    if (!dimStale) {
-      wallDim.value = String(Number(a.dim) || 0);
-      wallDimVal.textContent = wallTuneOpt(wallDim, wallDim.value).text;
+    if (dimStale) {
+      // 本地刚存的值比这份快照新：不走「用表单值回写快照」那条路，
+      // 否则滑杆会被快照里的旧值拽回去再被本地值拽回来，看着就是闪
+      CFG_APPEARANCE.dim = Number(wallDim.value) || 0;
+    } else {
+      var dv = String(Number(a.dim) || 0);
+      if (wallDim.value !== dv) wallDim.value = dv;
+      if (wallDimVal.textContent !== wallTuneOpt(wallDim, dv).text) {
+        wallDimVal.textContent = wallTuneOpt(wallDim, dv).text;
+      }
       CFG_APPEARANCE.dim = Number(a.dim) || 0;
     }
-    if (!blurStale) {
-      wallBlur.value = String(Number(a.blur) || 0);
-      wallBlurVal.textContent = wallTuneOpt(wallBlur, wallBlur.value).text;
+    if (blurStale) {
+      CFG_APPEARANCE.blur = Number(wallBlur.value) || 0;
+    } else {
+      var bv = String(Number(a.blur) || 0);
+      if (wallBlur.value !== bv) wallBlur.value = bv;
+      if (wallBlurVal.textContent !== wallTuneOpt(wallBlur, bv).text) {
+        wallBlurVal.textContent = wallTuneOpt(wallBlur, bv).text;
+      }
       CFG_APPEARANCE.blur = Number(a.blur) || 0;
     }
     // 毛玻璃也以后端为准：别端的值推过来时把滑条和 CSS 一起对齐
     if (wallGlass && a.glass != null) {
       var gsnap = Math.max(0, Math.min(20, Math.round(Number(a.glass) || 0)));
-      wallGlass.value = String(gsnap);
-      wallGlassVal.textContent = gsnap + 'px';
+      if (wallGlass.value !== String(gsnap)) wallGlass.value = String(gsnap);
+      if (wallGlassVal.textContent !== gsnap + 'px') wallGlassVal.textContent = gsnap + 'px';
       savedGlass = gsnap;
       document.documentElement.style.setProperty('--glass', gsnap + 'px');
     }
@@ -11541,6 +11553,8 @@
     // applyCfgAppearance()，而它会拿本地旧值回写快照，下一次保存就把
     // 拖动结果换成旧值，「滑到 40% 下一秒自己归零」
     if (!el) { applyCfgAppearance(); return; }
+    // 本次要落盘的值：保存结果回来时拿它比对，确认回包就是手停住时的那次
+    var sent = el === wallDim ? Number(wallDim.value) || 0 : Number(wallBlur.value) || 0;
     wallTuneTimer = setTimeout(function () {
       var body = {};
       // 本地时间戳用「现在」而不是回包里的：保存请求在路上时任何回程快照
@@ -11555,7 +11569,8 @@
         body.blur = CFG_APPEARANCE.blur;
         wallBlurSavedAt = now;
       }
-      applyCfgAppearance();
+      // keepTune：本地值刚写进快照，重画时别反过来又把滑杆刷成快照旧值
+      applyCfgAppearance(null, true);
       // 本地值已经写进快照、也画上了，从这一刻起这条滑杆就受保护到
       // 本次保存的结果回来（见下）
       wallTuneEl = null;
@@ -11569,6 +11584,10 @@
           // 后端已经记下这一项的新时间戳，保护窗口没必要再等；
           // 回包里的快照比本地旧时 renderAppearanceForm 自己会跳过这一项
           wallTuneEndAt = 0;
+          // 回包前用户又动过这一条：这份快照拍的是更早的值，整份丢掉，
+          // 否则滑杆会被「上一次松手」的结果往回拽一下，看着就是闪烁
+          var nowVal = el === wallDim ? Number(wallDim.value) || 0 : Number(wallBlur.value) || 0;
+          if (nowVal !== sent) return;
           renderAppearanceForm(d.theme);
         })
         .catch(function () {});
@@ -11677,6 +11696,9 @@
     // 内缩半径后的可用区间（与 bindWallRg 的 seek 互为反函数）
     var kr = (knob && knob.offsetWidth ? knob.offsetWidth : 18) / 2;
     var w = rg.clientWidth || 0;
+    // 隐藏中的那份（设置页与对话内两套滑条只有一套可见）量不到宽度，
+    // 硬画会把抓手甩到 0 格；交给它重新显示时的 transitionend 再补画
+    if (!w) return;
     var inner = Math.max(1, w - kr * 2);
     var pos = w ? kr + inner * pct : 0;
     if (knob) knob.style.transform = 'translateX(' + pos + 'px)';
@@ -11706,8 +11728,9 @@
       wallDimVal.textContent = wallTuneOpt(wallDim, CFG_APPEARANCE.dim).text;
       wallBlurVal.textContent = wallTuneOpt(wallBlur, CFG_APPEARANCE.blur).text;
       // 本地即时值同步进快照，再由 applyCfgAppearance 统一换算成 CSS 变量，
-      // 拖动时的实时观感与松手后、刷新后完全一致（两处换算口径不再分叉）
-      applyCfgAppearance();
+      // 拖动时的实时观感与松手后、刷新后完全一致（两处换算口径不再分叉）。
+      // 必须带 keepTune：无参调用会把快照值写回滑杆，把正在拖的位置拽回去
+      applyCfgAppearance(null, true);
       syncWallRg(el);
       // 拖动中：值由 .rg 的指针事件直接给，只防抖保存；键盘改值没有指针
       // 事件，走短防抖，按住方向键不会连发一堆请求
@@ -15663,7 +15686,10 @@
     }
     // 没传快照（或被当成事件对象传进来）时只是「按本地快照重画一遍」。
     // 以前这种情况会把本地值原样写回 CFG_APPEARANCE，等于把别的端推来的
-    // 旧值也认成自己的，再一保存就把拖动结果盖掉了
+    // 旧值也认成自己的，再一保存就把拖动结果盖掉了。
+    // 现在除了整份重画，还要把两条滑杆的读数/位置对齐到快照：
+    // 拖 A 滑杆时另一个 B 的快照值没变，B 的 fill 是 0%（只在初始化时画过一次），
+    // 松手后保存只重画变量、不画滑杆，于是 B 一直显示成 0 —— 需要在这里补画
     if (theme && typeof theme === 'object' && !(theme instanceof Event)) {
       // 这两项：本端这条滑杆正在拖、或快照的落盘时间比本地刚保存的还旧，
       // 就一律用本地值。以前整份快照照收，于是刚点完滑条马上被一份更早
@@ -15678,6 +15704,19 @@
       }
       theme = Object.assign({}, theme, fix);
       CFG_APPEARANCE = theme;
+    } else if (typeof wallDim !== 'undefined' && wallDim && CFG_APPEARANCE && CFG_APPEARANCE.dim != null) {
+      // 重画：以快照为准把滑杆和读数刷一遍（不提交、不广播）
+      var rd = String(Number(CFG_APPEARANCE.dim) || 0);
+      var rb = String(Number(CFG_APPEARANCE.blur) || 0);
+      if (wallDim.value !== rd) wallDim.value = rd;
+      if (wallBlur.value !== rb) wallBlur.value = rb;
+      if (typeof wallDimVal !== 'undefined' && wallDimVal) {
+        wallDimVal.textContent = wallTuneOpt(wallDim, rd).text;
+      }
+      if (typeof wallBlurVal !== 'undefined' && wallBlurVal) {
+        wallBlurVal.textContent = wallTuneOpt(wallBlur, rb).text;
+      }
+      if (typeof syncWallRgs === 'function') syncWallRgs();
     }
     // 主题与毛玻璃也是后端下发的：快照里带了就按它对齐本端（不回写、不广播），
     // 这样 A 端改了主题/毛玻璃，其余端和应用内 Deck 客户端都会跟着变
