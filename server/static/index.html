@@ -3006,7 +3006,7 @@
     var m = rbEl('ctxMenu');
     if (!m) return;
     m.innerHTML = '';
-    fbCtxItem('设为 DeckMeido 壁纸', function () { applyWallCandidate(cand); });
+    fbCtxItem('设为 Meido 背景', function () { applyWallCandidate(cand); });
     fbCtxItem('新标签页看大图', function () { window.open(cand.url, '_blank'); });
     fbCtxOpen(e.clientX, e.clientY);
   }
@@ -3026,7 +3026,7 @@
           return;
         }
         if (j.theme) applyTheme(j.theme);
-        fbToast('已设为 DeckMeido 壁纸', 'chat');
+        fbToast('已设为 Meido 背景', 'chat');
       });
     }).catch(function () { fbToast('设置失败：网络错误', 'chat', true); });
   }
@@ -4163,11 +4163,11 @@
     });
   }
 
-  // 图片扩展名判断：和「设为 DeckMeido 壁纸」同一个口径，后端也会再校验一次
+  // 图片扩展名判断：和「设为 Meido 背景」同一个口径，后端也会再校验一次
   var FB_IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|avif|heic|heif|tiff?|ico)$/i;
   function fbIsImage(name) { return FB_IMG_EXT.test(String(name || '')); }
 
-  // 右键「设为 DeckMeido 壁纸」：把磁盘上这张图直接交给后端落成壁纸，配色一起刷新
+  // 右键「设为 Meido 背景」：把磁盘上这张图直接交给后端落成壁纸，配色一起刷新
   function fbSetWallpaper(path, name) {
     fbToast('正在设为背景：' + name, 'file');
     apiFetch('/api/theme/wallpaper-from-path', {
@@ -4183,7 +4183,7 @@
         // 后端会广播 theme_changed，这里只管提示；本地也同步一份，免得
         // 广播没到（离线/重连中）时背景还是旧图
         if (j.theme) applyTheme(j.theme);
-        fbToast('已设为 DeckMeido 壁纸', 'file');
+        fbToast('已设为 Meido 背景', 'file');
       });
     }).catch(function () { fbToast('设置失败：网络错误', 'file', true); });
   }
@@ -4248,7 +4248,7 @@
       fbCtxItem('预览', function () { fbPreview(path, name); });
       // 图片才有：直接把这张图设成软件背景，省掉「下载 → 去设置页上传」两步
       if (fbIsImage(name)) {
-        fbCtxItem('设为 DeckMeido 壁纸', function () { fbSetWallpaper(path, name); });
+        fbCtxItem('设为 Meido 背景', function () { fbSetWallpaper(path, name); });
       }
       fbCtxItem('下载到本机', function () { fbDownload(path, name); });
       fbCtxItem('引用到对话', function () { fbQuote(path); });
