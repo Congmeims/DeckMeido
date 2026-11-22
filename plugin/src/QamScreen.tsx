@@ -1603,39 +1603,56 @@ export default function QamScreen() {
     !!s.status && s.status.autostart === false && !s.status.core_ok && !s.probing;
 
   if (!s.status || idleStopped) {
+    // 结构照搬大屏停泊页：标题按原因分级、说明按原因分支、主操作在主次上分开。
+    // 以前这里只有一张「连接」卡片和四个竖排按钮，原因全塞进一句话里。
+    const title = s.probing
+      ? "正在连接插件后端…"
+      : idleStopped
+        ? "后端未运行"
+        : !s.status
+          ? "插件后端未连上"
+          : s.status.core_stopped
+            ? "核心已停止"
+            : "核心异常";
+    const desc = s.probing
+      ? "正在探测插件后端，稍等…"
+      : idleStopped
+        ? "已关闭开机自动启动，需要时点下面的「启动核心」。"
+        : !s.status
+          ? "后端由 Decky 插件管理。重试没用就直接重启一次；确实不想它跑着就点停止。"
+          : s.status.core_stopped
+            ? "后端由 Decky 插件管理。重试没用就直接重启一次；确实不想它跑着就点停止，停止后只有「启动核心」能恢复。"
+            : `${s.status.core_error || "无响应"}。可以重启后端；不想它跑着就点停止。`;
     return shell(
       <>
         <Card title="连接" accent={s.accent}>
-          <div style={{ fontSize: 12, color: TEXT }}>
-            {s.probing
-              ? "正在连接插件后端…"
-              : idleStopped
-                ? "后端未运行"
-                : "插件后端未连上"}
+          <div style={{ fontSize: 13, fontWeight: 700, color: TITLE, lineHeight: 1.3 }}>
+            {title}
           </div>
-          <div style={{ fontSize: 11, color: DIM, lineHeight: 1.5 }}>
-            {idleStopped
-              ? "已关闭开机自动启动，需要时点下面的「启动后端」。"
-              : "后端由 Decky 插件管理。重试没用就直接重启一次；确实不想它跑着就点停止，停止后只有「启动核心」能恢复。"}
-          </div>
-          {idleStopped ? (
+          <div style={{ fontSize: 11, color: DIM, lineHeight: 1.5 }}>{desc}</div>
+          <Btn primary onClick={() => void s.refreshStatus()} disabled={s.probing} description="重试">
+            {s.probing ? "连接中…" : "重试连接"}
+          </Btn>
+          {/* 核心是被「停止后端」关掉的，或自启关着没起：唯一的救法就是启动核心 */}
+          {(idleStopped || (s.status && !s.status.core_ok)) && (
             <Btn
-              primary
               onClick={() => void s.coreStart()}
               disabled={s.starting}
-              description="启动后端"
+              description="启动核心"
+              accent={s.accent}
+              style={{
+                background: "rgba(224,108,117,.18)",
+                borderColor: "rgba(224,108,117,.45)",
+                color: "#f0c3c7",
+              }}
             >
-              {s.starting ? "启动中…" : "启动后端"}
-            </Btn>
-          ) : (
-            <Btn primary onClick={() => void s.refreshStatus()} description="重试">
-              重试连接
+              {s.starting ? "启动中…" : "启动核心"}
             </Btn>
           )}
-          {!idleStopped && (
-            <>
-              {/* 连不上时后端很可能已经半死：插件的启动逻辑会先看端口占用再决定复用，
-                  重启就是「收掉旧进程 + 按启动命令重放一遍」，比让用户去终端手动 pkill 靠谱 */}
+          {/* 连不上时后端很可能已经半死：插件的启动逻辑会先看端口占用再决定复用，
+              重启就是「收掉旧进程 + 按启动命令重放一遍」，比让用户去终端手动 pkill 靠谱 */}
+          <div style={{ display: "flex", gap: 6 }}>
+            <div style={{ flex: "1 1 0", minWidth: 0 }}>
               <Btn
                 onClick={() => void s.coreRestart()}
                 disabled={s.restarting || s.probing}
@@ -1643,6 +1660,8 @@ export default function QamScreen() {
               >
                 {s.restarting ? "重启中…" : "重启后端"}
               </Btn>
+            </div>
+            <div style={{ flex: "1 1 0", minWidth: 0 }}>
               <Btn
                 onClick={() => void s.coreKill()}
                 disabled={s.killing || s.probing}
@@ -1650,8 +1669,8 @@ export default function QamScreen() {
               >
                 {s.killing ? "停止中…" : "停止后端"}
               </Btn>
-            </>
-          )}
+            </div>
+          </div>
           <Btn height={26} size={11} onClick={s.openBigScreen} description="打开大屏">
             打开大屏
           </Btn>

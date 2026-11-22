@@ -152,7 +152,9 @@ if [ -z "$UNIT" ]; then
   if ssh "$HOST" "curl -s -o /dev/null -m 2 -w '%{http_code}' http://127.0.0.1:$PORT/api/status 2>/dev/null" | grep -q '^200$'; then
     log "2/5 没有 systemd 用户单元，后端已在 $PORT 应答，跳过重启"
   else
-    die "找不到 DeckMeido 的 systemd 用户单元（app-DeckMeido@*.service 或 deckmeido-backend），且 $PORT 上没有后端"
+    # 没有单元、端口也没人应答：可能是自启被用户关掉了、后端本该停着，
+    # 也可能是真坏了。交给第 3 步按 core.no_autostart 标记区分，这里不拦
+    log "2/5 没有 systemd 用户单元，$PORT 上也没有后端"
   fi
 else
   log "2/5 重启 $UNIT"
@@ -177,15 +179,22 @@ for _ in $(seq 1 20); do
   sleep 1
 done
 if [ "$CODE" != "200" ]; then
-  printf '\n最近 40 行后端日志：\n'
-  if [ -n "$UNIT" ]; then
-    ssh "$HOST" "journalctl --user -u $UNIT --since '2 min ago' --no-pager | tail -40" || true
+  # 用户关了自启、后端本来就该停着：这时没 200 是预期状态，不是部署失败。
+  # 判据以后端数据目录里的 core.no_autostart 标记为准（插件/客户端共用这一份）
+  if ssh "$HOST" "test -f /home/deck/DeckMeido/userdata/core.no_autostart"; then
+    log "3/5 后端未运行（用户已关闭开机自启），跳过 /api/status 自检"
   else
-    ssh "$HOST" "tail -40 /tmp/dm_boot.log 2>/dev/null" || true
+    printf '\n最近 40 行后端日志：\n'
+    if [ -n "$UNIT" ]; then
+      ssh "$HOST" "journalctl --user -u $UNIT --since '2 min ago' --no-pager | tail -40" || true
+    else
+      ssh "$HOST" "tail -40 /tmp/dm_boot.log 2>/dev/null" || true
+    fi
+    die "后端没有在 20 秒内返回 200（当前 $CODE）"
   fi
-  die "后端没有在 20 秒内返回 200（当前 $CODE）"
+else
+  printf '  /api/status -> 200\n'
 fi
-printf '  /api/status -> 200\n'
 
 # ---------- 4. 插件 dist / main.py 有变化才同步并重载 ----------
 LOCAL_SHA=$(sha256sum "$ROOT/plugin/dist/index.js" | cut -d' ' -f1)
