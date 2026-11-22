@@ -2340,9 +2340,14 @@ class Plugin:
             "config_error": "" if cfg else _cfg_error_text(),
             # QAM / 大屏的强调色：以前插件里写死 #5AA9E6（Steam 蓝），
             # 网页换壁纸换主题后这边完全不变。这里把后端那套配色带过来，
-            # 插件按 theme 选对应的那档品牌色
-            "theme": (_theme_brief(port) if _THEME_CACHE.get(port) else
-                      await refresh_theme(port)) if core.get("ok") else {},
+            # 插件按 theme 选对应的那档品牌色。
+            # 注意这里的三元必须整体用 await 包住：写成
+            # `(_theme_brief(...) if cond else await refresh_theme(...))` 时，
+            # await 的优先级比条件表达式低，整个 return 会变成 coroutine，
+            # Decky 序列化时报 "Object of type coroutine is not JSON serializable"，
+            # 面板/大屏只能显示「连不上」
+            "theme": (await (_theme_brief(port) if _THEME_CACHE.get(port)
+                             else refresh_theme(port))) if core.get("ok") else {},
         }
 
     async def _report_game(self, port: int, game: dict) -> dict:
