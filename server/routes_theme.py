@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import re
 import time
+import urllib.parse
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import paths, themecolor
+from . import paths, themecolor, tools
 
 router = APIRouter()
 
@@ -272,6 +273,30 @@ def register(app) -> None:
             raise HTTPException(400, f"读取失败：{e}") from None
         await _publish({"wallpaper": name, "palette": themecolor.dump_palette(palette)})
         return {"ok": True, "theme": current_theme()}
+
+    @router.post("/api/theme/candidates/{cid}/save")
+    async def api_theme_candidate_save(cid: str):
+        """把候选图存进工作区（聊天气泡上右键「保存到工作区」用）
+
+        存进工作区根目录下的「图片」子目录，文件名带时间戳，避免重名覆盖。
+        不进 uploads/：那是给对话附件用的，用户想在工作区里长期留着的图分开放。
+        """
+        p = themecolor.candidate_path(cid)
+        if p is None:
+            raise HTTPException(404, "候选图已过期，请重新搜一次")
+        try:
+            raw = p.read_bytes()
+        except OSError as e:
+            raise HTTPException(400, f"读取失败：{e}") from None
+        out = tools.WORKSPACE / "图片"
+        try:
+            out.mkdir(parents=True, exist_ok=True)
+            name = f"img_{int(time.time())}{p.suffix or '.jpg'}"
+            (out / name).write_bytes(raw)
+        except OSError as e:
+            raise HTTPException(400, f"写入工作区失败：{e}") from None
+        rel = str((out / name).relative_to(tools.WORKSPACE))
+        return {"ok": True, "path": rel, "url": "/files/" + urllib.parse.quote(rel)}
 
     @router.get("/api/theme/candidates/{cid}")
     async def api_theme_candidate(cid: str):

@@ -3007,8 +3007,29 @@
     if (!m) return;
     m.innerHTML = '';
     fbCtxItem('设为 Meido 背景', function () { applyWallCandidate(cand); });
+    fbCtxItem('保存到工作区', function () { saveWallCandidate(cand); });
     fbCtxItem('新标签页看大图', function () { window.open(cand.url, '_blank'); });
     fbCtxOpen(e.clientX, e.clientY);
+  }
+
+  // 把候选图存进工作区（「图片/」子目录），之后可以在右侧文件面板里找到
+  function saveWallCandidate(cand) {
+    var cid = cand && cand.id;
+    if (!cid) return;
+    fbToast('正在保存到工作区…', 'chat');
+    apiFetch('/api/theme/candidates/' + encodeURIComponent(cid) + '/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok || !j.ok) {
+          fbToast('保存失败：' + (j.detail || j.error || ('HTTP ' + r.status)), 'chat', true);
+          return;
+        }
+        fbToast('已保存到工作区：' + j.path, 'chat');
+      });
+    }).catch(function () { fbToast('保存失败：网络错误', 'chat', true); });
   }
 
   function applyWallCandidate(cand) {
