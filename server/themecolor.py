@@ -250,18 +250,22 @@ def tier_palette(five: list[str], tier: str) -> dict:
     if len(five) < 5:
         return {}
     if tier == "light":
-        # 浅底：底/面板/第二层压到接近白，仍带原色相；强调色用段内偏暗的两个
-        bg = _tune(five[4], 0.958)
-        surface = _tune(five[3], 0.918)
-        surface_2 = _tune(five[2], 0.878)
-        brand, bubble = five[1], five[0]
+        # 浅底：从底到气泡一条从亮到暗的阶梯，每格固定往下走 8~9 个百分点。
+        # 以前强调/气泡两格直接拿 five[1]/five[0] 原色，明度不受控，
+        # 遇到壁纸里两种亮色挨得很近时，第 4、5 格几乎一模一样（实测差 0.011），
+        # 整排看着不是阶梯而是三格渐变加两个同色块。
+        ladder = [0.958, 0.868, 0.778, 0.688, 0.598]
+        out = [_tune(c, t) for c, t in zip(reversed(five), ladder)]
+        bg, surface, surface_2, brand, bubble = out
     else:
-        # 暗底：明度压到很低，深色档比暗黑档略亮一点，两档才分得开
-        lo, step = (0.02, 0.03) if tier == "oled" else (0.06, 0.04)
-        bg = _tune(five[0], lo)
-        surface = _tune(five[1], lo + step)
-        surface_2 = _tune(five[2], lo + step * 2)
-        brand, bubble = five[3], five[4]
+        # 暗底：同理一条从暗到亮的阶梯，深色档比暗黑档整体略亮，两档才分得开。
+        # 五格全部按 ladder 定明度，壁纸原色只提供色相/饱和度。以前强调、
+        # 气泡两格保留原色明度，结果第 3 格直接跳到 0.62、第 4 格又落回 0.44
+        # （实测），色板是一段暗 + 一颗亮 + 一颗中间色，不是阶梯。
+        ladder = [0.060, 0.180, 0.300, 0.420, 0.540] if tier == "dark" \
+            else [0.020, 0.078, 0.136, 0.194, 0.252]
+        out = [_tune(c, t) for c, t in zip(five, ladder)]
+        bg, surface, surface_2, brand, bubble = out
     return {
         "brand": brand,
         "user_bubble": bubble,
