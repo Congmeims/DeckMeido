@@ -47,6 +47,42 @@
 </div>
 <div id="riToast"></div>
 
+<!-- 触控垫（盲操）：没有指针锁定的设备（手机、触屏）也能操作 Deck。
+     只在接管中断开式出现，不接管时完全不占屏幕 —— 交给用户的手感全在
+     「触控板 + 左右键 + 虚拟按键」这一条链路上 -->
+<div id="riPad" hidden>
+  <div class="rip-head">
+    <span class="rip-dot"></span>
+    <span id="riPadTitle">触控垫 · 接管中</span>
+    <button id="riPadStop" type="button">停止</button>
+  </div>
+  <div id="riPadTrack" class="rip-track">
+    <div class="rip-pads">
+      <div class="rip-pad" data-pad="left" aria-hidden="true">触摸移动</div>
+      <div class="rip-pad" data-pad="right" aria-hidden="true">滚动</div>
+    </div>
+    <div class="rip-hint" id="riPadHint">单指滑动移动指针 · 轻点左键 · 双击双击 · 两指上下滑动</div>
+    <div class="rip-keys">
+      <button type="button" data-act="escape">Esc</button>
+      <button type="button" data-act="enter">回车</button>
+      <button type="button" data-act="tab">Tab</button>
+      <button type="button" data-act="win">Win</button>
+      <button type="button" data-act="steam">Steam</button>
+      <button type="button" data-act="qam">QAM</button>
+      <button type="button" data-act="up" aria-label="↑">↑</button>
+      <button type="button" data-act="down" aria-label="↓">↓</button>
+      <button type="button" data-act="left" aria-label="←">←</button>
+      <button type="button" data-act="right" aria-label="→">→</button>
+    </div>
+    <div class="rip-btns">
+      <button type="button" id="riPadLeft" class="rip-btn">左键</button>
+      <button type="button" id="riPadRight" class="rip-btn">右键</button>
+      <button type="button" id="riPadWheelUp" class="rip-btn rip-btn-sm">滚上</button>
+      <button type="button" id="riPadWheelDn" class="rip-btn rip-btn-sm">滚下</button>
+    </div>
+  </div>
+</div>
+
 <div id="app">
 <aside id="sidebar">
   <!-- 折叠态只剩这条窄条：点「会话」或者箭头都能展开 -->
@@ -15226,6 +15262,8 @@
     riWs.onclose = function (ev) {
       riWs = null;
       if (riPingTimer) { clearInterval(riPingTimer); riPingTimer = 0; }
+      // 触控垫自己管连接与提示：它的 onclose 在 padOpenSocket 里，这里别再抢一次
+      if (riPad.on) return;
       if (riActive && !riClosing) { riFail('RI_DISCONNECTED'); return; }
       // 还没等到 RI_ACTIVE 就被关：以前这里什么都不做，4401（没带设备令牌）
       // 之类会把锁定留在原地——鼠标没了却按不动 Deck。一律收尾并说清原因
@@ -15379,6 +15417,16 @@
     riTeardown(true);
   }
 
+  // 触屏设备（手机/平板）没有指针锁定，走触控垫；桌面上锁不锁得到先按能力判断
+  function wantsTouchPad() {
+    if (IS_NATIVE) return false;
+    var coarse = window.matchMedia &&
+                 window.matchMedia('(hover: none), (pointer: coarse)').matches;
+    if (coarse) return true;
+    // 桌面浏览器里用户自己把触控垫收起来后，再点 logo 仍回到指针锁定那套
+    return typeof brandLogo.requestPointerLock !== 'function';
+  }
+
   brandLogo.addEventListener('click', function (e) {
     e.preventDefault();
     e.stopPropagation();
@@ -15386,6 +15434,7 @@
     // 绝不能把它当成退出指令，否则 Deck 上任何一次点击都会断开接管
     if (document.pointerLockElement === brandLogo) return;
     brandLogo.blur();
+    if (!IS_NATIVE && (riPad.on || wantsTouchPad())) { padPressLogo(e); return; }
     if (IS_NATIVE) {
       // 本机 Deck 客户端：点 logo 只释放，不会接管自己
       if (riActive) { stopRemoteInput(); riToast('已停止接管'); }
@@ -15401,6 +15450,287 @@
     e.stopPropagation();
     stopRemoteInput();
   });
+
+  // ---------- 触控垫（盲操） ----------
+  // 手机、平板、任何没有鼠标锁定能力的浏览器：点 logo 直接进入触控垫，
+  // 手指在垫上滑 = 相对移动，轻点 = 左键，两指上下滑 = 滚轮，外加一排虚拟键。
+  // 走的是同一条 /ws/input 与同一套后端会话，不另开协议；
+  // 灵敏度放在触控垫里单独一档（手感和鼠标不一样，共用设置里那一项会互相打架）。
+  var riPadEl = document.getElementById('riPad');
+  var riPadTrack = document.getElementById('riPadTrack');
+  var riPadHint = document.getElementById('riPadHint');
+  var riPadStopBtn = document.getElementById('riPadStop');
+  var riPadRightBtn = document.getElementById('riPadRight');
+  var riPadLeftBtn = document.getElementById('riPadLeft');
+  var riPadWheelUp = document.getElementById('riPadWheelUp');
+  var riPadWheelDn = document.getElementById('riPadWheelDn');
+  var PAD_SENS_KEY = 'deckmeido_pad_sens';
+  var riPad = {
+    on: false,             // 触控垫会话本身（连着 /ws/input）
+    sens: Number(localStorage.getItem(PAD_SENS_KEY)) || 1.8,
+    touch: null,           // 当前这一根手指：{id, x, y, sx, sy, moved, t0, two:bool}
+    rightHeld: false,
+    acc: { x: 0, y: 0 },   // 不足 1px 的余量，攒到下一个事件再发，慢速拖动才不丢
+    lastTap: 0, lastTapX: 0, lastTapY: 0
+  };
+
+  function padPaint() {
+    riPadEl.hidden = !riPad.on;
+    document.body.classList.toggle('rip-on', riPad.on);
+    // 触控垫自带标题和停止按钮，顶部那条胶囊就不必再出现
+    riBanner.hidden = !riActive || riPad.on;
+    riPaint();
+  }
+
+  function padSend(obj) {
+    if (!riPad.on) return;
+    riSend(obj);
+  }
+
+  function padOpenSocket() {
+    if (riWs) return;
+    var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    riWs = new WebSocket(proto + '://' + location.host
+      + deviceTokenQuery('/ws/input'));
+    riWs.onopen = function () {
+      if (!riPad.on) { riTeardown(false); return; }
+      riSend({ t: 'ping' });
+      clearInterval(riPingTimer);
+      riPingTimer = setInterval(function () {
+        if (riWs && riWs.readyState === 1) riSend({ t: 'ping' });
+      }, 3000);
+    };
+    riWs.onmessage = function (ev) {
+      var msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (msg.t !== 'state') return;
+      if (msg.ok && msg.code === 'RI_ACTIVE') {
+        riActive = true;
+        riState.active = true;
+        if (msg.backend) riState.backend = msg.backend;
+        riToast('已接管 Deck，手指在触控垫上滑动即可');
+        return;
+      }
+      if (!msg.ok) { riPadClose(false); riToast(RI_ERR_TEXT[msg.code] || ('接管失败：' + msg.code)); return; }
+      riPadClose(false);
+    };
+    riWs.onclose = function (ev) {
+      riWs = null;
+      if (riPingTimer) { clearInterval(riPingTimer); riPingTimer = 0; }
+      if (riPad.on) {
+        if (riClosing) return;  // 自己点的停止，不提示「断开」
+        riPadClose(false);
+        riToast(ev && ev.code === 4401
+          ? '接管未建立：登录已失效，请重新配对'
+          : '与 Deck 的连接断开，已释放所有按键');
+      }
+    };
+    riWs.onerror = function () {
+      if (riPad.on) { riPadClose(true); riToast('与 Deck 的连接断开，已释放所有按键'); }
+    };
+  }
+
+  function padOpen() {
+    if (riPad.on) return;
+    if (!riState.enabled) { riGuideEnable(); return; }
+    riPad.on = true;
+    riClosing = false;
+    padPaint();
+    padOpenSocket();
+  }
+
+  function padClose(sendRelease) {
+    if (!riPad.on) return;
+    riPad.on = false;
+    riClosing = true;
+    if (sendRelease) {
+      riSend({ t: 'release' });
+      riPostRelease();
+    }
+    if (riWs) { try { riWs.close(); } catch (e) {} }
+    riWs = null;
+    if (riPingTimer) { clearInterval(riPingTimer); riPingTimer = 0; }
+    riPad.rightHeld = false;
+    riPadRightBtn.classList.remove('on');
+    riPad.touch = null;
+    riActive = false;
+    riState.active = false;
+    padPaint();
+    setTimeout(function () { riClosing = false; }, 150);
+  }
+
+  function padPointerToDeck(x, y) {
+    var s = riPad.sens || 1;
+    riPad.acc.x += (x - riPad.touch.x) * s;
+    riPad.acc.y += (y - riPad.touch.y) * s;
+    riPad.touch.x = x;
+    riPad.touch.y = y;
+    var dx = Math.round(riPad.acc.x);
+    var dy = Math.round(riPad.acc.y);
+    if (!dx && !dy) return;
+    riPad.acc.x -= dx;
+    riPad.acc.y -= dy;
+    padSend({ t: 'move', dx: dx, dy: dy });
+  }
+
+  // 轻点左键 / 双击：靠两次轻点的间隔和落点判断，Deck 上双击比手机难触发，
+  // 这里放宽到 320ms、40px，手指抖一点也能双击
+  function padTap(x, y) {
+    if (!riPad.touch) { riPad.touch = { x: x, y: y }; }
+    var now = Date.now();
+    var dbl = now - riPad.lastTap < 320 &&
+      Math.abs(x - riPad.lastTapX) < 40 && Math.abs(y - riPad.lastTapY) < 40;
+    padSend({ t: 'click' });
+    if (dbl) padSend({ t: 'click' });
+    riPad.lastTap = dbl ? 0 : now;
+    riPad.lastTapX = x;
+    riPad.lastTapY = y;
+  }
+
+  riPadTrack.addEventListener('touchstart', function (e) {
+    if (!riPad.on || !e.touches.length) return;
+    e.preventDefault();
+    var t0 = e.touches[0];
+    // 两根手指：进入滚动模式，不移动指针
+    riPad.touch = {
+      id: t0.identifier, x: t0.clientX, y: t0.clientY,
+      sx: t0.clientX, sy: t0.clientY,
+      moved: false, t0: Date.now(), two: e.touches.length >= 2
+    };
+    riPad.acc.x = riPad.acc.y = 0;
+  }, { passive: false });
+
+  riPadTrack.addEventListener('touchmove', function (e) {
+    if (!riPad.on || !riPad.touch) return;
+    e.preventDefault();
+    var t = null;
+    for (var i = 0; i < e.touches.length; i++) {
+      if (e.touches[i].identifier === riPad.touch.id) { t = e.touches[i]; break; }
+    }
+    if (!t) return;
+    if (e.touches.length >= 2) {
+      riPad.touch.two = true;
+      riPad.touch.moved = true;
+      padSend({ t: 'wheel', d: t.clientY > riPad.touch.y ? 1 : -1 });
+    } else {
+      // 起手 8px 内不算拖动：手指按下去的那一下轻微挪动不该甩飞指针
+      if (!riPad.touch.moved &&
+          Math.abs(t.clientX - riPad.touch.sx) < 8 &&
+          Math.abs(t.clientY - riPad.touch.sy) < 8) return;
+      riPad.touch.moved = true;
+      padPointerToDeck(t.clientX, t.clientY);
+    }
+    riPad.touch.x = t.clientX;
+    riPad.touch.y = t.clientY;
+  }, { passive: false });
+
+  function padTouchEnd(e) {
+    if (!riPad.on || !riPad.touch) return;
+    var cur = riPad.touch;
+    riPad.touch = null;
+    // 手指都离开才算是「轻点」：两指滚动结束时不能补一次点击
+    if (e.touches && e.touches.length) return;
+    if (!cur.moved && !cur.two) padTap(cur.sx, cur.sy);
+  }
+  riPadTrack.addEventListener('touchend', padTouchEnd);
+  riPadTrack.addEventListener('touchcancel', function () { riPad.touch = null; });
+
+  // 鼠标也能用：桌面浏览器没锁定指针时（指纹弹窗、权限等），触控垫同样能操作
+  riPadTrack.addEventListener('mousedown', function (e) {
+    if (!riPad.on) return;
+    e.preventDefault();
+    riPad.touch = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY,
+                    moved: false, t0: Date.now(), two: false };
+    riPad.acc.x = riPad.acc.y = 0;
+  });
+  window.addEventListener('mousemove', function (e) {
+    if (!riPad.on || !riPad.touch) return;
+    if (!riPad.touch.moved &&
+        Math.abs(e.clientX - riPad.touch.sx) < 4 &&
+        Math.abs(e.clientY - riPad.touch.sy) < 4) return;
+    riPad.touch.moved = true;
+    padPointerToDeck(e.clientX, e.clientY);
+  });
+  window.addEventListener('mouseup', function () {
+    if (!riPad.on || !riPad.touch) return;
+    var cur = riPad.touch;
+    riPad.touch = null;
+    if (!cur.moved) padTap(cur.sx, cur.sy);
+  });
+
+  // 别让长按弹出系统的「复制/搜索」菜单，盲操时那层菜单会盖住触控垫
+  riPadTrack.addEventListener('contextmenu', function (e) {
+    if (riPad.on) e.preventDefault();
+  });
+
+  // 虚拟键：按下即抬，不需要按住；长按连发交给系统重复点击即可
+  riPadEl.querySelectorAll('.rip-keys button').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      padSend({ t: 'act', a: btn.getAttribute('data-act') });
+    });
+  });
+
+  riPadLeftBtn.addEventListener('click', function (e) {
+    e.preventDefault();
+    padSend({ t: 'btn', b: 0, p: true });
+    padSend({ t: 'btn', b: 0, p: false });
+  });
+
+  // 右键做成一键拖拽：按住期间左键保持按下，松手才抬起。
+  // 触控垫上做不了「按住再滑」，这是最接近长按拖拽的手感
+  riPadRightBtn.addEventListener('click', function (e) {
+    e.preventDefault();
+    if (riPad.rightHeld) return;
+    riPad.rightHeld = true;
+    riPadRightBtn.classList.add('on');
+    padSend({ t: 'btn', b: 0, p: true });
+    setTimeout(function () {
+      if (!riPad.rightHeld) return;
+      riPad.rightHeld = false;
+      riPadRightBtn.classList.remove('on');
+      padSend({ t: 'btn', b: 0, p: false });
+    }, 600);
+  });
+
+  function padWheel(d) {
+    // 一键走三格：Deck 的滚轮一格在游戏列表里只挪一点点，一格一格点太累
+    for (var i = 0; i < 3; i++) padSend({ t: 'wheel', d: d });
+  }
+  riPadWheelUp.addEventListener('click', function (e) { e.preventDefault(); padWheel(-1); });
+  riPadWheelDn.addEventListener('click', function (e) { e.preventDefault(); padWheel(1); });
+
+  // 灵敏度：触控垫标题长按 / 双击三下调出来，不额外占界面
+  var riPadTitle = document.getElementById('riPadTitle');
+  riPadTitle.addEventListener('click', function () {
+    var next = [1.2, 1.8, 2.6, 3.6];
+    var i = next.indexOf(Number(riPad.sens));
+    riPad.sens = next[(i + 1) % next.length];
+    localStorage.setItem(PAD_SENS_KEY, String(riPad.sens));
+    riPadHint.textContent = '灵敏度 ' + riPad.sens.toFixed(1) + '× · 再点标题继续切换';
+  });
+
+  riPadStopBtn.addEventListener('click', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    padClose(true);
+    riToast('已停止接管');
+  });
+
+  // 页面切走（来电、切 App）就收尾：留在后台继续按住键会把 Deck 卡住
+  document.addEventListener('visibilitychange', function () {
+    if (riPad.on && document.hidden) padClose(true);
+  });
+
+  // 没有指针锁定的设备点 logo → 触控垫
+  function padPressLogo(e) {
+    if (IS_NATIVE) return;
+    e.preventDefault();
+    e.stopPropagation();
+    brandLogo.blur();
+    if (riPad.on) { padClose(true); riToast('已停止接管'); }
+    else padOpen();
+  }
 
   // 页面首次加载时恢复状态（例如接管已经开始后才打开这个页面）
   loadRemoteStatus();

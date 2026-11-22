@@ -101,6 +101,35 @@ KEYMAP = {
     "AltGraph": 100, "ContextMenu": 127,
 }
 
+# 触控垫的按键动作 → 要在 Deck 上按一下的 key 组合（不含鼠标键）。
+# 手机上没法用键盘，只能把常用键做成按钮；每个动作是一组「一次按下」的组合，
+# 支持 Ctrl+W 这种。值里的字符串必须都在 KEYMAP 里，导入时校验。
+RI_KEY_ACTIONS = {
+    "enter": ("Enter",),
+    "escape": ("Escape",),
+    "tab": ("Tab",),
+    "backspace": ("Backspace",),
+    "space": ("Space",),
+    "up": ("ArrowUp",),
+    "down": ("ArrowDown",),
+    "left": ("ArrowLeft",),
+    "right": ("ArrowRight",),
+    "pagedown": ("PageDown",),
+    "pageup": ("PageUp",),
+    # Steam 客户端的两层菜单：Steam 键 / 快速访问（QAM）
+    "steam": ("ControlLeft", "Digit2"),
+    "qam": ("ControlLeft", "Digit3"),
+    "close": ("AltLeft", "F4"),
+    "ctrlw": ("ControlLeft", "KeyW"),
+    "win": ("MetaLeft",),
+}
+
+_MISSING_ACTIONS = {k: [c for c in v if c not in KEYMAP]
+                    for k, v in RI_KEY_ACTIONS.items()}
+_MISSING_ACTIONS = {k: v for k, v in _MISSING_ACTIONS.items() if v}
+if _MISSING_ACTIONS:  # pragma: no cover - 写错映射时尽早炸掉，别到运行时才静默失效
+    raise RuntimeError(f"触控垫动作里有未映射的键：{_MISSING_ACTIONS}")
+
 
 # 测试用：交付要求里点名必须覆盖的键
 REQUIRED_CODES = (
@@ -474,6 +503,23 @@ class InputSession:
                 print(f"[DeckMeido] 忽略未映射的按键：{code}", file=sys.stderr)
                 return ""
             await self.key(linux_code, p)
+            return ""
+        if t == "click":
+            # 触控垫的「轻点」：左键按下抬起，双击也走这条（前端连发两次）
+            await self.button(0, True)
+            await self.button(0, False)
+            return ""
+        if t == "act":
+            # 触控垫的虚拟按键：一组键整体按下再逆序抬起，Ctrl+W 这类不会漏放
+            name = msg.get("a")
+            combo = RI_KEY_ACTIONS.get(str(name or ""))
+            if not combo:
+                raise RemoteInputError(RI_BAD_MSG, f"未知动作：{name}")
+            codes = [KEYMAP[c] for c in combo]
+            for code in codes:
+                await self.key(code, True)
+            for code in reversed(codes):
+                await self.key(code, False)
             return ""
         if t == "release":
             return RI_RELEASED
