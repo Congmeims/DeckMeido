@@ -3000,6 +3000,37 @@
   // 普通 ask 卡片一致，也不需要前端知道怎么取色
   // isImage=true 是单纯找图（search_image）：点图只发编号不会换壁纸，
   // 文案不能说「想用哪张」，否则用户会以为随便点一下就改了主题
+
+  // 候选图右键菜单：复用文件管理器那套 #ctxMenu，话术保持一致
+  function openWallMenu(e, cand) {
+    var m = rbEl('ctxMenu');
+    if (!m) return;
+    m.innerHTML = '';
+    fbCtxItem('设为软件背景', function () { applyWallCandidate(cand); });
+    fbCtxItem('新标签页看大图', function () { window.open(cand.url, '_blank'); });
+    fbCtxOpen(e.clientX, e.clientY);
+  }
+
+  function applyWallCandidate(cand) {
+    var cid = cand && cand.id;
+    if (!cid) return;
+    fbToast('正在设为背景…', 'chat');
+    apiFetch('/api/theme/candidates/' + encodeURIComponent(cid) + '/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok || !j.ok) {
+          fbToast('设置失败：' + (j.detail || j.error || ('HTTP ' + r.status)), 'chat', true);
+          return;
+        }
+        if (j.theme) applyTheme(j.theme);
+        fbToast('已设为软件背景', 'chat');
+      });
+    }).catch(function () { fbToast('设置失败：网络错误', 'chat', true); });
+  }
+
   function makeWallPickCard(ev, isImage) {
     var card = document.createElement('div');
     card.className = 'wall-pick';
@@ -3057,6 +3088,13 @@
       n.textContent = String(i + 1);
       b.appendChild(img);
       b.appendChild(n);
+      // 右键直接把这张设成软件背景：不用再走「回复编号 → 模型调工具」那一轮。
+      // 桌面网页端有意义；Deck 上虽然没有鼠标，但和文件管理器右键保持一套话术
+      b.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        openWallMenu(e, c);
+      });
       b.addEventListener('click', function (e) {
         e.stopPropagation();
         if (busy) return;

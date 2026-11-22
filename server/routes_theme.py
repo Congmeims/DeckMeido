@@ -252,6 +252,27 @@ def register(app) -> None:
         await _publish(updates)
         return {"ok": True, "theme": current_theme()}
 
+    @router.post("/api/theme/candidates/{cid}/apply")
+    async def api_theme_candidate_apply(cid: str):
+        """把某张候选图直接设成壁纸（聊天气泡上右键「设为软件背景」用）
+
+        和用户回复「用第几张」走的是同一条路：候选图本来就落盘在
+        wallpapers/candidates/ 下，这里按 id 取回字节交给 save_wallpaper，
+        所以不需要再联网下载一次。
+        """
+        p = themecolor.candidate_path(cid)
+        if p is None:
+            raise HTTPException(404, "候选图已过期，请重新搜一次")
+        try:
+            raw = p.read_bytes()
+            name, palette = themecolor.save_wallpaper(raw)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        except OSError as e:
+            raise HTTPException(400, f"读取失败：{e}") from None
+        await _publish({"wallpaper": name, "palette": themecolor.dump_palette(palette)})
+        return {"ok": True, "theme": current_theme()}
+
     @router.get("/api/theme/candidates/{cid}")
     async def api_theme_candidate(cid: str):
         """候选壁纸图。给聊天里那 4 张预览用，不鉴权（静态图，和 /wallpapers 同口径）。
