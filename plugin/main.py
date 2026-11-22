@@ -1418,6 +1418,23 @@ _THREAD_MAX = 20
 _LAST_THREAD: dict | None = None
 # 最近一次核心探测的地址与失败原因（见 _core_http）
 _LAST_PROBE: dict = {"addr": "", "error": ""}
+
+
+def _drop_thread_cache():
+    """核心停下时清掉面板的对话缓存
+
+    这份缓存是插件进程里的模块级内存，不随后端生死走。以前「停止核心」只收进程，
+    _THREAD / _LAST_THREAD 原样留着，面板一重开 _resend() 又把快照补推一遍，
+    界面上看着对话还在、好像后端还活着。核心都停了就没有「当前对话」可言，
+    下次启动由后端 history 重新灌。
+    """
+    global _LAST_THREAD, _STREAM_RUNNING, _STREAM_SINCE
+    _THREAD.clear()
+    _LAST_THREAD = None
+    _STREAM_RUNNING = False
+    _STREAM_SINCE = 0.0
+
+
 # 最近一次截图落盘的本地路径：它比后端回显的 /shots/ 更早可用。
 # 后端要等 ws 把 16MB 的图收完才落盘，这段空窗里各端（尤其电脑网页）只看到
 # 一条没有画面的提问，看起来就像「插件截的图在电脑端不显示」
@@ -2506,6 +2523,18 @@ class Plugin:
         Decky 是先渲染面板、后挂 addEventListener，而 history 那条 thread 可能在
         面板首帧之前就推完了。这里不重新连后端，只把快照再发一遍。
         """
+        # 先问一次核心：停了（或被别处停掉）就不能把内存里的旧对话当成现状
+        # 推给面板，还要推一条空列表把前端可能残留的内容清掉
+        cfg = _load_server_cfg()
+        port = int(cfg.get("port", 18765))
+        st = await _core_http(port, "GET", "/api/status", timeout=2.0)
+        core_ok = bool(st.get("ok"))
+        data = st.get("data") if core_ok else None
+        if not core_ok:
+            _drop_thread_cache()
+            _emit({"kind": "thread", "items": []})
+            _emit({"kind": "status", "running": False, "since": 0.0})
+            return {"ok": True}
         if _LAST_THREAD:
             _emit(_LAST_THREAD)
         elif _THREAD:
@@ -2517,10 +2546,6 @@ class Plugin:
         # 最后一个「运行中」会永久挂着，面板一打开就凭空显示「思考中」。
         # 这里直接问一次 HTTP 状态，拿不到再退回缓存值。
         global _STREAM_RUNNING, _STREAM_SINCE
-        cfg = _load_server_cfg()
-        port = int(cfg.get("port", 18765))
-        st = await _core_http(port, "GET", "/api/status", timeout=2.0)
-        data = st.get("data") if st.get("ok") else None
         if isinstance(data, dict) and "running" in data:
             run = bool(data.get("running"))
             since = float(data.get("running_since") or 0) if run else 0.0
@@ -2873,6 +2898,8 @@ class Plugin:
         await _stop_backend(port)
         # 主动断掉 ws，别让读循环在后台对着已死的端口反复重连
         await _drop_backend()
+        # 核心停了就不能再拿旧对话糊弄面板，否则下次打开面板看着像还活着
+        _drop_thread_cache()
         return {"ok": True}
 
     async def screenshot(self, hide: bool = False) -> dict:

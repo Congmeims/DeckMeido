@@ -937,15 +937,22 @@ export default function BigScreen() {
       {/* 询问页的状态行已移入页面容器内（与聊天页输入行同一层级），
           避免两页因容器层数不同导致分隔线下移 */}
 
-      {!s.status ? (
+      {(!s.status || !s.status.core_ok) ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ ...cardStyle(accent), width: "min(560px, 100%)", alignItems: "stretch" }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: "#fff" }}>
-              {s.probing ? "正在连接插件后端…" : "插件后端未连上"}
+              {s.probing
+                ? "正在连接插件后端…"
+                : !s.status
+                  ? "插件后端未连上"
+                  : s.status.core_stopped
+                    ? "核心已停止"
+                    : "核心异常"}
             </div>
             <div style={{ color: DIM, fontSize: 13, lineHeight: 1.5 }}>
-              后端由 Decky 插件管理。重试没用就直接重启一次；确实不想它跑着就点停止，
-              停止后只有「启动核心」能恢复。
+              {s.status && !s.status.core_ok && !s.status.core_stopped
+                ? `${s.status.core_error || "无响应"}。可以重启后端；不想它跑着就点停止。`
+                : "后端由 Decky 插件管理。重试没用就直接重启一次；确实不想它跑着就点停止，停止后只有「启动核心」能恢复。"}
             </div>
             <ActionButton
               onClick={() => void s.refreshStatus()}
@@ -954,6 +961,21 @@ export default function BigScreen() {
             >
               重试连接
             </ActionButton>
+            {/* 核心是被「停止后端」关掉的：唯一能救回来的就是启动核心 */}
+            {s.status && !s.status.core_ok && (
+              <ActionButton
+                onClick={() => void s.coreStart()}
+                disabled={s.starting}
+                description="启动核心"
+                style={{
+                  background: "rgba(224,108,117,.18)",
+                  borderColor: "rgba(224,108,117,.45)",
+                  color: "#f0c3c7",
+                }}
+              >
+                {s.starting ? "启动中…" : "启动核心"}
+              </ActionButton>
+            )}
             <div style={{ display: "flex", gap: 8 }}>
               <ActionButton
                 onClick={() => void s.coreRestart()}

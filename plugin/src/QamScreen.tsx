@@ -1960,11 +1960,14 @@ export default function QamScreen() {
 
           <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex" }}>
             <ChatLog
-              items={s.items}
+              // 核心没起来时不能把内存里缓存的旧对话当成现状显示出来：
+              // 停止核心后关闭再打开 QAM，以前还能看到一整屏历史，像后端还活着
+              items={coreRunning ? s.items : []}
               streaming={s.streaming}
               thought={s.thought}
               busy={s.busy && s.runningAction === "send"}
               elapsed={s.elapsed}
+              emptyText={coreRunning ? "还没有对话" : "核心未运行：到「状态」页启动或重启后端"}
               scrollRef={scrollRef}
               answerBusy={s.busy}
               onAnswer={(t) => void s.send(t)}
