@@ -326,6 +326,17 @@ class VolumeKeyStop:
                     self._on_stop()
 
 
+def _hex_rgb(value: str):
+    """#rrggbb -> (r, g, b)；解析失败返回 None"""
+    h = (value or "").strip().lstrip("#")
+    if len(h) == 6:
+        try:
+            return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        except ValueError:
+            return None
+    return None
+
+
 class Mask(QWidget):
     def __init__(self):
         # 覆盖重定向窗口（绕过窗口管理器）：不进任务栏、始终盖在普通窗口之上。
@@ -340,6 +351,10 @@ class Mask(QWidget):
         self.setCursor(Qt.PointingHandCursor)
         self._text = ""
         self.phase = 0
+        # 主题色随 overlay_state 捎带：卡片底色/描边跟当前主题走，没拿到就保留默认深蓝
+        self._theme_key = None
+        self._theme_surface_rgb = None
+        self._theme_brand_rgb = None
 
         # 卡片用 QLabel 排版，换行/对齐交给 Qt，paintEvent 只管背景和按钮
         self.card = QFrame(self)
@@ -498,6 +513,31 @@ class Mask(QWidget):
             return 0, 0
         return top, h - 1 - bottom
 
+    def _apply_theme(self, theme: dict) -> None:
+        """按后端捎带的主题色刷新卡片底色/描边/文字，值没变就跳过避免重绘抖动"""
+        key = (theme.get("surface"), theme.get("brand"))
+        if self._theme_key == key:
+            return
+        self._theme_key = key
+        surf = _hex_rgb(theme.get("surface"))
+        brand = _hex_rgb(theme.get("brand"))
+        self._theme_surface_rgb = surf
+        self._theme_brand_rgb = brand
+        # 文字色按 surface 亮度反选：浅色底用深字，深色底用浅字，保证可读
+        if surf:
+            lum = 0.299 * surf[0] + 0.587 * surf[1] + 0.114 * surf[2]
+            fg, muted = ("#1a1d24", "#5a6072") if lum > 140 else ("#e8eaf0", "#aab0c0")
+        else:
+            fg, muted = "#e8eaf0", "#aab0c0"
+        s_r, s_g, s_b = surf if surf else (16, 20, 30)
+        b_r, b_g, b_b = brand if brand else (26, 159, 255)
+        self.card.setStyleSheet(
+            f"#card {{ background: rgba({s_r}, {s_g}, {s_b}, 230);"
+            f" border: 1px solid rgba({b_r}, {b_g}, {b_b}, 160); border-radius: 16px; }}")
+        self.title.setStyleSheet(f"color: {fg};")
+        self.action.setStyleSheet(f"color: {muted};")
+        self.update()
+
     def _poll_urgent(self):
         """穿透期间每 25ms 问一次后端，保证 agent 点击前遮罩已经藏好"""
         if self._urgent:
@@ -505,6 +545,7 @@ class Mask(QWidget):
 
     def _poll(self):
         state = self._fetch()
+        self._apply_theme(state.get("theme") or {})
         show = bool(state.get("show"))
         self._show_wanted = show
         self._set_text(state.get("text") or "")
@@ -708,11 +749,13 @@ class Mask(QWidget):
         p = QPainter(self)
         try:
             w, h = self.width(), self.height()
-            # 半透明底：能看清桌面，又明显区别于正常状态
-            p.fillRect(0, 0, w, h, QColor(6, 8, 14, 125))
-            # 呼吸边框
+            # 半透明底：颜色跟主题走，alpha 固定（透不透明无所谓，保证始终看得见）
+            s_r, s_g, s_b = self._theme_surface_rgb or (6, 8, 14)
+            p.fillRect(0, 0, w, h, QColor(s_r, s_g, s_b, 125))
+            # 呼吸边框：描边色跟主题品牌色走
             glow = 0.45 + 0.35 * abs((self.phase % 40) - 20) / 20.0
-            p.setPen(QPen(QColor(26, 159, 255, int(200 * glow)), 3))
+            b_r, b_g, b_b = self._theme_brand_rgb or (26, 159, 255)
+            p.setPen(QPen(QColor(b_r, b_g, b_b, int(200 * glow)), 3))
             p.drawRect(2, 2, w - 4, h - 4)
         finally:
             p.end()

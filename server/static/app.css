@@ -26,12 +26,16 @@
        这里只是 :root 兜底（脚本还没跑、或内联被清掉时）。有壁纸时取壁纸配色，
        没壁纸时取三档主题自己的默认强调色，都不写死在下面这组里 */
     --ri-brand: #1a9fff;
-    /* 跨屏接管提示的颜色在下面按 --ri-brand 统一覆盖，这里只保留兜底值 */
-    --ri-bg: rgba(12,16,26,.96);
+    /* 跨屏接管提示的颜色在下面按 --ri-brand 统一覆盖，这里只保留兜底值。
+       --ri-bg 跟 --panel-alpha 走（界面透明度）：没壁纸/滑条归零时是实色，
+       拉大后和其它卡片一起透出壁纸，不再写死成 96% 不透明的实心块 */
+    --ri-bg: color-mix(in srgb,
+              color-mix(in srgb, var(--ri-brand) 10%, var(--surface))
+              calc(var(--panel-alpha) * 100%), transparent);
     --ri-fg: #eaf4ff;
     --ri-line: rgba(120,200,255,.85);
     --ri-accent: #6fc3ff;
-    --ri-shadow: 0 8px 28px rgba(0,0,0,.55), 0 0 22px rgba(26,159,255,.35);
+    --ri-shadow: 0 8px 28px rgba(0,0,0,.45);
     --ri-shadow-sm: 0 2px 10px rgba(0,0,0,.28);
     --ri-btn-bg: rgba(26,159,255,.26);
     --ri-btn-bg-hover: rgba(26,159,255,.42);
@@ -1320,15 +1324,12 @@
   /* 悬停与接管中的底色都取自 --brand，不再写死 26,159,255：
      用户换强调色或壁纸配色后，接管发光圈不该还停在默认蓝 */
   .sb-brand:hover { background: color-mix(in srgb, var(--brand) 8%, transparent); }
-  /* 接管中：一圈高亮描边 + 呼吸，避免用户不知道现在是不是在接管。
-     侧栏贴屏幕左缘，外发光会被页面裁掉，所以只用 inset 阴影画在元素内部 */
+  /* 接管中：保留可见的激活态，但撤销此前按要求写死的呼吸发光。
+     侧栏贴屏幕左缘，外发光会被页面裁掉，这里只用一圈静态细描边环画在内部，
+     配合右上角的「接管中」胶囊和品牌色底色，已经够明显 */
   .sb-brand.ri-active {
-    animation: riBreath 1.6s ease-in-out infinite;
     background: color-mix(in srgb, var(--brand) 14%, transparent);
-  }
-  @keyframes riBreath {
-    0%, 100% { box-shadow: inset 0 0 0 1px var(--ri-focus-soft), inset 0 0 10px var(--ri-focus-soft); }
-    50%      { box-shadow: inset 0 0 0 2px var(--ri-focus), inset 0 0 18px var(--ri-focus-soft); }
+    box-shadow: inset 0 0 0 1px var(--ri-focus-soft);
   }
   /* --ri-focus / --ri-focus-soft 原来在 :root 和浅色主题里写死成蓝色，
      接管发光圈、输入框聚焦、引导闪烁全用它，所以换了强调色这几处都不变。
@@ -1346,6 +1347,8 @@
     border: 1px solid var(--ri-line); border-radius: 999px;
     padding: 1px 7px; line-height: 1.2; white-space: nowrap;
     box-shadow: var(--ri-shadow-sm);
+    /* 底色跟 --panel-alpha 走后会透出壁纸，补毛玻璃避免文字糊在壁纸上 */
+    backdrop-filter: blur(calc(10px + var(--glass)));
   }
   .sb-brand.ri-active .bn-ri { display: inline; }
   /* 接管中顶部标识：所有端（远程控制端 / Deck 客户端）都走同一条广播。
@@ -1467,16 +1470,21 @@
      用它会在浅色档串成另一套蓝 */
   html { --ri-accent: var(--ri-brand); }
   html { --ri-line: color-mix(in srgb, var(--ri-brand) 70%, transparent); }
-  html { --ri-bg: color-mix(in srgb, var(--ri-brand) 10%, #0c101a); }
+  /* 跟界面透明度走：底色 = 主题面板色混一点强调色，再按 --panel-alpha 透出壁纸。
+     以前写死 #0c101a 实色，透明度滑条拉满这块还是一块实心黑 */
+  html { --ri-bg: color-mix(in srgb,
+              color-mix(in srgb, var(--ri-brand) 10%, var(--surface))
+              calc(var(--panel-alpha) * 100%), transparent); }
   html { --ri-btn-bg: color-mix(in srgb, var(--ri-brand) 26%, transparent); }
   html { --ri-btn-bg-hover: color-mix(in srgb, var(--ri-brand) 42%, transparent); }
-  html { --ri-shadow: 0 8px 28px rgba(0,0,0,.55),
-                    0 0 22px color-mix(in srgb, var(--ri-brand) 35%, transparent); }
+  /* 撤掉品牌色发光那圈（0 0 22px ...），只留中性投影：以前那圈是按要求写死的，
+     现在要的是透明、跟壁纸融在一起，发光反而把它又框成一块实心牌 */
+  html { --ri-shadow: 0 8px 28px rgba(0,0,0,.45); }
   html { --ri-focus: color-mix(in srgb, var(--ri-brand) 92%, transparent); }
   html { --ri-focus-soft: color-mix(in srgb, var(--ri-brand) 30%, transparent); }
-  html[data-theme="light"] { --ri-bg: color-mix(in srgb, var(--ri-brand) 6%, #fff); }
-  html[data-theme="light"] { --ri-shadow: 0 8px 24px rgba(16,24,40,.18),
-                    0 0 16px color-mix(in srgb, var(--ri-brand) 16%, transparent); }
+  /* 浅色档不再单独写死白底：继承上面的公式，--surface 在浅色档本来就是亮的，
+     混出来自然是浅底；透明度也跟着 --panel-alpha 走 */
+  html[data-theme="light"] { --ri-shadow: 0 8px 24px rgba(16,24,40,.16); }
   /* 吐司贴着底栏，和接管横幅同口径加毛玻璃：壁纸/毛玻璃强度拉大时它也跟着糊 */
   #riToast {
     position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
@@ -1487,19 +1495,11 @@
     backdrop-filter: blur(calc(10px + var(--glass)));
   }
   #riToast.show { display: block; }
-  /* 吐司提示：边框/底色已经按 --brand 算过，但整块还是平的，换强调色看不出来。
-     补一圈品牌色柔光和左侧色条，和接管横幅同一口径。
-     用 --logo-glow*（内联按强调色算好的实色）而不是 --ri-focus：
-     后者在浅色档是一份写死的蓝，壁纸换了也不跟 */
-  #riToast {
-    border-left: 3px solid var(--logo-glow);
-    box-shadow: var(--ri-shadow),
-                0 0 0 1px var(--logo-glow-soft),
-                inset 0 0 14px var(--logo-glow-soft);
-  }
+  /* 吐司提示：撤销此前按要求写死的品牌色发光环/内发光和左侧色条，
+     只留上面 base 规则里的中性投影；错误态用一根细 danger 左边框区分，
+     不再铺内发光 */
   #riToast.err {
-    border-left-color: var(--danger);
-    box-shadow: var(--ri-shadow), inset 0 0 14px color-mix(in srgb, var(--danger) 25%, transparent);
+    border-left: 3px solid var(--danger);
   }
   /* 未开启时点 logo 的引导：设置页那张卡片闪两下，眼睛能立刻落到开关上。
      用 inset 阴影，不会像外发光那样被面板裁掉 */
@@ -1517,32 +1517,8 @@
     user-select: none; -webkit-user-drag: none;
   }
   [data-theme=light] .sb-brand .brand-mark { filter: none; }
-  /* 接管中 logo 的边缘发光：原来只有底框在呼吸（riBreath），蕾丝图本身没有
-     光边，换强调色后也看不出来。这里给图像描一圈品牌色光，和底框同一个节奏；
-     drop-shadow 会跟着 alpha 走，正好沿蕾丝的轮廓描边。
-     颜色不用 --ri-focus：那组变量在 [data-theme=light] 里还有一份写死的
-     蓝，且 html 上已被 applyCfg 内联的 --brand 盖掉时算不出新色。
-     --logo-glow / --logo-glow-soft 由 index.html 在内联 --brand 之后
-     按实际强调色重算，三档主题都取到同一个色 */
-  .sb-brand.ri-active .brand-mark {
-    animation: riLogoGlow 1.6s ease-in-out infinite;
-  }
-  @keyframes riLogoGlow {
-    0%, 100% { filter: brightness(1.06)
-               drop-shadow(0 0 3px var(--logo-glow-soft))
-               drop-shadow(0 0 8px var(--logo-glow-soft)); }
-    50%      { filter: brightness(1.18)
-               drop-shadow(0 0 6px var(--logo-glow))
-               drop-shadow(0 0 18px var(--logo-glow-soft)); }
-  }
-  [data-theme=light] .sb-brand.ri-active .brand-mark {
-    animation: riLogoGlowLight 1.6s ease-in-out infinite;
-  }
-  @keyframes riLogoGlowLight {
-    0%, 100% { filter: drop-shadow(0 0 3px var(--logo-glow-soft)); }
-    50%      { filter: drop-shadow(0 0 5px var(--logo-glow))
-                       drop-shadow(0 0 14px var(--logo-glow-soft)); }
-  }
+  /* 接管中 logo 的边缘发光：撤销此前按要求写死的 drop-shadow 呼吸光晕，
+     蕾丝图保留正常亮度即可；激活态靠侧栏品牌色底色 + 右上角「接管中」胶囊体现 */
   /* 左下角 logo 也跟着「界面透明度」走：拉全透时侧栏几乎全空，logo 还是
      一块实心图，看着像单独贴上去的。不直接用 --panel-alpha 当不透明度：
      那个值最低到 0.08，套上去 logo 会淡到几乎看不见，而它同时是跨屏接管
@@ -2162,6 +2138,14 @@
   }
   .tune-row > .rg { flex: 1 1 auto; min-width: 96px; margin: 0; }
   .tune-row > .rg-val { flex: 0 0 42px; text-align: right; }
+  /* 恢复默认按钮：和滑轨同一行，三条都用同一文案所以宽度一致，滑轨起止仍对齐 */
+  .tune-row > .tune-reset {
+    flex: 0 0 auto; margin-left: 4px;
+    border: 1px solid var(--line); background: transparent;
+    color: var(--muted); font-size: 12px; line-height: 1.4;
+    padding: 2px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+  }
+  .tune-row > .tune-reset:hover { color: var(--brand); border-color: var(--brand); }
   /* 开关外层的 label 同时也是 .field label，会把「块级 + 灰色小字」带进来，
      这里复位成与开关等大的容器 */
   .field label.switch { display: inline-block; margin: 0; font-size: 0; }
@@ -2554,6 +2538,8 @@
     border: 1px solid var(--ri-line); border-radius: 10px;
     background: var(--ri-bg); color: var(--ri-fg);
     box-shadow: var(--ri-shadow-sm);
+    /* 底色跟 --panel-alpha 走后会透出壁纸，补毛玻璃避免文字糊在壁纸上 */
+    backdrop-filter: blur(calc(10px + var(--glass)));
   }
   .qq-status-head {
     display: flex; align-items: center; gap: 8px;
@@ -2666,6 +2652,8 @@
     max-width: 100%; padding: 3px 4px 3px 10px; border-radius: 999px;
     border: 1px solid var(--ri-line); background: var(--ri-bg); color: var(--ri-fg);
     font-size: 12.5px; line-height: 1.6; word-break: break-all;
+    /* 底色跟 --panel-alpha 走后会透出壁纸，补毛玻璃避免文字糊在壁纸上 */
+    backdrop-filter: blur(calc(10px + var(--glass)));
   }
   .chip button {
     flex: none; border: 0; background: transparent; color: inherit; opacity: .65;
@@ -3491,9 +3479,9 @@
     /* 滚动条 */
     --sb-thumb: rgba(16,24,40,.22); --sb-thumb-hover: rgba(16,24,40,.38);
     /* 接管提示跟随浅色主题：浅底 + 深字，避免 0.6.2 的深底配 --text 深字
-       （浅色主题下就是黑底黑字）。强调色系列在下面按 --brand 覆盖，
-       这里只留亮度相关的兜底 */
-    --ri-bg: rgba(255,255,255,.97);
+       （浅色主题下就是黑底黑字）。底色不再写死白底，继承上面 html 的
+       --panel-alpha 透明公式（浅色档 --surface 本就是亮的，混出来自然浅底）。
+       强调色系列在下面按 --brand 覆盖，这里只留亮度相关的兜底 */
     --ri-fg: #10233a;
     --ri-btn-fg: var(--ri-brand);
     --ri-shadow-sm: 0 2px 8px rgba(16,24,40,.14);

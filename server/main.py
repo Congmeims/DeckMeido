@@ -4237,6 +4237,10 @@ async def handle_chat(text: str, announce: bool = True,
     # 只给界面看的短文案：历史里留着，各端渲染时优先用它
     if brief:
         src_tag["brief"] = brief
+    # assistant 消息不能继承 brief：前端渲染优先 m.brief || m.content，assistant
+    # 一旦带上它，AI 的真实回复就被用户那句短文案盖住（表现为「AI 只复读了我问的话」）。
+    # client/device 来源标记仍保留，只剔除 brief
+    asst_tag = {k: v for k, v in src_tag.items() if k != "brief"}
     # 随本轮附带的画面（Decky 插件截的游戏画面）先落成文件：各端回放历史时会跳过
     # 「content 是数组」的消息（那是给模型看图的素材），只靠内联 base64 的话
     # 屏幕上永远没有图，表现就是「答得头头是道，却不知道它看的是什么」
@@ -4391,7 +4395,7 @@ async def handle_chat(text: str, announce: bool = True,
         # 用户点了终止：广播终止消息并向上传递
         await manager.broadcast({"type": "assistant_message", "text": "已终止当前操作",
                                  "ts": time.time(), "events": events, "cancelled": True,
-                                 **sid_tag, **src_tag})
+                                 **sid_tag, **asst_tag})
         # 终止时把已经生成的部分保住：屏幕上出现过的每一段正文都留下，
         # 不能只用最后那段（工具调用前的过渡话也在屏幕上显示过）
         partial = _stream_buf(turn_sid).get("text") or ""
@@ -4415,7 +4419,7 @@ async def handle_chat(text: str, announce: bool = True,
         hist.append({"role": "assistant", "content": killed_text,
                      "events": events, "interrupted": True, "aborted_turn": True,
                      "tool_log": list(tool_log), "ts": time.time(),
-                     **src_tag,
+                     **asst_tag,
                      **({"candidates": list(turn_candidates)} if turn_candidates else {})})
         _safe_save(turn_sid, hist)
         _safe_clear_stream(turn_sid)
@@ -4448,7 +4452,7 @@ async def handle_chat(text: str, announce: bool = True,
     # 本轮搜过的壁纸候选随回答落盘：下一轮 _build_llm_msgs 会把它讲给模型听
     cand_tag = {"candidates": list(turn_candidates)} if turn_candidates else {}
     hist.append({"role": "assistant", "content": reply, "events": events,
-                 "ts": asst_ts, **src_tag, **cand_tag})
+                 "ts": asst_ts, **asst_tag, **cand_tag})
     # 关键：写回「本轮所属」的会话文件。中途被切走时 current_sid 已经指向别处，
     # 用 save_current_session 会把这一轮错写进新会话（串回复的根源）
     _safe_save(turn_sid, hist)
@@ -4483,7 +4487,7 @@ async def handle_chat(text: str, announce: bool = True,
                                  "ts": time.time()})
     else:
         await manager.broadcast({"type": "assistant_message", "text": reply, "ts": asst_ts,
-                                 "events": events, **sid_tag, **src_tag})
+                                 "events": events, **sid_tag, **asst_tag})
         # 语音播报：只播报最终回复，不播报思维链/工具过程（后台进行，不阻塞）。
         # QQ 通道的回答不在本机播报：那是别人在手机上说的话，不该从 Deck 的喇叭里出来。
         # 智能音箱模式（force_tts）必须等这一句读完再收尾，否则唤醒轮次会在
@@ -4947,6 +4951,25 @@ _overlay_state = {"show": False, "text": "", "passthrough": False, "lift": False
 _overlay_ack = {"passthrough": False, "lift": False}  # 遮罩进程确认已让开鼠标 / 已抬高
 _overlay_lock = threading.Lock()
 
+# 随 overlay_state 捎带给遮罩进程的主题色：让遮罩卡片底色/描边跟当前主题走，
+# 而不是写死的深蓝。遮罩每 100ms 轮询一次，current_theme 会读盘，缓存 1 秒避免抖动。
+_overlay_theme_cache = {"value": None, "ts": 0.0}
+
+
+def _overlay_theme_snapshot() -> dict:
+    now = time.monotonic()
+    if _overlay_theme_cache["value"] is None or now - _overlay_theme_cache["ts"] > 1.0:
+        snap = routes_theme.current_theme()
+        palette = snap.get("palette") or {}
+        cur = palette.get(snap.get("theme") or "dark") or {}
+        _overlay_theme_cache["value"] = {
+            "surface": str(cur.get("surface") or ""),
+            "brand": str(cur.get("brand") or ""),
+        }
+        _overlay_theme_cache["ts"] = now
+    return _overlay_theme_cache["value"]
+
+
 overlay_host.init(lambda: sys.modules[__name__])
 
 _xauthority = overlay_host._xauthority
@@ -4989,7 +5012,9 @@ async def api_overlay_state(ack: int = 0, hidden: int = 1):
         else:
             _overlay_ack["passthrough"] = want
         _overlay_ack["lift"] = _overlay_state["lift"]
-    return _overlay_state
+    payload = dict(_overlay_state)
+    payload["theme"] = _overlay_theme_snapshot()
+    return payload
 
 
 @app.on_event("startup")

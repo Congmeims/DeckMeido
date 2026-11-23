@@ -6,9 +6,9 @@ register(app) 时才定义路由函数，保持 main.api_xxx 的既有写法。
 壁纸与配色存 config.toml 的 [appearance] 段：
     wallpaper = "wallpaper.jpg"      # 空串 = 无壁纸
     palette   = '{"dark":{...},"light":{...},"source":"#xxx"}'   # JSON 字符串
-    dim       = 45                   # 界面透明度 0-100
-    blur      = 0                    # 壁纸模糊 px 0-12
-    glass     = 0                    # 毛玻璃强度 px 0-20
+    dim       = 70                   # 界面透明度 0-100（新装默认值，见 DIM_DEFAULT）
+    blur      = 2                    # 壁纸模糊 px 0-12（新装默认值，见 BLUR_DEFAULT）
+    glass     = 8                    # 毛玻璃强度 px 0-20（新装默认值，见 GLASS_DEFAULT）
     theme     = "dark"              # 三档主题 light / dark / oled
 整段跟随后端配置：任一端的网页/客户端改完写回这里，再广播给所有连接（含 Deck 客户端）。
 文件本身在 userdata/wallpapers/，由 /wallpapers 静态挂载公开提供（<img> 带不了令牌）。

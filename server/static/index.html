@@ -408,7 +408,7 @@
             <div class="field">
               <label>身份定位</label>
               <textarea id="cfgPersonaTraits" data-autosave rows="3" placeholder="日系女仆式助手：礼貌周到、称用户为主人，办事干练，偶尔带点俏皮的亲近感"></textarea>
-              <div class="field-hint">这句会接在「你是 {名字}，」后面，最先影响她怎么理解自己。</div>
+              <div class="field-hint">该名称会接入人格提示词的起始位置，用于定义角色的自我认知。</div>
             </div>
           </div>
           <div class="card">
@@ -451,7 +451,7 @@
             <div class="field">
               <label>额外规则（可留空）</label>
               <textarea id="cfgPersonaExtra" data-autosave rows="5" placeholder="例如：称呼我「主人」，汇报事情先给结论再给过程；不主动开玩笑；涉及设备操作时先说清要做什么。"></textarea>
-              <div class="field-hint">整段追加到系统提示词末尾，适合写上面表单装不下的规矩。</div>
+              <div class="field-hint">该内容将追加至系统提示词末尾，适用于补充上述字段无法容纳的规则。</div>
             </div>
           </div>
           <!-- 长期记忆并入这里：记的是「她记得你什么」，本来就是人设的一部分，
@@ -484,7 +484,7 @@
           <div class="card">
             <div class="card-title">备份</div>
             <p class="card-desc">
-              人设和上面的记忆就是「她这个人」的全部，导出一个 JSON 就能换机器、重装后恢复。
+              人格设定与记忆共同构成角色数据，可导出为 JSON 文件，用于换机或重装后恢复。
             </p>
             <div class="mem-foot">
               <span class="field-hint">不含 API Key 与对话记录</span>
@@ -539,8 +539,8 @@
               </label>
             </div>
             <div class="card-desc">
-              说「你好梅朵」唤醒，听你说完自动转文字发送。
-              唤醒和语音识别都在本机离线完成，不消耗 Token，只在桌面模式可用。
+              说出唤醒词「你好梅朵」即可唤醒，话音结束后自动转写为文字并发送。
+              唤醒与语音识别均在本机离线完成，不消耗 Token，仅桌面模式可用。
             </div>
           </div>
 
@@ -683,8 +683,8 @@
           <div class="card">
             <div class="card-title">设备配对</div>
             <div class="card-desc">
-              新设备打开局域网地址后点「配对新设备」，PIN 就会出现在下面。
-              点「允许」后把 4 位 PIN 告诉对方；PIN 60 秒有效，最多试 3 次。
+              新设备打开局域网地址后点击「配对新设备」，PIN 将显示在下方。
+              点击「允许」后将 4 位 PIN 告知对方；PIN 有效期为 60 秒，最多尝试 3 次。
             </div>
             <div class="mem-foot">
               <span id="pairAuditSummary" class="field-hint"></span>
@@ -722,8 +722,8 @@
               </label>
             </div>
             <p class="card-desc">
-              在电脑浏览器点左下角 logo 即可接管：鼠标与键盘移交到这台 Deck，可操作 Steam UI、游戏和本页。
-              按 Esc、再点一次 logo，或在客户端点 logo 释放。
+              在电脑浏览器点击左下角 logo 即可接管：鼠标与键盘将移交至这台 Deck，可操作 Steam 界面、游戏及本页面。
+              按 Esc、再次点击 logo，或在客户端点击 logo 即可释放。
             </p>
             <div class="ri-io-row">
               <div class="field">
@@ -747,9 +747,9 @@
               </label>
             </div>
             <p class="card-desc">
-              听歌听着睡着了，机器自己关机。需要同时满足两件事并持续满设定时长：
-              <b>音乐已经停了</b>，而且<b>这台机器没人用</b>（没有按键、触摸、鼠标移动，也没在玩游戏）。
-              歌还在放时绝不关机，不会打断还在听的人；有人在用时也不关机。
+              满足以下条件并持续达到设定时长后自动关机：
+              <b>音乐已停止</b>，且<b>本机处于空闲状态</b>（无按键、触摸、鼠标移动，且未运行游戏）。
+              音乐播放中或本机正在使用时不会关机。
             </p>
             <div class="ri-io-row">
               <div class="field">
@@ -794,7 +794,7 @@
               </div>
             </div>
             <div class="mem-foot" id="qqReconnectRow">
-              <span class="field-hint" id="qqReconnectHint">还没连接：直接点右边「连接」，会先保存当前表单再建连，不用单独点保存。</span>
+              <span class="field-hint" id="qqReconnectHint">尚未连接时，点击右侧「连接」会先保存当前配置再建立连接，无需另行点击保存。</span>
               <button id="qqReconnect" class="mini-btn primary" type="button">连接</button>
             </div>
             <div class="field field-row">
@@ -813,8 +813,8 @@
               <input id="cfgQqUrl" type="text" placeholder="wss://napcat.example.com/ws"
                      autocomplete="off" spellcheck="false">
               <div class="field-hint">
-                Deck 是客户端，主动连出去，不开入站端口。本机调试用 ws://127.0.0.1:3001；
-                公网入口必须走 wss://，否则令牌等于裸奔。
+                Deck 作为客户端主动发起连接，不开放入站端口。本机调试可使用 ws://127.0.0.1:3001；
+                公网地址必须使用 wss://，否则访问令牌将明文传输。
               </div>
             </div>
             <div class="field">
@@ -838,7 +838,7 @@
               <label for="cfgQqAdmins">主人 QQ</label>
               <input id="cfgQqAdmins" type="text" inputmode="numeric" maxlength="15"
                      placeholder="例如 10001" autocomplete="off" spellcheck="false">
-              <div class="field-hint" id="qqAdminHint">只有这个号能下指令。</div>
+              <div class="field-hint" id="qqAdminHint">仅该账号可下达指令。</div>
             </div>
             <div class="field">
               <label>允许的群号</label>
@@ -850,11 +850,11 @@
               <div id="qqGroupChips" class="chip-list"></div>
               <div class="field-hint" id="qqGroupHint"></div>
               <div class="field-hint">
-                群里 @ 机器人必回；发「昵称 + 空格」开头的消息也算叫机器人（群友与主人都能这样直接聊）。
-                两样都没有的消息只有「主动接话概率」命中时才会被回应。
-                普通群成员只能闲聊；主人可下指令（危险操作仍要确认）。
-                群号留空 = 全禁，所有群消息一律不响应（主人也不触发）。
-                指令写成「昵称 + 空格 + 指令」，例如「露露 菜单」「露露 截屏」「露露 停」。
+                群内 @ 机器人时必定回复；以「昵称 + 空格」开头的消息同样视为呼叫机器人（群成员与主人均可此方式直接对话）。
+                不满足以上条件的消息，仅在「主动接话概率」命中时才会被回应。
+                普通群成员仅可闲聊；主人可下达指令（危险操作仍需确认）。
+                群号留空表示全部禁用，所有群消息均不响应（主人亦不触发）。
+                指令格式为「昵称 + 空格 + 指令」，例如「露露 菜单」「露露 截屏」「露露 停」。
               </div>
             </div>
 
@@ -920,7 +920,7 @@
                          value="10" spellcheck="false">
                 </div>
               </div>
-              <div class="field-hint">0 = 不限。被限流时只发一次简短提示，不刷屏。</div>
+              <div class="field-hint">0 表示不限制。触发限频时仅发送一次简短提示，不会重复发送。</div>
             </div>
 
             <div class="qq-group">
@@ -1078,7 +1078,7 @@
                 </div>
                 <div class="field-hint">
                   QQ 归档放在数据根下的 <b>userdata/meidobot/</b>（图片、inbox_index.jsonl、text_log.txt）。
-                  <b>卸载不删</b>；数据根不可写时直接报错，不会换到别的目录。
+                  <b>卸载时不删除</b>；数据根目录不可写时将直接报错，不会自动切换至其他目录。
                   这里填路径可覆盖默认位置。
                 </div>
               </div>
@@ -1099,16 +1099,16 @@
               <input id="cfgQqAutoLaunchWait" type="number" min="0" max="60" step="1"
                      value="6" spellcheck="false">
               <div class="field-hint">
-                只对明确的安装类命令生效（apt/pacman 安装、install.sh、下载即执行等），
-                命令成功后才尝试打开；gamescope 下窗口可能看不到。
+                仅对明确的安装类命令生效（apt/pacman 安装、install.sh、下载后执行等），
+                命令执行成功后才尝试打开；gamescope 环境下窗口可能不可见。
               </div>
             </div>
             </details>
             <details class="set-fold" id="qqTextFold">
               <summary>回传文案（发给群里的提示语）</summary>
               <div class="card-desc">
-                机器人回给 QQ 的各种提示语。默认走内置文案，只填想改的那几条即可，
-                改完点下面的「保存文案」立刻生效，不用重启。留空 = 用内置文案。
+                配置机器人回复至 QQ 的各类提示语。默认使用内置文案，仅需填写需要修改的条目；
+                修改后点击下方「保存文案」立即生效，无需重启。留空表示使用内置文案。
               </div>
               <div class="field">
                 <div class="chip-add">
@@ -1158,7 +1158,7 @@
           <div class="card">
             <div class="card-title">提示词模板</div>
             <p class="card-desc">
-              和插件端「截屏询问 / 截屏翻译」是同一份配置。改完停手自动保存，留空即恢复默认，默认值由后端下发。
+              与插件端「截屏询问 / 截屏翻译」共用同一份配置。修改后自动保存，留空即恢复为后端下发的默认值。
             </p>
             <div class="field">
               <label>截屏询问提示词</label>
@@ -1217,7 +1217,7 @@
             <div class="card-title">当前壁纸</div>
             <div id="wallPreview" class="wall-preview"></div>
             <div class="wall-actions">
-              <div class="field-hint" id="wallHint">支持 PNG / JPG / WEBP / GIF / BMP，20MB 以内。也可以让 AI 联网找一张。</div>
+              <div class="field-hint" id="wallHint">支持 PNG / JPG / WEBP / GIF / BMP 格式，单文件不超过 20MB。也可使用 AI 联网搜索壁纸。</div>
             </div>
             <input id="wallFile" type="file" accept="image/*" hidden>
           </div>
@@ -1233,8 +1233,9 @@
                          aria-label="界面透明度">
                 </div>
                 <span class="rg-val" id="wallDimVal">70%</span>
+                <button class="tune-reset" type="button" data-tune="dim">恢复默认</button>
               </div>
-              <div class="field-hint">越小界面越实、壁纸被挡得越多；拉大后顶栏、两栏、输入框变透，壁纸更明显。</div>
+              <div class="field-hint">控制界面元素的透明程度。数值越高，顶栏、侧栏与输入框越通透，壁纸越清晰；数值越低，界面越不透明。</div>
             </div>
             <div class="field">
               <div class="tune-row" id="wallBlurRg">
@@ -1246,8 +1247,9 @@
                          aria-label="壁纸模糊">
                 </div>
                 <span class="rg-val" id="wallBlurVal">2px</span>
+                <button class="tune-reset" type="button" data-tune="blur">恢复默认</button>
               </div>
-              <div class="field-hint">图片很花、干扰阅读时往右拉一点，到最右就是完全糊开。</div>
+              <div class="field-hint">对壁纸施加高斯模糊。当壁纸细节影响阅读时可适当调高，最大值对应完全模糊。</div>
             </div>
             <div class="field">
               <div class="tune-row" id="wallGlassRg">
@@ -1259,8 +1261,9 @@
                          aria-label="毛玻璃强度">
                 </div>
                 <span class="rg-val" id="wallGlassVal">8px</span>
+                <button class="tune-reset" type="button" data-tune="glass">恢复默认</button>
               </div>
-              <div class="field-hint">顶栏、左右两栏、输入框背后的虚化程度。只在有壁纸时看得到效果；只影响这台设备的界面，不会同步到其他端。</div>
+              <div class="field-hint">控制顶栏、侧栏及输入框背景的毛玻璃虚化强度。仅在设置壁纸后生效，且仅作用于本机界面，不同步至其他设备。</div>
             </div>
           </div>
           <div class="card">
@@ -1280,7 +1283,7 @@
               </div>
               <div class="cp-tag" id="colrPreviewTag">当前：深色</div>
             </div>
-            <div class="field-hint" id="colrPreviewHint">预览里的颜色跟着下面三档实际配色走，切换明暗档会一起变。</div>
+            <div class="field-hint" id="colrPreviewHint">预览中的颜色与下方三档主题的实际配色一致，切换明暗档位时将同步更新。</div>
 
             <!-- 上下两块用同一套「玻璃内衬」：灰底 + 描边 + 内嵌高光，
                  不再是两条挂着分隔线的裸内容 -->
@@ -1304,7 +1307,7 @@
               </div>
               <!-- 在改哪一格：和色板同一套措辞，这里先亮出来。
                    收成一整条，编辑/未编辑只换文字和色 -->
-              <div class="colr-target" id="colrTarget">先点上方某一格，再选色只改那一格</div>
+              <div class="colr-target" id="colrTarget">先点击上方任一色块，再选择颜色即可仅修改该色块</div>
               <!-- 取色区和预设色共用一张「子卡片」：色块、色值、应用按钮
                    统一 32px 高、10px 圆角，和上面的控件同一档 -->
               <div class="colr-pick">
@@ -1322,7 +1325,7 @@
               </div>
               <!-- 必须先点色格才会提交：没选格时取色器只预览、不落盘，
                    避免没点任何格子却看着强调色跳变（见 applyPalette） -->
-              <div class="field-hint" id="wallPaletteHint">先点上方某一格，再选色只改那一格。</div>
+              <div class="field-hint" id="wallPaletteHint">先点击上方任一色块，再选择颜色即可仅修改该色块。</div>
             </div>
           </div>
           <h4 class="set-sect">运行与更新</h4>
@@ -1379,7 +1382,7 @@
             <div class="field">
               <label>日志占用</label>
               <div id="devLogUsage" class="field-hint">统计中…</div>
-              <div class="mem-foot" style="flex-wrap:wrap">
+              <div class="mem-foot" style="flex-wrap:wrap; justify-content:flex-end">
                 <button id="logClearAll" class="mini-btn danger" type="button">清空日志</button>
               </div>
               <div id="logClearNote" class="field-hint"></div>
@@ -11717,6 +11720,9 @@
   var wallBlur = document.getElementById('wallBlur');
   var wallDimVal = document.getElementById('wallDimVal');
   var wallBlurVal = document.getElementById('wallBlurVal');
+  // 三条外观滑杆的默认值，与后端 DIM/BLUR/GLASS_DEFAULT 保持一致（70/2/8）；
+  // 改后端默认值时这里也要同步
+  var TUNE_DEFAULTS = { dim: 70, blur: 2, glass: 8 };
   var wallColor = document.getElementById('wallColor');
   var wallPaletteHint = document.getElementById('wallPaletteHint');
   var WALL_HINT_BASE = wallHint.textContent;
@@ -12139,6 +12145,33 @@
     document.documentElement.style.setProperty('--glass', savedGlass + 'px');
     syncWallRg(wallGlass);
   }
+  // 每条滑杆右侧的「恢复默认」：把值设回默认值，走和松手相同的保存通路。
+  // 必须先刷读数/滑轨/CSS 再落盘，否则界面停在旧值、只后端变了会对不上
+  function resetTune(which) {
+    var el = which === 'dim' ? wallDim : (which === 'blur' ? wallBlur : wallGlass);
+    if (!el) return;
+    var v = TUNE_DEFAULTS[which];
+    el.value = String(v);
+    startWallTune(el);
+    if (which === 'dim') {
+      CFG_APPEARANCE.dim = v;
+      wallDimVal.textContent = wallTuneOpt(wallDim, v).text;
+    } else if (which === 'blur') {
+      CFG_APPEARANCE.blur = v;
+      wallBlurVal.textContent = wallTuneOpt(wallBlur, v).text;
+    } else {
+      CFG_APPEARANCE.glass = v;
+      wallGlassVal.textContent = v + 'px';
+      document.documentElement.style.setProperty('--glass', v + 'px');
+      try { localStorage.setItem(GLASS_KEY, String(v)); } catch (_) {}
+    }
+    applyCfgAppearance(null, true);
+    syncWallRg(el);
+    endWallTune(el);
+  }
+  document.querySelectorAll('.tune-reset').forEach(function (btn) {
+    btn.addEventListener('click', function () { resetTune(btn.getAttribute('data-tune')); });
+  });
   // 选图入口：空预览框本身（大号加号）和「换一张」都指向同一个 file input
   document.getElementById('wallPreview').addEventListener('click', function (e) {
     if (e.target.closest('.wall-swap') || e.target.closest('.wall-add')) {
@@ -12361,9 +12394,9 @@
       // 未选格时不提交任何颜色（见 applyPalette），这里只引导去选一格。
       // 以前这条写「整体强调色 · X 档」，但实际又写死改深色档、档位还可能标错，
       // 用户没点格就看着强调色跳，和提示对不上
-      el.textContent = '先点上方某一格，再选色只改那一格';
+      el.textContent = '先点击上方任一色块，再选择颜色即可仅修改该色块';
       el.classList.remove('on');
-      el.title = '先点上方某一格，就能只改那一格';
+      el.title = '先点击上方任一色块，即可仅修改该色块。';
     }
   }
 
@@ -12400,7 +12433,7 @@
     paintColrTarget();
     var hint = document.getElementById('wallPaletteHint');
     hint.className = 'field-hint';
-    if (!quiet) hint.textContent = '已退出单格编辑。先点上方某一格再选色。';
+    if (!quiet) hint.textContent = '已退出单格编辑。请先点击上方任一色块再选择颜色。';
   }
   document.getElementById('colrEditReset').addEventListener('click', function () {
     clearSlotEdit(false);
@@ -12460,7 +12493,7 @@
   function applyPalette(hex, quiet) {
     if (colrEdit) return applySlot(hex);
     if (!quiet) {
-      wallPaletteHint.textContent = '先点上方某一格，再选色只改那一格';
+      wallPaletteHint.textContent = '先点击上方任一色块，再选择颜色即可仅修改该色块';
       wallPaletteHint.className = 'field-hint';
     }
     return Promise.resolve();
@@ -12486,7 +12519,7 @@
   // 同步发请求时 colrEdit 已经清空，单格改色会被当成无目标丢弃
   wallColor.addEventListener('input', function () {
     document.getElementById('wallColorHex').value = wallColor.value;
-    wallPaletteHint.textContent = colrEdit ? '预览中，松手后应用这一格' : '先点上方某一格，松手后只改那一格';
+    wallPaletteHint.textContent = colrEdit ? '预览中，松手后应用这一格' : '先点击上方任一色块，松手后仅修改该色块';
   });
   wallColor.addEventListener('change', function () {
     var v = wallColor.value;
@@ -13949,9 +13982,9 @@
     }
     qqAdminHint.style.color = '';
     qqAdminHint.textContent = qqAdminExtras.length
-      ? ('只有这个号能下指令；检测到 ' + qqAdminExtras.length
-         + ' 个旧的管理员号，已保留，保存时不会丢弃。')
-      : '只有这个号能下指令。';
+      ? ('仅该账号可下达指令；检测到 ' + qqAdminExtras.length
+         + ' 个旧管理员账号，已保留，保存时不会丢弃。')
+      : '仅该账号可下达指令。';
   }
 
   if (cfgQqAdmins) {
@@ -14111,8 +14144,8 @@
     qqReconnectBtn.classList.toggle('primary', !on);
     if (qqReconnectHint) {
       qqReconnectHint.textContent = on
-        ? '已连接。改了下方参数点这里会先保存再重连，不用单独点保存。'
-        : '还没连接：直接点右边「连接」，会先保存当前表单再建连，不用单独点保存。';
+        ? '已连接。修改下方参数后点击此处会先保存再重新连接，无需另行点击保存。'
+        : '尚未连接时，点击右侧「连接」会先保存当前配置再建立连接，无需另行点击保存。';
     }
   }
 
