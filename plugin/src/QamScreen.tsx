@@ -52,9 +52,10 @@ const PLUGIN_VERSION =
 // 高度不能写死 460：QAM 的可用高度随分辨率和侧栏状态变化，写死会比可视区高，
 // 面板整体被外层滚动裁掉一截 —— 手柄焦点滚到底就成了「一块空白」。
 // 这里取「460 与可视区高度」的较小值，短屏自动收缩，长屏仍按原比例。
-// 只留 16px 余量：根节点已不再套 PanelSection，去掉了它自带的上下 padding，
-// 之前扣掉的 90px 会让底部白白多出一段空白。
-const PAGE_H = "min(460px, calc(100vh - 16px))";
+// 余量从 16px 放到 34px：QAM 面板内容区自己还有上下边距与底部的
+// 「A 选择 / B 返回」操作提示条，只留 16px 时最后一行仍会被压在提示条下面 ——
+// 表现为滚到底还吞掉一截，所以干脆多让出一条提示条的高度。
+const PAGE_H = "min(460px, calc(100vh - 34px))";
 const TAB_H = 26;
 const ACTION_H = 34;
 const INPUT_H = 32;
@@ -2130,7 +2131,11 @@ export default function QamScreen() {
           onOKActionDescription="浏览"
           style={{
             flex: 1,
+            // 和聊天区同一条坑：flex 子项默认 min-height:auto，卡片一多就把这块
+            // 撑到内容全高，flex:1 失效，滚到底时最后一截被外层固定高度的
+            // shell（overflow:hidden）裁掉。给 0 高让 overflow 真正接管滚动
             minHeight: 0,
+            height: 0,
             width: "100%",
             overflowY: "auto",
             overscrollBehavior: "contain",
