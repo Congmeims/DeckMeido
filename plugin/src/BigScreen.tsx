@@ -1130,7 +1130,9 @@ export default function BigScreen() {
                   whiteSpace: "nowrap",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
-                  color: s.status && !s.status.core_ok ? ERR_COLOR : TEXT,
+                  // 状态语跟主题色走（和 QAM 状态行一致）；核心异常时仍用错误红，
+                  // 那一条是告警，不能染成主题色
+                  color: s.status && !s.status.core_ok ? ERR_COLOR : accent,
                 }}
               >
                 {s.status && !s.status.core_ok
