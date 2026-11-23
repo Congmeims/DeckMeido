@@ -699,12 +699,15 @@ def palette_from_five(palette: dict, tier: str, five: list[str],
         }
     cur = _tier_accent(palette, tier)
     five = list(five)
-    # 强调/气泡以服务端现值为准：前端那份整档快照可能已被别处改过
-    # （比如另一台设备刚改过强调色），回写时不能顺手覆盖
-    five[3] = cur["brand"] or five[3]
-    five[4] = cur["user_bubble"] or five[4]
+    # 前端传来的整档快照可能已被别处改过，没改的格子以服务端现值为准。
+    # 强调(3)/气泡(4) 以前是无条件覆盖，导致点这两格永远改不动 —— 提交的
+    # 新色被当场换回旧值，回包还报 ok:true；只有用户真正改的就是这一格时才采纳
     if only is not None and 0 <= only < 5:
         prev = ((palette.get("slots") or {}).get(tier) or [])
+        if only != 3 and cur["brand"]:
+            five[3] = cur["brand"]
+        if only != 4 and cur["user_bubble"]:
+            five[4] = cur["user_bubble"]
         for i in (0, 1, 2):
             if i != only and len(prev) > i:
                 five[i] = prev[i]
