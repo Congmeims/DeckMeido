@@ -1773,7 +1773,8 @@ export default function QamScreen() {
             width: "100%",
           }}
         >
-          {/* 状态行只放结论：昵称状态 + 核心地址；错误码/明细只进设置页维护卡 */}
+          {/* 状态行只放结论：昵称状态 + 当前预设；设备地址已从这行移走（设置页连接卡里看），
+              状态语因此能占满整行 */}
           <div
             style={{
               height: 16,
@@ -1803,7 +1804,7 @@ export default function QamScreen() {
                 style={{
                   color: s.accent,
                   flexShrink: 0,
-                  maxWidth: 120,
+                  maxWidth: "40%",
                   whiteSpace: "nowrap",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
@@ -1813,9 +1814,6 @@ export default function QamScreen() {
                 预设：{s.status.preset_title || "已套用"}
               </span>
             )}
-            <span style={{ color: DIM, flexShrink: 0 }}>
-              {s.status ? `${s.status.ip}:${s.status.port}` : "—"}
-            </span>
           </div>
 
           {/* 画面静止的提示：只在需要时占一行，不常驻 */}
