@@ -1528,7 +1528,43 @@ export default function QamScreen() {
   // 所以这里自己补左右 5px（上下由 PAGE_H 的预留控制，不给纵向 padding）。
   // 做成 Focusable 也让焦点在面板内任意控件上时 L1/R1 冒泡到这里，
   // 与控制器消息回调共用 bumpOnce 去重，同一次按键只翻一页。
+  // 可用高度实测：QAM 内容区在 SteamOS 上会被外层再套几层容器（顶部标题、
+  // 底部「A 选择 / B 返回」提示条都在其中），100vh 不等于我们真正能用的高度。
+  // 以前靠 PAGE_H 扣固定像素去猜，不同分辨率/字幕开关下都会差一截，
+  // 表现就是滚到底还吞掉小半屏。改成量外层容器的实际高度，量到多少用多少，
+  // 量不到时（首帧、隐藏页签）才退回 PAGE_H 兜底。
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [availH, setAvailH] = useState(0);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      const h = entries[0]?.contentRect?.height || 0;
+      if (h <= 0) return;
+      // 排障用：QAM 面板里按 F12 看不到，只能翻 Decky 的前端日志。
+      // 量不到高度时这里不会打印，正好和「退回 PAGE_H」的现象对上
+      console.log("[QamScreen] 可用高度", Math.round(h));
+      setAvailH((prev) => (Math.abs(prev - h) < 1 ? prev : h));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const shell = (children: React.ReactNode) => (
+    // 外层只是量高度的探测层：尽量撑满 Decky 给的 content 容器，量到多少用多少。
+    // 不用 height:100%（父级没定高时会塌成 0，量不到就只能一直退回 PAGE_H），
+    // 改用 flex + minHeight:0，父级是 flex 容器时照样能拿到实际高度
+    <div
+      ref={wrapRef}
+      style={{
+        flex: "1 1 auto",
+        minHeight: 0,
+        width: "100%",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
+    >
     <Focusable
       // flow-children 必须给：Steam 的方向键导航按「父节点声明了哪个流向」建立
       // 上下关系。不写时根容器只当作一个可聚焦的整体，方向键在它身上无从下移，
@@ -1542,7 +1578,10 @@ export default function QamScreen() {
       }}
       style={{
         width: "100%",
-        height: PAGE_H,
+        // 量到高度就交给 flex 填满探测层（探测层已限制在外层真实可用高度内）；
+        // 还没量到时才用 PAGE_H 兜底，避免首帧塌成 0
+        flex: availH > 0 ? "1 1 auto" : undefined,
+        height: availH > 0 ? undefined : PAGE_H,
         padding: "0 5px",
         display: "flex",
         flexDirection: "column",
@@ -1556,6 +1595,7 @@ export default function QamScreen() {
     >
       {children}
     </Focusable>
+    </div>
   );
 
   // 页签两端的 L1/R1 小提示：只做视觉指引，不参与焦点，也不挤压页签文字。
