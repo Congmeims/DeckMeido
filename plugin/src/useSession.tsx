@@ -922,7 +922,10 @@ export function useSession() {
       if (msg.kind === "delta") {
         curRef.current += msg.text;
         flushAssistant();
-      } else {
+      } else if (msg.kind === "final") {
+        // 收尾只认 final：以前这里是裸 else，任何非 delta 的消息都会走进来，
+        // 而 final 也被当成「正文整段替换」处理；一旦收到前面那些未知 kind，
+        // 就会拿一段空 text 覆盖正文并立刻收尾，面板停在思考结束、正文空白
         curRef.current = msg.text;
         finishTurn(msg.cancelled);
       }
