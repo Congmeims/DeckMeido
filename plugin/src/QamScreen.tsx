@@ -315,15 +315,24 @@ function SwitchRow({
   );
 }
 
-/** 连接卡里的两列读数：标签 10px、值 11px，窄屏下一行也不挤 */
-function StatCell({ label, value }: { label: string; value: React.ReactNode }) {
+/** 连接卡里的两列读数：标签 10px、值 11px，窄屏下一行也不挤。
+ *  值文字跟卡片强调色走（主题色），不再写死浅蓝，换配色时整卡一致 */
+function StatCell({
+  label,
+  value,
+  accent = "#bcd6ea",
+}: {
+  label: string;
+  value: React.ReactNode;
+  accent?: string;
+}) {
   return (
     <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }}>
       <span style={{ fontSize: 10, color: DIM, lineHeight: 1.2 }}>{label}</span>
       <span
         style={{
           fontSize: 11,
-          color: "#bcd6ea",
+          color: accent,
           lineHeight: 1.4,
           whiteSpace: "nowrap",
           overflow: "hidden",
@@ -2136,6 +2145,83 @@ export default function QamScreen() {
             paddingRight: 2,
           }}
         >
+          {/* 连接：放在设置分区首位，打开设置先看核心/地址/截图这些现状 */}
+          <AccentCard title="连接">
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                columnGap: 10,
+                rowGap: 6,
+                width: "100%",
+              }}
+            >
+              <StatCell label="女仆核心" value={coreLine} accent={s.accent} />
+              <StatCell
+                label="设备地址"
+                value={s.status ? `${s.status.ip}:${s.status.port}` : "—"}
+                accent={s.accent}
+              />
+              <StatCell
+                label="当前游戏"
+                value={
+                  !s.status
+                    ? "—"
+                    : s.status.game_name
+                      ? `${s.status.game_name}（${s.status.game_source || "?"}）`
+                      : "未运行游戏"
+                }
+                accent={s.accent}
+              />
+              <StatCell
+                label="屏幕截图"
+                value={s.status?.capture_ok ? "可用" : s.status?.capture_reason || "不可用"}
+                accent={s.accent}
+              />
+              <StatCell
+                label="更新检测"
+                value={
+                  !s.status
+                    ? "检测中"
+                    : s.status.update_has
+                      ? `有更新${s.status.update_latest ? `（v${s.status.update_latest}）` : ""}`
+                      : "当前最新"
+                }
+                accent={s.accent}
+              />
+              <StatCell
+                label="核心版本"
+                value={!s.status ? "读取中" : s.status.version || "—"}
+                accent={s.accent}
+              />
+              <StatCell
+                label="语音输入"
+                value={
+                  !voice.status
+                    ? "读取中"
+                    : voice.ready
+                      ? "可用"
+                      : voice.status.enable === false
+                        ? "已关闭"
+                        : "不可用"
+                }
+                accent={s.accent}
+              />
+            </div>
+            {!coreRunning && (
+              <AccentBtn
+                height={26}
+                size={11}
+                primary
+                disabled={s.starting}
+                onClick={() => void s.startBackend()}
+                description="启动后端"
+              >
+                {s.starting ? "正在启动后端…" : "启动后端"}
+              </AccentBtn>
+            )}
+          </AccentCard>
+
           {/* 模型 */}
         <AccentCard title="模型">
             <div style={{ width: "100%", display: "flex" }}>
@@ -2260,77 +2346,6 @@ export default function QamScreen() {
                 </AccentBtn>
               </div>
             </div>
-          </AccentCard>
-
-          {/* 连接 */}
-          <AccentCard title="连接">
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                columnGap: 10,
-                rowGap: 6,
-                width: "100%",
-              }}
-            >
-              <StatCell label="女仆核心" value={coreLine} />
-              <StatCell
-                label="设备地址"
-                value={s.status ? `${s.status.ip}:${s.status.port}` : "—"}
-              />
-              <StatCell
-                label="当前游戏"
-                value={
-                  !s.status
-                    ? "—"
-                    : s.status.game_name
-                      ? `${s.status.game_name}（${s.status.game_source || "?"}）`
-                      : "未运行游戏"
-                }
-              />
-              <StatCell
-                label="屏幕截图"
-                value={s.status?.capture_ok ? "可用" : s.status?.capture_reason || "不可用"}
-              />
-              <StatCell
-                label="更新检测"
-                value={
-                  !s.status
-                    ? "检测中"
-                    : s.status.update_has
-                      ? `有更新${s.status.update_latest ? `（v${s.status.update_latest}）` : ""}`
-                      : "当前最新"
-                }
-              />
-              <StatCell
-                label="核心版本"
-                value={!s.status ? "读取中" : s.status.version || "—"}
-              />
-              <StatCell
-                label="语音输入"
-                value={
-                  !voice.status
-                    ? "读取中"
-                    : voice.ready
-                      ? "可用"
-                      : voice.status.enable === false
-                        ? "已关闭"
-                        : "不可用"
-                }
-              />
-            </div>
-            {!coreRunning && (
-              <AccentBtn
-                height={26}
-                size={11}
-                primary
-                disabled={s.starting}
-                onClick={() => void s.startBackend()}
-                description="启动后端"
-              >
-                {s.starting ? "正在启动后端…" : "启动后端"}
-              </AccentBtn>
-            )}
           </AccentCard>
 
           {/* 维护 */}
