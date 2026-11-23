@@ -3283,12 +3283,15 @@
     transform: translateY(-1px);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 65%, transparent);
   }
-  /* 槽位名压在色块下沿：白字 + 暗底，深浅底色上都看得清 */
+  /* 槽位名压在色块下沿：白字 + 暗底，深浅底色上都看得清。
+     遮罩不能太重：格子只有 34px，这条占 13px（近四成面积），
+     42% 的黑色会把低饱和的底色（如粉紫 #b48b9a）压成暗灰紫，
+     看着和实际色值对不上，所以降到 26%，改用文字阴影保证可读性 */
   .cb-chip i {
     position: absolute; left: 0; right: 0; bottom: 0;
     font-style: normal; font-size: 9.5px; line-height: 13px; text-align: center;
-    color: #fff; background: color-mix(in srgb, #000 42%, transparent);
-    text-shadow: 0 1px 1px rgba(0, 0, 0, .5);
+    color: #fff; background: color-mix(in srgb, #000 26%, transparent);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, .85), 0 0 3px rgba(0, 0, 0, .6);
   }
   .cb-chip.editing {
     box-shadow: 0 0 0 2px var(--brand), 0 0 0 4px color-mix(in srgb, var(--brand) 22%, transparent);
