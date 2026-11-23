@@ -1304,7 +1304,7 @@
               </div>
               <!-- 在改哪一格：和色板同一套措辞，这里先亮出来。
                    收成一整条，编辑/未编辑只换文字和色 -->
-              <div class="colr-target" id="colrTarget">整体强调色 · 深色</div>
+              <div class="colr-target" id="colrTarget">先点上方某一格，再选色只改那一格</div>
               <!-- 取色区和预设色共用一张「子卡片」：色块、色值、应用按钮
                    统一 32px 高、10px 圆角，和上面的控件同一档 -->
               <div class="colr-pick">
@@ -1320,9 +1320,9 @@
                   <div class="colr-presets" id="colrPresets"></div>
                 </div>
               </div>
-              <!-- 未点色格时改的是「整站强调色」：只动当前这一档，
-                   不是三档一起刷（见后端 retint_palette） -->
-              <div class="field-hint" id="wallPaletteHint">不点任何色格时，这里改的是当前档的整体强调色；先点上面某一格，再改色只影响那一格。</div>
+              <!-- 必须先点色格才会提交：没选格时取色器只预览、不落盘，
+                   避免没点任何格子却看着强调色跳变（见 applyPalette） -->
+              <div class="field-hint" id="wallPaletteHint">先点上方某一格，再选色只改那一格。</div>
             </div>
           </div>
           <h4 class="set-sect">运行与更新</h4>
@@ -12358,11 +12358,10 @@
       el.classList.add('on');
       el.title = '点「退出编辑」或色板空白处取消';
     } else {
-      // 说清「现在改的是哪一档」：以前这里写死「深色档」，用户在暗黑档
-      // 点色格、或者在哪一档上手动改色，都读不出落盘会落到哪档
-      var curTier = String(document.documentElement.getAttribute('data-theme') || '');
-      if (curTier !== 'light' && curTier !== 'dark' && curTier !== 'oled') curTier = 'dark';
-      el.textContent = '整体强调色 · ' + tierName(curTier) + '档（点上方某一格只改那一格）';
+      // 未选格时不提交任何颜色（见 applyPalette），这里只引导去选一格。
+      // 以前这条写「整体强调色 · X 档」，但实际又写死改深色档、档位还可能标错，
+      // 用户没点格就看着强调色跳，和提示对不上
+      el.textContent = '先点上方某一格，再选色只改那一格';
       el.classList.remove('on');
       el.title = '先点上方某一格，就能只改那一格';
     }
@@ -12401,7 +12400,7 @@
     paintColrTarget();
     var hint = document.getElementById('wallPaletteHint');
     hint.className = 'field-hint';
-    if (!quiet) hint.textContent = '已退出单格编辑，现在改的是整体强调色。';
+    if (!quiet) hint.textContent = '已退出单格编辑。先点上方某一格再选色。';
   }
   document.getElementById('colrEditReset').addEventListener('click', function () {
     clearSlotEdit(false);
@@ -12455,21 +12454,16 @@
   }
 
   // 统一的应用入口：色块、色值、预设三处都走这里，省得各写一遍。
-  // 正在改某一格时按格提交，否则改整体强调色（只动深色档）
+  // 只在「已选中某一格」时提交，未选格时点颜色一律不动后端 ——
+  // 以前没选格会默认改深色档强调色，用户没点强调格却看着它跳变，
+  // 还因为档位写死 dark、提示又可能标错档，显得像「随意变色」
   function applyPalette(hex, quiet) {
     if (colrEdit) return applySlot(hex);
-    return apiFetch('/api/theme/palette', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ brand: hex, tier: 'dark' })
-    }).then(function (r) { return r.json(); })
-      .then(function (d) {
-        if (d && d.ok) {
-          renderAppearanceForm(d.theme);
-          applyCfgAppearance(d.theme);
-        } else if (!quiet) {
-          wallPaletteHint.textContent = (d && d.error) || '应用失败';
-        }
-      }).catch(function () {});
+    if (!quiet) {
+      wallPaletteHint.textContent = '先点上方某一格，再选色只改那一格';
+      wallPaletteHint.className = 'field-hint';
+    }
+    return Promise.resolve();
   }
   // 兼容旧调用点：以前只画那个小示例条，现在整块配色板一起刷
   function paintSwatch() { paintPaletteBoard(CFG_APPEARANCE, wallColor.value); }
@@ -12486,14 +12480,13 @@
     return v;
   }
   // 取色器拖一下就是几十个 input：只更新色值和预览框，不发请求；
-  // 松手（change）才真正落盘。点过某一格时走单格改色，否则改整站强调色。
+  // 松手（change）才真正落盘。点过某一格时走单格改色；没选格则不提交（见 applyPalette）。
   // 两者都要晚一拍再提交：change 之后还可能跟着一次 click（浏览器在色块上
   // 松手会补发 click，冒泡到 colrBoard 就成了「点空白处退出编辑」）。
-  // 同步发请求时 colrEdit 已经清空，单格改色会掉进「整体强调色」分支，
-  // 表现就是选了暗黑档的格子、颜色却落到深色档上
+  // 同步发请求时 colrEdit 已经清空，单格改色会被当成无目标丢弃
   wallColor.addEventListener('input', function () {
     document.getElementById('wallColorHex').value = wallColor.value;
-    wallPaletteHint.textContent = colrEdit ? '预览中，松手后应用这一格' : '预览中，松手后应用';
+    wallPaletteHint.textContent = colrEdit ? '预览中，松手后应用这一格' : '先点上方某一格，松手后只改那一格';
   });
   wallColor.addEventListener('change', function () {
     var v = wallColor.value;
