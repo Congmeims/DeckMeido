@@ -608,19 +608,25 @@ def retint_palette(palette: dict, brand: str, tier: str | None = None) -> dict:
         if len(five) < 5:
             return palette
         if t == tier:
+            # 只改强调色这一格。以前连 user_bubble 一起刷成同色，
+            # 设置页上表现为「没点任何格子、只在下面选个常用色，
+            # 气泡和强调两格一起变」，和「整体强调色」这个名字也对不上。
+            # 气泡要改，点中气泡那一格再选色（走 palette_from_five）
             got["brand"] = brand
-            got["user_bubble"] = brand
+            # 气泡取 slots 第 4 格的现值，不读 palette[t] 里的派生值 ——
+            # 那份派生值是上次整份重写时留下的，可能早就和 slots 不同步
+            # （单独改过气泡格之后就是这种情况），照它回填会把刚改的抹掉
+            got["user_bubble"] = five[4] or brand
         out[t] = got
         out["slots"][t] = list(five)
     out = _sync_slots(out)
-    # 有点奇怪但必要：_sync_slots 会按每档的派生值回填 slots，
-    # 上面没动的档要保持原样，所以再按原 slots 校正一遍没改的档
+    # _sync_slots 会按每档的派生值回填 slots，上面没动的档要保持原样，
+    # 所以再按原 slots 校正一遍。accents 也照 slots 现算，不用 palette 里
+    # 那份可能已过期的缓存（单独改过某一格后它不会自动跟上）
     for t in ACCENT_KEYS:
         if t != tier and slots.get(t):
             out["slots"][t] = list(slots[t])
-            prev = palette.get("accents") or {}
-            if prev.get(t):
-                out["accents"][t] = dict(prev[t])
+            out["accents"][t] = {"brand": slots[t][3], "user_bubble": slots[t][4]}
     return out
 
 
