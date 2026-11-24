@@ -421,7 +421,10 @@ def _qq_image_data_url(blob: bytes | None) -> str | None:
 
 
 def _qq_apply_config(raw: dict) -> None:
-    onebot_client.configure(onebot.parse_config(raw))
+    cfg = onebot.parse_config(raw)
+    onebot_client.configure(cfg)
+    # 保存配置时顺手把归档目录建好（还没存过图时也不至于「目录不存在」）
+    onebot.ensure_archive_dirs(cfg)
 
 
 def _qq_voice_wav(text: str) -> Path:
@@ -503,6 +506,10 @@ def _qq_public_config() -> dict:
         "image_save_dir": cfg.image_save_dir,
         "image_recent_minutes": cfg.image_recent_minutes,
         "text_log_path": cfg.text_log_path,
+        # 「打开文件夹」按钮的落点：按当前配置算出的真实路径（留空时是默认归档目录），
+        # 前端不去猜路径拼接规则，免得 override 与默认值两套逻辑各写一遍
+        "image_dir_effective": str(onebot.image_archive(cfg)[1]),
+        "text_log_effective": str(onebot.text_log_location(cfg)),
         "auto_launch_after_install": cfg.auto_launch_after_install,
         "auto_launch_wait_seconds": cfg.auto_launch_wait_seconds,
         "archive_dir_default": str(onebot.archive_root("")),
@@ -745,7 +752,10 @@ def setup(require_auth_fn, get_main_fn) -> None:
 
 def configure_from_cfg() -> None:
     """按当前配置初始化客户端（main 在 CFG 加载后调用一次）"""
-    onebot_client.configure(onebot.parse_config(_m().CFG.get("qq") or {}))
+    cfg = onebot.parse_config(_m().CFG.get("qq") or {})
+    onebot_client.configure(cfg)
+    # 启动就把归档目录和占位文件备好：用户第一次点「打开图片文件夹」就有内容
+    onebot.ensure_archive_dirs(cfg)
 
 
 def _expose_routes() -> None:

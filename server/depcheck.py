@@ -222,7 +222,12 @@ def _probe_sherpa() -> tuple[bool, str]:
 
 
 def _probe_wake_ack() -> tuple[bool, str]:
-    """唤醒回应：命中唤醒词时那句「我在」的预合成缓存"""
+    """唤醒回应：命中唤醒词时那句「我在」的预合成缓存
+
+    「还没合成」不等于坏了：合成只在进入智能音箱模式时预跑，平时没生成是
+    正常的，组件本身好着，这里就该是绿点（把「还没生成」当说明带上）。
+    只有真的合成/播放失败（ack.error 有内容）才是红灯。
+    """
     svc = _main_attr("wake_service")
     if svc is None:
         return False, "唤醒服务未初始化"
@@ -233,17 +238,38 @@ def _probe_wake_ack() -> tuple[bool, str]:
     ack = st.get("ack") or {}
     if ack.get("ready"):
         return True, ""
-    # 合成只在 arm/重建时预跑；总开关关着时压根不会合成，此时报「未合成」
-    # 会把用户引到语音合成上去，实际该先去开总开关
+    # 总开关关着时压根不会合成，此时报「未合成」会把用户引到语音合成上去
     if not st.get("enabled"):
         return None, "未开启（设置 → 语音引擎）"
-    return False, ack.get("error") or "回应语音未合成（检查语音合成是否可用）"
+    err = str(ack.get("error") or "").strip()
+    if err:
+        return False, err
+    # 缓存还没生成：这时看合成组件本身能不能干活，能就是正常（绿点），
+    # 「还没生成」只当说明带上——它不是故障，进模式时会自动补上
+    tts = _main_attr("tts")
+    if tts is None:
+        return False, "语音合成未初始化"
+    try:
+        ts = tts.status()
+    except Exception as exc:
+        return False, f"语音合成状态读取失败：{exc}"
+    if ts.get("ready"):
+        return True, "回应语音还没生成，进入模式时自动合成"
+    return False, str(ts.get("reason") or "语音合成不可用")
+
+
+# 状态机里这些都算「能干活」：正在进模式、待机等人说话、在听、在想、在说
+# 都是正常工作，不是故障。以前只认 armed，一进模式就先把灯判红。
+_WAKE_OK_STATES = {"starting", "armed", "waking", "listening", "thinking", "speaking"}
 
 
 def _probe_wake() -> tuple[bool, str]:
-    """智能音箱：总开关与当前待机状态
+    """智能音箱：按「现在能不能干活」判灯，不按「有没有出过事」判灯
 
-    「关了」是用户自己的选择，不算故障（灰灯），不拉低可用数
+    「关了」是用户自己的选择，不算故障（灰灯），不拉低可用数。
+    last_error 可能是几分钟前的一次旧账，不适合单独把灯判红；它只在
+    state == "error"（真起不来）时作为说明带上。正常对话噪音（没听清、
+    说话太短）现在记在 last_notice，更不该判红。
     """
     svc = _main_attr("wake_service")
     if svc is None:
@@ -254,11 +280,16 @@ def _probe_wake() -> tuple[bool, str]:
         return False, f"状态读取失败：{exc}"
     if not st.get("enabled"):
         return None, "未开启（设置 → 语音引擎）"
-    if st.get("last_error"):
-        return False, str(st["last_error"])
-    if st.get("armed"):
+    state = str(st.get("state") or "")
+    if state in _WAKE_OK_STATES:
+        # 正常干活时手上的旧错误只当提示，不动灯色
         return True, ""
-    return False, f"当前状态：{st.get('state') or '未知'}"
+    if state == "error":
+        return False, str(st.get("last_error") or "启动失败（看日志里的原因）")
+    if state == "disarmed":
+        # 没进模式不算故障：智能音箱是按需进入的模式，平时就是这么待着
+        return None, "未进入智能音箱模式"
+    return False, f"当前状态：{state or '未知'}"
 
 
 PROBES = {

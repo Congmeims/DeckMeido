@@ -3752,6 +3752,8 @@ async def api_music_action(payload: dict):
         await asyncio.to_thread(media.execute, action)
     except media.MediaError as exc:
         raise HTTPException(status_code=503, detail=exc.reason) from exc
+    # 手动暂停/切歌后立刻作废唤醒服务那份 5 秒播放缓存，眼睛页下一轮就同步
+    wake_service.media_changed()
     return {"ok": True, "action": action}
 
 
@@ -4494,6 +4496,9 @@ async def handle_chat(text: str, announce: bool = True,
         # 播放结束前就把状态切回监听，眼睛与半双工都会错位。
         if (client or "") != "qq":
             if force_tts:
+                # 智能音箱模式：这句就是「梅朵说的话」，先上字幕再播，
+                # 播报失败或太长被截断时屏幕上仍有完整可见的一行
+                wake_service.note_subtitle("ai", reply)
                 await tts.speak(reply, force=True)
             else:
                 _spawn(tts.speak(reply), "tts_speak")

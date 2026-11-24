@@ -652,6 +652,69 @@ def text_log_location(cfg: OneBotConfig) -> Path:
     return archive_root("") / TEXT_LOG_NAME
 
 
+# 归档目录里的两个占位文件：目录空着时用户点开只看到「0 项」，不知道是干什么的。
+# 说明.txt 讲用途；测试图.png 是 64×64 纯色图，用来验证「发图/看图」整条链路。
+ARCHIVE_README_NAME = "说明.txt"
+ARCHIVE_SAMPLE_NAME = "测试图.png"
+ARCHIVE_README = """\
+这个目录存 QQ 通道收到的图片（按日期分子目录）。
+· 位置：默认是数据根下的 meidobot/images，可在「设置 → OneBot 通道 → 收图与归档」改。
+· 说明.txt 和 测试图.png 可以随时删掉，删了不影响机器人；下次保存 QQ 设置或重启会再放一份。
+· 卸载 DeckMeido 不会删除这个目录里的内容。
+"""
+
+
+def _sample_png(size: int = 64) -> bytes:
+    """生成一张 size×size 的纯色 PNG（64×64 约 135 字节）
+
+    不引第三方库、也不往仓库里塞二进制文件：这段只在首次建归档目录时跑一次。
+    之前用 base64 常量，改一行就可能少几个字符，解码时抛异常把后端带崩。
+    """
+    import struct
+    import zlib
+
+    row = b"\x00" + bytes((74, 158, 255)) * size
+    raw = row * size
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+def _write_once(path: Path, data: bytes) -> None:
+    """只在文件不存在时写：用户删过或改过就不动，失败也不抛"""
+    try:
+        if not path.exists():
+            path.write_bytes(data)
+    except OSError:
+        pass
+
+
+def ensure_archive_dirs(cfg: OneBotConfig) -> None:
+    """把归档目录和占位文件准备好（还没存过图/存过文本时也建）
+
+    以前目录是第一次存图时才 mkdir，用户点「打开图片文件夹」看到的是
+    「目录不存在」；启动和每次保存配置都走这里，目录一定在。
+    这是锦上添花的功能，任何异常都不许冒到调用方（存档点会连带后端启动）。
+    """
+    try:
+        _, images = image_archive(cfg)
+        log = text_log_location(cfg)
+        for folder in (images, log.parent):
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                continue
+        _write_once(images / ARCHIVE_README_NAME, ARCHIVE_README.encode("utf-8"))
+        _write_once(images / ARCHIVE_SAMPLE_NAME, _sample_png())
+    except Exception:
+        return
+
+
 # ---------- 前缀与指令解析 ----------
 
 def prefix_for(nickname: str) -> str:

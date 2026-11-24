@@ -26,6 +26,8 @@
     --btn-line: rgba(255,255,255,.28);
     --hint-fg: rgba(255,255,255,.42);
     --notice: rgba(255,255,255,.5);
+    --art-shadow: rgba(0,0,0,.62);
+    --art-line: rgba(255,255,255,.07);
     color-scheme: dark;
   }
   [data-theme=light] {
@@ -37,6 +39,8 @@
     --btn-line: rgba(16,24,40,.18);
     --hint-fg: rgba(16,24,40,.42);
     --notice: rgba(16,24,40,.5);
+    --art-shadow: rgba(16,24,40,.18);
+    --art-line: rgba(16,24,40,.08);
     color-scheme: light;
   }
   [data-theme=oled] {
@@ -48,6 +52,8 @@
     --btn-line: rgba(255,255,255,.24);
     --hint-fg: rgba(255,255,255,.4);
     --notice: rgba(255,255,255,.48);
+    --art-shadow: rgba(0,0,0,.8);
+    --art-line: rgba(255,255,255,.06);
     color-scheme: dark;
   }
   html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
@@ -73,37 +79,133 @@
     opacity: 0; transition: opacity .3s ease; pointer-events: none; max-width: 80vw;
   }
   #notice.on { opacity: 1; }
+  /* 唱片手势的轻提示：「已暂停」「下一首」这类一句话反馈，一秒多就淡掉 */
+  #toast {
+    position: fixed; left: 50%; top: 34px; transform: translateX(-50%);
+    padding: 7px 18px; border-radius: 999px; background: var(--btn-bg); color: var(--btn-fg);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", "Noto Sans SC", sans-serif;
+    letter-spacing: .04em; opacity: 0; pointer-events: none;
+    transition: opacity .22s ease;
+  }
+  #toast.on { opacity: .95; }
   /* ---- 播放态：小脸左置，右侧曲目卡 ---- */
   /* 不用卡片底、不加边框：整页仍是一块纯净的底色，只靠排版分区，
-     和主界面“无卡片”的气质一致，也少一层大面积点亮面积（OLED）。 */
+     和主界面“无卡片”的气质一致，也少一层大面积点亮面积（OLED）。
+     整块唯一的颜色来自封面：封面底下垫一层同图放大模糊，借用唱片自己的颜色当环境光。 */
   #now {
     position: fixed; right: 6vw; top: 50%; transform: translateY(-50%) translateX(24px);
-    width: min(34vw, 420px); opacity: 0; pointer-events: none;
+    width: min(36vw, 440px); opacity: 0; pointer-events: none;
     transition: opacity .45s ease, transform .45s cubic-bezier(.22,.61,.36,1);
-    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Noto Sans SC", sans-serif;
   }
-  #now.on { opacity: 1; transform: translateY(-50%) translateX(0); }
+  #now.on { opacity: 1; transform: translateY(-50%) translateX(0); pointer-events: auto; }
+  /* 封面 + 环境光：光只取封面的颜色，不引入任何多余的UI装饰 */
+  #now .art { position: relative; margin-bottom: 24px; }
+  /* 唱片可以上手：轻点暂停/继续，左右滑切歌。触摸手势自己吃掉，
+     否则浏览器会把横向划动当成页面手势；拖动时取消过渡才跟手 */
+  #now .art { touch-action: none; cursor: pointer;
+    transition: transform .32s cubic-bezier(.22,.61,.36,1); }
+  #now .art.drag { transition: none; }
+  #now .glow {
+    position: absolute; inset: 12% 10% 0; border-radius: 30px;
+    background-size: cover; background-position: center;
+    filter: blur(40px) saturate(1.25); opacity: 0; transform: scale(1.03);
+    /* 亮度和缩放由脚本逐帧写 inline（跟着音乐电平走），这里千万不能再挂
+       opacity 过渡：否则每帧的新值都被 .7s 的过渡拖住，光就永远跟不上鼓点 */
+    transition: none; will-change: opacity, transform; pointer-events: none;
+  }
+  #now .glow.on { opacity: .52; }
+  /* 封面做成唱片：正圆、缓慢转动 */
   #now .cover {
-    width: 100%; aspect-ratio: 1 / 1; border-radius: 18px; overflow: hidden;
+    position: relative; z-index: 2; width: 100%; aspect-ratio: 1 / 1; border-radius: 50%; overflow: hidden;
     background: var(--btn-bg); display: flex; align-items: center; justify-content: center;
-    margin-bottom: 22px;
+    box-shadow: 0 30px 60px -26px var(--art-shadow), inset 0 0 0 1px var(--art-line);
   }
-  /* 没有封面时放一个很淡的音符，避免出现一大块空白方块 */
+  /* 唱片纹路：一圈圈极淡的同心圆，不跟着转（转了也看不出来，还费电） */
+  #now .cover::before {
+    content: ""; position: absolute; inset: 0; border-radius: 50%; z-index: 2;
+    background: repeating-radial-gradient(circle at 50% 50%,
+      rgba(255,255,255,.055) 0 1px, rgba(0,0,0,0) 1px 7px);
+    box-shadow: inset 0 0 46px rgba(0,0,0,.35);
+    pointer-events: none;
+  }
+  /* 换曲时让封面淡入，别硬切。自转不用 CSS 动画：改由脚本逐帧推进角度，
+     这样「暂停」时是真的停住——CSS 动画在有的内核上暂停不生效，盘面还在转。 */
+  #now .cover img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+    opacity: 0; transition: opacity .45s ease; will-change: transform;
+  }
+  /* 没有封面时放一个很淡的音符，避免出现一大块空白圆盘 */
   #now .cover.empty::after {
-    content: "♪"; font-size: 64px; color: var(--face); opacity: .18;
+    content: "♪"; font-size: 60px; color: var(--face); opacity: .16;
   }
-  #now .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  /* ---- 换曲交接：旧盘向右滚出去，新盘从天上掉下来 ---- */
+  /* 滚出去：位移和旋转一起给，才有「轮子滚走」的感觉 */
+  #now .cover.rollout {
+    transform: translateX(78vw) rotate(230deg);
+    opacity: 0;
+    transition: transform .5s cubic-bezier(.45,.05,.72,.55), opacity .46s ease;
+  }
+  /* 站在天上：不要过渡，直接出现在屏幕上方等着掉 */
+  #now .cover.dropin {
+    transform: translateY(-72vh) rotate(-32deg);
+    opacity: 0;
+    transition: none;
+  }
+  /* 掉下来：轻微过冲再稳住，像落到盘位上，别硬邦邦地停住 */
+  #now .cover.landing {
+    transform: translateY(0) rotate(0deg);
+    opacity: 1;
+    transition: transform .62s cubic-bezier(.2,1.3,.4,1), opacity .28s ease;
+  }
+  /* 「正在播放」+ 跳动的电平条：一行小字就够了，不做标签/胶囊 */
+  #now .eyebrow {
+    display: flex; align-items: center; gap: 9px; margin-bottom: 9px;
+    color: var(--hint-fg); font-size: 11px; letter-spacing: .18em;
+  }
+  #now .eq { display: inline-flex; align-items: flex-end; gap: 2px; height: 10px; }
+  #now .eq i {
+    width: 2px; height: 4px; border-radius: 1px; background: currentColor; opacity: .75;
+    animation: eq 1.1s ease-in-out infinite;
+  }
+  #now .eq i:nth-child(2) { animation-delay: .18s; }
+  #now .eq i:nth-child(3) { animation-delay: .36s; }
+  #now .eq i:nth-child(4) { animation-delay: .54s; }
+  /* 暂停：唱片停转（由脚本不再推进角度）、电平条定住（文字换成「已暂停」） */
+  #now.paused .eq i { animation: none; height: 3px; opacity: .4; }
+  @keyframes eq {
+    0%, 100% { height: 3px; }
+    50% { height: 10px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #now .eq i { animation: none; height: 6px; }
+  }
+  /* 标题最多两行：长曲名不再被省略号砍成半句 */
   #now .title {
-    color: var(--face); font-size: 22px; font-weight: 600; letter-spacing: .01em;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--face); font-size: 23px; font-weight: 600; line-height: 1.3; letter-spacing: .005em;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
   #now .artist {
-    color: var(--hint-fg); font-size: 14px; margin-top: 6px;
+    color: var(--hint-fg); font-size: 13.5px; letter-spacing: .02em; margin-top: 8px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  #now .bar { height: 3px; border-radius: 2px; background: var(--btn-bg); margin: 18px 0 8px; overflow: hidden; }
-  #now .bar i { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--face); opacity: .55; }
-  #now .time { display: flex; justify-content: space-between; color: var(--hint-fg); font-size: 12px; }
+  /* 进度：细轨 + 端点小圆点，颜色仍然只有前景色一档 */
+  #now .bar { position: relative; height: 4px; border-radius: 999px; background: var(--btn-bg); margin: 22px 0 9px; }
+  #now .bar i {
+    position: relative; display: block; height: 100%; width: 0; border-radius: 999px;
+    background: var(--face); opacity: .7; transition: width .28s linear;
+  }
+  #now .bar i::after {
+    content: ""; position: absolute; right: -3px; top: 50%; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--face); transform: translateY(-50%);
+    box-shadow: 0 0 10px 1px rgba(255,255,255,.25);
+  }
+  /* 直播/时长未知时不画端点，免得零进度还挂个点 */
+  #now .bar i.idle::after { display: none; }
+  #now .time {
+    display: flex; justify-content: space-between; color: var(--hint-fg); font-size: 11.5px;
+    font-variant-numeric: tabular-nums; letter-spacing: .04em;
+  }
   /* 只在“正在收听”时出现的底部气泡：两条，你 → 梅朵 */
   #bubbles {
     position: fixed; left: 50%; bottom: 78px; transform: translateX(-50%);
@@ -119,12 +221,46 @@
     white-space: nowrap;
   }
   #bubbles div.me { color: var(--hint-fg); font-size: 13px; }
+  /* 对话字幕：一句可能很长，允许换行，也不再按行数截断——回复一直往下长，
+     超过一屏就从下往上滚，旧的句子从顶部淡出。字号按「坐远一点也要看得清」定。 */
+  #bubbles.subs {
+    bottom: 64px; gap: 10px; max-height: 46vh;
+    overflow-y: auto; overflow-x: hidden; scrollbar-width: none;
+    padding-top: 8px;   /* 给顶部渐隐留出位置，短句不会因此变形 */
+  }
+  #bubbles.subs::-webkit-scrollbar { display: none; }
+  /* 只有内容真的超过一屏才渐隐顶部，短句的第一行不会被糊掉 */
+  #bubbles.subs.clip {
+    -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,0) 0, #000 24px);
+    mask-image: linear-gradient(to bottom, rgba(0,0,0,0) 0, #000 24px);
+  }
+  #bubbles.subs div {
+    white-space: normal; max-width: 78vw; text-align: center; word-break: break-word;
+    padding: 9px 20px; border-radius: 16px;
+    flex: 0 0 auto;   /* 长句靠滚动显示，别被 flex 压扁成一行 */
+  }
+  #bubbles.subs div.me {
+    font-size: 19px; line-height: 1.4; color: var(--face); opacity: .66;
+  }
+  #bubbles.subs div:not(.me) {
+    font-size: 25px; line-height: 1.45; text-align: left;
+  }
+  /* 放着音乐时字幕挪到左侧脸的下方：右边是曲目卡，居中的大字会压到进度和时长 */
+  #bubbles.subs.play {
+    left: 6vw; transform: none; align-items: flex-start; max-width: 42vw;
+    bottom: 44px; max-height: 38vh;
+  }
+  #bubbles.subs.play div { max-width: 100%; }
 </style>
 </head>
 <body>
 <canvas id="stage"></canvas>
 <div id="now">
-  <div class="cover empty" id="cover"></div>
+  <div class="art">
+    <div class="glow" id="coverGlow"></div>
+    <div class="cover empty" id="cover"></div>
+  </div>
+  <div class="eyebrow"><span class="eq"><i></i><i></i><i></i><i></i></span><span id="eyebrowText">正在播放</span></div>
   <div class="title" id="trackTitle"></div>
   <div class="artist" id="trackArtist"></div>
   <div class="bar"><i id="trackBar"></i></div>
@@ -132,6 +268,7 @@
 </div>
 <div id="bubbles"></div>
 <div id="notice"></div>
+<div id="toast"></div>
 <div id="hint">
   <button id="stop">停止</button>
   <button id="exit">退出</button>
@@ -147,7 +284,20 @@
   const STOP = document.getElementById("stop");
   const EXIT = document.getElementById("exit");
   const nowPanel = document.getElementById("now");
+  const artEl = document.querySelector("#now .art");
+  const eyebrowEl = document.getElementById("eyebrowText");
+  const toastEl = document.getElementById("toast");
   const coverEl = document.getElementById("cover");
+  const glowEl = document.getElementById("coverGlow");
+  // 当前封面 <img>：唱片自转的角度由脚本逐帧写，暂停时不再推进
+  let coverImg = null;
+  let discAngle = 0;
+  // 换曲时猫脸往右「撞」一下的起始时刻（ms），0 表示没在撞
+  let bumpAt = 0;
+  let bumpX = 0;
+  function bumpFace() { bumpAt = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now(); }
+  const REDUCE_MOTION = !!(window.matchMedia
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   const titleEl = document.getElementById("trackTitle");
   const artistEl = document.getElementById("trackArtist");
   const barEl = document.getElementById("trackBar");
@@ -164,6 +314,23 @@
     const cs = getComputedStyle(document.documentElement);
     BG = (cs.getPropertyValue("--bg") || "").trim() || "#0f1117";
     FACE = (cs.getPropertyValue("--face") || "").trim() || "#e8eaf0";
+  }
+  // 压暗用「按比例混向底色」，而不是调 globalAlpha：嘴的两瓣圆头在中缝重叠，
+  // 半透明叠两次会亮出一小块，看着像重影（见 drawCatMouth 的说明）。
+  function dimColor(color, alpha) {
+    const hex = (s) => {
+      const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(s || "").trim());
+      if (!m) return null;
+      let h = m[1];
+      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+      return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16),
+              parseInt(h.slice(4, 6), 16)];
+    };
+    const f = hex(color), b = hex(BG);
+    if (!f || !b) return color;
+    const a = Math.max(0, Math.min(1, alpha));
+    const out = f.map((v, i) => Math.round(v * a + b[i] * (1 - a)));
+    return "rgb(" + out.join(",") + ")";
   }
   function setTheme(t) {
     const name = THEMES.indexOf(t) === -1 ? "dark" : t;
@@ -194,7 +361,19 @@
     track: null,          // 正在播放的曲目；不在播 / 拿不到曲名时为 null
     trackAt: 0,           // 拿到 track 的本地时刻，给进度条外推用
     playMode: 0,          // 0 = 表情居中，1 = 播放态（小脸左置 + 右侧曲目卡），逐帧过渡
-    bubbles: [],          // 对话态的两条气泡：[{me:true,text:"你说的"},{text:"梅朵回的"}]
+    bubbles: [],          // 对话字幕：[{me:true,text:"你说的"},{me:false,text:"梅朵回的"}]
+    subsSig: "",          // 字幕内容指纹：变了就重置停留计时
+    subsAt: 0,            // 拿到这版字幕的本地时刻（说完话后还要多留几秒）
+    subsMode: 0,          // 0 = 字幕没出现，1 = 完全不挡；脸据此上移缩小
+    aiFull: "",           // AI 回复全文：流式显示时按字取前缀
+    aiShown: -1,          // 已经显示到第几个字
+    aiAt: 0,              // 这版回复开始显示的时刻（performance.now）
+    aiDone: false,        // 是否已经打完，打完才开始算停留时间
+    musicLevel: 0,        // 后端下发的输出电平（0–1）
+    glowLevel: 0,         // 平滑后的背光强度，逐帧追 musicLevel
+    lastPos: 0,           // 上一次拿到的播放位置（秒），暂停时冻住它
+    lastDur: 0,           // 上一次拿到的曲目时长
+    noticeShown: "",      // 已经提示过的「没听清」这类闲聊噪音，避免每轮重弹
   };
 
   // ---- 防烧屏 / 闲置退出：全屏常亮的脸在 OLED 上会留残影 ----
@@ -254,11 +433,45 @@
   window.addEventListener("pagehide", () => { micWanted = false; micRelease(); });
 
   function applyStatus(d) {
+    // ---- 对话字幕：后端下发「我听到的（ASR 原文）」和「梅朵回的」----
+    // 内容或代数变了就重置停留计时，这样说完话回到待机后，字幕还能再留几秒
+    const sb = (d.subs && typeof d.subs === "object") ? d.subs : null;
+    const meTxt = sb && typeof sb.me === "string" ? sb.me.trim() : "";
+    const aiTxt = sb && typeof sb.ai === "string" ? sb.ai.trim() : "";
+    const sig = (sb && sb.gen != null ? String(sb.gen) : "") +
+      "\u0000" + meTxt + "\u0000" + aiTxt;
+    if (sig !== state.subsSig) {
+      state.subsSig = sig;
+      state.subsAt = Date.now();
+      // 新的一条回复：清空已显示的字，从第一个字开始流式长出来。
+      // 只比内容、不比 gen——同一句重复下发时不重打一遍。
+      if (aiTxt !== state.aiFull) {
+        state.aiFull = aiTxt;
+        state.aiShown = -1;
+        state.aiAt = performance.now();
+        state.aiDone = false;
+      }
+    }
     state.bubbles = [];
+    if (meTxt) state.bubbles.push({ me: true, text: meTxt });
+    if (aiTxt) state.bubbles.push({ me: false, text: aiTxt });
     state.name = d.state || "disarmed";
     micSync(state.name);
     state.level = Number(d.level) || 0;
+    // 输出口电平（后端从 sink monitor 采样）：唱片背光跟着它亮暗
+    state.musicLevel = (d.media && typeof d.media.level === "number")
+      ? Math.max(0, Math.min(1, d.media.level)) : 0;
     state.offline = false;
+    // 「没听到说话 / 说话太短 / 没识别到文字」这类正常对话噪音，后端记在
+    // last_notice 里：这里用顶部轻提示带一下，不进错误、不影响状态灯；
+    // 同一句只提示一次，下次真听清了后端会清空，再出现还能再提示
+    const nt = typeof d.last_notice === "string" ? d.last_notice.trim() : "";
+    if (nt && nt !== state.noticeShown) {
+      state.noticeShown = nt;
+      toast(nt);
+    } else if (!nt) {
+      state.noticeShown = "";
+    }
     // 后端 5 秒缓存一次的真实播放状态：在放音乐就一直算「有人在用」
     const p = !!(d.media && d.media.playing);
     if (p && !playingNow) markActive();
@@ -268,12 +481,16 @@
     // 歌词行：后端暂时不下发歌词，先留好字段，有就显示在底部气泡里
     const bm = (p && typeof m.bubble === "string") ? m.bubble.trim() : "";
     const bt = (p && typeof m.song === "string") ? m.song.trim() : "";
-    state.track = p && m.title
+    // 曲目信息：字段都可能是空串（播放器没暴露），前端据此只显示文字。
+    // 暂停（playing=false）也算「有曲目」：否则一点暂停整块唱片就消失，
+    // 没有地方再点回来。真正的「没在放」由后端不给 title 来区分。
+    state.track = m.title
       ? {
           title: String(m.title), artist: String(m.artist || ""),
           cover: String(m.cover || ""),
           position: Number(m.position) || 0, duration: Number(m.duration) || 0,
           bubble: bm || bt,
+          playing: p,
         }
       : null;
     state.trackAt = Date.now();
@@ -294,29 +511,77 @@
   }
 
   // ---- 播放态侧栏：曲名 / 歌手 / 封面 / 进度 ----
-  // 只在“有曲目且不是在对话”时出现；说话、在听的时候让位给气泡和表情。
+  // 有曲目就显示，对话时也留着：避免一问一答就把侧栏收掉、整屏跳一下。
   // 进度条在后端 5 秒缓存的 position 基础上本地外推，秒数到点后自己往前跑。
   let shownTrackKey = "";
+  // 侧栏的实际位置：脸要对齐它的封面圆心，放左空区正中。
+  // 节流到 0.4 秒一次，帧内重复用缓存。
+  // 封面圆心必须用布局尺寸（offsetTop/offsetHeight）算，不能用
+  // getBoundingClientRect：换曲时封面会被 translateY(-72vh) 甩到屏幕外，
+  // 量到的圆心跟着飞出画面，脸就一路追上去，等盘落位了再「从天上掉下来」。
+  let panelBox = null, panelBoxAt = 0;
+  function panelRect() {
+    const now = performance.now();
+    if (!panelBox || now - panelBoxAt > 400) {
+      const r = nowPanel.getBoundingClientRect();
+      const artH = artEl.offsetHeight;
+      if (r.width > 20 && artH > 20) {
+        panelBox = { left: r.left, artCY: r.top + artEl.offsetTop + artH / 2 };
+      }
+      panelBoxAt = now;
+    }
+    return panelBox;
+  }
   function mmss(sec) {
     const s = Math.max(0, Math.floor(sec));
     return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
   }
   let shownBubbles = "";
+  let aiBubbleEl = null;   // AI 那条字幕节点：流式显示时只改它的文本，不重建 DOM
+  // 字幕停留：说完/答完后状态很快回到「待机」，但字要再留一会儿才看得清
+  const SUBTITLE_HOLD_MS = 8000;
+  // 流式打字速度（字/秒）：比语速快，字不会落在话后面，又能看出是一点点出来的
+  const AI_CPS = 24;
+  function aiRevealLen(nowMs) {
+    const full = state.aiFull || "";
+    if (!full) return 0;
+    return Math.min(full.length, Math.floor((nowMs - state.aiAt) / 1000 * AI_CPS));
+  }
+  // 内容超过一屏才加顶部渐隐，短句的第一行不会被糊掉
+  function syncClip() {
+    bubblesEl.classList.toggle(
+      "clip", bubblesEl.scrollHeight > bubblesEl.clientHeight + 4);
+  }
   function renderBubbles(tr, talking) {
     const el = bubblesEl;
-    if (talking) {
+    const hold = state.subsAt > 0 && (Date.now() - state.subsAt) < SUBTITLE_HOLD_MS;
+    // 还在逐字长的时候也算「有事在发生」：回复很长时别打到一半就淡掉
+    const typing = !!state.aiFull && !state.aiDone;
+    const subs = state.bubbles || [];
+    if (subs.length && (talking || hold || typing)) {
+      // 对话字幕：上面是被识别的话，下面是梅朵回的，都允许换行
       el.classList.remove("meeting");
-      el.classList.add("on");
-      el.innerHTML = "";
-      (state.bubbles || []).forEach((b) => {
-        const d = document.createElement("div");
-        if (b && b.me) d.className = "me";
-        d.textContent = (b && b.text) || "";
-        el.appendChild(d);
-      });
-      shownBubbles = "";
+      el.classList.add("on", "subs");
+      el.classList.toggle("play", !!tr);
+      if (shownBubbles !== state.subsSig) {
+        el.innerHTML = "";
+        aiBubbleEl = null;
+        subs.forEach((b) => {
+          const d = document.createElement("div");
+          if (b && b.me) d.className = "me";
+          // AI 那条留空，交给 subsTick 一个字一个字填；「我说的」直接整句出
+          d.textContent = (b && b.me) ? ((b && b.text) || "") : "";
+          if (b && !b.me) aiBubbleEl = d;
+          el.appendChild(d);
+        });
+        state.aiShown = -1;
+        subsTick(performance.now());   // 立刻出第一屏，不等下一帧
+      }
+      shownBubbles = state.subsSig;
       return;
     }
+    el.classList.remove("subs", "play", "clip");
+    aiBubbleEl = null;
     const line = tr && tr.bubble ? tr.bubble : "";
     if (!line) {
       el.classList.remove("on", "meeting");
@@ -332,41 +597,149 @@
     d.textContent = line;
     el.appendChild(d);
   }
+  // 每帧推进：AI 回复一个字一个字长出来，长句自动贴底往上滚
+  function subsTick(nowMs) {
+    const el = bubblesEl;
+    if (!el.classList.contains("subs")) { aiBubbleEl = null; return; }
+    const full = state.aiFull || "";
+    if (!aiBubbleEl || !full) return;
+    const n = aiRevealLen(nowMs);
+    if (n === state.aiShown) return;
+    state.aiShown = n;
+    aiBubbleEl.textContent = full.slice(0, n);
+    el.scrollTop = el.scrollHeight;    // 新字从下面出来，旧行往上走
+    if (n >= full.length && !state.aiDone) {
+      // 打完才开始算停留，别最后一个字刚出来就淡掉
+      state.aiDone = true;
+      state.subsAt = Date.now();
+    }
+    syncClip();
+  }
   function renderNow() {
     const tr = state.track;
     const talking = ["waking", "listening", "thinking", "speaking"].includes(state.name);
-    nowPanel.classList.toggle("on", !!tr && !talking);
+    nowPanel.classList.toggle("on", !!tr);
+    // 暂停也留着唱片（否则没地方再点回来），只是停转、写真「已暂停」
+    const paused = !!tr && !tr.playing;
+    nowPanel.classList.toggle("paused", paused);
+    if (tr) eyebrowEl.textContent = paused ? "已暂停" : "正在播放";
+    panelBox = null;   // 侧栏显隐会换 transform，位置缓存作废，下一帧重新量
     renderBubbles(tr, talking);
-    if (!tr) return;
+    if (!tr) {
+      // 没在放就灭掉环境光，并把「上一首」的缓存标记清掉，
+      // 免得下次放同一首时不重新填标题
+      glowEl.classList.remove("on");
+      glowEl.style.opacity = "";        // 逐帧写过的 inline 要清掉，否则下次进来是旧亮度
+      glowEl.style.transform = "";
+      state.glowLevel = 0;
+      state.musicLevel = 0;
+      state.lastPos = 0;
+      state.lastDur = 0;
+      shownTrackKey = "";
+      return;
+    }
     const key = tr.title + "\u0000" + tr.cover;
     if (key !== shownTrackKey) {
+      const first = !shownTrackKey;    // 本次进来第一首：没有旧盘可滚
       shownTrackKey = key;
+      state.lastPos = 0;               // 换曲就别把上一首的进度带过来
+      state.lastDur = 0;
       titleEl.textContent = tr.title;
-      artistEl.textContent = tr.artist || "正在播放";
-      // 封面换曲才重新加载，避免每 250ms 轮询都把图片刷一遍
-      coverEl.classList.toggle("empty", !tr.cover);
-      coverEl.innerHTML = "";
-      if (tr.cover) {
-        const img = new Image();
-        img.alt = "";
-        img.onerror = () => { coverEl.classList.remove("img"); img.remove(); coverEl.classList.add("empty"); };
-        img.onload = () => coverEl.classList.remove("empty");
-        img.src = tr.cover;
-        coverEl.appendChild(img);
+      artistEl.textContent = tr.artist || (tr.playing ? "正在播放" : "已暂停");
+      if (first) {
+        fillCover(tr);
+        dropInDisc();
+      } else {
+        swapDisc(tr);
       }
     }
     // 进度按本地时间外推：拿到的 position 是「探测那一刻」的值
     renderProgress();
   }
+  // 把封面、环境光换成当前这首（只在换曲时调，轮询不会反复刷图）
+  function fillCover(tr) {
+    coverEl.classList.toggle("empty", !tr.cover);
+    coverEl.innerHTML = "";
+    coverImg = null;
+    // 环境光用同一张封面，只是放大、模糊、压暗——颜色来自唱片本身
+    glowEl.style.backgroundImage = tr.cover ? 'url("' + tr.cover + '")' : "";
+    glowEl.classList.toggle("on", !!tr.cover);
+    if (!tr.cover) return;
+    const img = new Image();
+    img.alt = "";
+    coverImg = img;
+    img.onerror = () => {
+      coverEl.classList.remove("img");
+      if (coverImg === img) coverImg = null;
+      img.remove();
+      coverEl.classList.add("empty");
+      glowEl.classList.remove("on");
+    };
+    // 图片解码完再淡入，避免先闪一个空缺
+    img.onload = () => {
+      coverEl.classList.remove("empty");
+      img.style.opacity = "1";
+    };
+    img.src = tr.cover;
+    coverEl.appendChild(img);
+  }
+  // 新盘从屏幕上方落下来：先无过渡地摆到天上，再换成带弹性的过渡落到位。
+  // 先强制重排一次，否则浏览器会把「天上」和「落位」并在同一帧里，看不到下落。
+  // 图还没解码好就先在天上等它，免得落下来的是一块空白圆盘（最多等 400ms）。
+  function dropInDisc() {
+    if (REDUCE_MOTION) return;      // 开了「减少动态」就直接换图，不做掉盘
+    coverEl.classList.remove("rollout", "landing");
+    coverEl.classList.add("dropin");
+    void coverEl.offsetWidth;
+    let started = false;
+    const go = () => {
+      if (started) return;
+      started = true;
+      coverEl.classList.remove("dropin");
+      coverEl.classList.add("landing");
+      setTimeout(() => coverEl.classList.remove("landing"), 700);
+    };
+    if (coverImg && !coverImg.complete) {
+      coverImg.addEventListener("load", go, { once: true });
+      coverImg.addEventListener("error", go, { once: true });
+      setTimeout(go, 400);
+    } else {
+      go();
+    }
+  }
+  // 换曲交接：猫脸先往右撞一下，旧盘顺势向右滚出画面，然后新盘落下来
+  let swapSeq = 0;
+  function swapDisc(tr) {
+    if (REDUCE_MOTION) { fillCover(tr); return; }   // 开了「减少动态」就只换图
+    const token = ++swapSeq;
+    bumpFace();
+    coverEl.classList.remove("landing");
+    coverEl.classList.add("rollout");
+    setTimeout(() => {
+      if (token !== swapSeq) return;   // 这期间又换曲了，交给新的一轮
+      fillCover(tr);
+      dropInDisc();
+    }, 460);
+  }
   function renderProgress() {
     const tr = state.track;
     if (!tr) return;
-    if (tr.duration > 0) {
+    // 暂停时后端拿不到播放位置（MPRIS 只在 Playing 下给 Position），
+    // 用暂停那一刻记下的进度冻住它，别让进度条跳回 0、继续时再跳回来。
+    if (tr.playing && tr.duration > 0) {
       const drift = (Date.now() - (state.trackAt || Date.now())) / 1000;
-      const pos = Math.min(tr.duration, tr.position + drift);
-      barEl.style.width = (pos / tr.duration * 100).toFixed(2) + "%";
-      posEl.textContent = mmss(pos);
-      lenEl.textContent = mmss(tr.duration);
+      state.lastPos = Math.min(tr.duration, tr.position + drift);
+      state.lastDur = tr.duration;
+    } else if (tr.playing) {
+      state.lastDur = 0;                // 直播 / 时长未知
+    }
+    const dur = state.lastDur;
+    // 时长未知（直播）时不画进度端点
+    barEl.classList.toggle("idle", !(dur > 0));
+    if (dur > 0) {
+      barEl.style.width = (Math.min(dur, state.lastPos) / dur * 100).toFixed(2) + "%";
+      posEl.textContent = mmss(Math.min(dur, state.lastPos));
+      lenEl.textContent = mmss(dur);
     } else {
       // 直播 / 时长未知：不显示假进度
       barEl.style.width = "0%";
@@ -441,12 +814,106 @@
   window.addEventListener("mousemove", reveal);
   window.addEventListener("touchstart", reveal, { passive: true });
 
+  // ---- 全屏：从主界面点「进入」跳过来时，浏览器不会自动全屏 ----
+  // 全屏 API 只能在用户手势里申请，所以进页面先试一次；被拒就等第一次点击/按键再补。
+  // 客户端（Qt）自己也会在 URL 变成 /eyes 时切全屏，这里只负责浏览器场景。
+  function goFullscreen() {
+    if (document.fullscreenElement) return;
+    const el = document.documentElement;
+    if (!el.requestFullscreen) return;
+    const p = el.requestFullscreen({ navigationUI: "hide" });
+    if (p && p.catch) p.catch(() => {});
+  }
+  goFullscreen();
+  ["pointerdown", "keydown"].forEach((ev) => {
+    window.addEventListener(ev, () => {
+      if (!document.fullscreenElement) goFullscreen();
+    }, { once: true });
+  });
+
   async function post(path) {
     try {
       const r = await fetch(path, { method: "POST", cache: "no-store" });
       return r.ok;
     } catch (e) { return false; }
   }
+
+  // ---- 唱片手势：轻点暂停/继续，左右滑切歌 ----
+  // 只有唱片这一块吃指针事件：轻点（位移小、时间短）当按钮，
+  // 横向拖过 56px 当切歌，拖动时唱片跟着手走一点、松手弹回去。
+  const SWIPE_MIN = 56;   // 横向位移超过它才算「滑」
+  const TAP_MOVE = 14;    // 位移不超过它、且够快，才算「点」
+  const TAP_MS = 600;
+  let toastAt = 0;
+  function toast(txt) {
+    toastEl.textContent = txt;
+    toastEl.classList.add("on");
+    toastAt = Date.now();
+    // 连续两次操作时别让前一次的定时器把新的提示提前关掉
+    setTimeout(() => {
+      if (Date.now() - toastAt >= 900) toastEl.classList.remove("on");
+    }, 950);
+  }
+  async function musicAction(action) {
+    try {
+      const r = await fetch("/api/music/action", {
+        method: "POST", cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        toast(d.detail || "播放器没响应");
+        return null;
+      }
+      return await r.json().catch(() => ({}));
+    } catch (e) {
+      toast("播放器没响应");
+      return null;
+    }
+  }
+  let gesture = null;
+  artEl.addEventListener("pointerdown", (e) => {
+    if (!state.track) return;
+    gesture = { x: e.clientX, y: e.clientY, t: Date.now(), dx: 0, moved: false, id: e.pointerId };
+    artEl.classList.add("drag");
+    // 抓住指针：手指滑出唱片范围也不会丢事件
+    try { artEl.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  artEl.addEventListener("pointermove", (e) => {
+    if (!gesture || e.pointerId !== gesture.id) return;
+    const dx = e.clientX - gesture.x;
+    const dy = e.clientY - gesture.y;
+    gesture.dx = dx;
+    if (Math.abs(dx) > TAP_MOVE || Math.abs(dy) > TAP_MOVE) gesture.moved = true;
+    // 越滑越「沉」：过了切歌阈值之后跟手幅度递减，给出到头的手感
+    const over = Math.max(0, Math.abs(dx) - SWIPE_MIN);
+    artEl.style.transform = "translateX(" + (dx * 0.5 / (1 + over / 120)).toFixed(1) + "px)";
+  });
+  function endGesture(e) {
+    if (!gesture || (e && e.pointerId !== gesture.id)) return;
+    const g = gesture;
+    gesture = null;
+    artEl.classList.remove("drag");
+    artEl.style.transform = "";
+    if (Math.abs(g.dx) >= SWIPE_MIN) {
+      // 左滑＝下一首，右滑＝上一首（和手机里的音乐 App 一致）
+      const nxt = g.dx < 0;
+      musicAction(nxt ? "next" : "previous").then((d) => {
+        if (d) toast(nxt ? "下一首" : "上一首");
+      });
+      return;
+    }
+    if (!g.moved && Date.now() - g.t <= TAP_MS) {
+      musicAction("toggle").then((d) => {
+        if (d) toast(d.action === "pause" ? "已暂停" : "继续播放");
+      });
+    }
+  }
+  artEl.addEventListener("pointerup", endGesture);
+  artEl.addEventListener("pointercancel", endGesture);
+  // 点在唱片上不再触发「双击空白处退出」：点两下就是暂停再播放
+  artEl.addEventListener("dblclick", (e) => e.stopPropagation());
   STOP.addEventListener("click", async (e) => {
     e.stopPropagation();
     await post("/api/wake/stop");
@@ -475,8 +942,10 @@
   // 恢复后会立刻按真实空闲时长处理——本来就是为了「人走了别再亮着」。
   setInterval(() => {
     const now = Date.now();
-    // 还在放音乐 = 人在听，不算闲置，计时一直往后推
-    if (playingNow) activeAt = now;
+    // 还在放音乐 = 人在听，不算闲置：两个计时一起往后推。
+    // 只推 activeAt 的话，放着歌也会到点闭眼（而且闭眼时脸会顺手扩成满屏），
+    // 再过一会儿还会把整个模式退出掉，人明明还在听。
+    if (playingNow) { activeAt = now; lastActive = now; }
     if (now - lastActive >= EYES_IDLE_EXIT_MS) {
       leave();
       return;
@@ -551,15 +1020,15 @@
   // ω 猫嘴：两段圆弧描边，圆头。三点定圆拟合自原图，宽高比 2.93:1。
   // 这里固定 1.0 不透明：两瓣的圆头在中缝完全重合，半透明时那一小块会叠两次、
   // 比别处亮（看着像重影）；不透明时后画的圆头直接盖住前一个，接缝均匀。
-  // 嘴不跟着整张脸淡出——空闲闭眼时整张脸压到 0.16，靠暗度表达即可。
-  function drawCatMouth(cx, cy, w, t) {
+  // 所以休眠压暗不能靠 globalAlpha，而是把颜色混向底色（dimColor）。
+  function drawCatMouth(cx, cy, w, t, color) {
     if (w < 2) return;
     ctx.save();
     ctx.globalAlpha = 1;
     ctx.translate(cx, cy);
     const th = w * 0.092;
     const Hh = w / 2.93;
-    ctx.strokeStyle = FACE;
+    ctx.strokeStyle = color || FACE;
     ctx.lineWidth = th;
     ctx.lineCap = "round";
     const r = w * 0.246;
@@ -580,7 +1049,7 @@
   }
 
   // 说话：ω 在开合之间形变——两瓣中心下压、开口放大，模拟嘴部张合
-  function drawTalkingMouth(cx, cy, w, open) {
+  function drawTalkingMouth(cx, cy, w, open, color) {
     if (w < 2) return;
     ctx.save();
     ctx.globalAlpha = 1;
@@ -590,7 +1059,7 @@
     ctx.scale(1 - open * 0.06, sy);
     const th = w * 0.092;
     const Hh = w / 2.93;
-    ctx.strokeStyle = FACE;
+    ctx.strokeStyle = color || FACE;
     ctx.lineWidth = th;
     ctx.lineCap = "round";
     const r = w * 0.246;
@@ -632,6 +1101,28 @@
     const dt = Math.min(0.05, t - (lastFrame || t));
     lastFrame = t;
     state.levelSmooth += (state.level - state.levelSmooth) * Math.min(1, dt * 9);
+
+    // 字幕流式推进：每帧按速率把 AI 回复多吐几个字
+    subsTick(tms);
+
+    // 唱片背光跟着输出电平呼吸：安静时几乎看不见（0.16），鼓点上来推到 0.86，
+    // 同时微微放大，看起来是「被声音顶了一下」。
+    // 电平本身已经做过快起慢落，这里再平滑一次，避免逐帧抖动。
+    state.glowLevel += (state.musicLevel - state.glowLevel) * Math.min(1, dt * 10);
+    if (glowEl.classList.contains("on")) {
+      const g = state.glowLevel;
+      glowEl.style.opacity = (0.10 + 0.32 * g).toFixed(3);
+      glowEl.style.transform = "scale(" + (1.02 + 0.08 * g).toFixed(3) + ")";
+    }
+
+    // 唱片自转：只有「正在播放」才推进角度，暂停时盘面就真的停在原处
+    // （26 秒一圈）。换曲换图也从当前角度接着转，不会突然跳回 0°。
+    if (state.track && state.track.playing && !REDUCE_MOTION) {
+      discAngle = (discAngle + dt * (360 / 26)) % 360;
+    }
+    if (coverImg) {
+      coverImg.style.transform = "rotate(" + discAngle.toFixed(2) + "deg)";
+    }
 
     // 状态切换：被唤醒的瞬间记下时间，供「一惊」动画使用
     if (state.name !== state.drawnName) {
@@ -744,31 +1235,47 @@
     // ---- 播放态布局：脸整体让到左侧，右侧留给曲目卡 ----
     // 用逐帧插值而不是 CSS 过渡，是因为脸的坐标由 canvas 每帧重算；
     // 0→1 大约 0.5 秒，和右侧侧栏的滑入节奏对齐。
-    const wantPlay = (!!state.track && !state.idleSleep
-      && !["waking", "listening", "thinking", "speaking"].includes(state.name)) ? 1 : 0;
+    // 只要音乐在放就保持这个布局：对话时也不再让脸铺满全屏去「应答」，
+    // 唱片和脸的位置始终稳定，不会一问一答就来回跳。
+    // 只要有曲目就保持「小脸在左、唱片在右」的布局。
+    // 不再看 idleSleep：休眠时脸本来就该很小很暗，绝不能反过来铺满全屏。
+    const wantPlay = state.track ? 1 : 0;
     state.playMode += (wantPlay - state.playMode) * Math.min(1, dt * 6);
     if (state.playMode < 0.004) state.playMode = 0;
     const pm = state.playMode;
 
-    // 脸的水平中心：居中是 W/2，播放态落在左侧 34% 处
-    const faceCX = W * (0.5 - 0.16 * pm);
-    // 播放态整张脸缩到 0.62，留出呼吸空间给侧栏
-    const playScale = 1 - 0.38 * pm;
+    // ---- 字幕让位：底部一出现字幕，整张脸往上收一点并略缩小 ----
+    // 字幕固定在屏幕下沿，而原来的脸几乎顶到下巴，字一多就会压在嘴上。
+    // 用逐帧插值，字幕淡入淡出时脸是滑过去的，不会跳。
+    const subsOn = !state.idleSleep && bubblesEl.classList.contains("subs");
+    state.subsMode += ((subsOn ? 1 : 0) - state.subsMode) * Math.min(1, dt * 6);
+    if (state.subsMode < 0.004) state.subsMode = 0;
+    const sm = state.subsMode;
+    // 播放态脸已经很小、也离字幕很远，不需要再让位，留一点点点到为止
+    if (sm > 0 && pm < 0.5) cy -= s * 0.11 * sm * (1 - pm);
 
-    // ---- 声光环：只叠一圈跟着音量起伏的亮环，不填实 ----
-    // 描边而不是实心圆，既不会盖住脸，也少一大块常亮面积（OLED 友好）。
-    // 说话时不画：那时脸本身就在动，再加光环会显得吵。
-    if (pm > 0.01) {
-      const ringR = eyeR * (2.5 + state.levelSmooth * 0.55);
-      ctx.save();
-      ctx.globalAlpha = pm * (0.16 + state.levelSmooth * 0.34);
-      ctx.strokeStyle = FACE;
-      ctx.lineWidth = Math.max(1.5, eyeR * 0.055);
-      ctx.beginPath();
-      ctx.arc(faceCX, cy, ringR, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
+    // 播放态：脸的水平中心落在「曲目卡左侧空区」的正中，
+    // 竖直方向对齐唱片的圆心——两边各自居中，视觉上才是并排而不是错位。
+    const pr = pm > 0.001 ? panelRect() : null;
+    const playScale = 1 - 0.45 * pm;   // 播放态整张脸缩到 0.55，不再抢唱片的戏
+    // 字幕出现时再收一点，保证脸的下沿和字之间留出空隙
+    const subsScale = 1 - 0.14 * sm;
+    let faceCX = W / 2;
+    if (pr) {
+      faceCX += (pr.left / 2 - W / 2) * pm;
+      const k = faceScale * playScale * subsScale;
+      const visualY = cy + (mouthDrop * k) / 2;   // 眼睛线与嘴之间的中点＝脸的视觉中心
+      cy += (pr.artCY - visualY) * pm;
     }
+
+    // ---- 换曲：猫脸往右撞一下（和唱片滚出的动作同时发生）----
+    // 0.52 秒一个来回：先快速顶出去，再慢一点弹回原位，像被自己甩出去的盘子带了一下
+    if (bumpAt) {
+      const bp = (tms - bumpAt) / 520;
+      if (bp >= 1) { bumpAt = 0; bumpX = 0; }
+      else bumpX = 74 * Math.sin(Math.PI * Math.pow(bp, 0.62));
+    }
+    faceCX += bumpX;
 
     // ---- 摇头晃脑：间歇性左右摆，兼作 OLED 防烧屏 ----
     // 包络由两个不同周期（约 10s / 27s）相乘，大约每 10 秒鼓起来一次，
@@ -780,12 +1287,13 @@
       nodX = env * wobble * eyeR * 0.5;
       nodTilt = env * wobble * 0.035;
     }
+    if (bumpX) nodTilt -= bumpX * 0.0004;   // 撞出去时脸稍微歪一点，不僵
 
     ctx.save();
     // 播放态整体缩小并左移：以脸的中心为基准缩放，嘴和眼才不会各自漂移
     ctx.translate(faceCX, cy);
     ctx.rotate(nodTilt);
-    ctx.scale(faceScale * playScale, faceScale * playScale);
+    ctx.scale(faceScale * playScale * subsScale, faceScale * playScale * subsScale);
     ctx.translate(-cx, -cy);
 
     const lx = cx - gap + inward;
@@ -796,8 +1304,10 @@
 
     // 嘴：ouo-face 校准值 0.26s 的基础上再下移 100px
     const my = cy + s * 0.26 + 100;
-    if (mouthOpen > 0.01) drawTalkingMouth(cx + nodX, my, mouthW, mouthOpen);
-    else drawCatMouth(cx + nodX, my, mouthW, t);
+    // 休眠时嘴也跟着一起压暗，不然眼睛暗下去了、只剩一张白嘴还亮着
+    const mouthColor = state.idleSleep ? dimColor(FACE, 0.16) : FACE;
+    if (mouthOpen > 0.01) drawTalkingMouth(cx + nodX, my, mouthW, mouthOpen, mouthColor);
+    else drawCatMouth(cx + nodX, my, mouthW, t, mouthColor);
     ctx.restore();
 
     // ---- 连接提示：只有断线，不显示错误详情 ----

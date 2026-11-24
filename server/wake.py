@@ -516,6 +516,110 @@ class Capture:
         self._drain()
 
 
+# ---------- 输出电平：给唱片背光做音乐响应 ----------
+
+
+class SinkLevel:
+    """抓默认输出的监听口（sink monitor）算一个 0–1 的电平。
+
+    只服务一件事：眼睛页里唱片背后的那圈光跟着音乐亮暗。不参与识别，
+    任何一步失败都只是「光不动」，绝不影响唤醒和对话。
+
+    实测（Deck 内置扬声器放歌）：mean(|s16|)/32768 大致 0.004–0.10，
+    所以这里先乘一个增益再开方，映射到 0–1 才对耳朵和眼睛都自然。
+    """
+
+    RATE = 8000
+    FRAME = 800        # 100ms 一帧，够跟上鼓点，CPU 几乎为零
+    GAIN = 8.0
+
+    def __init__(self):
+        self._proc: subprocess.Popen | None = None
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._level = 0.0
+        self._lock = threading.Lock()
+        self._retry_at = 0.0   # 起不来就退避 30 秒，别每次 arm 都去磨
+
+    @property
+    def level(self) -> float:
+        with self._lock:
+            return self._level
+
+    def _device(self) -> str:
+        sink = ""
+        try:
+            out = subprocess.run(["pactl", "get-default-sink"], capture_output=True,
+                                 text=True, timeout=2)
+            sink = (out.stdout or "").strip()
+        except Exception as exc:
+            devlog.debug("wake.level.sink", error=repr(exc))
+        if not sink:
+            return ""
+        return sink if sink.endswith(".monitor") else sink + ".monitor"
+
+    def start(self) -> None:
+        if self._proc is not None or self._thread is not None:
+            return
+        if time.monotonic() < self._retry_at:
+            return
+        parec = shutil.which("parec")
+        device = self._device() if parec else ""
+        if not parec or not device:
+            self._retry_at = time.monotonic() + 30.0
+            return
+        try:
+            self._proc = subprocess.Popen(
+                [parec, "--device=" + device, "--format=s16le",
+                 "--rate=%d" % self.RATE, "--channels=1", "--latency-msec=80"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+        except Exception as exc:
+            devlog.log("wake.level.spawn", error=str(exc))
+            self._retry_at = time.monotonic() + 30.0
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._reader, name="wake-sink-level",
+                                        daemon=True)
+        self._thread.start()
+
+    def _reader(self) -> None:
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+        while not self._stop.is_set():
+            chunk = proc.stdout.read(self.FRAME)
+            if not chunk:
+                break
+            raw = min(1.0, pcm_level(chunk) * self.GAIN) ** 0.75
+            with self._lock:
+                # 快起慢落：亮起来跟得上鼓点，落下去慢慢收，才不像频闪
+                k = 0.6 if raw > self._level else 0.14
+                self._level += (raw - self._level) * k
+        with self._lock:
+            self._level = 0.0
+
+    def stop(self) -> None:
+        self._stop.set()
+        proc = self._proc
+        self._proc = None
+        if proc is not None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception as exc:
+                    devlog.debug("wake.level.kill", error=repr(exc))
+                    pass
+        t = self._thread
+        if t is not None:
+            t.join(timeout=2)
+        self._thread = None
+        with self._lock:
+            self._level = 0.0
+
+
 # ---------- 服务本体 ----------
 
 
@@ -585,9 +689,18 @@ class WakeService:
         # 探一次（状态接口被高频轮询），缓存 5 秒；探测失败按「没在放」处理。
         self._playing = False
         self._playing_at = 0.0
+        # 「刚手动切歌/暂停」的生效窗口：这段时间里不信缓存，每次轮询都重探。
+        # 播放器是异步应用命令的，命令返回时 MPRIS 还可能是旧状态。
+        self._media_settle_until = 0.0
         self._media_info: dict = {}
         # 短反馈词的合成缓存：同一句「切了」只合成一次
         self._fb_wav: dict[str, bytes] = {}
+        # 对话字幕：me = 语音识别出的原话，ai = 梅朵要说的话。
+        # gen 是代数，同一句话重复出现（连着两次「那算了」）也要让前端重置停留计时。
+        self._subs = {"me": "", "ai": ""}
+        self._subs_gen = 0
+        # 输出电平采样：唱片背光跟着音乐亮暗，进模式才开
+        self._sink_level = SinkLevel()
         self._cancel_chat = None
         self._state_cb = None
         self._cfg = _merge_cfg(None)
@@ -609,6 +722,9 @@ class WakeService:
         self._followup_until = 0.0
         self._followup = False
         self._last_error = ""
+        # 对话噪音（没听到说话 / 说话太短 / 没识别到文字）：不是故障，
+        # 只给界面做个提示，绝不写进 last_error，否则状态灯会一直红
+        self._last_notice = ""
         self._wake_count = 0
         self._level = 0.0
         self._turns = 0
@@ -770,11 +886,21 @@ class WakeService:
             "wake_count": self._wake_count,
             "turns": self._turns,
             # 音乐是否正在放：playing 带 5 秒缓存，供眼睛页判断「还在放就别当闲置」
-            "media": {"playing": self._playing_now(), **self._media_info},
+            # level 是输出口实时电平（0–1），眼睛页拿它驱动唱片背后的背光
+            "media": {"playing": self._playing_now(),
+                      "level": round(self._sink_level.level, 3),
+                      **self._media_info},
             "last_error": self._last_error,
+            "last_notice": self._last_notice,
             "input_device": self._cfg.get("input_device", "default"),
             "wake_words": list(self._cfg.get("wake_words") or []),
             "eyes_display": self._cfg.get("eyes_display", "auto"),
+            # 对话字幕：眼睛页直接显示这两行，不用轮询别的接口
+            "subs": {
+                "me": self._subs.get("me", ""),
+                "ai": self._subs.get("ai", ""),
+                "gen": self._subs_gen,
+            },
             # 唤醒回应缓存是否就绪：眼睛页在合成失败时只显示「我在」，不出声
             "ack": {
                 "text": self._ack_text or str(self._cfg.get("ack_text") or "我在"),
@@ -796,6 +922,31 @@ class WakeService:
 
     # ---- 开关 ----
 
+    def note_subtitle(self, role: str, text: str) -> None:
+        """记一句对话字幕，供眼睛页显示（me = 识别出的原话，ai = 要说的话）。
+
+        只保留最近一轮：新的用户发言会顺手清掉上一轮的回复，避免屏幕上出现
+        「我说了新的一句、下面还挂着旧回答」的错位。
+        """
+        text = str(text or "").strip()
+        if not text or role not in ("me", "ai"):
+            return
+        # 回复可能很长：留够一整段，眼睛页是滚动显示的，不要在这里截断
+        limit = 2000 if role == "ai" else 600
+        if len(text) > limit:
+            text = text[:limit] + "…"
+        if role == "me":
+            self._subs["ai"] = ""
+        self._subs[role] = text
+        self._subs_gen += 1
+
+    def _clear_subtitle(self) -> None:
+        """清空字幕（重新进入模式时用，免得上一轮的旧话留在屏幕上）。"""
+        if not self._subs["me"] and not self._subs["ai"]:
+            return
+        self._subs = {"me": "", "ai": ""}
+        self._subs_gen += 1
+
     async def arm(self) -> dict:
         async with self._arm_lock:
             if not self._enabled:
@@ -803,6 +954,9 @@ class WakeService:
             if self._state in ("waking", "listening", "thinking", "speaking"):
                 return self.status()
             self._last_error = ""
+            self._last_notice = ""
+            # 进入模式先清字幕：屏幕上只留这一轮要说的话
+            self._clear_subtitle()
             # 先亮出「正在进入」：探测模型/抢麦克风要好几秒，眼睛页和客户端
             # 都靠这个状态决定显示加载提示，不能等 arm 全部跑完才变
             self._set_state("starting")
@@ -820,6 +974,8 @@ class WakeService:
             self._ready = True
             await self._warm_ack()
             self._set_state("armed")
+            # 背光电平采样：失败只是光不动，不影响唤醒
+            self._sink_level.start()
             if self._power_hold:
                 try:
                     self._power_hold()
@@ -833,6 +989,10 @@ class WakeService:
         self._ready = False
         await self._stop_capture()
         self._release_duck()
+        # 背光电平采样只在模式内开，退出时一起收掉
+        self._sink_level.stop()
+        # 退出模式：字幕一起清掉，下次进来是干净的
+        self._clear_subtitle()
         if self._power_release:
             try:
                 self._power_release()
@@ -986,6 +1146,8 @@ class WakeService:
         """命中唤醒词：先切「被叫醒」表情并播放预缓存的「我在」，播完再录音。"""
         self._wake_count += 1
         self._reset_audio()
+        # 新一轮唤醒＝新对话：上一轮的字幕不要还挂在屏幕上
+        self._clear_subtitle()
         self._followup = False
         if self._detector is not None:
             self._detector.reset()
@@ -997,6 +1159,8 @@ class WakeService:
     async def _run_ack(self) -> None:
         """播放缓存音频。没有缓存/合成失败/播放失败都静默降级，直接进录音。"""
         self._round_cancelled = False
+        # 屏幕上「我在」也要有字幕：没合成出声音时这句话只靠字可见
+        self.note_subtitle("ai", self._ack_text or str(self._cfg.get("ack_text") or "我在"))
         played = False
         if self._ack_wav and self._ack_play:
             try:
@@ -1086,7 +1250,10 @@ class WakeService:
             if not text:
                 self._abort("没有识别到文字")
                 return
+            self._last_notice = ""      # 这次真听清了，清掉上一次「没听清」的提示
             devlog.log("wake.transcribe", chars=len(text), text=text)
+            # 先把识别结果挂到字幕上：用户要能看到自己说的话被听成了什么
+            self.note_subtitle("me", text)
             # 上一轮问过「是 XXX 那首吗」：这一句先当作回答，最多问一次
             pending, self._pending_confirm = self._pending_confirm, None
             if pending is not None:
@@ -1272,6 +1439,8 @@ class WakeService:
         """念一句极短反馈；合成或播放失败都只记日志，不拦回待机。"""
         if not text:
             return
+        # 先上字幕再合成：即使合成/播放失败，用户也能看到「梅朵说了什么」
+        self.note_subtitle("ai", text)
         data = self._fb_wav.get(text)
         if data is None:
             try:
@@ -1342,7 +1511,16 @@ class WakeService:
             return
         if self._state == state:
             return
+        prev = self._state
         self._state = state
+        # 状态进出 error 时作废自检缓存：否则从 error 回到 armed 之后，
+        # 「智能音箱」那盏灯还会按缓存红满一分钟（进 error 同理，不会绿着不变）
+        if (prev == "error") != (state == "error"):
+            try:
+                from . import depcheck as _depcheck
+                _depcheck.invalidate()
+            except Exception as exc:
+                devlog.debug("wake._set_state.invalidate", error=repr(exc))
         # 半双工：唤醒回应/思考/播报期间暂停采集入队；回到待机/聆听时恢复
         if self._capture is not None:
             try:
@@ -1366,7 +1544,9 @@ class WakeService:
         self._release_duck()
         self._reset_audio()
         if reason:
-            self._last_error = reason
+            # _abort 只被「没听到说话 / 说话太短 / 没识别到文字」这类正常对话噪音
+            # 调用：记成 last_notice 给眼睛页提示，不写 last_error（那才是故障）
+            self._last_notice = reason
             devlog.log("wake.abort", reason=reason)
         self._set_state("armed")
 
@@ -1431,6 +1611,18 @@ class WakeService:
                 devlog.debug("wake._release_duck", error=repr(exc))
                 pass
 
+    def media_changed(self) -> None:
+        """有人手动切歌 / 暂停：作废播放状态的 5 秒缓存
+
+        眼睛页 250ms 轮询一次，但这里 5 秒才探一次。不清缓存的话，
+        点完暂停要等最多 5 秒唱片才停转，手感像没反应。
+        另外播放器是异步应用命令的：命令返回那一刻 MPRIS 往往还是旧状态，
+        所以开一个几秒的「生效窗口」，窗口内每轮都重探，等状态落定为止。
+        """
+        now = time.monotonic()
+        self._playing_at = -1e9
+        self._media_settle_until = now + 1.5
+
     def _playing_now(self) -> bool:
         """音乐是否在放，5 秒缓存。探测异常一律当「没在放」。
 
@@ -1438,7 +1630,8 @@ class WakeService:
         子进程会把 Deck 拖得很重；而「有没有在放音乐」5 秒的粒度足够。
         """
         now = time.monotonic()
-        if now - self._playing_at >= 5.0:
+        # 手动操作后的生效窗口内不认缓存：播放器可能还没把命令落地
+        if now < self._media_settle_until or now - self._playing_at >= 5.0:
             try:
                 self._playing = media.playing()
             except Exception as exc:

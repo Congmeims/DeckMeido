@@ -334,6 +334,39 @@
     cursor: default;
     opacity: .75;
   }
+  /* 「进入智能音箱模式」的询问卡：聊天里居中一张小卡，两个按钮二选一。
+     语气沿用系统行，但给足点击面积，免得在 Deck 手柄/触屏上误触 */
+  .msg.wake-ask {
+    align-self: center;
+    max-width: min(520px, 92%);
+    padding: 12px 14px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    font-size: 14px;
+    color: var(--text);
+    white-space: normal;
+    text-align: center;
+  }
+  .msg.wake-ask .wake-ask-t { line-height: 1.5; }
+  .msg.wake-ask .wake-ask-b { display: flex; gap: 8px; justify-content: center; margin-top: 10px; }
+  .msg.wake-ask .wake-ask-b button {
+    padding: 5px 16px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .msg.wake-ask .wake-ask-b .wake-yes {
+    background: var(--brand);
+    border-color: var(--brand);
+    color: var(--on-brand);
+  }
+  .msg.wake-ask .wake-ask-b button:disabled { opacity: .5; cursor: default; }
+  .msg.wake-ask.err { border-color: rgba(255, 90, 90, .5); }
   /* 语音条：可点击播放的助手消息附件（QQ 语音回复本地回放） */
   .voice-bubble {
     display: flex; align-items: center; gap: 8px;
@@ -1085,6 +1118,16 @@
     overflow: hidden;
   }
   .atchip .at-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  /* 上传中：格子里原地转圈，底下压着半透明的本地预览，传完换成真缩略图。
+     替代原来聊天区那条「上传中… N 个文件」的系统提示 */
+  .atchip .at-thumb { position: relative; }
+  .atchip.uploading .at-thumb img { opacity: .45; }
+  .atchip .at-spin {
+    position: absolute; inset: 0; margin: auto; width: 18px; height: 18px;
+    border-radius: 50%; border: 2px solid rgba(255,255,255,.3);
+    border-top-color: var(--brand); animation: atspin .8s linear infinite;
+  }
+  @keyframes atspin { to { transform: rotate(360deg); } }
   .atchip .at-thumb .at-ext {
     font-size: 9px; line-height: 1; font-weight: 600;
     color: var(--muted); text-transform: uppercase;
@@ -2770,13 +2813,18 @@
   body::before {
     content: ''; position: fixed; inset: 0; z-index: -1;
     background-image: var(--wallpaper);
-    background-size: cover; background-position: center;
-    background-repeat: no-repeat;
+    /* 铺法与焦点由设置页左上角那颗胶囊写进这几个变量：
+       填充 cover / 适应 contain / 拉伸 100% 100% / 平铺 auto+repeat / 居中 auto */
+    background-size: var(--wall-fit, cover);
+    background-position: var(--wall-pos, center);
+    background-repeat: var(--wall-repeat, no-repeat);
     filter: blur(var(--wall-blur));
     opacity: calc(1 - var(--wall-dim));
     pointer-events: none;
-    /* 模糊会让边缘露出底色，稍微放大一点避免四边出现暗角 */
-    transform: scale(1.03);
+    /* 模糊会让边缘露出底色，稍微放大一点避免四边出现暗角；
+      放宽一点点防止模糊后边缘漏底色。适应/平铺/居中不能放大（放大就把
+       留白和原尺寸一起毁掉），由前端把 --wall-scale 置 1 */
+    transform: scale(var(--wall-scale, 1.03));
   }
   /* 有壁纸时 body 自己的底色让位，否则会盖住 ::before */
   html.wall-on body { background: transparent; }
@@ -3100,6 +3148,41 @@
   .wall-clear:hover { border-color: rgba(232,70,58,.75); color: #ffb4ad; }
   .wall-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0 4px; }
   .wall-actions .field-hint { flex: 1 1 220px; margin: 0; }
+  /* 显示方式 / 显示重点做成压在预览图上的浮层：左上角一颗胶囊（点一次换一种
+     铺法，不做下拉——下拉展开要占一大块），右上角九宫格点焦点。浮层必须是
+     #wallPreview 的兄弟节点：预览框每次重画都会换掉里面的节点，放进去就被刷掉了 */
+  .wall-stage { position: relative; }
+  .wall-fit-ov, .wall-pos-ov { position: absolute; top: 8px; z-index: 3; }
+  .wall-fit-ov { left: 8px; }
+  .wall-pos-ov { right: 8px; }
+  .wall-fit-ov[hidden], .wall-pos-ov[hidden] { display: none; }
+  /* 胶囊：白字压在壁纸的雾上，观感与下面「换一张 / 撤销壁纸」一致。
+     选择器带 html/.set-body 是为了压过 html.wall-on 那条统一半透底规则，
+     不然会被刷成一块浅灰实心 */
+  html .set-body .wall-fit-pill {
+    height: 26px; padding: 0 12px; cursor: pointer;
+    font: inherit; font-size: 12px; line-height: 1; color: #fff;
+    border-radius: 999px; border: 1px solid rgba(255,255,255,.3);
+    background: rgba(12,16,26,.62);
+    backdrop-filter: blur(calc(6px + var(--glass)));
+  }
+  html .set-body .wall-fit-pill:hover {
+    background: rgba(12,16,26,.82); border-color: rgba(255,255,255,.55);
+  }
+  .wall-pos {
+    display: grid; grid-template-columns: repeat(3, 18px); gap: 4px; padding: 5px;
+    border-radius: 10px;
+    background: rgba(12,16,26,.62); border: 1px solid rgba(255,255,255,.28);
+    backdrop-filter: blur(calc(6px + var(--glass)));
+  }
+  .wall-pos button {
+    width: 18px; height: 18px; padding: 0; cursor: pointer;
+    border-radius: 4px; background: rgba(255,255,255,.16);
+    border: 1px solid rgba(255,255,255,.24);
+  }
+  .wall-pos button:hover { background: rgba(255,255,255,.36); }
+  .wall-pos button.on { background: #fff; border-color: #fff; }
+  .wall-pos[hidden] { display: none; }
   /* 配色来源分两栏：左边自动取色、右边手动强调色，窄屏再叠回去。
      两栏基线对齐——左边是「标题 + 一行说明」，右边是「标题行 + 输入行 + 示例行」，
      默认 stretch 会让左栏那块看着浮在半空 */
@@ -4086,6 +4169,9 @@
   .ctrl-list { display: flex; flex-direction: column; margin-bottom: 4px; }
   .ctrl-item { padding: 6px 2px; border-bottom: 1px solid var(--line); }
   .ctrl-item:last-child { border-bottom: none; }
+  /* 两列网格里末行有两格：:last-child 只抹掉右下那一格，末行左格还留着线，
+     看着就像右格下面少了一条分割线。两列模式统一保留，整行一起收口 */
+  .ctrl-list.ctrl-grid .ctrl-item:last-child { border-bottom: 1px solid var(--line); }
   /* 左栏只有「灯 + 名称」：名称直接吃掉整行剩余宽度，长名字也不会截断；
      右栏（.ctrl-grid）另起两列网格，各自一套列宽，互不牵制 */
   .ctrl-row {

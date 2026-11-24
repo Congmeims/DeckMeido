@@ -458,8 +458,7 @@
                单独占一格导航反而让设置页多出一层分类 -->
           <h4 class="set-sect">长期记忆</h4>
           <p class="pane-desc">
-            记在这里的内容每次对话都会带上，重启也还在。对话里说「记住…」她也会自己记一条；
-            纠正她的做法（「不对，应该…」）同样会记下来。只记你真想让她长期记住的，写多了会占掉上下文。
+            每次对话都会带上，重启也在。说「记住…」或纠正她的做法也会自动记一条；写多了占上下文。
           </p>
           <div class="card">
             <div class="card-title">新增一条</div>
@@ -539,8 +538,7 @@
               </label>
             </div>
             <div class="card-desc">
-              说出唤醒词「你好梅朵」即可唤醒，话音结束后自动转写为文字并发送。
-              唤醒与语音识别均在本机离线完成，不消耗 Token，仅桌面模式可用。
+              说唤醒词「你好梅朵」唤醒，说完自动转写发送；语音识别本机离线、不耗 Token，仅桌面模式可用。
             </div>
           </div>
 
@@ -598,7 +596,7 @@
 
         <section class="set-pane" data-pane="external">
           <h3>外部连接</h3>
-          <p class="pane-desc">本机权限与局域网接入、从别的设备远程接管，以及 OneBot 的 QQ 通道。全部只在你明确打开后才生效。</p>
+          <p class="pane-desc">本机权限、局域网接入、远程接管与 QQ 通道；全部只在你打开后才生效。</p>
           <h4 class="set-sect" id="localAccessSect">本机访问</h4>
           <div class="card">
             <div class="card-title">权限与工作区</div>
@@ -683,8 +681,7 @@
           <div class="card">
             <div class="card-title">设备配对</div>
             <div class="card-desc">
-              新设备打开局域网地址后点击「配对新设备」，PIN 将显示在下方。
-              点击「允许」后将 4 位 PIN 告知对方；PIN 有效期为 60 秒，最多尝试 3 次。
+              点「配对新设备」，PIN 显示在下方；「允许」后把 4 位 PIN 告诉对方（60 秒内有效，最多 3 次）。
             </div>
             <div class="mem-foot">
               <span id="pairAuditSummary" class="field-hint"></span>
@@ -722,8 +719,7 @@
               </label>
             </div>
             <p class="card-desc">
-              在电脑浏览器点击左下角 logo 即可接管：鼠标与键盘将移交至这台 Deck，可操作 Steam 界面、游戏及本页面。
-              按 Esc、再次点击 logo，或在客户端点击 logo 即可释放。
+              点左下角 logo 接管：键鼠移交 Deck，可操作 Steam 与游戏；按 Esc 或再点 logo 释放。
             </p>
             <div class="ri-io-row">
               <div class="field">
@@ -747,9 +743,7 @@
               </label>
             </div>
             <p class="card-desc">
-              满足以下条件并持续达到设定时长后自动关机：
-              <b>音乐已停止</b>，且<b>本机处于空闲状态</b>（无按键、触摸、鼠标移动，且未运行游戏）。
-              音乐播放中或本机正在使用时不会关机。
+              <b>音乐已停止</b>且<b>本机空闲</b>（无操作、未运行游戏）并持续设定时长后自动关机；放音乐或用着时不关。
             </p>
             <div class="ri-io-row">
               <div class="field">
@@ -805,16 +799,14 @@
               </label>
             </div>
             <div class="field-hint" id="qqAutoConnectHint">
-              关闭（默认）：每次启动都保持「已启用 · 未连接」，需要手动点连接；
-              打开后也只是下次启动生效，保存时不会立即连接。
+              关闭（默认）：启动后需手动点连接；打开也只在下次启动生效，保存时不会立即连接。
             </div>
             <div class="field">
               <label>NapCat WebSocket 地址（ws_url）</label>
               <input id="cfgQqUrl" type="text" placeholder="wss://napcat.example.com/ws"
                      autocomplete="off" spellcheck="false">
               <div class="field-hint">
-                Deck 作为客户端主动发起连接，不开放入站端口。本机调试可使用 ws://127.0.0.1:3001；
-                公网地址必须使用 wss://，否则访问令牌将明文传输。
+                客户端主动连接、不开入站端口；本机调试填 ws://127.0.0.1:3001，公网必须 wss://（否则令牌明文）。
               </div>
             </div>
             <div class="field">
@@ -850,11 +842,7 @@
               <div id="qqGroupChips" class="chip-list"></div>
               <div class="field-hint" id="qqGroupHint"></div>
               <div class="field-hint">
-                群内 @ 机器人时必定回复；以「昵称 + 空格」开头的消息同样视为呼叫机器人（群成员与主人均可此方式直接对话）。
-                不满足以上条件的消息，仅在「主动接话概率」命中时才会被回应。
-                普通群成员仅可闲聊；主人可下达指令（危险操作仍需确认）。
-                群号留空表示全部禁用，所有群消息均不响应（主人亦不触发）。
-                指令格式为「昵称 + 空格 + 指令」，例如「露露 菜单」「露露 截屏」「露露 停」。
+                @机器人或「昵称 + 空格」开头即呼叫；群友只闲聊，主人可下指令。群号留空 = 全部群不响应。
               </div>
             </div>
 
@@ -901,8 +889,7 @@
                 </div>
               </div>
               <div class="field-hint">
-                只在白名单群里记录，按群隔离；片段只给群友轮次做参考，不进会话历史、不写长期记忆。
-                条数或有效期填 0 = 关闭。管理员可在群里发 /memo 清除本群缓存。
+                只在白名单群记录、按群隔离，不进会话历史；条数或有效期填 0 = 关闭；群里 /memo 清缓存。
               </div>
             </div>
 
@@ -933,8 +920,7 @@
                 </div>
               </div>
               <div class="field-hint">
-                0% = 群里没人 @ 也不带昵称前缀时，从不主动接话；100% = 任意人说话都有概率接话。
-                @ 机器人和「昵称 + 空格」开头的消息不受影响，永远会回。
+                0% = 从不主动接话，100% = 见话就接；@机器人和「昵称 + 空格」开头的一定会回。
               </div>
             </div>
 
@@ -1017,10 +1003,7 @@
                 </div>
               </div>
               <div class="field-hint">
-                默认在文字回复之外额外发一条语音。私聊只对主人 QQ 生效；
-                群聊默认连群友一起发，关闭「群友也发语音」后只有主人 QQ 的回复带语音。
-                打开「只发语音」后，语音发送成功才跳过文字；合成不可用、超过时长或大小上限、
-                转码失败、NapCat 拒收时一律自动改发文字，不会既没语音也没文字。
+                文字外再发一条语音：私聊仅主人，群聊默认含群友；「只发语音」下语音失败会自动改发文字。
               </div>
             </div>
             <div class="qq-group">
@@ -1040,8 +1023,7 @@
                 </div>
               </div>
               <div class="field-hint">
-                断开后按指数退避重连：从最小间隔起逐次翻倍，封顶到最大间隔。
-                改完保存即生效，正在等待的那一次重连不受影响。
+                断开后按指数退避重连（逐次翻倍，封顶最大间隔）；改完即生效，正在等待的那次不受影响。
               </div>
             </div>
             <div class="qq-group qq-image-group">
@@ -1064,22 +1046,26 @@
               </div>
               <div class="field">
                 <label>图片保存目录（image_save_dir，留空 = 数据根下的 meidobot/images）</label>
-                <input id="cfgQqImageDir" type="text"
-                       placeholder="留空则用默认归档目录" autocomplete="off" spellcheck="false">
+                <div class="chip-add">
+                  <input id="cfgQqImageDir" type="text"
+                         placeholder="留空则用默认归档目录" autocomplete="off" spellcheck="false">
+                  <button id="qqOpenImageDir" class="mini-btn" type="button">打开图片文件夹</button>
+                </div>
               </div>
               <div class="field">
                 <label>文本存档文件（text_log_path，留空 = 数据根下的 meidobot/text_log.txt）</label>
-                <input id="cfgQqTextLog" type="text"
-                       placeholder="留空则用默认归档目录" autocomplete="off" spellcheck="false">
+                <div class="chip-add">
+                  <input id="cfgQqTextLog" type="text"
+                         placeholder="留空则用默认归档目录" autocomplete="off" spellcheck="false">
+                  <button id="qqOpenTextLog" class="mini-btn" type="button">打开文本文件夹</button>
+                </div>
               </div>
               <div class="qq-image-notes">
                 <div class="field-hint">
                   管理员最近发过的图会作为下一轮的视觉输入；普通群成员发的图不解析、不落盘。
                 </div>
                 <div class="field-hint">
-                  QQ 归档放在数据根下的 <b>userdata/meidobot/</b>（图片、inbox_index.jsonl、text_log.txt）。
-                  <b>卸载时不删除</b>；数据根目录不可写时将直接报错，不会自动切换至其他目录。
-                  这里填路径可覆盖默认位置。
+                  默认归档 userdata/meidobot/，卸载不删除；这里填路径可覆盖（目录不可写会报错）。
                 </div>
               </div>
             </div>
@@ -1099,16 +1085,14 @@
               <input id="cfgQqAutoLaunchWait" type="number" min="0" max="60" step="1"
                      value="6" spellcheck="false">
               <div class="field-hint">
-                仅对明确的安装类命令生效（apt/pacman 安装、install.sh、下载后执行等），
-                命令执行成功后才尝试打开；gamescope 环境下窗口可能不可见。
+                仅对安装类命令生效（apt/pacman、install.sh 等），成功后才打开；gamescope 下窗口可能不可见。
               </div>
             </div>
             </details>
             <details class="set-fold" id="qqTextFold">
               <summary>回传文案（发给群里的提示语）</summary>
               <div class="card-desc">
-                配置机器人回复至 QQ 的各类提示语。默认使用内置文案，仅需填写需要修改的条目；
-                修改后点击下方「保存文案」立即生效，无需重启。留空表示使用内置文案。
+                按需改机器人回复的提示语，留空用内置文案；点下方「保存文案」立即生效，无需重启。
               </div>
               <div class="field">
                 <div class="chip-add">
@@ -1132,8 +1116,7 @@
         <section class="set-pane" data-pane="plugin">
           <h3>插件设置</h3>
           <p class="pane-desc">
-            和 Decky 插件端（QAM 快捷面板 / 大屏页）共用同一份后端配置：这里保存后插件端读到的就是新值，
-            插件端改完回到这里也会显示新值。页面底部的「保存」管开关和表单，提示词模板改完自动保存。
+            与 Decky 插件端（QAM / 大屏页）共用同一份配置，两边互相同步；底栏「保存」管开关与表单，提示词自动保存。
           </p>
 
           <h4 class="set-sect">对话与插件</h4>
@@ -1182,8 +1165,7 @@
           <div class="card">
             <div class="card-title">按游戏提示词预设</div>
             <p class="card-desc">
-              游戏开始运行时自动套用对应预设，退出后恢复默认。预设只覆盖运行时的状态栏提示词，
-              不会改动上面的全局配置。当前：<span id="presetNow">—</span>
+              游戏运行时自动套用预设，退出恢复默认；预设只覆盖状态栏提示词，不动全局配置。当前：<span id="presetNow">—</span>
             </p>
             <div class="field">
               <label>选择预设</label>
@@ -1215,9 +1197,30 @@
           <h4 class="set-sect">壁纸与配色</h4>
           <div class="card">
             <div class="card-title">当前壁纸</div>
-            <div id="wallPreview" class="wall-preview"></div>
+            <!-- 显示方式 / 显示重点压在图上的两个角：左上胶囊选铺法，右上九宫格点焦点。
+                 .wall-stage 只是定位壳——里面只有 #wallPreview 会被每次重画替换，
+                 两个浮层放在它外面才不会被刷掉 -->
+            <div class="wall-stage">
+              <div id="wallPreview" class="wall-preview"></div>
+              <div class="wall-fit-ov" id="wallFitOv">
+                <button type="button" class="wall-fit-pill" id="wallFitBtn" title="显示方式：点击切换">填充</button>
+              </div>
+              <div class="wall-pos-ov" id="wallPosWrap">
+                <div class="wall-pos" id="wallPos" role="group" aria-label="显示重点：保留壁纸的哪一块">
+                  <button type="button" data-pos="left top" aria-label="左上"></button>
+                  <button type="button" data-pos="top" aria-label="上"></button>
+                  <button type="button" data-pos="right top" aria-label="右上"></button>
+                  <button type="button" data-pos="left" aria-label="左"></button>
+                  <button type="button" data-pos="center" aria-label="居中"></button>
+                  <button type="button" data-pos="right" aria-label="右"></button>
+                  <button type="button" data-pos="left bottom" aria-label="左下"></button>
+                  <button type="button" data-pos="bottom" aria-label="下"></button>
+                  <button type="button" data-pos="right bottom" aria-label="右下"></button>
+                </div>
+              </div>
+            </div>
             <div class="wall-actions">
-              <div class="field-hint" id="wallHint">支持 PNG / JPG / WEBP / GIF / BMP 格式，单文件不超过 20MB。也可使用 AI 联网搜索壁纸。</div>
+              <div class="field-hint" id="wallHint">支持 PNG / JPG / WEBP / GIF / BMP，单文件 ≤ 20MB；也可 AI 联网搜壁纸。</div>
             </div>
             <input id="wallFile" type="file" accept="image/*" hidden>
           </div>
@@ -1263,7 +1266,7 @@
                 <span class="rg-val" id="wallGlassVal">8px</span>
                 <button class="tune-reset" type="button" data-tune="glass">恢复默认</button>
               </div>
-              <div class="field-hint">控制顶栏、侧栏及输入框背景的毛玻璃虚化强度。仅在设置壁纸后生效，且仅作用于本机界面，不同步至其他设备。</div>
+              <div class="field-hint">顶栏 / 侧栏 / 输入框背景的毛玻璃强度；设壁纸后生效，仅本机，不同步其他设备。</div>
             </div>
           </div>
           <div class="card">
@@ -1339,8 +1342,7 @@
               </label>
             </div>
             <div class="field-hint">
-              开启后模型对话、在线模型列表、更新检查、余额、联网搜索和模型下载会在本地直接返回原因，不再等待超时；
-              截图、文件管理、状态日志、固定命令菜单和已装好的本地语音照常可用。保存即生效。
+              开启后对话、更新、余额、联网搜索与模型下载直接返回原因；截图、文件、日志与本地语音照常可用。
             </div>
           </div>
           <div class="card">
@@ -1373,8 +1375,7 @@
                 <option value="on">开启：记录请求 / 模型 / 工具 / 语音细节</option>
               </select>
               <div id="devModeHint" class="field-hint">
-                开启后写入 userdata/logs/debug-&lt;时间&gt;.log，正在写的文件上限 10 MB。
-                凭据、Cookie、URL 查询值、非回环 IP、QQ 号始终打码。
+                写入 userdata/logs/debug-&lt;时间&gt;.log（上限 10MB）；凭据、Cookie、查询值、IP、QQ 号始终打码。
               </div>
             </div>
             <details class="set-fold">
@@ -1696,7 +1697,7 @@
   // 自定义主题快照（壁纸 + 配色）。提前声明：WS 的 theme_changed 广播可能在
   // 文件后段的初始化执行到之前就到，那时若还是 undefined 会在 applyCfgAppearance
   // 里抛异常，连带后面的初始化全部中断。真正取值由 loadTheme 拉 /api/theme 填入。
-  var CFG_APPEARANCE = { wallpaper: '', url: '', thumb: '', palette: null, dim: 70, blur: 2, glass: 8, theme: '' };
+  var CFG_APPEARANCE = { wallpaper: '', url: '', thumb: '', palette: null, dim: 70, blur: 2, glass: 8, theme: '', wall_fit: 'cover', wall_pos: 'center' };
   // 最近一次拿到的主题快照。设置页那一段比 loadTheme 晚执行，
   // 进设置页 / 切到「外观」分区时按它补画表单，免得预览框和滑条空着
   var THEME_SNAPSHOT = null;
@@ -9658,6 +9659,80 @@
     termAiSync();
   }
 
+  /* ---------- 「进入智能音箱模式」的询问 ----------
+     用户打字说「进入智能音箱模式」这类话时，不把这句话丢给模型（模型答了也不会真的切屏），
+     直接在聊天里挂一张询问卡：点「进入」才真的开监听并切到面孔页。
+     只认「短句 + 明确动词」，像「智能音箱模式无法自动跳转」这种讨论不会被误判。 */
+  var WAKE_INTENT_RE = /(进入|进到|进|打开|开启|启动|切到|切换到|切换|跳到|换到|来个|开个|搞个)[\s，,。的]{0,3}[^，。！？!?]{0,6}(智能音箱|音箱模式|眼睛模式|语音模式|唤醒模式|唤醒监听)/;
+  function wakeIntentHit(text) {
+    var t = String(text || '').trim();
+    if (!t || t.length > 20) return false;
+    // 「不要/不用/退出」这类否定或反向说法一概不弹询问
+    if (/不要|不用|别|不想|取消|退出/.test(t)) return false;
+    // 疑问句是在讨论这个功能，不是在下指令（「如何进入智能音箱模式？」）
+    if (/如何|怎么|怎样|为什么|能否|什么|吗|？|\?/.test(t)) return false;
+    return WAKE_INTENT_RE.test(t);
+  }
+  // 命中就吃掉这条输入并弹询问；返回 true 表示「已拦截，别再发给模型」
+  function interceptWakeIntent(text) {
+    if (!wakeIntentHit(text)) return false;
+    input.value = '';
+    clearAttach();
+    input.style.height = 'auto';
+    updateSendBtn();
+    addWakeAsk();
+    return true;
+  }
+  function addWakeAsk() {
+    var card = document.createElement('div');
+    card.className = 'msg wake-ask';
+    var t = document.createElement('div');
+    t.className = 'wake-ask-t';
+    t.textContent = '要进入智能音箱模式吗？屏幕会切到全屏面孔页，后端开始监听唤醒词。';
+    var row = document.createElement('div');
+    row.className = 'wake-ask-b';
+    var yes = document.createElement('button');
+    yes.type = 'button';
+    yes.className = 'wake-yes';
+    yes.textContent = '进入';
+    var no = document.createElement('button');
+    no.type = 'button';
+    no.className = 'wake-no';
+    no.textContent = '先不';
+    function settle() {
+      yes.disabled = true;
+      no.disabled = true;
+    }
+    yes.addEventListener('click', function () {
+      if (yes.disabled) return;
+      settle();
+      t.textContent = '正在进入智能音箱模式…';
+      // 开关接口只回环可用：手机/别的设备访问会被后端挡下，这里就停在这一步
+      apiFetch('/api/wake/toggle?on=true', { method: 'POST' })
+        .then(function (r) {
+          if (!r.ok) throw new Error(String(r.status));
+          // 和面孔页自己的退出路径对称：退出时它回 /?native=1
+          location.href = '/eyes.html?native=1';
+        })
+        .catch(function () {
+          t.textContent = '进入失败：需要在本机访问才能开启，也可能缺唤醒模型或麦克风被占用。';
+          card.classList.add('err');
+        });
+    });
+    no.addEventListener('click', function () {
+      if (no.disabled) return;
+      settle();
+      t.textContent = '好的，继续留在主界面。';
+    });
+    row.appendChild(yes);
+    row.appendChild(no);
+    card.appendChild(t);
+    card.appendChild(row);
+    messages.appendChild(card);
+    trimMessages();
+    scrollBottomSafe();
+  }
+
   function doSend(text) {
     if (!text) return;
     if (!ws || ws.readyState !== 1) {
@@ -9683,7 +9758,8 @@
   // 附件标记（![图片](url) / @{path}）在发送时才拼上，正文输入框里不出现。
   function composeText() {
     var text = input.value.trim();
-    var marks = pendingAttach.map(function (a) { return a.mark; });
+    var marks = pendingAttach.filter(function (a) { return a.mark; })
+                            .map(function (a) { return a.mark; });
     if (text) return marks.length ? text + '\n' + marks.join('\n') : text;
     return marks.join('\n');
   }
@@ -9733,6 +9809,7 @@
     if (busy) { doCancel(); return; }
     var text = composeText();
     if (!text) return;
+    if (interceptWakeIntent(text)) return;   // 「进入智能音箱模式」这类话只弹询问，不进模型
     doSend(text);
     input.value = '';
     clearAttach();
@@ -9743,6 +9820,9 @@
 
   // 回车：运行中 = 排队；空闲 = 发送
   function submitInput() {
+    // 询问类输入优先拦下来：排队给模型毫无意义，模型答了也不会真的切屏
+    var pre = composeText();
+    if (pre && interceptWakeIntent(pre)) return;
     if (busy) { enqueueInput(); return; }
     send();
   }
@@ -10412,6 +10492,8 @@
   var cfgQqImageRecent = document.getElementById('cfgQqImageRecent');
   var cfgQqImageDir = document.getElementById('cfgQqImageDir');
   var cfgQqTextLog = document.getElementById('cfgQqTextLog');
+  // 「打开图片/文本文件夹」的跳转落点：后端按当前配置算好的真实路径
+  var qqArchivePaths = { image: '', text: '' };
   var cfgQqAutoLaunch = document.getElementById('cfgQqAutoLaunch');
   var cfgQqAutoLaunchWait = document.getElementById('cfgQqAutoLaunchWait');
   var cfgQqGuestPrompt = document.getElementById('cfgQqGuestPrompt');
@@ -11028,6 +11110,16 @@
     if (wasEmpty) apiProfilesState.current = apiProfilesState.profiles[0].id;
     paintApiProfiles();
     syncUsageApiOptions(apiProfilesState.profiles, apiProfilesState.current);
+    // 新增行也要记下基准值：autoSaveDirty() 会跳过没有 dataset.asv 的行，
+    // 以前填完 Key 直接切走就被当成「没有改动」，一个字节都不会存
+    var newRows = apiProfileList.querySelectorAll('.api-profile');
+    var newRow = newRows[newRows.length - 1];
+    if (newRow) {
+      Array.prototype.forEach.call(newRow.querySelectorAll('[data-autosave]'), function (el) {
+        el.dataset.asv = el.type === 'checkbox'
+          ? (el.checked ? '1' : '0') : String(el.value || '');
+      });
+    }
     apiProfileHint.textContent = '填好地址和 Key 后会自动保存；新增的这条保存后才能切换为当前使用';
   });
 
@@ -11168,9 +11260,8 @@
         ['账户', '请求', '输入', '命中率', '输出', '估算'], rows);
     }
     var note = d.note || '费用按官方单价估算，以官方账单为准。';
-    if ((d.unpriced_models || []).length) {
-      note += '　未收录单价、只统计 token：' + d.unpriced_models.join('、');
-    }
+    // 未收录单价的模型不在这里点名：接口仍返回 unpriced_models，
+    // 但费用页只给一句总说明，避免把服务商那边的模型名（含自动挑错的历史模型）混进提示里。
     if ((d.corrupted_files || []).length) {
       note += '　有 ' + d.corrupted_files.length + ' 个统计文件读取失败';
     }
@@ -11710,6 +11801,15 @@
   // 所以 PC 与 Deck 改完立刻都是同一套。
   var wallPreview = document.getElementById('wallPreview');
   var wallHint = document.getElementById('wallHint');
+  // 壁纸铺法与焦点（左上胶囊点一次换一种 + 右上九宫格），都压在预览图上
+  var wallFitBtn = document.getElementById('wallFitBtn');
+  var wallFitOv = document.getElementById('wallFitOv');
+  var wallPosGrid = document.getElementById('wallPos');
+  var wallPosWrap = document.getElementById('wallPosWrap');
+  // 当前铺法 / 焦点。快照可能比表单节点先到（首屏 loadTheme），
+  // 那时先记着，进设置页再按它回填
+  var wallFitCur = 'cover';
+  var wallPosCur = 'center';
   var wallDim = document.getElementById('wallDim');
   // 本端最近一次保存压暗 / 模糊的本地时间：比它旧的快照不能拿来刷滑杆。
   // 声明放在滑杆初始化之前，后面的赋值都在这之后执行
@@ -11728,6 +11828,51 @@
   var WALL_HINT_BASE = wallHint.textContent;
   // 还没选壁纸时预览框里那句话；大号加号也写这句，别两处各写一份
   var UPLOAD_HINT = '选一张图做壁纸，会自动取出主色生成整套配色';
+
+  // 壁纸铺法（显示方式）与焦点（显示重点）的合法值，与后端 WALL_FITS / WALL_POS 一致。
+  // 铺法照 KDE 桌面那套：填充 / 适应 / 拉伸 / 平铺 / 居中
+  var WALL_FITS = ['cover', 'contain', 'stretch', 'tile', 'center'];
+  var WALL_FIT_NAMES = { cover: '填充', contain: '适应', stretch: '拉伸',
+                         tile: '平铺', center: '居中' };
+  var WALL_POS = ['left top', 'top', 'right top', 'left', 'center', 'right',
+                  'left bottom', 'bottom', 'right bottom'];
+  function wallFitOf(v) {
+    v = String(v || '').toLowerCase();
+    return WALL_FITS.indexOf(v) !== -1 ? v : 'cover';
+  }
+  function wallPosOf(v) {
+    v = String(v || '').split(/\s+/).join(' ').toLowerCase();
+    return WALL_POS.indexOf(v) !== -1 ? v : 'center';
+  }
+  // 把铺法/焦点画到两个浮层控件上（只画，不落盘）
+  function paintWallFitUi(fit, pos) {
+    fit = wallFitOf(fit);
+    pos = wallPosOf(pos);
+    wallFitCur = fit;
+    wallPosCur = pos;
+    // 有壁纸才显示浮层。九宫格除了适应之外都常驻——适应虽然不裁切，
+    // 但留白那边图靠上还是居中同样由焦点决定，不该藏
+    var hasWall = !!(CFG_APPEARANCE && (CFG_APPEARANCE.thumb || CFG_APPEARANCE.wallpaper));
+    if (wallFitOv) wallFitOv.hidden = !hasWall;
+    if (wallFitBtn) {
+      wallFitBtn.textContent = WALL_FIT_NAMES[fit];
+      wallFitBtn.setAttribute('aria-label', '显示方式：' + WALL_FIT_NAMES[fit] + '，点击切换');
+    }
+    if (wallPosWrap) wallPosWrap.hidden = !hasWall;
+    if (wallPosGrid) {
+      Array.prototype.forEach.call(wallPosGrid.querySelectorAll('button'), function (b) {
+        b.classList.toggle('on', b.getAttribute('data-pos') === pos);
+      });
+    }
+    // 预览框里的图也按同样的铺法显示：换一种就能看到裁在哪，不用回主界面确认。
+    // 平铺/居中在这么小的框里没法如实表现，退化成 cover / contain 的近似
+    var pv = wallPreview && wallPreview.querySelector('img');
+    if (pv) {
+      pv.style.objectFit = fit === 'stretch' ? 'fill'
+                         : (fit === 'cover' || fit === 'tile' ? 'cover' : 'contain');
+      pv.style.objectPosition = pos;
+    }
+  }
 
   // 快照没到（theme 为空或带 error）时只同步按钮文案，不写表单：
   // 否则壁纸/配色还没拉下来就先把设置页刷成「没有壁纸」，看着像丢了设置
@@ -11801,6 +11946,11 @@
       // 没有壁纸时预览框本身就是「加号入口」：点一下就能选图，不必再往下找按钮
       wallPreview.innerHTML = '<span class="wall-add"><b>+</b><i>' + UPLOAD_HINT + '</i></span>';
     }
+    // 显示方式 / 显示重点跟着快照走：别的端改过也同步过来
+    paintWallFitUi(a.wall_fit, a.wall_pos);
+    // 没壁纸时才一起藏起来：铺法改成什么都不影响任何画面
+    if (wallFitOv) wallFitOv.hidden = !(a.thumb || a.wallpaper);
+    if (wallPosWrap) wallPosWrap.hidden = !(a.thumb || a.wallpaper);
     if (dimStale) {
       // 本地刚存的值比这份快照新：不走「用表单值回写快照」那条路，
       // 否则滑杆会被快照里的旧值拽回去再被本地值拽回来，看着就是闪
@@ -12210,6 +12360,53 @@
         }
       }).catch(function () { wallHint.textContent = '导入失败，请重试'; });
   });
+  // 显示方式 / 显示重点：改完本地立刻套上（不用等回包），再落盘广播给所有端。
+  // 点一下就是最终值，没有拖动中间态，所以只做一个很短的防抖合并连点
+  var wallCropSaveT = 0;
+  function saveWallCrop() {
+    var fit = wallFitOf(wallFitCur);
+    var pos = wallPosOf(wallPosCur);
+    if (CFG_APPEARANCE && typeof CFG_APPEARANCE === 'object') {
+      CFG_APPEARANCE.wall_fit = fit;
+      CFG_APPEARANCE.wall_pos = pos;
+    }
+    paintWallFitUi(fit, pos);
+    applyCfgAppearance();
+    clearTimeout(wallCropSaveT);
+    wallCropSaveT = setTimeout(function () {
+      apiFetch('/api/theme/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wall_fit: fit, wall_pos: pos })
+      }).then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (!d || !d.theme) return;
+          // 回包前又改过：这份快照是更早的值，整份丢掉
+          if (wallFitOf(wallFitCur) !== fit || wallPosOf(wallPosCur) !== pos) return;
+          renderAppearanceForm(d.theme);
+        })
+        .catch(function () {});
+    }, 200);
+  }
+  // 左上胶囊：点一次换一种，填充 → 适应 → 拉伸 → 平铺 → 居中 → 填充
+  if (wallFitBtn) {
+    wallFitBtn.addEventListener('click', function () {
+      var i = WALL_FITS.indexOf(wallFitOf(wallFitCur));
+      wallFitCur = WALL_FITS[(i + 1) % WALL_FITS.length];
+      saveWallCrop();
+    });
+  }
+  if (wallPosGrid) {
+    wallPosGrid.addEventListener('click', function (e) {
+      var b = e.target.closest && e.target.closest('button[data-pos]');
+      if (!b) return;
+      wallPosCur = wallPosOf(b.getAttribute('data-pos'));
+      saveWallCrop();
+    });
+  }
+  // 首帧按已经拿到的值画（快照还没到就是默认值），
+  // 别让「快照到之前点一下胶囊」把焦点跟着改成默认的居中
+  paintWallFitUi((CFG_APPEARANCE && CFG_APPEARANCE.wall_fit) || wallFitCur,
+                 (CFG_APPEARANCE && CFG_APPEARANCE.wall_pos) || wallPosCur);
   // ---------- 配色板：预览 + 三档 × 五格 + 手动取色 ----------
   // 快照里的 palette 就是后端生成的三套（light / dark / oled），
   // 这里只负责把它画出来，任何颜色都不在前端另算一遍
@@ -12876,6 +13073,8 @@
   function closeSettings() {
     // 还有点改动没落盘（比如刚打完字就点返回）：先抢存一次再走
     if (typeof flushAutoSave === 'function') flushAutoSave();
+    // OneBot 卡片的自动保存有 700ms 防抖，同样抢存一次
+    if (typeof qqCardFlush === 'function') qqCardFlush();
     document.body.classList.remove('settings-mode');
     document.body.classList.remove('sb-open');
     // 搜索框回到对话页后不显示，但 fitHdrSearch 曾给顶栏挂过换行标记的，
@@ -13093,7 +13292,10 @@
   saveCfg.addEventListener('click', function () {
     // 自动保存已经把改动都落盘了：这里只做兜底，没有未保存的改动就不发请求，
     // 免得每次点都刷一遍「保存中… → 已自动保存」，反倒把真正的提示挤掉
-    if (!autoSaveDirty()) { setCfgHint('没有待保存的改动'); return; }
+    if (!autoSaveDirty()) {
+      setCfgHint('已是最新');
+      return;
+    }
     cfgPermGateThenSave();
   });
 
@@ -13942,7 +14144,14 @@
   });
   qqRedactWords = makeChipList({
     input: cfgQqRedactInput, addBtn: cfgQqRedactAdd, box: qqRedactChipsBox,
-    hint: qqRedactHint, empty: '未添加敏感词，输出不做替换', check: qqRedactWordError
+    hint: qqRedactHint, empty: '未添加敏感词，输出不做替换', check: qqRedactWordError,
+    // 敏感词增删即保存：以前只改内存，刷新页面就从服务端旧值回填
+    onChange: function () {
+      if (!qqConfigLoaded) return;
+      submitQq(false, { silent: true }).then(function (res) {
+        if (qqRedactHint) qqRedactHint.textContent = res ? '敏感词已保存' : '';
+      });
+    }
   });
 
   // 禁用词句：一条 = 一个 chip；旧配置里的逗号串读进来时按中英文逗号/顿号/空白切分
@@ -13961,7 +14170,10 @@
   var personaForbid = makeChipList({
     input: cfgPersonaForbidInput, addBtn: cfgPersonaForbidAdd,
     box: personaForbidChipsBox, hint: personaForbidHint,
-    empty: '未添加禁用词句', check: forbidWordError
+    empty: '未添加禁用词句', check: forbidWordError,
+    // 禁用词句也走 /api/config 自动保存（payload 里带 persona_forbid）：
+    // 以前增删只改内存，不点「保存」就丢了，界面显示了但没生效
+    onChange: function () { cfgPermGateThenSave(); }
   });
 
   // 主人 QQ：只允许一个号；老配置里多出来的号存在 qqAdminExtras，保存时原样带回
@@ -14315,6 +14527,8 @@
         c.image_recent_minutes != null ? c.image_recent_minutes : 2;
       if (cfgQqImageDir) cfgQqImageDir.value = c.image_save_dir || '';
       if (cfgQqTextLog) cfgQqTextLog.value = c.text_log_path || '';
+      qqArchivePaths.image = c.image_dir_effective || '';
+      qqArchivePaths.text = c.text_log_effective || '';
       if (cfgQqAutoLaunch) cfgQqAutoLaunch.checked = c.auto_launch_after_install !== false;
       if (cfgQqAutoLaunchWait) cfgQqAutoLaunchWait.value =
         c.auto_launch_wait_seconds != null ? c.auto_launch_wait_seconds : 6;
@@ -14437,7 +14651,11 @@
       voice_group_members: cfgQqVoiceMembers ? !!cfgQqVoiceMembers.checked : true,
       voice_only: cfgQqVoiceOnly ? !!cfgQqVoiceOnly.checked : false,
       voice_max_seconds: qqNum(cfgQqVoiceSeconds, 60),
-      voice_max_kb: qqNum(cfgQqVoiceKb, 4096)
+      voice_max_kb: qqNum(cfgQqVoiceKb, 4096),
+      // 重连退避：以前只有这两个框自己的失焦保存会带它们，整表提交（连接 /
+      // 卡片自动保存）漏了这两项，改完点连接反而被后端旧值覆盖回去
+      reconnect_min: qqNum(cfgQqReconnMin, 1),
+      reconnect_max: qqNum(cfgQqReconnMax, 60)
     };
     return memFetch('/api/qq/config', {
       method: 'POST',
@@ -14517,6 +14735,45 @@
   // 「连接 / 重新连接」：先按当前表单保存，再用刚保存的配置建连。
   // 以前只保存“已保存的配置”再重连，用户改完参数直接点这里会用旧地址去连
   qqReconnectBtn.addEventListener('click', function () { void submitQq(true); });
+
+  // 「打开图片文件夹 / 打开文本文件夹」：把右侧文件页跳到归档落点。
+  // 落点由后端给（image_save_dir / text_log_path 留空时是 数据根/meidobot），
+  // 这些目录是第一次存图/存文本时才建的：先补建再跳，免得面板弹「目录不存在」。
+  // 文本那条是文件，跳父目录并高亮文件本身。
+  function qqRevealArchive(kind) {
+    var target = qqArchivePaths[kind] || '';
+    if (!target) {
+      if (qqReconnectHint) qqReconnectHint.textContent = '还没读到归档路径，稍后再试';
+      return;
+    }
+    var isFile = kind === 'text';
+    var dir = isFile ? (target.replace(/\/[^\/]*$/, '') || '/') : target;
+    var name = isFile ? target.split('/').pop() : '';
+    // 右栏可能收着（窄屏是抽屉）：先展开，再切到文件页
+    if (window.matchMedia('(max-width: 1080px)').matches) RB.open = true;
+    RB.collapsed = false;
+    rbApplyLayout();
+    rbShowTab('file');
+    // 目录是第一次存图/存文本时才建的：先补建一次再跳，免得面板弹「目录不存在」。
+    // 建不出来（父目录不在、只读分区）就直接跳，让面板自己说原因
+    var parent = dir.replace(/\/[^\/]*$/, '') || '/';
+    var leaf = dir.split('/').filter(function (s) { return !!s; }).pop() || '';
+    apiFetch('/api/fs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ op: 'mkdir', path: parent, path2: leaf })
+    }).catch(function () {}).then(function () {
+      fbLoad(target, name);
+    });
+  }
+  var openImageDirBtn = document.getElementById('qqOpenImageDir');
+  if (openImageDirBtn) {
+    openImageDirBtn.addEventListener('click', function () { qqRevealArchive('image'); });
+  }
+  var openTextLogBtn = document.getElementById('qqOpenTextLog');
+  if (openTextLogBtn) {
+    openTextLogBtn.addEventListener('click', function () { qqRevealArchive('text'); });
+  }
 
   // QQ 会话头部面板：打开时现拉一次状态与语音开关（不碰设置页未保存的其它项）
   if (qqSessBtn) {
@@ -14604,6 +14861,73 @@
     .forEach(function (el) {
       if (el) el.addEventListener('change', saveQqNumericFields);
     });
+
+  // ---- OneBot 卡片整体自动保存 ----
+  // 以前这张卡里只有语音开关、重连数值、群号改动会即时落库，其余（收图、限流、
+  // 缓存、路径、总开关……）都只能靠点「连接 / 重新连接」整表提交，改完不点就
+  // 丢了：界面上明明是打开的，config.toml 里还是旧值，机器人照样回
+  // 「图片功能没开（allow_image=false）」。现在卡片里任何控件改动都自动保存。
+  var qqCard = cfgQqEnable && cfgQqEnable.closest ? cfgQqEnable.closest('.card') : null;
+  // 已经有专用保存链路（只发部分字段）的控件：这里跳过，免得一次改动发两个请求
+  var QQ_CARD_SKIP = {
+    cfgQqVoice: 1, cfgQqVoiceMembers: 1, cfgQqVoiceOnly: 1,
+    cfgQqVoiceSeconds: 1, cfgQqVoiceKb: 1, cfgQqReconnMin: 1, cfgQqReconnMax: 1,
+    // 群号 / 敏感词的输入框只是「加一条」的草稿，真正落库在 chip 增删时
+    cfgQqGroupInput: 1, cfgQqRedactInput: 1
+  };
+  var QQ_CARD_SAVE_MS = 700;
+  var qqCardSaveTimer = null;
+  var qqCardSaveBusy = false;
+  var qqCardSaveAgain = false;
+  // 打字中间态（半截主人 QQ / 超长提示词）不提交：也不写错误提示，等用户填完
+  function qqCardCanSave() {
+    if (!qqConfigLoaded) return false;
+    if (cfgQqAdmins && qqAdminError(cfgQqAdmins.value.trim())) return false;
+    if (cfgQqGuestPrompt && cfgQqGuestPrompt.value.trim().length > QQ_GUEST_MAX) return false;
+    return true;
+  }
+  function qqCardRunSave() {
+    qqCardSaveTimer = null;
+    if (!qqCardCanSave()) return;
+    if (qqCardSaveBusy) { qqCardSaveAgain = true; return; }
+    qqCardSaveBusy = true;
+    qqCardSaveAgain = false;
+    submitQq(false, { silent: true }).then(function (res) {
+      qqCardSaveBusy = false;
+      // 失败文案 submitQq 自己已经写进 #qqHint 了，这里只补成功提示
+      if (res) qqHint.textContent = '已自动保存';
+      if (qqCardSaveAgain) qqCardScheduleSave(0);
+    });
+  }
+  function qqCardScheduleSave(delay) {
+    clearTimeout(qqCardSaveTimer);
+    qqCardSaveTimer = setTimeout(qqCardRunSave,
+      typeof delay === 'number' ? delay : QQ_CARD_SAVE_MS);
+  }
+  // 关设置页 / 离开页面时把还没到点的改动抢存一次
+  function qqCardFlush() {
+    if (!qqCardSaveTimer) return;
+    clearTimeout(qqCardSaveTimer);
+    qqCardRunSave();
+  }
+  if (qqCard) {
+    // 开关 / 下拉 / 数字框 / 单行文本：change（勾选、选择、失焦、回车）后立刻存
+    qqCard.addEventListener('change', function (e) {
+      var el = e.target;
+      if (!el || !el.id || QQ_CARD_SKIP[el.id]) return;
+      // 「QQ 回传文案」折叠区有自己的保存按钮和 /api/qq/texts 接口，别混进来
+      if (el.closest && el.closest('#qqTextFold')) return;
+      qqCardScheduleSave(0);
+    });
+    // 多行文本（群友提示词）边打边存：停手 700ms 后提交
+    qqCard.addEventListener('input', function (e) {
+      var el = e.target;
+      if (!el || el.tagName !== 'TEXTAREA') return;
+      if (el.closest && el.closest('#qqTextFold')) return;
+      qqCardScheduleSave(QQ_CARD_SAVE_MS);
+    });
+    window.addEventListener('pagehide', qqCardFlush);
+  }
   if (qsConnBtn) {
     qsConnBtn.addEventListener('click', function () {
       var connected = qqSessState === 'connected'
@@ -14638,7 +14962,9 @@
       if (cfgQqGuestPrompt) cfgQqGuestPrompt.value = qqGuestDefault;
       updateQqGuestCount();
       renderQqGuestHint();
-      qqHint.textContent = '已填入默认文案，点「保存」后生效';
+      // 填完直接落库（内容与默认一致时 submitQq 会存空串 = 用内置默认）
+      qqCardScheduleSave(0);
+      qqHint.textContent = '已恢复默认并保存';
     });
   }
   if (qqLogsRefresh) {
@@ -15003,6 +15329,7 @@
     saveBtn.addEventListener('click', function () {
       saveBtn.disabled = true;
       hint.textContent = '保存中…';
+      if (presetSaveTimer) { clearTimeout(presetSaveTimer); presetSaveTimer = null; }
       memFetch('/api/presets/' + encodeURIComponent(item.id), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -15020,6 +15347,38 @@
         setPresetHint('保存失败：' + ((err && err.message) || '未知错误'));
       }).then(function () { saveBtn.disabled = false; });
     });
+
+    // 预设编辑框也是自动保存：以前改完不点「保存」就切分区 / 关设置，改动
+    // 直接丢（只有切换预设下拉时才会提醒一次）。现在失焦 / 停手即 PATCH，
+    // 成功后就地更新基准值，不重建 DOM，不会把正在输入的框顶掉。
+    var presetSaving = false;
+    var presetSaveTimer = null;
+    function presetAutoSave() {
+      if (presetSaveTimer) { clearTimeout(presetSaveTimer); presetSaveTimer = null; }
+      if (presetSaving || !presetDirty()) return;
+      presetSaving = true;
+      hint.textContent = '保存中…';
+      memFetch('/api/presets/' + encodeURIComponent(item.id), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: titleIn.value, prompt: promptTa.value })
+      }).then(function (res) {
+        baseTitle = titleIn.value;
+        basePrompt = promptTa.value;
+        if (res && res.preset) item.prompt = res.preset.prompt;
+        hint.textContent = '已自动保存';
+        setPresetHint('预设已保存');
+      }).catch(function (err) {
+        hint.textContent = '';
+        setPresetHint('保存失败：' + ((err && err.message) || '未知错误'));
+      }).then(function () { presetSaving = false; });
+    }
+    titleIn.addEventListener('change', presetAutoSave);
+    promptTa.addEventListener('input', function () {
+      if (presetSaveTimer) clearTimeout(presetSaveTimer);
+      presetSaveTimer = setTimeout(presetAutoSave, 800);
+    });
+    promptTa.addEventListener('change', presetAutoSave);
 
     delBtn.addEventListener('click', function () {
       if (!window.confirm('删除《' + (item.game_name || item.title || '该游戏') + '》的预设？')) return;
@@ -15166,14 +15525,17 @@
   }
 
   function riPaint() {
-    // logo 状态：高亮描边 + 「接管中」小字，远程端和 Deck 端表现一致
-    brandLogo.classList.toggle('ri-active', riActive);
-    riBanner.hidden = !riActive;
-    if (riActive) {
+    // 「有人正在接管」（任何一个端发起的）和「本端正在接管」是两件事：
+    // Deck 本机页只是被控端，自己从不持有 riActive，但照样要显示状态和停止入口，
+    // 否则从电脑端接管过来后，Deck 上点 logo 会回「当前没有接管会话」。
+    var anyActive = riActive || riState.active;
+    brandLogo.classList.toggle('ri-active', anyActive);
+    riBanner.hidden = !anyActive;
+    if (anyActive) {
       // 文案要短：窄屏是一枚贴顶的胶囊，长句会被 nowrap 顶出屏幕。
       // 三档按「空间最紧 → 最松」排：手机 / 远端 / Deck 本机
       riBannerText.textContent = IS_NATIVE
-        ? '远端接管中 · Esc 停止'
+        ? '远端接管中 · 点 logo 停止'
         : (riState.by ? ('接管中 · ' + riState.by) : '接管中 · Esc 停止');
     }
   }
@@ -15446,6 +15808,19 @@
     riTeardown(true);
   }
 
+  // 停止接管（任何一端都能停）：服务端只有一个全局会话，
+  // 本端没持有会话（比如 Deck 本机页看着电脑端接管）时直接请求释放。
+  function riStopAny() {
+    if (riActive || riStarting || riWs) { riTeardown(true); return true; }
+    if (riState.active) {
+      riPostRelease();
+      riState.active = false;
+      riPaint();
+      return true;
+    }
+    return false;
+  }
+
   // 触屏设备（手机/平板）没有指针锁定，走触控垫；桌面上锁不锁得到先按能力判断
   function wantsTouchPad() {
     if (IS_NATIVE) return false;
@@ -15465,19 +15840,23 @@
     brandLogo.blur();
     if (!IS_NATIVE && (riPad.on || wantsTouchPad())) { padPressLogo(e); return; }
     if (IS_NATIVE) {
-      // 本机 Deck 客户端：点 logo 只释放，不会接管自己
-      if (riActive) { stopRemoteInput(); riToast('已停止接管'); }
-      else { riToast('当前没有接管会话'); }
+      // 本机 Deck 客户端：点 logo 只释放，不会接管自己。
+      // 不管接管是电脑端还是本机发起的都要能停（服务端只有一个全局会话）
+      if (riStopAny()) riToast('已停止接管');
+      else riToast('当前没有接管会话');
       return;
     }
     if (riActive) { stopRemoteInput(); }
+    // 别的端正在接管：别再发握手去撞 RI_BUSY，直接说明情况
+    else if (riState.active) { riToast('已经有人在接管这台 Deck 了'); }
     else { startRemoteInput(); }
   });
 
   riStop.addEventListener('click', function (e) {
     e.preventDefault();
     e.stopPropagation();
-    stopRemoteInput();
+    // 横幅上的「停止接管」在 Deck 本机页也要能停掉电脑端的会话
+    if (riStopAny()) riToast('已停止接管');
   });
 
   // ---------- 触控垫（盲操） ----------
@@ -16270,10 +16649,22 @@
     box.innerHTML = '';
     pendingAttach.forEach(function (a, i) {
       var chip = document.createElement('div');
-      chip.className = 'atchip';
+      chip.className = 'atchip' + (a.uploading ? ' uploading' : '');
       var thumb = document.createElement('span');
       thumb.className = 'at-thumb';
-      if (a.kind === 'image' && a.url) {
+      if (a.uploading) {
+        // 传的过程中先在格子里转圈：有本地预览就压在圈下面显示，
+        // 传完原地换成真缩略图，不另外弹「上传中」的提示
+        if (a.local) {
+          var pv = document.createElement('img');
+          pv.src = a.local;
+          pv.alt = '';
+          thumb.appendChild(pv);
+        }
+        var ring = document.createElement('span');
+        ring.className = 'at-spin';
+        thumb.appendChild(ring);
+      } else if (a.kind === 'image' && a.url) {
         var img = document.createElement('img');
         img.src = a.url;
         img.alt = a.name;
@@ -16296,6 +16687,7 @@
       del.textContent = '✕';
       del.addEventListener('click', function () {
         pendingAttach.splice(i, 1);
+        discardAttach(a);
         renderAttach();
       });
       chip.appendChild(thumb);
@@ -16306,18 +16698,64 @@
     box.classList.toggle('show', pendingAttach.length > 0);
   }
 
-  // 批量上传；逐个进 pendingAttach 并渲染缩略图胶囊，不再往正文里塞标记
+  // 删掉一个待发项：还在传的就标记作废（传完的回包直接丢），
+  // 已经传上去的顺手把服务端那份删掉 —— 没发出去的文件不该一直躺在磁盘上
+  function discardAttach(a) {
+    if (!a) return;
+    a.canceled = true;
+    if (a.local) {
+      try { URL.revokeObjectURL(a.local); } catch (e) {}
+      a.local = '';
+    }
+    // 只删「本次上传进上传目录」的那份：从文件面板拖来的 @{路径} 指向用户的
+    // 真实文件，点掉胶囊只该取消引用，绝不能把原文件删了
+    if (!a.owned || !a.mark) return;
+    apiFetch('/api/upload/discard', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: a.kind === 'image' ? a.url : '',
+                             path: a.kind === 'image' ? '' : (a.mark.replace(/^@\{|\}$/g, '')) })
+    }).catch(function () {});
+  }
+
+  // 批量上传；先占住格子转圈，传完原地换成缩略图胶囊，不再往正文里塞标记
   function uploadFiles(files) {
     if (!files || !files.length) return;
     var list = Array.prototype.slice.call(files);
-    addSystem('上传中… ' + list.length + ' 个文件');
+    // 一次只传一个（顺序链），但格子先全部占好：用户立刻看到「有东西在传」
+    var slots = list.map(function (f) {
+      var isImg = !f.type || f.type.indexOf('image/') === 0;
+      var slot = { uploading: true, canceled: false, mark: '', name: f.name,
+                   kind: 'file', url: '',
+                   local: (isImg && window.URL && URL.createObjectURL)
+                          ? URL.createObjectURL(f) : '' };
+      pendingAttach.push(slot);
+      return slot;
+    });
+    renderAttach();
     var chain = Promise.resolve();
-    list.forEach(function (f) {
+    list.forEach(function (f, i) {
       chain = chain.then(function () {
+        var slot = slots[i];
+        if (slot.canceled) return;
         return uploadOne(f).then(function (res) {
-          pendingAttach.push(attachMark(res, f.name));
+          if (slot.local) { try { URL.revokeObjectURL(slot.local); } catch (e) {} slot.local = ''; }
+          var at = pendingAttach.indexOf(slot);
+          if (slot.canceled || at < 0) {
+            // 传完之前已经被删了：这份上传没有主人，直接删掉
+            var orphan = attachMark(res, f.name);
+            orphan.owned = true;
+            discardAttach(orphan);
+            return;
+          }
+          var done = attachMark(res, f.name);
+          done.owned = true;   // 点掉胶囊时允许删这份上传文件
+          pendingAttach[at] = done;
           renderAttach();
         }).catch(function (err) {
+          var at = pendingAttach.indexOf(slot);
+          if (at >= 0) { pendingAttach.splice(at, 1); renderAttach(); }
+          if (slot.local) { try { URL.revokeObjectURL(slot.local); } catch (e) {} slot.local = ''; }
+          if (slot.canceled) return;
           addSystem('上传失败：' + f.name + (err && err.message ? '（' + err.message + '）' : ''));
         });
       });
@@ -16753,7 +17191,7 @@
     // 那里就到：此时它是 undefined，直接读 .palette 会抛异常并中断后面的初始化。
     // 这里先兜一个空壳，真正值稍后由 loadTheme / renderAppearanceForm 覆盖。
     if (!CFG_APPEARANCE || typeof CFG_APPEARANCE !== 'object') {
-      CFG_APPEARANCE = { wallpaper: '', url: '', thumb: '', palette: null, dim: 70, blur: 2, glass: 8 };
+      CFG_APPEARANCE = { wallpaper: '', url: '', thumb: '', palette: null, dim: 70, blur: 2, glass: 8, wall_fit: 'cover', wall_pos: 'center' };
     }
     // 没传快照（或被当成事件对象传进来）时只是「按本地快照重画一遍」。
     // 以前这种情况会把本地值原样写回 CFG_APPEARANCE，等于把别的端推来的
@@ -16832,6 +17270,9 @@
     // 模糊就是实际 px：0~12 直接用在 CSS 上，不再做平方根收口
     var blurRaw = Math.max(0, Math.min(12, Number(a.blur) || 0));
     var blur = blurRaw;
+    // 壁纸铺法：stretch 落成 100% 100%；contain 时不能再用 scale(1.03) 放大兜边，
+    // 否则四周的留白又被裁掉一块，「完整显示」就不完整了
+    var wallFit = String(a.wall_fit || 'cover');
     var vars = {
       '--wallpaper': on ? 'url("' + a.url + '")' : 'none',
       // 「压暗壁纸」实际做的事是让上层 UI 变透明：0 = 面板全实、壁纸完全被
@@ -16840,6 +17281,14 @@
       '--wall-dim': '0',
       '--wall-blur': (Math.round(blur * 2) / 2) + 'px',
       '--panel-alpha': on ? String(1 - dim / 100) : '1',
+      // 铺法与焦点：填充 cover / 适应 contain / 拉伸 100% 100% / 平铺 auto+repeat /
+      // 居中 auto（保持原尺寸）。平铺与居中不能放大兜边，会变成「放大后的平铺」
+      '--wall-fit': wallFit === 'stretch' ? '100% 100%'
+                  : (wallFit === 'cover' ? 'cover'
+                  : (wallFit === 'contain' ? 'contain' : 'auto')),
+      '--wall-repeat': wallFit === 'tile' ? 'repeat' : 'no-repeat',
+      '--wall-pos': String(a.wall_pos || 'center'),
+      '--wall-scale': (wallFit === 'cover' || wallFit === 'stretch') ? '1.03' : '1',
       // 毛玻璃强度跟随后端（所有端共用一套外观）；旧快照没有这一项时等于 0
       '--glass': Math.max(0, Math.min(20, Math.round(Number(a.glass) || 0))) + 'px'
     };
@@ -16923,6 +17372,7 @@
   function clearCfgAppearanceVars() {
     var html = document.documentElement;
     ['--wallpaper', '--wall-dim', '--wall-blur', '--panel-alpha', '--glass',
+     '--wall-fit', '--wall-pos', '--wall-scale', '--wall-repeat',
      '--brand', '--user-bubble', '--bg', '--surface', '--surface-2', '--muted-base',
      '--on-brand', '--on-user', '--logo-glow', '--logo-glow-soft',
      '--ri-brand'].forEach(function (k) {

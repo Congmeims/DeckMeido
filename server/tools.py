@@ -1073,16 +1073,43 @@ def venv_bin_dir() -> Path | None:
     return None
 
 
-def _command_env() -> dict:
-    """命令通道的环境变量：PATH 前置 venv/bin
+def dev_dir() -> Path:
+    """开发环境根目录：工作区下的隐藏目录 .dev
 
-    以前直接抄 os.environ，PATH 里只有系统目录，命令里的 python3 落到
-    /usr/bin/python3，PIL 这些装在 .venv 里的包自然 import 不到。
+    用户在 DeckMeido 里开发小应用时，语言运行时、工具链、依赖都装这里
+    （规则见 prompts/system.md）。放工作区的理由：SteamOS 的 / 只剩几百 MB、
+    /var 整盘才 230MB，写满会连系统更新都做不了；删掉 .dev 就等于复位。
+    每次现取 WORKSPACE，用户在设置里换工作区后自然跟着变。
+    """
+    return WORKSPACE / ".dev"
+
+
+def _command_env() -> dict:
+    """命令通道的环境变量：工作区 .dev/bin 与后端 venv/bin 前置，缓存改写
+
+    两件事：
+    1. PATH 里只有系统目录时，命令里的 python3 落到 /usr/bin/python3，
+       PIL 这些装在 .venv 里的包自然 import 不到 —— 所以 venv/bin 前置。
+    2. 开发时装运行时/依赖，pip、npm、cargo 默认会往系统盘和 ~/.cache 写。
+       SteamOS 的根分区只读且更新整盘覆盖，/var 只有 230MB，所以安装前缀
+       和缓存全部指到工作区的 .dev 下 —— 模型漏了提示词也不会污染系统盘。
     """
     env = dict(os.environ)
+    dev = dev_dir()
+    path = [str(dev / "bin"), str(dev / "go" / "bin")]
     bin_dir = venv_bin_dir()
     if bin_dir:
-        env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+        path.append(str(bin_dir))
+    path.append(env.get("PATH", ""))
+    env["PATH"] = os.pathsep.join(path)
+    # 安装前缀 / 缓存：一律落在工作区，删 .dev 就复位
+    env["PIP_CACHE_DIR"] = str(dev / "cache" / "pip")
+    env["UV_CACHE_DIR"] = str(dev / "cache" / "uv")
+    env["UV_PYTHON_INSTALL_DIR"] = str(dev / "python")
+    env["NPM_CONFIG_PREFIX"] = str(dev / "npm")
+    env["NPM_CONFIG_CACHE"] = str(dev / "cache" / "npm")
+    env["CARGO_HOME"] = str(dev / "cargo")
+    env["GOPATH"] = str(dev / "go")
     return env
 
 

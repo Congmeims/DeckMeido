@@ -10,6 +10,8 @@ register(app) 时才定义路由函数，保持 main.api_xxx 的既有写法。
     blur      = 2                    # 壁纸模糊 px 0-12（新装默认值，见 BLUR_DEFAULT）
     glass     = 8                    # 毛玻璃强度 px 0-20（新装默认值，见 GLASS_DEFAULT）
     theme     = "dark"              # 三档主题 light / dark / oled
+    wall_fit  = "cover"              # 壁纸铺法 cover / contain / stretch / tile / center
+    wall_pos  = "center"             # 壁纸焦点（background-position 九宫格写法）
 整段跟随后端配置：任一端的网页/客户端改完写回这里，再广播给所有连接（含 Deck 客户端）。
 文件本身在 userdata/wallpapers/，由 /wallpapers 静态挂载公开提供（<img> 带不了令牌）。
 """
@@ -40,16 +42,39 @@ class _TuneReq(BaseModel):
     blur: int | None = None
     glass: int | None = None
     theme: str | None = None
+    # 壁纸显示方式与焦点：竖构图、只想露一块时用（以前写死 cover + center）
+    wall_fit: str | None = None
+    wall_pos: str | None = None
 
 
 # 合法的三档主题名
 THEMES = ("light", "dark", "oled")
+
+# 壁纸铺法，照 KDE 桌面那套：填充 / 适应 / 拉伸 / 平铺 / 居中
+WALL_FITS = ("cover", "contain", "stretch", "tile", "center")
+# 焦点：直接写进 CSS background-position 的九宫格说法，默认居中
+WALL_POS = ("center", "top", "bottom", "left", "right",
+            "left top", "right top", "left bottom", "right bottom")
+WALL_FIT_DEFAULT = "cover"
+WALL_POS_DEFAULT = "center"
 
 
 def _theme_name(value, default: str = "dark") -> str:
     """配置里的主题名，非法值按默认档"""
     v = str(value or "").strip()
     return v if v in THEMES else default
+
+
+def _wall_fit(value) -> str:
+    """配置里的壁纸铺法，非法值按 cover（与改动前的写死值一致）"""
+    v = str(value or "").strip().lower()
+    return v if v in WALL_FITS else WALL_FIT_DEFAULT
+
+
+def _wall_pos(value) -> str:
+    """配置里的焦点位置，空白折叠后比对，非法值按居中"""
+    v = " ".join(str(value or "").split()).lower()
+    return v if v in WALL_POS else WALL_POS_DEFAULT
 
 
 # dim 在前端是「界面透明度」：越大上层 UI 越透、壁纸越清楚（见 index.html
@@ -130,6 +155,12 @@ def current_theme() -> dict:
         # 毛玻璃强度与三档主题也跟随后端：所有网页/客户端共用同一套外观
         "glass": glass,
         "theme": _theme_name(app.get("theme")),
+        # 壁纸怎么铺、焦点在哪：以前写死 cover + center，竖图只能被裁掉左右。
+        # stretch 由前端落成 background-size: 100% 100%
+        "wall_fit": _wall_fit(app.get("wall_fit")),
+        "wall_pos": _wall_pos(app.get("wall_pos")),
+        "wall_fit_ts": _stamp(str(app.get("wall_fit_ts") or "")),
+        "wall_pos_ts": _stamp(str(app.get("wall_pos_ts") or "")),
         # 壁纸平均亮度的档位（light / mid / dark）：前端拿它调小灰字深浅，
         # 浅色壁纸透上来时灰字加深、深色壁纸时反过来。没壁纸时不上报
         "wall_lum": themecolor.lum_bucket(themecolor.wallpaper_lum()) if name else "",
@@ -273,7 +304,7 @@ def register(app) -> None:
 
     @router.post("/api/theme/config")
     async def api_theme_config(req: _TuneReq):
-        """透明度 / 模糊 / 毛玻璃 / 主题：改完落到 config.toml，再广播给所有端
+        """透明度 / 模糊 / 毛玻璃 / 主题 / 壁纸铺法与焦点：改完落盘再广播
 
         外观全局共用一份，以后端为准：任一端（另一台浏览器、桌面客户端、
         掌机面板）改完，其余端收到 theme_changed 立刻跟着变。
@@ -282,6 +313,17 @@ def register(app) -> None:
         前端据此丢掉自己保存之前拍下的旧快照。
         """
         now = int(time.time() * 1000)
+        # 枚举项先校验：传了非法值就整次拒绝，不落半套配置
+        fit = None
+        if req.wall_fit is not None:
+            fit = str(req.wall_fit).strip().lower()
+            if fit not in WALL_FITS:
+                return {"ok": False, "error": "显示方式应为 cover / contain / stretch / tile / center"}
+        pos = None
+        if req.wall_pos is not None:
+            pos = " ".join(str(req.wall_pos).split()).lower()
+            if pos not in WALL_POS:
+                return {"ok": False, "error": "焦点位置不合法"}
         updates = {}
         if req.dim is not None:
             updates["dim"] = _clamp_int(req.dim, DIM_DEFAULT, 0, 100)
@@ -295,6 +337,12 @@ def register(app) -> None:
         if req.theme is not None:
             updates["theme"] = _theme_name(req.theme)
             updates["theme_ts"] = str(now)
+        if fit is not None:
+            updates["wall_fit"] = fit
+            updates["wall_fit_ts"] = str(now)
+        if pos is not None:
+            updates["wall_pos"] = pos
+            updates["wall_pos_ts"] = str(now)
         await _publish(updates)
         # 回包直接用这次的落盘时间：热重载后的 CFG 从文件里读回的 glass_ts
         # 是字符串，任何一步没跟上，前端都会把快照判成「旧货」拒收
@@ -309,6 +357,12 @@ def register(app) -> None:
         if req.theme is not None:
             snap["theme_ts"] = now
             snap["theme"] = updates["theme"]
+        if fit is not None:
+            snap["wall_fit_ts"] = now
+            snap["wall_fit"] = fit
+        if pos is not None:
+            snap["wall_pos_ts"] = now
+            snap["wall_pos"] = pos
         return {"ok": True, "theme": snap}
 
     @router.post("/api/theme/candidates/{cid}/apply")

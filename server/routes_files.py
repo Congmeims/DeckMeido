@@ -1085,6 +1085,31 @@ def register(app) -> None:
         rel = str(keep.relative_to(tools.WORKSPACE))
         return {"url": f"/uploads/{keep.name}", "path": rel, "kind": kind, "name": fn.name}
 
+    @router.post("/api/upload/discard")
+    async def api_upload_discard(req: dict):
+        """丢掉一份刚上传、还没发出去的附件。
+
+        待发框里点掉缩略图时调用：不加这一步，userdata/uploads 与
+        workspace/uploads 会一直留着从没发出去的图。只认这两个目录里的
+        文件，别的路径一律不动，防越权删。
+        """
+        url = str(req.get("url") or "")
+        rel = str(req.get("path") or "")
+        target = None
+        if url.startswith("/uploads/"):
+            target = paths.uploads_dir() / Path(url[len("/uploads/"):]).name
+        elif rel:
+            p = (tools.WORKSPACE / rel).resolve()
+            if p.parent == (tools.WORKSPACE / "uploads").resolve():
+                target = p
+        if target is None:
+            return {"ok": False, "error": "不认识的路径"}
+        try:
+            target.unlink()
+        except OSError:
+            return {"ok": False, "error": "文件不在了"}
+        return {"ok": True}
+
     @router.post("/api/upload-to")
     async def api_upload_to(file: UploadFile, dir: str = ""):
         """文件管理器里的拖放上传（multipart 版）。

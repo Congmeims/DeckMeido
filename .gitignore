@@ -7,6 +7,9 @@ server/config.toml
 server/memory.json
 server/meidosoul.json
 
+# 开发环境（工作区下的 .dev：便携版运行时/依赖/缓存，见 prompts/system.md）
+.dev/
+
 # Python
 __pycache__/
 *.py[cod]

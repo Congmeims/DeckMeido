@@ -1620,20 +1620,33 @@ def main() -> int:
         run_worker(_wake_stop_work, _wake_stop_done, app)
 
     def on_view_url(url) -> None:
-        # 页面自己用 Esc/退出按钮回到主界面时，把全屏一起收回来
-        if eyes_state["active"] and "/eyes" not in url.path():
+        """页面自己切 URL 时，把全屏和托盘状态一起对齐。
+
+        进入眼睛页可能来自两条路：托盘菜单（_enter_eyes 里已经全屏），
+        或者主界面聊天里点「进入」（页面自己跳过来，客户端全程不知情）。
+        后者必须在这里补全屏，否则会停在普通窗口里。
+        """
+        if "/eyes" in url.path():
+            if not eyes_state["active"]:
+                eyes_state["active"] = True
+                act_wake.setText("退出智能音箱模式")
+            if not view.isFullScreen():
+                view.showFullScreen()
+            return
+        # 页面用 Esc/退出按钮回到主界面时，把全屏一起收回来
+        if eyes_state["active"]:
             eyes_state["active"] = False
             act_wake.setText("智能音箱模式")
             view.showNormal()
 
-    view.urlChanged.connect(on_view_url)
-
     # 托盘菜单顺序固定：终止 → 显示 → 重启 → 退出
     menu = QMenu()
+    # 托盘动作要先建好：on_view_url 会按当前是否在眼睛页去改这一项的文字
     act_wake = QAction("智能音箱模式", menu)
     act_wake.triggered.connect(toggle_wake)
     act_wake_stop = QAction("停止聆听/播报", menu)
     act_wake_stop.triggered.connect(stop_wake)
+    view.urlChanged.connect(on_view_url)
     act_terminate = QAction("终止", menu)
     act_terminate.triggered.connect(terminate_ops)
     act_show = QAction("显示", menu)
