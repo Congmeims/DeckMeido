@@ -73,10 +73,64 @@
     opacity: 0; transition: opacity .3s ease; pointer-events: none; max-width: 80vw;
   }
   #notice.on { opacity: 1; }
+  /* ---- 播放态：小脸左置，右侧曲目卡 ---- */
+  /* 不用卡片底、不加边框：整页仍是一块纯净的底色，只靠排版分区，
+     和主界面“无卡片”的气质一致，也少一层大面积点亮面积（OLED）。 */
+  #now {
+    position: fixed; right: 6vw; top: 50%; transform: translateY(-50%) translateX(24px);
+    width: min(34vw, 420px); opacity: 0; pointer-events: none;
+    transition: opacity .45s ease, transform .45s cubic-bezier(.22,.61,.36,1);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  #now.on { opacity: 1; transform: translateY(-50%) translateX(0); }
+  #now .cover {
+    width: 100%; aspect-ratio: 1 / 1; border-radius: 18px; overflow: hidden;
+    background: var(--btn-bg); display: flex; align-items: center; justify-content: center;
+    margin-bottom: 22px;
+  }
+  /* 没有封面时放一个很淡的音符，避免出现一大块空白方块 */
+  #now .cover.empty::after {
+    content: "♪"; font-size: 64px; color: var(--face); opacity: .18;
+  }
+  #now .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #now .title {
+    color: var(--face); font-size: 22px; font-weight: 600; letter-spacing: .01em;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #now .artist {
+    color: var(--hint-fg); font-size: 14px; margin-top: 6px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #now .bar { height: 3px; border-radius: 2px; background: var(--btn-bg); margin: 18px 0 8px; overflow: hidden; }
+  #now .bar i { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--face); opacity: .55; }
+  #now .time { display: flex; justify-content: space-between; color: var(--hint-fg); font-size: 12px; }
+  /* 只在“正在收听”时出现的底部气泡：两条，你 → 梅朵 */
+  #bubbles {
+    position: fixed; left: 50%; bottom: 78px; transform: translateX(-50%);
+    display: flex; flex-direction: column; gap: 8px; align-items: center;
+    max-width: 76vw; opacity: 0; pointer-events: none;
+    transition: opacity .3s ease; font: 14px/1.5 system-ui, -apple-system, sans-serif;
+  }
+  #bubbles.on { opacity: 1; }
+  #bubbles.on.meeting { bottom: 150px; }
+  #bubbles div {
+    padding: 6px 14px; border-radius: 14px; background: var(--btn-bg);
+    color: var(--face); max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #bubbles div.me { color: var(--hint-fg); font-size: 13px; }
 </style>
 </head>
 <body>
 <canvas id="stage"></canvas>
+<div id="now">
+  <div class="cover empty" id="cover"></div>
+  <div class="title" id="trackTitle"></div>
+  <div class="artist" id="trackArtist"></div>
+  <div class="bar"><i id="trackBar"></i></div>
+  <div class="time"><span id="trackPos">0:00</span><span id="trackLen">0:00</span></div>
+</div>
+<div id="bubbles"></div>
 <div id="notice"></div>
 <div id="hint">
   <button id="stop">停止</button>
@@ -92,6 +146,14 @@
   const notice = document.getElementById("notice");
   const STOP = document.getElementById("stop");
   const EXIT = document.getElementById("exit");
+  const nowPanel = document.getElementById("now");
+  const coverEl = document.getElementById("cover");
+  const titleEl = document.getElementById("trackTitle");
+  const artistEl = document.getElementById("trackArtist");
+  const barEl = document.getElementById("trackBar");
+  const posEl = document.getElementById("trackPos");
+  const lenEl = document.getElementById("trackLen");
+  const bubblesEl = document.getElementById("bubbles");
 
   // ---- 主题：和主界面共用 localStorage 里的 deckmeido_theme ----
   // Canvas 不认识 CSS 变量，也不接受 "255,255,255" 这种裸三元组，
@@ -129,6 +191,10 @@
     offline: false, wakeStart: 0, drawnName: "",
     nextBlink: 0, blinkStart: 0, blinking: false, idleSleep: false,
     countdownLeft: null,
+    track: null,          // 正在播放的曲目；不在播 / 拿不到曲名时为 null
+    trackAt: 0,           // 拿到 track 的本地时刻，给进度条外推用
+    playMode: 0,          // 0 = 表情居中，1 = 播放态（小脸左置 + 右侧曲目卡），逐帧过渡
+    bubbles: [],          // 对话态的两条气泡：[{me:true,text:"你说的"},{text:"梅朵回的"}]
   };
 
   // ---- 防烧屏 / 闲置退出：全屏常亮的脸在 OLED 上会留残影 ----
@@ -188,6 +254,7 @@
   window.addEventListener("pagehide", () => { micWanted = false; micRelease(); });
 
   function applyStatus(d) {
+    state.bubbles = [];
     state.name = d.state || "disarmed";
     micSync(state.name);
     state.level = Number(d.level) || 0;
@@ -196,6 +263,21 @@
     const p = !!(d.media && d.media.playing);
     if (p && !playingNow) markActive();
     playingNow = p;
+    // 曲目信息：字段都可能是空串（播放器没暴露），前端据此只显示文字
+    const m = (d.media && typeof d.media === "object") ? d.media : {};
+    // 歌词行：后端暂时不下发歌词，先留好字段，有就显示在底部气泡里
+    const bm = (p && typeof m.bubble === "string") ? m.bubble.trim() : "";
+    const bt = (p && typeof m.song === "string") ? m.song.trim() : "";
+    state.track = p && m.title
+      ? {
+          title: String(m.title), artist: String(m.artist || ""),
+          cover: String(m.cover || ""),
+          position: Number(m.position) || 0, duration: Number(m.duration) || 0,
+          bubble: bm || bt,
+        }
+      : null;
+    state.trackAt = Date.now();
+    renderNow();
     // 睡眠模式倒计时：由后端判定，前端只负责显示和提供取消入口
     const sl = d.sleep || {};
     const left = (sl.countdown_left == null) ? null : Number(sl.countdown_left);
@@ -211,6 +293,87 @@
     }
   }
 
+  // ---- 播放态侧栏：曲名 / 歌手 / 封面 / 进度 ----
+  // 只在“有曲目且不是在对话”时出现；说话、在听的时候让位给气泡和表情。
+  // 进度条在后端 5 秒缓存的 position 基础上本地外推，秒数到点后自己往前跑。
+  let shownTrackKey = "";
+  function mmss(sec) {
+    const s = Math.max(0, Math.floor(sec));
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  }
+  let shownBubbles = "";
+  function renderBubbles(tr, talking) {
+    const el = bubblesEl;
+    if (talking) {
+      el.classList.remove("meeting");
+      el.classList.add("on");
+      el.innerHTML = "";
+      (state.bubbles || []).forEach((b) => {
+        const d = document.createElement("div");
+        if (b && b.me) d.className = "me";
+        d.textContent = (b && b.text) || "";
+        el.appendChild(d);
+      });
+      shownBubbles = "";
+      return;
+    }
+    const line = tr && tr.bubble ? tr.bubble : "";
+    if (!line) {
+      el.classList.remove("on", "meeting");
+      el.innerHTML = "";
+      shownBubbles = "";
+      return;
+    }
+    el.classList.add("on", "meeting");
+    if (line === shownBubbles) return;
+    shownBubbles = line;
+    el.innerHTML = "";
+    const d = document.createElement("div");
+    d.textContent = line;
+    el.appendChild(d);
+  }
+  function renderNow() {
+    const tr = state.track;
+    const talking = ["waking", "listening", "thinking", "speaking"].includes(state.name);
+    nowPanel.classList.toggle("on", !!tr && !talking);
+    renderBubbles(tr, talking);
+    if (!tr) return;
+    const key = tr.title + "\u0000" + tr.cover;
+    if (key !== shownTrackKey) {
+      shownTrackKey = key;
+      titleEl.textContent = tr.title;
+      artistEl.textContent = tr.artist || "正在播放";
+      // 封面换曲才重新加载，避免每 250ms 轮询都把图片刷一遍
+      coverEl.classList.toggle("empty", !tr.cover);
+      coverEl.innerHTML = "";
+      if (tr.cover) {
+        const img = new Image();
+        img.alt = "";
+        img.onerror = () => { coverEl.classList.remove("img"); img.remove(); coverEl.classList.add("empty"); };
+        img.onload = () => coverEl.classList.remove("empty");
+        img.src = tr.cover;
+        coverEl.appendChild(img);
+      }
+    }
+    // 进度按本地时间外推：拿到的 position 是「探测那一刻」的值
+    renderProgress();
+  }
+  function renderProgress() {
+    const tr = state.track;
+    if (!tr) return;
+    if (tr.duration > 0) {
+      const drift = (Date.now() - (state.trackAt || Date.now())) / 1000;
+      const pos = Math.min(tr.duration, tr.position + drift);
+      barEl.style.width = (pos / tr.duration * 100).toFixed(2) + "%";
+      posEl.textContent = mmss(pos);
+      lenEl.textContent = mmss(tr.duration);
+    } else {
+      // 直播 / 时长未知：不显示假进度
+      barEl.style.width = "0%";
+      posEl.textContent = "--:--";
+      lenEl.textContent = "--:--";
+    }
+  }
   // 倒计时期间任何输入都取消关机。后端自己也判空闲，所以这里只需要把
   // 「人已经回来了」这件事告诉它，倒计时就会撤回。
   function cancelSleepCountdown() {
@@ -227,6 +390,9 @@
       state.offline = true;
       micWanted = false;
       micRelease();
+      // 断线时别留着上一首的曲目卡，人看到会觉得还在放
+      state.track = null;
+      renderNow();
     }
     setTimeout(poll, state.offline ? 1500 : 250);
   }
@@ -474,6 +640,8 @@
         markActive();
       }
       state.drawnName = state.name;
+      // 进入/离开「在听 / 在说」时立刻切换侧栏与气泡，不等下一次轮询
+      renderNow();
     }
 
     ctx.globalAlpha = 1;
@@ -491,7 +659,15 @@
     const gap = Math.max(eyeR * 1.15, Math.min(s * 0.115 + 150, gapMax));
     const mouthW = s * 0.065 * 3.23 * 1.05;
     const cx = W / 2;
-    let cy = H * 0.40;
+    // 竖向居中：按「整张脸」的实际包围盒居中，而不是把眼心固定在某段比例上。
+    // 之前的 H*0.40 让屏幕顶到眼睛那一段（额头）比下巴长很多，看着脸往下沉。
+    // 脸的上沿取圆点眼上沿（眼心减 eyeR），下沿取猫嘴底（嘴心加半个嘴高），
+    // 让这两条边到屏幕上下边的留白相等。
+    const mouthDrop = s * 0.26 + 100;                          // 嘴心相对眼心的下移量（与下面 my 一致）
+    const mouthBottom = mouthDrop + mouthW * 0.5 / 2.93 / 2;   // 嘴高约为宽的 1/2.93
+    const faceTop = -eyeR;                                     // 眼睛上沿（相对眼心）
+    const faceMid = (faceTop + mouthBottom) / 2;
+    let cy = H / 2 - faceMid + eyeR * 0.3;                     // 略再下压一点：眼睛「看着」比圆更靠下
     const breathe = Math.sin(t * (state.name === "disarmed" ? 0.42 : 0.55));
     let faceScale = 1 + breathe * 0.012;
     cy += breathe * (s * 0.003);
@@ -562,7 +738,37 @@
       inward = 0; gazeX = 0; gazeY = 0; mouthOpen = 0;
     }
 
+    // 眨眼压扁量：要在 switch 之后算，因为 blinkable 是在各状态分支里置位的
     const squash = (blinkable && !state.idleSleep) ? blinkSquash(t) : 0;
+
+    // ---- 播放态布局：脸整体让到左侧，右侧留给曲目卡 ----
+    // 用逐帧插值而不是 CSS 过渡，是因为脸的坐标由 canvas 每帧重算；
+    // 0→1 大约 0.5 秒，和右侧侧栏的滑入节奏对齐。
+    const wantPlay = (!!state.track && !state.idleSleep
+      && !["waking", "listening", "thinking", "speaking"].includes(state.name)) ? 1 : 0;
+    state.playMode += (wantPlay - state.playMode) * Math.min(1, dt * 6);
+    if (state.playMode < 0.004) state.playMode = 0;
+    const pm = state.playMode;
+
+    // 脸的水平中心：居中是 W/2，播放态落在左侧 34% 处
+    const faceCX = W * (0.5 - 0.16 * pm);
+    // 播放态整张脸缩到 0.62，留出呼吸空间给侧栏
+    const playScale = 1 - 0.38 * pm;
+
+    // ---- 声光环：只叠一圈跟着音量起伏的亮环，不填实 ----
+    // 描边而不是实心圆，既不会盖住脸，也少一大块常亮面积（OLED 友好）。
+    // 说话时不画：那时脸本身就在动，再加光环会显得吵。
+    if (pm > 0.01) {
+      const ringR = eyeR * (2.5 + state.levelSmooth * 0.55);
+      ctx.save();
+      ctx.globalAlpha = pm * (0.16 + state.levelSmooth * 0.34);
+      ctx.strokeStyle = FACE;
+      ctx.lineWidth = Math.max(1.5, eyeR * 0.055);
+      ctx.beginPath();
+      ctx.arc(faceCX, cy, ringR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
 
     // ---- 摇头晃脑：间歇性左右摆，兼作 OLED 防烧屏 ----
     // 包络由两个不同周期（约 10s / 27s）相乘，大约每 10 秒鼓起来一次，
@@ -576,9 +782,10 @@
     }
 
     ctx.save();
-    ctx.translate(cx, cy);
+    // 播放态整体缩小并左移：以脸的中心为基准缩放，嘴和眼才不会各自漂移
+    ctx.translate(faceCX, cy);
     ctx.rotate(nodTilt);
-    ctx.scale(faceScale, faceScale);
+    ctx.scale(faceScale * playScale, faceScale * playScale);
     ctx.translate(-cx, -cy);
 
     const lx = cx - gap + inward;
@@ -599,7 +806,11 @@
     notice.classList.toggle("on", state.offline || starting);
     if (state.offline) notice.textContent = "与后端断开，正在重连…";
     else if (starting) notice.textContent = "正在进入智能音箱模式，请稍候…";
+
+    // 进度条跟着每帧走：后端 5 秒才给一次 position，本地外推才不会一顿一顿
+    if (state.track && nowPanel.classList.contains("on")) renderProgress();
   }
+
   requestAnimationFrame(frame);
 })();
 </script>

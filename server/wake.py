@@ -126,6 +126,23 @@ def pcm_to_wav(pcm: bytes, rate: int = SAMPLE_RATE) -> bytes:
     return buf.getvalue()
 
 
+def _brief_now_playing(info: dict | None) -> dict:
+    """media.now_playing() 的结果裁成眼睛页要用的几个字段。
+
+    封面在 MPRIS 里可能是 file:// 本地路径，也可能是 http(s) URL，
+    两种都原样交给前端去试；取不到就是空串，前端据此只显示文字。
+    """
+    if not isinstance(info, dict) or not info.get("title"):
+        return {}
+    return {
+        "title": str(info.get("title") or ""),
+        "artist": str(info.get("artist") or ""),
+        "cover": str(info.get("cover") or ""),
+        "position": float(info.get("position") or 0.0),
+        "duration": float(info.get("duration") or 0.0),
+    }
+
+
 def pcm_level(frame: bytes) -> float:
     """归一化电平（0–1），给眼睛界面做音量反馈；样本很少，直接遍历即可。"""
     if not frame:
@@ -568,6 +585,7 @@ class WakeService:
         # 探一次（状态接口被高频轮询），缓存 5 秒；探测失败按「没在放」处理。
         self._playing = False
         self._playing_at = 0.0
+        self._media_info: dict = {}
         # 短反馈词的合成缓存：同一句「切了」只合成一次
         self._fb_wav: dict[str, bytes] = {}
         self._cancel_chat = None
@@ -752,7 +770,7 @@ class WakeService:
             "wake_count": self._wake_count,
             "turns": self._turns,
             # 音乐是否正在放：playing 带 5 秒缓存，供眼睛页判断「还在放就别当闲置」
-            "media": {"playing": self._playing_now()},
+            "media": {"playing": self._playing_now(), **self._media_info},
             "last_error": self._last_error,
             "input_device": self._cfg.get("input_device", "default"),
             "wake_words": list(self._cfg.get("wake_words") or []),
@@ -1427,6 +1445,13 @@ class WakeService:
                 devlog.log("wake.media.playing.error", error=str(exc))
                 self._playing = False
             self._playing_at = now
+            # 曲目信息跟 playing 同一次探测里取，一起缓存：眼睛页要显示
+            # 曲名/歌手/进度，多起一次 busctl 没必要
+            try:
+                self._media_info = _brief_now_playing(media.now_playing())
+            except Exception as exc:
+                devlog.debug("wake.media.now_playing.error", error=repr(exc))
+                self._media_info = {}
         return self._playing
 
     def _cancel_round(self) -> None:
