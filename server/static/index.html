@@ -17669,10 +17669,12 @@
   // ---------- 侧栏：会话列表 ----------
   var sessList = document.getElementById('sessList');
   var hdrTitle = document.getElementById('hdrTitle');
-  // 顶栏标题 = 当前会话标题（空会话回落到 DeckMeido）
+  // 顶栏标题 = 当前会话标题（还没起名的空会话显示「新会话」）
   function setHdrTitle(t) {
     var name = String(t || '').trim();
-    if (!name) { name = 'DeckMeido'; }
+    // 空标题说明这是个还没说过话的空会话（后端要到第一句话才落盘起名）：
+    // 这时回落到「新会话」而不是应用名，删掉上一个会话后顶栏才不会残留旧标题
+    if (!name) { name = '新会话'; }
     if (hdrTitle.textContent !== name) hdrTitle.textContent = name;
   }
   // 最近一次拿到的会话名。设置页借用顶栏写「设置」，回来时要还回去，
@@ -17871,6 +17873,11 @@
         sessList.innerHTML = '';
         if (!(d.items || []).length) {
           sessSkeleton('暂无会话');
+          // 列表被删空时后端下次发消息会另开一个空会话：标题跟着回落成「新会话」。
+          // 以前这里直接 return，顶栏就那么挂着刚删掉那个会话的标题
+          curSessTitle = '';
+          setHdrTitle('');
+          if (document.body.classList.contains('settings-mode')) setHdrTitle('设置');
           return;
         }
         var curTitle = '';
