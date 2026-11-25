@@ -9971,9 +9971,8 @@
              '&device=' + encodeURIComponent(DEVICE_ID), { method: 'POST' })
       .then(function (r) { return r.json(); })
       .then(function (j) {
-        // 只在底部浮一个轻提示气泡，不往对话流里插系统文字；
-        // 模型本来也会回一句「已取消」，再插一遍就重复了
-        if (j && j.ok) fbToast('已取消，未执行', 'chat');
+        // 取消的结论由后端作为一条正常助手消息落在对话里，
+        // 这里不再弹浮层气泡、也不往 UI 上直接插字
       })
       .catch(function () {});
   }

@@ -2942,6 +2942,20 @@ async def api_pending_cancel(request: Request, client: str = "", device: str = "
     # 不带 sid：pending 是全局单份，清掉就该让所有端的卡片一起收
     await manager.broadcast({"type": "pending_clear", "reason": "cancelled",
                              "description": desc, "ts": time.time()})
+    # 取消也要在对话里留一句：这一步没执行，主人往下翻会话得能看出结论。
+    # 走正常的助手消息（落盘 + 广播到本会话），不弹浮层气泡
+    text = f"已取消，没有执行这一步：{desc}"
+    sid = store.current_sid
+    hist = store.history
+    hist.append({"role": "assistant", "content": text, "events": [], "ts": time.time()})
+    try:
+        if sid:
+            _write_session(sid, hist)
+    except Exception as e:
+        print(f"[DeckMeido] 取消后写回会话失败：{e}", file=sys.stderr, flush=True)
+    await manager.broadcast({"type": "assistant_message", "text": text,
+                             "ts": time.time(), "events": [],
+                             **({"sid": sid} if sid else {})})
     return {"ok": True, "description": desc}
 
 
