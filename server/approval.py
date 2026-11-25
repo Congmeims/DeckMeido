@@ -111,6 +111,24 @@ _HARD_RULES: tuple[tuple[str, str, int, str], ...] = (
     ("write_passwd", r"(?:>>?|tee|cp|mv|install|truncate)\s+[^\n]*"
                      r"/etc/(?:passwd|shadow|gshadow|sudoers)(?:\s|$)",
      CRITICAL, "改写系统账号文件"),
+    # —— 破坏启动：任何档位（含完全访问）都直接拒绝，不给确认通道 ——
+    # 用户离开座位开 auto 时，这些操作一旦执行就可能再也开不了机，
+    # 不能靠「点一下确认」兜底，也不能让女仆长放行。
+    ("write_boot_efi", r"(?:>>?|tee|cp|mv|install|truncate|rm|chmod|chown)\s+"
+                       r"[^\n]*(?<![\w])/(?:boot|efi)(?:/|\s|$)",
+     CRITICAL, "写入或删除引导分区，可能导致无法开机"),
+    ("write_fstab", r"(?:>>?|tee|cp|mv|install|truncate)\s+[^\n]*"
+                    r"/etc/(?:fstab|crypttab)(?:\s|$)",
+     CRITICAL, "改写挂载表，可能导致无法开机"),
+    ("grub_rebuild", _tok(r"(?:update-grub|grub-install|grub-mkconfig|grub2-mkconfig|"
+                          r"mkinitcpio|dracut|update-initramfs|mkinitramfs)"),
+     CRITICAL, "重建引导或 initramfs，配置错误会导致无法开机"),
+    ("rm_system_dir", r"(?:(?<=[\s;&|(`])|^)rm\s+(?:-[A-Za-z-]+\s+)*(?:/boot|/efi|"
+                      r"/lib|/lib64|/usr|/bin|/sbin|/etc)(?:/\S*|\s|$)",
+     CRITICAL, "删除系统关键目录，会导致无法开机"),
+    ("chmod_system_dir", r"chmod\s+-[A-Za-z]*R[A-Za-z]*\s+(?:777|a\+rwx)\s+"
+                         r"(?:/boot|/efi|/etc|/usr)(?:/\S*|\s|$)",
+     CRITICAL, "递归放开系统关键目录权限，可能导致无法开机"),
 
     # —— DANGEROUS：必须点名确认 ——
     ("pipe_to_shell", r"(?:curl|wget)[^\n|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|fish)",
@@ -264,17 +282,25 @@ def tool_risk(name: str, args: dict) -> Verdict:
     if name == "install_game":
         return Verdict(severity=NOTABLE, rule="install_game", reason="安装游戏会触发下载")
     path = str((args or {}).get("path") or (args or {}).get("file") or "")
-    if name in ("write_file", "edit_file") and path:
+    if name in ("write_file", "edit_file", "delete_file") and path:
         p = path.replace("\\", "/")
-        if re.search(r"/etc/(?:passwd|shadow|gshadow|sudoers)$", p) or p.startswith("/boot"):
+        op = "删除" if name == "delete_file" else "写入"
+        if (re.search(r"/etc/(?:passwd|shadow|gshadow|sudoers|fstab|crypttab)$", p)
+                or p.startswith("/boot") or p.startswith("/efi")):
             return Verdict(severity=CRITICAL, rule="critical_path",
-                           reason=f"写系统关键路径：{p}")
+                           reason=f"{op}系统关键路径：{p}")
         if p.startswith(("/etc/", "/usr/", "/boot/", "/sys/", "/proc/")):
             return Verdict(severity=DANGEROUS, rule="write_system",
-                           reason=f"写系统目录：{p}")
+                           reason=f"{op}系统目录：{p}")
         if "/.ssh/" in p or p.endswith("/.ssh"):
             return Verdict(severity=DANGEROUS, rule="write_ssh",
-                           reason=f"改写 SSH 配置：{p}")
+                           reason=f"{op} SSH 配置：{p}")
+        # B1：受保护目录（对齐 Trae 的 .git/.vscode 保护）。判 DANGEROUS：
+        # auto 走女仆长监护、manual 问用户、full 放行——不硬 deny，给完全访问留口子。
+        if (re.search(r"(?:^|/)(?:\.git|\.vscode|\.trae)(?:/|$)", p)
+                or re.search(r"(?:^|/)userdata/(?:sessions|trash)(?:/|$)", p)):
+            return Verdict(severity=DANGEROUS, rule="protected_dir",
+                           reason=f"{op}受保护目录：{p}")
     return Verdict()
 
 

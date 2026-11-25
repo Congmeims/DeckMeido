@@ -57,6 +57,7 @@ TOOL_CN: dict[str, str] = {
     "ocr_image": "识别图片文字",
     "write_file": "写入文件",
     "edit_file": "编辑文件",
+    "delete_file": "删除文件",
     "self_update": "更新软件",
     "remember": "记住这件事",
     "ask_user": "向你提问",
@@ -306,6 +307,22 @@ TOOLS: list[dict] = [
                     "new": {"type": "string", "description": "替换后的内容"},
                 },
                 "required": ["path", "old", "new"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_file",
+            "description": ("删除工作区内的文件或目录，会移进系统回收站（可恢复）。"
+                            "删除文件优先用这个，不要用 run_command 执行 rm（rm 是永久删除）。"
+                            "只能删工作区内的路径，系统目录和受保护目录（.git 等）会被拦下。"),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "要删除的文件或目录路径（工作区内）"},
+                },
+                "required": ["path"],
             },
         },
     },
@@ -2260,7 +2277,7 @@ def summarize_tool(name: str, args: dict) -> str:
             t = str(args.get("text", ""))
             return f"输入「{t[:40]}」"
         return "查看光标与焦点"
-    if name in ("read_file", "write_file", "edit_file", "list_dir"):
+    if name in ("read_file", "write_file", "edit_file", "delete_file", "list_dir"):
         path = str(args.get("path", ""))
         return path.split("/")[-1] or path
     # 无需参数的简单操作：不显示多余说明
@@ -3270,6 +3287,8 @@ async def _write_file(path: str, content: str) -> str:
     def _save() -> int:
         p.parent.mkdir(parents=True, exist_ok=True)
         old = len(p.read_text(encoding="utf-8", errors="replace").splitlines()) if p.is_file() else 0
+        if p.is_file():
+            _backup_orig_to_trash(p)   # 覆盖前把原文件送回收站，误覆盖能找回
         _atomic_write(p, content)
         return old
 
@@ -3289,6 +3308,7 @@ async def _edit_file(path: str, old: str, new: str) -> str:
         body = p.read_text(encoding="utf-8")
         n = body.count(old)
         if n == 1:
+            _backup_orig_to_trash(p)   # 覆盖前把原文件送回收站，误改能找回
             _atomic_write(p, body.replace(old, new, 1))
         return n
 
@@ -3299,6 +3319,40 @@ async def _edit_file(path: str, old: str, new: str) -> str:
         return f"替换失败：old 文本出现了 {count} 次，请扩大范围使其唯一"
     LAST_DIFF = {"add": len(new.splitlines()), "del": len(old.splitlines())}
     return f"已修改 {p}（替换 1 处）"
+
+
+def _backup_orig_to_trash(p: Path) -> None:
+    """覆盖写之前把原文件移进回收站，误覆盖能找回。
+
+    函数内延迟导入 routes_files（它顶层 import 了 tools，顶层导入会循环）。
+    备份失败不阻塞写入：少一层兜底而已，不影响正常编辑。
+    """
+    try:
+        from .routes_files import _move_to_trash
+        _move_to_trash(p)
+    except Exception:
+        pass
+
+
+async def _delete_file(path: str) -> str:
+    """把文件或目录移进系统回收站（可逆删除），优先用它而不是 rm。
+
+    对齐 Trae：AI 删文件走回收站，误删能找回。回收站不可用时拒绝删除、
+    不偷偷退化成 rm 永久删除——让模型/用户知道，换手动方式。
+    """
+    p = resolve_in_workspace(path)
+    if not p.exists():
+        return f"文件不存在：{p}"
+    try:
+        from .routes_files import _move_to_trash
+        await asyncio.to_thread(_move_to_trash, p)
+        kind = "目录" if p.is_dir() else "文件"
+        return f"已将{kind}移到回收站：{p}"
+    except OSError as exc:
+        return (f"删除失败：回收站不可用（{exc}）。为避免永久丢失，没有删除。"
+                f"如需删除请改用 run_command（会走审批）。")
+    except Exception as exc:
+        return f"删除失败：{exc}"
 
 
 async def _remember(text: str, kind: str = "note") -> str:
@@ -4436,6 +4490,7 @@ EXECUTORS = {
     "ocr_image": _ocr_image,
     "write_file": _write_file,
     "edit_file": _edit_file,
+    "delete_file": _delete_file,
     "self_update": _self_update,
     "remember": _remember,
     "music_play": _music_play,

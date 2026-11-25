@@ -808,6 +808,47 @@ async def run_agent(events: list[dict], extra_system: str = "",
                             f"如果确实需要，请自己在桌面终端里手动操作。")
                 needs_approval = verdict.ask
 
+                # auto 档：危险操作先交给女仆长 MeidoChou 监护。
+                # 放行（allow）→ 直接执行；拦下（deny）→ 告知女仆并提示主人；拿不准（ask）
+                # 或超时异常 → 降级走下面的人工挂起流程。
+                # 不交给女仆长的：CRITICAL（上面已 deny）、self_update upgrade
+                # （会重启服务，必须主人亲自确认）、远程入口（force_confirm，走人工）。
+                if (m.PERMISSION_MODE == "auto" and needs_approval
+                        and not ctx.force_confirm and name != "self_update"):
+                    from . import guardian as _guardian_mod
+                    g_decision, g_reason = await _guardian_mod.judge(
+                        name, args, verdict, m.llm, turn_sid)
+                    if g_decision == "allow":
+                        needs_approval = False
+                        await m.manager.broadcast({
+                            "type": "guardian", "action": "allow",
+                            "name": name, "label": tools.cn_name(name),
+                            "summary": tools.summarize_tool(name, args),
+                            "description": tools.describe(name, args),
+                            "reason": g_reason, "ts": time.time(), **m._turn_tag()})
+                    elif g_decision == "deny":
+                        from . import main as _main_mod
+                        ai_name = str((_main_mod.PERSONA or {}).get("name") or "DeckMeido").strip()
+                        label = tools.cn_name(name)
+                        summary = tools.summarize_tool(name, args)
+                        deny_event = {"type": "tool", "name": name, "label": label,
+                                      "summary": summary, "files": [], "denied": True,
+                                      "reason": f"女仆长拦下了这步：{g_reason}",
+                                      "seq": _next_seq()}
+                        events.append(deny_event)
+                        await m.manager.broadcast({"type": "tool_done", "event": deny_event,
+                                                   "ts": time.time(), **m._turn_tag()})
+                        await m.manager.broadcast({
+                            "type": "guardian", "action": "deny",
+                            "name": name, "description": tools.describe(name, args),
+                            "reason": g_reason, "ts": time.time(), **m._turn_tag()})
+                        msgs.append({"role": "tool", "tool_call_id": call["id"],
+                                     "content": f"[{name}] 女仆长觉得不妥，拦下了这步：{g_reason}。"
+                                                f"主人若确实要做，请切到手动审批档确认，或自己手动操作。"})
+                        return (f"女仆长拦下了这步操作，没有让{ai_name}执行。"
+                                "主人若确实需要，请切到手动审批档后确认，或自己手动操作。")
+                    # ask：保持 needs_approval = True，走下面的人工挂起
+
                 if needs_approval or remote_risk.level == "hard_confirm":
                     hard = verdict.hard or remote_risk.level == "hard_confirm"
                     # 挂起危险操作，等用户下一轮确认。把「谁在哪提的」一并记下，

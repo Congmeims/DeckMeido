@@ -1728,7 +1728,7 @@
   // 属于「某一轮对话」的消息类型：这些才需要按会话号过滤
   var TURN_SCOPED = ['user_message', 'stream_start', 'delta', 'thought_start',
                      'thought_delta', 'thought_end', 'tool_done', 'tool_activity',
-                     'progress', 'ask', 'assistant_message', 'pending_approval'];
+                     'progress', 'ask', 'assistant_message', 'pending_approval', 'guardian'];
 
   function fmtTime(ts) {
     var d = ts ? new Date(ts * 1000) : new Date();
@@ -7634,6 +7634,16 @@
         case 'pending_clear':
           // 确认/取消/被别端抢先：收起卡片、停用快捷键。不带 sid，全局单份清掉就都收。
           hidePendingCard();
+          break;
+        case 'guardian':
+          // auto 档女仆长 MeidoChou 的监护结果：放行/拦下都提示一声，让主人知道
+          // 女仆长放了/拦了什么（带 sid 过滤，只有发起会话弹，不打扰别的会话）。
+          if (msg.action === 'deny') {
+            fbToast('女仆长拦下了：' + (msg.description || msg.name || ''), 'chat', true);
+          } else {
+            fbToast('女仆长已放行：' + (msg.label || msg.name || '') +
+                    (msg.summary ? ' ' + msg.summary : ''), 'chat', false);
+          }
           break;
         case 'tool_start':
           // 工具开跑就立刻在时间线挂一行带秒表的「执行中」，
