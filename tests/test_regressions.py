@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from server import approval, policy, tools  # noqa: E402
+from server import approval, policy  # noqa: E402
 
 
 class PolicyTest(unittest.TestCase):
@@ -336,25 +336,26 @@ class DeletePolicyTest(unittest.TestCase):
             decision = policy.check("run_command", {"command": cmd}, ctx)
             self.assertTrue(decision.allowed, cmd)
 
-    def test_full_access_keeps_session_delete_guard(self):
-        """会话历史不在放行范围：误删不可恢复，仍然要求本轮点名"""
+    def test_full_access_releases_session_delete(self):
+        """full 档会话历史也放行：主人已显式放弃这层保护，只留审计行；
+        非 full 档仍然要求本轮点名"""
+        cmd = "curl -X DELETE http://127.0.0.1:18765/api/sessions/old-project"
         ctx = self.ctx("把没用的会话都删了")
         ctx.full_access = True
-        decision = policy.check(
-            "run_command",
-            {"command": "curl -X DELETE http://127.0.0.1:18765/api/sessions/old-project"},
-            ctx)
+        self.assertTrue(policy.check("run_command", {"command": cmd}, ctx).allowed)
+
+        plain = self.ctx("清理一下")
+        decision = policy.check("run_command", {"command": cmd}, plain)
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.code, "delete_blocked")
 
-    def test_full_access_ignored_for_remote_entry(self):
-        """QQ 远程即使配置里是 full，也不能放开删除"""
+    def test_full_access_applies_to_remote_entry(self):
+        """远程入口现在也享受 full 档（群成员这类只读会话在更前面就被拦）"""
         ctx = self.ctx("删掉那个临时目录")
         ctx.full_access = True
         ctx.force_confirm = True
         decision = policy.check("run_command", {"command": "rm -rf /home/deck/tmp"}, ctx)
-        self.assertFalse(decision.allowed)
-        self.assertEqual(decision.code, "delete_blocked")
+        self.assertTrue(decision.allowed)
 
     def test_non_delete_command_untouched(self):
         decision = policy.check("run_command", {"command": "ls /home/deck"},
@@ -415,17 +416,22 @@ class ApprovalGateTest(unittest.TestCase):
         self.assertFalse(v.deny)
         self.assertEqual(v.severity, approval.DANGEROUS)
 
-    def test_remote_uses_is_dangerous_regardless_of_mode(self):
-        """远程入口比本地更严：即使 full，is_dangerous 命中的也要硬确认"""
-        v = self.resolve("rm -rf ~/Downloads", "full", remote=True)
-        self.assertTrue(v.ask)
-        self.assertTrue(v.hard)
-        # 渠道额外高危（menu.remote_command_danger）同样拦
+    def test_remote_hard_confirm_except_full(self):
+        """远程入口比本地更严，唯独 full 档放行：is_dangerous 命中要硬确认"""
+        for mode in ("manual", "auto"):
+            v = self.resolve("rm -rf ~/Downloads", mode, remote=True)
+            self.assertTrue(v.ask, mode)
+            self.assertTrue(v.hard, mode)
+        self.assertFalse(self.resolve("rm -rf ~/Downloads", "full", remote=True).ask)
+        # 渠道额外高危（menu.remote_command_danger）同样只在非 full 生效
         v = approval.resolve("run_command", {"command": "ls"},
-                             self.ctx(True), "full", extra_danger="pacman_clean")
+                             self.ctx(True), "auto", extra_danger="pacman_clean")
         self.assertTrue(v.ask)
         self.assertTrue(v.hard)
         self.assertIn("pacman_clean", v.reason)
+        self.assertFalse(approval.resolve("run_command", {"command": "ls"},
+                                          self.ctx(True), "full",
+                                          extra_danger="pacman_clean").ask)
 
     def test_remote_safe_command_runs_silently(self):
         for mode in approval.MODES:
@@ -446,12 +452,18 @@ class ApprovalGateTest(unittest.TestCase):
         self.assertTrue(v.ask)
         self.assertFalse(v.hard)
 
-    def test_self_update_upgrade_always_asks(self):
-        for mode in approval.MODES:
+    def test_self_update_upgrade_asks_except_full(self):
+        """自更新会重启服务：manual / auto 必问且要回「确认执行」，full 放行"""
+        for mode in ("manual", "auto"):
             v = approval.resolve("self_update", {"action": "upgrade"},
                                  self.ctx(), mode)
             self.assertTrue(v.ask, mode)
             self.assertTrue(v.hard, mode)
+        # 只是查更新：auto 下不该打扰（manual 档照旧什么都问）
+        self.assertFalse(approval.resolve("self_update", {"action": "check"},
+                                          self.ctx(), "auto").ask)
+        self.assertFalse(approval.resolve("self_update", {"action": "upgrade"},
+                                          self.ctx(), "full").ask)
         self.assertFalse(approval.resolve("self_update", {"action": "check"},
                                           self.ctx(), "full").ask)
 
@@ -506,15 +518,21 @@ class PermissionContextSyncTest(unittest.TestCase):
         for body in calls:
             self.assertIn("full_access=", body, f"漏传 full_access：{body[:120]}")
 
-    def test_full_access_requires_mode_and_local_entry(self):
-        """full_access 只有真的在 full 档、且不是远程入口时才生效"""
+    def test_full_access_covers_remote_entry(self):
+        """full_access 只认设置里的档位，远程入口现在也享受；
+        群普通成员这类只读会话在 policy.check 最前面就被拦，到不了这一层"""
         local = policy.TurnContext(sid="s", turn_id="t", user_text="",
                                    boot_id="b", full_access=True)
         self.assertTrue(policy._is_full_access(local))
         remote = policy.TurnContext(sid="s", turn_id="t", user_text="",
                                     boot_id="b", full_access=True,
                                     force_confirm=True)
-        self.assertFalse(policy._is_full_access(remote))
+        self.assertTrue(policy._is_full_access(remote))
+        # 没开 full 时，本地和远程都不算完全访问
+        for ctx in (policy.TurnContext(sid="s", turn_id="t", user_text="", boot_id="b"),
+                    policy.TurnContext(sid="s", turn_id="t", user_text="", boot_id="b",
+                                       force_confirm=True)):
+            self.assertFalse(policy._is_full_access(ctx))
 
 
 class RuleTableTest(unittest.TestCase):
@@ -550,6 +568,12 @@ class RuleTableTest(unittest.TestCase):
         "pkexec": "pkexec bash",
         "chmod_777_wide": "chmod -R 777 /home/deck/data",
         "kill_all": "kill -9 -1",
+        # 破坏启动类（49bd75d 新增的硬规则）
+        "write_boot_efi": "install -m644 splash.png /efi/EFI/boot/",
+        "write_fstab": "cp newfstab /etc/fstab",
+        "grub_rebuild": "sudo grub-mkconfig -o /boot/grub/grub.cfg",
+        "rm_system_dir": "rm -rf /usr/lib/modules",
+        "chmod_system_dir": "chmod -R 777 /usr/share",
     }
 
     # 正常命令：一条都不许命中（误伤比漏拦更容易被用户骂）
@@ -578,7 +602,6 @@ class RuleTableTest(unittest.TestCase):
 
     def test_every_rule_has_a_hit_sample(self):
         """规则名字改了/删了，这条就红：提醒同步更新测试，别让规则悄悄消失"""
-        import re as _re
         rules = {r[0] for r in approval._HARD_RULES}
         self.assertEqual(set(self.HITS), rules)
 
