@@ -2948,9 +2948,46 @@ PY
 # 建 venv + 装依赖。$1 = gui 只装桌面客户端，stt / tts 只补对应可选依赖，空=全装。
 # requirements 分三份：服务端（必装）、gui（PySide6，失败只警告，保留网页版可用）、
 # stt / tts（可选能力）。拆开的目的是 PySide6 超时不会让整个安装失败。
+
+# ---------- 虚拟环境与系统 Python 的版本绑定 ----------
+# 当前系统 python3 的「主.次」版本（3.14.6 → 3.14）
+sys_py_mm() { python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || true; }
+
+# venv 建的时候记下的「主.次」版本（读 pyvenv.cfg 的 version 行，读不到就空）
+venv_py_mm() {
+  local cfg="$INSTALL_DIR/.venv/pyvenv.cfg"
+  [ -f "$cfg" ] || return 0
+  sed -n 's/^version *= *//p' "$cfg" 2>/dev/null | head -1 | cut -d. -f1,2
+}
+
+# 系统 Python 大版本一变（SteamOS 滚动更新 3.14 → 3.15），旧 venv 直接作废：
+# .venv/bin/python3 是指向 /usr/bin/python3 的软链，软链照样能执行，所以
+# 下面那句 `[ ! -x "$py" ]` 永远进不去重建分支；但 site-packages 还留在
+# lib/python3.14/ 下，pip 装的 C 扩展（pydantic-core / pillow / httptools）
+# import 直接 undefined symbol，连 pip 自己都起不来 —— 重跑安装脚本也救不回来。
+# 这里比对 pyvenv.cfg 记的版本，不一致就 --clear 原地重建（依赖随后重装）。
+# 只比「主.次」：补丁号升级（3.14.5 → 3.14.6）ABI 不变，不该让用户白重装一遍依赖。
+venv_rebuild_if_drifted() {
+  local want got
+  want=$(venv_py_mm)
+  got=$(sys_py_mm)
+  [ -n "$want" ] || return 1
+  [ -n "$got" ] || return 1
+  [ "$want" = "$got" ] && return 1
+  warn "虚拟环境是 Python $want 建的，系统 Python 现在是 $got：重建（依赖会重新装一遍）"
+  python3 -m venv --clear "$INSTALL_DIR/.venv" ||
+    die "重建虚拟环境失败：$INSTALL_DIR/.venv"
+  phase_ok "环境" "虚拟环境已按 Python $got 重建"
+  return 0
+}
+
 venv_install() {
   local only_gui="${1:-}"
   local py="$INSTALL_DIR/.venv/bin/python" idx=0 start=0
+  # 先修版本漂移，再判断要不要新建：判 new/missing 只看 -x，而软链漂移时 -x 仍为真
+  if [ -e "$INSTALL_DIR/.venv" ]; then
+    venv_rebuild_if_drifted || true
+  fi
   if [ ! -x "$py" ]; then
     info "创建虚拟环境 $INSTALL_DIR/.venv"
     python3 -m venv "$INSTALL_DIR/.venv"

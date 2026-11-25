@@ -22,6 +22,30 @@ export DECKMEIDO_CLIENT_WRAPPER=1
 [ -x "$PY" ] || { echo "找不到 $PY，请重跑 install.sh" >&2; exit 1; }
 [ -f "$MAIN" ] || { echo "找不到 $MAIN" >&2; exit 1; }
 
+# 系统 Python 大版本漂移（SteamOS 滚动更新 3.14 → 3.15）会让本地 venv 作废：
+# .venv/bin/python3 是指向 /usr/bin/python3 的软链，系统升级后软链照样能执行，
+# 但装好的 PySide6 等 C 扩展还留在 lib/python3.14/ 下，import 直接失败。
+# 表现就是「点快捷方式什么都不出来」，或者每 30 秒一次崩溃重启、刷 coredump。
+# 这种死法在没有终端的地方根本看不出原因，所以开跑前先认一次版本，给一条
+# 能照着做的提示就退出 —— 不要进下面的崩溃重试循环。
+venv_drift_check() {
+  local cfg="$ROOT/.venv/pyvenv.cfg" want got
+  [ -f "$cfg" ] || return 0
+  want="$(sed -n 's/^version *= *//p' "$cfg" 2>/dev/null | head -1 | cut -d. -f1,2)"
+  [ -n "$want" ] || return 0
+  got="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || true)"
+  [ -n "$got" ] || return 0
+  # 只比「主.次」：补丁号升级不影响 ABI，不该让用户白重建一遍
+  [ "$want" = "$got" ] && return 0
+  echo "[launch] 虚拟环境是按 Python $want 建的，系统 Python 已升到 $got，装好的依赖全部失效" >&2
+  echo "[launch] 请运行：bash $ROOT/install.sh upgrade" >&2
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send "DeckMeido 需要修复" "系统 Python 已从 $want 升到 $got，请运行 install.sh upgrade" >/dev/null 2>&1 || true
+  fi
+  return 1
+}
+venv_drift_check || exit 1
+
 relaunch="${CLIENT_CRASH_RELAUNCH:-1}"
 delay=2
 
