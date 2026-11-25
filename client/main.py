@@ -601,31 +601,41 @@ def _r1_log(msg: str) -> None:
 
 
 class R1Trigger(QObject):
-    """把右肩键（R1）转成网页里的按住说话。
+    """读手柄按键转给网页：R1 按住说话、A 确认审批、L1 取消审批。
 
     Qt6 没有 QGamepad，客户端走 SDL2（ctypes）读手柄：
     - 游戏模式下 Steam Input 会独占物理手柄，但它通过 uinput 暴露一只
       虚拟 X360 手柄；SDL2 的 evdev 后端读到的是这只虚拟手柄，所以
-      gamescope 下仍能拿到 R1，不依赖 X11/Qt 的手柄支持。
+      gamescope 下仍能拿到按键，不依赖 X11/Qt 的手柄支持。
     - 只读不抓取（不做 EVIOCGRAB），也不改键位，不抢游戏/系统的输入。
     - 拿不到 libSDL2、没有手柄或读取失败时记一行日志并降级为不启用，
       不影响客户端其它功能。
+
+    审批键（A / L1）是「单击沿触发」：按下瞬间发一次 approvePressed /
+    cancelPressed，前端 approve()/cancel() 自带 300ms 去重，能吸收
+    「A 既被注入、又碰巧被 lizard/Steam 模拟成 Enter」的双触发。
     """
 
     pressed = Signal()
     released = Signal()
+    approvePressed = Signal()   # A 键按下 → 确认挂起的审批操作
+    cancelPressed = Signal()    # L1 键按下 → 取消挂起的审批操作
 
     _SUBSYSTEMS = 0x00000200 | 0x00002000 | 0x00004000  # JOYSTICK | GAMECONTROLLER | EVENTS
-    # SDL_CONTROLLER_BUTTON_RIGHTSHOULDER = 10。
-    # 已在 Deck 上用 SDL_GameControllerGetStringForButton 逐值枚举确认：
-    # 9=leftshoulder、10=rightshoulder，不要凭记忆改这个数字。
+    # SDL_CONTROLLER_BUTTON_*：A=0、LEFTSHOULDER(L1)=9、RIGHTSHOULDER(R1)=10。
+    # 9/10 已在 Deck 上用 SDL_GameControllerGetStringForButton 逐值枚举确认，
+    # 不要凭记忆改这些数字。
+    _BUTTON_A = 0
+    _BUTTON_L1 = 9
     _BUTTON_R1 = 10
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._sdl = None
         self._ctrl = None
-        self._down = False
+        self._down = False          # R1 按住状态
+        self._a_down = False        # A 键沿触发状态
+        self._l1_down = False       # L1 键沿触发状态
         self._miss = 0
         self._missing_logged = False
         self._timer = QTimer(self)
@@ -688,6 +698,8 @@ class R1Trigger(QObject):
                 if ctrl:
                     self._ctrl = ctrl
                     self._down = False
+                    self._a_down = False
+                    self._l1_down = False
                     self._missing_logged = False
                     _r1_log(f"已连接手柄（设备序号 {i}）")
                     return True
@@ -709,6 +721,8 @@ class R1Trigger(QObject):
                 sdl.SDL_GameControllerClose(self._ctrl)
                 self._ctrl = None
                 self._down = False
+                self._a_down = False
+                self._l1_down = False
                 _r1_log("手柄已断开，等待重新连接")
             if not self._ctrl:
                 # 约 1 秒重试一次，手柄晚到或热插拔后能自己接上
@@ -717,19 +731,37 @@ class R1Trigger(QObject):
                     self._miss = 0
                     self._open()
                 return
-            value = int(sdl.SDL_GameControllerGetButton(self._ctrl, self._BUTTON_R1))
-            if value not in (0, 1):
-                _r1_log(f"读取 R1 返回异常值 {value}，停止轮询")
+            ctrl = self._ctrl
+            # R1：按住说话（按下 / 松开各发一次，前端 dmR2 据此启停录音）
+            r1 = int(sdl.SDL_GameControllerGetButton(ctrl, self._BUTTON_R1))
+            if r1 not in (0, 1):
+                _r1_log(f"读取 R1 返回异常值 {r1}，停止轮询")
                 self._timer.stop()
                 return
-            if not self._down and value == 1:
+            if not self._down and r1 == 1:
                 self._down = True
                 _r1_log("按下")
                 self.pressed.emit()
-            elif self._down and value == 0:
+            elif self._down and r1 == 0:
                 self._down = False
                 _r1_log("松开")
                 self.released.emit()
+            # A / L1：审批确认/取消，沿触发（按下瞬间发一次）。
+            # 异常值只跳过本轮、不停止轮询，免得一个键读错连累 R1。
+            a = int(sdl.SDL_GameControllerGetButton(ctrl, self._BUTTON_A))
+            if a in (0, 1):
+                if not self._a_down and a == 1:
+                    self._a_down = True
+                    self.approvePressed.emit()
+                elif self._a_down and a == 0:
+                    self._a_down = False
+            l1 = int(sdl.SDL_GameControllerGetButton(ctrl, self._BUTTON_L1))
+            if l1 in (0, 1):
+                if not self._l1_down and l1 == 1:
+                    self._l1_down = True
+                    self.cancelPressed.emit()
+                elif self._l1_down and l1 == 0:
+                    self._l1_down = False
         except Exception as exc:
             _r1_log(f"读取 R1 失败，停止轮询：{exc!r}")
             self._timer.stop()
@@ -745,6 +777,8 @@ class R1Trigger(QObject):
             pass
         self._ctrl = None
         self._down = False
+        self._a_down = False
+        self._l1_down = False
 
 
 # 重启预算：等旧核心退出最多 8 秒（_stop_for_restart 的 80×0.1），
@@ -1279,6 +1313,21 @@ def main() -> int:
 
     r1.pressed.connect(lambda: _r1_send("start"))
     r1.released.connect(lambda: _r1_send("stop"))
+
+    # ---- 审批快捷键：A 确认 / L1 取消（手动审批档下挂起操作时用） ----
+    # 前端 approve()/cancel() 是单一真源，且无 pending 时是 no-op，
+    # 所以客户端只管注入、不用感知前端状态；窗口未激活时不转发，避免后台误触。
+    def _approval_send(kind: str) -> None:
+        if not view.isActiveWindow():
+            return
+        view.page().runJavaScript(
+            "window.dm%s && window.dm%s()" % (kind, kind),
+            lambda result: _r1_log(f"审批 {kind} -> {result!r}"),
+        )
+
+    r1.approvePressed.connect(lambda: _approval_send("Approve"))
+    r1.cancelPressed.connect(lambda: _approval_send("Cancel"))
+
     r1.start()
     app.aboutToQuit.connect(r1.stop)
 

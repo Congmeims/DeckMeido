@@ -285,6 +285,24 @@
   <div id="fileList"></div>
   <div id="attachBox"></div>
   <div id="queueBox"></div>
+  <!-- 待审批卡片：手动审批档下 AI 想做某操作时挂起，在这里显示「想做什么」
+       + 批准/取消按钮。手柄 A（或键盘 Enter）确认、手柄 L1（或键盘 Esc）取消；
+       鼠标也能点按钮。卡片只在挂起时出现，确认/取消后收起。 -->
+  <div id="pendingApproval" class="pending-approval" hidden>
+    <div class="pa-row">
+      <span class="pa-icon" aria-hidden="true">!</span>
+      <div class="pa-body">
+        <div class="pa-title">梅朵想执行这个操作，需要你确认</div>
+        <div class="pa-desc" id="paDesc"></div>
+        <div class="pa-warn" id="paWarn" hidden></div>
+      </div>
+    </div>
+    <div class="pa-actions">
+      <button id="paApprove" class="pa-btn pa-approve" type="button">批准</button>
+      <button id="paCancel" class="pa-btn pa-cancel" type="button">取消</button>
+    </div>
+    <div class="pa-hint" id="paHint"></div>
+  </div>
   <!-- sudo 授权行：run_command 碰到需要提权的命令且没有可用授权时出现。
        一次校验通过后密码只留在后端内存，TTL 内复用，不再反复索要 -->
   <div id="sudoAuthBox" class="sudo-auth">
@@ -1710,7 +1728,7 @@
   // 属于「某一轮对话」的消息类型：这些才需要按会话号过滤
   var TURN_SCOPED = ['user_message', 'stream_start', 'delta', 'thought_start',
                      'thought_delta', 'thought_end', 'tool_done', 'tool_activity',
-                     'progress', 'ask', 'assistant_message'];
+                     'progress', 'ask', 'assistant_message', 'pending_approval'];
 
   function fmtTime(ts) {
     var d = ts ? new Date(ts * 1000) : new Date();
@@ -7608,6 +7626,15 @@
           }
           liveThought = null;
           break;
+        case 'pending_approval':
+          // 手动审批档：AI 有一条操作在等确认。显示卡片、启用快捷键。
+          // 带 sid 过滤（TURN_SCOPED）：只有发起会话的页面弹卡片，别的会话不打扰。
+          showPendingCard(msg);
+          break;
+        case 'pending_clear':
+          // 确认/取消/被别端抢先：收起卡片、停用快捷键。不带 sid，全局单份清掉就都收。
+          hidePendingCard();
+          break;
         case 'tool_start':
           // 工具开跑就立刻在时间线挂一行带秒表的「执行中」，
           // 装包 / 扫盘这类慢操作不再只有一个转圈，用户能看出还在动、动了多久
@@ -9109,6 +9136,41 @@
   var awaitingResync = false;      // 刚重连、等第一条 status 来对齐运行状态
   var noLlmNoticeShown = false;    // 「还没配置模型」只提醒一次，别跟着 status 刷屏
 
+  // ---------- 待审批卡片（手动审批档） ----------
+  // 单一真源：所有确认/取消动作（手柄 A/L1 注入、键盘 Enter/Esc、卡片按钮）
+  // 都走 approve()/cancel()，不各写一套，避免按键回调语义漂移（同类 bug 的根源）。
+  var hasPending = false;
+  var pendingDesc = '', pendingHard = false, pendingLabel = '';
+  var lastApprovalAt = 0;          // 去重：手柄注入与键盘事件可能几乎同时到达
+  var paEl = document.getElementById('pendingApproval');
+  var paDescEl = document.getElementById('paDesc');
+  var paWarnEl = document.getElementById('paWarn');
+  var paHintEl = document.getElementById('paHint');
+  var paApproveBtn = document.getElementById('paApprove');
+  var paCancelBtn = document.getElementById('paCancel');
+  // 卡片按钮（鼠标 / 触屏）走同一对 approve/cancel
+  if (paApproveBtn) paApproveBtn.addEventListener('click', approve);
+  if (paCancelBtn) paCancelBtn.addEventListener('click', cancel);
+  // 审批键盘快捷键：仅在有挂起操作时生效（捕获阶段，先于 input 自己的 keydown）。
+  //   Esc            → 取消
+  //   输入框为空 Enter → 确认（手柄 A 由客户端注入 dmApprove，不经过这里）
+  //   输入框有内容 Enter → 不拦截，交给正常发送：用户打字「算了」会走文字取消路径
+  document.addEventListener('keydown', function (e) {
+    if (!hasPending) return;
+    if (e.key === 'Escape') {
+      e.preventDefault(); e.stopPropagation();
+      cancel();
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+      var val = (input && input.value) ? input.value.trim() : '';
+      if (!val) {
+        e.preventDefault(); e.stopPropagation();
+        approve();
+      }
+    }
+  }, true);
+
   // ---------- 等待发送队列（参考 Trae 的排队条目样式） ----------
   // 一行一条：左边拖拽手柄（⋮⋮）+ 时钟，中间单行省略的正文，右边
   // 「编辑 / 立即发送 / 删除」三个图标。拖动同一条可以改顺序（拉选排队）。
@@ -9754,6 +9816,62 @@
     lastSendAt = Date.now();   // 自愈逻辑据此判断「刚发出去，服务端可能还在建 task」
     setBusy(true);
   }
+
+  // ---------- 待审批：确认 / 取消（单一真源） ----------
+  // 所有触发源都走这两个函数，不各写一套：桌面客户端手柄 A/L1 注入（dmApprove/dmCancel）、
+  // 键盘 Enter/Esc、卡片上的按钮。这样按键回调语义只有一份，不会出现「A 能确认但 Esc 走了别路径」的漂移。
+  // approve：发确认词，复用后端已有的 is_confirm 确认链路（hard 档只认「确认执行」）。
+  // cancel：调专用接口，只清 pending、不跑新对话（用户明确要求）。
+  function approvalDedup() {
+    // 去重：手柄注入与键盘事件可能在几十毫秒内先后到达（比如 A 既被注入又被模拟成 Enter），
+    // 300ms 内同一动作只执行一次。
+    var now = Date.now();
+    if (now - lastApprovalAt < 300) return false;
+    lastApprovalAt = now;
+    return true;
+  }
+  function showPendingCard(msg) {
+    hasPending = true;
+    pendingDesc = msg.description || '';
+    pendingHard = !!msg.hard;
+    pendingLabel = msg.label || '';
+    paDescEl.textContent = pendingDesc;
+    if (pendingHard) {
+      paWarnEl.hidden = false;
+      paWarnEl.textContent = '风险较高（' + pendingLabel + '），只有回复「确认执行」才会执行。';
+    } else {
+      paWarnEl.hidden = true;
+    }
+    paHintEl.textContent = '手柄 A 确认 / L1 取消　·　键盘 Enter 确认 / Esc 取消';
+    paEl.classList.add('show');
+    paEl.hidden = false;
+  }
+  function hidePendingCard() {
+    hasPending = false;
+    pendingDesc = ''; pendingHard = false; pendingLabel = '';
+    paEl.classList.remove('show');
+    paEl.hidden = true;
+  }
+  function approve() {
+    if (!hasPending) return;
+    if (!approvalDedup()) return;
+    var hard = pendingHard;      // 先取值，hidePendingCard 会清掉状态
+    // 乐观收起：后端确认成功会再广播 pending_clear 兜底；失败（如被别端抢先）影响也很小
+    hidePendingCard();
+    doSend(hard ? '确认执行' : '确认');
+  }
+  function cancel() {
+    if (!hasPending) return;
+    if (!approvalDedup()) return;
+    hidePendingCard();
+    apiFetch('/api/pending/cancel?client=' + encodeURIComponent(myClient()) +
+             '&device=' + encodeURIComponent(DEVICE_ID), { method: 'POST' })
+      .catch(function () {});
+  }
+  // 暴露给桌面客户端注入（手柄 A / L1）。无 pending 时 approve/cancel 是 no-op，
+  // 客户端不需要感知前端状态，只管注入就行。
+  window.dmApprove = approve;
+  window.dmCancel = cancel;
 
   // 把正文 + 待发送附件标记合并成最终要发出去的文本。
   // 附件标记（![图片](url) / @{path}）在发送时才拼上，正文输入框里不出现。

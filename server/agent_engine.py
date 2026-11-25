@@ -822,6 +822,15 @@ async def run_agent(events: list[dict], extra_system: str = "",
                                "client": store.turn.get("client") or "",
                                "device": store.turn.get("device") or ""}
                     m._pending_set(pending)
+                    # 通知各端有一条操作在等审批：前端据此显示待审批卡片、
+                    # 启用手柄/键盘快捷键（A/Enter 确认、X/Esc 取消）。
+                    # 带本轮 sid（_turn_tag），别的会话不会弹出不相关的卡片。
+                    await m.manager.broadcast({"type": "pending_approval",
+                        "description": pending["description"],
+                        "hard": pending["hard"],
+                        "label": verdict.label,
+                        "reason": verdict.reason or "",
+                        "ts": time.time(), **m._turn_tag()})
                     print(f"[DeckMeido] 工具待确认 {name}（模式 {m.PERMISSION_MODE}，"
                           f"{verdict.label}{'/' + verdict.reason if verdict.reason else ''}）："
                           f"{pending['description']}")

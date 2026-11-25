@@ -2926,6 +2926,32 @@ async def api_cancel(request: Request, client: str = "", device: str = ""):
     return {"ok": False, "detail": "no active task", "killed": killed}
 
 
+@app.post("/api/pending/cancel")
+async def api_pending_cancel(request: Request, client: str = "", device: str = ""):
+    """取消挂起的待审批操作：只清掉这一条、不跑新对话。
+
+    手动审批档下，用户按手柄 L1 / 键盘 Esc / 点卡片「取消」时调用。
+    校验「谁提的谁才能取消」（_pending_matches 比 sid/epoch/client/device），
+    避免别的端误清掉手头操作。和打字取消（发一句非确认词）的区别是：
+    这里不触发新一轮对话，纯粹把 pending 摘掉。
+    """
+    pend = _pending_get()
+    who = f"client={client or '?'} device={device or '?'} ip={request.client.host if request.client else '?'}"
+    if pend is None:
+        return {"ok": False, "detail": "no pending action"}
+    if not _pending_matches(pend, store.current_sid, store.epoch, client, device):
+        print(f"[DeckMeido] 取消审批被拒：{who} 不是发起端", file=sys.stderr, flush=True)
+        return {"ok": False, "detail": "not the originator"}
+    if not _pending_claim(pend):
+        return {"ok": False, "detail": "already claimed"}
+    desc = pend.get("description") or pend.get("name") or "操作"
+    print(f"[DeckMeido] 取消待确认：{desc}（{who}）", file=sys.stderr, flush=True)
+    # 不带 sid：pending 是全局单份，清掉就该让所有端的卡片一起收
+    await manager.broadcast({"type": "pending_clear", "reason": "cancelled",
+                             "description": desc, "ts": time.time()})
+    return {"ok": True, "description": desc}
+
+
 class TTSPreviewRequest(BaseModel):
     # 试听文本；留空用一句内置短句
     text: str = ""
@@ -4354,6 +4380,11 @@ async def handle_chat(text: str, announce: bool = True,
                                                  turn_candidates_out=turn_candidates)
             else:
                 action = pend
+                # 认领成功：通知各端收起待审批卡片、停用手柄/键盘快捷键
+                await manager.broadcast({"type": "pending_clear",
+                    "reason": "approved",
+                    "description": action.get("description") or "",
+                    "ts": time.time(), **sid_tag})
                 decision = policy.check(action["name"], action["args"], turn_ctx,
                                         approved=True)
                 events.append({"type": "tool", "name": action["name"],
@@ -4380,6 +4411,10 @@ async def handle_chat(text: str, announce: bool = True,
         elif (pend := _pending_get()) is not None and _pending_claim(pend):
             # 有新消息但未确认，取消挂起操作
             action = pend
+            await manager.broadcast({"type": "pending_clear",
+                "reason": "cancelled",
+                "description": action.get("description") or "",
+                "ts": time.time(), **sid_tag})
             reply = f"已取消：{action['description']}。\n\n" + await run_agent(
                 events, hist=hist, image_part=shot_ref, tool_log=tool_log,
                 from_client=client, turn_ctx=turn_ctx, extra_system=turn_note,

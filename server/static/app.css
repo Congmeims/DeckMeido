@@ -1152,6 +1152,47 @@
   .atchip .at-del:hover { background: var(--danger); color: #fff; }
   #queueBox { display: none; flex-direction: column; align-items: stretch; gap: 4px; margin-bottom: 6px; }
   #queueBox.show { display: flex; }
+  /* 待审批卡片：手动审批档下挂起操作时出现在输入框上方。
+     不用弹窗、不遮罩：只是输入框上方多一条横幅，确认/取消后立刻收起，
+     不打断正在看的对话。按钮 + 手柄/键盘快捷键三条路都走 approve()/cancel()。 */
+  .pending-approval {
+    display: none; flex-direction: column; gap: 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+  }
+  .pending-approval.show { display: flex; }
+  .pending-approval .pa-row { display: flex; gap: 10px; align-items: flex-start; }
+  .pending-approval .pa-icon {
+    flex: none; width: 22px; height: 22px; border-radius: 50%;
+    background: var(--warning, #f0a020); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 14px; line-height: 1;
+  }
+  .pending-approval .pa-body { flex: 1; min-width: 0; }
+  .pending-approval .pa-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .pending-approval .pa-desc {
+    margin-top: 3px; font-size: 13px; color: var(--text);
+    word-break: break-word; line-height: 1.45;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .pending-approval .pa-warn {
+    margin-top: 6px; font-size: 12px; color: var(--danger);
+  }
+  .pending-approval .pa-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .pending-approval .pa-btn {
+    border: 1px solid var(--border); background: var(--surface-3);
+    color: var(--text); border-radius: 8px; padding: 6px 16px;
+    font-size: 13px; cursor: pointer;
+  }
+  .pending-approval .pa-btn:hover { background: var(--surface-4); }
+  .pending-approval .pa-approve { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .pending-approval .pa-approve:hover { filter: brightness(1.08); }
+  .pending-approval .pa-hint {
+    font-size: 11px; color: var(--muted); text-align: right;
+  }
   .qchip {
     display: flex; align-items: center; gap: 7px;
     background: var(--surface-2);
