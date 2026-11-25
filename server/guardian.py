@@ -33,6 +33,11 @@ GUARDIAN_TIMEOUT = 15.0
 # 只认这三个整词，避免女仆长解释一大段时误命中
 _DECISION_RE = re.compile(r"\b(ALLOW|DENY|ASK)\b", re.IGNORECASE)
 
+# 判词是内部协议（模型按 ALLOW/DENY/ASK 输出，代码按这三个词分支），
+# 但它会拼进 reason 直接显示在聊天和界面上，主人看不懂英文缩写，
+# 所以对外一律换中文。日志里仍保留原词，便于 grep。
+_DECISION_CN = {"allow": "放行", "deny": "拦下", "ask": "请主人定夺"}
+
 _SYSTEM_PROMPT = """你是 DeckMeido 的女仆长 MeidoChou，负责监护女仆（AI 助手）的每一步操作，判断这步能否在主人不在场时让女仆自己执行。
 
 请仅根据下面给出的「操作内容」判断，输出格式为「判词：一句中文理由」，例如：
@@ -99,7 +104,10 @@ async def judge(name: str, args: dict, verdict, llm, turn_sid: str = "") -> tupl
             why = raw[m.end():].strip(" \t\r\n:：，,。.;；-—*`\"'")
             if len(why) > 80:
                 why = why[:80].rstrip() + "…"
-            reason = f"女仆长判定 {decision}" + (f"：{why}" if why else "")
+            # 对外口径用中文判词：界面上只该出现「女仆长判定「拦下」：…」，
+            # 不能再把 ALLOW/DENY/ASK 原样丢给主人看
+            cn = _DECISION_CN.get(decision, decision)
+            reason = f"女仆长判定「{cn}」" + (f"：{why}" if why else "")
         else:
             reason = f"女仆长没说清（输出无法解析），请主人定夺：{raw[:120]!r}"
     except asyncio.TimeoutError:
@@ -112,7 +120,8 @@ async def judge(name: str, args: dict, verdict, llm, turn_sid: str = "") -> tupl
     devlog.debug("meidochou.judge", name=name, decision=decision,
                  rule=getattr(verdict, "rule", ""), severity=getattr(verdict, "severity", 0),
                  elapsed=round(elapsed, 2), turn=turn_sid, reason=reason)
-    print(f"[DeckMeido][meidochou] {decision.upper()} {name}（{getattr(verdict, 'label', '')}"
+    print(f"[DeckMeido][meidochou] {_DECISION_CN.get(decision, decision)} {name}"
+          f"（{getattr(verdict, 'label', '')}"
           f"/{getattr(verdict, 'rule', '')}，会话 {turn_sid}，{elapsed:.1f}s）："
           f"{op_desc[:160]} | {reason}", file=sys.stderr, flush=True)
     return decision, reason

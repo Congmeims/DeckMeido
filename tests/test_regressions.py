@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import sys
 import tempfile
@@ -508,6 +509,40 @@ class ApprovalGateTest(unittest.TestCase):
             self.assertFalse(v.ask, cmd)
         # grep 的参数里带关键词：不是删除，但提权/服务类关键词仍值得留意
         self.assertFalse(self.resolve("grep reboot /var/log/syslog", "auto").deny)
+
+
+class GuardianWordingTest(unittest.TestCase):
+    """女仆长的判词要换成中文再给主人看
+
+    ALLOW / DENY / ASK 是内部协议词（模型输出、代码分支用），但 reason 会被
+    直接显示在聊天和工具卡片上，主人看不懂这三个缩写。这里锁住对外口径。
+    """
+
+    class _LLM:
+        def __init__(self, reply: str):
+            self.reply = reply
+
+        async def chat(self, messages):  # pragma: no cover - 桩
+            return self.reply
+
+    def judge(self, reply: str):
+        from server import guardian
+        verdict = approval.Verdict(severity=approval.DANGEROUS,
+                                   rule="history_clear", reason="清空命令历史")
+        return asyncio.run(guardian.judge(
+            "run_command", {"command": "history -c", "reason": "清历史"},
+            verdict, self._LLM(reply), "s1"))
+
+    def test_decision_words_are_chinese(self):
+        for reply, decision, word in (
+                ("ALLOW：只清本机历史，不碰系统文件", "allow", "放行"),
+                ("DENY：会抹掉整块硬盘", "deny", "拦下"),
+                ("ASK：拿不准，等主人回来", "ask", "请主人定夺")):
+            got, reason = self.judge(reply)
+            self.assertEqual(got, decision, reply)
+            self.assertIn(f"「{word}」", reason, reply)
+            for en in ("ALLOW", "DENY", "ASK"):
+                self.assertNotIn(en, reason.upper(), f"{reply} → {reason}")
 
 
 class PermissionContextSyncTest(unittest.TestCase):
