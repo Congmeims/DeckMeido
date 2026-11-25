@@ -2942,9 +2942,17 @@ async def api_pending_cancel(request: Request, client: str = "", device: str = "
     # 不带 sid：pending 是全局单份，清掉就该让所有端的卡片一起收
     await manager.broadcast({"type": "pending_clear", "reason": "cancelled",
                              "description": desc, "ts": time.time()})
-    # 取消也要在对话里留一句：这一步没执行，主人往下翻会话得能看出结论。
-    # 走正常的助手消息（落盘 + 广播到本会话），不弹浮层气泡
-    text = f"已取消，没有执行这一步：{desc}"
+    # 取消也要在对话里留一句：这一步没执行，主人往下翻会话得能看出结论
+    await _append_assistant_note(f"已取消，没有执行这一步：{desc}")
+    return {"ok": True, "description": desc}
+
+
+async def _append_assistant_note(text: str) -> None:
+    """往当前会话补一条助手消息（落盘 + 广播）。
+
+    用于「取消 / 中止」这类没有模型回合的结论：不写进会话的话，界面一收
+    （卡片、授权行消失），主人回头看只剩半句「已完成」，根本不知道那步没跑。
+    """
     sid = store.current_sid
     hist = store.history
     hist.append({"role": "assistant", "content": text, "events": [], "ts": time.time()})
@@ -2952,11 +2960,10 @@ async def api_pending_cancel(request: Request, client: str = "", device: str = "
         if sid:
             _write_session(sid, hist)
     except Exception as e:
-        print(f"[DeckMeido] 取消后写回会话失败：{e}", file=sys.stderr, flush=True)
+        print(f"[DeckMeido] 写回会话失败：{e}", file=sys.stderr, flush=True)
     await manager.broadcast({"type": "assistant_message", "text": text,
                              "ts": time.time(), "events": [],
                              **({"sid": sid} if sid else {})})
-    return {"ok": True, "description": desc}
 
 
 class TTSPreviewRequest(BaseModel):
@@ -3451,7 +3458,15 @@ class SudoPasswordBody(BaseModel):
 @app.post("/api/sudo/cancel")
 async def api_sudo_cancel():
     """界面点「取消」：撤掉待授权请求，被拦下的命令不再等密码"""
-    return {"ok": True, "cancelled": sudo_auth.cancel_pending()}
+    command = str((sudo_auth.pending() or {}).get("command") or "").strip()
+    ok = sudo_auth.cancel_pending()
+    # 取消授权也得在对话里留一句：否则授权行一收，主人看到的还是上一条
+    # 「已完成：…」，完全不知道那条命令没跑（会话 708412 就是这么卡住的）
+    if ok:
+        await _append_assistant_note(
+            "已取消管理员授权，这条命令没有执行。"
+            + (f"\n{command}" if command else ""))
+    return {"ok": True, "cancelled": ok}
 
 
 @app.post("/api/sudo/password")
@@ -4427,8 +4442,12 @@ async def handle_chat(text: str, announce: bool = True,
                 # 补上执行结果，QQ 的「装完自动打开」要靠 exit=0 判断成功
                 if events:
                     events[-1]["output"] = str(result)[:1500]
-                reply = (f"已完成：{action['description']}\n{result}" if decision.allowed
-                         else f"未执行：{action['description']}\n{result}")
+                # sudo 没授权时命令并没有真的跑，只是打开了授权入口：
+                # 这里还写「已完成」，主人会以为已经执行过了
+                head = ("已完成" if decision.allowed
+                        and not str(result).startswith("这条命令需要管理员权限")
+                        else "未执行")
+                reply = f"{head}：{action['description']}\n{result}"
         elif (pend := _pending_get()) is not None and _pending_claim(pend):
             # 有新消息但未确认，取消挂起操作
             action = pend
