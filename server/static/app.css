@@ -907,31 +907,45 @@
     position: relative;   /* 供 ＋ 菜单 / 命令菜单 / 回到底部球定位 */
   }
   #composerBar { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  /* sudo 授权行：只在需要授权时占位，复用自检卡的输入/眼睛/确认样式。
-     抬成一张浮起的卡片：左边一条主色竖条 + 阴影，和输入框拉开层级，
-     不然贴在输入框上方看着就像输入框的一部分 */
+  /* sudo 授权行：只在需要授权时占位。
+     样式和待审批卡片（.pending-approval）保持同一套：同样的圆角、内边距、
+     面板底色公式和按钮尺寸 —— 两者都在输入框上方出现、都是「要主人拍板」，
+     长成两个样会显得像两个功能。以前这里是「实色底 + 左侧主色竖条 + 大阴影」，
+     在壁纸下也不跟透明度走 */
   #sudoAuthBox {
-    display: none; padding: 9px 12px 10px; box-sizing: border-box;
-    border: 1px solid var(--line); border-left: 3px solid var(--brand);
-    border-radius: 10px; background: var(--surface-2);
-    box-shadow: 0 6px 18px rgba(0,0,0,.18);
+    display: none; flex-direction: column; gap: 10px; box-sizing: border-box;
+    background: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
+    backdrop-filter: blur(calc(10px + var(--glass))) saturate(1.05);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
   }
-  #sudoAuthBox.show { display: block; }
+  #sudoAuthBox.show { display: flex; }
   .sd-auth-head {
-    display: flex; align-items: baseline; justify-content: space-between;
-    gap: 8px; margin-bottom: 6px;
+    display: flex; align-items: center; gap: 10px;
   }
   /* 标题四个字必须整体不折行：以前和下面那行命令挤在一起被压成两行 */
-  .sd-auth-title { flex: 0 0 auto; font-size: 12.5px; color: var(--text); white-space: nowrap; }
+  .sd-auth-title {
+    flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600;
+    color: var(--text); white-space: nowrap;
+  }
+  /* 黄色叹号和定夺框同一颗：两处都在提示「这里需要你处理」 */
+  .sd-auth-icon {
+    flex: none; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--warning, #f0a020); color: #1a1300;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px; line-height: 1;
+  }
   .sd-auth-meta {
     font-size: 11px; color: var(--muted); min-width: 0; text-align: right;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   /* 要授权的命令单独占一行，等宽字体、超长省略，不再和标题挤成一坨 */
   .sd-auth-cmd {
-    margin-bottom: 6px; padding: 5px 8px; box-sizing: border-box;
-    border-radius: 8px; background: var(--code-bg); color: var(--code-text);
-    font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5;
+    padding: 6px 10px; box-sizing: border-box;
+    border-radius: 9px; background: var(--code-bg); color: var(--code-text);
+    font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .sd-auth-cmd:empty { display: none; }
@@ -3061,7 +3075,8 @@
      和周围的玻璃对不上。
      统一按 --panel-alpha 半透，并补一层毛玻璃：不补的话，字直接压在
      花壁纸的亮部上会糊；--panel-alpha 拉到底（8%）时仍有这层雾托底。
-     回到底部的悬浮球和 sudo 授权行也一起收进来（都贴在输入框上下沿）。
+     回到底部的悬浮球也一起收进来。sudo 授权行不在这里列：它的底色直接在
+     #sudoAuthBox 里按同一套公式算，和待审批卡片共用一份写法。
      下拉候选面板 .dd-list 故意不放进来：它展开时只有几行，半透会把
      背后的消息透出来，选项反而难读，保持实心。
      「发送」和文件面板的「上传」是同一块品牌色实心按钮，也按面板透明度走，
@@ -3070,7 +3085,6 @@
   html.wall-on #composer .think-slider,
   html.wall-on #composer .dd-trigger,
   html.wall-on #composer #jumpLatest,
-  html.wall-on #composer #sudoAuthBox,
   html.wall-on #composer #send,
   html.wall-on #fbDropBar #fbUploadBtn,
   html.wall-on #btnNewSess,
@@ -4392,6 +4406,26 @@
     color: var(--danger); border-color: var(--danger);
     background: rgba(228,80,80,.12);
   }
+  /* 授权框里的控件按定夺框（.pending-approval .pa-btn）对齐：等高 36px、
+     圆角 9px，主按钮 14px/600 + 9px 24px 内边距。这两块都在输入框上方、
+     都要主人拍板，尺寸不一致会显得一个是卡片、一个是表单 */
+  #sudoAuthBox .sc-auth-line { gap: 10px; }
+  #sudoAuthBox .sc-pw {
+    height: 36px; padding: 0 12px; font-size: 13.5px; border-radius: 9px;
+    background: var(--surface); border: 1px solid var(--line);
+  }
+  #sudoAuthBox .sc-eye {
+    height: 36px; padding: 0 14px; font-size: 13px; border-radius: 9px;
+    border: 1px solid var(--line); background: var(--surface-2);
+  }
+  #sudoAuthBox .sc-auth-btn {
+    width: auto; height: 36px; min-height: 36px; padding: 0 24px;
+    font-size: 14px; font-weight: 600; line-height: 1.2; border-radius: 9px;
+    border: 1px solid var(--brand); background: var(--brand);
+    color: var(--on-brand); cursor: pointer;
+  }
+  #sudoAuthBox .sc-auth-btn:hover { filter: brightness(1.06); }
+  #sudoAuthBox .sc-auth-err { margin-top: 0; font-size: 12px; }
   .sc-auth-err {
     margin-top: 4px; font-size: 11.5px; color: #d0492b; line-height: 1.4;
     overflow-wrap: anywhere;

@@ -305,6 +305,7 @@
        一次校验通过后密码只留在后端内存，TTL 内复用，不再反复索要 -->
   <div id="sudoAuthBox" class="sudo-auth">
     <div class="sd-auth-head">
+      <span class="sd-auth-icon" aria-hidden="true">!</span>
       <span class="sd-auth-title">需要授权</span>
       <span class="sd-auth-meta" id="sudoAuthMeta"></span>
     </div>
@@ -8751,7 +8752,13 @@
       try { document.getElementById('input').focus(); } catch (e) {}
       // 失败要留下痕迹：以前这里 .catch 全吞，后端 500 时界面
       // 和「取消成功」一模一样，排查时毫无线索
-      apiFetch('/api/sudo/cancel', { method: 'POST' }).catch(function (e) {
+      // 带上 sid：留痕要写进「点取消的这个会话」，后端默认落 current_sid，
+      // 多标签页/切换会话时会写到别的会话里（屏幕上看不到）
+      apiFetch('/api/sudo/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sid: currentSid || '' })
+      }).catch(function (e) {
         console.warn('[sudo] 取消失败：', e && (e.message || e));
       });
     });
