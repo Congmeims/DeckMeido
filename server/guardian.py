@@ -36,7 +36,7 @@ _DECISION_RE = re.compile(r"\b(ALLOW|DENY|ASK)\b", re.IGNORECASE)
 # 判词是内部协议（模型按 ALLOW/DENY/ASK 输出，代码按这三个词分支），
 # 但它会拼进 reason 直接显示在聊天和界面上，主人看不懂英文缩写，
 # 所以对外一律换中文。日志里仍保留原词，便于 grep。
-_DECISION_CN = {"allow": "放行", "deny": "拦截", "ask": "请主人定夺"}
+_DECISION_CN = {"allow": "放行", "deny": "拦截", "ask": "请定夺"}
 
 _SYSTEM_PROMPT = """你是 DeckMeido 的女仆长 MeidoChou，负责监护女仆（AI 助手）的每一步操作，判断这步能否在主人不在场时让女仆自己执行。
 
@@ -109,11 +109,11 @@ async def judge(name: str, args: dict, verdict, llm, turn_sid: str = "") -> tupl
             cn = _DECISION_CN.get(decision, decision)
             reason = f"女仆长判定「{cn}」" + (f"：{why}" if why else "")
         else:
-            reason = f"女仆长没说清（输出无法解析），请主人定夺：{raw[:120]!r}"
+            reason = f"女仆长没说清（输出无法解析），请定夺：{raw[:120]!r}"
     except asyncio.TimeoutError:
-        reason = f"女仆长思考超时（>{GUARDIAN_TIMEOUT:.0f}s），请主人定夺"
+        reason = f"女仆长思考超时（>{GUARDIAN_TIMEOUT:.0f}s），请定夺"
     except Exception as exc:
-        reason = f"女仆长这边出了点状况，请主人定夺：{exc!r}"
+        reason = f"女仆长这边出了点状况，请定夺：{exc!r}"
 
     elapsed = time.time() - started
     # 后台日志：放行/拦下都留痕，devlog 结构化 + stderr 进 backend.log
