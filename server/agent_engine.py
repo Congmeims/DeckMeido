@@ -839,6 +839,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         summary = tools.summarize_tool(name, args)
                         deny_event = {"type": "tool", "name": name, "label": label,
                                       "summary": summary, "files": [], "denied": True,
+                                      "guardian_deny": True,
                                       "reason": g_reason,
                                       "seq": _next_seq()}
                         events.append(deny_event)

@@ -2560,8 +2560,15 @@
     // 被拦截的行必须说清「拦了 + 谁拦的 + 为什么」，不能混进「已完成」里，
     // 否则主人只会看到一条正常的命令行，根本不知道有东西被拒了。
     // tag 是行首那句显式说明：行为越界 · 女仆长介入 · 已拦截/已放行
-    if (ev.denied) return { text: '已拦截', chip: ev.summary, intent: ev.reason,
-                            tag: '行为越界 · 女仆长介入' };
+    if (ev.denied) {
+      if (ev.guardian_deny)
+        return { text: '已拦截', chip: ev.summary, intent: ev.reason,
+                 tag: '行为越界 · 女仆长介入' };
+      // 超高危（ULTRA_RULES）走的是审批直接硬拒，女仆长根本没参与，
+      // 不能张冠李戴写成「女仆长介入」
+      return { text: '已拒绝', chip: ev.summary, intent: ev.reason,
+               tag: '超高危 · 直接拒绝' };
+    }
     // 女仆长在 auto 档替主人放行的步骤：单独一条绿行的文案，
     // 和「已运行」区分开，主人才知道这一步是她拍了板才执行的
     if (ev.guardian_allow) return { text: '已放行', chip: ev.summary, intent: ev.intent,
