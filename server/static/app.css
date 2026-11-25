@@ -1214,7 +1214,24 @@
     margin-bottom: 8px;
   }
   .pending-approval.show { display: flex; }
-  .pending-approval .pa-actions { display: flex; gap: 10px; justify-content: flex-end; }
+  /* 标题 + 按钮同一行：左边黄色叹号和「（昵称）想执行这个操作，需要你确认」，
+     右边两个按钮；窄屏放不下时按钮整组换到第二行，标题不截断 */
+  .pending-approval .pa-line {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .pending-approval .pa-icon {
+    flex: none; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--warning, #f0a020); color: #1a1300;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px; line-height: 1;
+  }
+  .pending-approval .pa-title {
+    flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600;
+    color: var(--text);
+  }
+  .pending-approval .pa-actions {
+    display: flex; gap: 10px; margin-left: auto; flex: none;
+  }
   /* 这里以前写的是 --surface-3 / --surface-4 / --accent / --border，四个变量在 app.css
      里都不存在：整条 border/background 声明会被判无效，按钮就退化成纯文字，
      显得「不明显、不吃强调色」。只用真实存在的 --surface-2 / --line / --hover / --brand */

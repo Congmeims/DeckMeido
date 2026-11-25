@@ -32,7 +32,6 @@
 我需要执行一个会影响设备的操作：
 
 **{description}**
-
 **后果**：{consequence}
 
 {reply}<!-- /@part -->

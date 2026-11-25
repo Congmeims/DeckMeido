@@ -289,11 +289,15 @@
        + 批准/取消按钮。手柄 A（或键盘 Enter）确认、手柄 L1（或键盘 Esc）取消；
        鼠标也能点按钮。卡片只在挂起时出现，确认/取消后收起。 -->
   <div id="pendingApproval" class="pending-approval" hidden>
-    <!-- 命令/目的/后果都写在上面那条助手消息里了，这里只留抉择：
-         两处都写一遍只会重复、还占掉半个屏幕 -->
-    <div class="pa-actions">
-      <button id="paApprove" class="pa-btn pa-approve" type="button">批准</button>
-      <button id="paCancel" class="pa-btn pa-cancel" type="button">取消</button>
+    <!-- 命令/目的/后果都写在上面那条助手消息里了，这里只留一行标题 + 抉择，
+         不重复占屏幕 -->
+    <div class="pa-line">
+      <span class="pa-icon" aria-hidden="true">!</span>
+      <span class="pa-title" id="paTitle">想执行这个操作，需要你确认</span>
+      <div class="pa-actions">
+        <button id="paApprove" class="pa-btn pa-approve" type="button">批准</button>
+        <button id="paCancel" class="pa-btn pa-cancel" type="button">取消</button>
+      </div>
     </div>
     <div class="pa-hint" id="paHint"></div>
   </div>
@@ -9237,6 +9241,7 @@
   var lastApprovalAt = 0;          // 去重：手柄注入与键盘事件可能几乎同时到达
   var paEl = document.getElementById('pendingApproval');
   var paHintEl = document.getElementById('paHint');
+  var paTitleEl = document.getElementById('paTitle');
   var paApproveBtn = document.getElementById('paApprove');
   var paCancelBtn = document.getElementById('paCancel');
   // 卡片按钮（鼠标 / 触屏）走同一对 approve/cancel
@@ -9924,6 +9929,8 @@
   function showPendingCard(msg) {
     hasPending = true;
     pendingHard = !!msg.hard;
+    // 名字走人设配置（设置页里能改），没设过就兜底「AI」
+    paTitleEl.textContent = (PERSONA_NAME || 'AI') + '想执行这个操作，需要你确认';
     paHintEl.textContent = '手柄 A 确认 / L1 取消　·　键盘 Enter 确认 / Esc 取消';
     paEl.classList.add('show');
     paEl.hidden = false;
