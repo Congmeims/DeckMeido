@@ -1186,7 +1186,7 @@
   .pending-approval {
     display: none; flex-direction: column; gap: 10px;
     background: var(--surface-2);
-    border: 1px solid var(--border);
+    border: 1px solid var(--line);
     border-radius: 12px;
     padding: 12px 14px;
     margin-bottom: 8px;
@@ -1209,15 +1209,29 @@
   .pending-approval .pa-warn {
     margin-top: 6px; font-size: 12px; color: var(--danger);
   }
-  .pending-approval .pa-actions { display: flex; gap: 8px; justify-content: flex-end; }
-  .pending-approval .pa-btn {
-    border: 1px solid var(--border); background: var(--surface-3);
-    color: var(--text); border-radius: 8px; padding: 6px 16px;
-    font-size: 13px; cursor: pointer;
+  /* 女仆长介入但拿不准：写明她已经看过、只是把决定交回来（amber，和红色的硬警告区分） */
+  .pending-approval .pa-guard {
+    margin-top: 6px; font-size: 12px; line-height: 1.5;
+    color: #d99a2b; white-space: pre-line; word-break: break-word;
   }
-  .pending-approval .pa-btn:hover { background: var(--surface-4); }
-  .pending-approval .pa-approve { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .pending-approval .pa-approve:hover { filter: brightness(1.08); }
+  .pending-approval .pa-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px; }
+  /* 这里以前写的是 --surface-3 / --surface-4 / --accent / --border，四个变量在 app.css
+     里都不存在：整条 border/background 声明会被判无效，按钮就退化成纯文字，
+     显得「不明显、不吃强调色」。只用真实存在的 --surface-2 / --line / --hover / --brand */
+  .pending-approval .pa-btn {
+    border: 1px solid var(--line); background: var(--surface-2);
+    color: var(--text); border-radius: 9px; padding: 9px 24px;
+    font-size: 14px; font-weight: 600; line-height: 1.2;
+    cursor: pointer;
+    transition: background .15s ease, border-color .15s ease, filter .15s ease;
+  }
+  .pending-approval .pa-btn:hover { background: var(--hover); }
+  .pending-approval .pa-approve {
+    background: var(--brand); border-color: var(--brand); color: #fff;
+    box-shadow: 0 2px 12px color-mix(in srgb, var(--brand) 40%, transparent);
+  }
+  .pending-approval .pa-approve:hover { background: var(--brand); filter: brightness(1.1); }
+  .pending-approval .pa-cancel:hover { border-color: var(--text); }
   .pending-approval .pa-hint {
     font-size: 11px; color: var(--muted); text-align: right;
   }

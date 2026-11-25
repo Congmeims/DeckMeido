@@ -295,6 +295,8 @@
         <div class="pa-title">梅朵想执行这个操作，需要你确认</div>
         <div class="pa-desc" id="paDesc"></div>
         <div class="pa-warn" id="paWarn" hidden></div>
+        <!-- auto 档女仆长拿不准时，这里写明她已经介入过、只是不敢替主人拍板 -->
+        <div class="pa-guard" id="paGuard" hidden></div>
       </div>
     </div>
     <div class="pa-actions">
@@ -9222,6 +9224,7 @@
   var paEl = document.getElementById('pendingApproval');
   var paDescEl = document.getElementById('paDesc');
   var paWarnEl = document.getElementById('paWarn');
+  var paGuardEl = document.getElementById('paGuard');
   var paHintEl = document.getElementById('paHint');
   var paApproveBtn = document.getElementById('paApprove');
   var paCancelBtn = document.getElementById('paCancel');
@@ -9919,6 +9922,14 @@
     } else {
       paWarnEl.hidden = true;
     }
+    // auto 档女仆长已经看过、但拿不准：说明白是「她交回来的」，不是普通的危险确认，
+    // 不然主人会以为 auto 档根本没起作用
+    if (msg.guardian_reason) {
+      paGuardEl.hidden = false;
+      paGuardEl.textContent = '女仆长已介入 · 她拿不准，请你定夺\n' + msg.guardian_reason;
+    } else {
+      paGuardEl.hidden = true;
+    }
     paHintEl.textContent = '手柄 A 确认 / L1 取消　·　键盘 Enter 确认 / Esc 取消';
     paEl.classList.add('show');
     paEl.hidden = false;
@@ -9940,9 +9951,16 @@
   function cancel() {
     if (!hasPending) return;
     if (!approvalDedup()) return;
+    var desc = pendingDesc;      // hidePendingCard 会清掉状态，先把描述留下
     hidePendingCard();
     apiFetch('/api/pending/cancel?client=' + encodeURIComponent(myClient()) +
              '&device=' + encodeURIComponent(DEVICE_ID), { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        // 后端确认真的取消了才留痕：以前卡片一收就没了下文，
+        // 主人不知道这步到底执行没执行，只能靠猜
+        if (j && j.ok) addSystem('已拒绝执行：' + (desc || '这一步操作') + '（没有执行）');
+      })
       .catch(function () {});
   }
   // 暴露给桌面客户端注入（手柄 A / L1）。无 pending 时 approve/cancel 是 no-op，

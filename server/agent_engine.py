@@ -810,6 +810,9 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 # 女仆长放行时记下她的判词：这一步的时间线行要标绿「已放行」，
                 # 让主人事后能看出哪几步是她替自己拍的板（不只在 toast 里闪一下）
                 guardian_ok = ""
+                # 女仆长拿不准（ask）时的判词：卡片上要写明「她已经看过、但不敢替你拍板」，
+                # 否则主人只会以为这是普通的危险确认，不知道 auto 档的自动判官已经介入过
+                guardian_ask = ""
 
                 # auto 档：危险操作先交给女仆长 MeidoChou 监护。
                 # 放行（allow）→ 直接执行；拦下（deny）→ 告知女仆并提示主人；拿不准（ask）
@@ -856,6 +859,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         return (f"这步操作被女仆长拦截，没有让{ai_name}执行。\n\n{g_reason}\n\n"
                                 "主人若确实需要，请切到手动审批档后确认，或自己手动操作。")
                     # ask：保持 needs_approval = True，走下面的人工挂起
+                    else:
+                        guardian_ask = g_reason
 
                 if needs_approval or remote_risk.level == "hard_confirm":
                     hard = verdict.hard or remote_risk.level == "hard_confirm"
@@ -869,7 +874,8 @@ async def run_agent(events: list[dict], extra_system: str = "",
                                "epoch": store.turn.get("epoch") or store.epoch,
                                "turn_id": store.turn.get("turn_id") or "",
                                "client": store.turn.get("client") or "",
-                               "device": store.turn.get("device") or ""}
+                               "device": store.turn.get("device") or "",
+                               "guardian": guardian_ask}
                     m._pending_set(pending)
                     # 通知各端有一条操作在等审批：前端据此显示待审批卡片、
                     # 启用手柄/键盘快捷键（A/Enter 确认、X/Esc 取消）。
@@ -879,6 +885,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         "hard": pending["hard"],
                         "label": verdict.label,
                         "reason": verdict.reason or "",
+                        "guardian_reason": guardian_ask,
                         "ts": time.time(), **m._turn_tag()})
                     print(f"[DeckMeido] 工具待确认 {name}（模式 {m.PERMISSION_MODE}，"
                           f"{verdict.label}{'/' + verdict.reason if verdict.reason else ''}）："
