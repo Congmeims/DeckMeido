@@ -301,8 +301,37 @@ class SudoCancelLeavesNoteTest(unittest.TestCase):
         self.assertTrue(res["cancelled"])
         self.assertEqual(sudo_auth.pending_status(), None)
         self.assertEqual(len(notes), 1)
-        self.assertIn("已取消管理员授权", notes[0])
+        self.assertIn("已取消授权", notes[0])
         self.assertIn(cmd, notes[0])
+
+
+class SudoGrantLeavesNoteTest(unittest.TestCase):
+    """密码通过后也要在对话里留一句「已授权」，否则主人看不出密码被接受了。"""
+
+    def test_grant_appends_chat_note(self):
+        import tempfile
+        env = {"DECKMEIDO_DATA_DIR": tempfile.mkdtemp(prefix="dm-sudogrant-"),
+               "DECKMEIDO_ALLOW_SECOND_BACKEND": "1",
+               "DECKMEIDO_PORT": "18797"}
+        with mock.patch.dict(os.environ, env):
+            from server import main, sudo_auth
+
+        notes = []
+
+        async def fake_note(text):
+            notes.append(text)
+
+        held = {"command": "sudo systemctl mask NetworkManager"}
+        with mock.patch.object(sudo_auth, "provide_password",
+                               return_value={"ok": True, "resume": held}), \
+             mock.patch.object(main, "_append_assistant_note", fake_note), \
+             mock.patch.object(main, "_resume_after_sudo", lambda h: True):
+            res = asyncio.run(main.api_sudo_password(main.SudoPasswordBody(password="x")))
+
+        self.assertTrue(res["ok"])
+        self.assertEqual(len(notes), 1)
+        self.assertIn("已授权", notes[0])
+        self.assertIn(held["command"], notes[0])
 
 
 if __name__ == "__main__":

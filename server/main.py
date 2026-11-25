@@ -3466,7 +3466,7 @@ async def api_sudo_cancel():
     # 「已完成：…」，完全不知道那条命令没跑（会话 708412 就是这么卡住的）
     if ok:
         await _append_assistant_note(
-            "已取消管理员授权，这条命令没有执行。"
+            "已取消授权，这条命令没有执行。"
             + (f"\n{command}" if command else ""))
     return {"ok": True, "cancelled": ok}
 
@@ -3481,6 +3481,12 @@ async def api_sudo_password(req: SudoPasswordBody):
     if not res.get("ok"):
         return JSONResponse(res, status_code=400)
     held = res.pop("resume", None)
+    # 授权成功也要在对话里留一句：之前只有「续跑结果」那一轮，主人看不出
+    # 密码到底有没有被接受（会话 cb3d64a5 反馈「点了没反应」）
+    await _append_assistant_note(
+        "已授权管理员权限（sudo）。"
+        + (f"\n{str((held or {}).get('command') or '').strip()}"
+           if (held or {}).get("command") else ""))
     if held:
         res["resumed"] = _resume_after_sudo(held)
     return res
