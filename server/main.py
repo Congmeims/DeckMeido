@@ -2944,11 +2944,10 @@ async def api_pending_cancel(request: Request, client: str = "", device: str = "
                              "description": desc, "ts": time.time()})
     # 取消也要在对话里留一句：这一步没执行，主人往下翻会话得能看出结论
     await _append_assistant_note(f"已取消，没有执行这一步：{desc}", side="user")
-    # 和 sudo 授权框一致：主人按了取消，模型也要回一句收尾，
-    # 否则卡片一收就断在半空，只有他自己一句「已取消」
-    _followup_reply(
-        f"主人取消了这一步操作，没有执行：{desc}\n"
-        "请用一两句话简短回应，确认它没有执行，不要重试。")
+    # 助手侧补一句收尾（写死的短句，不调模型）：主人按了取消，界面上不能只剩
+    # 他自己那一句就断掉。之前交给模型回，女仆长人设一展开就是三行解释，主人
+    # 嫌啰嗦 —— 这种「已确认没执行」没有任何需要发挥的地方，直接固定一句
+    await _append_assistant_note("好的，这一步没有执行。")
     return {"ok": True, "description": desc}
 
 
@@ -2995,29 +2994,6 @@ async def _append_assistant_note(text: str, sid: str | None = None,
                              "ts": time.time(), "events": [],
                              **({"side": "user"} if side == "user" else {}),
                              **({"sid": target} if target else {})})
-
-
-def _followup_reply(prompt: str, sid: str = "") -> bool:
-    """主人按了「取消」之后，让模型补一轮简短收尾。
-
-    取消原来只写一条留痕就结束，界面上卡片/授权行一收、只剩主人自己一句
-    「取消授权 / 已取消」，看着像对话断在半空（主人反馈「点取消 ai 也应该
-    回复一句」）。这里把「没执行、别重试」交给模型，让它正常回一两句。
-
-    prompt 是内部提示，只进历史不广播（announce=False），界面上不会多出
-    一条主人没打过的字。上一轮还在跑就放弃（返回 False），不抢 current_task。
-    """
-    if _chat_busy():
-        return False
-
-    async def _run() -> None:
-        try:
-            await start_chat(prompt, announce=False, sid=sid or "")
-        except Exception as exc:
-            devlog.debug("main._followup_reply", error=repr(exc))
-
-    _spawn(_run(), "_followup_reply")
-    return True
 
 
 class TTSPreviewRequest(BaseModel):
@@ -3520,7 +3496,6 @@ async def api_sudo_cancel(req: SudoCancelBody | None = None):
     """界面点「取消」：撤掉待授权请求，被拦下的命令不再等密码"""
     # 注意用 pending_status()：模块里没有 pending()，写错会 500，
     # 而前端 .catch 把错误吞掉，表现就是「点了取消毫无反应」
-    command = str((sudo_auth.pending_status() or {}).get("command") or "").strip()
     ok = sudo_auth.cancel_pending()
     # 取消授权也得在主人这一侧留一句，和定夺框那边「确认执行」一个套路：
     # 主人只认短句「取消授权」，写成一整段「已取消授权，这条命令没有执行」
@@ -3528,14 +3503,11 @@ async def api_sudo_cancel(req: SudoCancelBody | None = None):
     if ok:
         await _append_assistant_note("取消授权",
                                      sid=(req.sid if req else ""), side="user")
-        # 取消不该是死胡同：授权行一收，界面上只剩主人自己一句「取消授权」，
-        # 看着像对话被截断。把结论交给模型，让它回一两句收尾
-        _followup_reply(
-            "主人取消了 sudo 授权，需要管理员权限的那条命令没有执行：\n"
-            + (command or "（命令已丢失）")
-            + "\n请用一两句话简短回应：确认这条命令没有执行、不要重试，"
-              "也不要再向主人索要密码。",
-            sid=(req.sid if req else ""))
+        # 助手侧补一句收尾（写死短句，不调模型）：不写就是主人自己一句「取消授权」
+        # 断在半空；交给模型回又会绕成三行解释（主人截图反馈啰嗦）。
+        # 「已确认没执行」没有任何要发挥的余地，固定一句，还省一次模型调用
+        await _append_assistant_note("好的，这条命令没有执行。",
+                                     sid=(req.sid if req else ""))
     return {"ok": True, "cancelled": ok}
 
 
