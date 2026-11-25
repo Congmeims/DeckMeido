@@ -2237,10 +2237,8 @@ async def _core_prefs(port: int) -> dict:
             "stt_duck_available": bool((d.get("stt_duck") or {}).get("available")),
             "version": str(d.get("version") or ""),
             "model": str(d.get("model") or ""),
-            # 审批模式（manual/auto/custom/full）与自定义档四组开关：
-            # 网页端也能改，面板显示必须以这份现读值为准
+            # 审批模式（manual/auto/full）：网页端也能改，面板显示必须以这份现读值为准
             "permission_mode": str(d.get("permission_mode") or "auto"),
-            "permission_custom": dict(d.get("permission_custom") or {}),
             # 「对话与语音」总开关、智能音箱模式、界面语言、深度思考档位
             "chat_voice": bool(d.get("chat_voice", True)),
             "wake_enabled": bool(d.get("wake_enabled", False)),
@@ -2389,7 +2387,6 @@ class Plugin:
             "model": str(prefs.get("model") or ""),
             # 审批模式：网页端也能改，这里每次现读后端，面板/大屏跟着一起变
             "permission_mode": str(prefs.get("permission_mode") or "auto"),
-            "permission_custom": dict(prefs.get("permission_custom") or {}),
             # 「对话与语音」总开关 / 智能音箱模式 / 界面语言
             "chat_voice": bool(prefs.get("chat_voice", True)),
             "wake_enabled": bool(prefs.get("wake_enabled", False)),

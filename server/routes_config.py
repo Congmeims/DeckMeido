@@ -62,8 +62,6 @@ class ConfigUpdate(BaseModel):
     # 「对话与语音」整组总开关：写入 [agent] chat_voice；关闭后该组功能整体停用
     chat_voice: bool | None = None
     permission_mode: str | None = None
-    # 自定义档的四组开关 {read/write/cmd/net: bool}，True = 先问我
-    permission_custom: dict | None = None
     # 深度思考档位：空串 / low / medium / high（前端滑条的「无 / 低 / 中 / 高」）
     reasoning_effort: str | None = None
     workspace: str | None = None
@@ -187,8 +185,6 @@ def init(require_auth, client_ip, get_main) -> None:
             # [ui] language：网页/客户端据此显示语言下拉，切换后整页重载
             "ui_language": m.UI_LANG,
             "permission_mode": m.PERMISSION_MODE,
-            # 自定义档的四组开关：设置页打开时按它落位
-            "permission_custom": dict(m.CUSTOM_PERM),
             "workspace": str(tools.WORKSPACE),
             "port": CFG["server"].get("port", 18765),
             # 局域网访问开关：默认 false 只监听 127.0.0.1；开启后设置页显示地址与配对入口
@@ -356,15 +352,8 @@ def init(require_auth, client_ip, get_main) -> None:
             # 深度思考滑条：空串 = 不带参数（不思考），其余原样写进 [llm]。
             # 空串要显式落盘，不能当作「没传」忽略，否则关掉之后再打开还是旧的档位
             llm_updates["reasoning_effort"] = req.reasoning_effort
-        if req.permission_mode in ("manual", "auto", "custom", "full"):
-            sec = {"permission_mode": req.permission_mode}
-            # 自定义档的四组开关跟着一起落盘；没传就沿用当前值，
-            # 避免「只切模式」把用户配好的开关洗回默认
-            if req.permission_custom is not None:
-                sec["custom"] = tools.normalize_custom(req.permission_custom)
-            else:
-                sec["custom"] = dict(m.CUSTOM_PERM)
-            updates["security"] = sec
+        if req.permission_mode in ("manual", "auto", "full"):
+            updates["security"] = {"permission_mode": req.permission_mode}
         if req.workspace is not None and req.workspace.strip():
             updates["workspace"] = {"dir": req.workspace.strip()}
         if req.ask_template is not None:

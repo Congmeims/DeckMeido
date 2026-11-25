@@ -1,7 +1,7 @@
 """文件与终端接口：上传、浏览、预览、文件操作、终端（HTTP + PTY WebSocket）
 
 从 main.py 平移出来的一整块。这些端点要回读 main 的运行态
-（CFG / INSTALL_DIR / PERMISSION_MODE / CUSTOM_PERM 会被 apply_config 整体重新赋值），
+（CFG / INSTALL_DIR / PERMISSION_MODE 会被 apply_config 整体重新赋值），
 所以统一用 get_main() 现读，本模块不缓存任何一份。
 
 工作区相关的纯函数（路径判定、上传上限、文本抽取）也一并搬到这里，
@@ -1503,7 +1503,7 @@ def register(app) -> None:
         if not cmd:
             raise HTTPException(status_code=400, detail="命令为空")
         m = _m()
-        # 和对话里同一个审批通道（approval.resolve）：手动模式一律先问，智能/自定义
+        # 和对话里同一个审批通道（approval.resolve）：手动模式一律先问，智能审批
         # 模式只拦危险命令，完全访问直接跑。面板不能变成绕过审批的后门，也不该自己
         # 另写一套规则 —— 规则只在 approval.py 里维护一份
         verdict = approval.resolve(
@@ -1512,7 +1512,7 @@ def register(app) -> None:
             # 享有删除类豁免，否则会出现「同一个命令在对话里放行、在面板里被问」
             policy.TurnContext(boot_id=m._system_boot_id(),
                                full_access=(m.PERMISSION_MODE == "full")),
-            m.PERMISSION_MODE, m.CUSTOM_PERM)
+            m.PERMISSION_MODE)
         if verdict.deny:
             return {"ok": False, "denied": True, "reason": verdict.reason,
                     "output": f"已拒绝执行（{verdict.label}）：{verdict.reason}"}

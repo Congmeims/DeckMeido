@@ -6,7 +6,7 @@
 
 这里只做「平移」，不改行为：
   - 引擎要读写的 main 模块级状态（llm / SYSTEM_PROMPT / PERMISSION_MODE /
-    CUSTOM_PERM / pending_action / manager …）统一通过 get_main() 现读，
+    pending_action / manager …）统一通过 get_main() 现读，
     因为这些量会被 apply_config 整体重新赋值，本模块不能缓存任何一份；
   - main 侧保留同名薄壳转发（run_agent / _run_agent_guarded …），
     其余调用点与测试（monkeypatch main.xxx）的写法都不变。
@@ -789,7 +789,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     extra_danger = (menu.remote_command_danger(cmd)
                                     if ctx.force_confirm else "")
                 verdict = m.approval.resolve(name, args, ctx, m.PERMISSION_MODE,
-                                             m.CUSTOM_PERM, extra_danger=extra_danger)
+                                             extra_danger=extra_danger)
                 if verdict.deny:
                     label = tools.cn_name(name)
                     summary = tools.summarize_tool(name, args)

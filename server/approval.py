@@ -12,7 +12,7 @@
    - CRITICAL 不给确认通道，任何档位（含完全访问）都直接拒绝；
    - DANGEROUS 在 full 之外的档位一律硬确认（要回「确认执行」）；
    - NOTABLE 按档位决定问不问。
-2. 权限档位（mode）：manual / custom / auto / full 决定非危险场景问不问。
+2. 权限档位（mode）：manual / auto / full 决定非危险场景问不问。
 
 远程入口（QQ，ctx.force_confirm）在所有档位之上再收紧一档：即使配置是
 full，DANGEROUS 及以上仍然必须确认，且必须回「确认执行」。
@@ -41,7 +41,7 @@ SEVERITY_CN = {
 }
 
 # 权限档位；老配置里没有的值一律按 auto 处理
-MODES = ("manual", "custom", "auto", "full")
+MODES = ("manual", "auto", "full")
 DEFAULT_MODE = "auto"
 
 
@@ -305,26 +305,22 @@ def tool_risk(name: str, args: dict) -> Verdict:
 
 
 # ---------- 第三层：权限档位 ----------
-def _ask_by_mode(name: str, args: dict, mode: str, custom: dict,
-                 risk: Verdict) -> bool:
+def _ask_by_mode(mode: str, risk: Verdict) -> bool:
     """非硬规则场景下，这一档权限要不要弹确认"""
     if mode == "manual":
         return True
     if mode == "full":
         return False
-    if mode == "custom":
-        return tools.custom_needs_approval(name, args, custom)
     # auto：只有危险命令才问。这里用 risk 而不是 tools.is_dangerous，
     # 是为了让「本地 rm」这类 NOTABLE 也按危险处理，与注释口径一致
     return risk.severity >= DANGEROUS
 
 
 def resolve(name: str, args: dict, ctx: policy.TurnContext, mode: str,
-            custom: dict | None = None, *, extra_danger: str = "") -> Verdict:
+            *, extra_danger: str = "") -> Verdict:
     """审批闸门的唯一入口：返回这次工具调用该怎么处理
 
-    mode        当前权限档位（manual / custom / auto / full）
-    custom      自定义档的四组开关，mode != custom 时可传 None
+    mode        当前权限档位（manual / auto / full）
     extra_danger 渠道额外高危提示（QQ 那边 menu.remote_command_danger 的结论）
     """
     args = args or {}
@@ -365,7 +361,7 @@ def resolve(name: str, args: dict, ctx: policy.TurnContext, mode: str,
         return risk
 
     # 4) 本地档位
-    # auto 档只拦 DANGEROUS 及以上：NOTABLE 是给 manual/custom 用的分级，
+    # auto 档只拦 DANGEROUS 及以上：NOTABLE 是给 manual 用的分级，
     # 落到 auto 上就等于「什么都问」，和原来的自动审批不一致
     if risk.severity >= DANGEROUS:
         # 危险命令：即使 full 也要问？不 —— 用户开了 full 就是明确放弃这层。
@@ -377,13 +373,13 @@ def resolve(name: str, args: dict, ctx: policy.TurnContext, mode: str,
 
     if risk.severity >= NOTABLE and mode != "auto":
         # 需留意：按档位决定问不问，但不算 hard（一个「好」就够）
-        if _ask_by_mode(name, args, mode, custom or {}, risk):
+        if _ask_by_mode(mode, risk):
             return Verdict(ask=True, hard=False, severity=risk.severity,
                            rule=risk.rule, reason=risk.reason)
         return risk
 
-    # 5) 安全命令：manual 全问，custom 按组，auto 不问
-    if _ask_by_mode(name, args, mode, custom or {}, risk):
+    # 5) 安全命令：manual 全问，auto 不问
+    if _ask_by_mode(mode, risk):
         return Verdict(ask=True, hard=False, severity=NOTABLE,
                        rule=f"mode:{mode}", reason="当前权限模式下需要确认")
     return risk

@@ -51,11 +51,9 @@ export type Status = {
   update_has?: boolean;
   update_latest?: string;
   model: string;
-  // 审批模式：manual / auto / custom / full。网页端也能改，
+  // 审批模式：manual / auto / full。网页端也能改，
   // 面板每次 refreshStatus 都以后端现读值为准
   permission_mode?: string;
-  // 自定义档的四组开关（True = 先问我）
-  permission_custom?: Record<string, boolean>;
   // 「对话与语音」总开关 / 智能音箱模式 / 界面语言（网页端也能改）
   chat_voice?: boolean;
   wake_enabled?: boolean;

@@ -2478,14 +2478,6 @@
   /* 文字色落在 .dd-label 上（见 .dd-trigger .dd-label），只改外层没用 */
   .dd.dd-danger .dd-trigger .dd-label { color: #e8b339; font-weight: 600; }
   .dd-item.dd-danger { color: #e8b339; font-weight: 600; }
-  /* 自定义档的四组开关：跟着权限下拉展开，和设置页的分组字段同一套留白 */
-  .perm-custom { margin-top: 8px; padding: 8px 10px;
-                 background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; }
-  .perm-custom[hidden] { display: none; }
-  .perm-custom-row { display: flex; align-items: center; justify-content: space-between;
-                     gap: 12px; padding: 6px 0; font-size: 14px; cursor: pointer; }
-  .perm-custom-row input { width: 16px; height: 16px; accent-color: var(--brand); }
-  .perm-custom-hint { margin-top: 4px; font-size: 12px; color: var(--muted); }
   /* 展开时「完全访问」是当前值时，选中色（品牌蓝）会盖掉黄色，这里抢回来 */
   .dd.dd-danger .dd-trigger,
   .dd-item.dd-danger.sel { color: #e8b339; }

