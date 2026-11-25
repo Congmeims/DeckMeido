@@ -288,13 +288,18 @@ class SudoCancelLeavesNoteTest(unittest.TestCase):
                               "created": _t.time(),
                               "expires": _t.time() + sudo_auth.ttl()}
         notes = []
+        sids = []
 
-        async def fake_note(text):
+        async def fake_note(text, sid=None):
             notes.append(text)
+            sids.append(sid)
 
         try:
             with mock.patch.object(main, "_append_assistant_note", fake_note):
-                res = asyncio.run(main.api_sudo_cancel())
+                # 前端会把「自己正在看的会话」带上来：留痕必须写到那个会话，
+                # 否则按 sid 过滤后主人屏幕上一片空白
+                res = asyncio.run(main.api_sudo_cancel(
+                    main.SudoCancelBody(sid="sess-cancel")))
         finally:
             sudo_auth.clear_all()
 
@@ -303,6 +308,7 @@ class SudoCancelLeavesNoteTest(unittest.TestCase):
         self.assertEqual(len(notes), 1)
         self.assertIn("已取消授权", notes[0])
         self.assertIn(cmd, notes[0])
+        self.assertEqual(sids, ["sess-cancel"])
 
 
 class SudoGrantLeavesNoteTest(unittest.TestCase):
@@ -318,7 +324,7 @@ class SudoGrantLeavesNoteTest(unittest.TestCase):
 
         notes = []
 
-        async def fake_note(text):
+        async def fake_note(text, sid=None):
             notes.append(text)
 
         held = {"command": "sudo systemctl mask NetworkManager"}

@@ -8676,10 +8676,6 @@
     var cancelBtn = document.getElementById('sudoAuthCancel');
     if (!box || !pw || !eye || !btn || !err) return;
 
-    function reuseText(sec) {
-      var m = Math.max(1, Math.round((Number(sec) || 0) / 60));
-      return m + ' 分钟内 sudo 命令直接复用';
-    }
     function reset() {
       pw.value = '';
       pw.type = 'password';
@@ -8718,7 +8714,7 @@
       apiFetch('/api/sudo/password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: value })
+        body: JSON.stringify({ password: value, sid: currentSid || '' })
       }).then(function (r) {
         return r.json().then(function (j) { return { ok: r.ok, j: j }; },
                               function () { return { ok: false, j: null }; });
@@ -8726,13 +8722,14 @@
         value = '';
         btn.disabled = false;
         if (x.ok && x.j && x.j.ok) {
-          hide();
+          // 成功不再浮 toast：后端已经往对话里补了一条「已授权管理员权限（sudo）」，
+          // 重复提示反而挡视线（主人明确要求用聊天回复代替气泡）
           if (x.j.resumed === false) {
-            // 上一轮还没跑完，后端没有自动续跑；说清楚，别让用户以为已经执行了
-            fbToast('已授权，但上一轮还在跑：这条命令需要你再说一句「继续」');
-          } else {
-            fbToast('已授权：' + reuseText(x.j.expires_in));
+            // 这一轮还没跑完，后端没续跑：行留着，把提示写在行里
+            err.textContent = '已授权，但上一轮还在跑：需要你再说一句「继续」';
+            return;
           }
+          hide();
           return;
         }
         err.textContent = (x.j && (x.j.error || x.j.reason)) || '授权失败，请重试';
@@ -8763,8 +8760,8 @@
       payload = payload || {};
       if (payload.state === 'need_password') { show(payload); return; }
       if (payload.state === 'ok') {
+        // 只收行，不弹 toast：对话里已经有「已授权管理员权限（sudo）」那条
         hide();
-        fbToast('已授权：' + reuseText(payload.expires_in));
         return;
       }
       if (payload.state === 'cancelled') { hide(); return; }

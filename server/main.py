@@ -2947,23 +2947,39 @@ async def api_pending_cancel(request: Request, client: str = "", device: str = "
     return {"ok": True, "description": desc}
 
 
-async def _append_assistant_note(text: str) -> None:
-    """往当前会话补一条助手消息（落盘 + 广播）。
+async def _append_assistant_note(text: str, sid: str | None = None) -> None:
+    """往会话补一条助手消息（落盘 + 广播）。
 
-    用于「取消 / 中止」这类没有模型回合的结论：不写进会话的话，界面一收
+    用于「取消 / 中止 / 授权」这类没有模型回合的结论：不写进会话的话，界面一收
     （卡片、授权行消失），主人回头看只剩半句「已完成」，根本不知道那步没跑。
+
+    sid 是「点按钮那个端正在看的会话」：默认取 store.current_sid，但它记的是
+    **最后一次切会话**的那个端，未必是点取消的端。写错会话时，前端按 sid 过滤
+    这条广播，主人屏幕上什么都不会出现（会话 cb3d64a5 的取消没反应就是这个）。
     """
-    sid = store.current_sid
-    hist = store.history
-    hist.append({"role": "assistant", "content": text, "events": [], "ts": time.time()})
-    try:
-        if sid:
-            _write_session(sid, hist)
-    except Exception as e:
-        print(f"[DeckMeido] 写回会话失败：{e}", file=sys.stderr, flush=True)
+    target = str(sid or "").strip() or store.current_sid
+    note = {"role": "assistant", "content": text, "events": [], "ts": time.time()}
+    if not target or target == store.current_sid:
+        store.history.append(note)
+        try:
+            if target:
+                _write_session(target, store.history)
+        except Exception as e:
+            print(f"[DeckMeido] 写回会话失败：{e}", file=sys.stderr, flush=True)
+    else:
+        # 别的会话：只改那个文件，不能动内存里的当前历史
+        try:
+            data = store.read_session(target)
+            hist = data.get("history") if isinstance(data, dict) else None
+            if isinstance(hist, list):
+                hist.append(note)
+                data.pop("_from_disk_mtime", None)
+                store.rewrite_file(target, data)
+        except Exception as e:
+            print(f"[DeckMeido] 写回会话失败：{e}", file=sys.stderr, flush=True)
     await manager.broadcast({"type": "assistant_message", "text": text,
                              "ts": time.time(), "events": [],
-                             **({"sid": sid} if sid else {})})
+                             **({"sid": target} if target else {})})
 
 
 class TTSPreviewRequest(BaseModel):
@@ -3453,10 +3469,16 @@ async def api_sudo_status():
 
 class SudoPasswordBody(BaseModel):
     password: str
+    # 点按钮那个端正在看的会话；留空回落到 store.current_sid
+    sid: str = ""
+
+
+class SudoCancelBody(BaseModel):
+    sid: str = ""
 
 
 @app.post("/api/sudo/cancel")
-async def api_sudo_cancel():
+async def api_sudo_cancel(req: SudoCancelBody | None = None):
     """界面点「取消」：撤掉待授权请求，被拦下的命令不再等密码"""
     # 注意用 pending_status()：模块里没有 pending()，写错会 500，
     # 而前端 .catch 把错误吞掉，表现就是「点了取消毫无反应」
@@ -3467,7 +3489,8 @@ async def api_sudo_cancel():
     if ok:
         await _append_assistant_note(
             "已取消授权，这条命令没有执行。"
-            + (f"\n{command}" if command else ""))
+            + (f"\n{command}" if command else ""),
+            sid=(req.sid if req else ""))
     return {"ok": True, "cancelled": ok}
 
 
@@ -3486,7 +3509,8 @@ async def api_sudo_password(req: SudoPasswordBody):
     await _append_assistant_note(
         "已授权管理员权限（sudo）。"
         + (f"\n{str((held or {}).get('command') or '').strip()}"
-           if (held or {}).get("command") else ""))
+           if (held or {}).get("command") else ""),
+        sid=req.sid)
     if held:
         res["resumed"] = _resume_after_sudo(held)
     return res
