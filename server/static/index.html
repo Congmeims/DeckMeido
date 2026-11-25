@@ -2560,6 +2560,9 @@
     // 被拦下的行必须说清「拦下 + 谁拦的 + 为什么」，不能混进「已完成」里，
     // 否则主人只会看到一条正常的命令行，根本不知道有东西被拒了
     if (ev.denied) return { text: '已拦下', chip: ev.summary, intent: ev.reason };
+    // 女仆长在 auto 档替主人放行的步骤：单独一条绿行的文案，
+    // 和「已运行」区分开，主人才知道这一步是她拍了板才执行的
+    if (ev.guardian_allow) return { text: '已放行', chip: ev.summary, intent: ev.intent };
     switch (ev.name) {
       case 'read_file':   return { text: '已读取', chip: fname || ev.summary };
       case 'list_dir':    return { text: '已查看目录', chip: fname || ev.summary };
@@ -2903,8 +2906,10 @@
     var hasBody = !!(ev.output || ev.image || ev.diff || ev.error || (ev.files && ev.files.length));
     var r = makeTlRow(ev.approved ? ('已批准：' + (ev.summary || '')) : info.text,
                       null, false);
-    // 失败 / 被拦下的行标红，和「已完成」的灰行一眼区分开
+    // 失败 / 被拦下的行标红，和「已完成」的灰行一眼区分开；
+    // 女仆长放行的行标绿 —— 放行和普通执行分开，主人一眼能看出哪些是她拍的板
     if (ev.error || ev.denied) r.head.classList.add('err');
+    else if (ev.guardian_allow) r.head.classList.add('ok');
     // 模型给的一句话意图（run_command 的 reason）：排在命令 chip 前面，
     // 「已运行 · 定位写块设备的字面量 [命令] 0.1s」比只有一条命令好读
     var intent = String(ev.intent || info.intent || '').trim();
@@ -4368,12 +4373,14 @@
   // 浮窗通知：area = 'chat' | 'file'，就地显示在对应区域底部，2 秒后淡出。
   // 替代之前把「已复制/已删除」塞进聊天时间线的 addSystem 做法。
   var _toastTimer = {};
-  function fbToast(text, area, isErr) {
+  function fbToast(text, area, isErr, isOk) {
     var id = area === 'file' ? 'toastFile' : 'toastChat';
     var el = document.getElementById(id);
     if (!el) return;
     el.textContent = text;
     el.classList.toggle('err', !!isErr);
+    // 成功态：女仆长放行这类「好事」也用颜色说清，别和普通提示混成一片
+    el.classList.toggle('ok', !!isOk);
     el.classList.add('show');
     if (_toastTimer[area]) clearTimeout(_toastTimer[area]);
     _toastTimer[area] = setTimeout(function () {
@@ -7691,7 +7698,7 @@
             fbToast('女仆长拦下了：' + (msg.description || msg.name || ''), 'chat', true);
           } else {
             fbToast('女仆长已放行：' + (msg.label || msg.name || '') +
-                    (msg.summary ? ' ' + msg.summary : ''), 'chat', false);
+                    (msg.summary ? ' ' + msg.summary : ''), 'chat', false, true);
           }
           break;
         case 'full_action':

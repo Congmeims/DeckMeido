@@ -609,6 +609,10 @@
   /* 失败行：截图没抓到这类「说完成了但其实没完成」的情况要显眼 */
   .tl-head.err { color: #d9534f; }
   .tl-head.err .tl-ico { background: #d9534f; opacity: .9; }
+  /* 女仆长放行的行：绿色。以前只有「拦下」有颜色，放行和普通完成一样是灰的，
+     主人看不到「这一步是她替我拍的板」 */
+  .tl-head.ok { color: #2ecc71; }
+  .tl-head.ok .tl-ico { background: #2ecc71; opacity: .9; }
   .tl-err { color: #d9534f; word-break: break-word; }
   /* 截图失败详情卡：左侧一道按成因着色的竖线，标题 / 处置建议 / 技术细节三层。
      三种成因用同一套版式，只换强调色，免得用户每次失败都要重新认一遍结构 */
@@ -4831,6 +4835,12 @@
     box-shadow: 0 6px 20px rgba(26, 159, 255, .25);
   }
   #toastChat.toast.err, #toastFile.toast.err { color: var(--danger); border-color: var(--danger); }
+  /* 成功态（女仆长放行 / 已执行）：绿色，和红色的拦下、蓝色的普通提示区分开 */
+  #toastChat.toast.ok, #toastFile.toast.ok {
+    color: #2ecc71;
+    border-color: rgba(46, 204, 113, .75);
+    box-shadow: 0 6px 20px rgba(46, 204, 113, .22);
+  }
   /* 文件面板的提示放到底部上传条上方：以前放顶部（80px）会压住路径栏和
      列表头一两行，删完文件正好挡住用户正在看的那条。底部 64px 正好在
      #fbDropBar（44px 高 + 8px 外边距）上方，不挡列表内容也不挡上传条 */

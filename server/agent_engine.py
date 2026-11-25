@@ -807,6 +807,9 @@ async def run_agent(events: list[dict], extra_system: str = "",
                             f"它属于不可逆的破坏性操作，不会执行，也不要换一种写法绕过。"
                             f"如果确实需要，请自己在桌面终端里手动操作。")
                 needs_approval = verdict.ask
+                # 女仆长放行时记下她的判词：这一步的时间线行要标绿「已放行」，
+                # 让主人事后能看出哪几步是她替自己拍的板（不只在 toast 里闪一下）
+                guardian_ok = ""
 
                 # auto 档：危险操作先交给女仆长 MeidoChou 监护。
                 # 放行（allow）→ 直接执行；拦下（deny）→ 告知女仆并提示主人；拿不准（ask）
@@ -822,6 +825,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         name, args, verdict, m.llm, turn_sid)
                     if g_decision == "allow":
                         needs_approval = False
+                        guardian_ok = g_reason
                         await m.manager.broadcast({
                             "type": "guardian", "action": "allow",
                             "name": name, "label": tools.cn_name(name),
@@ -907,6 +911,10 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 intent = str(args.get("reason") or "").strip()
                 event = {"type": "tool", "name": name, "label": label,
                          "summary": summary, "files": files, "intent": intent}
+                # 女仆长放行的标记：前端据此把这一行画成绿色「已放行」，
+                # 落盘回放时也还在，不会像 toast 那样两秒就没了
+                if guardian_ok:
+                    event["guardian_allow"] = guardian_ok
                 # 路径一律给全：AI 给的常常是相对工作区的路径，面板直接拿去
                 # 跳目录会落到后端进程的 cwd 上（一般是家目录），跟 AI 看的地方对不上
                 if name in ("read_file", "write_file", "edit_file", "list_dir",
