@@ -3226,7 +3226,8 @@
   function applyWallCandidate(cand) {
     var cid = cand && cand.id;
     if (!cid) return;
-    fbToast('正在设为背景…', 'chat');
+    // 设背景是「点一下就看到结果」的操作（壁纸当场换），不再浮「正在设置 / 已设为背景」
+    // 的气泡；只有失败才提示
     apiFetch('/api/theme/candidates/' + encodeURIComponent(cid) + '/apply', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3246,7 +3247,6 @@
         if (typeof renderAppearanceForm === 'function' && setBody) renderAppearanceForm(j.theme, true);
         // 文件面板里如果正开着，可能刚好在看壁纸目录，刷一下让人看到新图
         if (RB.tab === 'file' && fb.path) fbLoad(fb.path);
-        fbToast('已设为 Meido 背景', 'chat');
       });
     }).catch(function () { fbToast('设置失败：网络错误', 'chat', true); });
   }
@@ -4514,7 +4514,7 @@
 
   // 右键「设为 Meido 背景」：把磁盘上这张图直接交给后端落成壁纸，配色一起刷新
   function fbSetWallpaper(path, name) {
-    fbToast('正在设为背景：' + name, 'file');
+    // 同上：换壁纸当场可见，不浮气泡；失败才提示
     apiFetch('/api/theme/wallpaper-from-path', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4534,7 +4534,6 @@
           applyCfgAppearance(j.theme);
           renderAppearanceForm(j.theme);
         }
-        fbToast('已设为 Meido 背景', 'file');
       });
     }).catch(function () { fbToast('设置失败：网络错误', 'file', true); });
   }
