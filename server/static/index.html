@@ -8777,6 +8777,12 @@
         .then(function (res) {
           if (!res || !res.ok) return;
           var pending = res.pending;
+          // 超过 ttl 的旧请求不再回放：后端那边早该失效了，再摆出来只会让
+          // 主人每次刷新都看到一条「需要授权」，点取消又像是在跟鬼打墙
+          if (pending && pending.created) {
+            var age = Date.now() / 1000 - Number(pending.created || 0);
+            if (age > (Number(res.ttl) || 600)) pending = null;
+          }
           if (pending && pending.created) {
             show({ command: pending.command, error: pending.last_error,
                    source: pending.source });

@@ -172,6 +172,12 @@ def invalidate(reason: str = "") -> None:
 
 
 def pending_status() -> dict | None:
+    """当前待授权请求（给界面回放：刷新页面后把「需要授权」行恢复出来）。
+
+    这里不判过期：expires 是用调用方时钟算的，pending_command() 已经在真正
+    续跑前判过。界面侧另按 created + ttl 兜一层，避免刷新时摆出早就失效的
+    请求（会话 cb3d64a5：取消接口 500，旧请求就一直在刷新后复活）。
+    """
     with _lock:
         return dict(_pending) if _pending else None
 
