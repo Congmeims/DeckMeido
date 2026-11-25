@@ -3458,7 +3458,9 @@ class SudoPasswordBody(BaseModel):
 @app.post("/api/sudo/cancel")
 async def api_sudo_cancel():
     """界面点「取消」：撤掉待授权请求，被拦下的命令不再等密码"""
-    command = str((sudo_auth.pending() or {}).get("command") or "").strip()
+    # 注意用 pending_status()：模块里没有 pending()，写错会 500，
+    # 而前端 .catch 把错误吞掉，表现就是「点了取消毫无反应」
+    command = str((sudo_auth.pending_status() or {}).get("command") or "").strip()
     ok = sudo_auth.cancel_pending()
     # 取消授权也得在对话里留一句：否则授权行一收，主人看到的还是上一条
     # 「已完成：…」，完全不知道那条命令没跑（会话 708412 就是这么卡住的）

@@ -8752,7 +8752,11 @@
       hide();
       // 取消后让输入框拿回焦点，用户可以直接继续说话
       try { document.getElementById('input').focus(); } catch (e) {}
-      apiFetch('/api/sudo/cancel', { method: 'POST' }).catch(function () {});
+      // 失败要留下痕迹：以前这里 .catch 全吞，后端 500 时界面
+      // 和「取消成功」一模一样，排查时毫无线索
+      apiFetch('/api/sudo/cancel', { method: 'POST' }).catch(function (e) {
+        console.warn('[sudo] 取消失败：', e && (e.message || e));
+      });
     });
 
     onSudoAuth = function (payload) {

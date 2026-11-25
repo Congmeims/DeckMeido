@@ -264,5 +264,46 @@ class AuditTests(SudoAuthBase):
         self.assertEqual(events[0]["action"], "auth")
 
 
+class SudoCancelLeavesNoteTest(unittest.TestCase):
+    """取消待授权请求要在对话里留一句。
+
+    会话 cb3d64a5 的教训：/api/sudo/cancel 里写错属性名（sudo_auth.pending
+    不存在）直接抛 AttributeError → 500，前端 .catch 吞掉，主人点了取消
+    界面毫无反应。这里按「有一定待授权 → 点取消」的真实调用走一遍。
+    """
+
+    def test_cancel_appends_chat_note_and_clears_pending(self):
+        # 导入 main 会跑单例守护（本机若已有一份后端在跑会 SystemExit），
+        # 必须先把数据目录/端口指到临时值
+        import tempfile
+        env = {"DECKMEIDO_DATA_DIR": tempfile.mkdtemp(prefix="dm-sudocancel-"),
+               "DECKMEIDO_ALLOW_SECOND_BACKEND": "1",
+               "DECKMEIDO_PORT": "18796"}
+        with mock.patch.dict(os.environ, env):
+            from server import main, sudo_auth
+        import time as _t
+
+        cmd = "sudo systemctl mask NetworkManager"
+        sudo_auth._pending = {"id": "p1", "source": "run_command", "command": cmd,
+                              "created": _t.time(),
+                              "expires": _t.time() + sudo_auth.ttl()}
+        notes = []
+
+        async def fake_note(text):
+            notes.append(text)
+
+        try:
+            with mock.patch.object(main, "_append_assistant_note", fake_note):
+                res = asyncio.run(main.api_sudo_cancel())
+        finally:
+            sudo_auth.clear_all()
+
+        self.assertTrue(res["cancelled"])
+        self.assertEqual(sudo_auth.pending_status(), None)
+        self.assertEqual(len(notes), 1)
+        self.assertIn("已取消管理员授权", notes[0])
+        self.assertIn(cmd, notes[0])
+
+
 if __name__ == "__main__":
     unittest.main()
