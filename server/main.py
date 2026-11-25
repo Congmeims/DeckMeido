@@ -4396,6 +4396,20 @@ async def handle_chat(text: str, announce: bool = True,
                           f"{decision.reason}", file=sys.stderr)
                     result = f"策略拒绝：{decision.reason}"
                 tool_log.append({"name": action["name"], "summary": action["description"]})
+                # 审批后才执行的工具走的是这条路径，不是 run_agent 里的内联执行；
+                # 候选图/编号对应表要在这里补一遍，否则前端只画一行「已完成：搜索壁纸」，
+                # 四张候选图永远上不去（手动审批 / 自动档拦下来的搜图都会踩到）
+                if (decision.allowed and events
+                        and action["name"] in ("search_wallpaper", "search_image")):
+                    events[-1]["candidates"] = [
+                        {k: v for k, v in c.items() if k != "src_url"}
+                        for c in tools.LAST_CANDIDATES]
+                    events[-1]["query"] = str(action["args"].get("query") or "")
+                    # 编号 ↔ id 挂到本轮回答上：工具往返不进历史，隔一轮回「3」
+                    # 时模型才知道指的是哪张
+                    turn_candidates[:] = [
+                        {"no": i + 1, "id": c["id"], "title": c.get("title") or ""}
+                        for i, c in enumerate(tools.LAST_CANDIDATES)]
                 # 补上执行结果，QQ 的「装完自动打开」要靠 exit=0 判断成功
                 if events:
                     events[-1]["output"] = str(result)[:1500]
