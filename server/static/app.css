@@ -4838,12 +4838,6 @@
     box-shadow: 0 6px 20px rgba(26, 159, 255, .25);
   }
   #toastChat.toast.err, #toastFile.toast.err { color: var(--danger); border-color: var(--danger); }
-  /* 成功态（女仆长放行 / 已执行）：绿色，和红色的拦下、蓝色的普通提示区分开 */
-  #toastChat.toast.ok, #toastFile.toast.ok {
-    color: #2ecc71;
-    border-color: rgba(46, 204, 113, .75);
-    box-shadow: 0 6px 20px rgba(46, 204, 113, .22);
-  }
   /* 文件面板的提示放到底部上传条上方：以前放顶部（80px）会压住路径栏和
      列表头一两行，删完文件正好挡住用户正在看的那条。底部 64px 正好在
      #fbDropBar（44px 高 + 8px 外边距）上方，不挡列表内容也不挡上传条 */

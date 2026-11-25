@@ -4389,14 +4389,12 @@
   // 浮窗通知：area = 'chat' | 'file'，就地显示在对应区域底部，2 秒后淡出。
   // 替代之前把「已复制/已删除」塞进聊天时间线的 addSystem 做法。
   var _toastTimer = {};
-  function fbToast(text, area, isErr, isOk) {
+  function fbToast(text, area, isErr) {
     var id = area === 'file' ? 'toastFile' : 'toastChat';
     var el = document.getElementById(id);
     if (!el) return;
     el.textContent = text;
     el.classList.toggle('err', !!isErr);
-    // 成功态：女仆长放行这类「好事」也用颜色说清，别和普通提示混成一片
-    el.classList.toggle('ok', !!isOk);
     el.classList.add('show');
     if (_toastTimer[area]) clearTimeout(_toastTimer[area]);
     _toastTimer[area] = setTimeout(function () {
@@ -7706,17 +7704,6 @@
         case 'pending_clear':
           // 确认/取消/被别端抢先：收起卡片、停用快捷键。不带 sid，全局单份清掉就都收。
           hidePendingCard();
-          break;
-        case 'guardian':
-          // auto 档女仆长 MeidoChou 的监护结果：放行/拦截都提示一声，
-          // 用「行为越界 · 女仆长介入 · 已放行/已拦截」的完整口径，
-          // 主人一眼就能分清这是她拍的板，不是普通执行
-          if (msg.action === 'deny') {
-            fbToast('行为越界 · 女仆长介入 · 已拦截：' + (msg.description || msg.name || ''), 'chat', true);
-          } else {
-            fbToast('行为越界 · 女仆长介入 · 已放行：' + (msg.label || msg.name || '') +
-                    (msg.summary ? ' ' + msg.summary : ''), 'chat', false, true);
-          }
           break;
         case 'full_action':
           // full 档：危险操作直接执行前的非阻塞提示，让主人知道女仆干了什么。
