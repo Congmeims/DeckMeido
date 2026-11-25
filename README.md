@@ -10,7 +10,9 @@
 </p>
 
 <p align="center">
-  SteamOS / Linux · Python 3.11+ · CC BY-NC 4.0
+  <img alt="SteamOS / Linux" src="https://img.shields.io/badge/SteamOS%20%2F%20Linux-1a1a1a?logo=steam&logoColor=white">
+  <img alt="Python 3.11+" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white">
+  <img alt="CC BY-NC 4.0" src="https://img.shields.io/badge/License-CC%20BY--NC%204.0-3a9d5d">
 </p>
 
 <p align="center">
@@ -23,6 +25,14 @@
   <a href="#故障排查">排查</a>
 </p>
 
+<p align="center">
+  <a href="#安装">安装</a> ·
+  <a href="#数据目录">数据目录</a> ·
+  <a href="#升级与卸载">升级与卸载</a> ·
+  <a href="#开发">开发</a> ·
+  <a href="#许可">许可</a>
+</p>
+
 ---
 
 ## 这是什么
@@ -33,9 +43,11 @@
 
 | 场景 | 你能做什么 |
 | --- | --- |
-| 游戏内 QAM | X 翻译画面、Y 截图询问、按住 R2 说话；LB/RB 翻页 |
+| 游戏内 QAM | <kbd>X</kbd> 翻译画面、<kbd>Y</kbd> 截图询问、按住 <kbd>R2</kbd> 说话；<kbd>LB</kbd>/<kbd>RB</kbd> 翻页 |
 | 大屏 / 桌面 | 完整聊天、设置、文件与终端；手柄和键鼠都能操作 |
 | QQ 远程 | 管理员下指令、群友只读聊天；高危操作有独立风险档位 |
+
+---
 
 ## 快速开始
 
@@ -52,6 +64,8 @@ bash /tmp/dm.sh from-mirror
 ```
 
 装完打开网页或桌面客户端，进「设置」填模型地址与 Key 即可对话。数据默认在 `<安装目录>/userdata/`。
+
+---
 
 ## 能力总览
 
@@ -71,14 +85,16 @@ bash /tmp/dm.sh from-mirror
 
 | 入口 | 说明 |
 | --- | --- |
-| QAM 面板 | Decky 插件，游戏内三页签「询问 / 聊天 / 设置」，L1/R1 翻页 |
-| 大屏页 | 注册到 GamepadUI 路由，功能同 QAM；X 翻译、Y 截图询问、R2 说话 |
+| QAM 面板 | Decky 插件，游戏内三页签「询问 / 聊天 / 设置」，<kbd>L1</kbd>/<kbd>R1</kbd> 翻页 |
+| 大屏页 | 注册到 GamepadUI 路由，功能同 QAM；<kbd>X</kbd> 翻译、<kbd>Y</kbd> 截图询问、<kbd>R2</kbd> 说话 |
 | 桌面客户端 | PySide6 + QWebEngineView，加载与网页版同一界面；最小化进托盘 |
 | 网页控制台 | 电脑或手机浏览器打开 `http://<deck-ip>:18765/`；首次打开用掌机 PIN 配对新设备 |
 | QQ | NapCat WebSocket；Deck 主动外连，本机不开入站端口 |
 | 智能音箱 | 客户端托盘进入；全屏猫脸页反馈状态，唤醒词进入一轮语音问答并自动播报 |
 
 QAM 面板由 Decky 插件提供，以 root 运行、走本机回环免鉴权；大屏页从 QAM 直接跳转。
+
+---
 
 ## 最近新增
 
@@ -97,6 +113,8 @@ QAM 面板由 Decky 插件提供，以 root 运行、走本机回环免鉴权；
 | **记忆 scope 与预算** | 记忆按 `private` / `group:<群号>` / `person:<QQ>` 分 scope；`/memory` 查看（最多 10 条），`/memory clear [群/人/私聊/all]` 清空；单轮注入上限 2500 字，超了按「知识 → 环境经验 → 画像」丢，只影响本轮 |
 | **TurnPolicy** | 主人档保持全部能力；群友档零工具、无长期记忆、400 字硬上限、强制脱敏、只给公开人设（`extra` 只给主人），上下文只带最近 20 条 × 40 字，全在代码层强制 |
 | **命令菜单与脱敏** | `/help` 或「菜单 / 帮助」列出内置指令与口语别名；群友回复替换配置键、绝对路径、IP、令牌样式文本，后端日志统一打码凭据、Cookie、URL 查询值、非回环 IP 与 QQ 号 |
+
+---
 
 ## 功能细节
 
@@ -126,7 +144,7 @@ QAM 面板由 Decky 插件提供，以 root 运行、走本机回环免鉴权；
 - **眼睛页（猫脸）**：客户端托盘提供「智能音箱模式 / 退出」，进入后加载 `/eyes.html` 全屏猫脸页，跟着播放状态眨眼、露出专辑封面、显示睡眠倒计时；退出恢复主界面。状态也可从 `/api/wake/state` 读取。
 - **电源**：模式期间持有「唤醒模式」电源锁，避免掌机在监听时休眠。
 
-依赖：
+**依赖**：
 
 - sherpa-onnx 运行时与 `requirements-stt.txt`（KWS、silero VAD、SenseVoice 识别共用）。
 - 系统录音工具 `parec` 或 `pw-record`；音乐播控需要 `busctl`。
@@ -134,7 +152,7 @@ QAM 面板由 Decky 插件提供，以 root 运行、走本机回环免鉴权；
 - 音乐功能需要安装 Decky Loader 插件 **Decky Music**（MIT，支持 QQ 音乐 / 网易云音乐），并在插件里登录音乐服务；没装或没登录时播控/点歌会回一句中文原因，不影响问答。
 - 回答语音按上一节的 TTS 配置；TTS 不可用时只显示文字状态。
 
-限制：
+**限制**：
 
 - 半双工：TTS 播放期间丢弃采集帧，不能打断她说话（没有 barge-in）。
 - 一次只处理一轮；唤醒词识别是本地小模型，环境噪声大或说话太轻时会漏唤醒。
@@ -181,9 +199,11 @@ QAM 面板由 Decky 插件提供，以 root 运行、走本机回环免鉴权；
 
 1. 网页设置里打开 `[remote_input] enabled`（会先弹一次安全确认）。
 2. 在电脑浏览器点网页左下角 DeckMeido logo 进入接管；指针锁定后移动与按键都发往 Deck。
-3. 再点 logo、按 Esc，或到达 `max_minutes` 自动释放。
+3. 再点 logo、按 <kbd>Esc</kbd>，或到达 `max_minutes` 自动释放。
 
 注入优先 `ydotool`（由 `ydotoold` 用户服务托管），不可用时直写 `/dev/uinput`——这要求后端有 root 或 `input` 组权限。只有已配对设备能接管。
+
+---
 
 ## QQ 用法
 
@@ -208,7 +228,7 @@ QAM 面板由 Decky 插件提供，以 root 运行、走本机回环免鉴权；
 
 **归档**：可存图、存文本，图片进 `meidobot/images/<日期>/`，索引与文本分别写入 `inbox_index.jsonl`、`text_log.txt`；QQ 会话面板上有「打开图片文件夹」，直接调起掌机文件管理器。
 
-其它能力：
+**其它能力**：
 
 - **语音条**：`voice_reply` 打开后，回复可附带一条 NapCat `record`。私聊只对 `admin_qq` 生效，群里是否放开给群成员由 `voice_group_members` 决定。一轮最多额外发一条，默认上限 60 秒 / 4 MB；`voice_only` 打开时语音失败会改发文字，不会吞掉回复。需要 TTS 模型可用。
 - **图片**：`allow_image` 打开后下载并识别 QQ 图片，可作视觉输入并归档；单张上限 `max_image_mb`（默认 8 MB），最近 `image_recent_minutes`（默认 2 分钟）内的图会跟着聊天轮次带上。下载只放行公网 http(s)，挡住 `file://`、内网地址、异常端口和重定向绕道。
@@ -216,6 +236,8 @@ QAM 面板由 Decky 插件提供，以 root 运行、走本机回环免鉴权；
 - **敏感词**：`redact_words` 命中的词替换成 `redact_mask`（默认 `***`），不分大小写与全半角；单字词自动忽略，免得误伤。
 - **群常识缓存**：`group_memo` 打开且群在白名单时，每群保留最近 20 条、每条压到 80 字、5 分钟后过期，整段最多 400 字，最多同时缓存 200 个群，仅供理解语境；纯内存、不落盘、不写长期记忆，`/memo` 可清空本群缓存。
 - **安装后自动启动**：安装类命令成功后按 `auto_launch_after_install` 自动拉起刚装好的程序，等 `auto_launch_wait_seconds` 秒再截图回一条图文。
+
+---
 
 ## 安全与权限
 
@@ -238,6 +260,8 @@ QAM 面板由 Decky 插件提供，以 root 运行、走本机回环免鉴权；
 - `normal`：其余设备操作，按普通确认流程走。
 
 内置指令之外的设备操作，先按 `[security] permission_mode` 判断本机权限，再叠加远程风险档位。
+
+---
 
 ## 配置
 
@@ -294,6 +318,8 @@ QAM 面板由 Decky 插件提供，以 root 运行、走本机回环免鉴权；
 
 语音输入默认开启，可在 QAM / 大屏 / 网页设置里切换（写入 `[stt] enable`）；首次使用会下载识别模型，失败只影响语音，不影响其它功能。语音播报在 `[tts] enable` 或设置里打开，`[tts] speaker` 选发音人：机器人（espeak-ng，需系统包）、月读酱（piper-plus，需模型）、哔哔啵啵（纯代码合成，不需要任何外部依赖）。
 
+---
+
 ## 安装
 
 ### 前置
@@ -336,11 +362,13 @@ bash install.sh uninstall --dry-run  # 预览卸载会动哪些路径（不实�
 
 装完会自动打开一次客户端，同时拉起后端。之后双击桌面上的 DeckMeido 图标即可；窗口最小化驻留托盘，右键菜单可退出。
 
+---
+
 ## 数据目录
 
 所有可修改数据统一在数据根下，默认 `<安装目录>/userdata`，可用环境变量 `DECKMEIDO_DATA_DIR` 覆盖；服务端找不到数据根会直接报错，不会静默换目录。
 
-```
+```text
 userdata/
 ├── config.toml              600
 ├── persona/meidosoul.json   人设：名字、性格、称呼、语气
@@ -371,6 +399,8 @@ userdata/
 - 安装器只维护这一套标准布局；数据根位置由 `DECKMEIDO_DATA_DIR`（默认 `<安装目录>/userdata`）决定。
 - 卸载时默认把 `userdata/` 整体搬到 `~/MeidoSpace/userdata-<时间>`，校验文件数与字节数通过后才删代码；`--purge` 才会一并清掉。
 
+---
+
 ## 升级与卸载
 
 **升级**
@@ -391,6 +421,8 @@ bash ~/DeckMeido/uninstall.sh --purge    # 连 userdata、工作区与配置一�
 - 默认先把 `userdata/`（人设、会话、记忆、QQ 归档、模型）搬到 `~/MeidoSpace/userdata-<时间>`，校验数量与字节后才删代码；`--purge` 才把 `userdata/`、`[workspace] dir` 与安装器创建的配置目录一并进回收站。
 - 会询问是否一起卸载安装器装过的系统包（回车 = 卸载，`n` = 保留）；随后清理 Decky 插件、桌面快捷方式与缓存目录。插件按「停止 → 等残留 → 启动」重载，不会硬 `restart`。
 - `bash install.sh uninstall` 只允许对着带 `.deckmeido-install` 标记的安装目录执行；源码工作区（含 `.git`）会被守卫拒绝，避免误删 clone 下来的仓库。
+
+---
 
 ## 故障排查
 
@@ -413,9 +445,11 @@ bash ~/DeckMeido/uninstall.sh --purge    # 连 userdata、工作区与配置一�
 
 日志位置：后端 `userdata/logs/backend.log`、遮罩 `userdata/logs/overlay.log`、客户端崩溃栈 `userdata/logs/client-crash.log`；开发者模式另有 `userdata/logs/debug-*.log`；QQ 事件可在状态页查看，也可调 `/api/qq/logs`；依赖安装日志 `pip-install.log` 在安装目录。
 
+---
+
 ## 开发
 
-```
+```text
 DeckMeido/
 ├── install.sh        安装 / 升级 / 卸载 / 镜像安装 / 自检 / 测速
 ├── server/           FastAPI 后端：agent 循环、工具、LLM、会话、记忆、QQ、STT/TTS、外观、静态前端
@@ -438,6 +472,8 @@ python tools/release.py 0.8.23          # 构建 dist/：tar.gz + 插件 zip + l
 依赖分四份：`requirements-gui.txt`（桌面客户端）、`requirements-stt.txt`（识别 / 唤醒）、`requirements-tts.txt`（合成）、`requirements-ocr.txt`（OCR 可选组件，模型单独下载，不随发布包）。
 
 发版：`release.py` 只写 `dist/` 并自动同步到 `winres/deckmeido/`；该目录**只保留最新版本产物**，同步时会清掉其它版本的 tar/zip 与 `.sha256`，`install.sh`、`latest.json`、`SHA256SUMS` 常驻保留。提交后打 tag，用 `gh release create` 上传 tar.gz、插件 zip、sha256、`latest.json` 与 `install.sh`。
+
+---
 
 ## 许可
 
