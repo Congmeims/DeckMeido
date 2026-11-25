@@ -505,7 +505,11 @@
      里面最长的那行代码撑开，overflow-x:auto 就永远不触发，代码块右侧直接
      被裁在屏幕外。压掉下限后长行才会在气泡内部左右滚 */
   .msg pre, .md-doc pre { min-width: 0; max-width: 100%; background: var(--code-bg); padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 6px 0; font-size: 13px; }
-  .msg code, .md-doc code { background: var(--code-bg); padding: 2px 6px; border-radius: 5px; font-size: 13px; font-family: var(--font-mono); }
+  /* 行内代码不许撑高行盒：padding 只给 1px（垂直方向本来也不参与行盒计算），
+     line-height 压到 1.15 让等宽字体的上/下伸部收在 24px 行盒内。
+     原来 2px 内边距 + 13px 字号让 chip 比正文高、底色还压到相邻行上，
+     一段里混着几处代码就有「行距一会高一会低」的观感 */
+  .msg code, .md-doc code { background: var(--code-bg); padding: 1px 5px; line-height: 1.15; border-radius: 5px; font-size: 13px; font-family: var(--font-mono); }
   .msg pre code, .md-doc pre code { background: none; padding: 0; }
   /* 用户气泡是蓝底：里面的行内代码/代码块若还用主题的代码底色，
      浅色主题下就是「浅灰块 + 继承来的白字」，整段看不见。
@@ -514,7 +518,14 @@
   .msg.user pre { background: rgba(255, 255, 255, .16); color: var(--on-user); }
   .msg.user pre code { background: none; color: var(--on-user); }
   .msg.user h3, .msg.user h4, .msg.user a { color: var(--on-user); }
-  .msg h3, .msg h4, .md-doc h3, .md-doc h4 { margin: 8px 0 4px; color: var(--brand); }
+  /* 标题跟正文同色（大段文档里一水蓝色标题像一排超链接），
+     用左侧品牌色竖条做层级。前后的空行已由渲染器剥掉，间距只留这里的 margin */
+  .msg h3, .msg h4, .md-doc h3, .md-doc h4 {
+    margin: 12px 0 4px; color: var(--text); font-weight: 600;
+    border-left: 3px solid var(--brand); padding-left: 8px; line-height: 1.4;
+  }
+  .msg h3:first-child, .msg h4:first-child,
+  .md-doc h3:first-child, .md-doc h4:first-child { margin-top: 0; }
   .msg h3, .md-doc h3 { font-size: 16px; }
   .msg h4, .md-doc h4 { font-size: 15px; }
   /* markdown 表格：气泡内自适应；列太多/单元格太长时整表横向滚动，不撑破气泡 */
@@ -537,6 +548,10 @@
   }
   .msg ul, .md-doc ul { padding-left: 20px; margin: 4px 0; }
   .msg a, .md-doc a { color: var(--brand); }
+  /* 空行间隔块：渲染器把空行换成这个固定 9px 的块。
+     原来空行是 <br><br>（整整一行 24px 的空白），一旦和标题/列表的 margin
+     叠加，段距就忽高忽低，字号一改更失控 */
+  .msg .md-gap, .md-doc .md-gap { display: block; height: 9px; }
   /* 文件预览里的 Markdown 走的也是 renderMd：图片按容器宽度收 */
   .md-doc img.chat-img {
     display: block; max-width: 100%; height: auto; margin: 8px 0;

@@ -2028,9 +2028,12 @@
   function renderMd(t) {
     var s = escapeHtml(t);
     var stash = [];
-    // 1) 围栏代码块优先抽出：里面的 | 与 tab 不参与表格识别
+    // 1) 围栏代码块优先抽出：里面的 | 与 tab 不参与表格识别。
+    //    占位符类型用 'p'（块级 <pre>），和行内代码的 'c' 分开：
+    //    第 6 步要剥掉块级元素前后的 <br>，而行内代码后面紧跟的 <br>
+    //    是正文换行，绝不能碰
     s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, function (m, l, c) {
-      return mdHold(stash, 'c', '<pre><code>' + c.replace(/\n$/, '') + '</code></pre>');
+      return mdHold(stash, 'p', '<pre><code>' + c.replace(/\n$/, '') + '</code></pre>');
     });
     // 2) 行内代码也抽出：里面的 | 不触发分列，还能原样进表格单元格
     s = s.replace(/`([^`\n]+)`/g, function (m, c) {
@@ -2067,10 +2070,20 @@
       }).join('');
       return p + '<ul>' + items + '</ul>';
     });
-    // 6) 换行；表格是块级元素，前后的 <br> 去掉，免得白空一整行
-    s = s.replace(/\n{2,}/g, '<br><br>').replace(/\n/g, '<br>');
-    s = s.replace(/<br>(\u0001t\d+\u0001)/g, '$1')
-         .replace(/(\u0001t\d+\u0001)<br>/g, '$1');
+    // 6) 换行。空行换成固定 9px 的间隔块：原来用 <br><br>，等于整整一行
+    //    24px 的空白，再叠上标题/列表自己的 margin，段距就忽高忽低。
+    //    标题、列表、代码块、表格都是块级元素（自带 margin），它们前后的
+    //    <br> 和间隔块一并剥掉，间距统一交给 CSS
+    var GAP = '<div class="md-gap"></div>';
+    var SEP = '(?:<br>|' + GAP + ')';
+    s = s.replace(/\n{2,}/g, GAP).replace(/\n/g, '<br>');
+    s = s.replace(new RegExp(SEP + '+(?=<(?:h3|h4|ul|pre)\\b)', 'g'), '')
+         .replace(new RegExp('(</(?:h3|h4|ul|pre)>)' + SEP + '+', 'g'), '$1');
+    // 表格 / 围栏代码块的占位符还原后也是块级元素，同样处理。
+    // 行内代码占位符（c）不在这里：它后面可能紧跟正文换行
+    var PH = '\\u0001[tp]\\d+\\u0001';
+    s = s.replace(new RegExp(SEP + '+(?=' + PH + ')', 'g'), '')
+         .replace(new RegExp('(' + PH + ')' + SEP + '+', 'g'), '$1');
     // 行首缩进用不换行空格占位，避免连续半角空格被浏览器折叠/当作换行
     s = s.replace(/(^|<br>)([ \t]+)/g, function (m, pre, sp) {
       return pre + new Array(sp.length + 1).join('&nbsp;');
