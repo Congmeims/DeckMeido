@@ -3123,7 +3123,9 @@ def new_shot_state() -> dict:
 def _have_mss() -> bool:
     """mss 能不能 import。截图失败归因要用它区分「没装组件」和「装了就黑屏」"""
     try:
-        import mss  # noqa: F401
+        # 用 __import__ 而不是 import 语句：这里只要知道能不能 import，
+        # 模块本身不参与后续逻辑，写成 import 会被静态检查当成未使用
+        __import__("mss")
     except Exception:
         return False
     return True
@@ -3824,14 +3826,7 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
     except (TypeError, ValueError):
         count = 4
 
-    # 标题里带这些词的一律不收：Bing 经常混进文章配图、百科条目、表情包、商品
-    BAD_TITLE = re.compile(r"百度百科|维基百科|百科|新闻|资讯|攻略|教程|下载|软件|"
-                           r"表情包|头像|手游|手机|app|论坛|社区|博客|知乎|哔哩|b站|"
-                           r"新番|动画|漫画|漫迷|游侠|游民|3dm|steam|"
-                           r"采集|转载|www\.|http|mural|peel and stick|wall ?sticker|"
-                           r"decal|poster|canvas|sticker|amazon|etsy|ebay|"
-                           r"aliexpress|redbubble|shutterstock|istock|stock photo", re.I)
-    # 这些词出现在标题里就说明这张图不是壁纸（条目页 / 文章配图 / 商品图）。
+    # 标题里带这些词的一律不收（Bing 经常混进文章配图 / 百科条目 / 表情包 / 商品图）。
     # 单独拎出来是因为它现在是「直接否决」：Bing 那种「初音未来壁纸」标题
     # 里带「壁纸」、看着像对上了，内容其实是百科/新闻配图
     BAD_HARD = re.compile(r"百科|新闻|资讯|攻略|教程|下载|软件|论坛|社区|博客|知乎|"
@@ -3886,10 +3881,6 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
     # （只剩 "18" 之类）。兜底词从中文里取连续的两字片段：
     # 「初音未来」→「初音 / 未来」，拼进标题检索还能捞到东西
     zh_terms: list[str] = _zh_words(query) if ZH_RE.search(query) else []
-    # Bing 的召回很偏：里面全是文章配图，标题又正好带着原词，
-    # 词面命中过不了筛。所以中文提问时把 Bing 排到最后，只有前几个
-    # 图库（壁纸库/插画库）连一张的凑不齐时才轮到它补
-    bing_last = bool(zh_terms)
 
     # 「换一批」的翻页页码：同一个关键词再搜一次就往后翻一页。
     # 各图库都是确定性排序，不翻页的话同一关键词永远拿到同样那几张，
@@ -4022,14 +4013,6 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
         return (f"没搜到能用的图片（{why}）。"
                 "换一组更常见的名词再搜一次。")
 
-    # 按图库轮转排队：壁纸库、插画库、Bing 交替，最后才轮到照片库
-    order = ["wallhaven", "anime", "safebooru", "bing", "openverse", "wikimedia"]
-    if bing_last:
-        # 翻译没成功时，中文词丢给 anime/safebooru 必然 0 条，能出图的只有
-        # Bing（召回偏但标题带原词，能过筛）。让它跟壁纸库交替，
-        # 免得 4 张全被文章配图占满；搜索词没翻成英文时它已经是主力了
-        order = ["wallhaven", "bing", "openverse", "wikimedia",
-                 "anime", "safebooru"]
     # 同一轮里换个说法再搜（「蓝色档案 日鞠」→「日鞠」）时，二次元库用的
     # 是同一套 tag：同一个帖子会被两条不同的标签各查出来一次，URL 各不相同，
     # 只有 booru 的 post id（就在 title 里）是一样的。整个池子先按 id 拦一道
