@@ -289,14 +289,8 @@
        + 批准/取消按钮。手柄 A（或键盘 Enter）确认、手柄 L1（或键盘 Esc）取消；
        鼠标也能点按钮。卡片只在挂起时出现，确认/取消后收起。 -->
   <div id="pendingApproval" class="pending-approval" hidden>
-    <div class="pa-row">
-      <span class="pa-icon" aria-hidden="true">!</span>
-      <div class="pa-body">
-        <div class="pa-title" id="paTitle">想执行这个操作，需要你确认</div>
-        <div class="pa-desc" id="paDesc"></div>
-        <div class="pa-warn" id="paWarn" hidden></div>
-      </div>
-    </div>
+    <!-- 命令/目的/后果都写在上面那条助手消息里了，这里只留抉择：
+         两处都写一遍只会重复、还占掉半个屏幕 -->
     <div class="pa-actions">
       <button id="paApprove" class="pa-btn pa-approve" type="button">批准</button>
       <button id="paCancel" class="pa-btn pa-cancel" type="button">取消</button>
@@ -9239,12 +9233,9 @@
   // 单一真源：所有确认/取消动作（手柄 A/L1 注入、键盘 Enter/Esc、卡片按钮）
   // 都走 approve()/cancel()，不各写一套，避免按键回调语义漂移（同类 bug 的根源）。
   var hasPending = false;
-  var pendingDesc = '', pendingHard = false, pendingLabel = '';
+  var pendingHard = false;         // hard 档只认「确认执行」，其余随便回一个不算数
   var lastApprovalAt = 0;          // 去重：手柄注入与键盘事件可能几乎同时到达
   var paEl = document.getElementById('pendingApproval');
-  var paDescEl = document.getElementById('paDesc');
-  var paWarnEl = document.getElementById('paWarn');
-  var paTitleEl = document.getElementById('paTitle');
   var paHintEl = document.getElementById('paHint');
   var paApproveBtn = document.getElementById('paApprove');
   var paCancelBtn = document.getElementById('paCancel');
@@ -9932,25 +9923,14 @@
   }
   function showPendingCard(msg) {
     hasPending = true;
-    pendingDesc = msg.description || '';
     pendingHard = !!msg.hard;
-    pendingLabel = msg.label || '';
-    // 名字走人设配置（设置页里能改），不能写死「梅朵」
-    paTitleEl.textContent = (PERSONA_NAME || 'AI') + '想执行这个操作，需要你确认';
-    paDescEl.textContent = pendingDesc;
-    if (pendingHard) {
-      paWarnEl.hidden = false;
-      paWarnEl.textContent = '风险较高（' + pendingLabel + '），只有回复「确认执行」才会执行。';
-    } else {
-      paWarnEl.hidden = true;
-    }
     paHintEl.textContent = '手柄 A 确认 / L1 取消　·　键盘 Enter 确认 / Esc 取消';
     paEl.classList.add('show');
     paEl.hidden = false;
   }
   function hidePendingCard() {
     hasPending = false;
-    pendingDesc = ''; pendingHard = false; pendingLabel = '';
+    pendingHard = false;
     paEl.classList.remove('show');
     paEl.hidden = true;
   }

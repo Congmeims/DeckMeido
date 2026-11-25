@@ -33,7 +33,9 @@
 
 **{description}**
 
-回复「确认」我就执行，说别的就当作取消。<!-- /@part -->
+**后果**：{consequence}
+
+{reply}<!-- /@part -->
 
 <!-- @part: shot_caption_first -->
 （这是本次提问时截取的当前画面，请依据这张图回答）<!-- /@part -->

@@ -901,12 +901,20 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     print(f"[DeckMeido] 工具待确认 {name}（模式 {m.PERMISSION_MODE}，"
                           f"{verdict.label}{'/' + verdict.reason if verdict.reason else ''}）："
                           f"{pending['description']}")
+                    # 后果一栏：优先用女仆长的判词（她看过完整命令和上下文），
+                    # 否则用规则表给的原因（如「停用/屏蔽关键系统服务」）。
+                    # 写进聊天正文，下面的卡片就只剩两个按钮，不用两处重复
+                    why = (guardian_ask or verdict.reason or "").strip()
+                    if why.startswith("女仆长判定") and "：" in why:
+                        why = why.split("：", 1)[1].strip()
+                    consequence = (f"{why}（{verdict.label}级）" if why
+                                   else f"{verdict.label}级操作，执行前请确认")
+                    reply = ("回复「确认执行」我就执行，说别的就当作取消。"
+                             if pending["hard"] else
+                             "回复「确认」我就执行，说别的就当作取消。")
                     text_out = prompts.part("pending_approval").format(
-                        description=pending['description'])
-                    if pending["hard"]:
-                        text_out += ("\n这项操作风险较高"
-                                     f"（{verdict.label}：{verdict.reason or '高危操作'}），"
-                                     "只有回复「确认执行」才会执行。")
+                        description=pending['description'],
+                        consequence=consequence, reply=reply)
                     return text_out
 
                 # full 档：危险操作直接执行前给一个非阻塞提示，让主人知道
