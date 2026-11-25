@@ -609,6 +609,21 @@
   /* 行首文案：像「行为越界 · 女仆长介入 · 已拦截」这种整句在窄屏要能截断，
      但 chip、耗时、箭头必须留在原位，不能被长文字挤到屏幕外 */
   .tl-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* 女仆长介入的行首「行为越界 · 女仆长介入 · 已拦截」：不参与收缩。
+     之前它和判词挤在同一行，窄屏上「已拦截」被省略号整个吃掉，
+     看着只剩「行为越界 · 女仆长介入 · …」。宁可折行，也不许省略 */
+  .tl-label-fix {
+    flex: 0 0 auto; max-width: 100%;
+    overflow: visible; text-overflow: clip; white-space: normal;
+  }
+  /* 判词单独一行：长句自动换行，不再和命令摘要抢同一行的宽度 */
+  .tl-sub {
+    margin: 1px 0 3px 2px; padding-left: 8px;
+    font-size: 12px; line-height: 1.55; word-break: break-word;
+    border-left: 2px solid currentColor; opacity: .92;
+  }
+  .tl-sub.err { color: #d9534f; }
+  .tl-sub.ok { color: #2cc76f; }
   /* 失败行：截图没抓到这类「说完成了但其实没完成」的情况要显眼 */
   .tl-head.err { color: #d9534f; }
   .tl-head.err .tl-ico { background: #d9534f; opacity: .9; }

@@ -2573,7 +2573,9 @@
     }
     // 女仆长在 auto 档替主人放行的步骤：单独一条绿行的文案，
     // 和「已运行」区分开，主人才知道这一步是她拍了板才执行的
-    if (ev.guardian_allow) return { text: '已放行', chip: ev.summary, intent: ev.intent,
+    if (ev.guardian_allow) return { text: '已放行', chip: ev.summary,
+                                    // 判词在下方的 .tl-sub 里单独一行；老数据里可能是 true
+                                    intent: (typeof ev.guardian_allow === 'string' ? ev.guardian_allow : ev.intent),
                                     tag: '行为越界 · 女仆长介入' };
     switch (ev.name) {
       case 'read_file':   return { text: '已读取', chip: fname || ev.summary };
@@ -2928,14 +2930,26 @@
     // 女仆长放行的行标绿 —— 放行和普通执行分开，主人一眼能看出哪些是她拍的板
     if (ev.error || ev.denied) r.head.classList.add('err');
     else if (ev.guardian_allow) r.head.classList.add('ok');
+    // 女仆长介入的行：行首整句必须完整可见（见 app.css 的 .tl-label-fix）
+    var isGuardRow = !ev.approved && !!info.tag;
+    var labelEl = r.head.querySelector('.tl-label');
+    if (isGuardRow && labelEl) labelEl.classList.add('tl-label-fix');
     // 模型给的一句话意图（run_command 的 reason）：排在命令 chip 前面，
-    // 「已运行 · 定位写块设备的字面量 [命令] 0.1s」比只有一条命令好读
+    // 「已运行 · 定位写块设备的字面量 [命令] 0.1s」比只有一条命令好读。
+    // 女仆长介入的行不塞进 head —— 判词动辄三四十字，会把「已拦截」挤成省略号，
+    // 改成下面单独一行（.tl-sub），长就换行，读得全
     var intent = String(ev.intent || info.intent || '').trim();
-    if (!ev.approved && intent) {
+    if (!ev.approved && intent && !isGuardRow) {
       var inEl = document.createElement('span');
       inEl.className = 'tl-intent';
       inEl.textContent = intent;
       r.head.appendChild(inEl);
+    }
+    if (isGuardRow && intent) {
+      var sub = document.createElement('div');
+      sub.className = 'tl-sub' + (ev.denied ? ' err' : ' ok');
+      sub.textContent = intent;
+      r.tl.appendChild(sub);
     }
     if (!ev.approved && info.chip) {
       var chipEl = document.createElement('span');
