@@ -3492,15 +3492,13 @@ async def api_sudo_cancel(req: SudoCancelBody | None = None):
     """界面点「取消」：撤掉待授权请求，被拦下的命令不再等密码"""
     # 注意用 pending_status()：模块里没有 pending()，写错会 500，
     # 而前端 .catch 把错误吞掉，表现就是「点了取消毫无反应」
-    command = str((sudo_auth.pending_status() or {}).get("command") or "").strip()
     ok = sudo_auth.cancel_pending()
-    # 取消授权也得在对话里留一句：否则授权行一收，主人看到的还是上一条
-    # 「已完成：…」，完全不知道那条命令没跑（会话 708412 就是这么卡住的）
+    # 取消授权也得在主人这一侧留一句，和定夺框那边「确认执行」一个套路：
+    # 主人只认短句「取消授权」，写成一整段「已取消授权，这条命令没有执行」
+    # 加命令原文他反而觉得不是在说自己干了什么（截图反馈）
     if ok:
-        await _append_assistant_note(
-            "已取消授权，这条命令没有执行。"
-            + (f"\n{command}" if command else ""),
-            sid=(req.sid if req else ""), side="user")
+        await _append_assistant_note("取消授权",
+                                     sid=(req.sid if req else ""), side="user")
     return {"ok": True, "cancelled": ok}
 
 
@@ -3514,13 +3512,8 @@ async def api_sudo_password(req: SudoPasswordBody):
     if not res.get("ok"):
         return JSONResponse(res, status_code=400)
     held = res.pop("resume", None)
-    # 授权成功也要在对话里留一句：之前只有「续跑结果」那一轮，主人看不出
-    # 密码到底有没有被接受（会话 cb3d64a5 反馈「点了没反应」）
-    await _append_assistant_note(
-        "已授权管理员权限（sudo）。"
-        + (f"\n{str((held or {}).get('command') or '').strip()}"
-           if (held or {}).get("command") else ""),
-        sid=req.sid, side="user")
+    # 授权成功也留一句，短句版：和「取消授权」对称，续跑结果在下一轮里
+    await _append_assistant_note("已授权", sid=req.sid, side="user")
     if held:
         res["resumed"] = _resume_after_sudo(held)
     return res

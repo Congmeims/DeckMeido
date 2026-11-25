@@ -308,8 +308,8 @@ class SudoCancelLeavesNoteTest(unittest.TestCase):
         self.assertTrue(res["cancelled"])
         self.assertEqual(sudo_auth.pending_status(), None)
         self.assertEqual(len(notes), 1)
-        self.assertIn("已取消授权", notes[0])
-        self.assertIn(cmd, notes[0])
+        # 短句：和定夺框那边的「确认执行」一个套路，主人只要看到自己干了什么
+        self.assertEqual(notes[0], "取消授权")
         self.assertEqual(sids, ["sess-cancel"])
         # 主人自己按的取消，气泡要落在主人这一侧（之前画在助手侧，主人以为没留痕）
         self.assertEqual(sides, ["user"])
@@ -342,8 +342,7 @@ class SudoGrantLeavesNoteTest(unittest.TestCase):
 
         self.assertTrue(res["ok"])
         self.assertEqual(len(notes), 1)
-        self.assertIn("已授权", notes[0])
-        self.assertIn(held["command"], notes[0])
+        self.assertEqual(notes[0], "已授权")
         self.assertEqual(sides, ["user"])
 
 
