@@ -606,6 +606,9 @@
   }
   .tl-head.clickable { cursor: pointer; }
   .tl-head.clickable:hover { color: var(--text); background: var(--hover); }
+  /* 行首文案：像「行为越界 · 女仆长介入 · 已拦截」这种整句在窄屏要能截断，
+     但 chip、耗时、箭头必须留在原位，不能被长文字挤到屏幕外 */
+  .tl-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   /* 失败行：截图没抓到这类「说完成了但其实没完成」的情况要显眼 */
   .tl-head.err { color: #d9534f; }
   .tl-head.err .tl-ico { background: #d9534f; opacity: .9; }

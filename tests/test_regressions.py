@@ -536,7 +536,7 @@ class GuardianWordingTest(unittest.TestCase):
     def test_decision_words_are_chinese(self):
         for reply, decision, word in (
                 ("ALLOW：只清本机历史，不碰系统文件", "allow", "放行"),
-                ("DENY：会抹掉整块硬盘", "deny", "拦下"),
+                ("DENY：会抹掉整块硬盘", "deny", "拦截"),
                 ("ASK：拿不准，等主人回来", "ask", "请主人定夺")):
             got, reason = self.judge(reply)
             self.assertEqual(got, decision, reply)

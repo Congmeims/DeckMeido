@@ -852,7 +852,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                                      "content": f"[{name}] 女仆长没让执行这步（{g_reason}）。"
                                                 f"不要换个写法绕这层审查；若确实必要，"
                                                 f"请让主人切到手动审批档再确认。"})
-                        return (f"这步操作被拦下，没有让{ai_name}执行。\n\n{g_reason}\n\n"
+                        return (f"这步操作被女仆长拦截，没有让{ai_name}执行。\n\n{g_reason}\n\n"
                                 "主人若确实需要，请切到手动审批档后确认，或自己手动操作。")
                     # ask：保持 needs_approval = True，走下面的人工挂起
 
