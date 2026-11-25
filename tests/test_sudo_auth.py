@@ -290,14 +290,20 @@ class SudoCancelLeavesNoteTest(unittest.TestCase):
         notes = []
         sids = []
         sides = []
+        prompts = []
 
         async def fake_note(text, sid=None, side="assistant"):
             notes.append(text)
             sids.append(sid)
             sides.append(side)
 
+        def fake_followup(prompt, sid=""):
+            prompts.append((prompt, sid))
+            return True
+
         try:
-            with mock.patch.object(main, "_append_assistant_note", fake_note):
+            with mock.patch.object(main, "_append_assistant_note", fake_note), \
+                 mock.patch.object(main, "_followup_reply", fake_followup):
                 # 前端会把「自己正在看的会话」带上来：留痕必须写到那个会话，
                 # 否则按 sid 过滤后主人屏幕上一片空白
                 res = asyncio.run(main.api_sudo_cancel(
@@ -313,6 +319,11 @@ class SudoCancelLeavesNoteTest(unittest.TestCase):
         self.assertEqual(sids, ["sess-cancel"])
         # 主人自己按的取消，气泡要落在主人这一侧（之前画在助手侧，主人以为没留痕）
         self.assertEqual(sides, ["user"])
+        # 取消之后模型还要回一句收尾（不能只留主人自己那一句就断掉）
+        self.assertEqual(len(prompts), 1)
+        self.assertIn(cmd, prompts[0][0])
+        self.assertIn("不要重试", prompts[0][0])
+        self.assertEqual(prompts[0][1], "sess-cancel")
 
 
 class SudoGrantLeavesNoteTest(unittest.TestCase):
