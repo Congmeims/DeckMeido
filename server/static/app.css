@@ -644,6 +644,23 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     flex: 0 1 auto; min-width: 0;
   }
+  /* 模型给的一句话意图（run_command 的 reason）：Trae 式「已运行 定位字面量」，
+     比只摆一条命令更容易看出这一步在干什么 */
+  .tl-intent {
+    flex: 0 1 auto; min-width: 0;
+    max-width: min(360px, 46vw);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--text); opacity: .75;
+  }
+  /* 折叠的思考行：标题后面跟一句摘要，收起时也知道她刚才在想什么 */
+  .tl-gist {
+    flex: 0 1 auto; min-width: 0;
+    max-width: min(520px, 62vw);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--muted); opacity: .8;
+  }
+  /* 展开后正文已经完整可读，标题旁那句摘要就是多余的，收起来 */
+  .tl.open .tl-gist { display: none; }
   /* 折叠箭头：几何居中的纯 CSS 三角（不用 ▸ 字形）。
      字形墨迹在字框里偏下、又贴着基线对齐，旋转轴落不到视觉中心，
      转起来就像绕左下角甩；换成固定尺寸的三角，轴就是盒子正中心。 */
@@ -657,10 +674,12 @@
     transition: transform .15s ease, color .15s ease, opacity .15s ease;
   }
   .tl-head.clickable:hover .tl-arrow { opacity: 1; color: var(--brand); }
-  /* 执行中的工具行：左侧圆点呼吸、右端秒表走字。
-     秒表用等宽数字，宽度不随秒数跳动，免得整行左右抖 */
+  /* 执行中的工具行：左侧圆点呼吸、秒表走字。
+     秒表用等宽数字，宽度不随秒数跳动，免得整行左右抖。
+     位置就在 chip 后面，不再 margin-left:auto 推到行尾 —— 原来有耗时的行
+     箭头被挤到最右边、没耗时的行箭头贴着 chip，一列里两套样式 */
   .tl-elapsed {
-    flex: 0 0 auto; margin-left: auto;
+    flex: 0 0 auto;
     font-family: var(--font-mono); font-size: 11.5px;
     font-variant-numeric: tabular-nums;
     color: var(--muted); opacity: .85;
@@ -684,6 +703,8 @@
     max-height: 280px; overflow-y: auto;
   }
   .tl.open .tl-body { display: block; }
+  /* 思考正文：独立滚动区，展开最多占 42vh，长思考不再一路把整屏顶下去 */
+  .tl.thought .tl-body { max-height: 42dvh; }
   /* 截图行：正文块收缩到图片宽度，并解除 280px 高度裁切，完整显示整张图 */
   .tl.open .tl-body.pic {
     /* 宽度按 max-content 算：气泡宽度取自图片的固有宽度，padding/border

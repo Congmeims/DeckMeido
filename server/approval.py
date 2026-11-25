@@ -9,7 +9,11 @@
 
 1. 危险级别（severity）：与权限档位无关的判定。从低到高
    SAFE < NOTABLE < DANGEROUS < CRITICAL。
-   - CRITICAL 不给确认通道，任何档位（含完全访问）都直接拒绝；
+   - CRITICAL 分两档：ULTRA_RULES 里的「超高危」（格式化、抹盘、破坏引导）
+     任何档位，含完全访问，都直接拒绝，连女仆长也不放行；其余 CRITICAL
+     按「必须点名确认」处理 —— auto 档先交女仆长 MeidoChou 判定
+     （她看得到完整命令，能分辨 python 字符串里的字面量），她拿不准再
+     落回主人确认，full 档放行；
    - DANGEROUS 在 full 之外的档位一律硬确认（要回「确认执行」）；
    - NOTABLE 按档位决定问不问。
 2. 权限档位（mode）：manual / auto / full 决定非危险场景问不问。
@@ -162,6 +166,19 @@ _HARD_RULES: tuple[tuple[str, str, int, str], ...] = (
     ("kill_all", r"\bkill(?:all)?\s+(?:-9|-KILL|-SEGV|-11)?\s*(?:-1|--all|-SIGKILL)\b",
      DANGEROUS, "杀掉全部进程"),
 )
+
+# 超高危：真执行一次就再也开不了机 / 系统级不可恢复。任何档位（含完全访问）
+# 都直接拒绝，也不交给女仆长 —— 这种决定不该由一个自动判官替主人做。
+# 其余 CRITICAL（如 dd 写块设备）在 auto 档交给女仆长：规则表只能看字符串，
+# 分不清 `python3 -c "… dd if=/dev/zero of=/dev/sda …"` 里的字面量，
+# 她能看完整命令和上下文再定夺（见 guardian.py 的判断原则）。
+ULTRA_RULES = frozenset({
+    "mkswap_live", "wipe_root", "mkfs_root", "redirect_disk",
+    "fork_bomb", "rm_root", "chmod_root_777", "chown_root", "write_passwd",
+    # 破坏启动：注释里已写明「不能靠点一下确认兜底，也不能让女仆长放行」
+    "write_boot_efi", "write_fstab", "grub_rebuild", "rm_system_dir",
+    "chmod_system_dir",
+})
 
 # 命令里出现这些程序，即使不在上面的规则表里，也至少是 NOTABLE。
 # mkfs / wipefs / fdisk / dd 这类在硬规则里已经单独判过设备路径，
@@ -329,10 +346,18 @@ def resolve(name: str, args: dict, ctx: policy.TurnContext, mode: str,
 
     risk = tool_risk(name, args)
 
-    # 1) 极危一律拒绝，不给确认通道
+    # 1) 极危分两档：
+    #    超高危（ULTRA_RULES）不给确认通道，任何档位都直接拒绝；
+    #    其余极危按「必须点名确认」处理：auto 档由女仆长先过一遍（引擎侧接管），
+    #    manual 问主人，full 放行 —— 与 DANGEROUS 档的口径一致。
     if risk.severity >= CRITICAL:
-        return Verdict(deny=True, severity=CRITICAL, rule=risk.rule,
-                       reason=risk.reason or "极危操作，已拒绝")
+        if risk.rule in ULTRA_RULES:
+            return Verdict(deny=True, severity=CRITICAL, rule=risk.rule,
+                           reason=risk.reason or "极危操作，已拒绝")
+        if mode == "full" and not remote:
+            return Verdict(severity=CRITICAL, rule=risk.rule, reason=risk.reason)
+        return Verdict(ask=True, hard=True, severity=CRITICAL,
+                       rule=risk.rule, reason=risk.reason)
 
     # 2) 工具自己声明必须确认的（自更新升级：会重启服务、中断对话）。
     #    full 档下放行（主人已授权一切，含自更新重启）；其余档仍必问。

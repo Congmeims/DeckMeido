@@ -811,8 +811,10 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 # auto 档：危险操作先交给女仆长 MeidoChou 监护。
                 # 放行（allow）→ 直接执行；拦下（deny）→ 告知女仆并提示主人；拿不准（ask）
                 # 或超时异常 → 降级走下面的人工挂起流程。
-                # 不交给女仆长的：CRITICAL（上面已 deny）、self_update upgrade
-                # （会重启服务，必须主人亲自确认）、远程入口（force_confirm，走人工）。
+                # 不交给女仆长的：超高危（approval.ULTRA_RULES，上面已 deny，抹盘/破坏引导
+                # 这类没有回头路的操作）、self_update upgrade（会重启服务，必须主人亲自
+                # 确认）、远程入口（force_confirm，走人工）。其余极危（如 dd 写盘）也走这里，
+                # 因为规则表分不清字符串字面量与真执行，她看得完整命令才判得准。
                 if (m.PERMISSION_MODE == "auto" and needs_approval
                         and not ctx.force_confirm and name != "self_update"):
                     from . import guardian as _guardian_mod
@@ -833,7 +835,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         summary = tools.summarize_tool(name, args)
                         deny_event = {"type": "tool", "name": name, "label": label,
                                       "summary": summary, "files": [], "denied": True,
-                                      "reason": f"女仆长拦下了这步：{g_reason}",
+                                      "reason": g_reason,
                                       "seq": _next_seq()}
                         events.append(deny_event)
                         await m.manager.broadcast({"type": "tool_done", "event": deny_event,
@@ -843,9 +845,10 @@ async def run_agent(events: list[dict], extra_system: str = "",
                             "name": name, "description": tools.describe(name, args),
                             "reason": g_reason, "ts": time.time(), **m._turn_tag()})
                         msgs.append({"role": "tool", "tool_call_id": call["id"],
-                                     "content": f"[{name}] 女仆长觉得不妥，拦下了这步：{g_reason}。"
-                                                f"主人若确实要做，请切到手动审批档确认，或自己手动操作。"})
-                        return (f"女仆长拦下了这步操作，没有让{ai_name}执行。"
+                                     "content": f"[{name}] 女仆长拦下了这步：{g_reason}。"
+                                                f"不要换个写法绕这层审查；若确实必要，"
+                                                f"请让主人切到手动审批档再确认。"})
+                        return (f"女仆长拦下了这步操作，没有让{ai_name}执行。\n\n{g_reason}\n\n"
                                 "主人若确实需要，请切到手动审批档后确认，或自己手动操作。")
                     # ask：保持 needs_approval = True，走下面的人工挂起
 
@@ -898,8 +901,12 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 files = tools.extract_writes(str(args.get("command", ""))) if name == "run_command" else []
                 label = tools.cn_name(name)
                 summary = tools.summarize_tool(name, args)
+                # 模型给的「这一步要干什么」：run_command 的 reason 是必填项，
+                # 前端拿它当 Trae 那种一句话提示（「已运行 · 定位字面量」），
+                # 比只显示整条命令更容易看出当前在做什么
+                intent = str(args.get("reason") or "").strip()
                 event = {"type": "tool", "name": name, "label": label,
-                         "summary": summary, "files": files}
+                         "summary": summary, "files": files, "intent": intent}
                 # 路径一律给全：AI 给的常常是相对工作区的路径，面板直接拿去
                 # 跳目录会落到后端进程的 cwd 上（一般是家目录），跟 AI 看的地方对不上
                 if name in ("read_file", "write_file", "edit_file", "list_dir",
@@ -919,7 +926,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 # 全盘扫描类命令执行前就把「可能较久」说出来，别让人以为卡住了
                 slow_hint = (tools.slow_scan_hint(str(args.get("command") or ""))
                              if name == "run_command" else "")
-                activity = f"正在{label}：{summary}" if summary else f"正在{label}"
+                activity = f"正在{label}：{intent or summary}" if (intent or summary) else f"正在{label}"
                 if slow_hint:
                     activity += f"（{slow_hint}）"
                 # 工具卡片要插在正文后面：先把手头攒的 delta 推出去，
@@ -931,6 +938,7 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 tool_started = time.time()
                 await m.manager.broadcast({"type": "tool_start", "name": name,
                                            "label": label, "summary": summary,
+                                           "intent": intent,
                                            "slow": slow_hint,
                                            "started": tool_started,
                                            "ts": tool_started, **m._turn_tag()})

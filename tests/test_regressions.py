@@ -386,19 +386,38 @@ class ApprovalGateTest(unittest.TestCase):
         return approval.resolve("run_command", {"command": cmd},
                                 self.ctx(remote), mode)
 
-    def test_critical_is_denied_in_every_mode(self):
-        """写盘 / 格式化 / 改账号文件：没有任何确认通道，full 也拒"""
+    def test_ultra_critical_is_denied_in_every_mode(self):
+        """超高危（抹盘 / 格式化 / 改账号文件 / 破坏引导）：没有任何确认通道，full 也拒"""
         for cmd in ("mkfs.ext4 /dev/nvme0n1p1",
-                    "dd if=/dev/zero of=/dev/sda bs=1M",
                     "rm -rf /",
                     "echo x > /etc/passwd",
-                    "chmod -R 777 /"):
+                    "chmod -R 777 /",
+                    "cp newfstab /etc/fstab",
+                    "sudo grub-mkconfig -o /boot/grub/grub.cfg"):
             for mode in approval.MODES:
                 v = self.resolve(cmd, mode)
                 self.assertTrue(v.deny, f"{mode} {cmd}")
                 self.assertFalse(v.ask, f"{mode} {cmd}")
                 self.assertEqual(v.severity, approval.CRITICAL, cmd)
                 self.assertTrue(v.reason, cmd)
+
+    def test_ultra_rules_are_real_rules(self):
+        """ULTRA_RULES 里写错一个名字等于悄悄放开一层保护：必须是规则表里真有的规则"""
+        names = {r[0] for r in approval._HARD_RULES}
+        missing = set(approval.ULTRA_RULES) - names
+        self.assertFalse(missing, f"ULTRA_RULES 里有不存在的规则名：{missing}")
+
+    def test_disk_write_is_judged_by_guardian_in_auto(self):
+        """dd 写盘：规则只看得到字符串，分不清 python 里的字面量，
+        auto 档交给女仆长定夺（ask，由引擎侧接管），manual 问主人，full 放行"""
+        cmd = "dd if=/dev/zero of=/dev/sda bs=1M"
+        for mode in ("manual", "auto"):
+            v = self.resolve(cmd, mode)
+            self.assertFalse(v.deny, mode)
+            self.assertTrue(v.ask, mode)
+            self.assertTrue(v.hard, mode)
+            self.assertEqual(v.severity, approval.CRITICAL, mode)
+        self.assertFalse(self.resolve(cmd, "full").deny)
 
     def test_remote_entry_denies_critical_too(self):
         v = self.resolve("mkfs.ext4 /dev/sda1", "full", remote=True)

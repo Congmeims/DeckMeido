@@ -2557,12 +2557,15 @@
   // 工具事件 → 时间线行文案（Trae 式：已读取/已编辑/已运行…）
   function toolRowInfo(ev) {
     var fname = ev.path ? (ev.path.split(/[\\/]/).pop() || ev.path) : '';
+    // 被拦下的行必须说清「拦下 + 谁拦的 + 为什么」，不能混进「已完成」里，
+    // 否则主人只会看到一条正常的命令行，根本不知道有东西被拒了
+    if (ev.denied) return { text: '已拦下', chip: ev.summary, intent: ev.reason };
     switch (ev.name) {
       case 'read_file':   return { text: '已读取', chip: fname || ev.summary };
       case 'list_dir':    return { text: '已查看目录', chip: fname || ev.summary };
       case 'write_file':
       case 'edit_file':   return { text: '已编辑 1个文件' };
-      case 'run_command': return { text: '已运行', chip: ev.summary };
+      case 'run_command': return { text: '已运行', chip: ev.summary, intent: ev.intent };
       case 'screenshot':  return { text: ev.error ? '截屏失败' : '已截屏' };
       case 'web_search':  return { text: '已搜索', chip: ev.summary };
       case 'list_installed_games': return { text: '已查询游戏库' };
@@ -2586,12 +2589,19 @@
   // 正在跑的工具：复用时间线的行样式，图标位置换成一个呼吸点，
   // 右端挂秒表（每 500ms 走一次）。跑完 tool_done 会用正式行盖掉它
   var liveToolRows = {};
-  function showLiveTool(name, text, started, slow) {
+  function showLiveTool(name, text, started, slow, intent) {
     if (!liveBox) return null;
     var r = makeTlRow(text, null, false);
     r.head.classList.remove('clickable');
     r.head.classList.add('running');
     if (slow) r.head.classList.add('slow');
+    // 模型给的一句话意图：执行中就能看出这一步在干什么，而不是只有一个转圈
+    if (intent) {
+      var it = document.createElement('span');
+      it.className = 'tl-intent';
+      it.textContent = intent;
+      r.head.appendChild(it);
+    }
     var el = document.createElement('span');
     el.className = 'tl-elapsed';
     r.head.appendChild(el);
@@ -2673,6 +2683,16 @@
     return r.tl;
   }
 
+  // 思考摘要：取第一句、去掉 markdown 记号、截到 40 字。折叠成一行时跟在
+  // 「思考」后面，主人不用展开也知道她刚才在想什么（Trae 的「思考 ›」同理）
+  function thoughtGist(text) {
+    var s = String(text || '').replace(/\s+/g, ' ').trim();
+    s = s.replace(/[#>*`]+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    var cut = (s.split(/[。！？!?；;]/)[0] || s).trim();
+    return cut.length > 40 ? cut.slice(0, 40) + '…' : cut;
+  }
+
   // 思维链行（live 流式与历史渲染共用）
   function makeThoughtRow(text, open) {
     var body = text || '';
@@ -2681,6 +2701,13 @@
     var r = makeTlRow('思考', null, open);
     // 标记成 thought：dev_mode 回报时只数思考块，不把工具输出混进去
     r.tl.classList.add('thought');
+    var gist = thoughtGist(body);
+    if (gist) {
+      var g = document.createElement('span');
+      g.className = 'tl-gist';
+      g.textContent = gist;
+      r.head.appendChild(g);
+    }
     var arrow = document.createElement('span');
     arrow.className = 'tl-arrow';
     // 三角由 CSS 绘制，不放字符；方向由 .tl.open .tl-arrow 旋转控制
@@ -2828,9 +2855,10 @@
   // 渲染单个事件（思维链 / 过渡正文 / 工具调用+终端输出 / 文件改动）到容器
   function renderEvent(ev, box) {
     if (ev.type === 'thought') {
-      // 默认展开：折叠状态下整段思考只显示成一行「思考 ▸」，用户反馈
-      // 「网页端看不到思考过程」。想看回答的人再手动收起这一块即可。
-      var tr = makeThoughtRow(ev.text, true);
+      // 默认折叠：整段思考收起成一行「思考 · 摘要 ▸」，想看细节再点开。
+      // 长任务一轮几十段思考，全展开会把回答顶出好几屏，主人反而找不到
+      // 「她到底在干什么」——摘要一行就够读，正文点开是 42vh 的滚动区
+      var tr = makeThoughtRow(ev.text, false);
       if (tr) box.appendChild(tr);   // 空思考返回 null，不能直接 appendChild
       return;
     }
@@ -2875,8 +2903,17 @@
     var hasBody = !!(ev.output || ev.image || ev.diff || ev.error || (ev.files && ev.files.length));
     var r = makeTlRow(ev.approved ? ('已批准：' + (ev.summary || '')) : info.text,
                       null, false);
-    // 失败行标红，和「已完成」的灰行一眼区分开
-    if (ev.error) r.head.classList.add('err');
+    // 失败 / 被拦下的行标红，和「已完成」的灰行一眼区分开
+    if (ev.error || ev.denied) r.head.classList.add('err');
+    // 模型给的一句话意图（run_command 的 reason）：排在命令 chip 前面，
+    // 「已运行 · 定位写块设备的字面量 [命令] 0.1s」比只有一条命令好读
+    var intent = String(ev.intent || info.intent || '').trim();
+    if (!ev.approved && intent) {
+      var inEl = document.createElement('span');
+      inEl.className = 'tl-intent';
+      inEl.textContent = intent;
+      r.head.appendChild(inEl);
+    }
     if (!ev.approved && info.chip) {
       var chipEl = document.createElement('span');
       chipEl.className = 'tl-chip';
@@ -2999,7 +3036,32 @@
     if (!events || !events.length) return;
     var box = document.createElement('div');
     box.className = 'events';
-    events.forEach(function (ev) { renderEvent(ev, box); });
+    // 连续的思考并进同一个「思考」行：一轮里常有好几段，各画一行屏幕上就是
+    // 一长列「思考 ·」，主人反而看不出她真正做了什么。合并后一行一句摘要，
+    // 点开仍是完整的思考记录
+    var prevThought = null;
+    events.forEach(function (ev) {
+      if (ev.type === 'thought') {
+        var txt = String(ev.text || '').trim();
+        if (!txt) return;
+        if (prevThought) {
+          var pb = prevThought.querySelector('.tl-body');
+          if (pb) {
+            pb.textContent = (pb.textContent ? pb.textContent + '\n\n' : '') + txt;
+            var pg = prevThought.querySelector('.tl-gist');
+            if (pg) pg.textContent = thoughtGist(pb.textContent);
+          }
+          return;
+        }
+        var tr2 = makeThoughtRow(txt, false);
+        if (!tr2) return;
+        box.appendChild(tr2);
+        prevThought = tr2;
+        return;
+      }
+      prevThought = null;
+      renderEvent(ev, box);
+    });
     messages.appendChild(box);
     trimMessages();
     fillFileSizes(box);
@@ -7598,6 +7660,15 @@
               break;
             }
             // 思考结束后折叠为「思考 ▸」行，点击可展开
+            // 折叠后标题旁补一句摘要：不展开也知道她刚才在想什么
+            var gs = thoughtGist(liveThought.textContent);
+            var gh = trow2.querySelector('.tl-head');
+            if (gs && gh && !gh.querySelector('.tl-gist')) {
+              var gg = document.createElement('span');
+              gg.className = 'tl-gist';
+              gg.textContent = gs;
+              gh.insertBefore(gg, gh.querySelector('.tl-arrow'));
+            }
             // 箭头方向交给 CSS：移除 open 类后自动转回朝右
             trow2.classList.remove('open');
             liveThoughtShown++;   // 只在真的留下一条思考时计数
@@ -7634,7 +7705,8 @@
           // 装包 / 扫盘这类慢操作不再只有一个转圈，用户能看出还在动、动了多久
           if (msg.name) {
             showLiveTool(msg.name, msg.label || msg.name,
-                         Number(msg.started) || (Date.now() / 1000), msg.slow);
+                         Number(msg.started) || (Date.now() / 1000), msg.slow,
+                         msg.intent);
           }
           break;
         case 'tool_done':
