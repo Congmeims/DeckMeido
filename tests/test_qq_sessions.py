@@ -39,22 +39,38 @@ class QqSessionSidTest(unittest.TestCase):
 
 
 class QqSessionTitleTest(unittest.TestCase):
-    """标题 = QQ + 触发方标识后 5 位，不足 5 位按实际位数、不补零"""
+    """标题 = 群名 / 群 或 QQ + 标识后 4 位，不足 4 位按实际位数、不补零"""
 
-    def test_group_title_uses_last_five_of_group_id(self):
-        self.assertEqual(qq_session_title("qq-g-123456789"), "QQ56789")
-        self.assertEqual(qq_session_title("qq-g-20001"), "QQ20001")
+    def test_group_title_uses_last_four_of_group_id(self):
+        self.assertEqual(qq_session_title("qq-g-123456789"), "群6789")
+        self.assertEqual(qq_session_title("qq-g-20001"), "群0001")
 
-    def test_private_title_uses_last_five_of_qq(self):
-        self.assertEqual(qq_session_title("qq-p-645849334"), "QQ49334")
+    def test_private_title_uses_last_four_of_qq(self):
+        self.assertEqual(qq_session_title("qq-p-645849334"), "QQ9334")
 
     def test_short_id_is_not_padded(self):
         self.assertEqual(qq_session_title("qq-p-1234"), "QQ1234")
-        self.assertEqual(qq_session_title("qq-g-1"), "QQ1")
+        self.assertEqual(qq_session_title("qq-g-1"), "群1")
+
+    def test_group_name_prefixes_tail(self):
+        self.assertEqual(qq_session_title("qq-g-123456789", "摸鱼群"), "摸鱼群 · 6789")
+        # 群名里的换行/多空格压成一个，过长截到 16 字
+        self.assertEqual(qq_session_title("qq-g-123456789", "  摸鱼\n 群  "), "摸鱼 群 · 6789")
+        self.assertEqual(len(qq_session_title("qq-g-123456789", "群" * 40).split(" · ")[0]), 16)
+        # 私聊不看群名
+        self.assertEqual(qq_session_title("qq-p-645849334", "摸鱼群"), "QQ9334")
+
+    def test_zero_tail_falls_back_to_five_digits(self):
+        # 整数群号（10000 / 120000）后 4 位全是 0，补前一位才认得出是哪个群
+        self.assertEqual(qq_session_title("qq-g-10000"), "群10000")
+        self.assertEqual(qq_session_title("qq-g-120000"), "群20000")
+        self.assertEqual(qq_session_title("qq-p-10000"), "QQ10000")
+        # 本身就只有 4 位时不再往前补
+        self.assertEqual(qq_session_title("qq-g-0000"), "群0000")
 
     def test_old_group_uin_sid_uses_group_number(self):
         # 老格式（群号 + QQ 号）只认群号，标题以会话标识为准
-        self.assertEqual(qq_session_title("qq-g-123456789-30003"), "QQ56789")
+        self.assertEqual(qq_session_title("qq-g-123456789-30003"), "群6789")
 
     def test_non_qq_sid_has_no_fixed_title(self):
         self.assertEqual(qq_session_title("default"), "")
@@ -68,16 +84,16 @@ class QqSessionTitleTest(unittest.TestCase):
     def test_qq_session_title_ignores_first_message(self):
         data = {"id": "qq-g-123456789", "title": "新会话"}
         set_title(data, [{"role": "user", "content": "今天聊什么"}])
-        self.assertEqual(data["title"], "QQ56789")
+        self.assertEqual(data["title"], "群6789")
 
     def test_qq_title_survives_later_messages(self):
         # 同一 sid 换个首条消息再算一次，标题仍不变（只随会话标识）
         data = {"id": "qq-p-645849334", "title": "新会话"}
         set_title(data, [{"role": "user", "content": "第一句"}])
-        self.assertEqual(data["title"], "QQ49334")
+        self.assertEqual(data["title"], "QQ9334")
         set_title(data, [{"role": "user", "content": "完全不同的第二句"},
                          {"role": "user", "content": "第三句"}])
-        self.assertEqual(data["title"], "QQ49334")
+        self.assertEqual(data["title"], "QQ9334")
 
 
 class SessionOrderTest(unittest.TestCase):
@@ -151,7 +167,7 @@ class QqSessionPersistTest(unittest.TestCase):
         restarted = SessionStore()
         data = restarted.read_session("qq-g-20001")
         self.assertEqual(data.get("history"), hist)
-        self.assertEqual(data.get("title"), "QQ20001")
+        self.assertEqual(data.get("title"), "群0001")
 
     def test_files_are_isolated_by_sid(self):
         store = SessionStore()
@@ -163,11 +179,11 @@ class QqSessionPersistTest(unittest.TestCase):
         self.assertEqual(fresh.read_session("qq-g-20001")["history"][0]["content"], "A")
         self.assertEqual(fresh.read_session("qq-g-20002")["history"][0]["content"], "B")
         self.assertEqual(fresh.read_session("qq-p-10001")["history"][0]["content"], "C")
-        self.assertEqual(fresh.read_session("qq-g-20002").get("title"), "QQ20002")
-        self.assertEqual(fresh.read_session("qq-p-10001").get("title"), "QQ10001")
+        self.assertEqual(fresh.read_session("qq-g-20002").get("title"), "群0002")
+        self.assertEqual(fresh.read_session("qq-p-10001").get("title"), "QQ0001")
 
     def test_title_is_not_rewritten_by_later_messages(self):
-        """写两次（第二轮首条消息不同）后标题仍是首次的 QQ + 后 5 位"""
+        """写两次（第二轮首条消息不同）后标题仍是首次的 QQ + 后 4 位"""
         store = SessionStore()
         store.write_session("qq-p-645849334", [{"role": "user", "content": "第一句"}])
         self.barrier()
@@ -178,7 +194,7 @@ class QqSessionPersistTest(unittest.TestCase):
         ])
         self.barrier()
         data = SessionStore().read_session("qq-p-645849334")
-        self.assertEqual(data.get("title"), "QQ49334")
+        self.assertEqual(data.get("title"), "QQ9334")
         self.assertEqual(len(data.get("history") or []), 3)
 
     def test_view_does_not_bump_updated(self):
