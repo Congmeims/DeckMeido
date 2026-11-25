@@ -75,6 +75,27 @@ def _record_power_intent(ctx: policy.TurnContext, name: str, args: dict,
     it["status"] = "executed" if code == 0 else "cancelled"
     it["finished_at"] = time.time()
     store.set_intent(ctx.sid, it)
+    if code == 0:
+        # 电源命令成功 = 这一轮注定跑不完。记下动作与轮次，退出时据此
+        # 把半截回答写成正常收尾，而不是挂一个「被中断 / 重试」的按钮
+        POWER_DONE.update({"action": action, "sid": str(ctx.sid or ""),
+                           "ts": time.time()})
+
+
+POWER_DONE = {"action": "", "sid": "", "ts": 0.0}
+
+
+def power_done(sid: str = "") -> str:
+    """这一轮是不是刚成功执行了电源动作（poweroff / reboot），否则返回空串"""
+    action = str(POWER_DONE.get("action") or "")
+    if not action:
+        return ""
+    want = str(sid or "")
+    have = str(POWER_DONE.get("sid") or "")
+    # 会话对不上就当没发生：别的会话的关机不该影响这次的中断标记
+    if want and have and want != have:
+        return ""
+    return action
 
 
 # ---------- 拒绝识别 ----------

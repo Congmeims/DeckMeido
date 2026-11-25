@@ -3524,11 +3524,11 @@ async def api_sudo_password(req: SudoPasswordBody):
     # 授权成功也留一句，短句版：和「取消授权」对称，续跑结果在下一轮里
     await _append_assistant_note("已授权", sid=req.sid, side="user")
     if held:
-        res["resumed"] = _resume_after_sudo(held)
+        res["resumed"] = _resume_after_sudo(held, sid=req.sid)
     return res
 
 
-def _resume_after_sudo(held: dict) -> bool:
+def _resume_after_sudo(held: dict, sid: str = "") -> bool:
     """密码通过后自动续跑被拦下的那条命令。
 
     之前只做了一半：命令被拦下 → 用户输密码 → 授权成功，但没有任何环节
@@ -3555,6 +3555,19 @@ def _resume_after_sudo(held: dict) -> bool:
         except Exception as exc:
             devlog.debug("main._resume_after_sudo", error=repr(exc))
             out = f"重新执行失败：{exc}"
+        action = policy.power_action(command)
+        if action:
+            # 关机/重启不能走「再起一轮」：命令一成功机器就断电，而注入的那句
+            # 「请继续完成原来那轮」会先落盘，重启后变成聊天里一整段没有回答的
+            # 话（会话 4371f1）。这里只补一句结论，不再开新回合
+            code = agent_engine._exit_code(str(out or ""))
+            if code == 0:
+                await _append_assistant_note(
+                    "好的，机器正在重启。" if action == "reboot" else "好的，机器正在关机。",
+                    sid=sid)
+                devlog.debug("main._resume_after_sudo", reason="power done",
+                             action=action)
+                return
         await start_chat(text + "\n\n" + str(out or ""), announce=False)
 
     _spawn(_run(), "_resume_after_sudo")
@@ -5227,6 +5240,23 @@ def _mark_turn_interrupted() -> None:
     hist = store.history
     # 最后一轮已经是带标记的助手消息就别重复补
     if hist and hist[-1].get("role") == "assistant" and hist[-1].get("interrupted"):
+        return
+    sid = store.turn.get("sid") or store.current_sid
+    power = agent_engine.power_done(sid)
+    if power:
+        # 关机/重启：这一轮是被断电感断的，不是出错。写成正常回答收尾，
+        # 不给「已停止更新 / 重试」按钮；模型没来得及说话就补一句结论
+        if not text:
+            text = "好的，机器正在重启。" if power == "reboot" else "好的，机器正在关机。"
+        hist.append({"role": "assistant", "content": text, "events": evs,
+                     "ts": time.time()})
+        try:
+            _write_session(sid, hist)
+            store.drop_stream_side(sid)
+        except Exception as e:
+            print(f"[DeckMeido] 写回关机收尾失败：{e}", file=sys.stderr)
+        print(f"[DeckMeido] 退出前已补关机收尾（{power}，{len(text)} 字）",
+              file=sys.stderr)
         return
     retry = ""
     for m in reversed(hist):
