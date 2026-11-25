@@ -651,17 +651,20 @@ def _delete_blocked(hit: _DeleteHit) -> PolicyDecision:
 
 
 def _is_full_access(ctx: TurnContext) -> bool:
-    """本机完全访问：设置里开了 full，且不是 QQ 这类远程入口"""
-    return bool(ctx.full_access) and not ctx.force_confirm
+    """完全访问：设置里开了 full。
+
+    远程入口（QQ）也享受 full 档的放行；只读会话（QQ 群普通成员）在
+    check() 最前面就被拦下，到不了这里，所以不会放开群成员的设备操作。
+    """
+    return bool(ctx.full_access)
 
 
 def check_delete(name: str, args: dict, ctx: TurnContext) -> PolicyDecision | None:
     """删除类工具调用的硬约束入口（不通过则不执行工具）
 
-    完全访问（本机 full 模式）下文件删除不再受限：用户已在设置里显式
-    放弃了这层保护，再拦就等于「开了权限也不生效」。
-    删会话历史除外 —— 它清的是用户自己的对话记录，误删不可恢复，
-    和「删个临时目录」不是一回事，full 模式下仍然要求本轮点名。
+    完全访问（full 模式）下删除不再受限：主人已在设置里显式放弃这层保护，
+    文件删除和会话历史删除都放行，只留一行审计便于事后追溯。
+    非 full 档：批量/通配/递归/越界，或删除本轮没点名的对象，一律拦下。
     """
     if name != "run_command":
         return None
@@ -671,7 +674,7 @@ def check_delete(name: str, args: dict, ctx: TurnContext) -> PolicyDecision | No
     hit = _scan_delete(cmd, ctx)
     if not hit:
         return None
-    if _is_full_access(ctx) and hit.kind == "file":
+    if _is_full_access(ctx):
         # 放行但留一行审计，事后能查到「什么时候删了什么」
         try:
             audit.record("delete", "allowed_full", "ok", reason=hit.code,
@@ -1117,6 +1120,10 @@ def check(name: str, args: dict, ctx: TurnContext | None = None,
     action = risky_action(name, args)
     if not action:
         return PolicyDecision(True, code="not_power")
+    if _is_full_access(ctx):
+        # full 档：电源操作 / 会话切换也直接放行（主人已授权）。
+        # 只读会话在上面已拦，群成员到不了这里。
+        return PolicyDecision(True, code="full_access", action=action)
     is_power = action in POWER_ACTIONS
 
     if approved:

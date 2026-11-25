@@ -883,6 +883,17 @@ async def run_agent(events: list[dict], extra_system: str = "",
                                      "只有回复「确认执行」才会执行。")
                     return text_out
 
+                # full 档：危险操作直接执行前给一个非阻塞提示，让主人知道
+                # 女仆干了什么（只 toast，不打断）。SAFE/NOTABLE 不提示，避免刷屏；
+                # auto 档女仆长放行已有提示，这里只针对 full。
+                if m.PERMISSION_MODE == "full" and verdict.severity >= m.approval.DANGEROUS:
+                    await m.manager.broadcast({
+                        "type": "full_action",
+                        "name": name, "label": tools.cn_name(name),
+                        "summary": tools.summarize_tool(name, args),
+                        "description": tools.describe(name, args),
+                        "ts": time.time(), **m._turn_tag()})
+
                 # 文件改动识别（run_command）
                 files = tools.extract_writes(str(args.get("command", ""))) if name == "run_command" else []
                 label = tools.cn_name(name)

@@ -7645,6 +7645,12 @@
                     (msg.summary ? ' ' + msg.summary : ''), 'chat', false);
           }
           break;
+        case 'full_action':
+          // full 档：危险操作直接执行前的非阻塞提示，让主人知道女仆干了什么。
+          // 带 sid 过滤，只在发起会话弹。
+          fbToast('已执行（完全访问）：' + (msg.label || msg.name || '') +
+                  (msg.summary ? ' ' + msg.summary : ''), 'chat', false);
+          break;
         case 'tool_start':
           // 工具开跑就立刻在时间线挂一行带秒表的「执行中」，
           // 装包 / 扫盘这类慢操作不再只有一个转圈，用户能看出还在动、动了多久
@@ -16547,6 +16553,39 @@
     });
   }
 
+  // ---- 完全访问闲置回落：开了 full 后 10 分钟无任何交互，自动切回智能审批 ----
+  // 防止主人忘了切回、AI 一直无确认执行。只在 full 档计时；任何交互都重置。
+  var FULL_IDLE_MS = 10 * 60 * 1000;
+  var fullIdleTimer = null;
+  var lastFullReset = 0;
+  function clearFullIdle() {
+    if (fullIdleTimer) { clearTimeout(fullIdleTimer); fullIdleTimer = null; }
+  }
+  function fullIdleFire() {
+    fullIdleTimer = null;
+    postConfig({ permission_mode: 'auto' });
+    addSystem('完全访问已闲置 10 分钟，自动切回智能审批。');
+  }
+  function applyFullIdle(mode) {
+    clearFullIdle();
+    if (mode === 'full') {
+      lastFullReset = Date.now();
+      fullIdleTimer = setTimeout(fullIdleFire, FULL_IDLE_MS);
+    }
+  }
+  function resetFullIdle() {
+    if (!fullIdleTimer) return;                 // 非 full 档不动
+    var now = Date.now();
+    if (now - lastFullReset < 1000) return;      // 节流：1 秒内不重复重置
+    lastFullReset = now;
+    clearFullIdle();
+    fullIdleTimer = setTimeout(fullIdleFire, FULL_IDLE_MS);
+  }
+  // 任何主人操作都算活跃：鼠标、键盘、触摸、指针
+  ['mousemove', 'keydown', 'touchstart', 'pointerdown'].forEach(function (ev) {
+    document.addEventListener(ev, resetFullIdle, { passive: true });
+  });
+
   // 后端广播的 config_changed：把顶栏和设置页里"别处也能改"的项同步成新值。
   // 只动这几项，不碰输入框里正在写的内容，避免把用户正在编辑的表单冲掉
   function syncConfigChanged(prefs) {
@@ -16572,6 +16611,8 @@
         if (pc.cmd !== undefined) permCustomCmd.checked = !!pc.cmd;
         if (pc.net !== undefined) permCustomNet.checked = !!pc.net;
       }
+      // full 档启动/停止闲置回落计时器（单一入口：只信后端广播的权威值）
+      applyFullIdle(mode);
     }
     // 外观快照跟着同一份广播过来：设置页不必再单独请求 /api/theme。
     // 按字段合并（本端正拖的滑杆/刚切的档保留本地值），别的端改的照收
@@ -16597,6 +16638,7 @@
           // 记下「上次是什么」，弹窗被取消时据此还原下拉框
           permSelect.dataset.prev = c.permission_mode;
           syncPermDanger(permSelect);
+          applyFullIdle(c.permission_mode);
         }
         // 模型下拉：先用当前模型占位，再异步补上服务商真实模型列表
         fillModelSelect([c.model]);

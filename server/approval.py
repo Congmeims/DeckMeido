@@ -338,15 +338,15 @@ def resolve(name: str, args: dict, ctx: policy.TurnContext, mode: str,
         return Verdict(deny=True, severity=CRITICAL, rule=risk.rule,
                        reason=risk.reason or "极危操作，已拒绝")
 
-    # 2) 工具自己声明必须确认的（自更新升级：会重启服务、中断对话），
-    #    不受档位影响，full 模式下也要问
-    if risk.ask:
+    # 2) 工具自己声明必须确认的（自更新升级：会重启服务、中断对话）。
+    #    full 档下放行（主人已授权一切，含自更新重启）；其余档仍必问。
+    if risk.ask and mode != "full":
         return Verdict(ask=True, hard=True, severity=risk.severity,
                        rule=risk.rule, reason=risk.reason)
 
-    # 3) 远程入口：tools.DANGEROUS 与 DANGEROUS 及以上必须硬确认；
-    #    NOTABLE 也要问（旧行为：远程 rm 同样按 is_dangerous 硬确认，不能放松）
-    if remote:
+    # 3) 远程入口：非 full 时，DANGEROUS 及以上必须硬确认、NOTABLE 也要问；
+    #    full 档下远程入口同样放行（只读会话在 policy.check 已拦群成员）。
+    if remote and mode != "full":
         if extra_danger:
             return Verdict(ask=True, hard=True, severity=DANGEROUS,
                            rule="remote_extra", reason=extra_danger)
