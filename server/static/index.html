@@ -306,8 +306,9 @@
   </div>
   <div id="inputWrap">
     <textarea id="input" rows="1" placeholder="" enterkeyhint="send"></textarea>
-    <!-- 清空输入框：贴在输入框内右边缘的小图标按钮，只在有内容时出现，点它不会触发发送 -->
-    <button id="clearBtn" type="button" aria-label="清空输入框">×</button>
+    <!-- 退格：贴在输入框内右边缘的小图标按钮，只在有内容时出现。
+         点一下删一个字，按住连续删；点它不会触发发送 -->
+    <button id="clearBtn" type="button" aria-label="退格删除">⌫</button>
   </div>
   <div id="composerBar">
     <div class="cb-left">
@@ -10077,13 +10078,78 @@
     // 只需要刷新「该不该显示」——长高本身可能让可视区变矮
     syncJumpLatest();
   });
-  // 清空只清正文，不动待发送附件；清完把焦点还回输入框，方便接着打
-  document.getElementById('clearBtn').addEventListener('click', function () {
-    input.value = '';
-    input.style.height = 'auto';
-    input.dispatchEvent(new Event('input'));
-    input.focus();
-  });
+  // 退格按钮：点一下删光标前一个字，按住连续删（鼠标和触摸都走 pointer 事件）。
+  // 按光标位置删而不是整段清空——打错半个字时不用整句重打；要全清就按住不放。
+  (function () {
+    var btn = document.getElementById('clearBtn');
+    var holdTimer = null;    // 「按住」判定
+    var repeatTimer = null;  // 连删定时器
+    var holding = false;
+
+    function deleteOnce() {
+      var v = input.value;
+      if (!v) return false;
+      // 输入框没聚焦时（刚点按钮、还没点过输入区）从末尾删，比从残留的光标位置删
+      // 更符合直觉；聚焦时才按真实光标位置来
+      var focused = document.activeElement === input;
+      var s = focused && input.selectionStart != null ? input.selectionStart : v.length;
+      var e = focused && input.selectionEnd != null ? input.selectionEnd : s;
+      if (s !== e) {
+        // 有选中就整段删掉，和系统退格一致
+        input.value = v.slice(0, s) + v.slice(e);
+        input.setSelectionRange(s, s);
+      } else if (s > 0) {
+        var cut = s - 1;
+        // emoji 是代理对，按 UTF-16 逐位删会留下半个字符，渲染成方块
+        var code = v.charCodeAt(cut);
+        if (cut > 0 && code >= 0xDC00 && code <= 0xDFFF) cut -= 1;
+        input.value = v.slice(0, cut) + v.slice(s);
+        input.setSelectionRange(cut, cut);
+      } else {
+        return false;   // 光标在最前面，前面没字可删
+      }
+      // 走既有 input 监听：重算高度、发送按钮、跳转最新提示，保持一致
+      input.dispatchEvent(new Event('input'));
+      return true;
+    }
+
+    function stopHold() {
+      holding = false;
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+      if (repeatTimer) { clearTimeout(repeatTimer); repeatTimer = null; }
+      document.removeEventListener('pointerup', stopHold);
+      document.removeEventListener('pointercancel', stopHold);
+    }
+
+    // 连删节奏：起手 90ms 一个，每删一个加快 8ms，最快 28ms（约每 36 个字/秒）
+    function tick(delay) {
+      if (!holding) return;
+      if (!deleteOnce()) { stopHold(); return; }
+      repeatTimer = setTimeout(function () { tick(Math.max(28, delay - 8)); }, delay);
+    }
+
+    btn.addEventListener('pointerdown', function (ev) {
+      if (ev.button) return;        // 只认左键 / 单指
+      ev.preventDefault();          // 别让按钮抢焦点，也别开始选词
+      stopHold();
+      deleteOnce();                 // 先立刻删一个，不等长按判定
+      input.focus();
+      holding = true;
+      // 监听挂在 document 上：删空后按钮会被 CSS 隐藏，pointerup 就落不到它身上
+      document.addEventListener('pointerup', stopHold);
+      document.addEventListener('pointercancel', stopHold);
+      holdTimer = setTimeout(function () {
+        holdTimer = null;
+        if (holding) tick(90);
+      }, 420);
+    });
+    // 触摸长按会弹系统右键菜单，拦掉
+    btn.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
+    // 键盘 / 读屏触发（pointerdown 不会发生）时兜底，detail === 0 即非鼠标点击
+    btn.addEventListener('click', function (ev) {
+      if (ev.detail === 0) { deleteOnce(); input.focus(); }
+    });
+  })();
 
   pairBtn.addEventListener('click', pairStart);
   pairConfirm.addEventListener('click', pairSubmit);

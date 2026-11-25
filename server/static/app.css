@@ -910,7 +910,11 @@
     display: none; align-items: center; justify-content: center;
     border: none; border-radius: 50%;
     background: transparent; color: var(--muted);
-    font-size: 17px; line-height: 1; cursor: pointer; z-index: 1;
+    font-size: 16px; line-height: 1; cursor: pointer; z-index: 1;
+    /* 长按连删：别让触摸把手势判成滚动/选中，也别弹长按菜单、选中文字 */
+    touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
   }
   #clearBtn:hover { background: rgba(127,127,127,.18); color: var(--text); }
   #clearBtn:active { opacity: .7; }
