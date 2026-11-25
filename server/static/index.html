@@ -2347,7 +2347,7 @@
       return node;
     };
     try {
-      addMsg(m.role === 'user' ? 'user' : 'assistant', m.brief || m.content, m.ts,
+      addMsg((m.side === 'user' || m.role === 'user') ? 'user' : 'assistant', m.brief || m.content, m.ts,
              m.events, m.client, m.device, m.voice, m.interrupted, m.retry_text);
     } finally {
       messages.appendChild = realAppend;
@@ -7463,7 +7463,7 @@
             // 只挂 assistant 的话，回放历史时提问里的图就丢了。
             // brief 是界面专用的短文案：截屏询问那套提示词一百多字，
             // 各端都只显示它，真正发出去的仍然是 content
-            addMsg(m.role === 'user' ? 'user' : 'assistant', m.brief || m.content, m.ts,
+            addMsg((m.side === 'user' || m.role === 'user') ? 'user' : 'assistant', m.brief || m.content, m.ts,
                    m.events, m.client, m.device, m.voice, m.interrupted, m.retry_text);
           });
           if (histPending.length) {
@@ -7785,6 +7785,14 @@
           break;
 
         case 'assistant_message':
+          // 主人自己在界面上按的动作（取消授权 / 授权成功 / 取消审批）带 side='user'：
+          // 画在主人这一侧，像一句自己说的话 —— 主人明确要求「我这边的气泡要显示
+          // 取消授权 / 已授权」。不能走下面的收尾逻辑：那条是给「模型这一轮说完」
+          // 用的，会把打字态、时间线、队列一起收拾掉
+          if (msg.side === 'user') {
+            addMsg('user', msg.text, msg.ts);
+            break;
+          }
           // 这一段负责把「这一轮结束」落实到界面上（补正文、挂按钮、清理时间线）。
           // 里面任何一步抛异常，旧代码都会连带跳过后面的 flushQueue ——
           // 结果就是排队的消息永远发不出去，表现成「按回车加入队列」完全不生效。

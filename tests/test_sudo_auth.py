@@ -289,10 +289,12 @@ class SudoCancelLeavesNoteTest(unittest.TestCase):
                               "expires": _t.time() + sudo_auth.ttl()}
         notes = []
         sids = []
+        sides = []
 
-        async def fake_note(text, sid=None):
+        async def fake_note(text, sid=None, side="assistant"):
             notes.append(text)
             sids.append(sid)
+            sides.append(side)
 
         try:
             with mock.patch.object(main, "_append_assistant_note", fake_note):
@@ -309,6 +311,8 @@ class SudoCancelLeavesNoteTest(unittest.TestCase):
         self.assertIn("已取消授权", notes[0])
         self.assertIn(cmd, notes[0])
         self.assertEqual(sids, ["sess-cancel"])
+        # 主人自己按的取消，气泡要落在主人这一侧（之前画在助手侧，主人以为没留痕）
+        self.assertEqual(sides, ["user"])
 
 
 class SudoGrantLeavesNoteTest(unittest.TestCase):
@@ -323,9 +327,11 @@ class SudoGrantLeavesNoteTest(unittest.TestCase):
             from server import main, sudo_auth
 
         notes = []
+        sides = []
 
-        async def fake_note(text, sid=None):
+        async def fake_note(text, sid=None, side="assistant"):
             notes.append(text)
+            sides.append(side)
 
         held = {"command": "sudo systemctl mask NetworkManager"}
         with mock.patch.object(sudo_auth, "provide_password",
@@ -338,6 +344,7 @@ class SudoGrantLeavesNoteTest(unittest.TestCase):
         self.assertEqual(len(notes), 1)
         self.assertIn("已授权", notes[0])
         self.assertIn(held["command"], notes[0])
+        self.assertEqual(sides, ["user"])
 
 
 if __name__ == "__main__":
