@@ -4445,11 +4445,15 @@ async def handle_chat(text: str, announce: bool = True,
                 if events:
                     events[-1]["output"] = str(result)[:1500]
                 # sudo 没授权时命令并没有真的跑，只是打开了授权入口：
-                # 这里还写「已完成」，主人会以为已经执行过了
-                head = ("已完成" if decision.allowed
-                        and not str(result).startswith("这条命令需要管理员权限")
-                        else "未执行")
-                reply = f"{head}：{action['description']}\n{result}"
+                # 这时排版也换个样子——套一句「未执行：执行命令：…」很像报错，
+                # 和女仆长审批那种交流框差得远（主人反馈「怪」）
+                if str(result).startswith("这条命令需要管理员权限"):
+                    reply = ("**需要管理员权限（sudo）**\n\n"
+                             f"**{action['description']}**\n\n"
+                             "在输入框上方的「需要授权」行输入一次密码即可。")
+                else:
+                    head = "已完成" if decision.allowed else "未执行"
+                    reply = f"{head}：{action['description']}\n{result}"
         elif (pend := _pending_get()) is not None and _pending_claim(pend):
             # 有新消息但未确认，取消挂起操作
             action = pend

@@ -345,12 +345,12 @@ def verify(password: str, timeout: float = 15.0) -> tuple[bool, str, str]:
 # ---------- 待授权请求 ----------
 
 def _request_message(source: str) -> str:
-    minutes = max(1, int(round(_ttl / 60)))
-    return ("这条命令需要管理员权限（sudo），但当前没有可用授权，所以没有执行。"
-            f"授权入口已经打开：请在输入框上方的「需要授权」行输入一次管理员密码，"
-            f"通过后 {minutes} 分钟内 sudo 命令会直接复用，不会再问。"
-            "不要在对话里把密码明文发给我。"
-            "授权完成后会自动重新执行这条命令，不需要你再催我。")
+    """工具返回给模型/主人的说明。
+
+    只留必要信息：界面上的「需要授权」行本身就是入口，时长、别发明文密码、
+    自动重试这些细节写在这里只会变成一段啰嗦的尾注（主人明确要求删掉）。
+    """
+    return "这条命令需要管理员权限（sudo），已打开「需要授权」入口，等主人输入密码后重试。"
 
 
 def prepare(command: str, source: str = "run_command",
