@@ -858,9 +858,20 @@ async def run_agent(events: list[dict], extra_system: str = "",
                                                 f"请让主人切到手动审批档再确认。"})
                         return (f"这步操作被女仆长拦截，没有让{ai_name}执行。\n\n{g_reason}\n\n"
                                 "主人若确实需要，请切到手动审批档后确认，或自己手动操作。")
-                    # ask：保持 needs_approval = True，走下面的人工挂起
+                    # ask：保持 needs_approval = True，走下面的人工挂起。
+                    # 同时在时间线留一行「行为越界 · 女仆长已介入 · 请定夺」——
+                    # 和放行/拦截一样显示在聊天区，主人才能看出 auto 档的自动判官
+                    # 已经看过、并且是她把决定交回来的；卡片那边就只留抉择。
                     else:
                         guardian_ask = g_reason
+                        ask_event = {"type": "tool", "name": name,
+                                     "label": tools.cn_name(name),
+                                     "summary": tools.summarize_tool(name, args),
+                                     "files": [], "guardian_ask": True,
+                                     "reason": g_reason, "seq": _next_seq()}
+                        events.append(ask_event)
+                        await m.manager.broadcast({"type": "tool_done", "event": ask_event,
+                                                   "ts": time.time(), **m._turn_tag()})
 
                 if needs_approval or remote_risk.level == "hard_confirm":
                     hard = verdict.hard or remote_risk.level == "hard_confirm"

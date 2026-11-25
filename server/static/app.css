@@ -624,6 +624,9 @@
   }
   .tl-sub.err { color: #d9534f; }
   .tl-sub.ok { color: #2cc76f; }
+  /* 女仆长拿不准、把决定交回主人：琥珀色，和放行（绿）/ 拦截（红）并列的第三种结局 */
+  .tl-head.ask { color: #d99a2b; }
+  .tl-sub.ask { color: #d99a2b; }
   /* 失败行：截图没抓到这类「说完成了但其实没完成」的情况要显眼 */
   .tl-head.err { color: #d9534f; }
   .tl-head.err .tl-ico { background: #d9534f; opacity: .9; }
@@ -1229,11 +1232,6 @@
   }
   .pending-approval .pa-warn {
     margin-top: 6px; font-size: 12px; color: var(--danger);
-  }
-  /* 女仆长介入但拿不准：写明她已经看过、只是把决定交回来（amber，和红色的硬警告区分） */
-  .pending-approval .pa-guard {
-    margin-top: 6px; font-size: 12px; line-height: 1.5;
-    color: #d99a2b; white-space: pre-line; word-break: break-word;
   }
   .pending-approval .pa-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px; }
   /* 这里以前写的是 --surface-3 / --surface-4 / --accent / --border，四个变量在 app.css

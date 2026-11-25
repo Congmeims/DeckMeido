@@ -295,8 +295,6 @@
         <div class="pa-title" id="paTitle">想执行这个操作，需要你确认</div>
         <div class="pa-desc" id="paDesc"></div>
         <div class="pa-warn" id="paWarn" hidden></div>
-        <!-- auto 档女仆长拿不准时，这里写明她已经介入过、只是不敢替主人拍板 -->
-        <div class="pa-guard" id="paGuard" hidden></div>
       </div>
     </div>
     <div class="pa-actions">
@@ -2571,6 +2569,14 @@
       return { text: '已拒绝', chip: ev.summary, intent: ev.reason,
                tag: '超高危 · 直接拒绝' };
     }
+    // 女仆长拿不准、把决定交回主人：和放行/拦截一样留在聊天区，
+    // 不然这张确认卡看着和普通危险确认没区别，看不出 auto 档自动判官已经介入过
+    if (ev.guardian_ask) {
+      // 判词开头的「女仆长判定「请定夺」：」和行首的「请定夺」重复，切掉只留理由
+      var askWhy = String(ev.reason || '').replace(/^女仆长判定「[^」]*」：\s*/, '');
+      return { text: '请定夺', chip: ev.summary, intent: askWhy,
+               tag: '行为越界 · 女仆长已介入' };
+    }
     // 女仆长在 auto 档替主人放行的步骤：单独一条绿行的文案，
     // 和「已运行」区分开，主人才知道这一步是她拍了板才执行的
     if (ev.guardian_allow) return { text: '已放行', chip: ev.summary,
@@ -2929,6 +2935,7 @@
     // 失败 / 被拦下的行标红，和「已完成」的灰行一眼区分开；
     // 女仆长放行的行标绿 —— 放行和普通执行分开，主人一眼能看出哪些是她拍的板
     if (ev.error || ev.denied) r.head.classList.add('err');
+    else if (ev.guardian_ask) r.head.classList.add('ask');
     else if (ev.guardian_allow) r.head.classList.add('ok');
     // 女仆长介入的行：行首整句必须完整可见（见 app.css 的 .tl-label-fix）
     var isGuardRow = !ev.approved && !!info.tag;
@@ -2947,7 +2954,7 @@
     }
     if (isGuardRow && intent) {
       var sub = document.createElement('div');
-      sub.className = 'tl-sub' + (ev.denied ? ' err' : ' ok');
+      sub.className = 'tl-sub' + (ev.denied ? ' err' : (ev.guardian_ask ? ' ask' : ' ok'));
       sub.textContent = intent;
       r.tl.appendChild(sub);
     }
@@ -9239,7 +9246,6 @@
   var paDescEl = document.getElementById('paDesc');
   var paWarnEl = document.getElementById('paWarn');
   var paTitleEl = document.getElementById('paTitle');
-  var paGuardEl = document.getElementById('paGuard');
   var paHintEl = document.getElementById('paHint');
   var paApproveBtn = document.getElementById('paApprove');
   var paCancelBtn = document.getElementById('paCancel');
@@ -9938,19 +9944,6 @@
       paWarnEl.textContent = '风险较高（' + pendingLabel + '），只有回复「确认执行」才会执行。';
     } else {
       paWarnEl.hidden = true;
-    }
-    // auto 档女仆长已经看过、但拿不准：说明白是「她交回来的」，不是普通的危险确认，
-    // 不然主人会以为 auto 档根本没起作用。
-    // 她的判词形如「女仆长判定「请定夺」：停止 ssh 会中断远程连接，需主人确认」，
-    // 只取冒号后的理由，避免「请定夺」在卡片上重复两遍
-    if (msg.guardian_reason) {
-      var g = String(msg.guardian_reason);
-      var gi = g.indexOf('：');
-      var why = gi >= 0 ? g.slice(gi + 1).trim() : '';
-      paGuardEl.hidden = false;
-      paGuardEl.textContent = '女仆长已介入 · 她拿不准' + (why ? '：' + why : '，请定夺');
-    } else {
-      paGuardEl.hidden = true;
     }
     paHintEl.textContent = '手柄 A 确认 / L1 取消　·　键盘 Enter 确认 / Esc 取消';
     paEl.classList.add('show');
