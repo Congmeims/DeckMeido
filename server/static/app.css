@@ -1200,7 +1200,10 @@
      不打断正在看的对话。按钮 + 手柄/键盘快捷键三条路都走 approve()/cancel()。 */
   .pending-approval {
     display: none; flex-direction: column; gap: 10px;
-    background: var(--surface-2);
+    /* 跟界面透明度走：以前是实色 --surface-2，一开壁纸这张卡片就像贴了块实心板，
+       和周围半透明的对话栏/输入框完全不搭。和侧栏、对话栏同一套公式 + 毛玻璃 */
+    background: color-mix(in srgb, var(--surface-2) calc(var(--panel-alpha) * 100%), transparent);
+    backdrop-filter: blur(calc(10px + var(--glass))) saturate(1.05);
     border: 1px solid var(--line);
     border-radius: 12px;
     padding: 12px 14px;
@@ -1218,7 +1221,10 @@
   .pending-approval .pa-title { font-size: 13px; font-weight: 600; color: var(--text); }
   .pending-approval .pa-desc {
     margin-top: 3px; font-size: 13px; color: var(--text);
-    word-break: break-word; line-height: 1.45;
+    word-break: break-word; line-height: 1.5;
+    /* 后端给的是「执行命令：…\n目的：…」两行，不 pre-line 会被折成
+       「…ssh 目的：按主人要求…」一整句，读着像语序错乱 */
+    white-space: pre-line;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   .pending-approval .pa-warn {
