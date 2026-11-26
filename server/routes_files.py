@@ -442,14 +442,40 @@ def _workspace_file(rel: str) -> Path:
     return target
 
 
+def _trash_owner() -> tuple[int, Path]:
+    """回收站归属：(uid, 家目录)。
+
+    后端多数时候以 deck 用户跑，用自己的就行；以 root 跑时（插件 flags 里有
+    root）必须落到真实图形会话用户身上——否则删掉的文件进的是 /root 的回收站，
+    主人打开 Dolphin 永远看不到。
+    """
+    if not hasattr(os, "getuid"):
+        return 1000, Path.home()
+    uid = os.getuid()
+    if uid != 0:
+        return uid, Path.home()
+    try:
+        from .tools import _session_user
+        sess = _session_user()
+    except Exception:
+        sess = None
+    if sess:
+        try:
+            import pwd
+            return sess[0], Path(pwd.getpwuid(sess[0]).pw_dir)
+        except (KeyError, ImportError):
+            pass
+    return uid, Path.home()
+
+
 def _trash_dir(path: Path) -> Path | None:
     """该路径所在磁盘的回收站目录；不可用时返回 None。
 
-    按 XDG 规范：通常盘用 ~/.local/share/Trash，其它挂载点用 <挂载点>/.Trash-$uid
-    （必须确实存在且可写，否则文件管理器不会去那里找，移到那儿等于永久删除）。
+    按 XDG 规范：家目录用 ~/.local/share/Trash，其它挂载点用 <挂载点>/.Trash-$uid。
+    目录不存在时就地建一个（0700）——新插的盘上第一次删文件，回收站本来就还不存在，
+    以前这里直接返回 None，等于删不了。只读挂载点建目录会失败，照常返回 None。
     """
-    uid = os.getuid() if hasattr(os, "getuid") else 1000
-    home = Path.home()
+    uid, home = _trash_owner()
     try:
         if path == home or home in path.parents:
             base = Path(os.environ.get("XDG_DATA_HOME")
@@ -475,7 +501,12 @@ def _trash_dir(path: Path) -> Path | None:
             base = mount / f".Trash-{uid}"
     except OSError:
         return None
-    return base if base.is_dir() and os.access(base, os.W_OK) else None
+    if not base.is_dir():
+        try:
+            base.mkdir(mode=0o700, parents=True, exist_ok=False)
+        except OSError:
+            return None
+    return base if os.access(base, os.W_OK) else None
 
 
 def _trash_unique(dest_dir: Path, name: str) -> Path:
@@ -492,9 +523,16 @@ def _trash_unique(dest_dir: Path, name: str) -> Path:
 
 
 def _trash_info_lines(src: Path) -> str:
-    """回收站 info 文件的内容：原绝对路径 + 删除时间（UTF-8 做 URL 转义）"""
-    return "Path=" + quote(str(src)) + "\nDeletionDate=" + \
-        time.strftime("%Y-%m-%dT%H:%M:%S") + "\n"
+    """回收站 info 文件的内容：原绝对路径 + 删除时间（UTF-8 做 URL 转义）
+
+    首行的 "[Trash Info]" 是 freedesktop 规范要求的段头，不能省：`.trashinfo`
+    按 desktop-entry（ini）解析，缺段头时 KIO / GIO / trash-cli 都把这条件目
+    当成非法索引直接跳过——文件明明躺在 files/ 里占着空间，回收站里却看不见，
+    「清空回收站」也清不掉。之前漏了这行，删掉的东西就全成了这种孤儿。
+    """
+    return ("[Trash Info]\n"
+            "Path=" + quote(str(src)) + "\n"
+            "DeletionDate=" + time.strftime("%Y-%m-%dT%H:%M:%S") + "\n")
 
 
 def _move_to_trash(target: Path) -> Path:
