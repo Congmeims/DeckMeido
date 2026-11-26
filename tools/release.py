@@ -33,10 +33,11 @@ WINRES = ROOT / "winres" / "deckmeido"
 
 ITEMS = [
     "server", "client", "assets", "deploy", "plugin", "vendor",
-    "requirements.txt", "requirements-gui.txt", "requirements-stt.txt",
-    "requirements-tts.txt",
     "README.md", "LICENSE", "install.sh",
 ]
+# 依赖清单按通配收：以前是逐个手写，0.9.0 漏了 requirements-ocr.txt，
+# 包里没有它，安装到离线 OCR 那一步 pip 直接报「找不到 requirements 文件」。
+ITEMS += sorted(p.name for p in ROOT.glob("requirements*.txt"))
 # tools/ 是仓库自用的运维脚本（连服务器的、打包的），不进发布包。
 # cli/ 里要是有给用户用的工具，单独列在这里
 EXTRA_DIRS = ["cli"]

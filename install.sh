@@ -2598,6 +2598,12 @@ install_ocr_deps() {
       phase_skip "安装" "离线 OCR（DECKMEIDO_INSTALL_OCR=${DECKMEIDO_INSTALL_OCR}）"
       return 0 ;;
   esac
+  if [ ! -f "$INSTALL_DIR/requirements-ocr.txt" ]; then
+    # 老一点的安装包可能没打这个清单（0.9.0 就漏了）。缺文件时 pip 会把
+    # 四个源各试一遍才失败，这里直接说清楚原因并跳过，不拖慢整轮安装。
+    phase_skip "安装" "离线 OCR 依赖清单缺失（安装包里没有 requirements-ocr.txt）"
+    return 0
+  fi
   if pip_install_with_switch "$py" requirements-ocr.txt "离线 OCR 依赖（RapidOCR）" "$start"; then
     have_py_module "$py" rapidocr || phase_fail "复查" "rapidocr 装上了但导入失败"
     return 0
