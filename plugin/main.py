@@ -1674,10 +1674,14 @@ def _thread_item(m: dict, base: str) -> dict | None:
     # 随图那条多模态消息（content 是数组）不进面板，画面由 events 里的路径显示
     if isinstance(content, list):
         return None
+    # 历史里正文在 content，实时广播（user_message / assistant_message）里叫 text。
+    # 只读 content 的后果：面板连上后端之后才来的消息正文全空，只剩来源标签
+    # 「电脑」孤零零一个词，助手消息更糟——正文没了，只剩工具输出顶着当正文
+    text = m.get("brief") or content or m.get("text") or ""
     item: dict = {
         "role": role,
         # brief 是界面专用的短文案（截屏询问那套提示词一百多字，长显会把面板撑开）
-        "text": str(m.get("brief") or content or ""),
+        "text": str(text),
         "client": str(m.get("client") or ""),
         "ts": float(m.get("ts") or 0),
         "base": base,

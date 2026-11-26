@@ -336,7 +336,7 @@ class SudoGrantLeavesNoteTest(unittest.TestCase):
         with mock.patch.object(sudo_auth, "provide_password",
                                return_value={"ok": True, "resume": held}), \
              mock.patch.object(main, "_append_assistant_note", fake_note), \
-             mock.patch.object(main, "_resume_after_sudo", lambda h: True):
+             mock.patch.object(main, "_resume_after_sudo", lambda h, sid="": True):
             res = asyncio.run(main.api_sudo_password(main.SudoPasswordBody(password="x")))
 
         self.assertTrue(res["ok"])

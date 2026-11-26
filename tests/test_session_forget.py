@@ -105,8 +105,14 @@ class SessionTrashTests(unittest.TestCase):
 
     def test_回收站只保留最近_N_份(self):
         d = paths.trash_dir()
+        names = []
         for i in range(session_store.TRASH_KEEP + 5):
-            p = d / f"s-{i:02d}.json"
+            # 回收站文件名带 -日期-时间 后缀（trash_session 就是这么命名的）：
+            # prune_trash 靠它认会话号，认不出会话号的文件一律不动，只按文件数
+            # 截断会把不同会话的备份互相挤掉
+            name = f"s-{i:02d}-20260101-1200{i:02d}.json"
+            names.append(name)
+            p = d / name
             p.write_text("{}", encoding="utf-8")
             # mtime 越大越新：i=0 最旧
             os.utime(p, (time.time() - 100 + i, time.time() - 100 + i))
@@ -114,8 +120,8 @@ class SessionTrashTests(unittest.TestCase):
         self.assertEqual(len(removed), 5)
         left = sorted(d.glob("*.json"))
         self.assertEqual(len(left), session_store.TRASH_KEEP)
-        self.assertFalse((d / "s-00.json").exists())
-        self.assertTrue((d / f"s-{session_store.TRASH_KEEP + 4:02d}.json").exists())
+        self.assertFalse((d / names[0]).exists())
+        self.assertTrue((d / names[session_store.TRASH_KEEP + 4]).exists())
 
 
 class OneBotDropSessionTests(unittest.TestCase):

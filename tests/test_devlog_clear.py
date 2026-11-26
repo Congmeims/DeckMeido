@@ -51,13 +51,14 @@ class LogClearTest(unittest.TestCase):
     def test_active_files_are_truncated_others_removed(self):
         res = devlog.clear_logs("run")
         self.assertTrue(res["ok"])
-        # backend.log / overlay.log 是常驻的「正在写入」文件：截断而非删除
-        self.assertEqual(res["truncated"], 2)
-        self.assertEqual(res["deleted"], 1)
+        # backend.log / overlay.log / client-crash.log 都是进程常驻写着的：
+        # 截断而非删除（client-crash 按前缀匹配，由桌面客户端持有句柄）
+        self.assertEqual(res["truncated"], 3)
+        self.assertEqual(res["deleted"], 0)
         self.assertGreater(res["freed_bytes"], 0)
         self.assertEqual((self.logs / RUN_BACKEND).read_text(encoding="utf-8"), "")
         self.assertEqual((self.logs / RUN_OVERLAY).read_text(encoding="utf-8"), "")
-        self.assertFalse((self.logs / RUN_CRASH).exists())
+        self.assertEqual((self.logs / RUN_CRASH).read_text(encoding="utf-8"), "")
         # 其它分类不受影响
         self.assertTrue((self.logs / DEBUG).exists())
         self.assertTrue((self.logs / INSTALL).exists())
