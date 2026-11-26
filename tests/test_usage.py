@@ -273,6 +273,79 @@ class RecordTest(UsageTestBase):
         self.assertEqual(usage.export_data()["days"], {})
 
 
+class SessionUsageTest(UsageTestBase):
+    """会话级明细：每次调用一条，聚合时算每轮平均（后台调用也算进去）"""
+
+    def _call(self, sid, run, call, kind, pin, pout, hit=0, model="deepseek-chat",
+              now=None):
+        with usage.call_scope(sid, run=run, call=call, kind=kind):
+            usage.record({"prompt_tokens": pin, "completion_tokens": pout,
+                          "prompt_cache_hit_tokens": hit}, model,
+                         api_id="api-a", now=now)
+
+    def test_按会话累计与每轮平均(self):
+        # 第 1 轮：一次对话 + 一次工具往返；第 2 轮：对话 + 一次后台压缩
+        self._call("s1", 100.0, 1, "chat", 1000, 100, hit=800)
+        self._call("s1", 100.0, 2, "tool_round", 2000, 200)
+        self._call("s1", 200.0, 1, "chat", 3000, 300)
+        self._call("s1", 0, 0, "compact", 500, 50)
+        data = usage.session_summary("s1")
+        self.assertTrue(data["has_data"])
+        self.assertEqual(data["turns"], 2)          # 工具往返不额外算一轮
+        self.assertEqual(data["calls"], 4)          # 后台调用也算一次真实调用
+        self.assertEqual(data["background"], 1)
+        self.assertEqual((data["in"], data["out"]), (6500, 650))
+        self.assertEqual((data["background_in"], data["background_out"]), (500, 50))
+        self.assertEqual(data["avg_in"], 3250)
+        self.assertEqual(data["avg_out"], 325)
+        self.assertEqual(data["avg_total"], 3575)   # 后台那 550 也摊进每轮平均
+        self.assertEqual(data["avg_total_per_call"], 1788)
+        self.assertEqual(data["cache_hit_rate"], 12.3)
+        self.assertEqual(len(data["rounds"]), 4)
+        self.assertEqual(data["rounds"][0]["kind"], "compact")   # 最近的在前
+        self.assertEqual(data["rounds"][0]["turn"], 0)           # 后台调用不占轮次
+        self.assertEqual([r["turn"] for r in data["rounds"]], [0, 2, 1, 1])
+
+    def test_旧会话没有明细时为空态(self):
+        data = usage.session_summary("not-exist")
+        self.assertFalse(data["has_data"])
+        self.assertEqual(data["rounds"], [])
+        self.assertEqual(data["turns"], 0)
+        self.assertEqual(usage.session_list(), [])
+
+    def test_没有会话上下文时只记日聚合(self):
+        usage.record({"prompt_tokens": 10, "completion_tokens": 1}, "deepseek-chat")
+        self.assertFalse((self.tmp / "usage" / "sessions" / "s1.json").exists())
+        self.assertEqual(usage.session_list(), [])
+
+    def test_会话列表按最后使用时间倒序(self):
+        early = datetime.fromisoformat("2026-11-06T10:00:00+08:00")
+        late = datetime.fromisoformat("2026-11-06T11:00:00+08:00")
+        self._call("a", 1.0, 1, "chat", 100, 10, now=early)
+        self._call("b", 1.0, 1, "chat", 200, 20, now=late)
+        rows = usage.session_list(12)
+        self.assertEqual([r["sid"] for r in rows], ["b", "a"])
+        self.assertEqual(rows[0]["turns"], 1)
+        self.assertEqual(rows[0]["in"], 200)
+
+    def test_删除会话与清空统计都会带走明细(self):
+        self._call("s1", 1.0, 1, "chat", 100, 10)
+        self.assertTrue(usage.drop_session("s1"))
+        self.assertFalse(usage.session_summary("s1")["has_data"])
+
+        self._call("s2", 1.0, 1, "chat", 100, 10)
+        self.assertEqual(usage.clear(), 2)          # 当日聚合 + 会话明细
+        self.assertFalse(usage.session_summary("s2")["has_data"])
+
+    def test_只有后台调用时不炸(self):
+        self._call("s1", 0, 0, "title", 100, 10)
+        data = usage.session_summary("s1")
+        self.assertTrue(data["has_data"])
+        self.assertEqual(data["turns"], 0)
+        self.assertEqual(data["avg_total"], 0)
+        self.assertEqual(data["background"], 1)
+
+
 class BalanceTest(unittest.TestCase):
     def _client(self, handler) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(handler))

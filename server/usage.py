@@ -33,6 +33,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import json
 import os
 import threading
@@ -95,6 +97,35 @@ _PRO_KEYS = ("pro",)
 
 _LOCK = threading.Lock()
 _SCHEMA_VERSION = 2
+
+# 会话级用量：每次模型调用追加一条明细，便于回答「这个会话每轮平均烧多少 token」
+_SESSION_SCHEMA = 1
+SESSION_MAX_ROUNDS = 500       # 单个会话保留最近多少次模型调用
+SESSION_MAX_FILES = 200        # 保留最近多少个会话的明细文件
+
+# 后台调用（压缩 / 起标题）：不是用户那句提问直接引起的，但仍然真实花钱，
+# 所以合计与「每轮平均」里都算上，只在界面上单列次数让人知道占比
+BACKGROUND_KINDS = ("compact", "title", "status")
+
+# 当前这次模型调用属于哪个会话 / 哪一轮对话 / 这一轮的第几次调用 / 什么用途。
+# 由 agent_engine（对话）与 main（压缩、起标题）在发请求前用 call_scope 设置，
+# record() 写日聚合时顺手读出来落一份会话明细；没有上下文（探活、群友轮次、
+# 单测）就只记日聚合，不影响原有统计。
+#
+# run 用「这一轮提问的时间戳」而不是轮次序号：序号在每次 run_agent 里都从 1 重来，
+# 多个用户提问会互相撞号；时间戳天然唯一，聚合时按它去重就是「用户问了几轮」。
+_CALL_CTX: contextvars.ContextVar = contextvars.ContextVar("usage_call_ctx", default=None)
+
+
+@contextlib.contextmanager
+def call_scope(sid: str = "", run: float = 0.0, call: int = 0, kind: str = "chat"):
+    """标记接下来的模型调用归属哪个会话；异常退出时自动还原"""
+    token = _CALL_CTX.set({"sid": str(sid or ""), "run": float(run or 0.0),
+                           "call": int(call or 0), "kind": str(kind or "chat")})
+    try:
+        yield
+    finally:
+        _CALL_CTX.reset(token)
 
 
 # ---------- 时间与时段 ----------
@@ -282,7 +313,215 @@ def record(usage: dict | None, model: str, base_url: str = "",
                prompt=parsed["prompt_tokens"], completion=parsed["completion_tokens"],
                cache_hit=parsed["cache_hit_tokens"],
                api=api_id, base_url=base_url)
+    # 会话明细：上下文里没有会话号（探活 / 群友轮次 / 单测）就只记日聚合
+    try:
+        record_session(usage, model=key, api_id=api_id, now=local)
+    except Exception as exc:      # 会话明细写失败绝不能影响对话
+        devlog.log("usage.session_record_failed", error=repr(exc))
     return True
+
+
+# ---------- 会话级用量 ----------
+
+def sessions_dir() -> Path:
+    path = usage_dir() / "sessions"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _safe_sid(sid: str) -> str:
+    """会话号 → 文件名安全串；只放行字母数字和 - _ .，防路径穿越"""
+    raw = str(sid or "").strip()
+    safe = "".join(ch for ch in raw if ch.isalnum() or ch in "-_.")
+    return safe[:80]
+
+
+def _session_file(sid: str) -> Path:
+    return sessions_dir() / f"{sid}.json"
+
+
+def _read_session(sid: str) -> tuple[dict, bool]:
+    """读一个会话明细文件，返回 (数据, 文件原来是否存在)"""
+    path = _session_file(sid)
+    if not path.exists():
+        return {"version": _SESSION_SCHEMA, "sid": sid, "updated": "", "rounds": []}, False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        devlog.log("usage.session_read_failed", path=str(path), error=repr(exc))
+        return {"version": _SESSION_SCHEMA, "sid": sid, "updated": "", "rounds": []}, True
+    if not isinstance(data, dict) or not isinstance(data.get("rounds"), list):
+        return {"version": _SESSION_SCHEMA, "sid": sid, "updated": "", "rounds": []}, True
+    data.setdefault("sid", sid)
+    return data, True
+
+
+def _write_session(sid: str, data: dict) -> None:
+    path = _session_file(sid)
+    data["version"] = _SESSION_SCHEMA
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _prune_sessions() -> None:
+    """只保留最近 SESSION_MAX_FILES 个会话的明细，防止目录无限增长"""
+    try:
+        files = sorted(sessions_dir().glob("*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return
+    for old in files[SESSION_MAX_FILES:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
+def record_session(usage: dict | None, model: str = "", api_id: str = "",
+                   now: datetime | None = None) -> bool:
+    """按当前 call_scope 把一次模型调用追加到会话明细；没有上下文时什么也不做"""
+    ctx = _CALL_CTX.get()
+    if not isinstance(ctx, dict):
+        return False
+    sid = _safe_sid(ctx.get("sid") or "")
+    if not sid or not isinstance(usage, dict):
+        return False
+    parsed = parse_usage(usage)
+    if not parsed["prompt_tokens"] and not parsed["completion_tokens"]:
+        return False
+    when = _cn(now)
+    entry = {
+        "ts": int(when.timestamp()),
+        "run": round(float(ctx.get("run") or 0.0), 3),
+        "call": int(ctx.get("call") or 0),
+        "kind": str(ctx.get("kind") or "chat"),
+        "model": str(model or ""),
+        "api": str(api_id or ""),
+        "in": parsed["prompt_tokens"],
+        "out": parsed["completion_tokens"],
+        "hit": parsed["cache_hit_tokens"],
+    }
+    with _LOCK:
+        data, existed = _read_session(sid)
+        rounds = data.get("rounds")
+        if not isinstance(rounds, list):
+            rounds = data["rounds"] = []
+        rounds.append(entry)
+        if len(rounds) > SESSION_MAX_ROUNDS:
+            del rounds[:-SESSION_MAX_ROUNDS]
+        data["updated"] = when.isoformat(timespec="seconds")
+        data["updated_ts"] = int(when.timestamp())
+        _write_session(sid, data)
+    if not existed:
+        _prune_sessions()
+    return True
+
+
+def _is_background(kind: str) -> bool:
+    return str(kind or "") in BACKGROUND_KINDS
+
+
+def _round_stats(rounds: list[dict]) -> dict:
+    """聚合一个会话的所有模型调用：合计与平均都按真实消耗算，后台调用算进去。
+
+    「轮」只由用户提问定义（同一轮里工具往返 / 自动续写的多次调用共用一个 run 键，
+    去重后算一轮）；压缩 / 起标题这类后台调用没有 run，不增加轮数，但它们的 token
+    会计入合计，也会摊进「平均每轮」——那正是这个会话真实烧掉的量。
+    """
+    items = [r for r in rounds if isinstance(r, dict)]
+    fg = [r for r in items if not _is_background(r.get("kind"))]
+    bg = [r for r in items if _is_background(r.get("kind"))]
+    tin = sum(int(r.get("in") or 0) for r in items)
+    tout = sum(int(r.get("out") or 0) for r in items)
+    hit = sum(int(r.get("hit") or 0) for r in items)
+    turns = len({r.get("run") for r in fg if r.get("run")})
+    if not turns and fg:
+        turns = 1
+    calls = len(items)
+    out = {
+        "turns": turns, "calls": calls, "background": len(bg),
+        "in": tin, "out": tout, "total": tin + tout,
+        "background_in": sum(int(r.get("in") or 0) for r in bg),
+        "background_out": sum(int(r.get("out") or 0) for r in bg),
+        "cache_hit_rate": round(hit / tin * 100, 1) if tin else 0.0,
+    }
+    out["avg_in"] = round(tin / turns) if turns else 0
+    out["avg_out"] = round(tout / turns) if turns else 0
+    out["avg_total"] = round((tin + tout) / turns) if turns else 0
+    out["avg_in_per_call"] = round(tin / calls) if calls else 0
+    out["avg_out_per_call"] = round(tout / calls) if calls else 0
+    out["avg_total_per_call"] = round((tin + tout) / calls) if calls else 0
+    return out
+
+
+def session_summary(sid: str, recent: int = 10) -> dict:
+    """一个会话的用量聚合 + 最近若干次调用明细；没有记录时 has_data=False"""
+    safe = _safe_sid(sid)
+    data, _ = _read_session(safe) if safe else ({}, False)
+    rounds = [r for r in (data.get("rounds") or []) if isinstance(r, dict)]
+    result = {"sid": str(sid or ""), "has_data": bool(rounds),
+              "updated": data.get("updated") or "", "rounds": []}
+    result.update(_round_stats(rounds))
+    if not rounds:
+        return result
+    recent = max(1, min(int(recent or 10), 50))
+    # 轮次序号：run 键按出现先后编号（后台调用没有 run，显示为「—」）
+    order = {}
+    for r in rounds:
+        key = r.get("run")
+        if key and key not in order:
+            order[key] = len(order) + 1
+    detail = []
+    for r in reversed(rounds[-recent:]):
+        detail.append({
+            "ts": int(r.get("ts") or 0), "turn": order.get(r.get("run"), 0),
+            "call": int(r.get("call") or 0), "kind": str(r.get("kind") or "chat"),
+            "model": str(r.get("model") or ""), "in": int(r.get("in") or 0),
+            "out": int(r.get("out") or 0), "hit": int(r.get("hit") or 0),
+        })
+    result["rounds"] = detail
+    return result
+
+
+def session_list(limit: int = 12) -> list[dict]:
+    """最近使用过、且有用量明细的会话，按最后使用时间倒序"""
+    limit = max(1, min(int(limit or 12), 50))
+    items = []
+    try:
+        files = list(sessions_dir().glob("*.json"))
+    except OSError:
+        return items
+    for path in files:
+        sid = path.stem
+        data, _ = _read_session(sid)
+        rounds = [r for r in (data.get("rounds") or []) if isinstance(r, dict)]
+        if not rounds:
+            continue
+        stat = _round_stats(rounds)
+        items.append({"sid": sid, "updated": data.get("updated") or "",
+                      "updated_ts": int(data.get("updated_ts") or 0),
+                      "in": stat["in"], "out": stat["out"],
+                      "turns": stat["turns"], "calls": stat["calls"],
+                      "rounds": len(rounds)})
+    items.sort(key=lambda x: x["updated_ts"], reverse=True)
+    return items[:limit]
+
+
+def drop_session(sid: str) -> bool:
+    """删掉一个会话的用量明细（会话被删除 / 清空统计时调用）"""
+    safe = _safe_sid(sid)
+    if not safe:
+        return False
+    path = _session_file(safe)
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        devlog.log("usage.session_drop_failed", path=str(path), error=repr(exc))
+        return False
 
 
 def _model_summary(name: str, m: dict) -> dict:
@@ -473,10 +712,15 @@ def export_data() -> dict:
 
 
 def clear() -> int:
-    """清空本地用量统计（只删 usage 目录下的 json，不碰配置与会话）"""
+    """清空本地用量统计（按日聚合 + 会话明细），不碰配置与会话文件"""
     removed = 0
     with _LOCK:
-        for path in usage_dir().glob("*.json"):
+        targets = list(usage_dir().glob("*.json"))
+        try:
+            targets += list(sessions_dir().glob("*.json"))
+        except OSError:
+            pass
+        for path in targets:
             try:
                 path.unlink()
                 removed += 1

@@ -14,7 +14,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from . import audit, devlog, onebot, session_store, themecolor, tools
+from . import audit, devlog, onebot, session_store, themecolor, tools, usage
 from .session_store import store
 
 router = APIRouter()
@@ -360,6 +360,9 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         # 流式副档案跟着一起删：留着的话下次启动会把它当「被中断的回答」恢复出来，
         # 删掉的会话就凭空冒出一条消息
         await asyncio.to_thread(session_store.io_submit(store.drop_stream_side, sid).result)
+        # 会话级用量明细跟着删：留着的话「最近会话」里会冒出一个已经删掉的会话，
+        # 点开也没有对应会话可跳转
+        await asyncio.to_thread(usage.drop_session, sid)
         # 候选图（搜索图 / 壁纸候选）清理：先算出「删掉这份会话后，还有没有人引用」，
         # 只删没人认领的那批。回收站里的备份也算引用，所以软删除期间图还在，
         # 撤销恢复后照常能看；真正的清理发生在会话被回收站淘汰或彻底删掉之后

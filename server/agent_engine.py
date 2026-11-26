@@ -26,7 +26,8 @@ from pathlib import Path
 
 import httpx
 
-from . import devlog, memory, menu, netmode, policy, prompts, qqtext, themecolor, tools
+from . import (devlog, memory, menu, netmode, policy, prompts, qqtext,
+               themecolor, tools, usage)
 from .session_store import store
 
 # 由 main 在模块末尾调用：get_main 返回 main 模块本身（现读现写）
@@ -455,6 +456,11 @@ async def run_agent(events: list[dict], extra_system: str = "",
 
     try:
         round_no = 0
+        # 本轮内的模型调用次数（含续写）：会话用量明细里用来区分「这是第几次调用」
+        call_no = 0
+        # 本次提问的唯一起点：工具往返 / 续写共用同一个值，会话用量按它去重算
+        # 「用户问了几轮」，平均值才不会被工具轮数稀释
+        run_key = time.time()
         # 本轮已经注入对话的那条画面消息：只保留最新一张（模型反复截图就是想确认
         # 刚才那步之后的画面，留着早先那张它会对着旧帧下判断）
         shot_msg = None
@@ -527,10 +533,16 @@ async def run_agent(events: list[dict], extra_system: str = "",
 
             thought_ev = None
             thought_live = []
-            msg = await m.llm.chat_with_tools_stream(msgs, round_tools, on_delta=on_delta,
-                                                     on_thought=on_thought,
-                                                     on_retry=_reset_thought,
-                                                     max_tokens=_output_budget(msgs, used_now))
+            call_no += 1
+            # 标记这次调用的归属：会话 / 轮次 / 第几次调用 / 用途（首轮是 chat，
+            # 之后是工具往返 tool_round），usage 模块据此落一份会话明细
+            with usage.call_scope(turn_sid, run=run_key, call=call_no,
+                                  kind="chat" if round_no == 1 else "tool_round"):
+                msg = await m.llm.chat_with_tools_stream(
+                    msgs, round_tools, on_delta=on_delta,
+                    on_thought=on_thought,
+                    on_retry=_reset_thought,
+                    max_tokens=_output_budget(msgs, used_now))
             if thought_open:
                 # 先把手里的思考片段推完，再发 thought_end，否则尾部几个字会
                 # 落在 thought_end 之后，前端那块已经收起来了，看起来就是「思考末尾丢字」
@@ -550,9 +562,12 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 msgs.append({"role": "assistant", "content": partial})
                 msgs.append({"role": "user", "content": prompts.part("continue_truncated")})
                 used_now = m._estimate_tokens(msgs)
-                cont_msg = await m.llm.chat_with_tools_stream(
-                    msgs, [], on_delta=on_delta,
-                    max_tokens=_output_budget(msgs, used_now))
+                call_no += 1
+                with usage.call_scope(turn_sid, run=run_key, call=call_no,
+                                      kind="continue"):
+                    cont_msg = await m.llm.chat_with_tools_stream(
+                        msgs, [], on_delta=on_delta,
+                        max_tokens=_output_budget(msgs, used_now))
                 more = (cont_msg.get("content") or "")
                 # 续写阶段的思维链同样不能补记：正文已经流式播到屏幕上了，
                 # 这条 thought 追加到 events 里就排在本轮正文之后
@@ -1133,8 +1148,11 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         devlog.debug("main._screen_call", error=repr(exc))
                         pass
         # 工具轮数用尽：最后再不给工具地问一次，让它基于已有结果收尾回答
-        msg = await m.llm.chat_with_tools_stream(
-            msgs, [], on_delta, max_tokens=_output_budget(msgs, m._estimate_tokens(msgs)))
+        call_no += 1
+        with usage.call_scope(turn_sid, run=run_key, call=call_no, kind="chat"):
+            msg = await m.llm.chat_with_tools_stream(
+                msgs, [], on_delta,
+                max_tokens=_output_budget(msgs, m._estimate_tokens(msgs)))
         if msg.get("reasoning_content") and thought_ev is None:
             thought_ev = {"type": "thought", "text": msg["reasoning_content"]}
             events.append(thought_ev)

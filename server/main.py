@@ -3312,6 +3312,31 @@ async def api_usage_clear(request: Request):
     return {"ok": True, "removed": removed}
 
 
+@app.get("/api/usage/sessions")
+async def api_usage_sessions(limit: int = 12):
+    """最近有用量明细的会话（按最后使用时间倒序，标题/来源从会话索引补齐）"""
+    rows = await asyncio.to_thread(usage.session_list, limit)
+    index = store.index() or {}
+    for row in rows:
+        meta = index.get(row.get("sid") or "") or {}
+        row["title"] = meta.get("title") or row.get("sid") or "会话"
+        row["origin"] = meta.get("origin") or ""
+    return {"ok": True, "sessions": rows}
+
+
+@app.get("/api/usage/session")
+async def api_usage_session(sid: str = "", recent: int = 10):
+    """单个会话的用量聚合：总额、每轮平均、按调用平均与最近若干次调用明细"""
+    if not sid:
+        return {"ok": False, "error": "缺少会话号 sid"}
+    data = await asyncio.to_thread(usage.session_summary, sid, recent)
+    meta = (store.index() or {}).get(sid) or {}
+    data["title"] = meta.get("title") or sid
+    data["origin"] = meta.get("origin") or ""
+    data["ok"] = True
+    return data
+
+
 @app.post("/api/pair/start")
 async def api_pair_start(request: Request):
     """浏览器发起配对：返回 pair_id，此时还不能访问任何接口。"""
@@ -4762,14 +4787,16 @@ async def compact_history(auto: bool = False, hist: list[dict] | None = None,
     digest = "\n\n".join(parts)
     sys_msg = {"role": "system", "content": prompts.part("compact_summary")}
     try:
-        summary = await llm.chat([sys_msg, {"role": "user", "content": digest}])
-        # 弱模型有时只回一句「用户询问了某问题」，那么长的历史一压就没了。
-        # 摘要短到不成比例时补一次：明确指出漏了哪些栏位，仍不合格就用原文兜底。
-        if len(summary.strip()) < max(120, len(digest) // 20):
-            retry_sys = {"role": "system", "content": prompts.part("compact_summary_retry")}
-            again = await llm.chat([retry_sys, {"role": "user", "content": digest}])
-            if len(again.strip()) > len(summary.strip()):
-                summary = again
+        # 后台调用：记为 compact，计入合计与每轮平均，界面上单列次数
+        with usage.call_scope(sid, kind="compact"):
+            summary = await llm.chat([sys_msg, {"role": "user", "content": digest}])
+            # 弱模型有时只回一句「用户询问了某问题」，那么长的历史一压就没了。
+            # 摘要短到不成比例时补一次：明确指出漏了哪些栏位，仍不合格就用原文兜底。
+            if len(summary.strip()) < max(120, len(digest) // 20):
+                retry_sys = {"role": "system", "content": prompts.part("compact_summary_retry")}
+                again = await llm.chat([retry_sys, {"role": "user", "content": digest}])
+                if len(again.strip()) > len(summary.strip()):
+                    summary = again
     except Exception as e:
         return f"压缩失败，历史原样保留：{e}"
     if sid in store.deleted_sids:
@@ -4824,8 +4851,10 @@ async def _summarize_title(sid: str, first_user_text: str) -> None:
         return
     try:
         sys_msg = {"role": "system", "content": prompts.part("session_title")}
-        title = (await llm.chat([sys_msg, {"role": "user",
-                                           "content": first_user_text[:200]}])) or ""
+        # 后台调用：记为 title，计入合计与每轮平均
+        with usage.call_scope(sid, kind="title"):
+            title = (await llm.chat([sys_msg, {"role": "user",
+                                               "content": first_user_text[:200]}])) or ""
         title = title.strip().strip('"“”\n').replace("\n", " ")[:16]
     except Exception:
         return
