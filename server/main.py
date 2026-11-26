@@ -2199,7 +2199,10 @@ AUTH_PUBLIC_PATHS = frozenset({
 })
 AUTH_PUBLIC_PREFIXES = ("/api/pair/",)
 # 首页与静态资源不走路由，用 URL 前缀判断（挂载点不会进 request.url.path）
-AUTH_PUBLIC_URL_PREFIXES = ("/static/", "/uploads/", "/files/", "/wallpapers/")
+# /files/ 不在这里：它是路由（工作区文件下载），页面里的 <a>/<img> 取文件时
+# 已经用 ?token= 带上设备令牌（见 index.html 的 deviceTokenQuery），
+# 免鉴权等于把工作区里的附件、生成的文档向整个局域网公开。
+AUTH_PUBLIC_URL_PREFIXES = ("/static/", "/uploads/", "/wallpapers/")
 
 
 def _auth_public(request: Request) -> bool:
@@ -3219,6 +3222,23 @@ def _pair_http(exc: pairing.PairError) -> HTTPException:
     return HTTPException(status_code=exc.status, detail=exc.message)
 
 
+def _require_pair_console(request: Request) -> None:
+    """掌机侧的配对接口（pending / refresh / decision）来源校验。
+
+    /api/pair/ 整段在免鉴权前缀里（浏览器未配对时也必须能走 start/waiting/
+    confirm），所以这几条读 PIN、改配对状态的接口必须自己再判一次来源：
+    否则局域网里任何一台机器都能 GET /api/pair/pending 读到别人正在配对
+    的 pair_id + PIN，再拿它去 confirm 换一枚设备令牌，等于绕过配对。
+    本机来源（回环 / 本机网卡）与已配对设备放行，其余按未授权拒绝并记审计。
+    """
+    ip = _client_ip(request)
+    if netcfg.is_this_host(ip):
+        return
+    if _auth_device(request):
+        return
+    _reject_unauthorized(ip, "pair", request.url.path)
+
+
 @app.get("/api/auth/session")
 async def api_auth_session(request: Request):
     """未登录也能查：当前是不是已经凭设备令牌或本机来源登录。
@@ -3388,18 +3408,20 @@ async def api_pair_waiting():
 
 
 @app.get("/api/pair/pending")
-async def api_pair_pending(history: bool = Query(False)):
+async def api_pair_pending(request: Request, history: bool = Query(False)):
     """掌机设置页：待配对设备 + PIN + 倒计时。
 
     history=1 时连同最近 5 分钟内已结束的会话一起返回，让设置页能显示
     「已允许 / 已拒绝」而不是点完就消失。插件与计数仍用默认的进行中列表。
     """
+    _require_pair_console(request)
     sessions = pairing.manager.pending(include_finished=bool(history))
     return {"ok": True, "sessions": sessions, "device_days": _device_days()}
 
 
 @app.post("/api/pair/refresh")
-async def api_pair_refresh(req: PairIdRequest):
+async def api_pair_refresh(req: PairIdRequest, request: Request):
+    _require_pair_console(request)
     try:
         return {"ok": True, **pairing.manager.refresh(req.pair_id)}
     except pairing.PairError as exc:
@@ -3408,6 +3430,7 @@ async def api_pair_refresh(req: PairIdRequest):
 
 @app.post("/api/pair/decision")
 async def api_pair_decision(req: PairDecisionRequest, request: Request):
+    _require_pair_console(request)
     try:
         return {"ok": True, **pairing.manager.decide(
             req.pair_id, bool(req.allow), _client_ip(request))}
