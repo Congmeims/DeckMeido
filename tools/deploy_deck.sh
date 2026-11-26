@@ -150,7 +150,22 @@ fi
 # 稍后按「能否返回 200」判定，再决定要不要自己拉一个
 if [ -z "$UNIT" ]; then
   if ssh "$HOST" "curl -s -o /dev/null -m 2 -w '%{http_code}' http://127.0.0.1:$PORT/api/status 2>/dev/null" | grep -q '^200$'; then
-    log "2/5 没有 systemd 用户单元，后端已在 $PORT 应答，跳过重启"
+    # 后端不是 systemd 拉起来的（Decky 插件或手动 nohup）：代码和安装目录里的
+    # COMMIT 都只在进程启动时读一次，跳过重启就等于这次部署没生效 —— 表现成
+    # 「代码字段全对、界面上还是旧提交号」。这里主动停掉再拉起来：先等插件看门狗
+    # 自己重启，等不到就按同一条命令补一个，最后回读端口确认。
+    # 注意三条 ssh 必须拆开：pkill 的模式若和同一条命令行里的启动命令共存，
+    # 远程 shell（命令行里就带 uvicorn server.main:app）会被自己一起杀掉。
+    log "2/5 无 systemd 单元：重启 $PORT 上的后端进程"
+    ssh "$HOST" "pkill -f 'uvicorn server[.]main:app' || true"
+    ssh "$HOST" "n=0; while [ \$n -lt 20 ]; do n=\$((n+1)); sleep 1; curl -s -o /dev/null -m 2 http://127.0.0.1:$PORT/api/status || break; done; true"
+    if ! ssh "$HOST" "curl -s -o /dev/null -m 3 http://127.0.0.1:$PORT/api/status"; then
+      # 远端后台进程必须把三个标准流都丢到 /dev/null：只要它还攥着 ssh 的通道，
+      # 客户端就一直等（踩过两次：一次是没加 &，一次是只重定向了日志文件）
+      ssh "$HOST" "setsid nohup sh -c 'cd $REMOTE && exec .venv/bin/python -m uvicorn server.main:app --host 0.0.0.0 --port $PORT --ws-ping-interval 60 --ws-ping-timeout 120 >>/tmp/deckmeido-backend.log 2>&1' >/dev/null 2>&1 </dev/null &"
+      ssh "$HOST" "n=0; while [ \$n -lt 30 ]; do n=\$((n+1)); sleep 1; curl -s -o /dev/null -m 2 http://127.0.0.1:$PORT/api/status && exit 0; done; exit 1" \
+        || die "后端已停止但没能重新拉起，请检查 /tmp/deckmeido-backend.log"
+    fi
   else
     # 没有单元、端口也没人应答：可能是自启被用户关掉了、后端本该停着，
     # 也可能是真坏了。交给第 3 步按 core.no_autostart 标记区分，这里不拦
