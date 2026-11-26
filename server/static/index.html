@@ -385,6 +385,16 @@
           </div>
           <h4 class="set-sect">用量统计</h4>
           <div class="card">
+            <div class="card-title">最近会话</div>
+            <div class="field">
+              <label>会话（按最后使用时间）</label>
+              <select id="usageSessionSelect" class="cfg-select"></select>
+            </div>
+            <div id="usageSessionMain" class="usage-empty">暂无会话用量——新开会话聊一轮后出现</div>
+            <div class="field-hint" id="usageSessionHint"></div>
+            <div id="usageSessionDetail"></div>
+          </div>
+          <div class="card">
             <div class="card-title">用量与余额</div>
             <div class="usage-head">
               <div>
@@ -11462,6 +11472,8 @@
         : (list.length ? list[0].id : 'all');
     }
     usageApiSelect.value = usageApi || 'all';
+    // 选项是异步填的，自绘下拉的胶囊文案要跟着刷新，否则一直停在占位文案
+    if (usageApiSelect._dd) usageApiSelect._dd.refresh();
   }
 
   function usageScopeLabel() {
@@ -11600,6 +11612,122 @@
     return '';
   }
 
+  // ---------- 最近会话（每次模型调用的输入 / 输出 token） ----------
+  // 明细来自后端 usage/sessions/<sid>.json：每次模型调用落一条，读取时现算聚合。
+  // 升级前的旧会话没有这份文件 → 显示「暂无用量记录」，不按字数反推（那只是估算，
+  // 会被误当成真实账单）。
+  var usageSessionSelect = document.getElementById('usageSessionSelect');
+  var usageSessionMainEl = document.getElementById('usageSessionMain');
+  var usageSessionHintEl = document.getElementById('usageSessionHint');
+  var usageSessionDetailEl = document.getElementById('usageSessionDetail');
+  var usageSessionSid = '';
+
+  var USAGE_KIND_LABEL = {chat: '对话', tool_round: '工具往返', continue: '续写',
+                          compact: '压缩', title: '起标题', status: '状态栏'};
+
+  function usageKindLabel(k) { return USAGE_KIND_LABEL[k] || k || '对话'; }
+
+  function usageTime(ts) {
+    if (!ts) return '—';
+    var d = new Date(Number(ts) * 1000);
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return (d.getMonth() + 1) + '-' + p(d.getDate()) + ' '
+      + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function renderUsageSession(d) {
+    if (!d || !d.ok) {
+      usageSessionMainEl.className = 'usage-empty';
+      usageSessionMainEl.textContent = '会话用量读取失败';
+      usageSessionHintEl.textContent = (d && d.error) || '';
+      usageSessionDetailEl.innerHTML = '';
+      return;
+    }
+    if (!d.has_data) {
+      usageSessionMainEl.className = 'usage-empty';
+      usageSessionMainEl.textContent = '该会话暂无用量记录（旧版本未记录）';
+      usageSessionHintEl.textContent = '升级后的新会话会按每次模型调用记录输入 / 输出 token';
+      usageSessionDetailEl.innerHTML = '';
+      return;
+    }
+    usageSessionMainEl.className = '';
+    usageSessionMainEl.innerHTML = '<b>' + escapeHtml(String(d.turns)) + '</b> 轮 · 输入 '
+      + escapeHtml(usageTokens(d.in)) + ' · 输出 ' + escapeHtml(usageTokens(d.out))
+      + ' · 平均每轮 ' + escapeHtml(usageTokens(d.avg_total))
+      + '<div class="field-hint">平均每轮 =（输入 ' + escapeHtml(usageTokens(d.avg_in))
+      + ' + 输出 ' + escapeHtml(usageTokens(d.avg_out)) + '），含工具往返轮；'
+      + '后台调用（压缩 / 起标题）也算在里面</div>';
+    usageSessionHintEl.textContent = '缓存命中 '
+      + (Number(d.cache_hit_rate) || 0).toFixed(1) + '% · 共 '
+      + (Number(d.calls) || 0) + ' 次模型调用'
+      + (Number(d.background) ? '（其中后台 ' + d.background + ' 次：压缩 / 起标题）' : '')
+      + ' · 按调用平均 ' + usageTokens(d.avg_total_per_call)
+      + '（输入 ' + usageTokens(d.avg_in_per_call)
+      + ' / 输出 ' + usageTokens(d.avg_out_per_call) + '）';
+    var rows = (d.rounds || []).map(function (r) {
+      return [usageTime(r.ts), r.turn ? ('第 ' + r.turn + ' 轮') : '—',
+              usageKindLabel(r.kind), usageTokens(r.in), usageTokens(r.out),
+              usageTokens(r.hit)];
+    });
+    usageSessionDetailEl.innerHTML = rows.length
+      ? '<details><summary class="usage-caption">每次调用明细（最近 '
+        + rows.length + ' 次）</summary>'
+        + usageTable(['时间', '轮次', '用途', '输入', '输出', '缓存命中'], rows)
+        + '</details>'
+      : '';
+  }
+
+  function loadUsageSession() {
+    var sid = usageSessionSid;
+    if (!sid) return Promise.resolve();
+    return apiFetch('/api/usage/session?recent=10&sid=' + encodeURIComponent(sid))
+      .then(function (r) {
+        if (!r.ok) throw new Error('读取失败（HTTP ' + r.status + '）');
+        return r.json();
+      })
+      .then(renderUsageSession)
+      .catch(function (e) {
+        usageSessionMainEl.className = 'usage-empty';
+        usageSessionMainEl.textContent = '会话用量读取失败：' + ((e && e.message) || e);
+      });
+  }
+
+  function renderUsageSessions(list) {
+    list = list || [];
+    var keep = usageSessionSid;
+    usageSessionSelect.innerHTML = list.length
+      ? list.map(function (s) {
+        return '<option value="' + escapeHtml(s.sid) + '">'
+          + escapeHtml((s.title || s.sid) + ' · ' + (s.turns || 0) + ' 轮')
+          + '</option>';
+      }).join('')
+      : '<option value="">（暂无会话）</option>';
+    var valid = list.some(function (s) { return s.sid === keep; });
+    usageSessionSid = valid ? keep : (list.length ? list[0].sid : '');
+    usageSessionSelect.value = usageSessionSid;
+    // 选项是异步填的：自绘胶囊的文案跟着刷新
+    if (usageSessionSelect._dd) usageSessionSelect._dd.refresh();
+    return loadUsageSession();
+  }
+
+  function loadUsageSessions() {
+    return apiFetch('/api/usage/sessions?limit=12')
+      .then(function (r) {
+        if (!r.ok) throw new Error('读取失败（HTTP ' + r.status + '）');
+        return r.json();
+      })
+      .then(function (d) { return renderUsageSessions(d && d.sessions); })
+      .catch(function (e) {
+        usageSessionMainEl.className = 'usage-empty';
+        usageSessionMainEl.textContent = '会话列表读取失败：' + ((e && e.message) || e);
+      });
+  }
+
+  usageSessionSelect.addEventListener('change', function () {
+    usageSessionSid = usageSessionSelect.value || '';
+    loadUsageSession();
+  });
+
   function loadUsageBalance() {
     // 具体账户查那一组的余额；「全部」时后端回退到当前使用（余额不能跨组相加）
     var q = (usageApi && usageApi !== 'all')
@@ -11662,7 +11790,8 @@
       usageRefreshBtn.disabled = true;
       usageRefreshBtn.textContent = '刷新中…';
     }
-    return Promise.all([loadUsageStats(), loadUsageBalance()]).then(function () {
+    return Promise.all([loadUsageStats(), loadUsageBalance(),
+                        loadUsageSessions()]).then(function () {
       if (manual) {
         usageRefreshBtn.disabled = false;
         usageRefreshBtn.textContent = '刷新';
@@ -17249,13 +17378,15 @@
     refreshLabel();
   }
   function ddInitAll() {
-    [['permSelect'], ['modelSelect'], ['setModelSelect'], ['memKind'], ['cfgPerm']]
+    [['permSelect'], ['modelSelect'], ['setModelSelect'], ['memKind'], ['cfgPerm'],
+     ['usageApiSelect'], ['usageSessionSelect']]
       .forEach(function (id) { ddSelect(document.getElementById(id)); });
   }
   // config/模型列表异步加载后，select.value 被恢复但 label 没跟着变，
   // 强刷会导致下拉框显示第一个选项。这里统一按各自 value 刷新一次 label
   function ddRefreshAll() {
-    ['permSelect', 'modelSelect', 'setModelSelect', 'memKind', 'cfgPerm']
+    ['permSelect', 'modelSelect', 'setModelSelect', 'memKind', 'cfgPerm',
+     'usageApiSelect', 'usageSessionSelect']
       .forEach(function (id) {
         var el = document.getElementById(id);
         if (el && el._dd && el._dd.refresh) el._dd.refresh();
