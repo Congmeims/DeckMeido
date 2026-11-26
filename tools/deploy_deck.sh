@@ -194,6 +194,20 @@ if [ "$CODE" != "200" ]; then
   fi
 else
   printf '  /api/status -> 200\n'
+  # COMMIT 写进安装目录只是「文件对了」：后端启动时才读一次，界面显示要等重启后
+  # 才会跟上。这里回读 /api/version 确认 version_display 的后缀就是本次部署的
+  # 提交号，免得再出现「代码已更新、界面还挂着旧提交号」的错位（0.9.0 热更踩过）
+  if [ -n "$COMMIT" ]; then
+    VD=$(ssh "$HOST" "curl -s -m 3 http://127.0.0.1:$PORT/api/version" || true)
+    case "$VD" in
+      *"\"commit\":\"$COMMIT\""*)
+        printf '  版本后缀已生效：%s\n' "$COMMIT" ;;
+      '')
+        printf '  警告：读不到 /api/version，无法核对 COMMIT（%s）\n' "$COMMIT" ;;
+      *)
+        printf '  警告：/api/version 报告的提交号不是本次部署的 %s，实际：%s\n' "$COMMIT" "$VD" ;;
+    esac
+  fi
 fi
 
 # ---------- 4. 插件 dist / main.py 有变化才同步并重载 ----------
