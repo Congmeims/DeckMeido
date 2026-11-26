@@ -17379,14 +17379,14 @@
   }
   function ddInitAll() {
     [['permSelect'], ['modelSelect'], ['setModelSelect'], ['memKind'], ['cfgPerm'],
-     ['usageApiSelect'], ['usageSessionSelect']]
+     ['cfgLanEnable'], ['usageApiSelect'], ['usageSessionSelect']]
       .forEach(function (id) { ddSelect(document.getElementById(id)); });
   }
   // config/模型列表异步加载后，select.value 被恢复但 label 没跟着变，
   // 强刷会导致下拉框显示第一个选项。这里统一按各自 value 刷新一次 label
   function ddRefreshAll() {
     ['permSelect', 'modelSelect', 'setModelSelect', 'memKind', 'cfgPerm',
-     'usageApiSelect', 'usageSessionSelect']
+     'cfgLanEnable', 'usageApiSelect', 'usageSessionSelect']
       .forEach(function (id) {
         var el = document.getElementById(id);
         if (el && el._dd && el._dd.refresh) el._dd.refresh();
