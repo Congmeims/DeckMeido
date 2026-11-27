@@ -952,10 +952,16 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         consequence = f"**后果**：{line}\n"
                     else:
                         consequence = ""
-                    reply = ("回复「确认执行」我就执行，说别的就当作取消。"
+                    # 人称统一用人设昵称：这条消息替主人复述操作，
+                    # 说「我」分不清是 AI 还是主人（卡片标题早已在用昵称）。
+                    # 没配人设时退回「AI」
+                    from . import main as _main_mod
+                    ai_name = str((_main_mod.PERSONA or {}).get("name") or "AI").strip()
+                    reply = (f"回复「确认执行」{ai_name}就执行，说别的就当作取消。"
                              if pending["hard"] else
-                             "回复「确认」我就执行，说别的就当作取消。")
+                             f"回复「确认」{ai_name}就执行，说别的就当作取消。")
                     text_out = prompts.part("pending_approval").format(
+                        ai_name=ai_name,
                         description=pending['description'],
                         consequence=consequence, reply=reply)
                     return text_out

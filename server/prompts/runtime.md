@@ -29,7 +29,7 @@
 （想跟你确认一件事，但问题没写出来）<!-- /@part -->
 
 <!-- @part: pending_approval -->
-我需要执行一个会影响设备的操作：
+{ai_name}需要执行一个会影响设备的操作：
 
 **{description}**
 {consequence}
