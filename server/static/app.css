@@ -4977,16 +4977,12 @@
     animation: fbConfirmIn .16s ease;
   }
   .fa-card h3 {
-    margin: 0 0 4px; font-size: 15px; font-weight: 600;
+    margin: 0 0 12px; font-size: 15px; font-weight: 600;
     display: flex; align-items: center; gap: 7px;
   }
   /* 标题两侧各一个警告三角（红底 + 白色感叹号 + 白描边），
      不管气泡强调色是深是浅都认得出来 */
   .fa-card .fa-warn { width: 17px; height: 17px; flex: none; }
-  .fa-card .fa-sub {
-    font-size: 12px; margin-bottom: 14px;
-    color: color-mix(in srgb, var(--on-user) 72%, transparent);
-  }
   .fa-card .fa-body {
     font-size: 13px; line-height: 1.72; color: inherit;
     border-left: 2px solid color-mix(in srgb, var(--on-user) 55%, transparent);

@@ -104,7 +104,6 @@
         <circle cx="12" cy="17.5" r="1.15" fill="#fff"/>
       </svg>
     </h3>
-    <div class="fa-sub" id="fullAccessSub">AI 不再向你确认任何操作，女仆长停止越界行为审批</div>
     <div class="fa-body" id="fullAccessBody"></div>
     <label class="fa-check">
       <input type="checkbox" id="fullAccessAck">
@@ -16758,15 +16757,14 @@
   function confirmFullAccess() {
     var mask = rbEl('fullAccessMask');
     var body = rbEl('fullAccessBody');
-    var sub = rbEl('fullAccessSub');
     var ack = rbEl('fullAccessAck');
     var yes = rbEl('fullAccessYes');
     var no = rbEl('fullAccessNo');
     // 抬头用当前人设昵称（PERSONA_NAME 由 /api/config 同步），没配置时退回「AI」
     var ai = String(PERSONA_NAME || '').trim() || 'AI';
-    if (sub) sub.textContent = ai + ' 不再向你确认任何操作，女仆长停止越界行为审批';
     if (body) {
       body.textContent =
+        ai + ' 不再向你确认任何操作，女仆长停止越界行为审批。\n\n' +
         '完全访问意味着 ' + ai + ' 将拥有与你本人相当的操作权限，无需审批即可在 Deck 自主完成：' +
         '读写本地文件、执行终端命令、联网与调用扩展。\n\n' +
         '可能带来的风险：数据被误删或覆盖，造成丢失；敏感数据被读取或外泄；Prompt 注入。' +
