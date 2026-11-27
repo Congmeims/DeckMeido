@@ -90,7 +90,7 @@
 <div id="fullAccessMask">
   <div class="fa-card">
     <h3>开启完全访问？</h3>
-    <div class="fa-sub">AI 将不再向你确认任何操作，女仆长也一并退出</div>
+    <div class="fa-sub" id="fullAccessSub">AI 将不再向你确认任何操作，女仆长也一并退出</div>
     <div class="fa-body" id="fullAccessBody"></div>
     <label class="fa-check">
       <input type="checkbox" id="fullAccessAck">
@@ -16744,12 +16744,16 @@
   function confirmFullAccess() {
     var mask = rbEl('fullAccessMask');
     var body = rbEl('fullAccessBody');
+    var sub = rbEl('fullAccessSub');
     var ack = rbEl('fullAccessAck');
     var yes = rbEl('fullAccessYes');
     var no = rbEl('fullAccessNo');
+    // 抬头用当前人设昵称（PERSONA_NAME 由 /api/config 同步），没配置时退回「AI」
+    var ai = String(PERSONA_NAME || '').trim() || 'AI';
+    if (sub) sub.textContent = ai + ' 将不再向你确认任何操作，女仆长也一并退出';
     if (body) {
       body.textContent =
-        '完全访问意味着 AI 可以直接在 Deck 上动手，不再逐条问你：\n' +
+        '完全访问意味着 ' + ai + ' 可以直接在 Deck 上动手，不再逐条问你：\n' +
         '· 读写、整理或删除文件，包括系统文件\n' +
         '· 执行命令，比如安装软件、修改系统设置\n' +
         '· 联网下载、上传或外发内容\n' +
