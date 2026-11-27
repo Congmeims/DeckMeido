@@ -32,8 +32,7 @@
 我需要执行一个会影响设备的操作：
 
 **{description}**
-**后果**：{consequence}
-
+{consequence}
 {reply}<!-- /@part -->
 
 <!-- @part: shot_caption_first -->

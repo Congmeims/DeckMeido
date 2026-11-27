@@ -937,14 +937,21 @@ async def run_agent(events: list[dict], extra_system: str = "",
                     print(f"[DeckMeido] 工具待确认 {name}（模式 {m.PERMISSION_MODE}，"
                           f"{verdict.label}{'/' + verdict.reason if verdict.reason else ''}）："
                           f"{pending['description']}")
-                    # 后果一栏：优先用女仆长的判词（她看过完整命令和上下文），
-                    # 否则用规则表给的原因（如「停用/屏蔽关键系统服务」）。
-                    # 写进聊天正文，下面的卡片就只剩两个按钮，不用两处重复
+                    # 后果一栏只在真有可能的不良后果时出现。规则判成安全时
+                    # （manual 档只是按档位惯例问一句，操作本身没风险）整行
+                    # 省掉：写「只读命令，不会改动文件或系统设置（安全级）」
+                    # 相当于用一句话说明没有后果，反而占版面。
+                    # 非空时自己带一个换行，和下面的回复隔开空行（模板里
+                    # {consequence} 与 {reply} 紧邻，空串时不留下多余空行）
                     why = (guardian_ask or verdict.reason or "").strip()
                     if why.startswith("女仆长判定") and "：" in why:
                         why = why.split("：", 1)[1].strip()
-                    consequence = (f"{why}（{verdict.label}级）" if why
-                                   else f"{verdict.label}级操作，执行前请确认")
+                    if verdict.severity >= m.approval.NOTABLE:
+                        line = (f"{why}（{verdict.label}级）" if why
+                                else f"{verdict.label}级操作，执行前请确认")
+                        consequence = f"**后果**：{line}\n"
+                    else:
+                        consequence = ""
                     reply = ("回复「确认执行」我就执行，说别的就当作取消。"
                              if pending["hard"] else
                              "回复「确认」我就执行，说别的就当作取消。")
