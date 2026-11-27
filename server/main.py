@@ -2057,6 +2057,10 @@ _init_sessions()
 # 否则任何连上的客户端随便一句「好」就能放行别人发起的危险命令
 pending_action: dict | None = None
 
+# 结果由界面自己呈现的工具：审批后执行完只回一句「已完成：<描述>」，
+# 不把工具回执贴进聊天。这些回执是写给模型看的下一步指引，不是给人看的
+_SILENT_RESULT_TOOLS = ("search_wallpaper", "search_image", "screenshot")
+
 
 def _pending_get() -> dict | None:
     """读挂起的危险操作。
@@ -4556,7 +4560,14 @@ async def handle_chat(text: str, announce: bool = True,
                              "在输入框上方的「需要授权」行输入一次密码即可。")
                 else:
                     head = "已完成" if decision.allowed else "未执行"
-                    reply = f"{head}：{action['description']}\n{result}"
+                    # 展示型工具的结果已经在界面里画出来了（候选图、截图），
+                    # 不能再把工具回执贴一遍：那些话是写给模型的操作指引
+                    # （「已经显示给用户了」「等用户回复编号后，把 id 传给…」），
+                    # 贴进聊天就是让主人看模型自己的备忘录
+                    if action["name"] in _SILENT_RESULT_TOOLS:
+                        reply = f"{head}：{action['description']}"
+                    else:
+                        reply = f"{head}：{action['description']}\n{result}"
         elif (pend := _pending_get()) is not None and _pending_claim(pend):
             # 有新消息但未确认，取消挂起操作
             action = pend
