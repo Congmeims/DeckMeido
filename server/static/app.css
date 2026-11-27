@@ -4980,13 +4980,9 @@
     margin: 0 0 4px; font-size: 15px; font-weight: 600;
     display: flex; align-items: center; gap: 7px;
   }
-  /* 标题前的警示标记：红色三角 + 红点。三角和感叹号都带白描边，
+  /* 标题两侧各一个警告三角（红底 + 白色感叹号 + 白描边），
      不管气泡强调色是深是浅都认得出来 */
   .fa-card .fa-warn { width: 17px; height: 17px; flex: none; }
-  .fa-card .fa-reddot {
-    width: 7px; height: 7px; border-radius: 50%; flex: none;
-    background: #ff3b30; box-shadow: 0 0 0 2px rgba(255, 255, 255, .45);
-  }
   .fa-card .fa-sub {
     font-size: 12px; margin-bottom: 14px;
     color: color-mix(in srgb, var(--on-user) 72%, transparent);
