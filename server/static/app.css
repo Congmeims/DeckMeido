@@ -5347,6 +5347,11 @@
       box-shadow: 0 0 40px rgba(0,0,0,.4);
     }
     body.rb-open #rightbar { transform: none; }
+    /* 任一侧抽屉拉开时收起「回到底部」球：它有 z-26，压在抽屉（z-15/16）
+       之上，会在文件管理器 / 会话列表中间浮一个圆球，既挡操作也不合语境。
+       特异性 111 > #jumpLatest.show 的 110，直接盖掉 .show 的 display:flex */
+    body.rb-open #jumpLatest,
+    body.sb-open #jumpLatest { display: none; }
     /* 和左侧抽屉同理：壁纸模式的半透明底会让正文透上来 */
     html.wall-on #rightbar {
       background: var(--surface);
