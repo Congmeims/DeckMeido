@@ -90,11 +90,11 @@
 <div id="fullAccessMask">
   <div class="fa-card">
     <h3>开启完全访问？</h3>
-    <div class="fa-sub">AI 将不再向你确认任何操作</div>
+    <div class="fa-sub">AI 将不再向你确认任何操作，女仆长也一并退出</div>
     <div class="fa-body" id="fullAccessBody"></div>
     <label class="fa-check">
       <input type="checkbox" id="fullAccessAck">
-      <span>我已了解上述说明，自行承担开启后的操作结果</span>
+      <span>我已了解上述风险，并自行承担开启完全访问后的一切后果</span>
     </label>
     <div class="btns">
       <button id="fullAccessNo">取消</button>
@@ -16749,13 +16749,17 @@
     var no = rbEl('fullAccessNo');
     if (body) {
       body.textContent =
-        '完全访问表示 AI 可以直接在 Deck 上动手，不再逐条询问：\n' +
-        '读写、整理或删除文件（包括系统文件）；\n' +
-        '执行命令，如安装软件、修改系统设置；\n' +
-        '联网下载或上传内容；\n' +
-        '读取 Deck 上保存的密码、API Key 等敏感信息。\n\n' +
-        '开启后这些操作不会每次弹窗确认。如果 AI 理解偏了或任务本身不安全，' +
-        '可能出现误删、误改。建议只在信任当前模型和任务时打开，平时保持默认模式即可。';
+        '完全访问意味着 AI 可以直接在 Deck 上动手，不再逐条问你：\n' +
+        '· 读写、整理或删除文件，包括系统文件\n' +
+        '· 执行命令，比如安装软件、修改系统设置\n' +
+        '· 联网下载、上传或外发内容\n' +
+        '· 读取机器上保存的密码、API Key 等敏感信息\n\n' +
+        '开启后这些操作不再弹窗确认，误删误改也不会先拦你一道，删掉的东西可能找不回来。\n\n' +
+        '女仆长也会失效：她只在智能审批档替你判断危险操作，完全访问下不参与，' +
+        '这道防线整体下线。唯一还会被拦下的是抹盘、格式化、破坏引导这类超高危操作——' +
+        '它们在任何档位都直接拒绝，不给确认通道。\n\n' +
+        '兜底只有一条：网页开着且连续 10 分钟无操作，会自动切回智能审批；关掉网页后不再计时。\n\n' +
+        '建议只在完全信任当前模型和任务时开启，用完手动切回。';
     }
     ack.checked = false;
     yes.disabled = true;

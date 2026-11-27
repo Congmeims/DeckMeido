@@ -2975,10 +2975,10 @@
      壁纸模式下它们就是一块块实心板。这里给它们半透 + 毛玻璃：强度同样
      叠加 --glass，但不透明度的起点更高（78%），0 强度时字仍然压在
      自己的底色上，和以前一样看得清。--glass 为 0 时只是多了层
-     blur(0)，观感不变。选择器用的是实际存在的类：#fullAccessMask 的
-     弹窗卡、文件面板的确认框。菜单按钮（分享栏那排）本身就是药丸形，
-     只跟随毛玻璃强度，底色保持原样，免得一排按钮在壁纸上看成半透的 */
-  html.wall-on .fa-card,
+     blur(0)，观感不变。菜单按钮（分享栏那排）本身就是药丸形，
+     只跟随毛玻璃强度，底色保持原样，免得一排按钮在壁纸上看成半透的。
+     #fullAccessMask 的卡片不在名单里：它要读一长段风险说明，
+     半透 + 毛玻璃在花哨壁纸上照样糊字，改成实心强调色（见下方 .fa-card） */
   html.wall-on .fb-confirm {
     background-color: color-mix(in srgb,
       var(--surface-2) calc(var(--panel-alpha) * 78%), transparent);
@@ -4962,10 +4962,15 @@
     padding: 24px; background: rgba(0, 0, 0, .62);
   }
   #fullAccessMask.show { display: flex; }
+  /* 卡片底色直接铺用户气泡的强调色、实心不透明：
+     壁纸模式下以前的半透毛玻璃把整段风险说明糊在壁纸花纹上，字根本读不清。
+     字色统一用 --on-user（index.html 的 brandInk() 按强调色亮度算出的对比色），
+     换任何壁纸配色都不会出现「浅底浅字」；边框和次要文字都从它混出来 */
   .fa-card {
     width: 100%; max-width: 460px; max-height: 86vh; overflow-y: auto;
-    background: var(--surface-2);
-    border: 1px solid var(--line);
+    background: var(--user-bubble);
+    color: var(--on-user);
+    border: 1px solid color-mix(in srgb, var(--on-user) 22%, transparent);
     border-radius: 16px;
     padding: 20px 22px 16px;
     box-shadow: 0 18px 56px rgba(0, 0, 0, .6);
@@ -4975,30 +4980,42 @@
     margin: 0 0 4px; font-size: 15px; font-weight: 600;
     display: flex; align-items: center; gap: 7px;
   }
+  /* 原来这颗红点铺在深色卡片上很扎眼，换成对比色：底色本身就是警告色了 */
   .fa-card h3::before {
     content: ''; width: 8px; height: 8px; border-radius: 50%;
-    background: var(--danger); flex: none;
+    background: var(--on-user); flex: none;
   }
-  .fa-card .fa-sub { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+  .fa-card .fa-sub {
+    font-size: 12px; margin-bottom: 14px;
+    color: color-mix(in srgb, var(--on-user) 72%, transparent);
+  }
   .fa-card .fa-body {
-    font-size: 13px; line-height: 1.72; color: var(--text);
-    border-left: 2px solid var(--danger);
+    font-size: 13px; line-height: 1.72; color: inherit;
+    border-left: 2px solid color-mix(in srgb, var(--on-user) 55%, transparent);
     padding-left: 12px; margin-bottom: 16px;
     white-space: pre-wrap; word-break: break-word;
   }
   .fa-card .fa-check {
     display: flex; align-items: flex-start; gap: 8px;
-    font-size: 12.5px; color: var(--muted); line-height: 1.5;
-    margin-bottom: 14px; cursor: pointer;
+    font-size: 12.5px; line-height: 1.5; margin-bottom: 14px; cursor: pointer;
+    color: color-mix(in srgb, var(--on-user) 84%, transparent);
   }
-  .fa-card .fa-check input { margin-top: 2px; flex: none; }
+  .fa-card .fa-check input {
+    margin-top: 2px; flex: none; accent-color: var(--on-user);
+  }
   .fa-card .btns { display: flex; justify-content: flex-end; gap: 8px; }
   .fa-card button {
-    border: 1px solid var(--line); background: var(--surface);
-    color: var(--text); font-size: 13px; padding: 7px 18px;
+    border: 1px solid color-mix(in srgb, var(--on-user) 34%, transparent);
+    background: transparent; color: inherit;
+    font-size: 13px; padding: 7px 18px;
     border-radius: 999px; cursor: pointer;
   }
-  .fa-card button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  /* 「开启完全访问」用反色实心块：整张卡都是强调色时，只有反过来的那一块
+     才吸眼睛，也避免误点——取消是透明的次要按钮，确定是实心的主按钮 */
+  .fa-card button.danger {
+    background: var(--on-user); border-color: var(--on-user);
+    color: var(--user-bubble); font-weight: 600;
+  }
   .fa-card button:disabled { opacity: .4; cursor: not-allowed; }
   .fa-card button:not(:disabled):active { opacity: .75; }
   /* AI 正在看的那个文件：黄一下再淡出，比直接变色更容易被注意到 */
