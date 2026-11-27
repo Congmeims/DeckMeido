@@ -83,6 +83,26 @@
   </div>
 </div>
 
+<!-- 开启「完全访问」前的风险确认。挂在 body 级：设置页和快捷栏两个入口共用。
+     以前它被放在右栏（#rightbar）里，窄屏右栏变成 transform 抽屉后，
+     这个 fixed 遮罩就以抽屉为参照系、被 overflow 裁掉——弹窗出现在文件管理器
+     那一小块里，抽屉收起时更是整块跑到屏幕外，点都点不到 -->
+<div id="fullAccessMask">
+  <div class="fa-card">
+    <h3>开启完全访问？</h3>
+    <div class="fa-sub">AI 将不再向你确认任何操作</div>
+    <div class="fa-body" id="fullAccessBody"></div>
+    <label class="fa-check">
+      <input type="checkbox" id="fullAccessAck">
+      <span>我已了解上述说明，自行承担开启后的操作结果</span>
+    </label>
+    <div class="btns">
+      <button id="fullAccessNo">取消</button>
+      <button id="fullAccessYes" class="danger" disabled>开启完全访问</button>
+    </div>
+  </div>
+</div>
+
 <div id="app">
 <aside id="sidebar">
   <!-- 折叠态只剩这条窄条：点「会话」或者箭头都能展开 -->
@@ -1517,24 +1537,6 @@
           <button id="fbConfirmNo">取消</button>
           <button id="fbConfirmYes" class="danger">删除</button>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 开启「完全访问」前的风险确认。挂在 body 级：设置页和快捷栏两个入口共用，
-       放在某个面板里会被面板的 overflow 裁掉 -->
-  <div id="fullAccessMask">
-    <div class="fa-card">
-      <h3>开启完全访问？</h3>
-      <div class="fa-sub">AI 将不再向你确认任何操作</div>
-      <div class="fa-body" id="fullAccessBody"></div>
-      <label class="fa-check">
-        <input type="checkbox" id="fullAccessAck">
-        <span>我已了解上述说明，自行承担开启后的操作结果</span>
-      </label>
-      <div class="btns">
-        <button id="fullAccessNo">取消</button>
-        <button id="fullAccessYes" class="danger" disabled>开启完全访问</button>
       </div>
     </div>
   </div>
@@ -13694,16 +13696,21 @@
   function cfgPermGateThenSave(done) {
     // 从非 full 切到 full 时先过风险确认，没同意就不提交这次保存
     if (cfgPerm.value === 'full' && cfgPerm.dataset.prev !== 'full') {
+      // 同上：先拨回原档位再问，避免确认框点不到时界面停在高危档位上，
+      // 也别让「full」这个未确认的值被别处的自动保存顺带提交上去
+      var prevMode = cfgPerm.dataset.prev || 'auto';
+      cfgPerm.value = prevMode;
+      syncPermDanger(cfgPerm);
       confirmFullAccess().then(function (ok) {
         if (!ok) {
-          cfgPerm.value = cfgPerm.dataset.prev || 'auto';
-          syncPermDanger(cfgPerm);
           setCfgHint('已取消：仍为「' +
             cfgPerm.options[cfgPerm.selectedIndex].text + '」');
           if (done) done(false);
           return;
         }
+        cfgPerm.value = 'full';
         cfgPerm.dataset.prev = 'full';
+        syncPermDanger(cfgPerm);
         doSaveCfg(done);
       });
       return;
@@ -17012,9 +17019,13 @@
     var want = permSelect.value;
     var back = permSelect.dataset.prev || 'auto';
     if (want === 'full') {
-      // 先弹风险确认；不同意就把下拉框拨回原来的值，不往后端发请求
+      // 确认没点头之前，胶囊先停在原来的档位上：确认框万一没显示出来、
+      // 或被别的东西挡住点不到，界面也不会挂着「完全访问」像已经开了
+      permSelect.value = back;
+      syncPermDanger(permSelect);
       confirmFullAccess().then(function (ok) {
-        if (!ok) { permSelect.value = back; syncPermDanger(permSelect); return; }
+        if (!ok) return;
+        permSelect.value = 'full';
         permSelect.dataset.prev = 'full';
         syncPermDanger(permSelect);
         postConfig({ permission_mode: 'full' });

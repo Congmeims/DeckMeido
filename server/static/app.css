@@ -4227,7 +4227,11 @@
     .events::before { left: 5px; }
     .tl-ico { left: -15px; }
     .tl-head { font-size: 12.5px; gap: 5px; }
-    .tl-chip { max-width: 56vw; font-size: 11.5px; }
+    /* 行首文案（「已 读取 OptiSpace 安装包」）先占宽度，命令摘要 chip 收窄：
+       原来 chip 能吃到 56vw，标签被挤成「已 读取 OptiSc…」，等于看不出做了啥。
+       摘要本身就是可截断的次要信息，让给标签更划算 */
+    .tl-label { flex: 1 1 auto; }
+    .tl-chip { max-width: 40vw; font-size: 11.5px; }
     .tl-body { font-size: 12px; }
     /* 截图缩略图别顶满整行。这里不能再写固定 vw：气泡上限是 92%，
        图一旦比「气泡宽度 − 内边距」宽，就会从右下角顶出去 */
