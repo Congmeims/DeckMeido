@@ -89,7 +89,16 @@
      那一小块里，抽屉收起时更是整块跑到屏幕外，点都点不到 -->
 <div id="fullAccessMask">
   <div class="fa-card">
-    <h3>开启完全访问？</h3>
+    <h3>
+      <svg class="fa-warn" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 3.4 2.5 20.1a1.3 1.3 0 0 0 1.1 1.95h16.8a1.3 1.3 0 0 0 1.1-1.95L12 3.4z"
+              fill="#ff4d4f" stroke="#fff" stroke-width="1.1" stroke-linejoin="round"/>
+        <path d="M12 9.4v4.7" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="12" cy="17.5" r="1.15" fill="#fff"/>
+      </svg>
+      <span>开启完全访问？</span>
+      <span class="fa-reddot" aria-hidden="true"></span>
+    </h3>
     <div class="fa-sub" id="fullAccessSub">AI 将不再向你确认任何操作，女仆长也一并退出</div>
     <div class="fa-body" id="fullAccessBody"></div>
     <label class="fa-check">
@@ -16754,16 +16763,12 @@
     if (body) {
       body.textContent =
         '完全访问意味着 ' + ai + ' 可以直接在 Deck 上动手，不再逐条问你：\n' +
-        '· 读写、整理或删除文件，包括系统文件\n' +
-        '· 执行命令，比如安装软件、修改系统设置\n' +
-        '· 联网下载、上传或外发内容\n' +
-        '· 读取机器上保存的密码、API Key 等敏感信息\n\n' +
-        '开启后这些操作不再弹窗确认，误删误改也不会先拦你一道，删掉的东西可能找不回来。\n\n' +
-        '女仆长也会失效：她只在智能审批档替你判断危险操作，完全访问下不参与，' +
-        '这道防线整体下线。唯一还会被拦下的是抹盘、格式化、破坏引导这类超高危操作——' +
-        '它们在任何档位都直接拒绝，不给确认通道。\n\n' +
-        '兜底只有一条：网页开着且连续 10 分钟无操作，会自动切回智能审批；关掉网页后不再计时。\n\n' +
-        '建议只在完全信任当前模型和任务时开启，用完手动切回。';
+        '· 读写或删除文件，包括系统文件\n' +
+        '· 执行命令、安装软件、修改系统设置\n' +
+        '· 联网上传下载，读取保存的密码和 API Key\n\n' +
+        '误删误改不会先拦你，删掉的可能找不回来。女仆长也一并失效，' +
+        '只剩抹盘、格式化、破坏引导这类超高危操作还会被直接拒绝。\n\n' +
+        '开启后不会自动切回，用完请手动改回；建议只在完全信任当前模型和任务时开启。';
     }
     ack.checked = false;
     yes.disabled = true;
@@ -16787,38 +16792,9 @@
     });
   }
 
-  // ---- 完全访问闲置回落：开了 full 后 10 分钟无任何交互，自动切回智能审批 ----
-  // 防止主人忘了切回、AI 一直无确认执行。只在 full 档计时；任何交互都重置。
-  var FULL_IDLE_MS = 10 * 60 * 1000;
-  var fullIdleTimer = null;
-  var lastFullReset = 0;
-  function clearFullIdle() {
-    if (fullIdleTimer) { clearTimeout(fullIdleTimer); fullIdleTimer = null; }
-  }
-  function fullIdleFire() {
-    fullIdleTimer = null;
-    postConfig({ permission_mode: 'auto' });
-    addSystem('完全访问已闲置 10 分钟，自动切回智能审批。');
-  }
-  function applyFullIdle(mode) {
-    clearFullIdle();
-    if (mode === 'full') {
-      lastFullReset = Date.now();
-      fullIdleTimer = setTimeout(fullIdleFire, FULL_IDLE_MS);
-    }
-  }
-  function resetFullIdle() {
-    if (!fullIdleTimer) return;                 // 非 full 档不动
-    var now = Date.now();
-    if (now - lastFullReset < 1000) return;      // 节流：1 秒内不重复重置
-    lastFullReset = now;
-    clearFullIdle();
-    fullIdleTimer = setTimeout(fullIdleFire, FULL_IDLE_MS);
-  }
-  // 任何主人操作都算活跃：鼠标、键盘、触摸、指针
-  ['mousemove', 'keydown', 'touchstart', 'pointerdown'].forEach(function (ev) {
-    document.addEventListener(ev, resetFullIdle, { passive: true });
-  });
+  // 完全访问没有闲置自动回落：开就是开，只有主人自己切回才会退出。
+  // 以前这里有个 10 分钟无操作自动切回智能审批的计时器，已经被明确取消
+  // （主人开了就是明确授权，不该被后台悄悄改回去）。
 
   // 后端广播的 config_changed：把顶栏和设置页里"别处也能改"的项同步成新值。
   // 只动这几项，不碰输入框里正在写的内容，避免把用户正在编辑的表单冲掉
@@ -16837,8 +16813,6 @@
         cfgPerm.dataset.prev = mode;
         syncPermDanger(cfgPerm);
       }
-      // full 档启动/停止闲置回落计时器（单一入口：只信后端广播的权威值）
-      applyFullIdle(mode);
     }
     // 外观快照跟着同一份广播过来：设置页不必再单独请求 /api/theme。
     // 按字段合并（本端正拖的滑杆/刚切的档保留本地值），别的端改的照收
@@ -16864,7 +16838,6 @@
           // 记下「上次是什么」，弹窗被取消时据此还原下拉框
           permSelect.dataset.prev = c.permission_mode;
           syncPermDanger(permSelect);
-          applyFullIdle(c.permission_mode);
         }
         // 模型下拉：先用当前模型占位，再异步补上服务商真实模型列表
         fillModelSelect([c.model]);
