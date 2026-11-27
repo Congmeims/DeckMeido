@@ -333,6 +333,24 @@ def _ask_by_mode(mode: str, risk: Verdict) -> bool:
     return risk.severity >= DANGEROUS
 
 
+def _safe_reason(name: str, args: dict) -> str:
+    """manual 档连没命中任何风险规则的操作也要问，这时「后果」一栏不能拿
+    档位本身充数（原来写「当前权限模式下需要确认」，等于什么都没说）。
+    既然规则判定它安全，就如实说清楚它动不动文件。"""
+    if name == "run_command":
+        writes = tools.extract_writes(_cmd_of(name, args))
+        if writes:
+            shown = "、".join(writes[:3])
+            more = f" 等 {len(writes)} 处" if len(writes) > 3 else ""
+            return f"会写入 {shown}{more}"
+        return "只读命令，不会改动文件或系统设置"
+    if name in ("write_file", "edit_file", "delete_file"):
+        path = str((args or {}).get("path") or (args or {}).get("file") or "")
+        op = "删除" if name == "delete_file" else "写入"
+        return f"{op}文件：{path}" if path else f"{op}文件"
+    return "只读操作，不会改动文件或系统设置"
+
+
 def resolve(name: str, args: dict, ctx: policy.TurnContext, mode: str,
             *, extra_danger: str = "") -> Verdict:
     """审批闸门的唯一入口：返回这次工具调用该怎么处理
@@ -405,6 +423,8 @@ def resolve(name: str, args: dict, ctx: policy.TurnContext, mode: str,
 
     # 5) 安全命令：manual 全问，auto 不问
     if _ask_by_mode(mode, risk):
-        return Verdict(ask=True, hard=False, severity=NOTABLE,
-                       rule=f"mode:{mode}", reason="当前权限模式下需要确认")
+        # 严重度沿用规则判定（一般是「安全」），别为了弹窗硬升成「需留意」：
+        # 档位要求问，不代表这条操作有风险
+        return Verdict(ask=True, hard=False, severity=risk.severity,
+                       rule=f"mode:{mode}", reason=_safe_reason(name, args))
     return risk
