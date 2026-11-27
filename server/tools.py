@@ -2065,9 +2065,9 @@ async def _run_command(command: str, reason: str = "", timeout: int = 60, stdin:
                 return (f"命令超时（{timeout}s），已终止这条安装/更新命令。\n"
                         f"原因：{slow_hint}。这类命令靠加超时硬等多半还是等不完，"
                         "而且中途被杀可能留下半装状态，不要反复重试。\n"
-                        "请改成放后台并留日志，例如："
+                        "建议改成放后台并留日志，例如："
                         "nohup sudo pacman -S --noconfirm 包名 > /tmp/pkg.log 2>&1 & "
-                        "然后隔一会儿用 tail -n 40 /tmp/pkg.log 看进度和结果。")
+                        "之后用 tail -n 40 /tmp/pkg.log 看进度和结果。")
             return (f"命令超时（{timeout}s），已按全盘/大范围扫描的短超时终止。\n"
                     f"这条命令可能扫很久（{slow_hint}），先停下以免一直卡住。\n"
                     "需要继续可以让我延长超时（例如 timeout=180），"
@@ -2615,7 +2615,7 @@ def _shot_fail(kind: str, detail: str) -> str:
                        "error_hint": hint})
     return (f"截图失败：{label}。{hint}"
             + (f"\n技术细节：{detail}" if detail and detail != label else "")
-            + "\n现在没有当前画面可用，请直接告诉用户这次没截到图、以及原因，"
+            + "\n现在没有当前画面可用，这次没截到图，"
               "不要凭空描述屏幕内容。")
 
 
@@ -2716,9 +2716,9 @@ async def _finish_shot(path: Path, name: str, shots_dir: Path, time_mod,
         # 但工具结果照样说「当前画面已附上」，排查时无从下手
         holder["error"] = f"画面压缩失败（{e!r}）"
         return (f"截图完成：/shots/{name}，但压缩给模型看的那份失败了"
-                f"（{holder['error']}）。这次你收不到画面，"
-                "请直接告诉用户没看到图，不要凭空描述屏幕内容。")
-    return f"截图完成：/shots/{name}。当前画面已附上，你可以直接根据画面内容回答用户的问题。"
+                f"（{holder['error']}）。这次收不到画面，"
+                "没截到图，不要凭空描述屏幕内容。")
+    return f"截图完成：/shots/{name}。当前画面已附上，可直接根据画面内容回答。"
 
 
 async def screenshot_payload() -> dict:
@@ -3192,8 +3192,8 @@ async def _ocr_image(path: str) -> str:
     probe = ocr_mod.available()
     if not probe["ok"]:
         return ("离线 OCR 组件没安装，暂时无法识别图片文字。"
-                "可以告诉用户「设置页 → 语音引擎下方安装离线 OCR」，"
-                f"或直接运行 pip install -r requirements-ocr.txt（原因：{probe['reason']}）")
+                "安装方式：设置页 → 语音引擎下方安装离线 OCR，"
+                f"或运行 pip install -r requirements-ocr.txt（原因：{probe['reason']}）")
     try:
         # 识别是 CPU 密集的同步调用（约 1 秒），丢线程池免得堵住事件循环
         text = await asyncio.to_thread(ocr_mod.OCR_ENGINE.recognize, p)
@@ -4167,7 +4167,7 @@ async def _set_wallpaper(url: str = "", clear: bool = False,
     url = str(url or "").strip()
     if not re.match(r"^https?://", url, re.I):
         return ("需要候选图 id，或者一个 http/https 的图片直链。"
-                "想给用户挑图当壁纸就用 search_wallpaper 搜几张，只看图用 search_image。")
+                "挑图可以先用 search_wallpaper 搜几张，只看图用 search_image。")
     raw, err = await _fetch_image(url, themecolor.WALLPAPER_MAX)
     if raw is None:
         return f"{err}。换一张试试。"
@@ -4237,8 +4237,8 @@ async def _music_play(query: str = "", confirm: bool = True, dry_run: bool = Fal
     try:
         await asyncio.to_thread(media.play_plan, plan.item)
     except media.MediaError as exc:
-        # 放不了的时候给模型一个明确的下一步，别让它反复重试同一首
-        return f"「{plan.label}」没放出来：{exc.reason}。跟用户说一声，可以换一首或搜同歌手的其他歌。"
+        # 放不了的时候给一个明确的下一步，别反复重试同一首
+        return f"「{plan.label}」没放出来：{exc.reason}。可以换一首，或搜同歌手的其他歌。"
     return f"已经在放了：{plan.label}"
 
 
@@ -4351,7 +4351,7 @@ async def _music_play_batch(query: str, wants: list, count: int | None) -> str:
             head = items[0]
             return (f"已整批入队 {len(items)} 首：{_song_line(head, 1)}"
                     f"（回读确认那一步没拿到结果：{exc.reason}）")
-        return f"整批点歌没放出来：{exc.reason}。跟用户说一声，可以换一批或先检查播放器。"
+        return f"整批点歌没放出来：{exc.reason}。可以换一批，或先检查播放器。"
     head = items[0]
     lines = [f"已整批入队 {len(items)} 首，正在放第 1 首：{_song_line(head, 1)}"]
     if len(items) > 1:
@@ -4534,7 +4534,7 @@ async def execute(name: str, args: dict) -> str:
             except asyncio.TimeoutError:
                 print(f"[DeckMeido] 工具超时 {name}（>{budget}s）", file=sys.stderr)
                 return (f"工具 {name} 超过 {budget} 秒没有返回，已强制中止。"
-                        f"换个方式继续（例如换更小的范围、别的命令，或让用户确认目标是否存在）")
+                        f"可以换个方式继续（例如换更小的范围、别的命令，或先确认目标是否存在）")
         text = result if isinstance(result, str) else str(result)
         print(f"[DeckMeido] 工具完成 {name}（{time.monotonic() - t0:.2f}s，"
               f"{len(text)} 字）：{sudo_auth.redact_text(text)[:300]}")
@@ -4545,7 +4545,7 @@ async def execute(name: str, args: dict) -> str:
         print(f"[DeckMeido] 工具被拒 {name}：越出工作区 {e}", file=sys.stderr)
         return (f"拒绝访问：{e} 在工作区 {WORKSPACE} 之外。"
                 f"当前权限模式只允许操作工作区内的文件；"
-                f"确实需要访问这里，请让用户去设置里切到「完全访问」")
+                f"确实需要访问这里，请到设置里切到「完全访问」")
     except Exception as e:
         print(f"[DeckMeido] 工具异常 {name}（{time.monotonic() - t0:.2f}s）：{e!r}",
               file=sys.stderr)

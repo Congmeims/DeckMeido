@@ -2060,6 +2060,9 @@ pending_action: dict | None = None
 # 结果由界面自己呈现的工具：审批后执行完只回一句「已完成：<描述>」，
 # 不把工具回执贴进聊天。这些回执是写给模型看的下一步指引，不是给人看的
 _SILENT_RESULT_TOOLS = ("search_wallpaper", "search_image", "screenshot")
+# 静默工具失败时仍要把原因带出来：主人得知道为什么没成。
+# 只有成功回执里那种「已经显示给用户了」「把 id 传给…」才该藏起来
+_FAIL_HINTS = ("失败", "没截到", "收不到画面", "不存在", "无法", "超时")
 
 
 def _pending_get() -> dict | None:
@@ -4566,6 +4569,8 @@ async def handle_chat(text: str, announce: bool = True,
                     # 贴进聊天就是让主人看模型自己的备忘录
                     if action["name"] in _SILENT_RESULT_TOOLS:
                         reply = f"{head}：{action['description']}"
+                        if any(w in result for w in _FAIL_HINTS):
+                            reply += f"\n{result}"
                     else:
                         reply = f"{head}：{action['description']}\n{result}"
         elif (pend := _pending_get()) is not None and _pending_claim(pend):
