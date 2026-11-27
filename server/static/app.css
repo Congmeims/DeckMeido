@@ -2041,6 +2041,15 @@
   }
   .usage-table tr:last-child td { border-bottom: none; }
   .usage-empty { color: var(--muted); font-size: 12px; padding: 6px 0; }
+  /* 会话用量主行：每个数据项整体不拆行，放不下就整项换到下一行。
+     窄屏原来是一整行文本按字符折，「平均每轮 66.4k」常被拆成两截。
+     项间只留列间距、不加「·」：折行时行首会顶着个点，比没有更难看 */
+  .usage-sum {
+    display: flex; flex-wrap: wrap; align-items: baseline;
+    column-gap: 14px; row-gap: 2px;
+    font-size: 13px; line-height: 1.6;
+  }
+  .usage-sum .us-item { white-space: nowrap; }
   /* ---------- 接口（多组 API 配置） ----------
      每条一张可折叠小卡：收起只占一行（名称 · host · 掩码 Key · 使用中 · 删除），
      展开才露出地址/Key 输入。当前使用那条左侧有一道强调色条。

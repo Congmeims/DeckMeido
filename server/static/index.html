@@ -11666,10 +11666,16 @@
       return;
     }
     usageSessionMainEl.className = '';
-    usageSessionMainEl.innerHTML = '<b>' + escapeHtml(String(d.turns)) + '</b> 轮 · 输入 '
-      + escapeHtml(usageTokens(d.in)) + ' · 输出 ' + escapeHtml(usageTokens(d.out))
-      + ' · 平均每轮 ' + escapeHtml(usageTokens(d.avg_total))
-      + '<div class="field-hint">平均每轮 =（输入 ' + escapeHtml(usageTokens(d.avg_in))
+    // 每项整体换行：窄屏下原来整行按字符折，「平均每轮 66.4k」被拆成
+    // 「平均每轮」+「66.4k」两截，看着像掉了半句。拆成独立项后
+    // 放不下就整项挪到下一行，数字不会和它的标签分开
+    usageSessionMainEl.innerHTML = '<div class="usage-sum">'
+      + '<span class="us-item"><b>' + escapeHtml(String(d.turns)) + '</b> 轮</span>'
+      + '<span class="us-item">输入 ' + escapeHtml(usageTokens(d.in)) + '</span>'
+      + '<span class="us-item">输出 ' + escapeHtml(usageTokens(d.out)) + '</span>'
+      + '<span class="us-item">平均 ' + escapeHtml(usageTokens(d.avg_total)) + '</span>'
+      + '</div>'
+      + '<div class="field-hint">平均 =（输入 ' + escapeHtml(usageTokens(d.avg_in))
       + ' + 输出 ' + escapeHtml(usageTokens(d.avg_out)) + '），含工具往返轮；'
       + '后台调用（压缩 / 起标题）也算在里面</div>';
     usageSessionHintEl.textContent = '缓存命中 '
