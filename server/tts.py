@@ -58,13 +58,17 @@ SPEAKERS = (
 PREVIEW_TIMEOUT = 20.0
 SPEAKER_LABELS = {item["id"]: item["label"] for item in SPEAKERS}
 
-# 试听默认句：各自报发明明白，哔哔啵啵换用自己的名字
-PREVIEW_TEXT = "你好，我是月读酱。"
+# 试听默认句：选谁试听就念谁的名字，不能三个共用一句
 PREVIEW_TEXTS = {
-    SPEAKER_ROBOT: PREVIEW_TEXT,
-    SPEAKER_MAID: PREVIEW_TEXT,
+    SPEAKER_ROBOT: "你好，我是机器人。",
+    SPEAKER_MAID: "你好，我是月读酱。",
     SPEAKER_BIBIBO: "你好，我是哔哔啵啵。",
 }
+
+# 音调：每个发音人各自一份倍率，1.0 = 原始音高，0.5 = 低一个八度，2.0 = 高一个八度
+PITCH_MIN = 0.5
+PITCH_MAX = 2.0
+PITCH_DEFAULT = 1.0
 
 VOICE_ID = "tsukuyomi"
 VOICE_LABEL = "つくよみちゃん（ja/zh/en/es/fr/pt）"
@@ -687,6 +691,7 @@ class TTS:
         speed: int = ESPEAK_SPEED,
         max_chars: int = MAX_CHARS,
         speed_scale: float = 1.0,
+        pitch: dict | None = None,
         length_scale: float = 1.0,
         noise_scale: float = 0.667,
         language: str = "auto",
@@ -706,6 +711,13 @@ class TTS:
         self.max_chars = int(_clamp(max_chars, 20, 2000, MAX_CHARS))
         # speed_scale：1.0 = 模型默认语速，>1 更快；内部换算成 length_scale
         self.speed_scale = _clamp(speed_scale, 0.5, 2.0, 1.0)
+        # pitch：每个发音人各自的音调倍率，切换发音人时用各自那一份
+        raw_pitch = pitch or {}
+        self.pitch = {
+            sid: _clamp(raw_pitch.get(sid, PITCH_DEFAULT),
+                        PITCH_MIN, PITCH_MAX, PITCH_DEFAULT)
+            for sid in (SPEAKER_ROBOT, SPEAKER_MAID, SPEAKER_BIBIBO)
+        }
         self.length_scale = _clamp(length_scale, 0.4, 3.0, 1.0)
         self.noise_scale = _clamp(noise_scale, 0.0, 1.0, 0.667)
         self.language = language if language in LANGUAGES else "auto"
@@ -771,6 +783,15 @@ class TTS:
             return "bibibobo"
         return "piper-plus" if self.speaker == SPEAKER_MAID else "espeak-ng"
 
+    def pitch_of(self, speaker: str | None = None) -> float:
+        """取某个发音人的音调倍率；不传就是当前选中的发音人。"""
+        return float(self.pitch.get(speaker or self.speaker, PITCH_DEFAULT)
+                     or PITCH_DEFAULT)
+
+    def _espeak_pitch(self) -> int:
+        """音调倍率 → espeak 的 -p（0~99，默认 50）。"""
+        return int(_clamp(round(50 * self.pitch_of()), 5, 95, 50))
+
     # ---------- 路径与能力 ----------
 
     @property
@@ -818,6 +839,11 @@ class TTS:
             if found:
                 return found
         return ""
+
+    def _espeak_wpm(self) -> int:
+        """espeak 实际语速：配置的基础语速 × 界面的语速倍率（80~320 wpm）"""
+        return int(_clamp(int(round(self.speed * self.speed_scale)), 80, 320,
+                          ESPEAK_SPEED))
 
     @staticmethod
     def _player() -> str:
@@ -882,6 +908,8 @@ class TTS:
             "languages": list(LANGUAGES),
             "speed": self.speed,
             "speed_scale": self.speed_scale,
+            # 每个发音人各自的音调倍率（robot / maid / bibibo）
+            "pitch": dict(self.pitch),
             "length_scale": self.length_scale,
             "noise_scale": self.noise_scale,
             # bibibobo 不需要外部程序，ready 恒为真
@@ -951,6 +979,11 @@ class TTS:
         self.speed = int(_clamp(cfg.get("speed", self.speed), 80, 320, ESPEAK_SPEED))
         self.max_chars = int(_clamp(cfg.get("max_chars", self.max_chars), 20, 2000, MAX_CHARS))
         self.speed_scale = _clamp(cfg.get("speed_scale", self.speed_scale), 0.5, 2.0, 1.0)
+        # 音调按发音人分开存：只覆盖传进来的那几个，其余保持原值
+        for sid in (SPEAKER_ROBOT, SPEAKER_MAID, SPEAKER_BIBIBO):
+            key = f"pitch_{sid}"
+            if key in cfg:
+                self.pitch[sid] = _clamp(cfg.get(key), PITCH_MIN, PITCH_MAX, PITCH_DEFAULT)
         self.length_scale = _clamp(cfg.get("length_scale", self.length_scale), 0.4, 3.0, 1.0)
         self.noise_scale = _clamp(cfg.get("noise_scale", self.noise_scale), 0.0, 1.0, 0.667)
         language = str(cfg.get("language", self.language) or "auto").strip().lower()
@@ -1175,7 +1208,48 @@ class TTS:
             except Exception:
                 path.unlink(missing_ok=True)
                 raise
+            # piper 没有音调参数：合成后按当前发音人的音调做一次变调
+            self._pitch_shift_wav(path)
             return path
+
+    def _pitch_shift_wav(self, path: Path) -> None:
+        """用 ffmpeg 给 piper 合成出来的 wav 变调，时长保持不变。
+
+        asetrate 把采样率乘上倍率，音高和速度一起变；再用 atempo 把速度
+        还原，只剩音高变化。没有 ffmpeg / 变调失败时保持原音，不影响播报。
+        """
+        scale = self.pitch_of()
+        if abs(scale - 1.0) < 0.01:
+            return
+        ffmpeg = _which("ffmpeg")
+        if not ffmpeg:
+            devlog.debug("tts.pitch.skip", reason="no_ffmpeg")
+            return
+        try:
+            with wave.open(str(path), "rb") as wav:
+                rate = wav.getframerate()
+        except Exception:
+            return
+        fd, tmp = tempfile.mkstemp(prefix="deckmeido-pitch-", suffix=".wav")
+        os.close(fd)
+        out = Path(tmp)
+        # atempo 只接受 0.5~2.0，音调倍率也压在这个区间，刚好 1/scale 落在范围内
+        filt = (f"asetrate={int(rate * scale)},aresample={rate},"
+                f"atempo={1.0 / scale:.6f}")
+        try:
+            proc = subprocess.run(
+                [ffmpeg, "-y", "-loglevel", "error", "-i", str(path),
+                 "-af", filt, str(out)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=60, check=False)
+            if proc.returncode == 0 and out.is_file() and out.stat().st_size > 0:
+                out.replace(path)
+            else:
+                out.unlink(missing_ok=True)
+                devlog.debug("tts.pitch.error", code=proc.returncode)
+        except Exception as exc:
+            out.unlink(missing_ok=True)
+            devlog.debug("tts.pitch.error", error=repr(exc))
 
     def synth_wav(self, text: str, language: str = "") -> Path:
         """按当前发音人生成 wav（QQ 语音条用）；返回临时文件，调用方负责删。
@@ -1227,7 +1301,8 @@ class TTS:
         os.close(fd)
         path = Path(tmp)
         try:
-            data = bibibobo.render(text)
+            data = bibibobo.render(text, speed=self.speed_scale,
+                                   pitch=self.pitch_of(SPEAKER_BIBIBO))
         except Exception as exc:
             path.unlink(missing_ok=True)
             raise TTSError(f"哔哔啵啵合成失败：{_short_error(exc)}",
@@ -1265,7 +1340,8 @@ class TTS:
         path = Path(tmp)
         try:
             proc = subprocess.run(
-                [binary, "-v", spoken, "-s", str(self.speed), "-w", str(path), text],
+                [binary, "-v", spoken, "-s", str(self._espeak_wpm()),
+                 "-p", str(self._espeak_pitch()), "-w", str(path), text],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 timeout=60, check=False)
         except Exception as exc:
@@ -1469,9 +1545,10 @@ class TTS:
         args = [binary]
         name = os.path.basename(binary)
         if name.startswith("espeak"):
-            args += ["-v", spoken, "-s", str(self.speed)]
+            args += ["-v", spoken, "-s", str(self._espeak_wpm()),
+                     "-p", str(self._espeak_pitch())]
         elif name.startswith("spd-say"):
-            args += ["-l", spoken, "-r", str(self.speed - 170)]
+            args += ["-l", spoken, "-r", str(self._espeak_wpm() - 170)]
         args.append(text)
         self._last_engine = "espeak-ng"
         devlog.log("tts.segment", engine="espeak-ng", binary=name, chars=len(text),

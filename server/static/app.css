@@ -22,6 +22,12 @@
     --on-brand: #fff;
     --on-user: #fff;
     --danger: #e8463a;
+    /* 消息气泡里的代码块 / 行内代码：浅色档是一张半透明白纸（透出气泡的暖色，
+       不再是一块冷白打印纸），深色档是一层极淡高光。终端卡片、代码查看器、
+       文件预览仍用 --code-bg，那些地方需要独立的深色底，别混用 */
+    --code-soft-bg: rgba(255,255,255,.07);
+    --code-soft-line: rgba(255,255,255,.13);
+    --code-chip-bg: rgba(255,255,255,.11);
     /* 跨屏接管提示的强调色色源：index.html 定完 --brand 后按当前档位写成内联，
        这里只是 :root 兜底（脚本还没跑、或内联被清掉时）。有壁纸时取壁纸配色，
        没壁纸时取三档主题自己的默认强调色，都不写死在下面这组里 */
@@ -177,6 +183,23 @@
   .ctrl.danger { color: #d0492b; }
   @keyframes ctrlPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
   @media (prefers-reduced-motion: reduce) { .ctrl .lamp { animation: none !important; } }
+  /* 顶栏 TTS 快捷开关：壳直接复用「6/6」那枚 .badge.ctrl（同背景、同圆角、
+     同字号、同样的灯 + 文字间距），只把灯换成青色。灯亮 = 语音播报开，
+     点一下灯灭 = 关；和设置页「语音合成」是同一个配置键 */
+  .tts-quick {
+    font-family: inherit; border: 0; cursor: pointer;
+    color: var(--muted);
+  }
+  .tts-quick[hidden] { display: none; }
+  .tts-quick:hover { color: var(--text); }
+  .tts-quick:focus, .tts-quick:focus-visible { outline: none; }
+  /* 灭灯：灰点压低透明度，别用黑描边（浅色壁纸下像画了个圈） */
+  .tts-quick .lamp { background: var(--muted); opacity: .45; box-shadow: none; }
+  .tts-quick.on { color: var(--text); }
+  .tts-quick.on .lamp {
+    background: #2ee6c8; opacity: 1;
+    box-shadow: 0 0 6px rgba(46, 230, 200, .8);
+  }
   /* 右上角状态区：整组靠右对齐。
      必须单行不换行：左右两栏顶栏是写死的 45px，徽章一多、宽度一窄，
      wrap 会把这一组折成两行，header 被撑高到 60+px，两侧分隔线却还停在
@@ -504,18 +527,32 @@
   /* min-width:0 是给窄屏兜底的：气泡是 flex 子项，默认 min-width:auto 会被
      里面最长的那行代码撑开，overflow-x:auto 就永远不触发，代码块右侧直接
      被裁在屏幕外。压掉下限后长行才会在气泡内部左右滚 */
-  .msg pre, .md-doc pre { min-width: 0; max-width: 100%; background: var(--code-bg); padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 6px 0; font-size: 13px; }
+  /* 代码块：浅色档是一张半透明白纸，透出气泡的暖色，跟卡片同一套色系；
+     深色档是一层淡高光。边框只做收边，不抢正文 */
+  .msg pre, .md-doc pre {
+    min-width: 0; max-width: 100%;
+    background: var(--code-soft-bg);
+    border: 1px solid var(--code-soft-line);
+    padding: 10px 12px; border-radius: 10px; overflow-x: auto; margin: 6px 0;
+    font-size: 13px; line-height: 1.6; tab-size: 4;
+  }
   /* 行内代码不许撑高行盒：padding 只给 1px（垂直方向本来也不参与行盒计算），
      line-height 压到 1.15 让等宽字体的上/下伸部收在 24px 行盒内。
      原来 2px 内边距 + 13px 字号让 chip 比正文高、底色还压到相邻行上，
      一段里混着几处代码就有「行距一会高一会低」的观感 */
-  .msg code, .md-doc code { background: var(--code-bg); padding: 1px 5px; line-height: 1.15; border-radius: 5px; font-size: 13px; font-family: var(--font-mono); }
+  .msg code, .md-doc code {
+    background: var(--code-chip-bg);
+    padding: 1px 5px; line-height: 1.15; border-radius: 5px;
+    font-size: 13px; font-family: var(--font-mono);
+    /* 一长串路径/哈希没有空格，默认会在气泡里顶出去 */
+    word-break: break-word;
+  }
   .msg pre code, .md-doc pre code { background: none; padding: 0; }
   /* 用户气泡是蓝底：里面的行内代码/代码块若还用主题的代码底色，
      浅色主题下就是「浅灰块 + 继承来的白字」，整段看不见。
      这里单独给一套半透明白底 + 白字，两个主题下都成立 */
   .msg.user code { background: rgba(255, 255, 255, .22); color: var(--on-user); }
-  .msg.user pre { background: rgba(255, 255, 255, .16); color: var(--on-user); }
+  .msg.user pre { background: rgba(255, 255, 255, .16); color: var(--on-user); border-color: rgba(255, 255, 255, .22); }
   .msg.user pre code { background: none; color: var(--on-user); }
   .msg.user h3, .msg.user h4, .msg.user a { color: var(--on-user); }
   /* 标题跟正文同色（大段文档里一水蓝色标题像一排超链接），
@@ -678,7 +715,11 @@
   .tl-chip {
     background: var(--surface-2); border-radius: 6px;
     padding: 1px 7px; font-size: 12px;
-    font-family: var(--font-mono); color: var(--brand);
+    font-family: var(--font-mono);
+    /* 命令/参数 chip 原来整串用 --brand 着色，而壁纸模式下 --brand 是从壁纸
+       取的强调色：浅黄壁纸配浅黄 chip、暗红壁纸配暗红 chip，字和底几乎同色。
+       这里把强调色只留下 25% 做点缀，其余按正文色，保证两种档位都读得清 */
+    color: color-mix(in srgb, var(--brand) 25%, var(--text));
     /* 300px 是桌面宽度上限；窄屏用 vw 收窄，避免把左侧标签压成竖排 */
     max-width: min(300px, 52vw);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -2428,18 +2469,22 @@
   .field-hint { font-size: var(--set-hint-size); color: var(--muted); margin-top: var(--set-hint-gap); min-height: 0; line-height: var(--set-hint-lh); }
   /* 素材署名（女仆人设 → 语音回复）收在可展开的 details 里。
      三个发音人平级横排，与上面「发音人」一行同序：机器人 / 月读酱 / 哔哔啵啵。
-     用 grid 而不是 flex：每列顶部对齐，名字行一样高，下面各写各的来源 */
+     用 flex + flex-basis:0：每块严格占 1/3，内容长短不会把某一列撑宽 */
   #ttsCredit {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    display: flex;
+    flex-wrap: wrap;
     gap: 12px 16px;
+    width: 100%;
     min-height: 0;
   }
   /* 极窄屏（掌机竖屏、手机）三列会挤成竖条，退回一列堆叠 */
   @media (max-width: 560px) {
-    #ttsCredit { grid-template-columns: minmax(0, 1fr); }
+    #ttsCredit .tts-credit-col { flex-basis: 100%; }
   }
-  #ttsCredit .tts-credit-col { min-width: 0; }
+  #ttsCredit .tts-credit-col {
+    flex: 1 1 0;
+    min-width: 0;
+  }
   #ttsCredit .tts-credit-name {
     font-size: var(--set-hint-size); font-weight: 600; color: var(--text);
     line-height: 1.6; margin-bottom: 2px;
@@ -2484,6 +2529,45 @@
     .tts-row2 .speaker-row { min-width: 0; flex: 1 1 auto; }
     .tts-row2 .tts-actions { flex: 1 1 100%; margin-left: 0; }
     .tts-row2 .speaker-btn { padding: 0 8px; }
+  }
+  /* 语速 / 音色：两条和壁纸页同款的滑杆装进一块淡玻璃底里。
+     不自带毛玻璃时只铺一层 surface-2 半透明底；壁纸模式下再叠
+     「毛玻璃强度」那一档，观感和上面的卡片是同一块玻璃 */
+  .tts-tune {
+    margin: 2px 0 8px;
+    padding: 7px 10px 5px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+  }
+  html.wall-on .tts-tune {
+    background: color-mix(in srgb,
+      var(--surface-2) calc(var(--panel-alpha) * 55%), transparent);
+    backdrop-filter: blur(calc(6px + var(--glass))) saturate(1.05);
+  }
+  .tts-tune .tune-row { gap: 8px; }
+  .tts-tune .tune-row + .tune-row { margin-top: 4px; }
+  /* 标签收窄，滑轨才能长一些；读数按最长的那档预留（哔哔啵啵 / 1.00×） */
+  .tts-tune .tune-row > label {
+    flex: 0 0 40px;
+    font-size: 12.5px; color: var(--muted); margin: 0; white-space: nowrap;
+  }
+  .tts-tune .tune-row > .rg-val { flex: 0 0 62px; }
+  /* 最右侧的默认值：既是标注，也当「恢复默认」用 */
+  .tts-tune-default {
+    flex: 0 0 auto; margin-left: 2px;
+    border: 1px solid var(--line); background: transparent;
+    color: var(--muted); font-size: 11.5px; line-height: 1.4;
+    padding: 2px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .tts-tune-default:hover { color: var(--brand); border-color: var(--brand); }
+  @media (max-width: 520px) {
+    .tts-tune { padding: 6px 8px 4px; }
+    .tts-tune .tune-row { gap: 6px; }
+    .tts-tune .tune-row > label { flex: 0 0 34px; }
+    .tts-tune .tune-row > .rg-val { flex: 0 0 54px; }
+    .tts-tune-default { padding: 2px 6px; font-size: 11px; }
   }
   .tts-actions {
     margin-left: auto; display: flex; align-items: center; justify-content: flex-end;
@@ -3691,6 +3775,11 @@
     --hover: rgba(16,24,40,.06);
     /* 代码块 / 终端：深色底上必须是浅字，否则会被系统原生深色底涂黑 */
     --code-bg: #f4f6fa; --code-text: #1c2333;
+    /* 气泡里的代码：浅色档用不透明的暖白卡片（比纯白 #fff 低一点色温，
+       压在暖色气泡上不刺眼，但层次始终清楚）；深色档仍是一层淡高光 */
+    --code-soft-bg: #fdfaf6;
+    --code-soft-line: rgba(16,24,40,.12);
+    --code-chip-bg: rgba(16,24,40,.055);
     --overlay: rgba(16,24,40,.35);
     --share-overlay: rgba(16,24,40,.6);
     /* 滚动条 */
@@ -3722,6 +3811,9 @@
     --line: rgba(255,255,255,.10);
     --hover: rgba(255,255,255,.08);
     --code-bg: #000000; --code-text: #c8d3e0;
+    --code-soft-bg: rgba(255,255,255,.055);
+    --code-soft-line: rgba(255,255,255,.11);
+    --code-chip-bg: rgba(255,255,255,.09);
     --overlay: rgba(0,0,0,.72);
     --share-overlay: rgba(0,0,0,.9);
     --sb-thumb: rgba(255,255,255,.2); --sb-thumb-hover: rgba(255,255,255,.34);
@@ -4223,7 +4315,7 @@
     /* 手机竖屏顶栏放不下右侧那一整组：会话状态胶囊、绿点「6/6」和「游戏模式」
        由脚本全部挪进侧栏状态卡第一排（见 .ctx-line），上下文用量放第二排
        （.ctx-line-2），顶栏右侧整组清空后由 .hdr-right:empty 收起 */
-    #ctxBadge, .hdr-right > .qq-sess-wrap { display: none !important; }
+    #ctxBadge, #ttsQuick, .hdr-right > .qq-sess-wrap { display: none !important; }
     /* 极窄屏（<360px）：模式徽章在侧栏里也收窄 */
     #modeBadge { padding: 3px 7px; font-size: 10.5px; }
     .hdr-right:empty { display: none; }
@@ -5143,6 +5235,12 @@
   .tm-head .st.run { color: var(--brand); }
   .tm-head .st.ok { color: #2ecc71; }
   .tm-head .st.bad { color: var(--danger); }
+  /* 「无输出」：跑完但一个字都没吐的命令，头行给个灰字，卡片不可点开。
+     这种卡片不需要展开/放大，光标也别装作可点 */
+  .tm-noout { flex: 0 0 auto; font-size: 10px; color: var(--muted); opacity: .8; }
+  .tm.no-out .tm-head { cursor: default; }
+  .tm-arch-row.no-out { cursor: default; }
+  .tm-arch-row.no-out:hover { background: transparent; }
   /* 归档区：跑完一段时间的命令折进来，默认只露一条窄条。
      以前这些卡片只能等 5 秒淡出，攒多了右栏整屏都是历史记录，
      真正在跑的那条被挤到看不见。现在一条窄条 + 可展开的一行式清单 */

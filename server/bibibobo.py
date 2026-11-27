@@ -87,14 +87,23 @@ def _voice_of(name: str | dict) -> dict:
 
 def synth(text: str, voice: str | dict = DEFAULT_VOICE, *,
           step: float | None = None, sample_rate: int = SAMPLE_RATE,
-          gap: float = GAP) -> list[float]:
+          gap: float = GAP, speed: float = 1.0,
+          pitch: float = 1.0) -> list[float]:
     """把一句话合成为单声道采样（范围 -1..1）。
 
     与 JS 版一致：问号结尾尾音上扬 5 个半音；带感叹号整句升高 3 个半音；
     省略号结尾整句压低 3 个半音、尾音下滑 4 个半音。
+
+    pitch：整体音调倍率（0.5~2.0），换算成半音偏移后加到每个字的音高上。
     """
     v = _voice_of(voice)
     step = v["step"] if step is None else step
+    # speed：界面的语速倍率（1.0 = 声线原本的字步长）。
+    # 只缩字与字之间的步长，句间停顿保持不变，快起来也不会糊成一串
+    step = step / min(2.0, max(0.5, float(speed or 1.0)))
+    # 音调倍率 → 半音偏移：2.0 = 高一个八度（+12），0.5 = 低一个八度（-12）
+    pitch = min(2.0, max(0.5, float(pitch or 1.0)))
+    shift = 12.0 * math.log2(pitch)
 
     sentences = []
     for chunk in _SENT_RE.findall(text or ""):
@@ -115,7 +124,8 @@ def synth(text: str, voice: str | dict = DEFAULT_VOICE, *,
             last = i == last_index
             code = _hash(word)
             midi = (v["scale"][code % len(v["scale"])]
-                    + (3 if shout else 0) - (3 if sad else 0))
+                    + (3 if shout else 0) - (3 if sad else 0)
+                    + shift)
             dur = min(step * v["hold"], v["max_dur"])
             if last and (ask or shout or sad):
                 dur += 0.1
@@ -202,7 +212,9 @@ def to_wav(samples: list[float], sample_rate: int = SAMPLE_RATE) -> bytes:
 
 
 def render(text: str, voice: str = DEFAULT_VOICE, *,
-           step: float | None = None, sample_rate: int = SAMPLE_RATE) -> bytes:
+           step: float | None = None, sample_rate: int = SAMPLE_RATE,
+           speed: float = 1.0, pitch: float = 1.0) -> bytes:
     """直接给一段话的完整 wav 字节"""
-    return to_wav(synth(text, voice, step=step, sample_rate=sample_rate),
+    return to_wav(synth(text, voice, step=step, sample_rate=sample_rate,
+                        speed=speed, pitch=pitch),
                   sample_rate)

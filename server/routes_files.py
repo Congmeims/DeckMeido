@@ -361,14 +361,18 @@ _KIND_MAP = {
     "video": {".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi", ".ogv"},
     "audio": {".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".opus", ".oga"},
     "pdf": {".pdf"},
-    "text": {".txt", ".md", ".log", ".csv", ".json", ".toml", ".ini", ".cfg", ".yml",
+    # .markdown/.mdx 等也按文本收：前端预览本来就认 .md|.markdown，后端
+    # 只列 .md 的话，同一种文件会一半能渲染、一半提示「没有内置预览」
+    "text": {".txt", ".md", ".markdown", ".mdx", ".mdown", ".mkd",
+             ".log", ".csv", ".json", ".toml", ".ini", ".cfg", ".yml",
              ".yaml", ".xml", ".html", ".css", ".js", ".ts", ".py", ".sh", ".c", ".h",
              ".cpp", ".rs", ".go", ".java", ".sql", ".conf", ".srt", ".desktop"},
 }
 
 
 def _file_kind(name: str) -> str:
-    ext = os.path.splitext(name)[1].lower()
+    # 末尾带空格/点的文件（某些解压工具会造）也要认得出扩展名
+    ext = os.path.splitext(name)[1].strip().lower()
     for kind, exts in _KIND_MAP.items():
         if ext in exts:
             return kind

@@ -47,6 +47,10 @@ class ConfigUpdate(BaseModel):
     tts_language: str | None = None
     tts_speed: int | None = None
     tts_speed_scale: float | None = None
+    # 音调：每个发音人各自一份（0.5~2.0，1.0 = 原始音高）
+    tts_pitch_robot: float | None = None
+    tts_pitch_maid: float | None = None
+    tts_pitch_bibibo: float | None = None
     tts_noise_scale: float | None = None
     tts_length_scale: float | None = None
     # 语音输入开关：和 tts_enable 一样走热更新，插件端 /api/stt/toggle 写的是同一份 [stt]
@@ -163,6 +167,8 @@ def init(require_auth, client_ip, get_main) -> None:
             "tts_language": tts.language,
             "tts_speed": tts.speed,
             "tts_speed_scale": tts.speed_scale,
+            # 每个发音人各自的音调倍率，设置页切换发音人时回填对应滑杆
+            "tts_pitch": dict(tts.pitch),
             "tts_noise_scale": tts.noise_scale,
             # 带画面询问的开关：面板重开后按它恢复，不能只存在前端内存里。
             # 对外给「有效值」：总开关关闭时插件端据此不再附加截图；
@@ -324,6 +330,12 @@ def init(require_auth, client_ip, get_main) -> None:
             tts_updates["speed"] = max(80, min(320, int(req.tts_speed)))
         if req.tts_speed_scale is not None:
             tts_updates["speed_scale"] = round(max(0.5, min(2.0, float(req.tts_speed_scale))), 2)
+        # 音调按发音人分开写：pitch_robot / pitch_maid / pitch_bibibo
+        for sid, value in (("robot", req.tts_pitch_robot),
+                           ("maid", req.tts_pitch_maid),
+                           ("bibibo", req.tts_pitch_bibibo)):
+            if value is not None:
+                tts_updates[f"pitch_{sid}"] = round(max(0.5, min(2.0, float(value))), 2)
         if req.tts_noise_scale is not None:
             tts_updates["noise_scale"] = round(max(0.0, min(1.0, float(req.tts_noise_scale))), 3)
         if req.tts_length_scale is not None:

@@ -252,6 +252,13 @@
     </div>
     <span class="badge stale-tag" id="staleTag" hidden>已停止更新</span>
     <span class="badge" id="ctxBadge" hidden></span>
+    <!-- 语音播报快捷开关：外壳与旁边「6/6」同一套胶囊，灯换成青色。
+         灯亮 = 开，点一下灯灭 = 关。改的就是设置页「语音合成」总闸，
+         两处共用同一个配置键，只是省得为了关掉播报再进一次设置 -->
+    <button type="button" class="badge ctrl tts-quick" id="ttsQuick" hidden
+            title="语音播报：开（点击关闭）" aria-pressed="true">
+      <span class="lamp"></span><span>TTS</span>
+    </button>
     <!-- 控件自检（6/6）与模式徽章：宽屏由脚本移回这里（见 placeBadges），
          窄屏留在侧栏状态卡的第一排 -->
   </div>
@@ -623,6 +630,33 @@
               <div class="tts-actions">
                 <button id="ttsPreview" class="mini-btn tts-preview" type="button">试听</button>
                 <button id="ttsPill" class="tts-pill" type="button">读取中…</button>
+              </div>
+            </div>
+            <!-- 语速 / 音调：和壁纸页那组滑杆同一套外观（自绘轨道 + 读数），
+                 最右是被点一下就能恢复的默认值 -->
+            <div class="tts-tune">
+              <div class="tune-row">
+                <label for="cfgTtsSpeed">语速</label>
+                <div class="rg">
+                  <div class="rg-rail"><div class="rg-fill"></div></div>
+                  <div class="rg-knob"></div>
+                  <input id="cfgTtsSpeed" type="range" min="0.5" max="2" step="0.05" value="1"
+                         aria-label="语速">
+                </div>
+                <span class="rg-val" id="cfgTtsSpeedVal">1.00×</span>
+                <button class="tts-tune-default" type="button" data-tts-tune="speed">默认 1.00×</button>
+              </div>
+              <div class="tune-row">
+                <label for="cfgTtsTone">音调</label>
+                <div class="rg">
+                  <div class="rg-rail"><div class="rg-fill"></div></div>
+                  <div class="rg-knob"></div>
+                  <!-- 音调按发音人各记一份：切换发音人时滑杆显示该发音人自己的值 -->
+                  <input id="cfgTtsTone" type="range" min="0.5" max="2" step="0.05" value="1"
+                         aria-label="音调">
+                </div>
+                <span class="rg-val" id="cfgTtsToneVal">1.00×</span>
+                <button class="tts-tune-default" type="button" data-tts-tune="tone">默认 1.00×</button>
               </div>
             </div>
             <div id="ttsDownloadHint" class="field-hint tts-bytes"></div>
@@ -4300,8 +4334,25 @@
     var body = rbEl('fvBody');
     body.innerHTML = '';
     body.classList.remove('md');
-    var src = '/api/preview?path=' + encodeURIComponent(path);
-    apiFetch(src).then(function (r) { return r.json(); }).then(function (d) {
+    var src;
+    try {
+      src = '/api/preview?path=' + encodeURIComponent(path);
+    } catch (e) {
+      // 老 GBK 文件名在 JS 里是孤立代理字符，encodeURIComponent 会直接抛错。
+      // 这里明确说一句，比停在「读取中…」强
+      body.innerHTML = '<div class="fv-note">这个路径里有浏览器没法编码的字符（多见于旧 GBK 文件名），预览不了；可以直接把它拖进对话让 AI 读。</div>';
+      rbEl('fvMeta').textContent = '';
+      return;
+    }
+    apiFetch(src).then(function (r) {
+      // 非 JSON（404 的纯文本 detail、网关错误页）不能直接 r.json()
+      return r.json().catch(function () {
+        return { error: '读取失败（HTTP ' + r.status + '）' };
+      }).then(function (d) {
+        if (d && !r.ok && !d.kind) d.error = d.error || d.detail || ('读取失败（HTTP ' + r.status + '）');
+        return d;
+      });
+    }).then(function (d) {
       if (!d || d.error || !d.kind) {
         body.innerHTML = '<div class="fv-note">' + (d && d.error ? d.error : '预览失败') + '</div>';
         rbEl('fvMeta').textContent = '';
@@ -4322,6 +4373,10 @@
         body.classList.add('md');
         body.innerHTML = '<div class="md-doc">' + renderMd(d.text || '（空文件）') + '</div>';
         wireChatImages(body);
+        // 这里已经直接写进 body 了，不要再走下面统一的 appendChild(el)：
+        // md 分支没有创建 el，落到那里会变成 appendChild(undefined) 报
+        // “parameter 1 is not of type 'Node'”，预览永远失败
+        return;
       } else if (d.kind === 'image') {
         el = document.createElement('img');
         el.src = url;
@@ -4350,8 +4405,11 @@
         return;
       }
       body.appendChild(el);
-    }).catch(function () {
-      body.innerHTML = '<div class="fv-note">预览失败</div>';
+    }).catch(function (e) {
+      // 把原因带出来：以前一律「预览失败」，文件到底是什么问题（渲染器抛错、
+      // 网络断了）全靠猜
+      body.innerHTML = '<div class="fv-note">预览失败'
+        + (e && e.message ? '：' + String(e.message).slice(0, 120) : '') + '</div>';
       rbEl('fvMeta').textContent = '';
     });
   }
@@ -6616,6 +6674,11 @@
     if (it._renderedArch) return termRenderArchRow(it);
     var box = document.createElement('div');
     box.className = 'tm' + (it.running ? ' running' : '') + (it.collapsed ? ' collapsed' : '');
+    // 跑完却一个字都没输出：不展开、不放大，头行直接标「无输出」。
+    // 以前这种卡片照样能点开/收起、还能点 ⤢ 放大到一个空终端，
+    // 点开只看到一句空的输出区，纯属让人白点一次
+    var noOut = !it.running && !String(it.out || '').trim();
+    if (noOut) box.classList.add('no-out');
     it._box = box;
     // 注意：这里不再给结束的命令加 dying 类。
     // 以前命令一结束就播 0.9s 淡出动画再整条删掉，等于「跑完 5 秒就看不见了」，
@@ -6663,22 +6726,30 @@
       }
       head.appendChild(stopBtn);
     }
-    // 放大：和文件预览一样弹全屏浮层，点遮罩 / Esc 关掉
-    var zoomBtn = document.createElement('button');
-    zoomBtn.className = 'zoom';
-    zoomBtn.type = 'button';
-    zoomBtn.textContent = '⤢';
-    zoomBtn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      termOpenBig(it);
-    });
-    head.appendChild(zoomBtn);
-    head.addEventListener('click', function () {
-      it.collapsed = !it.collapsed;
-      // 用户自己点开的，就不再归自动逻辑管了：之后再出输出也不强拉展开
-      it.autoCollapsed = false;
-      box.classList.toggle('collapsed', it.collapsed);
-    });
+    if (noOut) {
+      // 没有输出：不给放大入口，头行标一个灰字就够（点开也是空的）
+      var noOutTag = document.createElement('span');
+      noOutTag.className = 'tm-noout';
+      noOutTag.textContent = '无输出';
+      head.appendChild(noOutTag);
+    } else {
+      // 放大：和文件预览一样弹全屏浮层，点遮罩 / Esc 关掉
+      var zoomBtn = document.createElement('button');
+      zoomBtn.className = 'zoom';
+      zoomBtn.type = 'button';
+      zoomBtn.textContent = '⤢';
+      zoomBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        termOpenBig(it);
+      });
+      head.appendChild(zoomBtn);
+      head.addEventListener('click', function () {
+        it.collapsed = !it.collapsed;
+        // 用户自己点开的，就不再归自动逻辑管了：之后再出输出也不强拉展开
+        it.autoCollapsed = false;
+        box.classList.toggle('collapsed', it.collapsed);
+      });
+    }
     // ---- 输出区 ----
     // 三种情况：
     //  1. it.xt（手动命令，实时 xterm 会话）：复用已有的 host DOM，
@@ -6757,11 +6828,13 @@
     }
 
     // 普通 <pre> 输出
+    box.appendChild(head);
+    // 无输出的命令只留头行（标签已经写在头上），不再挂一块空的输出区
+    if (noOut) return box;
     out = document.createElement('pre');
     out.className = 'tm-out';
-    out.textContent = it.out || (it.running ? '' : '（无输出）');
+    out.textContent = it.out || '';
     out.style.borderTop = '1px solid var(--line)';
-    box.appendChild(head);
     box.appendChild(out);
     return box;
   }
@@ -7051,7 +7124,16 @@
     row.appendChild(who);
     row.appendChild(cmd);
     row.appendChild(st);
-    row.addEventListener('click', function () { termOpenBig(it); });
+    // 没输出的归档项点了也只会弹一个空浮层，干脆不可点，并标明原因
+    if (!String(it.out || '').trim()) {
+      var nout = document.createElement('span');
+      nout.className = 'tm-noout';
+      nout.textContent = '无输出';
+      row.appendChild(nout);
+      row.classList.add('no-out');
+    } else {
+      row.addEventListener('click', function () { termOpenBig(it); });
+    }
     return row;
   }
 
@@ -7864,6 +7946,13 @@
           if (askOnly && askPreBubble && askPreBubble.parentNode
               && askPreBubble !== streamEl) {
             if (msg.ts) askPreBubble.dataset.ts = String(msg.ts);
+            // 这段分析是流式期间用 textContent 一段段贴进去的（合帧写文本，
+            // 不走 markdown）。这里把它认成这一轮的正文，就必须补一次渲染，
+            // 否则表格、**粗体**、反引号会原样留在气泡里 —— 带选项的气泡
+            // 最明显，因为正文正好是提问前那段带清单的分析
+            var pbody = askPreBubble.querySelector('.stream-body');
+            if (pbody) { pbody.innerHTML = renderMd(pbody.textContent); wireChatImages(pbody); }
+            fillFileSizes(askPreBubble);
             askPreBubble.classList.add('turn-final');
             promoted = true;
             finalBubble = askPreBubble;
@@ -10492,6 +10581,49 @@
   // '' = 还没选（用后端默认的当前使用）；'all' = 全部汇总
   var usageApi = '';
   var cfgTts = document.getElementById('cfgTts');
+  // 顶栏「TTS」快捷开关：和设置页那颗 #cfgTts 是同一个配置键（tts_enable），
+  // 这里只负责把它显示成灯亮/灯灭，并给一个不用进设置页的入口
+  var ttsQuick = document.getElementById('ttsQuick');
+  function syncTtsQuick() {
+    if (!ttsQuick || !cfgTts) return;
+    var on = !!cfgTts.checked;
+    ttsQuick.hidden = false;
+    ttsQuick.classList.toggle('on', on);
+    ttsQuick.setAttribute('aria-pressed', on ? 'true' : 'false');
+    ttsQuick.title = on ? '语音播报：开（点击关闭）' : '语音播报：关（点击开启）';
+  }
+  if (ttsQuick && cfgTts) {
+    // 顶栏这颗开关只在聊天页可见，而配置回填 loadCfgForm 只在打开设置页时跑，
+    // 所以这里要自己拉一次初始状态；拉不到就保持隐藏，不猜
+    apiFetch('/api/config')
+      .then(function (r) { return r.json(); })
+      .then(function (c) {
+        if (!c || typeof c.tts_enable !== 'boolean') return;
+        cfgTts.checked = c.tts_enable;
+        syncTtsQuick();
+      })
+      .catch(function () { /* 拉不到就继续隐藏 */ });
+    ttsQuick.addEventListener('click', function () {
+      var next = !cfgTts.checked;
+      ttsQuick.disabled = true;
+      // 只切 tts.enable 一个键（/api/tts 就是插件面板用的那条专用接口，
+      // 返回的是后端真正生效的值，不依赖设置页表单）
+      apiFetch('/api/tts?enabled=' + (next ? 'true' : 'false'), { method: 'POST' })
+        .then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function (d) {
+          if (d && typeof d.tts_enable === 'boolean') cfgTts.checked = d.tts_enable;
+        })
+        .catch(function () { /* 没保存上就保持原状态，灯不假装已切换 */ })
+        .then(function () {
+          ttsQuick.disabled = false;
+          syncTtsQuick();
+        });
+    });
+    cfgTts.addEventListener('change', syncTtsQuick);
+  }
   // 设置页「模型接入 → 当前模型」下拉；和对话页顶栏共用同一个模型键
   var setModelSelect = document.getElementById('setModelSelect');
   var setModelState = document.getElementById('setModelState');
@@ -11918,9 +12050,26 @@
         apiProfilesLoaded = true;
         if (setModelSelect && c.model) setModelSelect.value = c.model;
         cfgTts.checked = c.tts_enable;
+        syncTtsQuick();
         // 发音人只有两个选项：新键优先，老配置没有 speaker 时按引擎映射
         setTtsSpeaker(c.tts_speaker
           || (c.tts_engine === 'espeak-ng' ? 'robot' : 'maid'));
+        // 语速滑条按后端现存的 speed_scale 回填，再统一重画一次
+        if (cfgTtsSpeed && c.tts_speed_scale != null) {
+          cfgTtsSpeed.value = String(c.tts_speed_scale);
+        }
+        // 音调按发音人回填（每个发音人一份），滑杆显示当前发音人自己的值
+        if (c.tts_pitch) {
+          ['robot', 'maid', 'bibibo'].forEach(function (k) {
+            var v = Number(c.tts_pitch[k]);
+            if (isFinite(v) && v > 0) ttsPitch[k] = v;
+          });
+        }
+        if (cfgTtsTone) {
+          var nowPitch = Number(ttsPitch[ttsSpeaker]);
+          cfgTtsTone.value = String(nowPitch > 0 ? nowPitch : TTS_PITCH_DEFAULT);
+        }
+        syncTtsTune();
         syncTtsFields();
         loadTtsStatus();
         // 插件设置：与插件端同一个 GET /api/config 来源，开关和模板都按后端值回填。
@@ -12550,7 +12699,9 @@
   // 自绘滑块外面那层 .rg 没有原生 range 的「点哪跳哪」行为，
   // 所以按点击位置自己算值：按下就跳过去，按住拖动跟着走。
   // 命中仍然交给上面透明的 input[type=range]（键盘、无障碍不被破坏）
-  function bindWallRg(input) {
+  // onEnd：可选。给了它就用它代替壁纸那套「松手落盘」逻辑，
+  // 也不参与 wallTuneEl 的拖动保护（语速/音调滑杆走自己的保存链路）
+  function bindWallRg(input, onEnd) {
     var rg = input.parentNode;
     if (!rg || !rg.classList || !rg.classList.contains('rg')) return;
     var dragging = false;
@@ -12591,7 +12742,7 @@
       if (e.button !== undefined && e.button !== 0) return;
       dragging = true;
       measure();
-      startWallTune(input);
+      if (!onEnd) startWallTune(input);
       try { rg.setPointerCapture(e.pointerId); } catch (_) {}
       // 自己算值并且先派给 input：拖拽手势（触屏/触控板）可能到不了
       // 里面那层透明 range，光靠它的原生行为会「划不动」
@@ -12608,7 +12759,7 @@
       dragging = false;
       geo = null;
       try { rg.releasePointerCapture(e.pointerId); } catch (_) {}
-      endWallTune(input);
+      if (onEnd) onEnd(input); else endWallTune(input);
     }
     rg.addEventListener('pointerup', end);
     rg.addEventListener('pointercancel', end);
@@ -13513,8 +13664,12 @@
     if (name === 'about' && typeof renderAppearanceForm === 'function' && THEME_SNAPSHOT) {
       renderAppearanceForm(THEME_SNAPSHOT);
     }
-    // 语音引擎里的语音回复卡要看模型/下载的实时状态，切过来时刷新一次
-    if (name === 'voice') loadTtsStatus();
+    // 语音引擎里的语音回复卡要看模型/下载的实时状态，切过来时刷新一次；
+    // 语速/音调滑杆在隐藏时量不到宽度，这里补画一次
+    if (name === 'voice') {
+      loadTtsStatus();
+      if (typeof syncTtsTune === 'function') syncTtsTune();
+    }
     // 按游戏预设可能在 Deck 上刚存过，切到插件页时重新拉一份
     if (name === 'plugin') loadPresets();
   }
@@ -14204,6 +14359,9 @@
   // 三个发音人：robot = 机器人（Deck 自带），maid = 女仆（本地模型），
   // bibibo = 哔哔啵啵（纯代码合成，不依赖模型）
   var TTS_SPEAKER_LABELS = { robot: '机器人', maid: '月读酱', bibibo: '哔哔啵啵' };
+  // 音调：每个发音人各自一份倍率（1.0 = 原始音高），后端存 [tts] pitch_<id>
+  var TTS_PITCH_DEFAULT = 1;
+  var ttsPitch = { robot: TTS_PITCH_DEFAULT, maid: TTS_PITCH_DEFAULT, bibibo: TTS_PITCH_DEFAULT };
 
   function setTtsSpeaker(value) {
     ttsSpeaker = TTS_SPEAKER_LABELS[value] ? value : 'maid';
@@ -14212,15 +14370,23 @@
       btn.classList.toggle('active', on);
       btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
+    // 音调滑条跟随当前发音人：每个发音人各记一份，切回来还是上次的值
+    if (typeof cfgTtsTone !== 'undefined' && cfgTtsTone) {
+      var pitch = Number(ttsPitch[ttsSpeaker]);
+      if (!isFinite(pitch) || pitch <= 0) pitch = TTS_PITCH_DEFAULT;
+      if (cfgTtsTone.value !== String(pitch)) cfgTtsTone.value = String(pitch);
+      if (typeof syncTtsTune === 'function') syncTtsTune();
+    }
   }
 
   // 试听句：按发音人取，状态接口没拉到就按本地表兜底。
-  // 哔哔啵啵要念自己的名字，不能和另外两个共用「月读酱」那句
+  // 选谁试听就念谁的名字，三个不能共用「月读酱」那一句
   function ttsPreviewText() {
     var texts = (ttsState && ttsState.preview_texts) || {};
-    // 状态还没拉到就先按本地表取，bibibo 必须念它自己的那一句
+    // 状态还没拉到就先按本地表取，机器人/哔哔啵啵都要念自己的那一句
     return texts[ttsSpeaker] ||
-      (ttsSpeaker === 'bibibo' ? '你好，我是哔哔啵啵。' : '你好，我是月读酱。');
+      { robot: '你好，我是机器人。', bibibo: '你好，我是哔哔啵啵。' }[ttsSpeaker] ||
+      '你好，我是月读酱。';
   }
 
   // 选中女仆但本机模型不可用时，提示会先用机器人的声音兜底
@@ -14327,13 +14493,23 @@
     }, 1000);
   }
 
-  // 只提交发音人：切换/试听前先存下来，不用等整页保存
+  // 只提交发音人 + 当前语速/音调：切换、试听前先存下来，不用等整页保存
   // opts 可带 signal：试听那边超时会中止整条请求链
   function saveTtsQuick(opts) {
+    var body = { tts_speaker: ttsSpeaker };
+    // 试听要应用「当前设置」：把滑杆上的语速/音调一起落盘，避免防抖还没发出去
+    if (typeof cfgTtsSpeed !== 'undefined' && cfgTtsSpeed) {
+      body.tts_speed_scale = Number(cfgTtsSpeed.value) || 1;
+    }
+    if (typeof cfgTtsTone !== 'undefined' && cfgTtsTone) {
+      var pitch = Number(cfgTtsTone.value) || TTS_PITCH_DEFAULT;
+      ttsPitch[ttsSpeaker] = pitch;
+      body['tts_pitch_' + ttsSpeaker] = pitch;
+    }
     return apiFetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tts_speaker: ttsSpeaker }),
+      body: JSON.stringify(body),
       signal: opts && opts.signal
     }).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -14431,6 +14607,106 @@
       saveTtsQuick().catch(function () {});
     });
   });
+
+  // ---------- 语速 / 音调滑杆 ----------
+  // 语速对应后端 [tts].speed_scale（0.5~2.0，默认 1.0）；
+  // 音调按发音人各存一份（[tts] pitch_robot / pitch_maid / pitch_bibibo），
+  // 切换发音人时滑杆显示该发音人自己的值。两条都在松手时各自落盘，
+  // 不走设置页的整表自动保存（collectConfig 里没有这两个键）
+  var TTS_DEFAULT_SPEED = 1;
+  var cfgTtsSpeed = document.getElementById('cfgTtsSpeed');
+  var cfgTtsSpeedVal = document.getElementById('cfgTtsSpeedVal');
+  var cfgTtsTone = document.getElementById('cfgTtsTone');
+  var cfgTtsToneVal = document.getElementById('cfgTtsToneVal');
+
+  function ttsSpeedText(v) {
+    return (Math.round((Number(v) || TTS_DEFAULT_SPEED) * 100) / 100).toFixed(2) + '×';
+  }
+  function ttsPitchText(v) {
+    return (Math.round((Number(v) || TTS_PITCH_DEFAULT) * 100) / 100).toFixed(2) + '×';
+  }
+
+  // 重画两条滑杆的轨道与读数。设置页隐藏时量不到宽度，
+  // syncWallRg 自己会跳过，等切到语音页（showSetPane）再补一次
+  function syncTtsTune() {
+    if (cfgTtsSpeed && cfgTtsSpeedVal) cfgTtsSpeedVal.textContent = ttsSpeedText(cfgTtsSpeed.value);
+    if (cfgTtsTone && cfgTtsToneVal) cfgTtsToneVal.textContent = ttsPitchText(cfgTtsTone.value);
+    if (typeof syncWallRg !== 'function') return;
+    if (cfgTtsSpeed) syncWallRg(cfgTtsSpeed);
+    if (cfgTtsTone) syncWallRg(cfgTtsTone);
+  }
+
+  var ttsSpeedTimer = 0;
+  // 只提交 speed_scale 一项：其它键不传，后端保留现值
+  function saveTtsSpeed() {
+    if (!cfgTtsSpeed) return;
+    clearTimeout(ttsSpeedTimer);
+    var v = Math.round((Number(cfgTtsSpeed.value) || TTS_DEFAULT_SPEED) * 100) / 100;
+    if (cfgTtsSpeedVal) cfgTtsSpeedVal.textContent = ttsSpeedText(v);
+    ttsSpeedTimer = setTimeout(function () {
+      apiFetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tts_speed_scale: v })
+      }).catch(function () {});
+    }, 250);
+  }
+
+  var ttsPitchTimer = 0;
+  // 音调只提交当前发音人的那一个键：另外两个发音人的值不动
+  function saveTtsPitch() {
+    if (!cfgTtsTone) return;
+    clearTimeout(ttsPitchTimer);
+    var v = Math.round((Number(cfgTtsTone.value) || TTS_PITCH_DEFAULT) * 100) / 100;
+    // 定时器触发时可能已经切了发音人，这里的 sid 必须现在就定下来
+    var sid = ttsSpeaker;
+    ttsPitch[sid] = v;
+    if (cfgTtsToneVal) cfgTtsToneVal.textContent = ttsPitchText(v);
+    ttsPitchTimer = setTimeout(function () {
+      var body = {};
+      body['tts_pitch_' + sid] = v;
+      apiFetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }).catch(function () {});
+    }, 250);
+  }
+
+  if (cfgTtsSpeed) {
+    bindWallRg(cfgTtsSpeed, saveTtsSpeed);
+    // 键盘改值没有指针事件，靠 change 补一次
+    cfgTtsSpeed.addEventListener('change', saveTtsSpeed);
+    cfgTtsSpeed.addEventListener('input', function () {
+      if (cfgTtsSpeedVal) cfgTtsSpeedVal.textContent = ttsSpeedText(cfgTtsSpeed.value);
+      syncWallRg(cfgTtsSpeed);
+    });
+  }
+  if (cfgTtsTone) {
+    bindWallRg(cfgTtsTone, saveTtsPitch);
+    cfgTtsTone.addEventListener('change', saveTtsPitch);
+    cfgTtsTone.addEventListener('input', function () {
+      if (cfgTtsToneVal) cfgTtsToneVal.textContent = ttsPitchText(cfgTtsTone.value);
+      syncWallRg(cfgTtsTone);
+    });
+  }
+  // 最右侧的默认值：点一下就恢复（语速 1.00× / 当前发音人音调 1.00×）
+  Array.prototype.forEach.call(document.querySelectorAll('.tts-tune-default'), function (btn) {
+    btn.addEventListener('click', function () {
+      if (btn.getAttribute('data-tts-tune') === 'speed') {
+        if (!cfgTtsSpeed) return;
+        cfgTtsSpeed.value = String(TTS_DEFAULT_SPEED);
+        syncTtsTune();
+        saveTtsSpeed();
+      } else {
+        if (!cfgTtsTone) return;
+        cfgTtsTone.value = String(TTS_PITCH_DEFAULT);
+        syncTtsTune();
+        saveTtsPitch();
+      }
+    });
+  });
+  syncTtsTune();
 
   // ---------- 远程连接页：Onebot 通道 ----------
   // 顶栏胶囊里的短词（位置窄，只放 2-4 个字；完整文案在面板里）

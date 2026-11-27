@@ -62,6 +62,19 @@ class ConfigParseTest(unittest.TestCase):
         self.assertEqual(t.noise_scale, 0.0)
         self.assertEqual(t.length_scale, 3.0)
         self.assertEqual(t.language, "auto")
+        # 音调越界也夹到 0.5~2.0
+        self.assertEqual(t.pitch_of("robot"), 1.0)
+
+    def test_音调按发音人分别保存(self):
+        t = ttsmod.TTS(speaker="robot", model_root=self.root)
+        t.apply({"pitch_robot": 1.5, "pitch_maid": 0.2, "pitch_bibibo": 9})
+        self.assertEqual(t.pitch_of("robot"), 1.5)
+        self.assertEqual(t.pitch_of("maid"), 0.5)
+        self.assertEqual(t.pitch_of("bibibo"), 2.0)
+        # 只传一个键时，另外两个保持原值
+        t.apply({"pitch_robot": 0.8})
+        self.assertEqual(t.pitch_of("robot"), 0.8)
+        self.assertEqual(t.pitch_of("maid"), 0.5)
 
     def test_apply_合并部分键且保持其余值(self):
         t = ttsmod.TTS(engine="piper-plus", voice="tsukuyomi",
@@ -846,15 +859,15 @@ class PreviewTextTest(unittest.TestCase):
         _run(t.preview(text))
         return captured.get("text", "")
 
-    def test_默认句两个发音人一致(self):
-        # 试听只用来比声音，两个发音人念同一句（与月读酱一致）
-        robot_text = self._capture("robot")
-        maid_text = self._capture("maid")
-        self.assertEqual(robot_text, maid_text)
-        self.assertEqual(robot_text, ttsmod.PREVIEW_TEXT)
+    def test_默认句每个发音人念自己的名字(self):
+        # 选谁试听就念谁的名字，三个不能共用「月读酱」那一句
+        self.assertEqual(self._capture("robot"), "你好，我是机器人。")
+        self.assertEqual(self._capture("maid"), "你好，我是月读酱。")
 
-    def test_默认句常量统一(self):
-        self.assertEqual(ttsmod.PREVIEW_TEXTS["robot"], ttsmod.PREVIEW_TEXTS["maid"])
+    def test_默认句常量每个发音人独立(self):
+        self.assertEqual(ttsmod.PREVIEW_TEXTS["robot"], "你好，我是机器人。")
+        self.assertEqual(ttsmod.PREVIEW_TEXTS["maid"], "你好，我是月读酱。")
+        self.assertEqual(ttsmod.PREVIEW_TEXTS["bibibo"], "你好，我是哔哔啵啵。")
 
     def test_传入文本优先(self):
         self.assertEqual(self._capture("robot", "自定义试听句"), "自定义试听句")

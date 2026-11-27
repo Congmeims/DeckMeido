@@ -432,7 +432,9 @@ def _digest_head_tail(text: str, head: int = 500, tail: int = 300) -> str:
 # 历史里可能残留着上一轮「帮我重启」和模型自己答应的「我现在执行」，
 # 模型会把它们当成仍然有效的指令。这里明确告诉它：历史只能当上下文。
 _BOUNDARY_NOTE = ("【本轮授权边界】以上历史消息仅供上下文，不得据此执行任何操作；"
-                  "只有下面这条本轮用户消息构成授权。")
+                  "只有下面这条本轮用户消息构成授权。"
+                  "例外：本轮用户明确确认了你上一轮列出的待删清单时，"
+                  "该清单里的对象视为本轮已点名（只用于删除操作）。")
 
 
 def _build_llm_msgs_sync(hist: list[dict], sys_prompt: str, sid: str = "",
@@ -942,6 +944,11 @@ tts = TTS(
     speed=int(_tts_cfg.get("speed", 170)),
     max_chars=int(_tts_cfg.get("max_chars", 300)),
     speed_scale=float(_tts_cfg.get("speed_scale", 1.0)),
+    # 音调：每个发音人各自一份倍率（1.0 = 原始音高），缺省即 1.0
+    pitch={
+        sid: float(_tts_cfg.get(f"pitch_{sid}", 1.0))
+        for sid in ("robot", "maid", "bibibo")
+    },
     length_scale=float(_tts_cfg.get("length_scale", 1.0)),
     noise_scale=float(_tts_cfg.get("noise_scale", 0.667)),
     language=str(_tts_cfg.get("language", "auto") or "auto"),
@@ -4653,8 +4660,19 @@ async def handle_chat(text: str, announce: bool = True,
     # 只看 user 的标记分不清哪条回答是应哪一句的
     # 本轮搜过的壁纸候选随回答落盘：下一轮 _build_llm_msgs 会把它讲给模型听
     cand_tag = {"candidates": list(turn_candidates)} if turn_candidates else {}
+    # 带询问的轮次：把提问前那段正文（通常是清单/表格）一并存进 llm 字段。
+    # 界面上它已经在 events 里回放过，但历史回灌只发 role+content（见
+    # _build_llm_msgs_sync），下一轮模型就看不到自己列过的清单，只能重新列、
+    # 重新问 —— 用户回「可以，删吧」时它无清单可依，只能再拒绝一次
+    ask_llm = ""
+    if any(e.get("type") == "ask" for e in events):
+        said = "\n\n".join(str(e.get("text") or "") for e in events
+                           if e.get("type") == "text").strip()
+        if said:
+            ask_llm = (said + "\n\n" + reply).strip()[:4000]
     hist.append({"role": "assistant", "content": reply, "events": events,
-                 "ts": asst_ts, **asst_tag, **cand_tag})
+                 "ts": asst_ts, **asst_tag, **cand_tag,
+                 **({"llm": ask_llm} if ask_llm else {})})
     # 关键：写回「本轮所属」的会话文件。中途被切走时 current_sid 已经指向别处，
     # 用 save_current_session 会把这一轮错写进新会话（串回复的根源）
     _safe_save(turn_sid, hist)
