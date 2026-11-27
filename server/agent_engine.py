@@ -954,9 +954,9 @@ async def run_agent(events: list[dict], extra_system: str = "",
                         consequence = ""
                     # 人称统一用人设昵称：这条消息替主人复述操作，
                     # 说「我」分不清是 AI 还是主人（卡片标题早已在用昵称）。
-                    # 没配人设时退回「AI」
+                    # 没配人设时退回默认名 DeckMeido（与 server/persona.py 一致）
                     from . import main as _main_mod
-                    ai_name = str((_main_mod.PERSONA or {}).get("name") or "AI").strip()
+                    ai_name = str((_main_mod.PERSONA or {}).get("name") or "DeckMeido").strip()
                     reply = (f"回复「确认执行」{ai_name}就执行，说别的就当作取消。"
                              if pending["hard"] else
                              f"回复「确认」{ai_name}就执行，说别的就当作取消。")

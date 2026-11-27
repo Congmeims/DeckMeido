@@ -9990,7 +9990,7 @@
     hasPending = true;
     pendingHard = !!msg.hard;
     // 名字走人设配置（设置页里能改），没设过就兜底「AI」
-    paTitleEl.textContent = (PERSONA_NAME || 'AI') + '想执行这个操作，需要你确认';
+    paTitleEl.textContent = (PERSONA_NAME || 'DeckMeido') + '想执行这个操作，需要你确认';
     paHintEl.textContent = '手柄 A 确认 / L1 取消　·　键盘 Enter 确认 / Esc 取消';
     paEl.classList.add('show');
     paEl.hidden = false;
@@ -16766,8 +16766,8 @@
     var ack = rbEl('fullAccessAck');
     var yes = rbEl('fullAccessYes');
     var no = rbEl('fullAccessNo');
-    // 抬头用当前人设昵称（PERSONA_NAME 由 /api/config 同步），没配置时退回「AI」
-    var ai = String(PERSONA_NAME || '').trim() || 'AI';
+    // 抬头用当前人设昵称（PERSONA_NAME 由 /api/config 同步），没配置时退回默认名 DeckMeido
+    var ai = String(PERSONA_NAME || '').trim() || 'DeckMeido';
     if (body) {
       body.textContent =
         '开启后，' + ai + ' 不再向你确认任何操作，女仆长停止越界行为审批。\n\n' +
