@@ -658,15 +658,19 @@
   }
   .tl-head.clickable { cursor: pointer; }
   .tl-head.clickable:hover { color: var(--text); background: var(--hover); }
-  /* 行首文案：像「行为越界 · 女仆长介入 · 已拦截」这种整句在窄屏要能截断，
-     但 chip、耗时、箭头必须留在原位，不能被长文字挤到屏幕外 */
-  .tl-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  /* 女仆长介入的行首「行为越界 · 女仆长介入 · 已拦截」：不参与收缩。
-     之前它和判词挤在同一行，窄屏上「已拦截」被省略号整个吃掉，
-     看着只剩「行为越界 · 女仆长介入 · …」。宁可折行，也不许省略 */
+  /* 行首文案（「已运行」「已搜索」「思考」）是这一行最该看清的几个字：
+     不参与伸缩，也不设 max-width —— 只要还有省略号这条兜底路径，窄屏挤的时候
+     就会出现「已…」，看着像乱码。这里让它整段占住自己的宽度，
+     要截断、要缩的是后面的意图句和命令 chip。
+     长句（「已批准：……」）在 JS 里另挂 .tl-label-fix 折行显示，不走省略号 */
+  .tl-label { flex: none; white-space: nowrap; }
+  /* 长句行首（「已批准：……」「行为越界 · 女仆长介入 · 已拦截」）：不参与收缩，
+     宁可折行也不许省略。之前的「已拦截」就被省略号整个吃掉，
+     看着只剩「行为越界 · 女仆长介入 · …」 */
   .tl-label-fix {
-    flex: 0 0 auto; max-width: 100%;
+    flex: 0 0 auto; max-width: 100%; min-width: 0;
     overflow: visible; text-overflow: clip; white-space: normal;
+    overflow-wrap: anywhere;
   }
   /* 判词单独一行：长句自动换行，不再和命令摘要抢同一行的宽度 */
   .tl-sub {
@@ -1096,9 +1100,16 @@
     padding: 5px;
     display: none;
   }
-  /* 空间不够时向上翻：比如底部输入栏里的权限/模型下拉，向下会顶出视口 */
-  .dd.up .dd-list { top: auto; bottom: calc(100% + 5px); }
-  .dd.open .dd-list { display: block; }
+  /* 候选面板挂在 body 下的独立图层里（见 ddSelect / ddLayer）：设置页卡片带
+     backdrop-filter，会各自形成层叠上下文，面板留在卡片内部时会被后面的
+     毛玻璃卡片整块盖住。图层本身不吃点击，只有里面的面板接收事件 */
+  #ddLayer { position: fixed; inset: 0; z-index: 900; pointer-events: none; }
+  /* min-width 要清零：固定定位的百分比宽度是相对视口算的，留着 min-width:100%
+     会让面板直接铺满整屏；宽度由脚本按 trigger 实测后写死 */
+  #ddLayer .dd-list { position: fixed; min-width: 0; pointer-events: auto; }
+  /* 面板已经不在 .dd 里面，展开状态改用列表自己的 .show 控制；
+     面板是 fixed 定位，向上/向下翻由脚本按 trigger 位置算好 top/bottom */
+  .dd-list.show { display: block; }
   .dd-item {
     padding: 8px 12px; border-radius: 8px; font-size: 13px; color: var(--text);
     cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -3029,20 +3040,23 @@
      挂在 #app 里会被各栏的不透明背景盖住，挂在 body 上则位于所有内容之下、
      body 背景之上（body 背景不画时这里才看得见，见 html.wall-on 那条） */
   body::before {
-    content: ''; position: fixed; inset: 0; z-index: -1;
+    content: ''; position: fixed; z-index: -1;
+    /* 图层按铺法向外多铺一圈（--wall-inset 为负值，由 index.html 算）：
+       filter: blur() 会把图层边缘糊成半透明，露出 body 的浅色底，浅色自定 UI
+       下看着就是屏幕最外圈一圈发光。多铺的这部分落在视口之外，模糊后的透明边
+       被视口裁掉；cover/stretch 按更大的框算铺法，等于原来的「放大一点点」 */
+    inset: var(--wall-inset, 0px);
     background-image: var(--wallpaper);
     /* 铺法与焦点由设置页左上角那颗胶囊写进这几个变量：
-       填充 cover / 适应 contain / 拉伸 100% 100% / 平铺 auto+repeat / 居中 auto */
+       填充 cover / 适应 contain / 拉伸 100% 100% / 平铺 auto+repeat /
+       居中 auto（原图比屏幕大时退成 contain，完整显示不裁切） */
     background-size: var(--wall-fit, cover);
     background-position: var(--wall-pos, center);
     background-repeat: var(--wall-repeat, no-repeat);
     filter: blur(var(--wall-blur));
     opacity: calc(1 - var(--wall-dim));
     pointer-events: none;
-    /* 模糊会让边缘露出底色，稍微放大一点避免四边出现暗角；
-      放宽一点点防止模糊后边缘漏底色。适应/平铺/居中不能放大（放大就把
-       留白和原尺寸一起毁掉），由前端把 --wall-scale 置 1 */
-    transform: scale(var(--wall-scale, 1.03));
+    transform: scale(var(--wall-scale, 1));
   }
   /* 有壁纸时 body 自己的底色让位，否则会盖住 ::before */
   html.wall-on body { background: transparent; }
@@ -4328,11 +4342,10 @@
     .events::before { left: 5px; }
     .tl-ico { left: -15px; }
     .tl-head { font-size: 12.5px; gap: 5px; }
-    /* 行首文案（「已 读取 OptiSpace 安装包」）先占宽度，命令摘要 chip 收窄：
-       原来 chip 能吃到 56vw，标签被挤成「已 读取 OptiSc…」，等于看不出做了啥。
-       摘要本身就是可截断的次要信息，让给标签更划算 */
-    .tl-label { flex: 1 1 auto; }
-    .tl-chip { max-width: 40vw; font-size: 11.5px; }
+    /* 行首文案（「已运行」「已搜索」）固定占自己的宽度，窄屏只收窄命令 chip：
+       以前 chip 能吃到 52vw，把标签和意图一起挤成省略号。摘要本身就是
+       可截断的次要信息，让给标签更划算 */
+    .tl-chip { max-width: 36vw; font-size: 11.5px; }
     .tl-body { font-size: 12px; }
     /* 截图缩略图别顶满整行。这里不能再写固定 vw：气泡上限是 92%，
        图一旦比「气泡宽度 − 内边距」宽，就会从右下角顶出去 */

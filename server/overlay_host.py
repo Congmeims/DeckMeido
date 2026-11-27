@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import glob
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -53,6 +54,22 @@ def _xauthority() -> str:
     return str(home) if home.exists() else ""
 
 
+# Xwayland 不在时（切后台会话、桌面崩溃的那几秒）硬拉遮罩，每个进程都只会
+# 往 overlay.log 写一行 "The X11 connection broke ... Did the X11 server die?"，
+# 一次切换就能刷出好几条。这里先探 X11 套接字，探不到直接跳过，再冷却一会儿，
+# 等 Xwayland 回来（下一次工具调用）再拉
+_X11_COOLDOWN = 20.0
+_x11_next_try = 0.0
+
+
+def _x11_ready() -> bool:
+    """Xwayland 的本地套接字在不在：遮罩走 xcb，没它拉起来也必然掉线"""
+    disp = os.environ.get("DISPLAY") or ":0"
+    hit = re.match(r"^:(\d+)", disp)
+    num = hit.group(1) if hit else "0"
+    return Path(f"/tmp/.X11-unix/X{num}").exists()
+
+
 def _overlay_env() -> dict:
     """桌面会话环境：systemd 用户服务里默认没有 DISPLAY / XAUTHORITY"""
     m = _m()
@@ -91,9 +108,19 @@ def ensure_overlay() -> None:
 
 
 def _ensure_overlay_locked() -> None:
+    global _x11_next_try
     m = _m()
     proc = m._overlay_proc
     if proc is not None and proc.poll() is None:
+        return
+    # Xwayland 不在就别 spawn：不然每个实例都会往 overlay.log 记一行 X11 断连。
+    # 冷却期内静默跳过，只记一条后端日志，避免一轮里反复试、反复写
+    if not _x11_ready():
+        now = time.time()
+        if now >= _x11_next_try:
+            _x11_next_try = now + _X11_COOLDOWN
+            devlog.debug("overlay_host.x11_missing",
+                         display=os.environ.get("DISPLAY", ""))
         return
 
     def spawn() -> bool:

@@ -1059,6 +1059,14 @@ async def run_agent(events: list[dict], extra_system: str = "",
                 on_screen = tools.touches_screen(name, args)
                 pointer = on_screen and tools.pointer_action(name, args)
                 m.set_overlay_pointer(pointer)
+                # 切会话（steamosctl switch-to-*）会把桌面/游戏模式整套重建，
+                # Xwayland 跟着重启。遮罩是 X11 窗口：只隐藏不够，进程还握着
+                # X11 连接，Xwayland 一死照样在 overlay.log 里刷断连日志；
+                # 所以执行前先彻底收掉，切换完下一轮工具调用再重新拉起
+                if name == "run_command" and policy.steamosctl_action(
+                        str(args.get("command") or "")):
+                    m.set_overlay(False)
+                    await asyncio.to_thread(m.stop_overlay)
                 if on_screen:
                     # 拉起遮罩最长要等 6 秒旧实例退位，必须走线程，否则整个 ws 卡住
                     await m.set_overlay_async(True, activity)

@@ -177,8 +177,10 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         if not isinstance(data, dict):
             raise HTTPException(status_code=500, detail="会话文件格式异常")
         store.current_sid = data.get("id", req.id)
-        # 同样换对象：在跑的那一轮仍持有旧列表，不受切换影响
+        # 同样换对象：在跑的那一轮仍持有旧列表，不受切换影响。
+        # 顺手清掉老会话里模型照抄的内部补记（候选清单那类）
         store.history = data.get("history", [])
+        session_store.scrub_internal_notes(store.history)
         comp = data.get("compact")
         if isinstance(comp, dict) and (comp.get("summary") or comp.get("upto")):
             m._set_compact(store.current_sid, comp.get("summary") or "",
@@ -225,6 +227,8 @@ def init(require_auth, client_ip, get_main, set_overlay) -> None:
         hist = data.get("history")
         if not isinstance(hist, list):
             hist = []
+        # 只读预览同样要干净：老会话里可能留着模型照抄的候选清单
+        session_store.scrub_internal_notes(hist)
         idx = store.index().get(sid) or {}
         return {
             "ok": True,

@@ -3373,6 +3373,54 @@ def _seen_mark(sig: str) -> None:
     del _SEEN_URLS[:-SEEN_LIMIT]
 
 
+# 已出名单落盘：只放内存里的话，后端一重启（部署、客户端重拉、崩溃重启）
+# 整份名单就清零，下一批又开始端出前面几批的原图——用户看到的就是
+# 「换了关键词还是同一批图」。只持久化内容指纹（sha1:xxx）：URL 通常很长，
+# 而且同一张图换个镜像地址后 URL 本来就拦不住，跨重启真正稳定的是内容指纹。
+_SEEN_FILE = "wallpaper_seen.json"
+_seen_loaded = False
+
+
+def _seen_file():
+    from . import paths
+    return paths.data_dir() / _SEEN_FILE
+
+
+def _seen_load() -> None:
+    """首次搜图前把上个进程留下的指纹读回来（读失败就当没有，不影响搜图）"""
+    global _seen_loaded
+    if _seen_loaded:
+        return
+    _seen_loaded = True
+    try:
+        data = json.loads(_seen_file().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except Exception as exc:
+        devlog.debug("tools.seen_load", error=repr(exc))
+        return
+    items = data.get("items") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return
+    for sig in items:
+        s = str(sig or "")
+        if s.startswith("sha1:") and s not in _SEEN_URLS:
+            _SEEN_URLS.append(s)
+    del _SEEN_URLS[:-SEEN_LIMIT]
+
+
+def _seen_save() -> None:
+    """把内容指纹落盘：先写临时文件再替换，进程中途挂掉也不会留下半份 JSON"""
+    try:
+        path = _seen_file()
+        sigs = [s for s in _SEEN_URLS if s.startswith("sha1:")][-SEEN_LIMIT:]
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps({"v": 1, "items": sigs}), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception as exc:
+        devlog.debug("tools.seen_save", error=repr(exc))
+
+
 # 一轮对话里连搜几批时的批次号：只在用户看到结果前累加，
 # 让工具返回的文案自带「第 N 批」，模型回复时不会把几批说成一两批
 _BATCH_NO = 0
@@ -4081,6 +4129,9 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
         count = max(2, min(4, int(count or 4)))
     except (TypeError, ValueError):
         count = 4
+    # 先把上次进程落盘的已出指纹读回来：后端重启过（部署/客户端重拉/崩溃重启）
+    # 也不会把前面几批的原图再端一遍
+    _seen_load()
 
     # 标题里带这些词的一律不收（Bing 经常混进文章配图 / 百科条目 / 表情包 / 商品图）。
     # 单独拎出来是因为它现在是「直接否决」：Bing 那种「初音未来壁纸」标题
@@ -4196,7 +4247,7 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
         hits = sum(1 for w in word_hit if w in flat)
         return hits * 2 >= len(word_hit) + 1
 
-    def _search() -> tuple[list[dict], list[str]]:
+    def _search(page_no: int) -> tuple[list[dict], list[str]]:
         """按关键词归属挑同类图源，各搜一次、各取 SRC_REQ 张当候选池。
 
         只在题材对口的图源里随机抽（核心源保底），同一个关键词每批的来源
@@ -4217,7 +4268,7 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
                 return query if random.random() < 0.5 else en
             return en
 
-        def _ask(group, en: str) -> tuple[list[dict], list[str]]:
+        def _ask(group, en: str, page_no: int) -> tuple[list[dict], list[str]]:
             pool: list[dict] = []
             errors: list[str] = []
             qs: dict[str, str] = {}
@@ -4230,7 +4281,7 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
                     qs[label] = q
                     # anime 每轮自己会连查 BATCH 轮，页码按 BATCH 推跟它对齐
                     if label in PAGED_SRC:
-                        p = page * BATCH + 1 if label == "anime" else page
+                        p = page_no * BATCH + 1 if label == "anime" else page_no
                         futs.append((ex.submit(fn, q, SRC_REQ, p), label))
                     else:
                         futs.append((ex.submit(fn, q, SRC_REQ), label))
@@ -4266,14 +4317,14 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
         rest_pool = [s for s in allowed if s[0] not in _WP_KIND_CORE[kind]]
         picked = list(core) + random.sample(
             rest_pool, min(max(0, SAMPLE_N - len(core)), len(rest_pool)))
-        pool, errors = _ask(picked, en_query)
+        pool, errors = _ask(picked, en_query, page_no)
         # 抽中的源凑不够（挂掉/没对上词），再从同类里剩下的源抽一批补位。
         # 只在同类图源里补，不再回落到全部 10 个源
         if len(pool) < count * 3:
             rest = [s for s in allowed if s not in picked]
             extra = random.sample(rest, min(SAMPLE_N, len(rest)))
             if extra:
-                more, more_err = _ask(extra, en_query)
+                more, more_err = _ask(extra, en_query, page_no)
                 pool += more
                 errors += more_err
                 picked += extra
@@ -4287,17 +4338,124 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
                 alt = " ".join(core_words[:size])
                 if not alt or alt == " ".join(words):
                     continue
-                again = _ask(picked, alt)
+                again = _ask(picked, alt, page_no)
                 if again[0]:
                     return again
         return pool, errors
 
+    async def _pick(pool: list[dict]) -> tuple[list[dict], str]:
+        """从候选池里挑出这一批能用的图，返回（成品列表, 最后一个下载错误）"""
+        # 同一轮里换个说法再搜（「蓝色档案 日鞠」→「日鞠」）时，二次元库用的
+        # 是同一套 tag：同一个帖子会被两条不同的标签各查出来一次，URL 各不相同，
+        # 只有 booru 的 post id（就在 title 里）是一样的。整个池子先按 id 拦一道
+        seen_ids: set[str] = set()
+        dedup: list[dict] = []
+        for r in pool:
+            if r.get("tags") and r.get("title"):
+                key = "post:" + str(r["title"])
+                if key in seen_ids:
+                    continue
+                seen_ids.add(key)
+            dedup.append(r)
+        pool = dedup
+        seen: set[str] = set(_SEEN_URLS)
+        queues: dict[str, list[dict]] = {}
+        for r in pool:
+            url = str(r.get("image") or "").strip()
+            if not url or url in seen or not re.match(r"^https?://", url, re.I):
+                continue
+            # booru 的 title 就是 post id；同一个帖子换个标签再查一次时 id 不变
+            if r.get("tags") and r.get("title"):
+                key = "post:" + str(r["title"])
+                if key in seen_ids:
+                    continue
+                seen_ids.add(key)
+            seen.add(url)
+            queues.setdefault(str(r.get("src")), []).append(r)
+        # 池子里兜底补的 Bing 图片多半是文章配图/站点缩略图，排到最后：
+        # 别的源用完还不够数时才轮到它们（以前它插在二次元库后面）
+        strong: list[dict] = []
+        weak: list[dict] = []
+        for r in pool:
+            (weak if r.get("src") == "bing" else strong).append(r)
+        ordered = strong + weak
+
+        # 下载量放宽：有的图库给的是防盗链直链，下不到的自动跳过；
+        # 同一个关键词反复搜时轮到更靠后的图库，池子也要够深
+        picked: list[dict] = []
+        tried = 0
+        used_src: dict[str, int] = {}
+        hashes: set[str] = set()      # 这一批内容指纹，同批两张一样的只留一张
+        last_err = ""
+        while len(picked) < count and tried < count * 5 and ordered:
+            tried += 1
+            # 每张成品尽量来自不同图库：单源已经占了 count-1 张就先跳过去，
+            # 让前两张分别是壁纸库和通用图片，不会出现 4 张全是一个来源
+            r = None
+            for i, cand in enumerate(ordered):
+                if used_src.get(cand["src"], 0) >= count - 1:
+                    continue
+                r = ordered.pop(i)
+                break
+            if r is None:
+                r = ordered.pop(0)
+            # 同一个帖子换 URL（jpeg 版 / 原图版）还会漏过来一次，再按 id 拦一道
+            if r.get("tags") and r.get("title"):
+                key = "post:" + str(r["title"])
+                if key in hashes:
+                    continue
+                hashes.add(key)
+            raw, err = await _fetch_image(r["image"], themecolor.WALLPAPER_MAX)
+            if not raw:
+                last_err = err or last_err
+                continue
+            # 不同 URL 指向同一张图（转载、镜像、同人重复投稿）也算重复：
+            # 按内容算指纹，已经在最近几批里出过的直接丢
+            sig = "sha1:" + hashlib.sha1(raw).hexdigest()
+            if sig in hashes or sig in seen:
+                continue
+            try:
+                cid, _ext = await asyncio.to_thread(themecolor.save_candidate, raw, False)
+            except ValueError as e:
+                last_err = str(e) or last_err
+                continue
+            hashes.add(sig)
+            used_src[r["src"]] = used_src.get(r["src"], 0) + 1
+            picked.append({"id": cid, "url": themecolor.candidate_url(cid),
+                           # src_url / sig 只给后端自己用（下一轮去重），不下发给前端
+                           "src_url": r["image"], "sig": sig,
+                           "title": str(r.get("title") or "")[:80]})
+        return picked, last_err
+
+    attempts = 0
+    picked: list[dict] = []
+    last_err = ""
     try:
-        pool, errors = await asyncio.to_thread(_search)
+        pool, errors = await asyncio.to_thread(_search, page)
     except Exception as e:
         return (f"搜图失败：{e}。可以换个关键词再试，"
                 "风景/动漫类用英文关键词（如 scenic landscape、anime portrait）"
                 "命中率更高。")
+
+    # 复杂度兜底：池子里有货但全被已出名单挡掉时往后翻页再找。
+    # 最常见的就是后端重启后翻页计数回到第 1 页（「已出名单」是落盘的、还在），
+    # 那一页的图全是名单里的，不翻页就只能回「都没下载成」
+    while True:
+        if pool:
+            picked, last_err = await _pick(pool)
+        if picked or attempts >= 2:
+            break
+        attempts += 1
+        try:
+            more, more_err = await asyncio.to_thread(_search, page + attempts)
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+            break
+        errors += more_err
+        if not more:
+            break
+        pool = more
+
     if not pool:
         # errors 里可能一条都没有（各源都正常返回、只是全被筛掉了），
         # 那就别把空括号甩给模型，直接说没对上
@@ -4305,98 +4463,21 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
         return (f"没搜到能用的图片（{why}）。"
                 "换一组更常见的名词再搜一次。")
 
-    # 同一轮里换个说法再搜（「蓝色档案 日鞠」→「日鞠」）时，二次元库用的
-    # 是同一套 tag：同一个帖子会被两条不同的标签各查出来一次，URL 各不相同，
-    # 只有 booru 的 post id（就在 title 里）是一样的。整个池子先按 id 拦一道
-    seen_ids: set[str] = set()
-    dedup: list[dict] = []
-    for r in pool:
-        if r.get("tags") and r.get("title"):
-            key = "post:" + str(r["title"])
-            if key in seen_ids:
-                continue
-            seen_ids.add(key)
-        dedup.append(r)
-    pool = dedup
-    seen: set[str] = set(_SEEN_URLS)
-    queues: dict[str, list[dict]] = {}
-    for r in pool:
-        url = str(r.get("image") or "").strip()
-        if not url or url in seen or not re.match(r"^https?://", url, re.I):
-            continue
-        # booru 的 title 就是 post id；同一个帖子换个标签再查一次时 id 不变
-        if r.get("tags") and r.get("title"):
-            key = "post:" + str(r["title"])
-            if key in seen_ids:
-                continue
-            seen_ids.add(key)
-        seen.add(url)
-        queues.setdefault(str(r.get("src")), []).append(r)
-    # 池子里兜底补的 Bing 图片多半是文章配图/站点缩略图，排到最后：
-    # 别的源用完还不够数时才轮到它们（以前它插在二次元库后面）
-    strong: list[dict] = []
-    weak: list[dict] = []
-    for r in pool:
-        (weak if r.get("src") == "bing" else strong).append(r)
-    ordered = strong + weak
-
-    # 下载量放宽：有的图库给的是防盗链直链，下不到的自动跳过；
-    # 同一个关键词反复搜时轮到更靠后的图库，池子也要够深
-    picked: list[dict] = []
-    tried = 0
-    used_src: dict[str, int] = {}
-    hashes: set[str] = set()      # 这一批内容指纹，同批两张一样的只留一张
-    last_err = ""
-    while len(picked) < count and tried < count * 5 and ordered:
-        tried += 1
-        # 每张成品尽量来自不同图库：单源已经占了 count-1 张就先跳过去，
-        # 让前两张分别是壁纸库和通用图片，不会出现 4 张全是一个来源
-        r = None
-        for i, cand in enumerate(ordered):
-            if used_src.get(cand["src"], 0) >= count - 1:
-                continue
-            r = ordered.pop(i)
-            break
-        if r is None:
-            r = ordered.pop(0)
-        # 同一个帖子换 URL（jpeg 版 / 原图版）还会漏过来一次，再按 id 拦一道
-        if r.get("tags") and r.get("title"):
-            key = "post:" + str(r["title"])
-            if key in hashes:
-                continue
-            hashes.add(key)
-        raw, err = await _fetch_image(r["image"], themecolor.WALLPAPER_MAX)
-        if not raw:
-            last_err = err or last_err
-            continue
-        # 不同 URL 指向同一张图（转载、镜像、同人重复投稿）也算重复：
-        # 按内容算指纹，已经在最近几批里出过的直接丢
-        sig = "sha1:" + hashlib.sha1(raw).hexdigest()
-        if sig in hashes or sig in seen:
-            continue
-        try:
-            cid, _ext = await asyncio.to_thread(themecolor.save_candidate, raw, False)
-        except ValueError as e:
-            last_err = str(e) or last_err
-            continue
-        hashes.add(sig)
-        used_src[r["src"]] = used_src.get(r["src"], 0) + 1
-        picked.append({"id": cid, "url": themecolor.candidate_url(cid),
-                       # src_url / sig 只给后端自己用（下一轮去重），不下发给前端
-                       "src_url": r["image"], "sig": sig,
-                       "title": str(r.get("title") or "")[:80]})
-
     if not picked:
-        # 这一批一张都没下成：不动 _SEEN_URLS 和 LAST_CANDIDATES，让「换一批」
-        # 仍然躲开前面几批已经出过的图，别把旧图又端回来。
-        # 把真实的失败原因带回去：以前这里只拼 errors（百度/维基那些源没报错
-        # 时就是空括号），模型只能自己猜，用户看到的是「都下载失败（）」
-        why = "；".join(errors) if errors else ""
+        # 这一批一张都没出：不动 _SEEN_URLS，让「换一批」仍然躲开前面几批
+        # 已经出过的图，别把旧图又端回来。
+        # LAST_CANDIDATES 必须清空：agent_engine / main 是直接拿它给前端画卡片的，
+        # 留着上一批的话，这次明明没搜到新图，界面上又铺一遍旧图（用户看到的就是
+        # 「全是重复的」），而且新的事件里挂的是上一批的 id，点下去挺莫名其妙
+        LAST_CANDIDATES.clear()
         if last_err:
-            why = (why + "；" if why else "") + last_err
-        return ("图库找到了图片但都没下载成"
-                + (f"（{why}）" if why else "") +
-                "。换一组更通用的关键词再搜一次（例如 scenic landscape、anime wallpaper），"
+            return ("图库里这些图都没下载成（" + last_err + "）。"
+                    "换一组更通用的关键词再搜一次（例如 scenic landscape、anime wallpaper），"
+                    "或者直接用 set_wallpaper 指定一张图片网址。")
+        # 池子里有货却一张没出，就是全被内容指纹挡掉了（都是前面几批的老图）
+        why = ("；" + "；".join(errors)) if errors else ""
+        return ("找到的图都是前面几批出过的（内容完全一样，已经过滤掉了" + why + "）。"
+                "换一组更具体的关键词（换个角色名/作品名）再搜一次，"
                 "或者直接用 set_wallpaper 指定一张图片网址。")
     LAST_CANDIDATES[:] = picked
     # 整批落盘之后再裁一次旧图：这时这批 id 已经进了 LAST_CANDIDATES，
@@ -4408,8 +4489,11 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
     for c in picked:
         _seen_mark(str(c.get("src_url") or ""))
         _seen_mark(str(c.get("sig") or ""))
-    # 记下这次用的词：同一个词再来一次就从第 2 页取，出的是另一批图
-    _RECENT_QUERIES.append(key)
+    _seen_save()
+    # 记下这次用的词：同一个词再来一次就从第 2 页取，出的是另一批图。
+    # 上面自动翻页试了几页就记几次，下次接着往后翻，不会又回到被试空的那几页
+    for _ in range(1 + attempts):
+        _RECENT_QUERIES.append(key)
     del _RECENT_QUERIES[:-6]
     # 结果文本给模型看，前端另有一份候选列表可渲染；两者顺序一致，编号从 1 开始。
     # 同一轮对话里可能连搜好几次，编号各自从 1 开始，得让模型知道这是第几批，

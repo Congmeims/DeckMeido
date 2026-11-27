@@ -2729,9 +2729,10 @@
     var ic = document.createElement('span');
     ic.className = 'tl-ico';
     var tx = document.createElement('span');
-    // 行首文案可能很长（如「行为越界 · 女仆长介入 · 已拦截」）：
-    // 给个可截断的类名，窄屏时省略成「…」，不至于把 chip 和耗时挤出屏幕
-    tx.className = 'tl-label';
+    // 行首文案：短标签（「已运行」「思考」）整段保留，任何宽度下都不加省略号；
+    // 长句（「已批准：……」「行为越界 · 女仆长介入 · 已拦截」）走 .tl-label-fix
+    // 折行显示，也不用省略号——否则窄屏上会剩一个「已…」，根本读不出做了什么
+    tx.className = 'tl-label' + (text.length > 10 ? ' tl-label-fix' : '');
     tx.textContent = text;
     head.appendChild(ic); head.appendChild(tx);
     head.addEventListener('click', function () {
@@ -12464,7 +12465,8 @@
       });
     }
     // 预览框里的图也按同样的铺法显示：换一种就能看到裁在哪，不用回主界面确认。
-    // 平铺/居中在这么小的框里没法如实表现，退化成 cover / contain 的近似
+    // 平铺在这么小的框里没法如实表现，退化成 cover；居中现在按「完整显示」处理，
+    // 和 contain 一致
     var pv = wallPreview && wallPreview.querySelector('img');
     if (pv) {
       pv.style.objectFit = fit === 'stretch' ? 'fill'
@@ -16142,6 +16144,8 @@
       empty.className = 'field-hint';
       empty.textContent = '还没有预设：在 Deck 上运行游戏后，用插件端的「存为预设」保存当前提示词。';
       presetEditorEl.appendChild(empty);
+      // 自绘胶囊的文案不会跟着 option 变，得手动刷一次
+      ddRefreshAll();
       return;
     }
     presetItems.forEach(function (item) {
@@ -16157,6 +16161,8 @@
     presetSelectEl.value = presetEditing;
     var editing = presetItems.filter(function (item) { return item.id === presetEditing; })[0];
     if (editing) presetEditorEl.appendChild(buildPresetEditor(editing, cur));
+    // 选项是整体重建的，自绘胶囊的 label 必须重刷，否则还停在旧预设名上
+    ddRefreshAll();
   }
 
   if (presetSelectEl) {
@@ -17578,6 +17584,19 @@
   // 所以既有的 .value 读取、change 监听、innerHTML 动态填充（模型/记忆类型）都不受影响。
   var _ddOpen = null;   // 当前打开的自定义下拉实例
 
+  // 候选面板挂到 body 下的独立图层。设置页的卡片带 backdrop-filter，会形成
+  // 新的层叠上下文：面板留在卡片内部时，后面的毛玻璃卡片会盖在它上面
+  // （下拉一展开就钻进下一张卡片的雾里）。挂到顶层后靠 fixed 坐标定位
+  var _ddLayer = null;
+  function ddLayer() {
+    if (!_ddLayer) {
+      _ddLayer = document.createElement('div');
+      _ddLayer.id = 'ddLayer';
+      document.body.appendChild(_ddLayer);
+    }
+    return _ddLayer;
+  }
+
   function ddSelect(sel) {
     if (!sel || sel._dd) return;
     var wrap = document.createElement('span');
@@ -17590,7 +17609,7 @@
     var list = document.createElement('div');
     list.className = 'dd-list';
     wrap.appendChild(trig);
-    wrap.appendChild(list);
+    ddLayer().appendChild(list);
     sel.parentNode.insertBefore(wrap, sel);
     wrap.appendChild(sel);
     if (sel.id === 'modelSelect') wrap.classList.add('dd-model');
@@ -17613,10 +17632,11 @@
     refreshLabel();  // 建出来就先给占位文案，别等 /api/config 回来才不是空条
     function close() {
       wrap.classList.remove('open');
+      list.classList.remove('show');
       if (_ddOpen === sel) _ddOpen = null;
     }
     function open() {
-      if (_ddOpen && _ddOpen !== sel) _ddOpen._dd.wrap.classList.remove('open');
+      if (_ddOpen && _ddOpen !== sel) _ddOpen._dd.close();
       _ddOpen = sel;
       refreshLabel();
       // 每次打开都从 select.options 现建候选，动态填充（模型列表异步拉回）也能跟上
@@ -17639,29 +17659,44 @@
         })(o.value);
       }
       wrap.classList.add('open');
-      // 向下放不下就向上翻（底部输入栏的权限/模型下拉）：先加 open 让列表有真实尺寸，
-      // 再量 trigger 底部到视口底的距离，不够列表高就切 .up
+      list.classList.add('show');
+      // 面板在顶层图层里，用 fixed 坐标贴着 trigger；宽度至少 140px 保证
+      // 窄胶囊里的选项也能读全，贴到视口右边时往左收，不顶出屏幕
       var tr = trig.getBoundingClientRect();
+      var w = Math.min(Math.max(tr.width, 140), window.innerWidth - 16);
+      var left = Math.max(8, Math.min(tr.left, window.innerWidth - 8 - w));
+      list.style.left = left + 'px';
+      list.style.width = w + 'px';
+      // 向下放不下就向上翻（底部输入栏的权限/模型下拉）
       var needH = Math.min(list.scrollHeight, 260) + 8;
       var below = window.innerHeight - tr.bottom;
-      wrap.classList.toggle('up', below < needH && tr.top > needH);
+      if (below < needH && tr.top > needH) {
+        list.style.top = 'auto';
+        list.style.bottom = (window.innerHeight - tr.top + 5) + 'px';
+      } else {
+        list.style.bottom = 'auto';
+        list.style.top = (tr.bottom + 5) + 'px';
+      }
     }
     trig.addEventListener('click', function (e) {
       e.stopPropagation();
       if (wrap.classList.contains('open')) close(); else open();
     });
+    sel._dd.close = close;
     refreshLabel();
   }
   function ddInitAll() {
     [['permSelect'], ['modelSelect'], ['setModelSelect'], ['memKind'], ['cfgPerm'],
-     ['cfgLanEnable'], ['usageApiSelect'], ['usageSessionSelect']]
+     ['cfgLanEnable'], ['usageApiSelect'], ['usageSessionSelect'],
+     ['presetSelect'], ['cfgLang'], ['cfgDevMode']]
       .forEach(function (id) { ddSelect(document.getElementById(id)); });
   }
   // config/模型列表异步加载后，select.value 被恢复但 label 没跟着变，
   // 强刷会导致下拉框显示第一个选项。这里统一按各自 value 刷新一次 label
   function ddRefreshAll() {
     ['permSelect', 'modelSelect', 'setModelSelect', 'memKind', 'cfgPerm',
-     'cfgLanEnable', 'usageApiSelect', 'usageSessionSelect']
+     'cfgLanEnable', 'usageApiSelect', 'usageSessionSelect',
+     'presetSelect', 'cfgLang', 'cfgDevMode']
       .forEach(function (id) {
         var el = document.getElementById(id);
         if (el && el._dd && el._dd.refresh) el._dd.refresh();
@@ -17669,9 +17704,18 @@
   }
   document.addEventListener('click', function (e) {
     if (_ddOpen) {
-      var d = _ddOpen._dd.wrap;
-      if (!d.contains(e.target)) { d.classList.remove('open'); _ddOpen = null; }
+      var d = _ddOpen._dd;
+      // 面板现在挂在 body 图层里，不在 wrap 内：点面板自身（含滚动条）不算点外面
+      if (!d.wrap.contains(e.target) && !d.list.contains(e.target)) d.close();
     }
+  });
+  // 面板是 fixed 定位，页面一滚就会和 trigger 分家（设置页整页可滚），
+  // 滚轮/拖动滚动条时直接收起；窗口尺寸变了同理
+  document.addEventListener('scroll', function (e) {
+    if (_ddOpen && !_ddOpen._dd.list.contains(e.target)) _ddOpen._dd.close();
+  }, true);
+  window.addEventListener('resize', function () {
+    if (_ddOpen) _ddOpen._dd.close();
   });
 
   loadToolbar();
@@ -17730,6 +17774,11 @@
     // 它每次都会重算全部内联变量，并清掉当前用不上的壁纸/品牌变量
     if (typeof applyCfgAppearance === 'function') applyCfgAppearance();
   }
+  // 壁纸原图尺寸缓存必须在这里初始化：紧接着的首帧 applyTheme 就会调到
+  // applyCfgAppearance（函数声明会提升），居中铺法要读 wallNatSize.url；
+  // 声明留到文件后段的话这里还是 undefined，一读就抛异常，
+  // 后面的初始化（手机抽屉、系统状态轮询）全部不再执行
+  var wallNatSize = { url: '', w: 0, h: 0 };
   // 先拿本地缓存画一帧（防闪），后端快照 /api/theme 回来后以它为准：
   // 主题、壁纸、配色、透明度、模糊、毛玻璃全部以后端配置为唯一来源
   // 首帧只按本地缓存画，不当成本端主动切档：不该写回配置，也不该占住
@@ -17908,6 +17957,21 @@
     }
     return theme;
   }
+  // 「居中」要判断原图是不是比屏幕大（大就缩到完整显示，不裁切）。原图尺寸
+  // 只在需要时量一次，量到后如果当前还是居中铺法就重画一遍
+  // （wallNatSize 的声明提前到了首帧 applyTheme 之前，见上文）
+  function ensureWallNatSize(url) {
+    if (!url || wallNatSize.url === url) return;
+    wallNatSize = { url: url, w: 0, h: 0 };
+    var im = new Image();
+    im.onload = function () {
+      if (wallNatSize.url !== url) return;
+      wallNatSize.w = im.naturalWidth;
+      wallNatSize.h = im.naturalHeight;
+      if (String((CFG_APPEARANCE || {}).wall_fit || '') === 'center') applyCfgAppearance();
+    };
+    im.src = url;
+  }
   function applyCfgAppearance(theme, keepTune) {
     // 旧刻度的配置先换算成新刻度（0~100 / 0~12），再进下面的逻辑
     theme = themeScale(theme);
@@ -17994,25 +18058,37 @@
     // 模糊就是实际 px：0~12 直接用在 CSS 上，不再做平方根收口
     var blurRaw = Math.max(0, Math.min(12, Number(a.blur) || 0));
     var blur = blurRaw;
-    // 壁纸铺法：stretch 落成 100% 100%；contain 时不能再用 scale(1.03) 放大兜边，
-    // 否则四周的留白又被裁掉一块，「完整显示」就不完整了
+    // 壁纸铺法：stretch 落成 100% 100%；cover 照旧放大一点点兜住模糊边；
+    // 平铺 auto+repeat；「居中」= 原图尺寸居中，原图比屏幕大时缩到 contain
+    // 完整显示（不裁切、也不放大，和「适应」的区别只在原图比屏幕小的场合）
     var wallFit = String(a.wall_fit || 'cover');
+    if (on && wallFit === 'center') ensureWallNatSize(a.url);
+    var centerSmall = wallNatSize.url === a.url && wallNatSize.w > 0 &&
+                      wallNatSize.w <= window.innerWidth && wallNatSize.h <= window.innerHeight;
+    // 模糊会把图层边缘糊成半透明，露出 body 的浅色底——浅色自定 UI 下就是屏幕
+    // 最外圈一圈发光。铺满屏幕的铺法（cover/stretch/tile）把壁纸层向四周多铺
+    // blur*2+6 px，模糊后的透明边落到视口外被裁掉，模糊效果保留；contain/center
+    // 不能外扩（会把「完整显示」裁掉一圈、或改掉原图尺寸），这两种不启用模糊
+    var edgeSafe = (wallFit === 'cover' || wallFit === 'stretch' || wallFit === 'tile');
+    var wallPad = edgeSafe ? (blur * 2 + 6) : 0;
     var vars = {
       '--wallpaper': on ? 'url("' + a.url + '")' : 'none',
       // 「压暗壁纸」实际做的事是让上层 UI 变透明：0 = 面板全实、壁纸完全被
       // 挡住；100 = 面板全透，壁纸完全露出来
       // 新装默认 70%（面板 30% 不透明），壁纸 2px 模糊 + 8px 毛玻璃
       '--wall-dim': '0',
-      '--wall-blur': (Math.round(blur * 2) / 2) + 'px',
+      '--wall-blur': (edgeSafe ? (Math.round(blur * 2) / 2) : 0) + 'px',
       '--panel-alpha': on ? String(1 - dim / 100) : '1',
       // 铺法与焦点：填充 cover / 适应 contain / 拉伸 100% 100% / 平铺 auto+repeat /
-      // 居中 auto（保持原尺寸）。平铺与居中不能放大兜边，会变成「放大后的平铺」
+      // 居中 auto（原图比屏幕大时用 contain 完整显示）
       '--wall-fit': wallFit === 'stretch' ? '100% 100%'
                   : (wallFit === 'cover' ? 'cover'
-                  : (wallFit === 'contain' ? 'contain' : 'auto')),
+                  : (wallFit === 'contain' ? 'contain'
+                  : (wallFit === 'center' ? (centerSmall ? 'auto' : 'contain') : 'auto'))),
       '--wall-repeat': wallFit === 'tile' ? 'repeat' : 'no-repeat',
       '--wall-pos': String(a.wall_pos || 'center'),
       '--wall-scale': (wallFit === 'cover' || wallFit === 'stretch') ? '1.03' : '1',
+      '--wall-inset': (-wallPad) + 'px',
       // 毛玻璃强度跟随后端（所有端共用一套外观）；旧快照没有这一项时等于 0
       '--glass': Math.max(0, Math.min(20, Math.round(Number(a.glass) || 0))) + 'px'
     };
@@ -18096,7 +18172,7 @@
   function clearCfgAppearanceVars() {
     var html = document.documentElement;
     ['--wallpaper', '--wall-dim', '--wall-blur', '--panel-alpha', '--glass',
-     '--wall-fit', '--wall-pos', '--wall-scale', '--wall-repeat',
+     '--wall-fit', '--wall-pos', '--wall-scale', '--wall-repeat', '--wall-inset',
      '--brand', '--user-bubble', '--bg', '--surface', '--surface-2', '--muted-base',
      '--on-brand', '--on-user', '--logo-glow', '--logo-glow-soft',
      '--ri-brand'].forEach(function (k) {

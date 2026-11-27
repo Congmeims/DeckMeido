@@ -437,6 +437,14 @@ _BOUNDARY_NOTE = ("【本轮授权边界】以上历史消息仅供上下文，�
                   "该清单里的对象视为本轮已点名（只用于删除操作）。")
 
 
+# 模型会把发给它的「壁纸候选补记」当成自己说过的话照抄进正文：老会话里已经
+# 抄进去的那几条，之后每一轮它都会跟着自己重复（气泡里冒出「用户」「candidate_id」
+# 这些内部措辞）。落盘和回灌都按标记截掉；读盘时也会用同一份逻辑清老会话
+def _strip_internal_notes(text: str) -> str:
+    """截掉模型照抄的内部补记（标记之后整段不要）"""
+    return session_store.strip_internal_notes(text)
+
+
 def _build_llm_msgs_sync(hist: list[dict], sys_prompt: str, sid: str = "",
                          hist_max: int = 0, item_max_chars: int = 0) -> list[dict]:
     """构造发给模型的 messages：摘要 + 压缩游标之后的原文
@@ -504,21 +512,27 @@ def _build_llm_msgs_sync(hist: list[dict], sys_prompt: str, sid: str = "",
         if (item_max_chars > 0 and isinstance(content, str)
                 and len(content) > item_max_chars):
             content = content[:item_max_chars] + "…"
-        # 那一轮搜过壁纸时，把候选清单补在这条回答后面。工具往返本身不进历史，
-        # 不补的话模型下一轮就忘了自己给过哪几张，用户回「3」它只能反问一遍
-        cands = m.get("candidates")
-        if cands and isinstance(content, str):
-            lines = [f"{c['no']}. {c.get('title') or '（无标题）'} · id={c['id']}"
-                     for c in cands]
-            content = (content + "\n\n【这一轮展示给用户的壁纸候选，用户可能用编号回复】\n"
-                       + "\n".join(lines) +
-                       "\n注意：同一轮对话里可能搜过好几批，各批编号都从 1 开始。"
-                       "用户回复的编号若带着 candidate_id（形如「3（candidate_id=xxx）」），"
-                       "以 candidate_id 为准直接传给 set_wallpaper；没有 id 时才按最近一批理解。")
+        # 老会话里可能留着模型照抄的候选补记，回灌前先截掉
+        if m["role"] == "assistant" and isinstance(content, str):
+            content = _strip_internal_notes(content)
         # 历史里还存了 ts / events 供界面回放，发给模型时只保留 role 和 content
         msgs.append({"role": m["role"], "content": content,
                      "tool_calls": m.get("tool_calls"),
                      "tool_call_id": m.get("tool_call_id")})
+        # 那一轮搜过壁纸时，候选清单作为一条独立的系统补记插在这条回答后面。
+        # 以前是拼进 assistant 正文发给模型，模型看见「自己说过」这段话，
+        # 下一轮就照抄进气泡，把「用户」「candidate_id」这些内部措辞念给主人看。
+        # 放在 system 里同样能让它记住给过哪几张，但不是它该说的话，也不容易被复述
+        cands = m.get("candidates")
+        if cands and isinstance(content, str):
+            lines = [f"{c['no']}. {c.get('title') or '（无标题）'} · id={c['id']}"
+                     for c in cands]
+            msgs.append({"role": "system", "content":
+                         "【壁纸候选记录（系统补记，只供你自己记住，不要复述）】\n"
+                         + "\n".join(lines) +
+                         "\n主人可能用编号回复；若带着 candidate_id"
+                         "（形如「3（candidate_id=xxx）」），以 candidate_id 为准"
+                         "直接传给 set_wallpaper；只有编号时按最近一批理解。"})
     # 只在最后一条用户消息（本轮提问）前插一条边界说明：
     # 历史里已经有同款提示时不再重复堆叠，别把 prompt 撑爆
     if not any(isinstance(m.get("content"), str)
@@ -4279,6 +4293,9 @@ def _apply_reply_policy(reply: str, pol: policy.TurnPolicy) -> str:
     群友档的长度/脱敏必须在代码层兜底，不能只靠提示词；主人档这两项都是关闭的。
     """
     out = str(reply or "")
+    # 模型偶尔会把内部补记（候选清单等）照抄进正文，落盘/广播前先截掉，
+    # 不然这条气泡会被下一轮的自己继续模仿
+    out = _strip_internal_notes(out)
     if pol.redact:
         out, changed = onebot.redact_output(out)
         if changed:
@@ -4613,6 +4630,8 @@ async def handle_chat(text: str, announce: bool = True,
         killed_text = "\n\n".join(s.strip() for s in killed_segs if s.strip()).strip()
         if partial.strip() and partial.strip() not in killed_text:
             killed_text = (killed_text + "\n\n" + partial.strip()).strip() if killed_text else partial.strip()
+        # 流式里已经吐出来的内部补记同样不进历史
+        killed_text = _strip_internal_notes(killed_text)
         # 一句话都还没说出口就被终止时（工具刚开跑就点了终止），
         # 以前会落一条 content 为空串的 assistant 消息 —— 会话里看着像「没有回答」，
         # 用户也看不到到底跑过什么。这里把已执行的步骤和结果补成正文

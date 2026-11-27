@@ -46,6 +46,35 @@ _IO = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sess-io")
 # 拆出去以后流式落盘只写这一个几 KB 到几十 KB 的小文件，与主文件大小无关。
 _SIDE_SUFFIX = ".side.json"
 
+# 模型会把发给它的内部补记（壁纸候选清单）当成自己说过的话照抄进正文，
+# 老会话里已经写进去的那几条气泡会一直被它自己模仿。新回复在 main 落盘前
+# 已按这个标记截掉，这里再在读盘时清一遍，历史旧气泡也就跟着干净了。
+_INTERNAL_NOTE_RE = re.compile(
+    r"\n*【(?:这一轮展示给用户的壁纸候选|壁纸候选记录)[^】\n]*】")
+
+
+def strip_internal_notes(text: str) -> str:
+    """截掉照抄的内部补记（标记之后整段不要）"""
+    if not text or "【" not in text:
+        return text
+    hit = _INTERNAL_NOTE_RE.search(text)
+    return text[:hit.start()].rstrip() if hit else text
+
+
+def scrub_internal_notes(hist: list | None) -> None:
+    """清掉会话里照抄的内部补记：assistant 正文、llm 字段与 text 事件"""
+    for m in hist or []:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        if isinstance(m.get("content"), str):
+            m["content"] = strip_internal_notes(m["content"])
+        if isinstance(m.get("llm"), str):
+            m["llm"] = strip_internal_notes(m["llm"])
+        for ev in m.get("events") or []:
+            if (isinstance(ev, dict) and ev.get("type") == "text"
+                    and isinstance(ev.get("text"), str)):
+                ev["text"] = strip_internal_notes(ev["text"])
+
 
 def _side_path(p: Path) -> Path:
     return p.with_name(p.stem + _SIDE_SUFFIX)
@@ -713,6 +742,8 @@ class SessionStore:
                 self.intent_map[sid] = dict(intent)
             else:
                 self.intent_map.pop(sid, None)
+        # 顺手清掉老会话里模型照抄的内部补记（下次保存就落回磁盘）
+        scrub_internal_notes(data.get("history"))
         data["_from_disk_mtime"] = mtime
         return data
 
