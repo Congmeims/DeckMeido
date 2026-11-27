@@ -210,6 +210,8 @@ TOOLS: list[dict] = [
                             "比在正文里列 1/2/3 更清楚。给了 options 就渲染成可点的按钮，"
                             "用户点的那一项会作为他的回答发回来；"
                             "不给 options 就是单纯把问题抛出来，等用户自己输入。"
+                            "删除类确认的选项要写成能直接照做的动作（如「按清单逐项删除（12 项）」），"
+                            "不要用「1–10 全清」「所有」「全删」这种范围说法。"
                             "调用后这一轮就结束，不要自己替用户选"),
             "parameters": {
                 "type": "object",
@@ -3382,8 +3384,17 @@ async def _fetch_image(url: str, limit: int) -> tuple[bytes | None, str]:
     if why:
         return None, why
     try:
+        headers = {"User-Agent": "DeckMeido"}
+        # 维基缩略图会把普通请求当爬虫拦掉（429），必须带联系方式；
+        # 芝加哥艺术馆的 IIIF 图片要求 AIC-User-Agent，否则一律 403
+        if "wikimedia.org" in url:
+            headers = dict(UA_BOT)
+        elif "artic.edu" in url:
+            headers = {**UA_WEB, "AIC-User-Agent": "DeckMeido (deck@steamos.local)"}
+        elif "qhimg" in url or "qhmsg" in url:
+            headers["Referer"] = "https://image.so.com/"
         async with httpx.AsyncClient(timeout=WALLPAPER_TIMEOUT, follow_redirects=True) as cli:
-            async with cli.stream("GET", url, headers={"User-Agent": "DeckMeido"}) as resp:
+            async with cli.stream("GET", url, headers=headers) as resp:
                 if resp.status_code != 200:
                     return None, f"图片地址返回 HTTP {resp.status_code}"
                 buf = bytearray()
@@ -3396,13 +3407,20 @@ async def _fetch_image(url: str, limit: int) -> tuple[bytes | None, str]:
         return None, f"下载失败 {type(e).__name__}"
 
 
-# ---------- 壁纸检索：固定用下面几个图库，不走通用搜图引擎 ----------
+# ---------- 壁纸检索：10 个图源里随机抽，不走通用搜图引擎 ----------
 # 原来用 DuckDuckGo 图片搜索，拿到的是网页里零散的缩略图：标题和画面经常对不上
 # （词不达意）、尺寸参差、夹广告图。这里改成几个能按关键词精确检索的图库，
 # 统一成 {image, title} 再走原来的下载/落盘流程。
 
-# 每个源要几张：多要一些当备胎，下载失败或内容不相关时顺位补上
-POOL_REQ = 10
+# 每次随机抽 SAMPLE_N 个源、每个源要 SRC_REQ 张，凑成候选池再挑 count 张出图。
+# 以前固定同时问所有源，同一个关键词每次都是同一批图；随机抽签后每批来源组合
+# 都不同，重复率自然降下来。
+SRC_REQ = 4
+SAMPLE_N = 4
+# 支持翻页的源：同一个关键词再搜时往后取，出的是另一批图
+PAGED_SRC = ("wallhaven", "anime", "safebooru", "bing", "so360")
+# 能直接吃中文关键词的源（其余是英文库，中文丢过去基本 0 条）
+ZH_SRC = ("bing", "so360")
 
 UA_WEB = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -3463,7 +3481,10 @@ def _anime_rows(data: list[dict], n: int, need: list[str] | None = None) -> list
         src = it.get("file_url") or it.get("jpeg_url") or ""
         w = int(it.get("width") or 0)
         h = int(it.get("height") or 0)
-        if not src or w < 1400 or (h and w * 9 < h * 16):
+        # 宽高比按 16:10（Deck 屏幕 1280x800）卡，别死守 16:9：
+        # booru 上竖图占七成，16:9 会把 16:10 的壁纸也筛掉，实测一个
+        # 标签底下 40 条只剩 2 条，派不上用场
+        if not src or w < 1400 or (h and w * 10 < h * 16):
             continue
         tags = str(it.get("tags") or "")
         low = tags.lower()
@@ -3505,7 +3526,7 @@ def _booru_json(api: str, tags: str, n: int, page: int = 1,
 
     page 用来「换一批」：同一个标签的第 2、3 页，拿到的图完全不同
     """
-    params = {"tags": tags, "limit": max(n * 3, 12)}
+    params = {"tags": tags, "limit": max(n * 8, 40)}
     if page > 1:
         # 固定按 id 倒序翻页：默认排序下翻页结果会随评分/时间漂移，
         # 同一页隔一次再要就是另一组图，去重后看着像「没换」
@@ -3621,9 +3642,9 @@ def _safe_search(query: str, n: int, page: int = 1) -> list[dict]:
         if not tags:
             continue
         params = {"page": "dapi", "s": "post", "q": "index",
-                  "json": 0, "limit": max(n * 3, 16),
+                  "json": 0, "limit": max(n * 8, 32),
                   "tags": f"{tags} sort:score width:>1400"}
-        # 翻页：一个标签底下的横图（宽 >=1400 且 16:9）常常只有十几张，
+        # 翻页：一个标签底下的横图（宽 >=1400 且 16:10 以内）常常只有十几张，
         # 永远从第 1 页取的话第二批起全是「已经出过、被 _SEEN_URLS 滤掉」，
         # 结果就是每次换一批都没换。这里让页号跟着批次一起推
         params["pid"] = page
@@ -3641,7 +3662,7 @@ def _safe_search(query: str, n: int, page: int = 1) -> list[dict]:
             src = post.get("file_url") or ""
             w = int(post.get("width") or 0)
             h = int(post.get("height") or 0)
-            if not src or w < 1400 or (h and w * 9 < h * 16):
+            if not src or w < 1400 or (h and w * 10 < h * 16):
                 continue
             t = (post.get("tags") or "").split()
             if not _safe_tags(" ".join(t)):
@@ -3721,18 +3742,20 @@ def _wm_search(query: str, n: int) -> list[dict]:
     return rows[:n]
 
 
-BING_API = "https://www.bing.com/images/async"
+BING_API = "https://cn.bing.com/images/async"
 
 
-def _bing_wallpapers(query: str, n: int) -> list[dict]:
-    """Bing 图片检索兜底：中文关键词也认（其余几个源都是英文站）
+def _bing_wallpapers(query: str, n: int, page: int = 1) -> list[dict]:
+    """Bing 图片检索：中英文都认（其余几个源多数只吃英文）
 
+    必须走 cn.bing.com 并带 Accept: text/html —— www.bing.com 现在回空响应。
     结果页里 murl 是原图地址、t 是标题；竖图直接跳过。
     """
-    params = {"q": query, "first": 0, "count": max(n * 4, 16),
-              "mkt": "zh-CN", "mmasync": 1}
+    params = {"q": query, "first": (page - 1) * max(n * 4, 16),
+              "count": max(n * 4, 16), "mkt": "zh-CN", "mmasync": 1}
     r = httpx.get(BING_API, params=params, timeout=WALLPAPER_TIMEOUT,
-                  follow_redirects=True, headers=UA_WEB)
+                  follow_redirects=True,
+                  headers={**UA_WEB, "Accept": "text/html"})
     r.raise_for_status()
     import html as _html
     rows = []
@@ -3760,6 +3783,247 @@ def _bing_wallpapers(query: str, n: int) -> list[dict]:
         if len(rows) >= n:
             break
     return rows
+
+
+SO_API = "https://image.so.com/j"
+
+
+def _so_search(query: str, n: int, page: int = 1) -> list[dict]:
+    """360 图片：中文原生召回最好的一路，中英文关键词都能搜
+
+    返回里的 img 是原图直链，但多数站点防盗链（服务器端连不上）；
+    thumb 反而是 360 CDN 按原尺寸缓存的那张（实测 1200~2560 宽），所以优先用它。
+    """
+    rn = max(n * 3, 16)
+    data = _get_json(SO_API, {"q": query, "pn": (page - 1) * rn, "rn": rn},
+                     headers={**UA_WEB, "Referer": "https://image.so.com/"})
+    rows = []
+    for it in data.get("list") or []:
+        src = str(it.get("thumb") or it.get("img") or "")
+        w, h = int(it.get("width") or 0), int(it.get("height") or 0)
+        # 混着大量商品图、头像和竖图：横图 + 够宽才留下
+        if not src.startswith(("http://", "https://")):
+            continue
+        if w and h and (w < 1200 or w <= h):
+            continue
+        title = str(it.get("title") or it.get("litetitle") or query)
+        rows.append({"image": src, "title": title[:60]})
+        if len(rows) >= n:
+            break
+    return rows
+
+
+NASA_API = "https://images-api.nasa.gov/search"
+
+
+def _nasa_search(query: str, n: int) -> list[dict]:
+    """NASA 图片库：免 key，星空/地球/航天题材命中很准
+
+    列表里的 links.href 是带 ~thumb 的缩略图地址，换成 ~orig 就是原图；
+    少数条目没有原图版本，下载失败会在主流程里自动跳过。
+    """
+    data = _get_json(NASA_API, {"q": query, "media_type": "image",
+                                "page_size": max(n * 2, 8)})
+    rows = []
+    for it in data.get("collection", {}).get("items") or []:
+        link = (it.get("links") or [{}])[0] or {}
+        src = str(link.get("href") or "")
+        if not src.startswith(("http://", "https://")):
+            continue
+        src = (src.replace("~thumb", "~orig").replace("~small", "~orig")
+               .replace("~medium", "~orig").replace("~large", "~orig"))
+        meta = (it.get("data") or [{}])[0] or {}
+        rows.append({"image": src, "title": str(meta.get("title") or "")[:60]})
+        if len(rows) >= n:
+            break
+    return rows
+
+
+ARTIC_API = "https://api.artic.edu/api/v1/artworks/search"
+ARTIC_HEAD = {**UA_WEB, "AIC-User-Agent": "DeckMeido (deck@steamos.local)"}
+
+
+def _artic_search(query: str, n: int) -> list[dict]:
+    """芝加哥艺术博物馆：免 key 的开放馆藏，油画/版画风景能当氛围壁纸
+
+    搜索接口返回 image_id，用它拼 IIIF 的 1686 宽图；竖构图跳过。
+    注意 IIIF 图片本身也要求 AIC-User-Agent，否则 403（见 _fetch_image）。
+    """
+    data = _get_json(ARTIC_API, {"q": query, "limit": max(n * 3, 12),
+                                 "fields": "id,title,image_id,thumbnail"},
+                     headers=ARTIC_HEAD)
+    iiif = str((data.get("config") or {}).get("iiif_url")
+               or "https://www.artic.edu/iiif/2").rstrip("/")
+    rows = []
+    for it in data.get("data") or []:
+        iid = str(it.get("image_id") or "")
+        th = it.get("thumbnail") or {}
+        w, h = int(th.get("width") or 0), int(th.get("height") or 0)
+        if not iid or (w and h and w < h):
+            continue
+        rows.append({"image": f"{iiif}/{iid}/full/1686,/0/default.jpg",
+                     "title": str(it.get("title") or "")[:60]})
+        if len(rows) >= n:
+            break
+    return rows
+
+
+CMA_API = "https://openaccess-api.clevelandart.org/api/artworks/"
+
+
+def _cma_search(query: str, n: int) -> list[dict]:
+    """克利夫兰艺术博物馆：免 key 开放馆藏，print 尺寸动辄 3000+ 宽
+
+    优先拿 print（jpg）；full 是 tif，体积大且后续处理都慢，不用。
+    竖构图和太小（web 版约 778 宽）的跳过。
+    """
+    data = _get_json(CMA_API, {"q": query, "limit": max(n * 3, 12),
+                               "has_image": 1})
+    rows = []
+    for it in data.get("data") or []:
+        imgs = it.get("images") or {}
+        info = imgs.get("print") or imgs.get("web") or {}
+        src = str(info.get("url") or "")
+        w, h = int(info.get("width") or 0), int(info.get("height") or 0)
+        if not src.startswith(("http://", "https://")):
+            continue
+        if w and h and (w < 1400 or w < h):
+            continue
+        rows.append({"image": src, "title": str(it.get("title") or "")[:60]})
+        if len(rows) >= n:
+            break
+    return rows
+
+
+# 图源池：名字会写进候选的 src 字段（去重/兜底排序用），别随便改。
+SEARCH_SOURCES = (
+    ("wallhaven", _wh_search),
+    ("safebooru", _safe_search),
+    ("anime", _anime_any),
+    ("bing", _bing_wallpapers),
+    ("openverse", _ov_search),
+    ("wikimedia", _wm_search),
+    ("so360", _so_search),
+    ("nasa", _nasa_search),
+    ("artic", _artic_search),
+    ("cleveland", _cma_search),
+)
+
+# ---------- 关键词归属：先定题材，再去同类图源里搜 ----------
+# 以前是 10 个图源不分题材随机抽 4 个：搜二次元角色会抽到 NASA / 美术馆，
+# 搜星空会抽到动漫图库，命中率全看运气。这里先判断关键词属于哪类题材，
+# 再只在同类图源里随机抽（同类内仍然随机，「换一批」照样能出新图）。
+# 这些词表只参与归类，不参与检索；实际检索词仍是 en_query。
+_WP_KIND_ZH: dict[str, tuple[str, ...]] = {
+    "anime": ("动漫", "二次元", "动画", "漫画", "插画", "少女", "女仆", "萝莉",
+              "御姐", "老婆", "角色", "日漫", "番剧", "同人", "初音", "原神",
+              "崩坏", "星穹铁道", "蔚蓝档案", "明日方舟", "碧蓝航线", "亚丝娜",
+              "刀剑神域", "雷姆", "拉姆", "魔法少女", "赛博朋克", "机甲", "和风",
+              "鬼灭", "咒术回战", "间谍过家家", "孤独摇滚", "芙莉莲", "日鞠",
+              "阿罗娜", "白子", "优香", "菲伦"),
+    "space": ("星空", "宇宙", "星系", "银河", "星云", "星球", "太空", "月球",
+              "月亮", "夜空", "极光", "行星", "恒星", "天文", "航天", "火箭",
+              "卫星", "火星", "土星", "木星", "地球", "日食", "月食"),
+    "art": ("油画", "名画", "绘画", "水彩", "素描", "版画", "艺术", "美术馆",
+            "博物馆", "雕塑", "印象派", "文艺复兴", "梵高", "莫奈", "毕加索",
+            "浮世绘", "壁画", "古典画", "静物画", "藏品"),
+    "photo": ("风景", "景色", "山水", "自然", "海边", "海滩", "大海", "海洋",
+              "湖泊", "河流", "瀑布", "森林", "树林", "草地", "草原", "沙漠",
+              "山谷", "峡谷", "山脉", "雪山", "城市", "街景", "建筑", "桥梁",
+              "花卉", "花朵", "樱花", "花园", "秋景", "雪景", "春天", "夏天",
+              "日落", "日出", "黄昏", "清晨", "夜景", "雨景", "云海", "雾",
+              "动物", "猫", "狗", "鸟", "野生动物", "摄影", "旅行", "国家公园"),
+}
+
+_WP_KIND_EN: dict[str, tuple[str, ...]] = {
+    "anime": ("anime", "manga", "waifu", "chibi", "kawaii", "otaku", "cosplay",
+              "vocaloid", "touhou", "genshin", "honkai", "arknights", "mecha",
+              "cyberpunk", "azur lane", "blue archive", "kantai collection",
+              "mahou shoujo", "sword art online", "kimetsu no yaiba",
+              "jujutsu kaisen", "spy x family", "bocchi the rock",
+              "hatsune miku", "hakurei reimu", "kirisame marisa",
+              "raiden shogun", "hu tao", "asuna yuuki", "akeboshi himari",
+              "sunaookami shiroko", "hayase yuuka", "arona", "frieren",
+              "rem re zero", "anime girl", "anime boy"),
+    "space": ("space", "outer space", "star", "stars", "starry", "galaxy",
+              "galaxies", "nebula", "cosmos", "cosmic", "universe", "planet",
+              "planets", "moon", "lunar", "mars", "saturn", "jupiter", "neptune",
+              "nasa", "astronaut", "aurora", "milky way", "solar system",
+              "eclipse", "constellation", "night sky"),
+    "art": ("painting", "paintings", "oil painting", "watercolor", "sketch",
+            "drawing", "sculpture", "museum", "art gallery", "impressionist",
+            "renaissance", "van gogh", "monet", "picasso", "ukiyo e",
+            "fine art", "still life", "fresco", "classical art"),
+    "photo": ("landscape", "scenery", "scenic", "mountain", "mountains",
+              "ocean", "sea", "beach", "coast", "forest", "woods", "desert",
+              "valley", "river", "lake", "waterfall", "island", "sky", "cloud",
+              "clouds", "sunset", "sunrise", "dawn", "dusk", "night", "city",
+              "cityscape", "skyline", "street", "architecture", "building",
+              "bridge", "flower", "flowers", "blossom", "cherry blossoms",
+              "garden", "autumn", "winter", "spring", "summer", "snow", "rain",
+              "fog", "mist", "nature", "wildlife", "animal", "animals", "cat",
+              "dog", "bird", "horse", "tiger", "lion", "elephant",
+              "national park", "underwater", "macro"),
+}
+
+# 内置二次元词表（ZH_ANIME）里混着的这些词，题材其实不是二次元：
+# 中文词查表命中时不要一律判成 anime，交给下面的中文词表重新归类
+_WP_TABLE_NOT_ANIME = ("starry sky", "night sky", "cat", "landscape",
+                       "cherry blossoms")
+
+# 每类题材的「核心源」：最对口的库一定问，随机只发生在同类其他源之间
+_WP_KIND_CORE: dict[str, tuple[str, ...]] = {
+    "anime": ("anime", "safebooru"),
+    "space": ("nasa",),
+    "art": ("artic", "cleveland"),
+    "photo": (),
+    "default": (),
+}
+
+# 每类题材可用的图源（写的是 SEARCH_SOURCES 里的 label）
+_WP_KIND_SOURCES: dict[str, tuple[str, ...]] = {
+    "anime": ("anime", "safebooru", "wallhaven", "bing", "so360"),
+    "space": ("nasa", "wallhaven", "openverse", "wikimedia", "bing", "so360"),
+    "art": ("artic", "cleveland", "wikimedia", "openverse", "wallhaven", "bing"),
+    "photo": ("wallhaven", "openverse", "wikimedia", "bing", "so360"),
+    "default": tuple(s[0] for s in SEARCH_SOURCES),
+}
+
+
+def _wp_hits(text: str, toks: set[str], hints: tuple[str, ...]) -> bool:
+    """hint 命中判定：带空格的按子串比，单个词按 token 比
+
+    按 token 比是为了避免「rem」命中「forest」、「cat」命中「delicate」
+    这类子串误判。
+    """
+    for h in hints:
+        if " " in h:
+            if h in text:
+                return True
+        elif h in toks:
+            return True
+    return False
+
+
+def _wallpaper_kind(query: str, en_query: str, *, table_hit: bool = False) -> str:
+    """判断关键词属于哪类题材（anime / space / art / photo / default）
+
+    只决定去哪几个图源搜，不影响检索词本身。优先级 anime > space > art >
+    photo；都判不出来就 default（10 个源全开放，保持原来的随机抽签）。
+    table_hit=True 表示中文词查过内置二次元词表、en_query 是 booru 标签，
+    这种情况本身就是二次元（词表里混的风景词除外）。
+    """
+    q = str(query or "").strip().lower()
+    en = str(en_query or "").strip().lower()
+    toks = {w for w in re.split(r"[^0-9a-z]+", en) if w}
+    if table_hit and not _wp_hits(en, toks, _WP_TABLE_NOT_ANIME):
+        return "anime"
+    for kind in ("anime", "space", "art", "photo"):
+        if any(h in q for h in _WP_KIND_ZH[kind]):
+            return kind
+        if _wp_hits(en, toks, _WP_KIND_EN[kind]):
+            return kind
+    return "default"
 
 
 # ---------- 中文关键词的翻译通道 ----------
@@ -3873,6 +4137,9 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
     # （只剩 "18" 之类）。兜底词从中文里取连续的两字片段：
     # 「初音未来」→「初音 / 未来」，拼进标题检索还能捞到东西
     zh_terms: list[str] = _zh_words(query) if ZH_RE.search(query) else []
+    # 单字关键词（「猫」「雪」）切不出两字片段，直接用原词
+    if ZH_RE.search(query) and not zh_terms:
+        zh_terms = [query.strip().lower()]
 
     # 「换一批」的翻页页码：同一个关键词再搜一次就往后翻一页。
     # 各图库都是确定性排序，不翻页的话同一关键词永远拿到同样那几张，
@@ -3889,11 +4156,17 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
         """
         title = str(r.get("title") or "")
         tags = str(r.get("tags") or "")
-        # 壁纸库里没有标题（只有 id/tag），不做词面判断。
-        # 翻译失败时 words 为空，退回中文两字片段，别把新闻配图当壁纸
-        word_hit = words or zh_terms
+        # 中文检索（Bing / 360）时标题也是中文，拿英文译文比必然全灭，
+        # 改用中文两字片段；翻译失败时 words 为空，同样退回中文片段
+        word_hit = (zh_terms if (r.get("lang") == "zh" and zh_terms)
+                    else (words or zh_terms))
         if r.get("src") == "wallhaven":
             return True
+        # 360 / NASA / 美术馆这些是按关键词检全文的搜索引擎或馆藏接口：
+        # 标题经常不含检索词（画名、作品名），但排序已经算过相关性，
+        # 不再做词面核对，只把商品/文章类标题挡掉
+        if r.get("src") in ("so360", "nasa", "artic", "cleveland"):
+            return not (title and BAD_HARD.search(title))
         # 中文提问（翻译没成功）时能判断内容的只有标题，标题里连一个中文
         # 片段都没出现就说明这图和词无关：Bing 补词加的词面检查挡不住
         # 「他」→「待产包清单」这种，只能在这里比
@@ -3924,47 +4197,53 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
         return hits * 2 >= len(word_hit) + 1
 
     def _search() -> tuple[list[dict], list[str]]:
-        """并行问几个图库，各取几张当候选池。
+        """按关键词归属挑同类图源，各搜一次、各取 SRC_REQ 张当候选池。
 
-        Wallhaven、Safebooru 是壁纸/插画库，命中率最高；Bing 图片补中文
-        题材；Openverse、维基共享补真实照片。一个源挂了只记一笔。
-        中文提问时，Bing 用中文原词（它的中文召回还行），其余用译文。
+        只在题材对口的图源里随机抽（核心源保底），同一个关键词每批的来源
+        组合不同，重复率自然降下来。抽中的源挂了或没对上词时，从同类剩下
+        的源里再抽一批补位，避免一手死源就直接空手而归。
+        中文提问时，Bing / 360 随机用中文原词或译文，其余英文库用译文。
         """
         import concurrent.futures as cf
+        import random
 
-        sources = (
-            ("wallhaven", _wh_search),
-            ("safebooru", _safe_search),
-            ("anime", _anime_any),
-            ("bing", _bing_wallpapers),
-            ("openverse", _ov_search),
-            ("wikimedia", _wm_search),
-        )
-        # 支持翻页的三个源（其余接口是搜索式，翻页参数无意义）：
-        # 同一个关键词第二次搜索时带 page，拿到的就是另一批图。
-        # anime 每轮自己会连查 BATCH 轮，所以页码按 BATCH 推，跟它对齐
-        paged = ("wallhaven", "anime", "safebooru")
+        def _term(label: str, en: str) -> str:
+            # Bing 每次都掷一次骰子：一半中文原词、一半英文译文。
+            # 360 只吃中文（英文查询召回只有两三条小图），有中文就直接用；
+            # 其余是英文库，中文丢过去基本 0 条
+            if label in ZH_SRC and zh_terms:
+                if label == "so360":
+                    return query
+                return query if random.random() < 0.5 else en
+            return en
 
-        def _ask(term: str) -> tuple[list[dict], list[str]]:
+        def _ask(group, en: str) -> tuple[list[dict], list[str]]:
             pool: list[dict] = []
             errors: list[str] = []
-            with cf.ThreadPoolExecutor(max_workers=len(sources)) as ex:
+            qs: dict[str, str] = {}
+            with cf.ThreadPoolExecutor(max_workers=len(group)) as ex:
                 futs = []
-                for label, fn in sources:
-                    q = f"{term} wallpaper" if label == "bing" else term
-                    if label in paged:
+                for label, fn in group:
+                    q = _term(label, en)
+                    if label == "bing":
+                        q = f"{q} {'壁纸' if ZH_RE.search(q) else 'wallpaper'}"
+                    qs[label] = q
+                    # anime 每轮自己会连查 BATCH 轮，页码按 BATCH 推跟它对齐
+                    if label in PAGED_SRC:
                         p = page * BATCH + 1 if label == "anime" else page
-                        futs.append((ex.submit(fn, q, POOL_REQ, p), label))
+                        futs.append((ex.submit(fn, q, SRC_REQ, p), label))
                     else:
-                        futs.append((ex.submit(fn, q, POOL_REQ), label))
+                        futs.append((ex.submit(fn, q, SRC_REQ), label))
                 for fut, label in futs:
                     try:
                         rows = fut.result()
                     except Exception as e:      # 单个源挂了不算失败
                         errors.append(f"{label}:{type(e).__name__}")
                         continue
+                    lang = "zh" if ZH_RE.search(qs.get(label, "")) else "en"
                     for r in rows:
                         r["src"] = label
+                        r["lang"] = lang
                         # 先过一轮基本过滤：商品图、文章标题都不要，免得占掉
                         # 后面的下载名额；这里只看标题，不联网
                         if _relevant(r):
@@ -3976,18 +4255,39 @@ async def _search_wallpaper(query: str, count: int = 4, *, for_wallpaper: bool =
                 return [], errors
             return pool, errors
 
-        pool, errors = _ask(en_query)
+        # 先按关键词归属选图源：题材对口才搜（搜角色不再抽到 NASA / 美术馆，
+        # 搜星空不再抽到动漫图库）。同类源内仍然随机抽，保证「换一批」有新图；
+        # 归属判不出来时走 default，退回原来 10 源全随机。
+        kind = _wallpaper_kind(query, en_query, table_hit=bool(hit))
+        allowed = [s for s in SEARCH_SOURCES if s[0] in _WP_KIND_SOURCES[kind]]
+        if not allowed:
+            allowed = list(SEARCH_SOURCES)
+        core = [s for s in allowed if s[0] in _WP_KIND_CORE[kind]]
+        rest_pool = [s for s in allowed if s[0] not in _WP_KIND_CORE[kind]]
+        picked = list(core) + random.sample(
+            rest_pool, min(max(0, SAMPLE_N - len(core)), len(rest_pool)))
+        pool, errors = _ask(picked, en_query)
+        # 抽中的源凑不够（挂掉/没对上词），再从同类里剩下的源抽一批补位。
+        # 只在同类图源里补，不再回落到全部 10 个源
+        if len(pool) < count * 3:
+            rest = [s for s in allowed if s not in picked]
+            extra = random.sample(rest, min(SAMPLE_N, len(rest)))
+            if extra:
+                more, more_err = _ask(extra, en_query)
+                pool += more
+                errors += more_err
+                picked += extra
         # 图库都是「所有词都得命中」的 AND 检索：三个词以上的长句（模型很爱
         # 自己拼 "cute anime girl pastel background"）几乎一律 0 条，于是这一
         # 批只剩 Bing 那几张、或者干脆空白。整句查空就用去掉常见修饰词后的
         # 词重查一次——同一个空词不管搜多少遍都是空，用户看到的就是「每次一样」
         if not pool:
-            core = [w for w in words if w not in _GENERIC_TAGS]
+            core_words = [w for w in words if w not in _GENERIC_TAGS]
             for size in (2, 1):
-                alt = " ".join(core[:size])
+                alt = " ".join(core_words[:size])
                 if not alt or alt == " ".join(words):
                     continue
-                again = _ask(alt)
+                again = _ask(picked, alt)
                 if again[0]:
                     return again
         return pool, errors
